@@ -103,6 +103,7 @@ class BaseLiveTurn:
     """
 
     owns_interruption = False
+    host_followup_window = False
 
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
         self._conn = conn

@@ -18,8 +18,8 @@ Wake conversations can stay open for follow-ups (five seconds by default;
 `JASPER_FOLLOWUP_TIMEOUT_SEC=0` disables the window). The closing chirp marks
 listening ending. GPT-Live streams the admitted microphone during the active
 conversation, including pauses and assistant speech; its session closes when
-JTS ends that conversation. Existing endpointed adapters wait locally for a
-follow-up and send its audio when speech is detected.
+JTS ends that conversation. Endpointed adapters close the conversation as soon
+as playback drains.
 
 
 Voice tools may also send tool results back to that same voice provider so it

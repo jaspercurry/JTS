@@ -28,6 +28,7 @@ async def drain_audio_chunks(turn) -> list[AudioOutChunk]:
 
 class FakeLiveTurn:
     owns_interruption = False
+    host_followup_window = False
 
     def __init__(
         self,

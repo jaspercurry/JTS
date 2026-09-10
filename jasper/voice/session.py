@@ -196,6 +196,11 @@ class LiveTurn(Interruptible, Protocol):
     work and `discard_input()` synchronously revokes buffered microphone audio.
     """
 
+    # True when the host may hold this turn open for a local follow-up
+    # after playout drains, instead of closing it. `_base.BaseLiveTurn`
+    # carries the default; a continuous session runs its own window.
+    host_followup_window: bool
+
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         ...
 

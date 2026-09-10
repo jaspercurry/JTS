@@ -891,7 +891,7 @@ class WakeLoop:
                 or self._followup.seconds <= 0 or reason not in {"ended", "barge_in"}
                 or self._turn.turn_lost() or self._conversation_end_requested
                 or not self._playback_report.accepted_audio
-                or getattr(self._turn, "continuous_input", False)):
+                or not self._turn.host_followup_window):
             await self._end_turn("conversation_ended" if self._conversation_end_requested else reason)
             return
         self._response_transition = True

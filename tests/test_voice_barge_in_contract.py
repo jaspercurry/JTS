@@ -97,6 +97,9 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
         # exempt from the host's barge-in flush. Every other turn carries the
         # default, so a fifth adapter cannot inherit the exemption by accident.
         assert turn.owns_interruption is (provider_id == "openai_live")
+        # No provider's follow-ups are proven on hardware yet, so every turn
+        # closes when playout drains; Live runs its own window inside the turn.
+        assert turn.host_followup_window is False, provider_id
 
 
 # ---------------------------------------------------------------------------
