@@ -16,14 +16,15 @@
 # (Debian #1093057), so nothing automatically re-pins the control.
 # Our own custom udev rule covers the hotplug path; this monitor
 # is belt-and-suspenders for any other source of drift (manual
-# amixer, a quirk we haven't anticipated, etc). Polls at 1 Hz, logs
-# every observed change, and resets to 100% if the value isn't
-# 100% — converting silent drift into a self-healing event with a
-# timestamped audit trail.
+# amixer, a quirk we haven't anticipated, etc). It blocks on
+# `alsactl monitor` — a control moving IS the event, so an idle
+# board forks nothing (#4121) — logs every observed change, and
+# resets to 100% if the value isn't 100%, converting silent drift
+# into a self-healing event with a timestamped audit trail.
 #
-# The first poll logs the current value as "initial"; subsequent
-# polls log only on change. Resets are also logged so the journal
-# shows what self-healing happened and when.
+# The first read logs the current value as "initial"; later ones
+# log only on change. Resets are also logged so the journal shows
+# what self-healing happened and when.
 #
 # WHICH attached cards are Apple, and WHICH control they pin, are the
 # classifier's answer, asked through its env emitter (ADR-0235 R2).
@@ -79,8 +80,19 @@ read_state() {
 # running — a transient amixer error isn't worth crashing the
 # watcher.
 maybe_reset() {
-    local card="$1" state="$2"
+    local card="$1" state="$2" idx="$3" last_reset
     if [[ "$state" != *"[100%]"* ]]; then
+        # The reset writes a control, which the monitor reports straight back
+        # as another event: without a floor between resets, anything holding
+        # the control down turns that into a fight at event rate. `SECONDS` is
+        # whole-second, so this holds resets to roughly one per second per
+        # card — the ceiling the `sleep 1` poll used to give for free.
+        last_reset="${card_reset_at[$idx]}"
+        if [[ -n "$last_reset" ]] &&
+            (( SECONDS - last_reset < RESET_MIN_INTERVAL_SEC )); then
+            return 0
+        fi
+        card_reset_at[idx]=$SECONDS
         echo "event=apple_dongle.headphone_monitor.drift card=${card} control=${CONTROL} state=$(event_state "$state") action=reset_to_100"
         if ! amixer -c "$card" sset "$CONTROL" 100% unmute >/dev/null 2>&1; then
             echo "event=apple_dongle.headphone_monitor.reset_failed card=${card} control=${CONTROL} reason=amixer_nonzero"
@@ -94,8 +106,13 @@ maybe_reset() {
 APPLE_CARDS=()
 # Never equal to a population: a real one is empty or ends in a space.
 LAST_POPULATION="unprobed"
+# Whether the last refresh saw the board's `cardN:id` set move. The monitor
+# enumerates cards once when it starts, so this is what re-opens it on a card
+# arriving or leaving.
+POPULATION_MOVED=0
 refresh_apple_cards() {
     local entry name id population="" payload
+    POPULATION_MOVED=0
     # An explicit card argument is an operator override and asks nothing.
     if [[ "$CONFIGURED_CARD" != "auto" ]]; then
         APPLE_CARDS=("$CONFIGURED_CARD")
@@ -110,6 +127,7 @@ refresh_apple_cards() {
     done
     [[ "$population" != "$LAST_POPULATION" ]] || return 0
     LAST_POPULATION="$population"
+    POPULATION_MOVED=1
     if ! payload="$("$PYTHON" -m jasper.cli.output_hardware --env)"; then
         # Clear rather than leave stale ids, and force a real retry on the
         # next poll regardless of whether the card population changes.
@@ -142,13 +160,17 @@ echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CA
 card_keys=()
 card_last=()
 card_unreadable=()
+card_reset_at=()
 
-# Index of card "$1", or non-zero when this card has not been seen yet.
+# Sets CARD_INDEX to the index of card "$1", or returns non-zero when this
+# card has not been seen yet. A global rather than a `$(...)` result, so a
+# sweep of an already-known card forks nothing.
+CARD_INDEX=""
 card_index() {
     local i=0
     while (( i < ${#card_keys[@]} )); do
         if [[ "${card_keys[$i]}" == "$1" ]]; then
-            printf '%s' "$i"
+            CARD_INDEX="$i"
             return 0
         fi
         i=$(( i + 1 ))
@@ -156,41 +178,108 @@ card_index() {
     return 1
 }
 
-absent_logged=0
-probe_failed_logged=0
-while true; do
-    # Logged once per outage (like absent_logged below) and reset on the
-    # next successful probe; never an exit: an exit here would walk
-    # `Restart=always` into `StartLimitBurst` and park the unit with
-    # nothing left to revive it. A failed probe forces a real retry next
-    # poll (see refresh_apple_cards), so the outage self-heals.
-    if refresh_apple_cards; then
-        probe_failed_logged=0
-    elif [[ "$probe_failed_logged" != "1" ]]; then
-        echo "event=apple_dongle.headphone_monitor.probe_failed reason=emitter_nonzero" >&2
-        probe_failed_logged=1
-    fi
+# One `alsactl monitor hw:<card>` per armed card blocks in place of the 1 Hz
+# `amixer` poll this loop used to run: an unchanged control produces nothing
+# to read, so an idle board forks nothing at all (#4121). `alsactl monitor`
+# takes exactly one <card> (alsactl(1)), so a board with two Apple DACs runs
+# two of them, fanned out from a single process-substitution subshell that
+# `wait`s on both -- their stdout shares that subshell's one pipe, so a
+# single blocking `read` still sees every armed card's events, and the pipe
+# only EOFs (waking the read promptly) once every card's process has
+# exited. Each start enumerates the board's cards once and exits when one of
+# them is removed, so both directions of a card population move are
+# answered by re-opening it.
+MONITOR_PGID=""
+# How long a blocked read waits before re-checking the card population.
+# Builtins only on that path.
+MONITOR_POLL_SEC=5
+RESET_MIN_INTERVAL_SEC=1
+SWEEP_MIN_INTERVAL_SEC=1
+# Test seams, not operator knobs (mirrors JASPER_SYS_CLASS_SOUND etc. above):
+# let the backoff test assert real elapsed time without waiting out a
+# multi-second production cap.
+MONITOR_BACKOFF_BASE_SEC="${JASPER_HEADPHONE_MONITOR_BACKOFF_BASE_SEC:-1}"
+MONITOR_BACKOFF_CAP_SEC="${JASPER_HEADPHONE_MONITOR_BACKOFF_CAP_SEC:-$MONITOR_POLL_SEC}"
+MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+MONITOR_MODE=""
+MONITOR_MODE_REASON=""
 
-    if [[ "${#APPLE_CARDS[@]}" -eq 0 ]]; then
-        if [[ "$absent_logged" != "1" ]]; then
-            echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
-            absent_logged=1
-        fi
-        card_keys=()
-        card_last=()
-        card_unreadable=()
-        sleep 5
-        continue
-    fi
+# Logs mode=monitor|poll once, on an actual transition -- never per retry,
+# which would spam the journal every backoff cycle.
+set_monitor_mode() {
+    local mode="$1" reason="${2:--}"
+    [[ "$mode" == "$MONITOR_MODE" && "$reason" == "$MONITOR_MODE_REASON" ]] && return 0
+    MONITOR_MODE="$mode"
+    MONITOR_MODE_REASON="$reason"
+    echo "event=apple_dongle.headphone_monitor.mode mode=${mode} reason=${reason}"
+}
 
-    absent_logged=0
+stop_monitor() {
+    [[ -n "$MONITOR_PGID" ]] || return 0
+    kill "$MONITOR_PGID" 2>/dev/null
+    exec 3<&-
+    MONITOR_PGID=""
+}
+
+# Started only once a card exists and stopped the moment none does, so the
+# pipe never fills with events for a board this loop is not watching.
+# Non-zero when there is no alsactl to run, which leaves the caller polling.
+start_monitor() {
+    command -v alsactl >/dev/null 2>&1 || return 1
+    local use_stdbuf=0
+    command -v stdbuf >/dev/null 2>&1 && use_stdbuf=1
+    # alsactl block-buffers when its stdout is a pipe, so without a line
+    # buffer an event sits in libc until 4 KB of them have piled up behind
+    # it. The subshell's own exit code is not reliable for the caller to
+    # `wait` on later (bash loses track of a process-substitution pid once
+    # other job control happens in between), so exec_failed vs eof is read
+    # off MONITOR_MODE instead -- whether THIS generation ever proved
+    # itself connected before it went away.
+    #
+    # `stop_monitor`'s `kill "$MONITOR_PGID"` only reaches this subshell --
+    # the fanned-out `alsactl &` children below are not in a process group
+    # the shell put them in, so left alone they'd simply be orphaned and
+    # keep running past the reset (#4772 review). The trap forwards that
+    # same TERM to every child this generation started before the subshell
+    # itself exits.
+    exec 3< <(
+        child_pids=()
+        kill_fanout_children() {
+            local pid
+            (( ${#child_pids[@]} )) || return 0
+            for pid in "${child_pids[@]}"; do
+                kill "$pid" 2>/dev/null
+            done
+        }
+        trap kill_fanout_children TERM
+        for card in "${APPLE_CARDS[@]}"; do
+            [[ -n "$card" ]] || continue
+            if (( use_stdbuf )); then
+                stdbuf -oL alsactl monitor "hw:${card}" &
+            else
+                alsactl monitor "hw:${card}" &
+            fi
+            child_pids+=("$!")
+        done
+        wait
+    )
+    MONITOR_PGID=$!
+}
+
+# Read every armed card's control once, log what moved, and re-pin anything
+# that is no longer at 100%.
+sweep_cards() {
+    local card idx cur last
     for card in "${APPLE_CARDS[@]}"; do
         [[ -n "$card" ]] || continue
-        if ! idx=$(card_index "$card"); then
+        if card_index "$card"; then
+            idx="$CARD_INDEX"
+        else
             echo "event=apple_dongle.headphone_monitor.detected card=${card} control=${CONTROL}"
             card_keys+=("$card")
             card_last+=("")
             card_unreadable+=(0)
+            card_reset_at+=("")
             idx=$(( ${#card_keys[@]} - 1 ))
         fi
 
@@ -205,18 +294,148 @@ while true; do
         fi
         card_unreadable[idx]=0
         last="${card_last[$idx]}"
-        if [[ -n "$cur" && "$cur" != "$last" ]]; then
+        if [[ "$cur" != "$last" ]]; then
             if [[ -z "$last" ]]; then
                 echo "event=apple_dongle.headphone_monitor.state card=${card} control=${CONTROL} state=$(event_state "$cur") initial=1"
                 # If we start up to a non-100% state (daemon restart
                 # while drift was already in effect), self-heal too.
-                maybe_reset "$card" "$cur"
+                maybe_reset "$card" "$cur" "$idx"
             else
                 echo "event=apple_dongle.headphone_monitor.change card=${card} control=${CONTROL} from=$(event_state "$last") to=$(event_state "$cur")"
-                maybe_reset "$card" "$cur"
+                maybe_reset "$card" "$cur" "$idx"
             fi
             card_last[idx]="$cur"
         fi
     done
-    sleep 1
+}
+
+# Symmetric with `detected` above: a card the last refresh was tracking that
+# is no longer in APPLE_CARDS gets a structured event and drops its
+# per-card bookkeeping, so a card that comes back later starts clean
+# instead of reusing a previous instance's card_last/reset state.
+prune_departed_cards() {
+    local i=0 key still_armed card
+    local kept_keys=() kept_last=() kept_unreadable=() kept_reset=()
+    while (( i < ${#card_keys[@]} )); do
+        key="${card_keys[$i]}"
+        still_armed=0
+        if (( ${#APPLE_CARDS[@]} )); then
+            for card in "${APPLE_CARDS[@]}"; do
+                [[ "$card" == "$key" ]] && { still_armed=1; break; }
+            done
+        fi
+        if (( still_armed )); then
+            kept_keys+=("$key")
+            kept_last+=("${card_last[$i]}")
+            kept_unreadable+=("${card_unreadable[$i]}")
+            kept_reset+=("${card_reset_at[$i]}")
+        else
+            echo "event=apple_dongle.headphone_monitor.card_gone card=${key}"
+        fi
+        i=$(( i + 1 ))
+    done
+    card_keys=()
+    card_last=()
+    card_unreadable=()
+    card_reset_at=()
+    if (( ${#kept_keys[@]} )); then
+        card_keys=("${kept_keys[@]}")
+        card_last=("${kept_last[@]}")
+        card_unreadable=("${kept_unreadable[@]}")
+        card_reset_at=("${kept_reset[@]}")
+    fi
+}
+
+absent_logged=0
+probe_failed_logged=0
+sweep_due=1
+LAST_SWEEP_AT=""
+while true; do
+    # Logged once per outage (like absent_logged below) and reset on the
+    # next successful probe; never an exit: an exit here would walk
+    # `Restart=always` into `StartLimitBurst` and park the unit with
+    # nothing left to revive it. A failed probe forces a real retry next
+    # pass (see refresh_apple_cards), so the outage self-heals.
+    if refresh_apple_cards; then
+        probe_failed_logged=0
+    elif [[ "$probe_failed_logged" != "1" ]]; then
+        echo "event=apple_dongle.headphone_monitor.probe_failed reason=emitter_nonzero" >&2
+        probe_failed_logged=1
+    fi
+    if [[ "$POPULATION_MOVED" == "1" ]]; then
+        stop_monitor
+        prune_departed_cards
+        sweep_due=1
+    fi
+
+    if [[ "${#APPLE_CARDS[@]}" -eq 0 ]]; then
+        stop_monitor
+        if [[ "$absent_logged" != "1" ]]; then
+            echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
+            absent_logged=1
+        fi
+        # So the next generation's first mode transition logs for real
+        # instead of being deduped against a reason from before the board
+        # went empty (set_monitor_mode only logs on an actual change).
+        MONITOR_MODE=""
+        MONITOR_MODE_REASON=""
+        sleep "$MONITOR_POLL_SEC"
+        continue
+    fi
+
+    absent_logged=0
+    if [[ -z "$MONITOR_PGID" ]] && start_monitor; then
+        # Whatever moved while no monitor was open is only visible in the
+        # control itself, so a fresh monitor always costs one read.
+        sweep_due=1
+    fi
+
+    # A burst of events inside the floor is one control changing several
+    # times, not several controls: coalesce it into a single sweep, the
+    # same 1/s ceiling `maybe_reset` already holds resets to.
+    if [[ "$sweep_due" == "1" ]]; then
+        if [[ -z "$LAST_SWEEP_AT" ]] ||
+            (( SECONDS - LAST_SWEEP_AT >= SWEEP_MIN_INTERVAL_SEC )); then
+            sweep_cards
+            sweep_due=0
+            LAST_SWEEP_AT=$SECONDS
+        fi
+    fi
+
+    if [[ -z "$MONITOR_PGID" ]]; then
+        # No alsactl on this box: a slow poll is the only way left to see
+        # drift at all.
+        set_monitor_mode poll not_installed
+        sweep_due=1
+        sleep "$MONITOR_POLL_SEC"
+    elif read -r -t "$MONITOR_POLL_SEC" -u 3; then
+        set_monitor_mode monitor
+        MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+        sweep_due=1
+    elif ! kill -0 "$MONITOR_PGID" 2>/dev/null; then
+        # The pid, not `read`'s exit code, is what separates a plain timeout
+        # from the monitor going away — alsactl exits when a card it holds
+        # is removed, or failed to open its control device at all. This
+        # generation already having reached mode=monitor is what tells the
+        # two apart: eof if it once proved connected, exec_failed if it
+        # never got the chance. Re-open it with backoff; never fall back to
+        # polling for good, or a dongle plugged back in would never be
+        # watched again.
+        wait "$MONITOR_PGID" 2>/dev/null
+        exit_reason="exec_failed"
+        [[ "$MONITOR_MODE" == "monitor" ]] && exit_reason="eof"
+        stop_monitor
+        set_monitor_mode poll "$exit_reason"
+        sleep "$MONITOR_BACKOFF"
+        (( MONITOR_BACKOFF < MONITOR_BACKOFF_CAP_SEC )) &&
+            MONITOR_BACKOFF=$(( MONITOR_BACKOFF * 2 ))
+        (( MONITOR_BACKOFF > MONITOR_BACKOFF_CAP_SEC )) &&
+            MONITOR_BACKOFF="$MONITOR_BACKOFF_CAP_SEC"
+    else
+        # A full read window elapsed with the monitor still connected and
+        # nothing to report: whatever backoff an earlier retry grew has
+        # proven itself unneeded.
+        set_monitor_mode monitor
+        MONITOR_BACKOFF="$MONITOR_BACKOFF_BASE_SEC"
+    fi
 done

@@ -5,8 +5,10 @@
 """The outputd topology's wiring: declarative pins plus the steps that run."""
 from __future__ import annotations
 
+import errno
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -201,19 +203,38 @@ def _bash_function(path: Path, name: str) -> str:
 # The role gate that enables/disables these two units is covered end to end by
 # tests/test_audio_hardware_reconcile.py, which also proves it is CALLED.
 DRIFTED_HEADPHONE_STATE = "  Front Left: Playback 80 [67%] [-20.00dB] [on]"
+PINNED_HEADPHONE_STATE = "  Front Left: Playback 120 [100%] [0.00dB] [on]"
 
 
-def _amixer_double(tmp_path: Path) -> tuple[Path, Path]:
-    """An `amixer` that records its argv and reports a drifted Headphone."""
+def _amixer_double(
+    tmp_path: Path, *, state: str = DRIFTED_HEADPHONE_STATE,
+) -> tuple[Path, Path]:
+    """An `amixer` that records its argv and reports whatever
+    `bin_dir/amixer.state` holds, plus the `alsactl monitor` the drift
+    monitor blocks on — its events are lines appended to
+    `bin_dir/alsactl.events`."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = bin_dir / "amixer.log"  # absent until amixer is actually invoked
+    reported = bin_dir / "amixer.state"
+    reported.write_text(state + "\n", encoding="utf-8")
     (bin_dir / "amixer").write_text(
         "#!/usr/bin/env bash\n"
         f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n'
-        f"printf '%s\\n' {shlex.quote(DRIFTED_HEADPHONE_STATE)}\n"
+        f"cat {shlex.quote(str(reported))}\n"
     )
     (bin_dir / "amixer").chmod(0o755)
+    events = bin_dir / "alsactl.events"
+    events.write_text("", encoding="utf-8")
+    started = bin_dir / "alsactl.log"  # one line per monitor opened
+    started.write_text("", encoding="utf-8")
+    (bin_dir / "alsactl").write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$1" == "monitor" ]] || exit 0\n'
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(started))}\n'
+        f"exec tail -n +1 -f {shlex.quote(str(events))}\n"
+    )
+    (bin_dir / "alsactl").chmod(0o755)
     return bin_dir, log
 
 
@@ -224,6 +245,7 @@ def _start_monitor(
     *,
     card: str = "auto",
     control: str | None = None,
+    capture_stderr: bool = False,
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """The drift monitor plus its journal, reading `board` through the
     classifier's own seams. Argv matches the unit's: the card alone, so the
@@ -247,7 +269,7 @@ def _start_monitor(
                 **board,
             },
             stdout=journal.open("wb"),
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if capture_stderr else subprocess.DEVNULL,
         ),
         journal,
     )
@@ -276,6 +298,23 @@ def _await(
 def _event_fields(line: str) -> dict[str, str]:
     """One `event=... key=value` journal line as its fields."""
     return dict(token.split("=", 1) for token in line.split() if "=" in token)
+
+
+def _read_pid(path: Path) -> int | None:
+    """The pid a fake `alsactl monitor` recorded at `path`, or None before
+    it has written one."""
+    if not path.exists():
+        return None
+    text = path.read_text().strip()
+    return int(text) if text.isdigit() else None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return exc.errno != errno.ESRCH
+    return True
 
 
 def _empty_board(tmp_path: Path) -> dict[str, str]:
@@ -323,9 +362,320 @@ def test_the_drift_monitor_pins_every_apple_card_the_classifier_names(tmp_path):
     monitor, _ = _start_monitor(tmp_path, bin_dir, _dual_apple_cards(tmp_path))
     try:
         _await(monitor, log, _BOTH_APPLE_PINS)
+        # `alsactl monitor` takes exactly one <card>, so each armed card gets
+        # its OWN scoped process -- never a bare, unscoped `monitor` that
+        # would in practice only ever see card 0 (#4772 review). The
+        # per-card processes are backgrounded from a process-substitution
+        # subshell, so their own argv-logging line can lag the reset that
+        # `_await` above already waited for -- poll for it too.
+        deadline = time.monotonic() + 30.0
+        started: list[str] = []
+        while time.monotonic() < deadline:
+            started = (bin_dir / "alsactl.log").read_text().splitlines()
+            if sorted(started) == ["monitor hw:A", "monitor hw:A_1"]:
+                break
+            assert monitor.poll() is None, f"monitor exited; alsactl.log: {started!r}"
+            time.sleep(0.02)
+        assert sorted(started) == ["monitor hw:A", "monitor hw:A_1"]
     finally:
         monitor.kill()
         monitor.wait()
+
+
+def test_the_drift_monitor_kills_every_fanned_out_alsactl_on_a_population_move(
+    tmp_path,
+):
+    """`stop_monitor` used to `kill` only the process-substitution subshell
+    that fans `alsactl monitor` out one-per-card -- the fanned-out children
+    are not in a process group the shell put them in, so they were silently
+    orphaned and kept running past every population-triggered restart
+    (#4772 review). Two armed cards, then one leaves the board: neither
+    card's OLD `alsactl` survives the restart, and the departed card gets
+    its own structured event."""
+    bin_dir, log = _amixer_double(tmp_path)
+    started = bin_dir / "alsactl.log"
+    events = bin_dir / "alsactl.events"
+    (bin_dir / "alsactl").write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$1" == "monitor" ]] || exit 0\n'
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(started))}\n'
+        # A leaked orphan IS this fake's own pid, recorded under the card
+        # name so the test can `kill -0` it after a stop.
+        'card="${2#hw:}"\n'
+        f'printf "%s" "$$" > {shlex.quote(str(bin_dir))}/alsactl.pid."$card"\n'
+        f"exec tail -n +1 -f {shlex.quote(str(events))}\n"
+    )
+    (bin_dir / "alsactl").chmod(0o755)
+
+    monitor, journal = _start_monitor(tmp_path, bin_dir, _dual_apple_cards(tmp_path))
+    try:
+        _await(monitor, log, _BOTH_APPLE_PINS)
+
+        deadline = time.monotonic() + 30.0
+        pid_a = pid_a1 = None
+        while time.monotonic() < deadline and (pid_a is None or pid_a1 is None):
+            pid_a = _read_pid(bin_dir / "alsactl.pid.A")
+            pid_a1 = _read_pid(bin_dir / "alsactl.pid.A_1")
+            if pid_a is None or pid_a1 is None:
+                time.sleep(0.02)
+        assert pid_a and pid_a1, "both fake alsactls never recorded a pid"
+        assert _pid_alive(pid_a) and _pid_alive(pid_a1)
+
+        # Card A_1 leaves the board: the population moves from two cards to
+        # one, which is what a population-triggered restart is.
+        sys_class = tmp_path / "sys" / "class" / "sound"
+        (sys_class / "card2").unlink()
+        shutil.rmtree(tmp_path / "proc" / "asound" / "card2")
+        with events.open("a", encoding="utf-8") as fh:
+            fh.write("node hw:0,0,0 value|info\n")
+
+        _await(
+            monitor,
+            journal,
+            ("event=apple_dongle.headphone_monitor.card_gone card=A_1",),
+        )
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and (_pid_alive(pid_a) or _pid_alive(pid_a1)):
+            assert monitor.poll() is None, "monitor exited while awaiting cleanup"
+            time.sleep(0.02)
+        assert not _pid_alive(pid_a), "old card A alsactl survived the restart"
+        assert not _pid_alive(pid_a1), "old card A_1 alsactl survived the restart"
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_reads_the_control_only_when_an_event_says_so(
+    tmp_path,
+):
+    """The 1 Hz `amixer` poll is gone: nothing re-reads the control until
+    `alsactl monitor` reports it moved (#4121). Starting pinned at 100 %
+    there is nothing to heal, so the reset that follows an event line — with
+    exactly one read per card before it — is the loop waking on the event and
+    not on a clock."""
+    bin_dir, log = _amixer_double(tmp_path, state=PINNED_HEADPHONE_STATE)
+    monitor, journal = _start_monitor(
+        tmp_path, bin_dir, _dual_apple_cards(tmp_path),
+    )
+    try:
+        _await(
+            monitor,
+            journal,
+            (
+                "event=apple_dongle.headphone_monitor.state card=A ",
+                "event=apple_dongle.headphone_monitor.state card=A_1 ",
+            ),
+        )
+        assert "sset" not in log.read_text()  # already at 100 %, nothing to do
+
+        # Several times the 1 s poll this replaced. A slow machine can only
+        # make this pass for the wrong reason, never fail: the event-driven
+        # loop reads nothing while idle however long it waits.
+        time.sleep(3.0)
+        assert log.read_text().count("sget") == 2  # one per card, at start
+
+        (bin_dir / "amixer.state").write_text(
+            DRIFTED_HEADPHONE_STATE + "\n", encoding="utf-8"
+        )
+        (bin_dir / "alsactl.events").write_text(
+            "node hw:0,0,0 value|info\n", encoding="utf-8"
+        )
+
+        _await(monitor, log, _BOTH_APPLE_PINS)
+        assert log.read_text().count("sget") == 4  # one per card, twice
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def _await_count(path: Path, n: int, monitor: subprocess.Popen[bytes]) -> float:
+    """Block until the decimal counter at `path` reaches at least `n`,
+    returning the `time.monotonic()` it did. Only a hang backstop -- the
+    caller compares two returned timestamps, never this deadline (#3092)."""
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        text = path.read_text().strip() if path.exists() else ""
+        if text.isdigit() and int(text) >= n:
+            return time.monotonic()
+        code = monitor.poll()
+        if code is not None:
+            raise AssertionError(f"monitor exited with {code} awaiting count {n}")
+        time.sleep(0.02)
+    raise AssertionError(f"count at {path} never reached {n}")
+
+
+def test_the_drift_monitor_backoff_grows_caps_then_decays_after_a_full_window(
+    tmp_path,
+):
+    """`alsactl monitor` exits when a card it holds is removed, or never
+    connects at all (a permission problem, say). Falling back to polling for
+    good would leave a dongle plugged back in unwatched, so the stream is
+    re-opened instead, behind a backoff that grows and is capped so a
+    monitor that cannot start would not spin (#4121) -- and decays back to
+    base once the reopened stream has proven itself connected through one
+    full read window, rather than staying inflated by an old failure
+    forever (#4772 review). The base/cap are overridable env vars, a test
+    seam documented in the script header, so this asserts real elapsed time
+    without waiting out the 5 s production cap and fails if a sleep is
+    optimized away.
+    """
+    bin_dir, log = _amixer_double(tmp_path, state=PINNED_HEADPHONE_STATE)
+    counter = bin_dir / "alsactl.count"
+    counter.write_text("0", encoding="utf-8")
+    starts = bin_dir / "alsactl.starts"
+    starts.write_text("", encoding="utf-8")
+    (bin_dir / "alsactl").write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$1" == "monitor" ]] || exit 0\n'
+        f'n=$(cat {shlex.quote(str(counter))})\n'
+        f'printf "%s" $((n + 1)) > {shlex.quote(str(counter))}\n'
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(starts))}\n'
+        # Invocations 1 and 2 fail to open the control device at all
+        # (exec_failed); invocation 3 connects and stays up -- long enough
+        # to span one full MONITOR_POLL_SEC read window before it, too,
+        # exits cleanly (eof), the way a card removal would end it.
+        'if [[ "$n" -lt 2 ]]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        "sleep 7\n"
+        "exit 0\n"
+    )
+    (bin_dir / "alsactl").chmod(0o755)
+
+    monitor, journal = _start_monitor(
+        tmp_path,
+        bin_dir,
+        {
+            "JASPER_HEADPHONE_MONITOR_BACKOFF_BASE_SEC": "1",
+            "JASPER_HEADPHONE_MONITOR_BACKOFF_CAP_SEC": "3",
+        },
+        card="Dongle_1",
+        control="Headphone",
+        capture_stderr=True,
+    )
+    try:
+        t1 = _await_count(counter, 1, monitor)
+        t2 = _await_count(counter, 2, monitor)  # after the base (1 s) sleep
+        t3 = _await_count(counter, 3, monitor)  # after growth capped at 3 s
+        assert 0.4 <= (t2 - t1) <= 2.2, "base backoff sleep was skipped or wrong"
+        assert 1.3 <= (t3 - t2) <= 4.2, "grown/capped backoff sleep was skipped or wrong"
+
+        # Invocation 3's `sleep 7` outlives one 5 s read window while
+        # connected, decaying the backoff back to base before it exits.
+        t4 = _await_count(counter, 4, monitor)
+        elapsed_after_death = t4 - (t3 + 7.0)
+        assert 0.2 <= elapsed_after_death <= 2.2, (
+            "post-decay backoff was not back near base "
+            f"(observed {elapsed_after_death:.2f}s, expected ~1s not ~3s)"
+        )
+
+        mode_lines = [
+            line for line in journal.read_text().splitlines()
+            if "headphone_monitor.mode" in line
+        ]
+        assert mode_lines == [
+            "event=apple_dongle.headphone_monitor.mode mode=poll reason=exec_failed",
+            "event=apple_dongle.headphone_monitor.mode mode=monitor reason=-",
+            "event=apple_dongle.headphone_monitor.mode mode=poll reason=eof",
+        ]
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_falls_back_to_polling_without_alsactl(tmp_path):
+    """A box with no `alsactl` at all (a stripped image, a PATH problem) must
+    still self-heal: mode is poll from the first pass, reason=not_installed,
+    logged once, and sweeps keep happening on the MONITOR_POLL_SEC clock so
+    drift is still caught (#4772 review)."""
+    bin_dir, log = _amixer_double(tmp_path)
+    # `_amixer_double` seeds a working fake `alsactl` too; remove it so
+    # `command -v alsactl` genuinely fails, same as a stripped image.
+    (bin_dir / "alsactl").unlink()
+
+    monitor, journal = _start_monitor(
+        tmp_path, bin_dir, {}, card="Dongle_1", control="Headphone",
+    )
+    try:
+        _await(
+            monitor,
+            journal,
+            ("event=apple_dongle.headphone_monitor.mode mode=poll reason=not_installed",),
+        )
+        _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
+        # A second `sget` well after one MONITOR_POLL_SEC proves the poll
+        # loop is still alive and re-sweeping on its clock, not stuck after
+        # the first pass -- the fake amixer never un-drifts on its own, so
+        # `sset` fires only the once (sweep_cards only reacts to an observed
+        # state CHANGE, and this one never changes) while `sget` keeps
+        # ticking every poll.
+        deadline = time.monotonic() + 20.0
+        while log.read_text().count("sget") < 3:
+            assert time.monotonic() < deadline, "poll fallback never swept again"
+            code = monitor.poll()
+            assert code is None, f"monitor exited with {code}"
+            time.sleep(0.05)
+        assert journal.read_text().count(
+            "mode=poll reason=not_installed"
+        ) == 1
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+
+def test_the_drift_monitor_floors_how_often_it_reads_and_resets(tmp_path):
+    """The reset writes a control, and the monitor hears about that write like
+    any other. A control that keeps moving would otherwise put the two in a
+    fight at event rate; the `sleep 1` poll this replaced capped resets at
+    one a second (#4121) -- and the review widened that same 1/s floor to
+    the `sget` reads themselves, coalescing a burst of events into one sweep
+    instead of one read per event (#4772 review)."""
+    bin_dir, log = _amixer_double(tmp_path)
+    state = shlex.quote(str(bin_dir / "amixer.state"))
+    (bin_dir / "amixer").write_text(  # a control that moves on every read
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n'
+        '[[ "$*" == *sget* ]] || exit 0\n'
+        f"cur=$(cat {state})\n"
+        'if [[ "$cur" == *"[100%]"* ]]; then\n'
+        f"  printf '%s\\n' {shlex.quote(DRIFTED_HEADPHONE_STATE)} > {state}\n"
+        "else\n"
+        f"  printf '%s\\n' {shlex.quote(PINNED_HEADPHONE_STATE)} > {state}\n"
+        "fi\n"
+        'printf "%s\\n" "$cur"\n'
+    )
+    (bin_dir / "amixer").chmod(0o755)
+    (bin_dir / "alsactl").write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$1" == "monitor" ]] || exit 0\n'
+        "while :; do printf 'node hw:0,0,0 value\\n'; sleep 0.01; done\n"
+    )
+    (bin_dir / "alsactl").chmod(0o755)
+
+    monitor, _ = _start_monitor(
+        tmp_path,
+        bin_dir,
+        _empty_board(tmp_path),
+        card="Dongle_1",
+        control="Headphone",
+    )
+    try:
+        _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
+        time.sleep(3.5)
+    finally:
+        monitor.kill()
+        monitor.wait()
+
+    calls = log.read_text()
+    sget_count = calls.count("sget")
+    sset_count = calls.count("sset")
+    # The fake control moves on literally every read (~100/s), so an
+    # unfloored loop would show hundreds of `sget`s over 3.5 s; floored to
+    # ~1/s it stays in the single digits -- proof the burst was coalesced,
+    # not read once per event.
+    assert 1 <= sget_count <= 8, sget_count
+    assert 1 <= sset_count <= sget_count, (sset_count, sget_count)
 
 
 def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
@@ -388,6 +738,30 @@ def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):
         assert not log.exists(), "nothing to reset when no dongle is present"
         _dual_apple_cards(tmp_path)
         _await(monitor, log, _BOTH_APPLE_PINS)
+
+        # Each card gets `alsactl monitor` scoped to it (`alsactl monitor`
+        # takes exactly one <card>), so a dongle plugged in later joins the
+        # watched set only because the moved population re-opens the stream
+        # with a process per card -- not none (the fallback poll would find
+        # it too, slowly) and not one per event.
+        (bin_dir / "amixer.state").write_text(
+            PINNED_HEADPHONE_STATE + "\n", encoding="utf-8"
+        )
+        with (bin_dir / "alsactl.events").open("a", encoding="utf-8") as events:
+            events.write("node hw:0,0,0 value|info\n")
+
+        _await(
+            monitor,
+            journal,
+            (
+                "event=apple_dongle.headphone_monitor.change card=A "
+                "control=Headphone from=[67%]_[-20.00dB]_[on] "
+                "to=[100%]_[0.00dB]_[on]",
+            ),
+        )
+        assert sorted(
+            (bin_dir / "alsactl.log").read_text().splitlines()
+        ) == ["monitor hw:A", "monitor hw:A_1"]
     finally:
         monitor.kill()
         monitor.wait()
