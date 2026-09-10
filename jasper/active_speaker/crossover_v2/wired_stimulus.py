@@ -15,6 +15,7 @@ play-seam capture half that drives the recorder around a program.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -30,10 +31,23 @@ from jasper.active_speaker.bundles import (
 from jasper.audio_measurement.bundles import read_artifact_manifest
 from jasper.audio_measurement.wired_capture import (
     WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
-    WiredCaptureError, WiredMicDevice, make_wired_recorder, mint_wired_answer,
+    WiredCaptureError, WiredMicDevice, WiredSplCeilingExceeded, WiredSplMonitor,
+    make_wired_recorder,
+    mint_wired_answer,
 )
 
 from .program_transaction import StimulusCaptureError
+
+logger = logging.getLogger(__name__)
+
+
+class SplCeilingCaptureError(StimulusCaptureError):
+    code = "spl_ceiling_exceeded"
+
+    def __init__(self, cause: WiredSplCeilingExceeded) -> None:
+        self.observed_db_spl = cause.observed_db_spl
+        self.ceiling_db_spl = cause.ceiling_db_spl
+        super().__init__(str(cause))
 
 
 def place_wired_answer(
@@ -66,16 +80,21 @@ class WiredStimulusCapture:
     bundle_dir: Path
     recorder_factory: Callable[[int, float], Any] | None = None
     setup_reference: Callable[[], Mapping[str, Any] | None] | None = None
+    spl_monitor: WiredSplMonitor | None = None
     _pending: list[WiredCaptureAnswer] = field(default_factory=list)
 
     async def around(self, play: Callable[[], Awaitable[None]], *, program: Any) -> str:
         self._pending.clear()
+        if self.spl_monitor is not None:
+            self.spl_monitor.reset()
         rate = int(program.sample_rate_hz)
         budget = float(program.total_samples) / rate + WIRED_PRE_PLAY_ALLOWANCE_S + WIRED_POST_ROLL_S
         recorder = (
             self.recorder_factory(rate, budget) if self.recorder_factory
             else make_wired_recorder(self.device, sample_rate_hz=rate, max_capture_s=budget)
         )
+        if self.spl_monitor is not None:
+            recorder.spl_monitor = self.spl_monitor
         started = asyncio.create_task(asyncio.to_thread(recorder.start))
         played = False
         try:
@@ -91,9 +110,37 @@ class WiredStimulusCapture:
                     except asyncio.CancelledError:
                         continue
                 raise
+            except WiredSplCeilingExceeded as exc:
+                raise SplCeilingCaptureError(exc) from exc
             except (WiredCaptureError, OSError, ValueError) as exc:
                 raise StimulusCaptureError("the measurement recorder never rolled") from exc
-            await play()
+            playing = asyncio.create_task(play())
+            async def _wait_for_ceiling() -> None:
+                while self.spl_monitor is not None and not self.spl_monitor.exceeded.is_set():
+                    await asyncio.sleep(0.01)
+            ceiling = (
+                asyncio.create_task(_wait_for_ceiling())
+                if self.spl_monitor is not None else None
+            )
+            if ceiling is None:
+                await playing
+            else:
+                done, _ = await asyncio.wait(
+                    (playing, ceiling), return_when=asyncio.FIRST_COMPLETED,
+                )
+                if ceiling in done and self.spl_monitor.error is not None:
+                    playing.cancel()
+                    await asyncio.gather(playing, return_exceptions=True)
+                    logger.error(
+                        "event=measurement_spl_ceiling_stop observed_db_spl=%.2f "
+                        "ceiling_db_spl=%.2f weighting=Z",
+                        self.spl_monitor.error.observed_db_spl,
+                        self.spl_monitor.error.ceiling_db_spl,
+                    )
+                    raise SplCeilingCaptureError(self.spl_monitor.error)
+                ceiling.cancel()
+                await asyncio.gather(ceiling, return_exceptions=True)
+                await playing
             played = True
         finally:
             if not played:
@@ -122,6 +169,15 @@ class WiredStimulusCapture:
             recording, device=self.device,
             setup=self.setup_reference() if self.setup_reference else None,
         )
+        if self.spl_monitor is not None:
+            answer = replace(answer, capture_integrity={
+                **answer.capture_integrity,
+                "spl": {
+                    "weighting": "Z",
+                    "max_window_db_spl": round(self.spl_monitor.max_window_db_spl, 2),
+                    "ceiling_db_spl": self.spl_monitor.ceiling_db_spl,
+                },
+            })
         return place_wired_answer(self.bundle_dir, answer, phase=phase, group=phase)
 
     def take_answer(self) -> WiredCaptureAnswer | None:

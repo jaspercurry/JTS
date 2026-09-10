@@ -53,6 +53,8 @@ from jasper.audio_measurement.wired_capture import (
     WiredMicDevice,
     WiredMicMissing,
     WiredRecorder,
+    WiredSplCeilingExceeded,
+    WiredSplMonitor,
     ZERO_RUN_MIN_SAMPLES,
     ZERO_RUN_RECORD_CAP,
     build_capture_integrity_report,
@@ -69,6 +71,11 @@ from jasper.mics.xvf3800 import USB_VID_PID as XVF_USB_VID_PID
 from tests.wired_capture_fixtures import FakePcm
 
 UMIK2_USB_ID = "2752:002b"
+
+
+class _Sensitivity:
+    def db_spl_from_dbfs(self, dbfs):
+        return dbfs + 100.0
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +292,28 @@ def test_start_confirms_audio_before_returning():
     recorder.start(ready_timeout_s=5.0)
     assert recorder._frames >= 32
     recorder.abort()
+
+
+def test_spl_ceiling_checks_first_block_before_playback_can_start():
+    loud = 2 ** 30
+    monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
+    recorder = WiredRecorder(
+        "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS, max_capture_s=1.0,
+        pcm_factory=lambda: FakePcm([(32, [(loud, loud)] * 32)]),
+        spl_monitor=monitor,
+    )
+    with pytest.raises(WiredSplCeilingExceeded):
+        recorder.start()
+    assert monitor.exceeded.is_set()
+    assert monitor.max_window_db_spl > 80.0
+
+
+def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():
+    monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
+    quiet = (2 ** 26).to_bytes(4, "little", signed=True) * 32
+    monitor.observe(quiet, 32, 1)
+    assert not monitor.exceeded.is_set()
+    assert monitor.max_window_db_spl == pytest.approx(69.9, abs=0.1)
 
 
 def test_budget_stops_the_reader_and_a_truncated_take_fails_the_ladder():

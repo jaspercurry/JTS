@@ -90,6 +90,22 @@ def _args(*argv: str):
     return build_parser().parse_args(["--kind", MEASURE_KIND_CANDIDATE, *argv])
 
 
+def test_explicit_lf_band_and_spl_ceiling_are_part_of_measure_spec():
+    spec = spec_from_args(_args(
+        "--graph-scope", "speaker_tune",
+        "--sweep-band-hz", "20", "20000",
+        "--spl-ceiling-db-spl", "80",
+    ))
+    assert spec.sweep_band_hz == (20.0, 20_000.0)
+    assert spec.spl_ceiling_db_spl == 80.0
+
+
+def test_direct_driver_capture_refuses_lf_summed_band_override():
+    with pytest.raises(MeasureFlagError) as caught:
+        spec_from_args(_args("--sweep-band-hz", "20", "20000"))
+    assert caught.value.reason == REFUSE_SPEC_INVALID
+
+
 # --------------------------------------------------------------------------- #
 # the flag layer
 # --------------------------------------------------------------------------- #
