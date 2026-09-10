@@ -77,10 +77,15 @@ def main(argv: list[str] | None = None) -> int:
         changed = False
     if args.require_management_transport:
         print(
-            "event=hardware.usb_management_transport "
-            f"available={str(state.management_transport_available).lower()} "
-            f"desired={state.desired_role} active={state.active_role} "
-            f"reason={state.reason}",
+            render_logfmt(
+                "hardware.usb_management_transport",
+                {
+                    "available": state.management_transport_available,
+                    "desired": state.desired_role,
+                    "active": state.active_role,
+                    "reason": state.reason,
+                },
+            ),
             file=sys.stderr,
         )
         return 0 if state.management_transport_available else 1

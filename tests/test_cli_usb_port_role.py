@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.audio_hardware.i2s_hat import I2S_HAT_BLOCK_BEGIN, write_i2s_hat_intent
 from jasper.cli.usb_port_role import main
 
@@ -93,3 +95,47 @@ def test_i2s_hat_self_heal_after_hand_deleted_managed_block_logs_changed_event(
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    ("udc_present", "available", "active", "reason", "exit_code"),
+    [
+        (False, "false", "host", "role_change_pending_reboot", 1),
+        (True, "true", "peripheral", "available", 0),
+    ],
+    ids=["no_gadget", "gadget_bound"],
+)
+def test_management_transport_probe_reports_structured_fields(
+    tmp_path: Path,
+    capsys,
+    udc_present: bool,
+    available: str,
+    active: str,
+    reason: str,
+    exit_code: int,
+) -> None:
+    model, config, _intent, hat, udc = boot_paths(tmp_path)
+    if udc_present:
+        (udc / "3f980000.usb").mkdir(parents=True)
+
+    assert main(
+        [
+            "--require-management-transport",
+            "--model-file",
+            str(model),
+            "--boot-config",
+            str(config),
+            "--udc-class-dir",
+            str(udc),
+            "--hat-dir",
+            str(hat),
+        ]
+    ) == exit_code
+
+    captured = capsys.readouterr()
+    assert stderr_event(captured.err, "hardware.usb_management_transport") == {
+        "available": available,
+        "desired": "peripheral",
+        "active": active,
+        "reason": reason,
+    }
