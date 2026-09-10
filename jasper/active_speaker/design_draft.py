@@ -31,6 +31,7 @@ from ._common import (
 from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
+    MANUAL_SETTINGS_FIELDS as _MANUAL_SETTINGS_FIELDS,
     DriverSafetyProfileError,
     build_driver_safety_profile,
     driver_protection_policy_view,
@@ -64,7 +65,6 @@ _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
 
-_MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates", "driver_spacing_mm"}
 _MANUAL_DRIVER_FIELDS = {
     "target_id",
     "role",
@@ -670,10 +670,6 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
         return None
     raw = _mapping(raw, "manual_settings")
     _reject_unknown_keys(raw, "manual_settings", _MANUAL_SETTINGS_FIELDS)
-    # #1864: the declared woofer<->tweeter acoustic-center distance -- the ONE
-    # owner of physical driver spacing, alongside radiating_diameter_mm/
-    # driver_class (#1665/#1675) on the same manual_settings surface. Absent
-    # means undeclared, never a default: see declared_driver_spacing_m.
     driver_spacing_mm = _positive_float(
         raw.get("driver_spacing_mm"), "manual_settings.driver_spacing_mm"
     )

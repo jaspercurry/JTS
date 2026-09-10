@@ -422,6 +422,7 @@ def test_driver_spacing_m_resolver_default_pins_todays_unknown_behavior(monkeypa
     context = v2ctx.resolve_conductor_context(_status())
 
     assert context.driver_spacing_m is None
+    assert context.driver_spacing_source == "unknown"
 
 
 def test_declared_driver_spacing_reaches_the_conductor_context(monkeypatch):
@@ -463,6 +464,7 @@ def test_declared_driver_spacing_reaches_the_conductor_context(monkeypatch):
     context = v2ctx.resolve_conductor_context(_status())
 
     assert context.driver_spacing_m == pytest.approx(0.15)
+    assert context.driver_spacing_source == "declared"
     unknown = MeasurementGeometry(driver_spacing_m=0.0, mic_distance_m=1.0)
     declared = MeasurementGeometry(
         driver_spacing_m=context.driver_spacing_m, mic_distance_m=1.0,

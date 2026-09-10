@@ -93,6 +93,12 @@ class V2ConductorContext:
     #: the ONE owner of this fact. ``MeasurementGeometry.parallax_us`` treats
     #: ``None``/``0.0`` identically (no correction), so this is never a gate.
     driver_spacing_m: float | None
+    #: "declared" when :attr:`driver_spacing_m` came from the operator's own
+    #: ``manual_settings.driver_spacing_mm``, "unknown" when the geometry
+    #: folds an absent declaration into 0.0 (no correction). Disclosure only:
+    #: nothing branches on it, it exists so "unknown" survives past the
+    #: ``0.0`` fold instead of reading as a declared zero spacing.
+    driver_spacing_source: str
     topology: Any
     playback_device: str
     role_channels: dict[str, int]
@@ -506,6 +512,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         raise CrossoverV2Refused(
             "the active output device is not declared; finish speaker setup"
         )
+    driver_spacing_m = declared_driver_spacing_m(draft)
     return V2ConductorContext(
         preset=preset,
         roles_bands=tuple(roles_bands),
@@ -528,7 +535,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         # the CamillaDSP main volume — the session measurement pause holds off
         # the idle reconciler, not VolumeCoordinator writes. Validation
         # runs hands-off; a session-long volume guard is a follow-up.
-        driver_spacing_m=declared_driver_spacing_m(draft),
+        driver_spacing_m=driver_spacing_m,
+        driver_spacing_source="unknown" if driver_spacing_m is None else "declared",
         topology=topology,
         playback_device=playback_device,
         role_channels={role: channel for channel, role in enumerate(roles)},
