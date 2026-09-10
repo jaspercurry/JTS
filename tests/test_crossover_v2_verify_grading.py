@@ -53,7 +53,6 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import logging
-import re
 import time
 
 import pytest
@@ -83,6 +82,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 
+from tests._log_events import event_fields
 from tests.crossover_v2_fixtures import (
     _DIAG_LOGGER,
     FakeSeams,
@@ -548,10 +548,10 @@ def test_verify_without_an_integrity_record_is_not_refused_but_says_so(caplog):
     assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
     # …but VERIFY's OWN capture gate still accepted this capture, and the
     # journal still says so rather than folding it into the round's refusal.
-    assert "event=correction.crossover_v2_verify_diag" in caplog.text
-    assert "accepted=true" in caplog.text
-    assert "integrity=unavailable" in caplog.text
-    assert "integrity_locate_confidence_min=null" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
+    assert fields["accepted"] == "true"
+    assert fields["integrity"] == "unavailable"
+    assert fields["integrity_locate_confidence_min"] == "null"
 
 
 def test_verify_integrity_gate_runs_ahead_of_the_linearity_branch():
@@ -574,24 +574,24 @@ def test_verify_diag_discloses_integrity_on_pass_and_on_refusal(caplog):
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     _run_phase(c, 3, 3)
-    assert "integrity=ok" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
+    assert fields["integrity"] == "ok"
     # MEMBERSHIP, not position: #2094 put two frame-accounting checks ahead of
     # the repeat-only ones, and the fact under test is that every unevaluated
     # check is disclosed by name — never which name comes first.
-    not_evaluated = re.search(
-        r"integrity_not_evaluated=(\S*)", caplog.text
-    ).group(1).split(",")
+    not_evaluated = fields["integrity_not_evaluated"].split(",")
     assert INTEGRITY_CHECK_REPEAT_EPSILON in not_evaluated
     assert INTEGRITY_CHECK_RENDER_GAP in not_evaluated
     assert INTEGRITY_CHECK_FRAME_LEDGER in not_evaluated
-    assert "integrity_locate_confidence_min=0.9" in caplog.text
-    assert "integrity_residual_ms_worst=0.0" in caplog.text
+    assert fields["integrity_locate_confidence_min"] == "0.9"
+    assert fields["integrity_residual_ms_worst"] == "0.0"
 
     caplog.clear()
     fakes.verify = _spliced_verify
     _run_phase(c, 3, 4)
-    assert f"integrity={INTEGRITY_CHECK_SWEEP_SCHEDULE}" in caplog.text
-    assert "integrity_residual_ms_worst=15.0" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
+    assert fields["integrity"] == INTEGRITY_CHECK_SWEEP_SCHEDULE
+    assert fields["integrity_residual_ms_worst"] == "15.0"
 
 
 # --- #1974: the outcome and the verdict that produced it -------------------------
@@ -1280,10 +1280,10 @@ def test_verify_level_reference_reset_is_journalled(caplog):
         program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
     )
     assert _run_phase(c, 1, 1)["accepted"] is True
-    assert "event=correction.crossover_v2_level_reference_reset" in caplog.text
-    assert "step_db=0.775" in caplog.text
-    assert "ceiling_db=0.35" in caplog.text
-    assert "prior_age_s=" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_level_reference_reset")
+    assert fields["step_db"] == "0.775"
+    assert fields["ceiling_db"] == "0.35"
+    assert "prior_age_s" in fields
 
 
 def test_verify_level_shift_still_fires_within_one_session():
