@@ -122,15 +122,18 @@ def test_voice_service_starts_udp_mic_producer_softly() -> None:
 
 
 def test_voice_service_parks_on_mic_unavailable_exit() -> None:
+    """The mic-unavailable code must park cleanly (never consume the reboot
+    budget) — checked against the live Python constant, not a hardcoded
+    literal. The exact "66 78" SuccessExitStatus/RestartPreventExitStatus
+    set (66 is this constant; 78 is the provider-unset code) is pinned, with
+    the rest of the restart ladder, by tests/test_systemd_hardening.py's
+    RESTART_POLICY table (R22, #4416)."""
     text = _unit_text()
     success = _directive_values(text, "SuccessExitStatus")
     prevent = _directive_values(text, "RestartPreventExitStatus")
     code = str(VOICE_MIC_UNAVAILABLE_EXIT)
-    # Both the mic-unavailable code (66) and the provider-unset code (78)
-    # must park cleanly — neither may consume the reboot budget.
     assert code in success, success
     assert code in prevent, prevent
-    assert "78" in success and "78" in prevent, (success, prevent)
 
 
 def test_marker_path_agreement() -> None:

@@ -137,28 +137,20 @@ def test_unit_has_no_positional_configfile():
     assert "--statefile" in last_line
 
 
-def test_unit_restarts_always_not_on_failure():
-    """Restart=on-failure ignores clean exits (status=0). A real
-    2026-05-07 incident left the speaker silently dead overnight
-    because Camilla exited cleanly. Restart=always covers both
-    crash and clean-exit paths."""
-    body = UNIT_PATH.read_text()
-    # Read the actual directive line, not occurrences in comments.
-    directive_lines = [
-        ln.strip() for ln in body.splitlines()
-        if ln.strip().startswith("Restart=")
-    ]
-    assert directive_lines == ["Restart=always"], directive_lines
+# Restart=always (Restart=on-failure ignores clean exits — a real
+# 2026-05-07 incident left the speaker silently dead overnight because
+# Camilla exited cleanly) is pinned, with the rest of camilla's restart
+# policy, by tests/test_systemd_hardening.py's RESTART_POLICY table (R22,
+# #4416).
 
 
 def test_unit_uses_recovery_handler_instead_of_raw_reboot():
     """JTS5's ALSA-busy failure class needs holder forensics and a bounded
     graph restart, not an immediate blind reboot."""
     body = UNIT_PATH.read_text()
-    assert _value_for(body, "StartLimitAction") == "none"
+    # StartLimitAction=none, StartLimitIntervalSec=60 and StartLimitBurst=5
+    # are pinned by RESTART_POLICY (R22, #4416).
     assert _values_for(body, "OnFailure") == ("jasper-camilla-recover.service",)
-    assert "StartLimitIntervalSec=60" in body
-    assert "StartLimitBurst=5" in body
 
 
 def test_recovery_unit_points_at_installed_helper():
