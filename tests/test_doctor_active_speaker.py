@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-import jasper.active_speaker._common as _common
 import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.cli.doctor import active_speaker
 from jasper.cli.doctor._evidence import StatusRead, evidence
@@ -677,84 +676,6 @@ def test_active_speaker_startup_hold_verdicts(
     assert r.status == status
     assert r.reason == reason
     assert r.speaker_silent is silent
-
-
-# ---------------------------------------------------- room correction authority
-
-
-@pytest.mark.parametrize(
-    "acoustic, status, reason",
-    [
-        pytest.param(
-            {"required": False}, "skipped",
-            active_speaker.REASON_ROOM_AUTHORITY_NOT_REQUIRED, id="no_authority_needed",
-        ),
-        pytest.param(
-            {"required": True, "allowed": True, "authority": "manual_applied_profile"},
-            "ok", "", id="banked",
-        ),
-        pytest.param(
-            {
-                "required": True,
-                "allowed": False,
-                "authority": None,
-                "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
-                "detail": "finish commissioning when convenient",
-            },
-            "ok", active_speaker.REASON_ROOM_AUTHORITY_UNBANKED,
-            id="never_minted_is_the_state_most_speakers_are_in",
-        ),
-        pytest.param(
-            {
-                "required": True,
-                "allowed": False,
-                "authority": None,
-                "reason": "active_applied_profile_graph_mismatch",
-                "detail": "apply that crossover again",
-            },
-            "warn", active_speaker.REASON_ROOM_AUTHORITY_BLOCKED,
-            id="non_receipt_denial_blocks_the_run",
-        ),
-        pytest.param(
-            None, "warn", active_speaker.REASON_ROOM_AUTHORITY_NO_DECISION,
-            id="no_room_decision_published",
-        ),
-    ],
-)
-def test_room_correction_authority_discloses_but_never_fails(
-    monkeypatch, acoustic, status, reason,
-):
-    """The doctor line is the only place an unbanked room run is visible.
-
-    Ruling S10 stopped the ABSENT receipt from refusing the run, so nothing
-    else tells a household that the result it just measured is not banked as
-    verified: an absent receipt is `ok` with its reason. Every other denial
-    warns.
-    """
-    monkeypatch.setattr(
-        setup_status_mod,
-        "read_active_speaker_setup_status",
-        lambda **_kwargs: {"acoustic_commissioning": acoustic},
-    )
-
-    r = active_speaker.check_room_correction_authority()
-
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
-    def _unreadable(**_kwargs):
-        raise OSError("secret filesystem detail")
-
-    monkeypatch.setattr(
-        setup_status_mod, "read_active_speaker_setup_status", _unreadable
-    )
-
-    r = active_speaker.check_room_correction_authority()
-
-    assert r.status == "warn"
-    assert r.reason == active_speaker.REASON_SPEAKER_SETUP_UNREADABLE
 
 
 # ------------------------------------------------- active speaker setup notices

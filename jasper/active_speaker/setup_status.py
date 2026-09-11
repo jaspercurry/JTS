@@ -20,10 +20,7 @@ from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
-from ._common import (
-    BASELINE_TOPOLOGY_CHANGED,
-    ROOM_AUTHORITY_RECEIPT_ABSENT,
-)
+from ._common import BASELINE_TOPOLOGY_CHANGED
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
@@ -33,7 +30,6 @@ from .crossover_contract import (
 )
 from .environment import read_camilla_statefile_config_path
 from .measurement import load_measurement_state
-from .passive_profile import measured_candidate_fingerprint
 from .profile import ActiveSpeakerConfigError
 from .runtime_contract import (
     CONTRACT_UNCONFIGURED,
@@ -42,19 +38,6 @@ from .runtime_contract import (
 )
 
 SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
-ROOM_ELIGIBILITY_SCHEMA_VERSION = 1
-ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED = "passive_not_required"
-ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE = "manual_applied_profile"
-ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT = (
-    "automatic_commissioning_receipt"
-)
-
-_RECEIPT_DETAIL_DEFAULT = (
-    "Room correction is running on an automatic crossover that does not name "
-    "the measured candidate it came from, so this result will not be banked "
-    "as verified. Re-apply the crossover from the crossover review screen, or "
-    "apply the current crossover as a manual profile."
-)
 
 _STAGED_CONFIG_BASENAMES = {
     "active_speaker_staged_startup.yml",
@@ -76,8 +59,6 @@ _READINESS_DERIVATION_ERRORS = (
     ActiveSpeakerConfigError,
     KeyError,
 )
-_CROSSOVER_SETUP_HREF = "/sound/speaker/crossover/"
-_ROOMS_SETUP_HREF = "/sound/pair/"
 _PROGRAM_BAKE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
 )
@@ -102,240 +83,9 @@ def _grouped_active_runtime() -> bool:
     return is_active_member(load_config())
 
 
-def _nonnegative_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _mapping(value: Any) -> Mapping[str, Any]:
     """Return a read-only mapping view for optional artifact sections."""
     return value if isinstance(value, Mapping) else {}
-
-
-def _v2_apply_room_authority(
-    applied_profile: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """Whether the applied automatic crossover was applied from a measurement.
-
-    ``jasper.web.correction_crossover_v2.handle_v2_apply`` is the only door
-    onto an automatic crossover (#4788/#4792) and it runs after VERIFY, so the
-    APPLY is the proof — and what it leaves on the speaker is the frozen
-    applied profile whose ``source.measured_candidate_fingerprint`` names the
-    measured candidate it installed. An automatic profile that names none was
-    never composed from a measured candidate, and is denied ABSENT.
-
-    v2 banks no durable per-apply proof this could resolve that fingerprint
-    against. Its round receipt grades a LATER verify round, is keyed by capture
-    session rather than by candidate, and is written fail-soft; the candidate
-    bank proves a publish rather than an apply, behind a bounded scan. And the
-    durable v2 state is a per-SESSION journey, not a record of what is playing:
-    a new session's first persist, the republish door and Start Over all
-    rewrite its ``applied``/``candidate`` fields while the same graph keeps
-    playing. Reading any of those would revoke room correction mid-listen.
-    """
-    fingerprint = measured_candidate_fingerprint(
-        _mapping(applied_profile).get("source")
-    )
-    if not fingerprint:
-        return {
-            "allowed": False,
-            "authority": "automatic_verified_receipt",
-            "reason": ROOM_AUTHORITY_RECEIPT_ABSENT,
-            "cause": "the applied automatic crossover names no measured candidate",
-            "receipt_fingerprint": None,
-        }
-    return {
-        "allowed": True,
-        "authority": "automatic_verified_receipt",
-        "reason": None,
-        "receipt_fingerprint": fingerprint,
-    }
-
-
-def _usable_summed_acoustic(record: Any) -> bool:
-    if not isinstance(record, Mapping) or record.get("validated") is not True:
-        return False
-    acoustic = record.get("acoustic")
-    return (
-        isinstance(acoustic, Mapping)
-        and acoustic.get("verdict") == "blend_ok"
-        and record.get("mic_clipping") is not True
-        and acoustic.get("mic_clipping") is not True
-    )
-
-
-def _acoustic_commissioning_status(
-    topology: Any,
-    *,
-    setup_ready: bool,
-    profile: Mapping[str, Any] | None,
-    applied_profile: Mapping[str, Any] | None,
-    measurements: Mapping[str, Any],
-    layer_a_binding: Mapping[str, Any],
-    receipt_authority: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Room-correction prerequisite for an active Layer-A graph.
-
-    Room correction operates on the Layer-A graph that is actually applied. An
-    immutable, topology-current manual snapshot is sufficient solo-runtime
-    authority; grouped active is unsupported until Active can bind its
-    distributed Layer A. An automatic snapshot additionally needs Active's
-    strict commissioning receipt, for which mutable measurements — quality
-    evidence and observability only — can never stand in.
-    """
-    summary = _mapping(measurements.get("summary"))
-    latest_summed = _mapping(summary.get("latest_summed_validations"))
-    required_summed_count = _nonnegative_int(
-        summary.get("required_summed_group_count")
-    )
-    usable_summed = {
-        str(group_id): record
-        for group_id, record in latest_summed.items()
-        if _usable_summed_acoustic(record)
-    }
-    snapshot = _mapping(
-        applied_profile.get("recomposition_snapshot")
-        if isinstance(applied_profile, Mapping)
-        else None
-    )
-    level_match = _mapping(snapshot.get("level_match"))
-    current_level_match = _mapping(
-        profile.get("level_match") if isinstance(profile, Mapping) else None
-    )
-    incomparable_groups = (
-        current_level_match.get("incomparable_groups")
-        if isinstance(current_level_match.get("incomparable_groups"), list)
-        else []
-    )
-    current_groups_measured = _nonnegative_int(
-        current_level_match.get("groups_measured")
-    )
-    required_active_groups = _active_group_count(topology)
-    excitation_comparable = not incomparable_groups
-    current_source = _mapping(
-        profile.get("source") if isinstance(profile, Mapping) else None
-    )
-    applied_state = crossover_snapshot_state(
-        applied_profile,
-        expected_topology_id=getattr(topology, "topology_id", None),
-        expected_topology_fingerprint=str(
-            current_source.get("topology_fingerprint") or ""
-        ) or None,
-        topology=topology,
-    )
-    tuning_owner = str(applied_state.get("owner") or "")
-    applied_measured = (
-        applied_state["valid"]
-        and level_match.get("applied") is True
-        and _nonnegative_int(level_match.get("groups_measured"))
-        >= required_active_groups
-    )
-    authority: str | None = None
-    setup_href = _CROSSOVER_SETUP_HREF
-    if not setup_ready:
-        reason = "active_speaker_setup_not_ready"
-        detail = "Apply the active speaker profile before starting room correction."
-    elif not applied_state["valid"]:
-        reason = str(applied_state["reason"])
-        detail = (
-            "Keep the current manual crossover or tune it automatically before "
-            "room correction so its applied graph can be saved."
-            if reason == "active_applied_profile_snapshot_missing"
-            else str(applied_state["detail"])
-        )
-    elif layer_a_binding.get("status") == "distributed_active_unsupported":
-        reason = "active_grouped_room_correction_not_supported"
-        detail = (
-            "Room correction for a grouped active speaker is not available "
-            "yet. Turn grouping off to measure the solo active speaker."
-        )
-        setup_href = _ROOMS_SETUP_HREF
-    elif layer_a_binding.get("matches") is not True:
-        reason = (
-            "active_applied_profile_graph_mismatch"
-            if layer_a_binding.get("status") == "mismatch"
-            else "active_applied_profile_graph_unverifiable"
-        )
-        # Cause-neutral on purpose: the loaded graph can drift from the applied
-        # profile because the EMITTER changed under it, not only because someone
-        # edited the crossover. The remedy is the same either way: re-apply.
-        detail = (
-            "The sound pipeline loaded on this speaker does not match the "
-            "applied manual profile. Apply that crossover again before Room "
-            "correction."
-            if reason == "active_applied_profile_graph_mismatch"
-            else "JTS could not verify the loaded crossover against the applied "
-            "profile. Apply the crossover again before Room correction."
-        )
-    elif tuning_owner == "manual":
-        reason = None
-        authority = ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
-        detail = f"The applied {tuning_owner} crossover is ready for room correction."
-    elif (
-        tuning_owner == "automatic"
-        and receipt_authority.get("allowed") is True
-        and receipt_authority.get("authority") == "automatic_verified_receipt"
-    ):
-        reason = None
-        authority = ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
-        detail = "The verified automatic crossover is ready for room correction."
-    else:
-        # An automatic applied snapshot is playback authority but not the
-        # receipt-backed commissioning authority Room BANKS: never infer that
-        # receipt from mutable measurements or from a successful apply. Room
-        # still runs — this names what may not be claimed (ruling S10).
-        reason = (
-            str(receipt_authority.get("reason") or ROOM_AUTHORITY_RECEIPT_ABSENT)
-            if tuning_owner == "automatic"
-            else ROOM_AUTHORITY_RECEIPT_ABSENT
-        )
-        detail = _RECEIPT_DETAIL_DEFAULT
-
-    allowed = reason is None
-    return {
-        "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
-        "authority": authority,
-        # Opaque Active-owned identity for the exact loaded driver-domain
-        # graph admitted by this decision. Room may compare this value at its
-        # writer boundaries; it must not reconstruct Layer A itself.
-        "layer_a_identity": (
-            str(layer_a_binding.get("loaded_fingerprint"))
-            if allowed and layer_a_binding.get("loaded_fingerprint")
-            else None
-        ),
-        "required": True,
-        "status": "ready" if allowed else "incomplete",
-        "allowed": allowed,
-        "reason": reason,
-        # Only denial today: the applied automatic profile names no
-        # measured-candidate fingerprint. See ADR-0288.
-        "cause": str(receipt_authority.get("cause") or "") if reason else "",
-        "detail": detail,
-        "setup_href": setup_href,
-        "receipt_fingerprint": (
-            receipt_authority.get("receipt_fingerprint")
-            if authority == ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
-            else None
-        ),
-        "applied_profile": {
-            "available": isinstance(applied_profile, Mapping),
-            "measured_level_match_applied": applied_measured,
-            "tuning_owner": tuning_owner or None,
-            "snapshot_valid": bool(applied_state["valid"]),
-            "graph_matches_loaded": layer_a_binding.get("matches") is True,
-        },
-        "drivers": {
-            "required_groups": required_active_groups,
-            "usable_groups": current_groups_measured,
-            "excitation_comparable": excitation_comparable,
-        },
-        "summed": {
-            "required": required_summed_count,
-            "usable": len(usable_summed),
-        },
-    }
 
 
 def _newest_commissioning_record(
@@ -390,7 +140,6 @@ def _idle_commissioning_summary() -> dict[str, Any]:
         "applied_profile_fingerprint": None,
         "last_capture": None,
         "last_failure_code": None,
-        "room_correction_allowed": False,
         # No topology resolved, so no transport to name (#2412): `null` rather
         # than a guess, since asserting a transport for a box whose route could
         # not be read is the half-fact this key exists to remove.
@@ -489,20 +238,6 @@ def _derive_commissioning_summary(
         "candidate_fingerprint"
     )
 
-    # Standalone approximation of "is there a valid applied Layer-A graph the
-    # room can correct against". read_active_speaker_setup_status overwrites it
-    # with the exact acoustic_commissioning.allowed value, which also sees
-    # config-path/topology gating this function does not.
-    current_source = _mapping(profile.get("source")) if profile is not None else {}
-    applied_state = crossover_snapshot_state(
-        applied_profile,
-        expected_topology_id=getattr(topology, "topology_id", None),
-        expected_topology_fingerprint=(
-            str(current_source.get("topology_fingerprint") or "") or None
-        ),
-        topology=topology,
-    )
-
     return {
         "phase": phase,
         "session_id": session_id,
@@ -510,7 +245,6 @@ def _derive_commissioning_summary(
         "applied_profile_fingerprint": applied_profile_fingerprint,
         "last_capture": _last_capture_summary(measurements),
         "last_failure_code": last_failure_code,
-        "room_correction_allowed": bool(applied_state.get("valid")),
         # A device name without its transport is the half-fact behind #2412.
         "transport": _commissioning_transport(topology),
     }
@@ -690,11 +424,8 @@ def _blocked_setup_status(
     *,
     active_group_count: int | None,
     status: str,
-    acoustic_status: str,
     reason: str,
     detail: str,
-    room_detail: str,
-    setup_href: str,
     active_config_path: str | None,
     issues: list[dict[str, str]],
 ) -> dict[str, Any]:
@@ -703,7 +434,6 @@ def _blocked_setup_status(
     commissioning = commissioning_summary(
         topology, profile=None, applied_profile=None, measurements=None,
     )
-    commissioning["room_correction_allowed"] = False
     return {
         "artifact_schema_version": 1,
         "kind": SETUP_STATUS_KIND,
@@ -715,17 +445,6 @@ def _blocked_setup_status(
         "configured": False,
         "volume_allowed": False,
         "grouping_allowed": False,
-        "room_correction_allowed": False,
-        "acoustic_commissioning": {
-            "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
-            "authority": None,
-            "required": True,
-            "status": acoustic_status,
-            "allowed": False,
-            "reason": reason,
-            "detail": room_detail,
-            "setup_href": setup_href,
-        },
         "commissioning": commissioning,
         "safety_muted": True,
         "reason": reason,
@@ -769,11 +488,8 @@ def read_active_speaker_setup_status(
             None,
             active_group_count=None,
             status="unknown",
-            acoustic_status="unknown",
             reason="output_topology_unreadable",
             detail="output topology cannot be read safely",
-            room_detail="Read the output topology before room correction.",
-            setup_href=_CROSSOVER_SETUP_HREF,
             active_config_path=active_config_path,
             issues=issues,
         )
@@ -795,11 +511,6 @@ def read_active_speaker_setup_status(
             if unconfigured
             else "choose and save a complete passive mono or stereo layout before using audio"
         )
-        room_detail = (
-            "Choose and save a speaker layout before room correction."
-            if unconfigured
-            else "Choose and save a complete passive mono or stereo layout before room correction."
-        )
         issue = _issue(
             "blocker",
             reason,
@@ -809,11 +520,8 @@ def read_active_speaker_setup_status(
             topology,
             active_group_count=0,
             status="blocked",
-            acoustic_status="incomplete",
             reason=reason,
             detail=detail,
-            room_detail=room_detail,
-            setup_href="/sound/speaker/",
             active_config_path=active_config_path,
             issues=[issue, *(dict(item) for item in output_contract.issues)],
         )
@@ -821,7 +529,6 @@ def read_active_speaker_setup_status(
         passive_commissioning = commissioning_summary(
             topology, profile=None, applied_profile=None, measurements=None,
         )
-        passive_commissioning["room_correction_allowed"] = True
         return {
             "artifact_schema_version": 1,
             "kind": SETUP_STATUS_KIND,
@@ -831,17 +538,6 @@ def read_active_speaker_setup_status(
             "configured": True,
             "volume_allowed": True,
             "grouping_allowed": True,
-            "room_correction_allowed": True,
-            "acoustic_commissioning": {
-                "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
-                "authority": ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
-                "required": False,
-                "status": "not_required",
-                "allowed": True,
-                "reason": None,
-                "detail": "Passive speakers do not need active-crossover commissioning.",
-                "setup_href": None,
-            },
             "commissioning": passive_commissioning,
             "safety_muted": False,
             "reason": None,
@@ -1172,34 +868,12 @@ def read_active_speaker_setup_status(
         if headline
         else "active speaker baseline is applied and output control is ready"
     )
-    receipt_authority = {
-        "allowed": False,
-        "authority": "automatic_verified_receipt",
-        "reason": ROOM_AUTHORITY_RECEIPT_ABSENT,
-        "receipt_fingerprint": None,
-    }
-    if applied_crossover.get("owner") == "automatic":
-        receipt_authority = _v2_apply_room_authority(applied_profile)
-    acoustic_commissioning = _acoustic_commissioning_status(
-        topology,
-        setup_ready=not blocked,
-        profile=profile,
-        applied_profile=applied_profile,
-        measurements=measurements,
-        layer_a_binding=layer_a_binding,
-        receipt_authority=receipt_authority,
-    )
     commissioning = commissioning_summary(
         topology,
         profile=profile,
         applied_profile=applied_profile,
         measurements=measurements,
     )
-    # Mirror the canonical gate exactly rather than trusting
-    # commissioning_summary's own standalone approximation (design doc
-    # "Runtime surface": "room_correction_allowed mirrors the existing
-    # acoustic_commissioning.allowed").
-    commissioning["room_correction_allowed"] = acoustic_commissioning["allowed"]
     return {
         "artifact_schema_version": 1,
         "kind": SETUP_STATUS_KIND,
@@ -1209,8 +883,6 @@ def read_active_speaker_setup_status(
         "configured": not blocked,
         "volume_allowed": not blocked,
         "grouping_allowed": not blocked,
-        "room_correction_allowed": acoustic_commissioning["allowed"],
-        "acoustic_commissioning": acoustic_commissioning,
         "commissioning": commissioning,
         "safety_muted": blocked,
         "reason": setup_reason,
