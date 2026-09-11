@@ -1479,14 +1479,20 @@ class Pass:
         apple_output = bool(self.observed.headphone_control)
         # The pin is enabled on every box: which controls a DAC pins is the
         # registry's answer, and jasper-dac-init is where it is asked.
-        self.systemctl_required("enable", DAC_INIT_UNIT, timeout=None)
+        # --no-reload: neither unit's file is written by this pass, so the
+        # implicit reload `enable` would otherwise trigger buys nothing and
+        # only costs time under memory pressure (#3639, the same fix
+        # jasper/source_intent.py's _UNIT_ENABLEMENT_VERBS already made).
+        self.systemctl_required("enable", "--no-reload", DAC_INIT_UNIT, timeout=None)
         if self.record_changed:
             self.restart_dac_init_for_record_change()
         else:
             self.systemctl_call("reset-failed", DAC_INIT_UNIT, quiet=True)
             self.systemctl_call("start", DAC_INIT_UNIT, timeout=None)
         if apple_output:
-            self.systemctl_required("enable", HEADPHONE_MONITOR_UNIT, timeout=None)
+            self.systemctl_required(
+                "enable", "--no-reload", HEADPHONE_MONITOR_UNIT, timeout=None
+            )
             # Idempotent start, never a restart: this gate runs on every
             # udev/reconcile pass and a deploy's core-audio bounce fires it
             # several times inside StartLimitIntervalSec. reset-failed clears a

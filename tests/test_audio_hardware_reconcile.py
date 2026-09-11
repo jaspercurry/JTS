@@ -1309,7 +1309,7 @@ def test_reconcile_arms_each_recognized_single_dac_role(
     # oneshot has run and at boot it can run before the record it reads exists.
     _assert_states(
         commands,
-        "enable jasper-dac-init.service",
+        "enable --no-reload jasper-dac-init.service",
         "--no-block restart jasper-dac-init.service",
         "stop jasper-voice.service",
         "reset-failed jasper-outputd.service",
@@ -1323,14 +1323,14 @@ def test_reconcile_arms_each_recognized_single_dac_role(
         # StartLimitBurst and parks it 'start-limit-hit'.
         _assert_states(
             commands,
-            "enable jasper-headphone-monitor.service",
+            "enable --no-reload jasper-headphone-monitor.service",
             "reset-failed jasper-headphone-monitor.service",
             "start jasper-headphone-monitor.service",
         )
         _assert_omits(commands, "restart jasper-headphone-monitor.service")
     else:
         assert "disable --now jasper-headphone-monitor.service" in commands
-        _assert_omits(commands, "enable jasper-headphone-monitor.service")
+        _assert_omits(commands, "enable --no-reload jasper-headphone-monitor.service")
 
 
 @pytest.mark.parametrize(
@@ -2221,8 +2221,8 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     _assert_parked_outputd_dac_template(_template(tmp_path))
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service" in commands
-    assert "enable jasper-headphone-monitor.service" in commands
+    assert "enable --no-reload jasper-dac-init.service" in commands
+    assert "enable --no-reload jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert stderr_event(result.stderr, "audio_hardware_reconcile.dual_apple_detected")["status"] == "ready"
     assert stderr_event(result.stderr, "hardware.usb_role_resolved") == {
@@ -2459,8 +2459,8 @@ def test_reconcile_saved_single_topology_still_takes_the_single_dongle(
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service" in commands
-    assert "enable jasper-headphone-monitor.service" in commands
+    assert "enable --no-reload jasper-dac-init.service" in commands
+    assert "enable --no-reload jasper-headphone-monitor.service" in commands
     assert (
         "--no-block stop jasper-voice.service jasper-outputd.service" not in commands
     )

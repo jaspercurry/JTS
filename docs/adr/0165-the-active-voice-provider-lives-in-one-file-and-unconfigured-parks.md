@@ -1,7 +1,8 @@
 # ADR-0165: The active voice provider lives in exactly one file, has no default, and an unconfigured speaker parks
 
 - **Date:** 2026-08-26
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0293](0293-the-no-provider-park-is-owned-by-the-voice-daemon.md)
 
 ## Context
 

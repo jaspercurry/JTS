@@ -1374,13 +1374,18 @@ def _short_provider_manifest(tmp_path: Path) -> None:
     ],
     ids=("unset", "not-an-id", "no-manifest", "not-in-manifest"),
 )
-def test_reconcile_parks_voice_for_an_unusable_provider(
+def test_reconcile_leaves_an_unusable_provider_to_the_daemon(
     tmp_path: Path,
     provider: str,
     stage_manifest: Callable[[Path], None] | None,
 ) -> None:
-    """Four ways the active provider fails to resolve; one park. The mic work
-    still happens — parking voice is not parking the box."""
+    """Four ways the active provider fails to resolve; one outcome.
+
+    The mic work still happens and the unit stays enabled, so jasper-voice's
+    own start reaches Config.from_env, speaks voice_not_set_up and parks on
+    78. Neither a stop nor a restart from here: the first would take the cue
+    (non-negotiable 6), the second would only re-park the daemon.
+    """
     env_file = _stage(
         tmp_path, "Array", voice_provider=provider, mode="auto", channels=6
     )
@@ -1391,9 +1396,17 @@ def test_reconcile_parks_voice_for_an_unusable_provider(
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
+    fields = stderr_event(result.stderr, "aec_reconcile.voice_provider_unset")
+    assert fields["action"] == "none"
     commands = _systemctl_log(tmp_path)
-    assert "disable --now jasper-voice.service" in commands
-    assert VOICE_RESTART_CMD not in commands
+    voice_commands = {
+        line for line in commands.splitlines() if "jasper-voice.service" in line.split()
+    }
+    assert voice_commands == {
+        "stop jasper-voice.service jasper-aec-bridge.service",
+        "enable jasper-voice.service",
+        "reset-failed jasper-voice.service",
+    }
 
 
 def test_reconcile_captures_directly_when_managed_xvf_is_not_6_channel(
@@ -4001,13 +4014,6 @@ def _present_park_marker(tmp_path: Path) -> dict[str, str]:
     return {}
 
 
-def _invalidated_voice_provider(tmp_path: Path) -> dict[str, str]:
-    # voice_provider.env is not in jasper.env, so the env change test cannot
-    # see a provider that went away. restart_voice's park branch has to run.
-    (tmp_path / "voice_provider.env").write_text("JASPER_VOICE_PROVIDER=\n")
-    return {}
-
-
 def _unreadable_accessory_probe(tmp_path: Path) -> dict[str, str]:
     # The fail-open branch. "I could not tell" is not "nothing is paired": a
     # probe that cannot answer must not be allowed to look like an unchanged
@@ -4021,29 +4027,56 @@ def _unreadable_accessory_probe(tmp_path: Path) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("apply_change", "expect_command"),
-    [
-        (_present_park_marker, VOICE_RESTART_CMD),
-        (_invalidated_voice_provider, "disable --now jasper-voice.service"),
-        (_unreadable_accessory_probe, VOICE_RESTART_CMD),
-    ],
-    ids=("park-marker", "invalid-provider", "unreadable-probe"),
+    "apply_change",
+    [_present_park_marker, _unreadable_accessory_probe],
+    ids=("park-marker", "unreadable-probe"),
 )
-def test_a_park_branch_trigger_still_reaches_restart_voice(
+def test_a_restart_trigger_the_env_test_cannot_see_still_restarts_voice(
     tmp_path: Path,
     apply_change: Callable[[Path], dict[str, str]],
-    expect_command: str,
 ) -> None:
-    """Three independent inputs to restart_voice's park branch that the env
-    change test cannot see. Each must still reach it."""
+    """Two independent inputs to restart_voice that the env change test cannot
+    see. Each must still reach it."""
     _armed_chip_aec_box(tmp_path)
     extra_env = apply_change(tmp_path)
 
     result = _run_reconcile(tmp_path, "--reason", "systemd", extra_env=extra_env)
 
     assert result.returncode == 0, result.stderr
-    assert expect_command in _systemctl_log(tmp_path)
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
     assert not _marker(tmp_path).exists()
+
+
+def test_a_provider_that_goes_away_leaves_a_running_daemon_alone(
+    tmp_path: Path,
+) -> None:
+    """A settled box whose provider is blanked under a running daemon.
+
+    voice_provider.env is not in jasper.env, so the change gate cannot see
+    this — and that is the right answer. The daemon froze its config at start
+    and is still hearing; taking it down would cost the household its
+    assistant with no cue, and a restart would only park it. The announcement
+    belongs to the daemon's own next start, which speaks voice_not_set_up
+    before exiting 78.
+    """
+    _stage(tmp_path, "Array", profile="custom", channels=6)
+    first = _run_reconcile(tmp_path, "--reason", "install")
+    assert first.returncode == 0, first.stderr
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path), first.stderr
+    _clear_systemctl_log(tmp_path)
+    (tmp_path / "voice_provider.env").write_text("JASPER_VOICE_PROVIDER=\n")
+
+    result = _run_reconcile(tmp_path, "--reason", "systemd")
+
+    assert result.returncode == 0, result.stderr
+    commands = _systemctl_log(tmp_path)
+    assert VOICE_RESTART_CMD not in commands
+    assert "disable --now jasper-voice.service" not in commands
+    assert "enable jasper-voice.service" not in commands
+    assert (
+        stderr_event(result.stderr, "aec_reconcile.voice_restart_skipped")["reason"]
+        == "no_voice_relevant_change"
+    )
 
 
 def test_a_bond_and_an_unbond_both_restart_the_leaders_voice(

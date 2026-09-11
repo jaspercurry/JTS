@@ -441,7 +441,8 @@ def test_default_writer_publishes_env_and_inner_lock_for_both_web_owners(
 
 
 def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
-    """Client waits outlast source service and owner-oneshot contracts."""
+    """Client waits outlast source service and owner-oneshot contracts, and
+    only the two symlink verbs carry `--no-reload` (#3639)."""
     import subprocess as sp
 
     calls: list[tuple[list[str], float]] = []
@@ -476,6 +477,8 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
         source_intent._USB_COUPLING_UNIT,
         "start",
     ) == (0, "")
+    assert source_intent._run_systemctl("librespot.service", True) == (0, "")
+    assert source_intent._run_systemctl("librespot.service", False) == (0, "")
     assert calls == [
         (["systemctl", "reset-failed", "librespot.service"], 5.0),
         (["systemctl", "start", "librespot.service"], 3.0),
@@ -503,6 +506,14 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
             source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[
                 source_intent._USB_COUPLING_UNIT
             ],
+        ),
+        (
+            ["systemctl", "enable", "--no-reload", "librespot.service"],
+            source_intent._UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC,
+        ),
+        (
+            ["systemctl", "disable", "--no-reload", "librespot.service"],
+            source_intent._UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC,
         ),
     ]
 

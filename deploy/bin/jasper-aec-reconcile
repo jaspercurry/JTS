@@ -525,10 +525,6 @@ voice_restart_can_be_skipped() {
     # A pass that would clear the park marker is UN-parking voice, which is
     # the whole reason to restart it.
     [[ ! -e "$VOICE_INPUT_ABSENT_MARKER" ]] || return 1
-    # voice_provider.env is not in $ENV_FILE, so a provider that went missing
-    # or invalid is invisible to the change test above; restart_voice's park
-    # branch has to run.
-    voice_provider_configured || return 1
     voice_start_inputs_match_stamp || return 1
     unit_active_and_enabled jasper-voice.service || return 1
 }
@@ -1610,12 +1606,17 @@ restart_voice() {
     # Voice input is available — either a local mic (the mic-present paths) or
     # a paired accessory microphone (restart_voice_for_accessory_mic below) —
     # so open the presence gate before (re)starting. Done even on the
-    # provider-unset branch below: the input axis is genuinely satisfied;
-    # the separate `disable --now` parks voice on the provider axis.
+    # provider-unset branch below: the input axis is genuinely satisfied,
+    # and it is the only axis this reconciler owns.
     clear_voice_input_absent
     if ! voice_provider_configured; then
-        log "voice provider unset or invalid; leaving jasper-voice parked"
-        run_systemctl disable --now jasper-voice.service
+        # jasper-voice owns this axis: Config.from_env raises on run()'s first
+        # statement, the daemon speaks voice_not_set_up, and exit 78 is in the
+        # unit's SuccessExitStatus AND RestartPreventExitStatus, so the park
+        # neither loops nor spends StartLimitBurst. A `disable --now` here took
+        # that cue away (non-negotiable 6); a restart would only re-park the
+        # daemon on every hot-plug. Leave the unit enabled and untouched.
+        log "event=aec_reconcile.voice_provider_unset action=none owner=jasper-voice.service"
         reset_failed_units jasper-voice.service
         return
     fi
@@ -1925,9 +1926,10 @@ voice_provider_configured() {
 
 valid_voice_provider() {
     local provider="$1"
-    # Install-time artifact generated from jasper.voice.catalog.
-    # Keep this boot/hotplug safety gate shell-only: if the manifest is
-    # missing or the provider is not an exact line, jasper-voice stays parked.
+    # Install-time artifact generated from jasper.voice.catalog. Keep the read
+    # shell-only — this runs on the hot-plug path (ADR-0226). A missing
+    # manifest or a provider that is not an exact line answers "not
+    # configured", which leaves voice to its own 78 park (restart_voice).
     [[ -n "$provider" && -r "$VOICE_PROVIDER_IDS_FILE" ]] || return 1
     grep -Fxq -- "$provider" "$VOICE_PROVIDER_IDS_FILE"
 }
