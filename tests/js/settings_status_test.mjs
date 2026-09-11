@@ -7,7 +7,10 @@
 // hold: gating runs off the baked capability map synchronously — the layout
 // owes the network nothing — and fails closed on a cap the map does not
 // grant; one /system/data.json snapshot then fills the status-* sublabels
-// without ever re-driving that layout.
+// without ever re-driving that layout. A caller with its own faster-changing
+// use for the same snapshot (the landing page's safety-mute banner) can
+// override the poll interval and see the raw snapshot via onSnapshot,
+// instead of opening a second fetch against the same endpoint.
 //
 // startPolling()'s own scheduling — the cadence, the hidden-tab backoff,
 // stop() — is polling_test.mjs's subject, so this only pins the interval this
@@ -167,6 +170,26 @@ async function the_tab_title_is_left_alone_unless_the_page_asks() {
   stop();
 }
 
+// The landing page's volume safety-mute banner needs the same snapshot
+// sooner than the sublabel cadence otherwise provides; onSnapshot/intervalMs
+// let it ride this one poll instead of opening a second fetch.
+async function an_onsnapshot_hook_rides_the_same_poll_at_its_own_interval() {
+  snapshot = { home_assistant: { configured: false } };
+  const seen = [];
+  const stop = start(
+    { pair_management: true },
+    { intervalMs: 5000, onSnapshot: (snap) => seen.push(snap) },
+  );
+  await settle();
+
+  check(delays[0] === 5000, "a caller can override the poll cadence");
+  check(fetched.length === 1, "still one fetch per tick, not two");
+  check(seen.length === 1, "onSnapshot sees the tick");
+  check(seen[0] === snapshot, "...with the raw parsed snapshot");
+  check(text("status-ha") === "Not connected", "the sublabels still render as normal");
+  stop();
+}
+
 // /system/data.json is a socket-activated wizard: a surface must not hold it
 // awake for sublabels it does not have.
 async function a_surface_with_no_live_sublabel_never_polls() {
@@ -190,6 +213,7 @@ await runTestFunctions(
     a_snapshot_fills_the_status_sublabels,
     a_thin_snapshot_leaves_the_rendered_sublabels_alone,
     the_tab_title_is_left_alone_unless_the_page_asks,
+    an_onsnapshot_hook_rides_the_same_poll_at_its_own_interval,
     a_surface_with_no_live_sublabel_never_polls,
   ],
   () => passed,

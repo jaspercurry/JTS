@@ -308,7 +308,8 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
     assert 'href="/sound/speaker/"' in html
     assert ".volume-wrap.safety-muted" in style
     assert "cursor: not-allowed;" in style
-    assert "fetch('/system/data.json', {cache: 'no-store'})" in script
+    assert "function handleSystemSnapshot(data)" in script
+    assert "setSafetyMuted(activeSpeakerSafetyMuted(data));" in script
     assert "active_speaker_output_safety" in script
     assert "typeof safety.safety_muted === 'boolean'" in script
     assert "typeof safety.volume_allowed === 'boolean'" in script

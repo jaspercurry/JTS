@@ -84,8 +84,14 @@ function renderSnapshot(snap, titleFollowsSpeakerName) {
 }
 
 // Gate on `caps` synchronously — before any fetch — then keep the sublabels
-// current. Returns startPolling's stop().
-export function initSettingsStatus({ caps, titleFollowsSpeakerName } = {}) {
+// current. `onSnapshot`, when given, also sees the raw parsed snapshot on
+// every tick — a page with its own faster-changing use for the same payload
+// (the landing page's volume safety-mute banner) rides this one poll at its
+// own `intervalMs` instead of running a second fetch against the same
+// socket-activated endpoint. Returns startPolling's stop().
+export function initSettingsStatus({
+  caps, titleFollowsSpeakerName, intervalMs = POLL_MS, onSnapshot,
+} = {}) {
   document.querySelectorAll("[data-requires]").forEach((el) => {
     const required = el.getAttribute("data-requires");
     if (required) el.hidden = !caps || caps[required] !== true;
@@ -97,9 +103,11 @@ export function initSettingsStatus({ caps, titleFollowsSpeakerName } = {}) {
     return () => {};
   }
   return startPolling(
-    async () => renderSnapshot(
-      await getJSON("/system/data.json"), titleFollowsSpeakerName,
-    ),
-    { intervalMs: POLL_MS },
+    async () => {
+      const snap = await getJSON("/system/data.json");
+      renderSnapshot(snap, titleFollowsSpeakerName);
+      if (onSnapshot) onSnapshot(snap);
+    },
+    { intervalMs },
   );
 }

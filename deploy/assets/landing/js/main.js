@@ -45,7 +45,6 @@ function initVolume() {
   // visible so those changes feel immediate without adding a persistent
   // connection or doing any network work from a hidden tab.
   var POLL_MS = 500;
-  var SAFETY_POLL_MS = 5000;
   var SETTLE_MS = 1500;
   // Last level the server CONFIRMED — the truth the UI falls back to
   // when a write fails, so the fill never keeps displaying a drag the
@@ -310,17 +309,13 @@ function initVolume() {
     if (pollFails >= 3) percentEl.textContent = '\u2014';
   }
 
-  async function pollSafetyMuted() {
-    if (document.visibilityState === 'hidden') return;
-    try {
-      var resp = await fetch('/system/data.json', {cache: 'no-store'});
-      if (resp.ok) {
-        setSafetyMuted(activeSpeakerSafetyMuted(await resp.json()));
-      }
-    } catch (_) {}
-  }
   startPolling(poll, { intervalMs: POLL_MS });
-  startPolling(pollSafetyMuted, { intervalMs: SAFETY_POLL_MS });
+  // The settings-status shared poll already fetches /system/data.json for
+  // the status-* sublabels; safety-mute rides that same snapshot at its own
+  // faster interval (SAFETY_POLL_MS, below) instead of a second fetch.
+  return function handleSystemSnapshot(data) {
+    setSafetyMuted(activeSpeakerSafetyMuted(data));
+  };
 }
 
 // Stereo-pair banner. While this speaker is an active bond member
@@ -658,9 +653,17 @@ function initMic() {
   startPolling(fetchState, { intervalMs: POLL_MS });
 }
 
+// The volume safety-mute banner needs its /system/data.json snapshot sooner
+// than the sublabel poll otherwise would (a locked fader should stop
+// confusing the user quickly) — initVolume() has no gating dependency, so it
+// can run first and hand its handler to the one shared poll.
+var SAFETY_POLL_MS = 5000;
+var handleSystemSnapshot = initVolume();
 // Gating first: the mic card short-circuits on its section being hidden.
-initSettingsStatus({ caps: bakedCaps(), titleFollowsSpeakerName: true });
-initVolume();
+initSettingsStatus({
+  caps: bakedCaps(), titleFollowsSpeakerName: true,
+  intervalMs: SAFETY_POLL_MS, onSnapshot: handleSystemSnapshot,
+});
 initPairBanner();
 initSources();
 initMic();
