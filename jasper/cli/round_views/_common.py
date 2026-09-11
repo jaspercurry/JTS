@@ -91,7 +91,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
-    "bass-fit": ViewArtifact("bass_fit.json", ("<fit-request.json>",)),
+    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--run", "<run-id>", "--candidate", "<candidate.json>", "--target", "<target.json>", "--tolerance-db", "<db>")),
     "packet": ViewArtifact("packet.json", producer="jasper-crossover-prescriber packet"),
     "entry": ViewArtifact("entry_state_grade.json"),
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
@@ -109,8 +109,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "frequency": ViewArtifact("frequency_view.json"),
     "bass": ViewArtifact("bass_view.json", TAKES_SET),
     "bass-compare": ViewArtifact("bass_comparison.json", (
-        "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
-        "--after-set", "<set-id>", "--change", "<change>",
+        TAKES_THIS_ROUND, "--set", "<before-set-id>", "--set", "<after-set-id>", "--change", "<change>",
     )),
     "delay-landscape": ViewArtifact("delay_landscape.json"),
     "delay-confirm": ViewArtifact("delay_confirmation.json"),

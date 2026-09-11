@@ -271,7 +271,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "distortion": _NO_CAPTURES,
     "bass": _NO_CAPTURES,
     "bass-compare": _NO_CAPTURES,
-    "bass-fit": _NO_CAPTURES,
+    "bass-fit-table": _NO_CAPTURES,
     "dsp-replay": _NO_CAPTURES,
     "dsp-levels": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
