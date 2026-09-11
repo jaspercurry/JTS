@@ -47,6 +47,24 @@ AEC_MODE_DISABLED = "disabled"
 # production DAC.
 CHIP_REF_OBSERVE_ENV = "JASPER_AEC_CHIP_REF_OBSERVE"
 
+# The wake-leg boolean vocabulary's per-key build defaults — the value a
+# reader falls back to when aec_mode.env omits (or predates) a key. One row
+# per leg: (destination name the CLI/control leg-vector code uses, the env
+# key, the build default). RAW defaults on (cheap OR-fusion wake-rate
+# recovery); every other leg is opt-in. Shared by
+# jasper.cli.audio_input_profile and jasper.control.aec_endpoints;
+# deploy/bin/jasper-aec-reconcile's ensure_mode_file mirrors it in bash
+# (no Python on that hot boot/hotplug path, ADR-0226) and is pinned against
+# this table by
+# tests/test_aec_reconcile.py::test_reconciler_leg_defaults_match_control_fallback.
+WAKE_LEG_DEFAULTS: tuple[tuple[str, str, bool], ...] = (
+    ("leg_raw", "JASPER_WAKE_LEG_RAW", True),
+    ("leg_dtln", "JASPER_WAKE_LEG_DTLN", False),
+    ("leg_chip_aec", "JASPER_WAKE_LEG_CHIP_AEC", False),
+    ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", False),
+    ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", False),
+)
+
 PROFILE_AUTO = "auto"
 PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"
 PROFILE_XVF_CHIP_AEC_TESTING = "xvf_chip_aec_testing"

@@ -288,7 +288,12 @@ observe_mic_profile_state() {
 # unlocked grep+append reverts an operator toggle taken between the two.
 ensure_mode_file() {
     local inferred_profile rc=0
-    # The build's defaults for the keys an older deploy's file omits.
+    # The build's defaults for the keys an older deploy's file omits — a
+    # bash-literal mirror of jasper.audio_profile_state.WAKE_LEG_DEFAULTS
+    # (also consumed by jasper.control.aec_endpoints), not re-derived from
+    # it: this runs on the hot boot/hotplug path (ADR-0226 — no short-lived
+    # Python there). Drift is pinned by
+    # tests/test_aec_reconcile.py::test_reconciler_leg_defaults_match_control_fallback.
     local seeds=(
         JASPER_WAKE_LEG_RAW=1
         JASPER_WAKE_LEG_DTLN=0
