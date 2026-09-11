@@ -827,7 +827,7 @@ def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
     assert payload["speaker"]["crossover_url"].endswith("/sound/speaker/crossover/")
     # Nothing is offered that would fail for the reason this report already
     # gave: both round-reading commands read what this verb could not.
-    assert payload["next"] == ["jasper-seat-level --mic-serial '<mic serial>'"]
+    assert payload["next"] == ["jasper-seat-level"]
 
 
 def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
@@ -842,7 +842,7 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     assert payload["banked"]["reason"] == payload["packet_error"]
     # Nothing to run against a speaker with no session: the page that runs one
     # is the handoff, and this verb never invents a command it cannot spell.
-    assert payload["next"] == ["jasper-seat-level --mic-serial '<mic serial>'"]
+    assert payload["next"] == ["jasper-seat-level"]
 
 
 @pytest.mark.parametrize("count", [2, 35])
