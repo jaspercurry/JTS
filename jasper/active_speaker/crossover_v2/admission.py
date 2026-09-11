@@ -86,8 +86,7 @@ REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
 
 #: Every kind :func:`assess_begin` can return. Declared so the flow's handling
 #: can be VERIFIED rather than trusted — the discipline
-#: :data:`.spatial.SCREEN_KINDS` and :data:`.coordinator.REFUSAL_KINDS`
-#: already keep. The unhandled direction is REFUSE: an extra take costs the
+#: :data:`.spatial.SCREEN_KINDS` already keeps. The unhandled direction is REFUSE: an extra take costs the
 #: household a try it may need, while a refusal costs it a retry it can make
 #: again.
 DECISION_KINDS = frozenset({

@@ -672,6 +672,7 @@ def build_round_receipt(
     evidence_identities: Mapping[str, Any] | None,
     created_at: str,
     round_measurements: Mapping[str, Any] | None = None,
+    protection: Mapping[str, Any] | None = None,
 ) -> RoundReceipt:
     """Assemble #2291's immutable round receipt from the round's own facts.
 
@@ -706,6 +707,7 @@ def build_round_receipt(
         # so a receipt's targets travel to the NEXT round.
         round_axes=evaluation.axes(),
         advice=advice,
+        protection=protection,
         round_measurements=round_measurements,
         evidence_identities=evidence_identities,
         created_at=created_at,

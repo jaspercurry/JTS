@@ -856,7 +856,7 @@ class _Probe:
         self.boost_overshoot_db = boost_overshoot_db
         # Which way the graded bins missed — the discriminator every
         # directional rule in this subsystem turns on, and the one
-        # ``seam_rollback_deferral`` reads.
+        # ``advice_deferral`` reads.
         self.realized_louder_than_commanded = realized_louder_than_commanded
         # Whether the realized-energy check ran (series-2 D1). Defaults to the
         # round that HAD a pre-apply capture, because that is the ordinary

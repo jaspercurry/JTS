@@ -55,7 +55,7 @@ from jasper.active_speaker.delta_probe import (
     graded_command_floor_db,
     interquartile_band_hz,
     louder_than_commanded,
-    seam_rollback_deferral,
+    advice_deferral,
     spatial_cost_from_group_spreads,
     widest_exceedance_octaves,
 )
@@ -1955,7 +1955,7 @@ def test_the_1447_shape_is_a_model_error_that_realized_only_quieter():
 
 
 def test_a_quieter_only_model_error_defers_to_the_adoption_table():
-    assert seam_rollback_deferral(_quieter_only_model_error()) == (
+    assert advice_deferral(_quieter_only_model_error()) == (
         SEAM_DEFERRED_QUIETER_THAN_COMMANDED
     )
 
@@ -1973,8 +1973,8 @@ def test_the_shape_hard_stop_is_directional_at_identical_magnitude():
     assert quieter.verdict == louder.verdict == VERDICT_MODEL_ERROR
     assert quieter.max_signed_error_db == pytest.approx(0.0, abs=1e-9)
     assert louder.max_signed_error_db == pytest.approx(3.32, abs=1e-6)
-    assert seam_rollback_deferral(quieter) == SEAM_DEFERRED_QUIETER_THAN_COMMANDED
-    assert seam_rollback_deferral(louder) == ""
+    assert advice_deferral(quieter) == SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+    assert advice_deferral(louder) == ""
 
 
 def test_one_bin_realized_louder_withholds_the_deferral():
@@ -1998,13 +1998,13 @@ def test_one_bin_realized_louder_withholds_the_deferral():
     assert probe.boost_over_declared_bound is False
     # …and the deferral is withheld anyway.
     assert probe.realized_louder_than_commanded is True
-    assert seam_rollback_deferral(probe) == ""
+    assert advice_deferral(probe) == ""
 
 
 def test_a_boost_realized_over_its_bound_is_always_louder_than_commanded():
     """The implication the explicit boost guard is stated on top of.
 
-    ``seam_rollback_deferral`` names ``boost_over_declared_bound`` outright even
+    ``advice_deferral`` names ``boost_over_declared_bound`` outright even
     though the per-bin rule already subsumes it. This is the subsumption,
     measured: if it ever stopped holding — the two bounds are independently
     tunable — the explicit guard is what keeps the fence standing.
@@ -2014,7 +2014,7 @@ def test_a_boost_realized_over_its_bound_is_always_louder_than_commanded():
 
     assert probe.boost_over_declared_bound is True
     assert probe.realized_louder_than_commanded is True
-    assert seam_rollback_deferral(probe) == ""
+    assert advice_deferral(probe) == ""
 
 
 def test_an_unanchored_map_makes_no_directional_finding_at_all():
@@ -2145,7 +2145,7 @@ def test_an_unanchored_louder_map_is_not_handed_the_quieter_only_lenience():
     assert louder.realized_louder_than_commanded is False
     # …and the fence is fed by the unanchored fact instead of by silence.
     assert louder.model_departure_over_tolerance is True
-    assert seam_rollback_deferral(louder) == ""
+    assert advice_deferral(louder) == ""
 
 
 def test_an_unanchored_quieter_only_map_still_keeps_its_lenience():
@@ -2165,7 +2165,7 @@ def test_an_unanchored_quieter_only_map_still_keeps_its_lenience():
     assert quieter.verdict == VERDICT_MODEL_ERROR
     assert quieter.safety_anchored is False
     assert quieter.model_departure_over_tolerance is False
-    assert seam_rollback_deferral(quieter) == SEAM_DEFERRED_QUIETER_THAN_COMMANDED
+    assert advice_deferral(quieter) == SEAM_DEFERRED_QUIETER_THAN_COMMANDED
 
 
 def test_a_boost_over_its_bound_never_defers_even_when_stated_alone():
@@ -2180,7 +2180,7 @@ def test_a_boost_over_its_bound_never_defers_even_when_stated_alone():
         realized_louder_than_commanded=False,
         boost_over_declared_bound=True,
     )
-    assert seam_rollback_deferral(stub) == ""
+    assert advice_deferral(stub) == ""
 
 
 @pytest.mark.parametrize(
@@ -2206,7 +2206,7 @@ def test_only_the_realized_vs_commanded_classes_defer(verdict, defers):
         boost_over_declared_bound=False,
     )
     expected = SEAM_DEFERRED_QUIETER_THAN_COMMANDED if defers else ""
-    assert seam_rollback_deferral(stub) == expected
+    assert advice_deferral(stub) == expected
     assert set(DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS) <= set(
         DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
     )
@@ -2230,7 +2230,7 @@ def test_a_map_that_never_reached_a_seam_rollback_records_no_deferral(probe):
     rollback was ever declined on them, and a receipt claiming otherwise would
     describe a decision the round never made.
     """
-    assert seam_rollback_deferral(probe) == ""
+    assert advice_deferral(probe) == ""
 
 
 def test_the_direction_helper_reports_not_measured_rather_than_zero():
@@ -2254,7 +2254,7 @@ def test_the_direction_helper_measures_the_raw_curve_not_a_frame_removed_one():
     assert probe.frame.fitted is True
     assert probe.frame.offset_db == pytest.approx(4.0, abs=1e-6)
     assert probe.realized_louder_than_commanded is True
-    assert seam_rollback_deferral(probe) == ""
+    assert advice_deferral(probe) == ""
 
 
 def test_to_dict_carries_the_direction_evidence_the_deferral_rests_on():

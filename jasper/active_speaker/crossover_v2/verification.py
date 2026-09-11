@@ -31,7 +31,7 @@ from ..delta_probe import (
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_SAFETY_ONLY,
-    seam_rollback_deferral,
+    advice_deferral,
 )
 from ..flat_spec import (
     FlatSpecReport,
@@ -877,7 +877,7 @@ def evaluate_applied_safety(
         "max_signed_error_db": (
             getattr(probe, "max_signed_error_db", None) if probe is not None else None
         ),
-        "seam_deferred": seam_rollback_deferral(probe),
+        "seam_deferred": advice_deferral(probe),
     }
 
     if boost_over_bound:
@@ -912,7 +912,8 @@ def evaluate_applied_safety(
 # --------------------------------------------------------------------------
 
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
-ADOPTION_PROBE_ROLLBACK_CLASS = "delta_probe_rollback_class"
+# Persisted reason and evidence keys remain readable by existing round consumers.
+ADOPTION_PROBE_ADVICE_CLASS = "delta_probe_rollback_class"
 ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
 ADOPTION_REALIZATION_FAILED = "realization_failed"
 ADOPTION_UNPROVEN = "benefit_unproven"
@@ -997,17 +998,17 @@ def evaluate_round_quality(
             f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
         )
     targets.extend(_model_departure_target(probe))
-    probe_rollback = _probe_rollback_class(probe, probe_verdict)
-    if probe_rollback:
+    probe_advice = _probe_advice_class(probe, probe_verdict)
+    if probe_advice:
         quality = QualityStatus.REGRESSED
-        reason = f"{ADOPTION_PROBE_ROLLBACK_CLASS}:{probe_rollback}"
+        reason = f"{ADOPTION_PROBE_ADVICE_CLASS}:{probe_advice}"
 
     return Verdict(quality, reason, {
         "targets": targets,
         "spec_bands": _failing_spec_bands(spec_report),
         # WHICH probe class escalated, or ``""``. Named rather than
         # re-derived from ``targets``: the row's reason is a constant.
-        "probe_rollback_class": probe_rollback,
+        "probe_rollback_class": probe_advice,
     })
 
 
@@ -1045,19 +1046,19 @@ def _model_departure_target(probe: Any | None) -> list[str]:
     return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
 
-def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
+def _probe_advice_class(probe: Any | None, verdict: str) -> str:
     """The probe verdict that advises against keeping this graph, or ``""``.
 
     Two owners consulted, neither re-derived here:
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
     for which classes advise against keeping, and
-    :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
+    :func:`~jasper.active_speaker.delta_probe.advice_deferral` for the
     ones that are spared.
     """
 
     if not verdict or verdict not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS:
         return ""
-    return "" if seam_rollback_deferral(probe) else verdict
+    return "" if advice_deferral(probe) else verdict
 
 
 def spec_band_rows(report: FlatSpecReport | None) -> list[dict[str, Any]]:
@@ -1361,20 +1362,42 @@ def decide_adoption(
             row=ADOPTION_ROW_RESTORE_FAILED,
         )
     if safety.status is SafetyStatus.UNSAFE:
-        outcome, row, reason = AdoptionOutcome.RESTORE, ADOPTION_ROW_RESTORE_UNSAFE, safety.reason
-    elif trust.status is EvidenceTrust.UNTRUSTED:
-        outcome, row = AdoptionOutcome.RESTORE, ADOPTION_ROW_RESTORE_UNTRUSTED
-        reason = ADOPTION_UNPROVEN_BOOST if boosted else trust.reason
-    else:
-        outcome, row = _QUALITY_ROWS[quality.status]
-        reason = quality.reason
-        if outcome is AdoptionOutcome.KEEP:
-            outcome, row = _PASSED_ROWS[headroom.status]
-            reason = headroom.reason
-    if outcome is AdoptionOutcome.RESTORE and not rollback_available:
-        outcome = AdoptionOutcome.RECOVERY_REQUIRED
-        reason = f"{ADOPTION_NO_ROLLBACK_ANCHOR}:{reason}"
-    return AdoptionDecision(outcome=outcome, reason=reason, row=row)
+        return _restore_advice(
+            safety.reason,
+            row=ADOPTION_ROW_RESTORE_UNSAFE,
+            rollback_available=rollback_available,
+        )
+    if trust.status is EvidenceTrust.UNTRUSTED:
+        return _restore_advice(
+            ADOPTION_UNPROVEN_BOOST if boosted else trust.reason,
+            row=ADOPTION_ROW_RESTORE_UNTRUSTED,
+            rollback_available=rollback_available,
+        )
+    outcome, row = _QUALITY_ROWS[quality.status]
+    if outcome is AdoptionOutcome.RESTORE:
+        return _restore_advice(
+            quality.reason, row=row, rollback_available=rollback_available,
+        )
+    if outcome is AdoptionOutcome.KEEP:
+        outcome, row = _PASSED_ROWS[headroom.status]
+        return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
+    return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
+
+
+def _restore_advice(
+    reason: str, *, row: str, rollback_available: bool
+) -> AdoptionDecision:
+    """Advise restore when a previous candidate exists, otherwise recovery."""
+
+    if rollback_available:
+        return AdoptionDecision(
+            outcome=AdoptionOutcome.RESTORE, reason=reason, row=row
+        )
+    return AdoptionDecision(
+        outcome=AdoptionOutcome.RECOVERY_REQUIRED,
+        reason=f"{ADOPTION_NO_ROLLBACK_ANCHOR}:{reason}",
+        row=row,
+    )
 
 
 # --------------------------------------------------------------------------

@@ -383,12 +383,9 @@ def test_the_schema_version_is_pinned_to_its_value():
     — and this field exists precisely because it sat at 1 through three shape
     changes and a reader could not tell two shapes apart by it.
 
-    2 since decision 10 (#2600) added ``round_measurements.blend``. A reader
-    branching on this should treat 1 as "no blend record can exist" rather than
-    "this round has none". Bumping it is fine; bumping it silently is not.
     """
 
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
 
 
 # --------------------------------------------------------------------------

@@ -93,7 +93,7 @@ DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS: frozenset[str] = frozenset({
 REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
 
 
-def seam_rollback_deferral(probe: Any | None) -> str:
+def advice_deferral(probe: Any | None) -> str:
     """Defer a quieter-only finding to the adoption table (ADR-0209)."""
     if probe is None:
         return ""
@@ -458,7 +458,7 @@ class DeltaProbeMap:
                 ),
                 "max_signed_error_db": self.max_signed_error_db,
                 "max_signed_error_hz": self.max_signed_error_hz,
-                "seam_rollback_deferral": seam_rollback_deferral(self),
+                "seam_rollback_deferral": advice_deferral(self),
             },
             # ``pooled`` is ``gain_factor`` under its band-resolved name (#2649).
             "realization": {
@@ -1244,7 +1244,7 @@ __all__ = [
     "graded_command_floor_db",
     "interquartile_band_hz",
     "louder_than_commanded",
-    "seam_rollback_deferral",
+    "advice_deferral",
     "spatial_cost_from_group_spreads",
     "widest_exceedance_octaves",
 ]

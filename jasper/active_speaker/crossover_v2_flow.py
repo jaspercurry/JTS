@@ -558,6 +558,8 @@ class V2FlowSeams:
     # #2291: is a prior candidate recorded to restore TO? Absence reads as "cannot
     # confirm", never as "there is one".
     rollback_available: Callable[[], bool] | None = None
+    restore_boost: Callable[[str], Mapping[str, Any]] | None = None
+    tuning_graph_fingerprint: Callable[[], str] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Absence answers "boosted".
     applied_boosts: Callable[[], bool] | None = None
 
@@ -1598,7 +1600,6 @@ class CrossoverV2Session:
         caller chooses to persist, and ``persist_conductor_state`` makes that check.
         """
         return self._last_failure_pilot_heard if self._last_failure_code else None
-
 
     def _pilot_heard_for(
         self, code: str | None, *, slot: str | None = None,
@@ -3788,6 +3789,8 @@ class CrossoverV2Session:
 
         return RoundPorts(
             rollback_available=self._seams.rollback_available,
+            restore_boost=self._seams.restore_boost,
+            tuning_graph_fingerprint=self._seams.tuning_graph_fingerprint,
             applied_boosts=self._seams.applied_boosts,
             entry_graph_fingerprint=self._seams.entry_graph_fingerprint,
             publish_round_receipt=self._seams.records.round_receipt,
@@ -3810,7 +3813,7 @@ class CrossoverV2Session:
         from jasper.active_speaker.crossover_v2 import coordinator
 
         if self._round_evaluated:
-            return verdict
+            return coordinator.round_verdict(verdict, (self._round_receipt_identity or {}).get("protection"))
         self._round_evaluated = True
         # #2602. ``None`` is a host that resolved nothing, and the opening round is the
         # fail-safe reading: it can only offer another round, never suppress a stop.
@@ -3886,7 +3889,9 @@ class CrossoverV2Session:
         )
         self._round_evaluation = decision.evaluation
         self._round_receipt_identity = decision.receipt_identity
-        return verdict
+        if decision.protection:
+            self._last_failure_code = decision.protection["code"]
+        return coordinator.round_verdict(verdict, decision.protection)
 
     def _consume_verify(
         self,

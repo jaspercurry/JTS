@@ -15,6 +15,7 @@ from jasper.json_fields import finite_float
 
 from ._common import blocker_issue
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .boost_protection import BOOST_OVER_DECLARED_BOUND, read_boost_finding
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .measured_crossover_candidate import candidate_trial_scope
 
@@ -114,31 +115,11 @@ def require_candidate_trial(
     )
 
 
-def candidate_boost_issue(candidate: Any) -> dict[str, str] | None:
-    """Refuse a candidate whose banked measurement found excess boost (AGENTS §2)."""
-    if candidate is None:
-        return None
-    from .crossover_v2.round_inputs import (  # lazy: apply-only evidence reader
-        _read_json_mapping, iter_round_sessions, round_artifact_dir,
-    )
-
+def candidate_boost_issue(graph_fingerprint: str) -> dict[str, str] | None:
     try:
-        source = find_banked_candidate(candidate.fingerprint).path.parents[5]
+        finding = read_boost_finding(graph_fingerprint)
     except CandidateBankRefusal as exc:
-        if exc.code != "not_found":
-            raise
-        return None
-    for bundle in iter_round_sessions(source):
-        directory, _ = round_artifact_dir(bundle)
-        if directory is None:
-            continue
-        receipt = _read_json_mapping(directory / "round_receipt.json") or {}
-        if (receipt.get("evidence_identities") or {}).get("candidate_fingerprint") != candidate.fingerprint:
-            continue
-        safety = (receipt.get("round_axes") or {}).get("safety") or {}
-        if (safety.get("evidence") or {}).get("boost_over_declared_bound") is True:
-            return blocker_issue(
-                "boost_over_declared_bound",
-                "The measured candidate exceeded its declared boost.",
-            )
-    return None
+        return blocker_issue(exc.code, exc.detail)
+    return None if finding is None else blocker_issue(
+        BOOST_OVER_DECLARED_BOUND, "The measured graph exceeded its declared boost.",
+    )

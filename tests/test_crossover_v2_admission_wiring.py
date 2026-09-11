@@ -15,10 +15,6 @@ inputs, then ask" rewrite gets wrong. The begin path reads a meter that may not
 exist yet and asks a seam that must not be asked on every begin; doing either
 eagerly is invisible to every other suite in the tree.
 
-The kind-vocabulary trio below is the discipline ``spatial.SCREEN_KINDS`` and
-``coordinator.REFUSAL_KINDS`` already keep, applied to the decision this slice
-introduced: declared set, every member handled, and an unrecognised member loud
-and REFUSED rather than quietly admitted.
 """
 
 from dataclasses import replace

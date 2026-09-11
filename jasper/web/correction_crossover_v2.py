@@ -3798,18 +3798,7 @@ def _previous_candidate_known() -> bool:
 
 
 def _previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
-    """Was the way-back pointer recorded by the apply now under grade?
-
-    The one equality of the pairing rule: ``previous_candidate_displaced_by``
-    — stamped by :func:`observe_apply_success` with the candidate its apply
-    installed, and re-stamped to ``None`` by the automatic revert's own
-    success — must equal the published candidate's fingerprint. ``False``
-    covers a pointer stamped by an older apply (#2559's staleness class), the
-    [revert…next-apply] window (no automatic ping-pong; the household's
-    way-back button is deliberately NOT gated on this), and a state written
-    before the pairing existed (no auto-follow until the next apply records
-    one — the same no-schema-bump posture the pointer itself takes).
-    """
+    """Was the previous candidate recorded by the apply now under grade?"""
     resolved = state or {}
     displaced_by = resolved.get("previous_candidate_displaced_by")
     candidate = resolved.get("candidate")
@@ -3965,6 +3954,7 @@ def bind_v2_stage_seams(
     publish_check: Any,
     publish_candidate: Any,
     run_async: Any,
+    camilla_factory: Any = None,
     provenance: CaptureProvenanceRecorder | None = None,
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
@@ -4023,6 +4013,8 @@ def bind_v2_stage_seams(
     # holds. Bound unconditionally: with the capture-dump ring gone the banked
     # record is the only file these numbers can land in.
     banked_evidence = CaptureEvidenceCarry()
+    from jasper.web.correction_crossover_v2_restore import bind_boost_restore, current_graph_fingerprint  # lazy: host binding cycle
+
     return V2FlowSeams(
         analyze=bind_production_analyze(
             meta=refs, provenance=provenance, carry=banked_provenance,
@@ -4065,6 +4057,8 @@ def bind_v2_stage_seams(
         applied_profile=_applied_profile_now,
         record_model_error=_record_live_model_error,
         rollback_available=_previous_candidate_known,
+        restore_boost=bind_boost_restore(run_async, camilla_factory),
+        tuning_graph_fingerprint=current_graph_fingerprint,
         # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
         # ``entry_graph_fingerprint``'s reason — what is live right now is not
         # a stage asymmetry — and it is the only way the grading stage can
@@ -5045,6 +5039,7 @@ def prepare_v2_session(
             publish_check=publish_check,
             publish_candidate=publish_candidate,
             run_async=run_async,
+            camilla_factory=camilla_factory,
             provenance=capture_provenance,
         )
         if verify_only:

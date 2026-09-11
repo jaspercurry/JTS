@@ -1294,8 +1294,7 @@ def test_every_screen_kind_has_a_household_sentence():
     """The completeness check the mapping exists to make possible.
 
     The kind sets are declared so the flow's mapping can be verified rather
-    than trusted — the same discipline ``coordinator.REFUSAL_KINDS`` keeps. A
-    kind added without an arm ships wearing another kind's copy, and this is
+    than trusted. A kind added without an arm ships wearing another kind's copy, and this is
     what stops that from being discovered by a household.
 
     Since #2291 Phase 5a-vii there are TWO owners: ``spatial.SCREEN_KINDS``
