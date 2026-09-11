@@ -1230,7 +1230,7 @@ def test_sound_module_preserves_editor_behaviour():
         assert path in js, f"sound module no longer references {path}"
     assert "dsp_write_epoch: dspWriteEpoch" in js
     assert "function cancelLiveDrafts()" in js
-    assert "jsonHeaders()" in js
+    assert "postJSON('./apply'" in js
     # CSRF/JSON helpers are imported from the shared http.js (which reads the
     # meta[name=jts-csrf] tag) rather than re-declared locally — the token is
     # never string-substituted at render time. (See the http.js drift guard in
@@ -1443,11 +1443,11 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "'./active-speaker/commissioning-view'" in js
     assert "action && action.endpoint || './active-speaker/summed-test'" in js
     assert "action && action.endpoint || './active-speaker/summed-validation'" in js
-    assert "fetch('./active-speaker/design-draft'" in js
-    assert "fetch('./active-speaker/crossover-preview'" in js
-    assert "fetch('./active-speaker/measurements'" in js
-    assert "fetch('./active-speaker/baseline-profile'" in js
-    assert "fetch('./active-speaker/baseline-profile/save-and-apply'" in js
+    assert "'./active-speaker/design-draft'" in js
+    assert "'./active-speaker/crossover-preview'" in js
+    assert "'./active-speaker/measurements'" in js
+    assert "'./active-speaker/baseline-profile'" in js
+    assert "'./active-speaker/baseline-profile/save-and-apply'" in js
     assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
     assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
@@ -1553,8 +1553,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function saveOutputChannelProtectionState(groupId, role, nextStatus)" not in js
     assert "function outputReadinessFromPreparedDriver(payload, button)" not in js
     assert "function checkOutputPlaybackReadiness(button)" not in js
-    assert "fetch('./output-topology'" in js
-    assert "fetch('./active-speaker/channel-identity'" in js
+    assert "'./output-topology'" in js
+    assert "'./active-speaker/channel-identity'" in js
     assert "fetch('./active-speaker/channel-protection'" not in js
     assert "fetch('./active-speaker/prepare-driver-test'" not in js
     assert "fetch('./active-speaker/playback-readiness'" not in js
@@ -1562,7 +1562,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-act="check-output-readiness"' not in js
     assert 'data-protection-required="' not in js
     assert 'data-protection-status="' not in js
-    assert "headers: jsonHeaders()" in js
+    assert "postJSON('./output-topology'" in js
     assert "Saved speaker layout." in js
     # The map-step footer's dirty-layout fallback wires the save-layout action
     # through the shared descriptor renderer (renderStepFooterButton emits the
@@ -1576,7 +1576,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Composite clock" in js
     assert "observedHardware" in js
     assert "topology_revision" in js
-    assert "resp.status === 409" in js
+    assert "e.status === 409" in js
     assert "channelCount" in js
     assert "Hardware details" in js
     assert "Hardware mismatch" in js
@@ -3034,11 +3034,12 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
 ):
     """Pin the wire shape the page already knows how to render.
 
-    ``deploy/assets/sound-profile/js/main.js``'s ``saveOutputTopology`` does
-    ``if (!resp.ok) throw new Error(payload.error || ...)`` and surfaces the
-    message while keeping the operator's draft on screen — so the refusal has
-    to arrive as a non-2xx with an ``error`` string, and must NOT take the 409
-    branch (that one re-ingests the server's topology and would wipe the draft).
+    ``deploy/assets/sound-profile/js/main.js``'s ``saveOutputTopology`` awaits
+    the shared ``postJSON``, which throws on any non-2xx; its ``catch`` only
+    special-cases ``e.status === 409`` (re-ingests the server's topology,
+    which would wipe the draft) and otherwise surfaces ``e.message`` while
+    keeping the operator's draft on screen — so the refusal has to arrive as a
+    non-409 non-2xx with an ``error`` string.
     """
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"

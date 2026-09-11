@@ -23,7 +23,7 @@
 // creeping back (same shared-by-promotion rule as escape.js / dialog.js).
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
-import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
+import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { initSeatLevel, isSeatLevelRunning, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
 import { applyInstallationToSetting, installationFromSetting } from "/assets/sound-profile/js/installation.js";
 import {
@@ -1246,16 +1246,12 @@ import {
     driverResearch.researchRequest = payload.driver_research_request || null;
   }
   async function fetchDesignDraft() {
-    var resp = await fetch('./active-speaker/design-draft', {cache: 'no-store'});
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'speaker design draft failed');
+    var payload = await getJSON('./active-speaker/design-draft');
     ingestDesignDraft(payload);
     return payload;
   }
   async function fetchCrossoverPreview() {
-    var resp = await fetch('./active-speaker/crossover-preview', {cache: 'no-store'});
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
+    var payload = await getJSON('./active-speaker/crossover-preview');
     ingestCrossoverPreview(payload);
     return payload;
   }
@@ -2987,10 +2983,8 @@ import {
   async function preview() {
     var seq = ++previewSeq;
     try {
-      var resp = await fetch('./preview', {method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify(liveProfile() || Object.assign(FLAT(), {enabled: false}))});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'preview failed');
+      var payload = await postJSON('./preview',
+        liveProfile() || Object.assign(FLAT(), {enabled: false}));
       if (seq !== previewSeq) return;
       var profile = liveProfile();
       renderGraph(payload, profile ? profile.enabled !== false : false);
@@ -3009,10 +3003,7 @@ import {
     livePending = false; liveInFlight = true;
     var seq = liveSeq;
     try {
-      var resp = await fetch('./live-draft', {method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({profile: draft, dsp_write_epoch: dspWriteEpoch})});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'live draft failed');
+      var payload = await postJSON('./live-draft', {profile: draft, dsp_write_epoch: dspWriteEpoch});
       if (seq === liveSeq) {
         if (payload.status === 'blocked') {
           // The loaded graph can't host EQ (e.g. an active crossover). Show
@@ -3063,9 +3054,7 @@ import {
     applying = true; cancelLiveDrafts();
     if (okMsg && sourceSeq === liveSourceSeq) status('Applying…');
     try {
-      var resp = await fetch('./apply', {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(profile)});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'apply failed');
+      var payload = await postJSON('./apply', profile);
       if (payload.status === 'blocked') {
         // Refused (e.g. EQ over an active crossover). Surface the honest hint
         // and skip ingestState — a blocked body carries no profile state.
@@ -3085,9 +3074,7 @@ import {
   async function profileMutate(path, body) {
     applying = true;
     try {
-      var resp = await fetch(path, {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body || {})});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'profile update failed');
+      var payload = await postJSON(path, body || {});
       if (payload.profile_library) eqEditor.library = payload.profile_library;
       return payload;
     } catch (e) {
@@ -3130,20 +3117,17 @@ import {
   async function saveI2sHatProfileId(profileId, input) {
     if (input) input.disabled = true;
     try {
-      var resp = await fetch('./i2s-hat', {
-        method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({profile_id: profileId || null})
-      });
-      var payload = await resp.json();
+      var payload = await postJSON('./i2s-hat', {profile_id: profileId || null});
       if ('desired_profile_id' in payload) outputPage.i2sHat = payload;
-      if (!resp.ok && 'desired_profile_id' in payload)
-        return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
-      if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
       if (payload.warnings && payload.warnings.length)
         return status(payload.warnings[0], true);
       status(payload.restart_required ?
         'I²S HAT setting saved. Restart required.' : 'I²S HAT setting saved.');
     } catch (e) {
+      if (e.body && 'desired_profile_id' in e.body) {
+        outputPage.i2sHat = e.body;
+        return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
+      }
       status('Could not save I²S HAT setting: ' + e.message, true);
     } finally {
       render();
@@ -3798,10 +3782,7 @@ import {
   // six crossover/commissioning reads only the speaker page draws.
   async function loadOutputHardware() {
     try {
-      var resp = await fetch('./output-topology', {cache: 'no-store'});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'speaker layout load failed');
-      ingestOutputTopology(payload);
+      ingestOutputTopology(await getJSON('./output-topology'));
     } catch (e) {
       outputTopology.error = e.message;
     }
@@ -3818,10 +3799,7 @@ import {
     outputTopology.error = '';
     if (!options.silent) render();
     try {
-      var resp = await fetch('./output-topology', {cache: 'no-store'});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'speaker layout load failed');
-      ingestOutputTopology(payload);
+      ingestOutputTopology(await getJSON('./output-topology'));
       try {
         await fetchDesignDraft();
       } catch (draftError) {
@@ -3857,16 +3835,14 @@ import {
   }
   async function refreshCommissionState() {
     try {
-      var resp = await fetch('./active-speaker/commission-state', {cache: 'no-store'});
-      if (resp.ok) patchActiveSpeaker({commission: await resp.json()});
+      patchActiveSpeaker({commission: await getJSON('./active-speaker/commission-state')});
     } catch (commissionError) {
       patchActiveSpeaker({commission: activeSpeaker.commission || null});
     }
   }
   async function refreshCommissioningView() {
     try {
-      var resp = await fetch('./active-speaker/commissioning-view', {cache: 'no-store'});
-      if (resp.ok) patchActiveSpeaker({commissioningView: await resp.json()});
+      patchActiveSpeaker({commissioningView: await getJSON('./active-speaker/commissioning-view')});
     } catch (viewError) {
       patchActiveSpeaker({commissioningView: activeSpeaker.commissioningView || null});
     }
@@ -3881,12 +3857,7 @@ import {
       render();
     }
     try {
-      var resp = await fetch(url, {
-        method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify(body || {})
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error((payload && payload.error) || 'request failed');
+      var payload = await postJSON(url, body || {});
       var failure = commissionPayloadFailure(payload);
       if (failure) {
         // The request was accepted (HTTP 200) but a guard refused/blocked it.
@@ -4644,16 +4615,10 @@ import {
       return;
     }
     try {
-      var response = await fetch('./active-speaker/driver-research-request', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          operator_inputs: driverResearch.inputs,
-          manual_settings: manualSettingsPayload(currentOutputTopology())
-        })
+      var payload = await postJSON('./active-speaker/driver-research-request', {
+        operator_inputs: driverResearch.inputs,
+        manual_settings: manualSettingsPayload(currentOutputTopology())
       });
-      var payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'research prompt preparation failed');
       prompt.value = String(payload.prompt || '');
       driverResearch.researchRequest = payload.request || null;
     } catch (e) {
@@ -4667,9 +4632,7 @@ import {
     var field = el('tuning-handoff-prompt');
     if (!field) return;
     try {
-      var resp = await fetch('./active-speaker/tuning-handoff', {cache: 'no-store'});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'handoff prompt could not be minted');
+      var payload = await getJSON('./active-speaker/tuning-handoff');
       if (payload.status !== 'ready') {
         throw new Error('this speaker has no applied profile to hand over yet');
       }
@@ -4774,30 +4737,13 @@ import {
     if (!importWarning) driverResearch.error = '';
     render();
     try {
-      var resp = await fetch('./active-speaker/design-draft', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          operator_inputs: driverResearch.inputs,
-          manual_settings: manualPayload,
-          driver_research_request: driverResearch.researchRequest,
-          driver_research: researchPayload,
-          expected_revision: Number((driverResearch.designDraft || {}).revision || 0)
-        })
+      var payload = await postJSON('./active-speaker/design-draft', {
+        operator_inputs: driverResearch.inputs,
+        manual_settings: manualPayload,
+        driver_research_request: driverResearch.researchRequest,
+        driver_research: researchPayload,
+        expected_revision: Number((driverResearch.designDraft || {}).revision || 0)
       });
-      var payload = await resp.json();
-      if (resp.status === 409) {
-        var keptLocalEdits = driverResearch.dirty;
-        ingestDesignDraft(payload, {force: !keptLocalEdits});
-        var conflictMessage = payload.error || 'Speaker design changed in another tab.';
-        driverResearch.error = keptLocalEdits
-          ? conflictMessage + ' Your unsaved edits were kept; review and save again.'
-          : conflictMessage + ' Review the refreshed values.';
-        status(driverResearch.error, true);
-        render();
-        return false;
-      }
-      if (!resp.ok) throw new Error(payload.error || 'speaker design draft save failed');
       // The saved draft carries no driver_research when this save dropped the
       // packet, so ingestDesignDraft would blank both the paste box and the
       // rejection reason -- leaving an explanation with nothing to act on.
@@ -4823,6 +4769,18 @@ import {
       render();
       return true;
     } catch (e) {
+      if (e.status === 409) {
+        var conflictPayload = e.body || {};
+        var keptLocalEdits = driverResearch.dirty;
+        ingestDesignDraft(conflictPayload, {force: !keptLocalEdits});
+        var conflictMessage = conflictPayload.error || 'Speaker design changed in another tab.';
+        driverResearch.error = keptLocalEdits
+          ? conflictMessage + ' Your unsaved edits were kept; review and save again.'
+          : conflictMessage + ' Review the refreshed values.';
+        status(driverResearch.error, true);
+        render();
+        return false;
+      }
       driverResearch.saving = false;
       driverResearch.error = e.message;
       status('Could not update working setup: ' + e.message, true);
@@ -4854,13 +4812,7 @@ import {
     crossoverPreview.error = '';
     render();
     try {
-      var resp = await fetch('./active-speaker/crossover-preview', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({})
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
+      var payload = await postJSON('./active-speaker/crossover-preview', {});
       ingestCrossoverPreview(payload);
       await refreshCommissioningView();
       outputPage.stepOverride = 'map';
@@ -4954,25 +4906,10 @@ import {
     outputTopology.error = '';
     render();
     try {
-      var resp = await fetch('./output-topology', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          output_topology: outputTopology.draft,
-          topology_revision: outputTopology.revision
-        })
+      var payload = await postJSON('./output-topology', {
+        output_topology: outputTopology.draft,
+        topology_revision: outputTopology.revision
       });
-      var payload = await resp.json();
-      if (!resp.ok) {
-        if (resp.status === 409 && payload.output_topology) {
-          ingestOutputTopology(payload);
-          outputTopology.error = payload.error || 'Speaker layout changed; refresh before saving.';
-          status(outputTopology.error, true);
-          render();
-          return;
-        }
-        throw new Error(payload.error || 'speaker layout save failed');
-      }
       ingestOutputTopology(payload);
       // The refusal card names the carrier this save just replaced, so a fixed
       // layout drops it at the render below instead of outliving its cause.
@@ -5007,6 +4944,13 @@ import {
         needsAttention
       );
     } catch (e) {
+      if (e.status === 409 && e.body && e.body.output_topology) {
+        ingestOutputTopology(e.body);
+        outputTopology.error = e.body.error || 'Speaker layout changed; refresh before saving.';
+        status(outputTopology.error, true);
+        render();
+        return;
+      }
       outputTopology.saving = false;
       outputTopology.error = e.message;
       status('Could not save speaker layout: ' + e.message, true);
@@ -5024,27 +4968,11 @@ import {
     outputTopology.error = '';
     render();
     try {
-      var resp = await fetch('./output-topology/reset', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          topology_revision: outputTopology.revision,
-          detected_hardware_identity: outputTopology.hardwareAdoption &&
-            outputTopology.hardwareAdoption.identity
-        })
+      var payload = await postJSON('./output-topology/reset', {
+        topology_revision: outputTopology.revision,
+        detected_hardware_identity: outputTopology.hardwareAdoption &&
+          outputTopology.hardwareAdoption.identity
       });
-      var payload = await resp.json();
-      if (!resp.ok) {
-        if (resp.status === 409 && payload.output_topology) {
-          ingestOutputTopology(payload);
-          var conflictMessage = payload.error ||
-            'Speaker setup or detected hardware changed. Review it and try again.';
-          status(conflictMessage, true);
-          render();
-          return;
-        }
-        throw new Error(payload.error || 'speaker setup reset failed');
-      }
       ingestOutputTopology(payload);
       stopCommissionAutoRamp('');
       patchActiveSpeaker({
@@ -5065,6 +4993,13 @@ import {
         status(resetStatus.message || 'Speaker setup was reset. Audio is off until you choose a speaker layout.');
       }
     } catch (e) {
+      if (e.status === 409 && e.body && e.body.output_topology) {
+        ingestOutputTopology(e.body);
+        status(e.body.error ||
+          'Speaker setup or detected hardware changed. Review it and try again.', true);
+        render();
+        return;
+      }
       outputTopology.resetting = false;
       status('Could not reset speaker setup: ' + e.message, true);
     }
@@ -5091,27 +5026,11 @@ import {
     outputTopology.error = '';
     render();
     try {
-      var resp = await fetch('./output-topology/repin', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          topology_revision: outputTopology.revision,
-          detected_hardware_identity: outputTopology.hardwareAdoption &&
-            outputTopology.hardwareAdoption.identity
-        })
+      var payload = await postJSON('./output-topology/repin', {
+        topology_revision: outputTopology.revision,
+        detected_hardware_identity: outputTopology.hardwareAdoption &&
+          outputTopology.hardwareAdoption.identity
       });
-      var payload = await resp.json();
-      if (!resp.ok) {
-        if (resp.status === 409 && payload.output_topology) {
-          ingestOutputTopology(payload);
-          status(payload.error ||
-            'Speaker setup or detected hardware changed. Review it and try again.',
-            true);
-          render();
-          return;
-        }
-        throw new Error(payload.error || 'pinning the new DAC failed');
-      }
       ingestOutputTopology(payload);
       // The commissioning design SURVIVES a re-pin, so nothing about it is
       // cleared here (unlike the reset above). Only the in-flight ramp is
@@ -5130,6 +5049,13 @@ import {
         status(repinStatus.message || 'Pinned the new DAC and kept your speaker setup.');
       }
     } catch (e) {
+      if (e.status === 409 && e.body && e.body.output_topology) {
+        ingestOutputTopology(e.body);
+        status(e.body.error ||
+          'Speaker setup or detected hardware changed. Review it and try again.', true);
+        render();
+        return;
+      }
       outputTopology.repinning = false;
       status('Could not pin the new DAC: ' + e.message, true);
     }
@@ -5164,17 +5090,11 @@ import {
     outputTopology.touched = true;
     render();
     try {
-      var resp = await fetch('./active-speaker/channel-identity', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          speaker_group_id: groupId,
-          role: role,
-          identity_verified: verified
-        })
+      var payload = await postJSON('./active-speaker/channel-identity', {
+        speaker_group_id: groupId,
+        role: role,
+        identity_verified: verified
       });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'channel identity update failed');
       ingestOutputTopology(payload);
       await refreshCommissioningView();
       // When the server had to silence the speaker for this write, its own
@@ -5224,16 +5144,10 @@ import {
     if (!pending) return;
     summedTestLevelUpdate.inFlight = true;
     try {
-      var resp = await fetch('./active-speaker/summed-test/level', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          speaker_group_id: pending.groupId,
-          level_dbfs: pending.levelDbfs
-        })
+      var payload = await postJSON('./active-speaker/summed-test/level', {
+        speaker_group_id: pending.groupId,
+        level_dbfs: pending.levelDbfs
       });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'combined test level failed');
       if (payload.status === 'idle') return;
       if (payload.status !== 'loaded') {
         throw new Error(payload.reason || 'combined test level was not applied');
@@ -5323,15 +5237,7 @@ import {
         duration_ms: 12000
       }, action && action.body || {});
       body.level_dbfs = requestedLevel;
-      var startPromise = fetch(action && action.endpoint || './active-speaker/summed-test', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(body)
-      }).then(async function(resp) {
-        var payload = await resp.json();
-        if (!resp.ok) throw new Error(payload.error || 'combined speaker test failed');
-        return payload;
-      });
+      var startPromise = postJSON(action && action.endpoint || './active-speaker/summed-test', body);
       summedTestRequest.current = {
         token: requestToken,
         groupId: groupId,
@@ -5460,16 +5366,8 @@ import {
         operator_listening_check: true,
         polarity: 'normal'
       });
-      var resp = await fetch(
-        action && action.endpoint || './active-speaker/summed-validation',
-        {
-          method: 'POST',
-          headers: jsonHeaders(),
-          body: JSON.stringify(body)
-        }
-      );
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'combined crossover check failed');
+      var payload = await postJSON(
+        action && action.endpoint || './active-speaker/summed-validation', body);
       patchActiveSpeaker({
         loading: false,
         action: '',
@@ -5537,15 +5435,9 @@ import {
       var expectedCandidateFingerprint = String(
         profile.candidate_fingerprint || ''
       );
-      var resp = await fetch('./active-speaker/baseline-profile/save-and-apply', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          expected_candidate_fingerprint: expectedCandidateFingerprint
-        })
+      var payload = await postJSON('./active-speaker/baseline-profile/save-and-apply', {
+        expected_candidate_fingerprint: expectedCandidateFingerprint
       });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'active profile save/apply failed');
       patchActiveSpeaker({
         loading: false, action: '',
         baselineProfile: payload.profile || payload,
@@ -5566,22 +5458,16 @@ import {
     render();
   }
   async function fetchActiveSpeakerMeasurements() {
-    var resp = await fetch('./active-speaker/measurements', {cache: 'no-store'});
-    if (!resp.ok) throw new Error('active-speaker measurements failed');
-    return await resp.json();
+    return await getJSON('./active-speaker/measurements');
   }
   async function fetchActiveSpeakerBaselineProfile() {
-    var resp = await fetch('./active-speaker/baseline-profile', {cache: 'no-store'});
-    if (!resp.ok) throw new Error('active-speaker baseline profile failed');
-    var payload = await resp.json();
+    var payload = await getJSON('./active-speaker/baseline-profile');
     tuningHandoff.programs = payload.tuning_programs || [];
     return payload;
   }
   async function loadState() {
     try {
-      var resp = await fetch('./state', {cache: 'no-store'});
-      if (!resp.ok) throw new Error('state failed');
-      var payload = await resp.json();
+      var payload = await getJSON('./state');
       ingestState(payload);
       eqEditor.selectedId = findIdFor(applied);
       // Open on Off when no EQ is effectively applied — bypassed (enabled
