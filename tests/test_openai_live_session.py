@@ -282,6 +282,83 @@ async def test_stop_releases_the_active_turn_and_closes_the_session_once():
     assert conn._state is ConnectionState.CLOSED
 
 
+class HangingDial(LiveSocket):
+    """A socket whose dial parks until `release` fires — a wake that is
+    still opening its session when something else stops the connection."""
+
+    def __init__(self, dialling: asyncio.Event, release: asyncio.Event):
+        super().__init__()
+        self._dialling = dialling
+        self._release = release
+
+    async def __aenter__(self):
+        self._dialling.set()
+        await self._release.wait()
+        return await super().__aenter__()
+
+
+async def test_a_stop_racing_an_in_flight_open_is_not_an_outage(monkeypatch):
+    """The open owns its turn, so a concurrent stop is not a local defect.
+
+    `stop()` nulls the shared active-turn field; an open reading it back
+    after its own await used to raise an AttributeError, which classifies
+    TERMINAL and latched the needs-attention remedy — suppressing the
+    announcement of a real one later.
+    """
+    monkeypatch.setattr(openai_live_session, "SESSION_CLOSE_TIMEOUT_SEC", 0.2)
+    dialling, release = asyncio.Event(), asyncio.Event()
+    socket = HangingDial(dialling, release)
+    dials = 0
+
+    def connect():
+        nonlocal dials
+        dials += 1
+        return socket
+
+    conn = OpenAILiveConnection(api_key="test", connect=connect)
+    await conn.start(ToolRegistry(), "Be concise.")
+
+    acquire = asyncio.create_task(conn.acquire_turn())
+    await wait_signalled(dialling, "the dial starting", producer=acquire)
+    await conn.stop()
+    release.set()
+    with pytest.raises(RuntimeError):
+        await acquire
+
+    assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+    # A stop is not the transient the second attempt exists for.
+    assert dials == 1
+    assert socket.closed
+
+
+async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(monkeypatch):
+    """`stop()` returns inside the close bound, whatever the dial does.
+
+    The release ends by taking the turn lock the acquire holds for its
+    whole open budget — longer than the unit's `TimeoutStopSec`, so an
+    unbounded release means SIGKILL on a restart mid-dial.
+    """
+    monkeypatch.setattr(openai_live_session, "SESSION_OPEN_BUDGET_SEC", 5.0)
+    monkeypatch.setattr(openai_live_session, "SESSION_CLOSE_TIMEOUT_SEC", 0.2)
+    dialling, release = asyncio.Event(), asyncio.Event()
+    socket = HangingDial(dialling, release)
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be concise.")
+
+    acquire = asyncio.create_task(conn.acquire_turn())
+    await wait_signalled(dialling, "the dial starting", producer=acquire)
+    started = time.monotonic()
+    await conn.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert conn._state is ConnectionState.CLOSED
+    assert socket.closed
+    release.set()
+    with pytest.raises(RuntimeError):
+        await acquire
+
+
 @pytest.mark.parametrize("gap_sec, played, discarded", [
     (0.0, 1, 0),
     (SILENCE_BRIDGE_SEC, 1, 0),

@@ -19,7 +19,7 @@ import time
 from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ..tools import dispatch_tool
-from ._base import BaseLiveConnection, BaseLiveTurn
+from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn
 from ._supervisor import failure_detail, is_transient
 from .conversation import END_CONVERSATION_TOOL
 from .openai_session import _upsample_16k_to_24k
@@ -365,7 +365,11 @@ class OpenAILiveConnection(BaseLiveConnection):
             try:
                 await self._open_session()
             except Exception as exc:  # noqa: BLE001
-                if attempt >= SESSION_OPEN_ATTEMPTS or not is_transient(exc):
+                if (
+                    attempt >= SESSION_OPEN_ATTEMPTS
+                    or self._stopping.is_set()
+                    or not is_transient(exc)
+                ):
                     raise
                 self._on_reconnect_attempt_failed(exc, attempt, True)
                 await self._teardown_session()
@@ -376,6 +380,9 @@ class OpenAILiveConnection(BaseLiveConnection):
     async def _open_session_attempt(self) -> None:
         assert self._registry is not None
         assert self._system_instruction_provider is not None
+        # Held locally: a concurrent `stop()` nulls the shared field while
+        # this awaits, and the attempt still owns the turn it opened for.
+        turn = self._active_turn
         connect = self._connect
         if connect is None:
             from openai import AsyncOpenAI  # lazy — optional provider SDK
@@ -383,7 +390,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             connect = self._connect = self._client.live.connect
         self._session_cm = connect()
         self._session = await self._session_cm.__aenter__()
-        self._receive_task = asyncio.create_task(self._receive())
+        self._receive_task = asyncio.create_task(self._receive(turn))
         await self._send({"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
             "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
@@ -394,7 +401,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             }},
         }})
         await self._started.wait()
-        if self._active_turn.turn_lost():
+        if turn.turn_lost() or self._stopping.is_set():
             raise RuntimeError("Live session failed during startup")
 
     async def _send(self, event) -> None:
@@ -402,8 +409,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             raise RuntimeError("Live socket is closed")
         await self._session.send(event)
 
-    async def _receive(self) -> None:
-        turn = self._active_turn
+    async def _receive(self, turn: OpenAILiveTurn) -> None:
         try:
             async for raw in self._session:
                 event = raw if isinstance(raw, dict) else raw.model_dump()
@@ -447,11 +453,21 @@ class OpenAILiveConnection(BaseLiveConnection):
             self._session_cm = self._session = None
 
     async def stop(self) -> None:
+        # Set before the release, so an acquire still dialling fails its
+        # open instead of handing back a turn on a closed connection.
+        self._stopping.set()
         # Released first: only the turn's own path sends `session.close` and
         # settles the billable interval. `super().stop()` then tears down
         # what is left, idempotently.
-        if self._active_turn is not None:
-            await self._active_turn.release()
+        turn = self._active_turn
+        if turn is not None:
+            # Bounded: the release ends by taking `_turn_lock`, which an
+            # acquire still dialling holds for up to
+            # SESSION_OPEN_BUDGET_SEC — past the unit's TimeoutStopSec.
+            try:
+                await asyncio.wait_for(turn.release(), SESSION_CLOSE_TIMEOUT_SEC)
+            except TimeoutError:
+                log_event(logger, "live.release_abandoned", level=logging.WARNING)
         await super().stop()
         if self._client is not None:
             await self._client.close()
