@@ -867,9 +867,7 @@ async def _dispatch(
         # 4-8 KB and flood the journal. Content-bearing tools redact the
         # preview entirely but keep length/timing diagnostics.
         preview = _payload_preview(tool, payload)
-        log_event(
-            logger, "tool.dispatch_done", name=name, fn_ms=round(fn_ms), payload=preview,
-        )
+        log_event(logger, "tool.dispatch_done", name=name, fn_ms=round(fn_ms), payload=preview)
     except asyncio.TimeoutError:
         fn_ms = (_time.monotonic() - t_fn) * 1000
         logger.warning("tool %s fn TIMED OUT after %.0fms", name, fn_ms)
