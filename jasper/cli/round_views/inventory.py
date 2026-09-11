@@ -13,16 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
-from jasper.active_speaker.crossover_v2.contracts import (
-    DESIGN_AXIS_DEG,
-    DRIVER_ROLE_TWEETER,
-    DRIVER_ROLE_WOOFER,
-)
-from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
-from jasper.active_speaker.crossover_v2.position_cycle import (
-    read_pose_curve_pair,
-    take_phase_composition,
-)
 from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
     capture_documents,
@@ -71,20 +61,10 @@ def _runnable(
     return shlex.join([*shlex.split(spec.producer or f"{PROG} {view}"), *tokens]), missing
 
 
-def _has_legacy_branch_pair(inputs: RoundInputs) -> bool:
-    selected = read_pose_curve_pair(
-        inputs.session_dir,
-        phase=PHASE_MEASURE,
-        position_deg=DESIGN_AXIS_DEG,
-        roles=(DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER),
-    )
-    return selected is not None and take_phase_composition(
-        inputs.session_dir, selected[2]
-    ) != "complete_tune_measured"
 
 
 def _forward_model_takes(
-    round_dir: Path, inputs: RoundInputs,
+    round_dir: Path,
 ) -> tuple[tuple[str, ...], str | None, bool]:
     try:
         documents = capture_documents(round_dir)
@@ -100,8 +80,6 @@ def _forward_model_takes(
         if capture_id is None:
             return TAKES_EXACT_CAPTURE, "exact_capture_id_required", True
         return (TAKES_THIS_ROUND, "--capture-id", capture_id), None, True
-    if _has_legacy_branch_pair(inputs):
-        return (TAKES_THIS_ROUND,), None, True
     return TAKES_EXACT_CAPTURE, "forward_model_basis_missing", False
 
 
@@ -126,7 +104,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         command_available = True
         if view == "forward-model":
             takes, repair_reason, command_available = _forward_model_takes(
-                round_dir, inputs
+                round_dir
             )
         else:
             takes = None

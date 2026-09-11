@@ -36,7 +36,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundViewsError,
     round_inputs,
 )
-from jasper.active_speaker.crossover_v2.ring_projection import bundle_session_id
+from jasper.active_speaker.round_bank import bundle_session_id
 from jasper.attribution.mechanisms import (
     MECHANISM_BOUNDARY_SBIR,
     MECHANISM_HF_REFLECTION,

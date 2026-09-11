@@ -4,7 +4,7 @@
 
 """Is a feature a driver defect, a cancellation, or the room?
 
-* ``classify-features <bundle-dir> [--dumps <ring>]`` — classify one banked
+* ``classify-features <bundle-dir>`` — classify one banked
   round's spectral features, known-answer controls first, and file
   ``feature_classification.json`` into the round's own artifact directory,
   where the evidence packet reads it. ``<bundle-dir>`` is a commissioning
@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -37,21 +36,16 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
     summary_lines,
 )
-from jasper.active_speaker.crossover_v2.ring_projection import (
-    RingProjectionRefused,
-    bundle_session_id,
-    project_ring,
-)
+from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
+from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from jasper.cli._refusal import (
     EXIT_UNREADABLE,
-    EXIT_WRITE_FAILED,
     StageFailed,
     stage,
 )
 
 from ._common import (
     ARTIFACT_BY_VIEW,
-    PROG,
     _BUNDLE_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
@@ -59,11 +53,6 @@ from ._common import (
     answer,
     refused_by_name,
 )
-
-#: Where the ring lands when the operator named no ``--dumps``: inside the
-#: bundle it is projected from and scoped to, so a second run re-links the same
-#: takes rather than growing a second ring somewhere else.
-_PROJECTED_RING = "ring"
 
 #: Said on "no round artifacts at all" and on nothing else: a bundle stopped
 #: for carrying more than one round has the right structure already, and
@@ -90,39 +79,11 @@ def _round_dir(bundle_dir: Path) -> Path:
     return round_dir
 
 
-def _ring(args: argparse.Namespace) -> Path:
-    """The capture ring: the operator's ``--dumps``, or one projected here.
-
-    A round banked today carries no ring — the speaker-side dump ring is gone
-    and the WAVs ride the bundle's take records — so the default is to project
-    one. The ring is written as it is read, so an unreadable bundle and a
-    half-written ring are one instruction: look at the filesystem, run it again.
-    """
-    if args.dumps is not None:
-        return args.dumps
-    projection = stage(
-        EXIT_WRITE_FAILED, (OSError,), project_ring,
-        args.bundle_dir, args.bundle_dir / _PROJECTED_RING,
-        setup_calibration_id=args.setup_calibration_id,
-    )
-    print(
-        f"projected {len(projection.projected)} take(s) from "
-        f"{projection.session_id} -> {projection.dumps_dir}",
-        file=sys.stderr,
-    )
-    for skipped in projection.skipped:
-        # Reported, never dropped: a reader skips a sidecar it cannot use
-        # without a word, which is what makes a half-projected ring look
-        # complete to whoever reads it next.
-        print(f"  skipped {skipped.path}: {skipped.reason}", file=sys.stderr)
-    return projection.dumps_dir
-
-
 def _classify(args: argparse.Namespace, programs_dir: Path) -> dict[str, Any]:
     """Everything the LOAD stage owns: the ring, the captures, the verdict."""
     captures = load_round_captures(
         programs_dir,
-        _ring(args),
+        args.bundle_dir / CAPTURE_RING_DIR,
         session_id=bundle_session_id(args.bundle_dir),
         walk_logs=tuple(args.walk_logs),
     )
@@ -140,13 +101,16 @@ def _classify(args: argparse.Namespace, programs_dir: Path) -> dict[str, Any]:
 
 
 def _cmd_classify_features(args: argparse.Namespace) -> int:
+    inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs,
+                   banked_round_of(args.bundle_dir) or args.bundle_dir)
+    args.bundle_dir = inputs.session_dir
     round_dir = _round_dir(args.bundle_dir)
     programs_dir = round_program_dir(args.bundle_dir, round_dir, ADMISSIBLE_PHASES)
     try:
         artifact = stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir
         )
-    except (FeatureClassificationRefused, RingProjectionRefused) as refusal:
+    except FeatureClassificationRefused as refusal:
         # The instrument's own reason, and the directory actually read: a
         # refusal that named neither starts a wrong-directory hunt.
         return refused_by_name(
@@ -181,25 +145,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     classify.add_argument(
         "bundle_dir", type=Path, metavar=_BUNDLE_DIR_METAVAR,
-        help="commissioning bundle: info.json beside evidence/v1/artifacts/",
-    )
-    classify.add_argument(
-        "--dumps", type=Path, default=None,
-        help="a capture ring already projected (sidecar JSON beside its WAV); "
-             f"without one the bundle is projected into <bundle-dir>/{_PROJECTED_RING} "
-             "and that ring is read",
-    )
-    classify.add_argument(
-        "--setup-calibration-id", default=None,
-        help="the measurement mic this round used. The bank does not carry it, "
-             "and it is stamped onto the ring projected here, where "
-             f"`{PROG} distortion` reads it to choose the sign convention a "
-             "--calibration file is parsed under. Ignored with --dumps",
+        help="banked round or its commissioning bundle",
     )
     classify.add_argument(
         "--walk-log", type=Path, action="append", default=[], dest="walk_logs",
-        help="turntable walk trail, repeatable. Without one, captures carry no "
-             "angle and the timing test reports that it did not run",
+        help="turntable walk trail, repeatable; fallback for captures without a banked angle",
     )
     classify.add_argument(
         "--at", type=float, action="append", default=None, metavar="HZ",
