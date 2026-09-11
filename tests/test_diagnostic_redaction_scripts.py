@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from jasper.cli.doctor.secret_compartments import COMPARTMENTS
 
@@ -155,3 +158,78 @@ def test_tail_pi_logs_redacts_the_live_stream(tmp_path):
     assert "OPENAI_API_KEY=<redacted>" in combined
     assert "GEMINI_API_KEY=<redacted>" in combined
     assert "END-OF-STREAM-MARKER-NO-NEWLINE" in proc.stdout
+
+
+def _fetch_logs_command_redaction_pattern() -> str:
+    """The exact sed -E program fetch-pi-logs.sh uses to strip diagnostic
+    command content from sudo audit COMMAND= lines, read live from the
+    script -- so this test breaks the moment the marker the two scripts
+    agree on drifts apart."""
+    text = (ROOT / "scripts" / "fetch-pi-logs.sh").read_text()
+    match = re.search(r"sed -E '([^']*)'", text)
+    assert match, "fetch-pi-logs.sh: expected one sed -E '...' redaction pattern"
+    return match.group(1)
+
+
+def _pi_run_diagnostic_remote_command(tmp_path: Path, *shape: str, stdin: str = "") -> str:
+    """The exact remote command string pi-run-diagnostic.sh sends over ssh
+    for `-- shape...`, captured via a fake `ssh` on PATH that logs its last
+    argument (the assembled systemd-run command line) instead of
+    connecting anywhere."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    log = tmp_path / "ssh-command.log"
+    ssh_stub = fake_bin / "ssh"
+    ssh_stub.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'printf \'%s\' "${@: -1}" > "$FAKE_COMMAND_LOG"\nexit 0\n'
+    )
+    ssh_stub.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["PI_HOST"] = "explicit.invalid"
+    env["PI_USER"] = "operator"
+    env["FAKE_COMMAND_LOG"] = str(log)
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "pi-run-diagnostic.sh"), "--", *shape],
+        env=env, capture_output=True, text=True, timeout=10, input=stdin,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return log.read_text()
+
+
+@pytest.mark.parametrize(
+    ("shape", "needle"),
+    [
+        (("uname", "-a"), "uname -a"),
+        (("bash", "-lc", "journalctl -b -1 -k | tail -80"), "journalctl"),
+        (("/opt/jasper/.venv/bin/python", "-"), "/opt/jasper/.venv/bin/python"),
+    ],
+    ids=["uname", "bash-lc-pipe", "python-heredoc"],
+)
+def test_diagnostic_command_redaction_matches_pi_run_diagnostic_construction(
+    tmp_path: Path, shape: tuple[str, ...], needle: str,
+) -> None:
+    """#4912 review: pi-run-diagnostic.sh's remote command must always carry
+    the "-- /usr/bin/bash -lc " marker fetch-pi-logs.sh's redaction keys on,
+    whatever shape the diagnostic argv takes -- otherwise the raw command
+    (which may contain operator-typed secrets) lands unredacted in
+    ./logs/. Exercises the real construction and the real sed pattern,
+    not a hand-reimplementation of either."""
+    remote_command = _pi_run_diagnostic_remote_command(tmp_path, *shape)
+    synthetic_audit_line = (
+        "Sep 10 08:00:00 jts3 sudo[12345]: pi : TTY=pts/0 ; "
+        "PWD=/home/pi/jts ; USER=root ; COMMAND="
+        + remote_command.removeprefix("sudo ")
+    )
+
+    result = subprocess.run(
+        ["sed", "-E", _fetch_logs_command_redaction_pattern()],
+        input=synthetic_audit_line,
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+
+    assert needle not in result.stdout
+    assert "<diagnostic-command-redacted>" in result.stdout
+    # The redaction must strip only the diagnostic tail, not the whole line.
+    assert "--unit=jts-diagnostic-" in result.stdout
