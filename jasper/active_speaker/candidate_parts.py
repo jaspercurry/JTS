@@ -55,7 +55,7 @@ def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any]
 def candidate_from_applied_profile(
     topology: OutputTopology, applied_profile: Mapping[str, Any], *, purpose: str | None = None,
 ) -> MeasuredCrossoverCandidate:
-    """Recover an authored candidate only when it reproduces the saved tune."""
+    """Compose the saved tune or a program baseline from the applied layers."""
     snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
     if snapshot is None:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))

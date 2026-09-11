@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.test_crossover_v2_tuning_scope import banked_program_baseline  # noqa: F401
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import journey, position_cycle, priors
