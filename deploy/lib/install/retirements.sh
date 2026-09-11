@@ -62,6 +62,12 @@ JASPER_RETIRED_LEFTOVERS=(
     # ever paired with nothing left to touch it.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/bt_roles.json|the retired Bluetooth device-role store"
+    # ADR-0291 deleted the background research feature: its scheduler, its
+    # job store and every reader of that store. A box that ran it still
+    # carries the queued prompts and results the assistant was asked to look
+    # up, with nothing left to read or expire them.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${STATE_DIR}/research_jobs.db|the retired background-research job store"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort

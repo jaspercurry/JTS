@@ -449,7 +449,8 @@ PY
         -e '/^SPOTIFY_CLIENT_ID=/d' \
         -e '/^SPOTIFY_OAUTH_MODE=/d' \
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
-        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d' \
+        -e '/^JASPER_RESEARCH_/d'
     migrate_wake_events_cap_seed
     migrate_mic_device_candidates_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
