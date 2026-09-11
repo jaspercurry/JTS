@@ -200,6 +200,25 @@ def test_a_pose_batch_is_granted_once_and_carried_across_its_configs() -> None:
     assert gate.grants == [(1, 1), (4, 4)]
 
 
+def test_a_stop_this_loop_skips_does_not_cost_a_second_placement_grant() -> None:
+    """A per-driver stop between two summed ones is played by nobody here, and
+    the microphone never left the pose — so the grant the first summed stop
+    opened carries the second, as it does for any two configs at one place."""
+    gate = AnsweredGate()
+    request = ac.AngleCaptureRequest(stops=(
+        ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a"),
+        ac.AngleStop(0, ac.REGIME_PER_DRIVER),
+        ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-b"),
+    ))
+
+    result, _fakes = asyncio.run(_run_gated(request, gate=gate))
+
+    assert result.status == plan_run.RUN_MEASURED
+    assert (result.takes_measured, result.takes_skipped) == (2, 1)
+    assert gate.grants == [(1, 1)]
+    assert result.mic_moves == 1
+
+
 def test_a_grant_nobody_gives_ends_the_run_under_the_gate_s_own_word(
     monkeypatch,
 ) -> None:
@@ -288,15 +307,28 @@ def test_a_level_policy_nothing_steps_yet_is_refused_before_a_stimulus(
     assert fakes.banked == []
 
 
-def test_a_stop_the_spec_will_not_carry_refuses_the_run_before_it_plays() -> None:
-    """A bearing under a vertical-axis template is a pose the spec refuses, and
-    the run stops there rather than measuring the stops it CAN place."""
-    request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a"),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL,
-        ),
-    )
+@pytest.mark.parametrize(
+    "request_kwargs",
+    [
+        {
+            "stops": (ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a"),),
+            "template": ac.walk_template(
+                kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL,
+            ),
+        },
+        # ``fp-z`` is in no scope map: the stop names a candidate the caller
+        # resolved nothing for.
+        {"stops": (ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-z"),)},
+    ],
+    ids=["pose-the-spec-refuses", "candidate-with-no-scope"],
+)
+def test_a_stop_the_spec_will_not_carry_refuses_the_run_before_it_plays(
+    request_kwargs: dict,
+) -> None:
+    """A pose the spec refuses and a candidate nothing resolved a graph scope for
+    are both stops this run cannot place, and the run stops there rather than
+    measuring the stops it CAN place."""
+    request = ac.AngleCaptureRequest(**request_kwargs)
 
     result, fakes = asyncio.run(_run_gated(request))
 

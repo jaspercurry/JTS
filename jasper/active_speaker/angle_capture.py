@@ -580,8 +580,9 @@ def stop_specs(
     ``candidate_scopes`` maps a stop's candidate fingerprint to the scope that
     compiles its complete graph, resolved by the caller that can read the bank.
 
-    Raises ``ValueError`` from :class:`MeasureSpec` when a stop's pose and the
-    template disagree; the caller attributes it.
+    Raises ``ValueError`` when a stop's pose and the template disagree (from
+    :class:`MeasureSpec`) or when no scope was resolved for a stop's candidate;
+    the caller attributes both.
     """
     placed: list[MeasureSpec | None] = []
     for stop, prompt in zip(request.stops, prompts):
@@ -589,9 +590,13 @@ def stop_specs(
             placed.append(None)
             continue
         scope = (
-            candidate_scopes[stop.candidate_id] if stop.candidate_id
+            candidate_scopes.get(stop.candidate_id) if stop.candidate_id
             else baseline_scope(stop.purpose)
         )
+        if scope is None:
+            raise ValueError(
+                f"no graph scope resolves for candidate {stop.candidate_id}"
+            )
         placed.append(replace(
             request.template,
             kind=(

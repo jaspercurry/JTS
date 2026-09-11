@@ -232,8 +232,9 @@ class PlanResult:
     alone cannot locate. ``decisions_needed`` is what the run wants a caller to
     decide before the next one -- empty until something fills it.
 
-    ``specs`` (one per planned stop, ``None`` where a stop played none) and
-    ``outcomes`` (the engine's own answers, in take order) are excluded from
+    ``specs`` (one per stop this run PLAYS, in play order -- a skipped stop
+    names none) and ``outcomes`` (the engine's own answers, in take order) are
+    excluded from
     :meth:`to_dict`: a host that reports per spec — the CLI's per-spec incidents
     and playback, and WHICH spec an interrupted run stopped on — reads them
     rather than building the plan a second time to find out.
@@ -257,7 +258,7 @@ class PlanResult:
     detail: str = ""
     stopped_at: Mapping[str, int] | None = None
     decisions_needed: tuple[Any, ...] = ()
-    specs: tuple[MeasureSpec | None, ...] = field(default=(), repr=False)
+    specs: tuple[MeasureSpec, ...] = field(default=(), repr=False)
     outcomes: tuple[tuple[MeasureOutcome, str], ...] = field(
         default=(), repr=False,
     )
@@ -347,25 +348,33 @@ async def run_plan(
     except LateralWalkRefused as exc:
         return _refused(fingerprint, exc, spl_monitor=spl_monitor)
 
-    batches: list[list[int]] = []
-    for _place, group in groupby(
-        range(len(request.stops)), key=lambda offset: request.stops[offset].place,
-    ):
-        batches.append(list(group))
+    # The playable subset, resolved ONCE and numbered over itself. The gate
+    # carries a pose's grant on the pair ``(index - 1, attempt - 1)``, so a
+    # skipped stop counted in the numbering would ask a second placement grant
+    # at the pose the microphone is already standing at.
+    playable = [offset for offset, spec in enumerate(specs) if spec is not None]
+    batches = [
+        [place for place, _offset in group]
+        for _place, group in groupby(
+            enumerate(playable), key=lambda row: request.stops[row[1]].place,
+        )
+    ]
+    indexes = [place + 1 for place in range(len(playable))]
     screens = pose_batch_screens(
-        [stop.index for stop in resolved], prompts,
-        [stop.candidate_id for stop in resolved],
+        indexes, [prompts[offset] for offset in playable],
+        [resolved[offset].candidate_id for offset in playable],
     )
     entries = {
-        stop.index: SimpleNamespace(screen={
-            **stop.screen,
-            **position_screen_keys(stop.prompt),
-            **screens.get(stop.index, {}),
+        index: SimpleNamespace(screen={
+            **resolved[offset].screen,
+            **position_screen_keys(resolved[offset].prompt),
+            **screens.get(index, {}),
         })
-        for stop in resolved
+        for index, offset in zip(indexes, playable)
     }
     return await _run(
-        batches, specs, entries=entries, fingerprint=fingerprint,
+        batches, [specs[offset] for offset in playable], entries=entries,
+        skipped=len(specs) - len(playable), fingerprint=fingerprint,
         session=session, gate=gate, aborts=aborts, spl_monitor=spl_monitor,
         clock=clock,
     )
@@ -386,7 +395,7 @@ async def run_specs(
     whole run costs.
     """
     return await _run(
-        [list(range(len(specs)))], tuple(specs), entries={},
+        [list(range(len(specs)))], tuple(specs), entries={}, skipped=0,
         fingerprint=_digest([spec.to_dict() for spec in specs]),
         session=session, gate=None, aborts=aborts, spl_monitor=spl_monitor,
         clock=clock,
@@ -400,9 +409,10 @@ async def run_specs(
 
 async def _run(
     batches: Sequence[Sequence[int]],
-    specs: Sequence[MeasureSpec | None],
+    specs: Sequence[MeasureSpec],
     *,
     entries: Mapping[int, Any],
+    skipped: int,
     fingerprint: str,
     session: TuningSession,
     gate: PositionGate | None,
@@ -422,7 +432,6 @@ async def _run(
     takes: list[TakeResult] = []
     outcomes: list[tuple[MeasureOutcome, str]] = []
     wall_s: list[float] = []
-    skipped = 0
     mic_moves = 0
     attempts = 0
     stopped: tuple[str, str, Mapping[str, int]] | None = None
@@ -431,9 +440,6 @@ async def _run(
         granted = False
         for offset in batch:
             spec = specs[offset]
-            if spec is None:
-                skipped += 1
-                continue
             # ``attempt`` tracks the stop, so the gate's batch carry sees the
             # (index - 1, attempt - 1) pair it grants the rest of a pose on.
             index = attempt = offset + 1
@@ -468,7 +474,7 @@ async def _run(
         request_fingerprint=fingerprint,
         status=RUN_MEASURED if stopped is None else RUN_INTERRUPTED,
         poses=len(batches),
-        stops_planned=len(specs),
+        stops_planned=len(specs) + skipped,
         takes_measured=len(takes),
         takes_skipped=skipped,
         mic_moves=mic_moves,
