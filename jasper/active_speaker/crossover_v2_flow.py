@@ -123,7 +123,6 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
 )
 from jasper.active_speaker.crossover_v2.capture_source import (
-    CaptureBeginDeferred,
     CaptureBeginRefused,
 )
 from jasper.log_event import log_event
@@ -144,29 +143,10 @@ MAX_EXTRA_ATTEMPTS_PER_POSITION = _admission.MAX_EXTRA_ATTEMPTS_PER_POSITION
 ATTEMPT_INITIATOR_HOUSEHOLD = _admission.ATTEMPT_INITIATOR_HOUSEHOLD
 ATTEMPT_INITIATOR_SPEAKER = _admission.ATTEMPT_INITIATOR_SPEAKER
 
-# Corner admissibility (plan §4.2 / #1894 / #1675). READ-ONLY doors: patching a
-# name here rebinds this module only; production resolves via ``fc_sweep``.
-
-from jasper.active_speaker.crossover_v2.fc_sweep import (
-    FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-    FC_REJECT_BELOW_DECLARED_FLOOR as FC_REJECT_BELOW_DECLARED_FLOOR,
-    _fc_rejection as _fc_rejection,
-)
-
-# Two more READ-ONLY doors, on the block above's terms.
-from jasper.active_speaker.branch_chain import (
-    sections_by_role as sections_by_role,
-)
-from jasper.active_speaker.crossover_v2.intervention import (
-    LINEARIZATION_MIN_PAIRED_OCCURRENCES as LINEARIZATION_MIN_PAIRED_OCCURRENCES,
-)
-
-
 # --- the walk this session will do (see crossover_v2.capture_plan) ---------
 # READ-ONLY doors: patching a name here rebinds this module only.
 AUTO_ADVANCE_COUNTDOWN = _plan.AUTO_ADVANCE_COUNTDOWN
 AUTO_ADVANCE_COUNTDOWN_S = _plan.AUTO_ADVANCE_COUNTDOWN_S
-AUTO_ADVANCE_ON_APPLY = _plan.AUTO_ADVANCE_ON_APPLY
 AUTO_ADVANCE_TAP = _plan.AUTO_ADVANCE_TAP
 CAPTURE_ENTRY_MARGIN_MS = _plan.CAPTURE_ENTRY_MARGIN_MS
 CAPTURE_PLAN_MAX_ATTEMPTS = _plan.CAPTURE_PLAN_MAX_ATTEMPTS
@@ -391,11 +371,6 @@ VERIFY_REPEAT_FLOOR_DB = 0.2
 #: agreement ends the set.
 VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
-# Nothing here reads this name; it survives as a door pinned by
-# ``test_crossover_v2_programs`` — do not delete it on an importer grep alone.
-courtesy_prelude_for_phase = _programs.courtesy_prelude_for_phase
-
-
 CrossoverV2FlowError = _contracts.CrossoverV2FlowError
 
 
@@ -582,13 +557,6 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     result = _spatial.combine_cloud_positions(positions)
     _diagnostics._emit_cloud_combine_diagnostics(logger, result.diagnostics)
     return result.combined
-
-
-def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
-    """Combine, read ``.geometry``, and journal a combiner failure."""
-    result = _spatial.cloud_geometry_verdict(positions)
-    _diagnostics._emit_cloud_combine_diagnostics(logger, result.diagnostics)
-    return result.verdict
 
 
 # --- cloud group bands + honesty pipeline (the emitting halves) ------------
@@ -1695,17 +1663,6 @@ class CrossoverV2Session:
             session_id=self.session_id,
         )
 
-    def _apply_observed(self) -> bool:
-        if self._journey.applied:
-            return True
-        try:
-            observed = bool(self._seams.apply_complete())
-        except (OSError, RuntimeError, ValueError):
-            observed = False
-        if observed:
-            self._journey.mark_applied()
-        return observed
-
     def snapshot(self) -> V2ConductorSnapshot:
         return V2ConductorSnapshot(
             session_id=self.session_id,
@@ -1783,34 +1740,12 @@ class CrossoverV2Session:
         # behind for a capture that never started.
         ledger = self._slot_attempts.get(slot)
 
-        def apply_failure_code() -> str:
-            """The apply seam's TERMINAL reason, or ``""`` — guarded here."""
-            try:
-                return str(self._seams.apply_failed() or "")
-            except (OSError, RuntimeError, ValueError):
-                return ""
-
         decision = _admission.assess_begin(
-            verify_hold=phase == PHASE_VERIFY and not self._apply_observed(),
-            apply_failure_code=apply_failure_code,
             ledger=ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
         )
-        if decision.kind == _admission.REFUSE_APPLY_FAILED:
-            self._last_failure_code = decision.code
-            # No capture ran, so no pilot evidence pairs with this (#2085). Written so a
-            # previous capture's cannot trail in.
-            self._last_failure_pilot_heard = None
-            spec = REASON_REGISTRY.get(decision.code)
-            message = (
-                reason_message(decision.code, spec) if spec else decision.code
-            )
-            self.capture_published_refusal = True
-            raise CaptureBeginRefused(decision.code, message)
-        if decision.kind == _admission.DEFER_AWAITING_APPLY:
-            raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
             self.capture_published_refusal = True
@@ -3408,22 +3343,6 @@ class CrossoverV2Session:
             unavailable("trust_curve_never_reaches_zero", tier)
             return None
         return float(grid[zeros[0]])
-
-    def _refuse(self, code: str) -> "CaptureBeginRefused":
-        """Build the refusal for ``code``, with its household copy, and record it as
-        this session's failure code.
-
-        **No production path calls this today**; it is kept because it alone owns the
-        stamp. **Stamping ``_last_failure_code`` is the load-bearing half**: the host
-        falls back to a capture-timeout sentence when it is unset.
-        """
-        spec = REASON_REGISTRY[code]
-        pilot_heard = self._pilot_heard_for(code)
-        self._last_failure_code = code
-        self._last_failure_pilot_heard = pilot_heard
-        return CaptureBeginRefused(
-            code, reason_message(code, spec, pilot_heard=pilot_heard),
-        )
 
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
