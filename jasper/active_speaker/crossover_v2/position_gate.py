@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 
 # Per-hold limit; the session volume owner enforces the whole-operation limit.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0
+
+#: How often a held begin retries the gate. The phone re-posts its deferred
+#: ``begin_capture`` every 1.5 s (capture-page wait screen); every local runner
+#: keeps that cadence so gate logging and driver pacing see the same rhythm the
+#: remote tier was built against.
+POSITION_HOLD_POLL_S = 1.5
 POSITION_HOLD_CODE = "awaiting_position"
 POSITION_HOLD_EXPIRED_CODE = REASON_POSITION_HOLD_EXPIRED
 POSITION_TARGET_MISSING_CODE = REASON_POSITION_TARGET_MISSING

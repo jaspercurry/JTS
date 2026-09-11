@@ -1682,28 +1682,26 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
 
 
 @pytest.mark.parametrize(
-    ("walk", "banked"),
+    "walk",
     [
-        ({"template": {"spl_ceiling_db_spl": 100.0}}, {"spl_ceiling_db_spl": 100.0}),
-        ({"level_mode": ac.LEVEL_ACQUIRE_AT_ANCHOR}, {}),
-        ({"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": (-20.0, -14.0)}, {}),
+        {"level_mode": ac.LEVEL_ACQUIRE_AT_ANCHOR},
+        {"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": (-20.0, -14.0)},
     ],
-    ids=["ceiling", "acquire-at-anchor", "series"],
+    ids=["acquire-at-anchor", "series"],
 )
 def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
-    spool_slot, walk: dict, banked: dict,
+    spool_slot, walk: dict,
 ) -> None:
     """The dry run still says what the walk would cost; the SLOT only ever holds a
     walk something can play. Refused on the way in and on the way out, so a
     hand-written document is refused the same way a staged one is.
+
+    The SPL ceiling left this arm when the executor learned to install a
+    monitor (#4873): a stated ceiling is now bounded against the box's own
+    commissioning stop where the run resolves it, not refused at the door.
     """
-    fields = {
-        **walk,
-        **({"template": ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **walk["template"])}
-           if "template" in walk else {}),
-    }
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **fields,
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **walk,
     )
     assert ac.walk_price(request)["captures"] >= 1
 
@@ -1713,18 +1711,27 @@ def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
     assert not spool.staged_angle_request_pending()
 
     hand_written = {
-        "artifact_schema_version": spool.SPOOL_SCHEMA_VERSION,
-        "kind": spool.SPOOL_KIND,
-        "mover": request.mover,
+        **spool.angle_request_document(request),
         "stops": [{"angle_deg": 0, "regime": ac.REGIME_PER_DRIVER}],
-        "template": request.template.to_dict() | banked,
-        **{key: list(value) if isinstance(value, tuple) else value
-           for key, value in walk.items() if key != "template"},
     }
     spool.angle_request_spool_path().write_text(json.dumps(hand_written))
     with pytest.raises(ac.LateralWalkRefused) as taking:
         spool.take_staged_angle_request()
     assert taking.value.reason == ac.WALK_POLICY_UNSUPPORTED_YET
+
+
+def test_a_stated_ceiling_now_stages_and_rides_the_walk(spool_slot) -> None:
+    """The arm that left: a walk stating an SPL ceiling banks and comes back
+    with it, because something installs a monitor for it now."""
+    request = ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=80.0,
+        ),
+    )
+    spool.stage_angle_request(request)
+
+    assert spool.take_staged_angle_request() == request
 
 
 @pytest.mark.parametrize(

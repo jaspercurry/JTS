@@ -133,15 +133,17 @@ def resolve_capture_preset(topology: Any) -> Any:
     )
 
 
-def commissioning_spl_ceiling_db(topology: Any) -> float:
+def commissioning_spl_ceiling_db(topology: Any, *, preset: Any = None) -> float:
     """The commissioning SPL hard stop this box declares, in dB SPL at the mic.
 
     The one reader of ``safety.max_commissioning_level_db_spl``: every surface
     bounding a level against the stop resolves it here. Raises ``ValueError``
-    when no finite ceiling resolves.
+    when no finite ceiling resolves. ``preset`` is for a caller that has already
+    resolved this box's protected preset -- reading it again would be a second
+    disk load of the same answer.
     """
 
-    preset = resolve_capture_preset(topology)
+    preset = resolve_capture_preset(topology) if preset is None else preset
     ceiling = finite_float(preset.safety.max_commissioning_level_db_spl)
     if ceiling is None:
         raise ValueError("the preset declares no finite max_commissioning_level_db_spl")

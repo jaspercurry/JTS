@@ -363,6 +363,13 @@ def speaker(tmp_path, monkeypatch):
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
         lambda **kw: object(),
     )
+    # This speaker's microphone is a stand-in, so it carries no calibration a
+    # run could scale dB SPL by. Stated, not inherited from whatever the
+    # developer's own box has stored.
+    monkeypatch.setattr(
+        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
+        lambda **kw: None,
+    )
     monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1098,3 +1105,210 @@ def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
     groups = (ms._TRIMMED_STRINGS, ms._ARRAYS, ms._NUMBERS, ms._PASSTHROUGH)
     assert frozenset().union(*groups) == ms._FIELD_NAMES
     assert sum(len(group) for group in groups) == len(ms._FIELD_NAMES)
+
+
+# --------------------------------------------------------------------------- #
+# the plan: a staged walk, and the package every run leaves behind
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def staged(tmp_path, monkeypatch):
+    """A writable pending slot for the walk a run takes."""
+    from jasper.active_speaker import angle_capture_spool as spool
+
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
+    try:
+        yield spool
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+
+def _one_pose_walk(**fields: Any) -> Any:
+    from jasper.active_speaker import angle_capture as ac
+
+    return ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(12, ac.REGIME_SUMMED),), **fields,
+    )
+
+
+@pytest.fixture
+def applied_baseline(monkeypatch):
+    """An applied Layer-A record matching this speaker, so a SUMMED scope emits.
+
+    A walk's summed stop plays a tuning-layer graph rather than the drivers one,
+    and that graph is composed from the profile a human already approved for
+    these drivers.
+    """
+    from jasper.active_speaker import baseline_profile
+    from jasper.output_topology import topology_config_fingerprint
+    from tests.crossover_v2_fixtures import _fixture_applied_profile
+
+    topology = mono_output_topology()
+    applied = _fixture_applied_profile()
+    applied["recomposition_snapshot"].update(
+        schema_version=1,
+        domain="full",
+        topology_id=topology.topology_id,
+        topology_fingerprint=topology_config_fingerprint(topology),
+        playback_device=_declaration().playback_device,
+    )
+    monkeypatch.setattr(
+        baseline_profile, "load_applied_baseline_profile_state", lambda *a, **k: applied,
+    )
+
+
+@pytest.mark.parametrize("source", ["staged", "path"])
+def test_a_staged_walk_measures_through_the_same_loop_as_a_spec_batch(
+    speaker, staged, applied_baseline, tmp_path, capsys, source,
+):
+    """The door's second front: an LLM states a walk, the run plays it, and the
+    answer is the same document a spec batch answers with.
+
+    ``staged`` consumes the pending slot; a path is the operator's own file and
+    is left where it was.
+    """
+    path = staged.stage_angle_request(_one_pose_walk())
+    moved = tmp_path / "walk.json"
+    if source == "path":
+        moved.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        path.unlink()
+
+    code = measure.main([
+        "--request", "staged" if source == "staged" else str(moved),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert payload["n_takes"] == 1
+    assert payload["counts"] == {
+        "measured": 1, "skipped": 0, "poses": 1, "mic_moves": 0,
+    }
+    record = json.loads(
+        (Path(payload["bundle_dir"]) / ARTIFACTS / payload["record_ids"][0]).read_text()
+    )
+    assert record["position_deg"] == 12
+    assert staged.staged_angle_request_pending() is False
+
+
+def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path):
+    """The counts a caller reads back without re-deriving them from the takes —
+    written into the bundle, so the run's own answer outlives the terminal."""
+    from jasper.active_speaker import plan_run
+
+    code = measure.main([
+        "--kind", MEASURE_KIND_BASELINE,
+        "--specs", _specs_file(tmp_path, [{"candidate_id": "a"}, {"candidate_id": "b"}]),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    document = json.loads(
+        (Path(payload["bundle_dir"]) / payload["plan_result"]).read_text()
+    )
+    assert document["kind"] == plan_run.PLAN_RESULT_KIND
+    assert document["status"] == plan_run.RUN_MEASURED
+    assert document["takes_measured"] == payload["n_takes"] == 2
+    assert [take["candidate_id"] for take in document["takes"]] == ["a", "b"]
+    # No calibration on this speaker's stand-in microphone, so the run says what
+    # did NOT watch its level rather than claiming a bound nothing measured.
+    assert payload["spl_monitor"] == plan_run.SPL_MONITOR_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("argv", "reason"),
+    [
+        (["--request", "staged", "--kind", MEASURE_KIND_BASELINE],
+         measure.REFUSE_REQUEST_UNREADABLE),
+        (["--request", "staged", "--position", "7"],
+         measure.REFUSE_REQUEST_UNREADABLE),
+        (["--request", "staged"], measure.REFUSE_NO_STAGED_REQUEST),
+    ],
+    ids=["kind", "position", "nothing-staged"],
+)
+def test_a_walk_states_its_own_takes_so_the_flags_are_refused_beside_it(
+    staged, capsys, argv, reason,
+):
+    code = measure.main(argv)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_UNREADABLE
+    assert payload["reason"] == reason
+
+
+def test_a_multi_pose_walk_is_refused_because_this_door_moves_nothing(
+    staged, capsys,
+):
+    """S12 again, for the walk shape: N poses through a door that prompts nobody
+    would bank N bearings nothing moved to."""
+    from jasper.active_speaker import angle_capture as ac
+
+    staged.stage_angle_request(ac.AngleCaptureRequest(stops=(
+        ac.AngleStop(0, ac.REGIME_SUMMED), ac.AngleStop(20, ac.REGIME_SUMMED),
+    )))
+
+    code = measure.main(["--request", "staged"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_UNREADABLE
+    assert payload["reason"] == REFUSE_ONE_POSITION_PER_RUN
+
+
+@pytest.mark.parametrize(
+    ("stated", "expected"),
+    [
+        (None, ""),
+        (80.0, "measure_spl_calibration_required"),
+        (90.0, "walk_ceiling_above_stop"),
+    ],
+    ids=["no-ceiling-disclosed", "stated-ceiling-refused", "above-the-stop"],
+)
+def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
+    monkeypatch, stated, expected,
+):
+    """The box's commissioning stop bounds every run now, not only one that typed
+    a ceiling — and what cannot be enforced is refused or disclosed, never assumed.
+    """
+    from jasper.active_speaker import plan_run
+
+    monkeypatch.setattr(
+        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
+        lambda **kw: None,
+    )
+    specs = (MeasureSpec(kind=MEASURE_KIND_BASELINE, spl_ceiling_db_spl=stated),)
+
+    if not expected:
+        assert measure._spl_monitor(
+            specs, box=_declaration(), device=object(), mic_serial=None,
+        ) == (None, plan_run.SPL_MONITOR_UNAVAILABLE)
+        return
+    with pytest.raises(measure.BoxNotMeasurable) as refused:
+        measure._spl_monitor(
+            specs, box=_declaration(), device=object(), mic_serial=None,
+        )
+    assert refused.value.reason == expected
+
+
+def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
+    """The other half: a resolvable sensitivity buys a real monitor, watching the
+    ceiling the run resolved."""
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+
+    monkeypatch.setattr(
+        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
+        lambda **kw: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.mic_identity.SUPPORTED_MODELS",
+        {"umik2": {"capture_channel": 0}},
+    )
+
+    monitor, note = measure._spl_monitor(
+        (MeasureSpec(kind=MEASURE_KIND_BASELINE),),
+        box=_declaration(), device=SimpleNamespace(model_key="umik2"),
+        mic_serial=None,
+    )
+
+    assert isinstance(monitor, WiredSplMonitor)
+    assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
+    assert note == "ceiling_85_db_spl"

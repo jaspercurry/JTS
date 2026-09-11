@@ -60,9 +60,11 @@ __all__ = [
     "SPOOL_TOO_LARGE",
     "SESSION_ALREADY_LIVE",
     "AngleRequestRefused",
+    "angle_request_document",
     "angle_request_spool_path",
     "live_measurement_session",
     "peek_staged_angle_request",
+    "read_angle_request",
     "set_angle_request_spool_path_for_tests",
     "stage_angle_request",
     "staged_angle_request_pending",
@@ -158,29 +160,16 @@ def _consumed_path(pending: Path) -> Path:
     return pending.with_name(pending.name + CONSUMED_SUFFIX)
 
 
-def stage_angle_request(request: AngleCaptureRequest) -> Path:
-    """Bank one resolved walk for the next session to take.
+def angle_request_document(request: AngleCaptureRequest) -> dict[str, Any]:
+    """One walk as the document this slot holds, minus when it was staged.
 
-    Staging twice is last-wins: the slot holds ONE walk, logged on overwrite
-    (``event=angle_capture.request_staged`` carries ``replaced``); the atomic rename
-    means a concurrent take sees one whole document, never a splice.
-
-    Write is atomic, mode ``0o640`` with the parent's group (matching the flow state
-    file), STRICT: a silent fallback to the writer's own group would publish a document
-    ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
-
-    A walk stating a policy no player honours yet is refused HERE rather than at the
-    statement (:func:`~.angle_capture.refuse_unplayable_walk_policy`), so a dry run
-    still prices what is coming while the slot only ever holds a runnable walk.
+    The banked SHAPE, with no clock in it, so the same walk encodes to the same
+    bytes twice -- which is what lets a run fingerprint the request it is about
+    to play (:func:`~.plan_run.request_fingerprint`) without re-spelling any of
+    these keys. :func:`stage_angle_request` adds ``staged_at`` on the way to
+    disk.
     """
-    refuse_unplayable_walk_policy(request)
-    busy = live_measurement_session()
-    if busy is not None:
-        _refuse(SESSION_ALREADY_LIVE, busy)
-
-    path = angle_request_spool_path()
-    replaced = path.is_file()
-    payload = {
+    return {
         "artifact_schema_version": SPOOL_SCHEMA_VERSION,
         "kind": SPOOL_KIND,
         "mover": request.mover,
@@ -214,8 +203,32 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
             }
             for stop in request.stops
         ],
-        "staged_at": time.time(),
     }
+
+
+def stage_angle_request(request: AngleCaptureRequest) -> Path:
+    """Bank one resolved walk for the next session to take.
+
+    Staging twice is last-wins: the slot holds ONE walk, logged on overwrite
+    (``event=angle_capture.request_staged`` carries ``replaced``); the atomic rename
+    means a concurrent take sees one whole document, never a splice.
+
+    Write is atomic, mode ``0o640`` with the parent's group (matching the flow state
+    file), STRICT: a silent fallback to the writer's own group would publish a document
+    ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
+
+    A walk stating a policy no player honours yet is refused HERE rather than at the
+    statement (:func:`~.angle_capture.refuse_unplayable_walk_policy`), so a dry run
+    still prices what is coming while the slot only ever holds a runnable walk.
+    """
+    refuse_unplayable_walk_policy(request)
+    busy = live_measurement_session()
+    if busy is not None:
+        _refuse(SESSION_ALREADY_LIVE, busy)
+
+    path = angle_request_spool_path()
+    replaced = path.is_file()
+    payload = {**angle_request_document(request), "staged_at": time.time()}
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if len(encoded.encode("utf-8")) > SPOOL_MAX_BYTES:
         _refuse(SPOOL_TOO_LARGE, "the staged walk exceeds the document size limit")
@@ -276,11 +289,28 @@ def peek_staged_angle_request() -> AngleCaptureRequest | None:
     return None if raw is None else _validate(raw)
 
 
-def _read_staged(*, consume: bool) -> bytes | None:
-    """The staged document's bytes, or ``None`` when the slot is empty. ONE reader behind both
-    doors above, so the size ceiling, refusal slugs and consume order cannot drift.
+def read_angle_request(path: Path) -> AngleCaptureRequest:
+    """The walk written at a STATED path, validated exactly as a staged one.
+
+    For a caller handed a document rather than the slot -- the measurement CLI's
+    ``--request <path>``. Reads without consuming: a file an operator named is
+    theirs, and this slot's single-use rule is about the PENDING slot.
     """
-    pending = angle_request_spool_path()
+    raw = _read_document(path, consume=False)
+    if raw is None:
+        _refuse(SPOOL_MALFORMED, f"no angle capture request at {path}")
+    return _validate(raw)
+
+
+def _read_staged(*, consume: bool) -> bytes | None:
+    """The pending slot's bytes, or ``None`` when it is empty."""
+    return _read_document(angle_request_spool_path(), consume=consume)
+
+
+def _read_document(pending: Path, *, consume: bool) -> bytes | None:
+    """One document's bytes, or ``None`` when there is no such file. ONE reader behind every
+    door above, so the size ceiling, refusal slugs and consume order cannot drift.
+    """
     try:
         stat = pending.stat()
     except FileNotFoundError:
