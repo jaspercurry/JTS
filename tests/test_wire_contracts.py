@@ -1012,6 +1012,7 @@ def _system_snapshot_payload() -> dict:
             self._ha_status_cache = type(
                 "_HaCache", (), {"snapshot": staticmethod(dict)},
             )
+            self._install_profile = staticmethod(lambda: "full")
             self.payload: dict = {}
 
         def _send_json(self, payload, **_status) -> None:

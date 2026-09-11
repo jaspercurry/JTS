@@ -202,6 +202,7 @@ def _start_aec_commission() -> bool:
         event_prefix="aec_commission.start",
     )
 
+
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
 # and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on for
 # software-AEC defaults, DTLN is off, and chip-AEC's extra beam detectors
