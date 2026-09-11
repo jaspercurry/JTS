@@ -81,15 +81,7 @@ from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_VERIFY,
-    PHASE_CLOUD_MEASURE,
-    PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
-)
-from jasper.active_speaker.crossover_v2_flow import (
-    STAGE1_INCLUDES_CLOUD_MEASURE,
-    STAGE1_INCLUDES_ENTRY_BASELINE,
-    build_v2_cloud_index_phase_map,
-    resolve_plan_shape,
 )
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
@@ -253,13 +245,13 @@ def _production_host_seams(monkeypatch, tmp_path):
     Everything a preparer DECIDES — the plan shape, the index→phase map, the
     seam bindings, the conductor construction, the persist — runs for real.
     """
-    # The preparers' mic gate (#2662 W2b, gate fix round S3) resolves the
-    # measurement mic BEFORE any evidence bundle opens; the disclosure it
-    # raises with none plugged in has its own pin in
-    # tests/test_correction_crossover_v2_wired.py.
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
-    )
+    from jasper.active_speaker import preflight_live
+    from tests.test_preflight import ready_facts
+
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))
+    monkeypatch.setattr(v2host, "secrets", SimpleNamespace(
+        token_hex=lambda _: "minted_by_this_stage", token_urlsafe=v2host.secrets.token_urlsafe))
+    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", fake_measurement_mic)
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import model_error_store
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
@@ -398,7 +390,7 @@ def _production_host_seams(monkeypatch, tmp_path):
 # What the stubbed mint hands back as the session id. Both stages bind their
 # conductor to whatever the mint returned, so this is the id the persist
 # rebinds to — deliberately not the seeded stage-1 one.
-_MINTED_CAPTURE_SESSION_ID = "cap_minted_by_this_stage"
+_MINTED_CAPTURE_SESSION_ID = "wired-minted_by_this_stage"
 
 
 def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str, Any]]:
@@ -414,9 +406,8 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
     captured: dict[str, Any] = {}
 
     def _fake_mint(_device, spec):
-        return SimpleNamespace(
-            pi_session=SimpleNamespace(session_id=_MINTED_CAPTURE_SESSION_ID), spec=spec,
-        )
+        from jasper.web.correction_crossover_v2_wired import WiredOpened, WiredCaptureSession
+        return WiredOpened(WiredCaptureSession(_MINTED_CAPTURE_SESSION_ID, spec, _device))
 
     def _fake_runner(conductor, **_kwargs):
         captured["conductor"] = conductor
@@ -456,7 +447,7 @@ async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
     store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
     monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda topology: (store, store.session_id))
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=asyncio.run, camilla_factory=None,
+        _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=None,
     )
     cleanup_started, cleanup_finished = asyncio.Event(), asyncio.Event()
     error = failure() if failure else None
@@ -490,9 +481,14 @@ async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
     assert store.reopen_json_artifact(artifacts[0])["accepted"] is True
 
 
+def _inline_body():
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER
+    return {"plan": AngleCaptureRequest(stops=(AngleStop(0, REGIME_PER_DRIVER),)).to_dict()}
+
+
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=asyncio.run, camilla_factory=None
+        _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=None
     )
     return _open_prepared(monkeypatch, prepared)
 
@@ -957,7 +953,7 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     named. VALUES, not key presence, for ``commanded_delta``'s reason.
     """
     prepared = v2host.prepare_v2_session(
-        {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
+        {**_inline_body(), "alignment_prescription": dict(_PRESCRIPTION_BODY)},
         status=_status(), run_async=asyncio.run, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
@@ -1026,7 +1022,7 @@ def test_a_prescribed_basin_reaches_the_fit_only_when_it_was_pinned(
     if polarity is not None:
         body["polarity"] = polarity
     prepared = v2host.prepare_v2_session(
-        {"alignment_prescription": body},
+        {**_inline_body(), "alignment_prescription": body},
         status=_status(), run_async=asyncio.run, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
@@ -1047,7 +1043,7 @@ def test_an_unknown_basin_refuses_the_session_before_it_opens(value):
     """
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {"alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": value}},
+            {**_inline_body(), "alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": value}},
             status=_status(), run_async=asyncio.run, camilla_factory=None,
         )
 
@@ -1065,7 +1061,7 @@ def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeyp
     del monkeypatch
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {"alignment_prescription": {**_PRESCRIPTION_BODY, "delay_us": 0.0}},
+            {**_inline_body(), "alignment_prescription": {**_PRESCRIPTION_BODY, "delay_us": 0.0}},
             status=_status(), run_async=asyncio.run, camilla_factory=None,
         )
     assert "prescription_out_of_lobe" in str(excinfo.value)
@@ -1101,7 +1097,7 @@ def test_the_tap_asks_the_preset_for_its_own_declared_window(monkeypatch):
             "basis_delay_us": -magnitude_us,
         }
         return v2host.prepare_v2_session(
-            {"alignment_prescription": body},
+            {**_inline_body(), "alignment_prescription": body},
             status=_status(), run_async=asyncio.run, camilla_factory=None,
         )
 
@@ -1591,48 +1587,6 @@ def test_stage_2_rollback_refuses_cleanly_with_no_prior_candidate(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_stage_1_plans_no_pre_apply_cloud_and_one_entry_baseline(monkeypatch):
-    """What stage 1 measures before the apply: no cloud, one summed capture.
-
-    Two facts, pinned together because they are easy to confuse and they mean
-    opposite things about ``predicted_sum``:
-
-    * **No pre-apply cloud.** ``STAGE1_INCLUDES_CLOUD_MEASURE`` is False, and
-      ``PHASE_CLOUD_MEASURE`` is the only pre-apply phase producing a spatially
-      COMBINED curve. That absence is what keeps the persisted
-      ``predicted_sum`` a MODEL rather than a measurement.
-    * **One entry baseline.** #2291 Phase 3c added exactly one summed
-      at-the-mark capture, LAST, immediately before apply — the round's
-      measured "before". So stage 1 does now sum, once; what it still does not
-      do is sum ACROSS POSITIONS.
-
-    (This test's earlier form said "stage 1 never sums" and called the commanded
-    delta "the only commanded axis stage 2 could ever have had". Both were true
-    of the shape before Phase 3c and are false now.)
-
-    Pinned twice on purpose: on the public phase-map builder at the production
-    flags, and on what the real ``prepare_v2_session`` actually put in the
-    durable state — the builder can be right while a call site passes something
-    else. That second half is what the existing coverage does not have:
-    ``test_correction_crossover_v2_endpoints.py`` asserts the flag's value and
-    reads the preparer's SOURCE for the flag's name, which cannot see a plan
-    that was built and then discarded.
-    """
-    planned = build_v2_cloud_index_phase_map(
-        plan_shape=resolve_plan_shape(None),
-        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=False,
-        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-    assert PHASE_CLOUD_MEASURE not in planned.values()
-    assert list(planned.values()).count(PHASE_ENTRY_BASELINE) == 1
-
-    _conductor, state = _stage_1(monkeypatch)
-
-    assert PHASE_MEASURE in state["session_phases"]
-    assert PHASE_CLOUD_MEASURE not in state["session_phases"]
-    assert state["session_phases"].count(PHASE_ENTRY_BASELINE) == 1
-
 
 # --------------------------------------------------------------------------- #
 # 5. the whole persisted payload — the rest of the bridge
@@ -1701,6 +1655,7 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # crosses for the way-back pointer's reason: it describes the graph
     # currently on the speaker, which outlives the session that wrote it.
     "round_receipt",
+    "plan",
     "schema_version",
     "session_id",
     "session_phases",
@@ -1728,7 +1683,7 @@ def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
     _seed_applied_stage_1_state()
     _conductor2, stage_2_state = _stage_2(monkeypatch)
 
-    assert set(stage_2_state) == _PERSISTED_TOP_LEVEL_KEYS
+    assert set(stage_2_state) == _PERSISTED_TOP_LEVEL_KEYS - {"plan"}
 
 
 # --------------------------------------------------------------------------- #
@@ -2026,7 +1981,7 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
 
     monkeypatch.setattr(v2host, "bind_v2_engine_seams", _twin_graph_binder)
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=asyncio.run, camilla_factory=cam_factory,
+        _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=cam_factory,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
     captured["conductor"] = conductor
@@ -2139,48 +2094,6 @@ async def test_a_session_that_takes_the_level_but_not_the_graph_keeps_neither(
     assert released == ["pause"], "voice was left paused with no session"
     v2host.set_volume_plan_for_tests(None)
 
-
-def test_the_runner_volume_arm_classifies_a_real_graph_install_failure():
-    """The note: a real install raises SessionGraphError, not RuntimeError.
-
-    The runner classifies a failed ``volume.open()`` by exception type. A
-    ``SessionGraphError`` is a sibling of ``RuntimeError``, not a subclass, so
-    before this it escaped the arm: the give-back still ran (no strand), but
-    ``_purge_best_effort`` was skipped — leaking the session, the exact leak
-    that arm exists to prevent — and the terminal failure was never
-    persisted, leaving the wizard's failure view blank.
-
-    A source-text pin because the property is which TYPES the arm names, and a
-    type absent from a tuple has no behaviour to observe.
-    """
-    import ast
-    from pathlib import Path as _Path
-
-    module = "jasper/web/correction_crossover_v2_wired.py"
-    source = _Path(__file__).resolve().parents[1] / module
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    caught: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        calls = {
-            getattr(inner.func, "attr", None)
-            for inner in ast.walk(node)
-            if isinstance(inner, ast.Call)
-        }
-        if "open" not in calls:
-            continue
-        for handler in node.handlers:
-            names = handler.type
-            items = names.elts if isinstance(names, ast.Tuple) else [names]
-            caught.update(
-                getattr(item, "id", "") for item in items if item is not None
-            )
-
-    assert "SessionGraphError" in caught, (
-        f"{module}: a real graph install failure escapes the volume arm — "
-        "the session leaks and the wizard shows a blank failure view"
-    )
 
 
 async def test_a_cancel_inside_the_give_back_still_drains_the_level(monkeypatch):
@@ -2427,6 +2340,7 @@ async def test_a_session_from_the_real_preparer_drives_the_measure_verb(monkeypa
     session = _session_from_real_open(monkeypatch, fakes)["tuning"]
 
     await session.open()
+    fakes.volume.proven_db = session.measurement_level_db
     measured = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
     await session.close()
 

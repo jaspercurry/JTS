@@ -141,22 +141,7 @@ def _handle_crossover_v2_capture(
     verify_only: bool,
     idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/session | /crossover/v2/verify (Wave 5a).
-
-    Thin dispatch over :mod:`jasper.web.correction_crossover_v2` — the v2 host
-    module owns gating, conductor construction, seam bindings, and the plan
-    runner; this bridges it into the shared capture slot/lifecycle machinery
-    (``_run_capture``) exactly as the other hosted crossover
-    captures do.
-
-    ``idle_hold`` covers the one background lifetime a v2 session still owns:
-    the capture runner (through ``_run_capture``). It serves no HTTP
-    request, and it is the flow the 600 s idle exit actually killed (issue
-    #1854). It used to reach a SECOND lifetime — the auto-apply worker thread
-    the runner spawned — which the two-stage split removed: the apply is now a
-    household POST served in-request, so the tracker's ordinary
-    in-flight-request accounting holds the process for it.
-    """
+    """Stage an inline session, or start the existing verification route."""
     raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_backend, correction_crossover_v2 as v2host

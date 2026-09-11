@@ -307,7 +307,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
             # (#2879). Stated rather than omitted so this stub keeps matching
             # the real V2PreparedSession.
             request_complete=None,
-            request_retake=None,
+            request_retake=None, join_spec=None, session_id="test",
         )
 
     def _fake_run_capture(kind, *, idle_hold):
@@ -322,6 +322,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
     monkeypatch.setattr(correction_capture, "_run_capture", _fake_run_capture)
+    monkeypatch.setattr(correction_capture, "_stage_capture", _fake_run_capture)
 
     correction_handlers._handle_crossover_v2_capture(
         None, verify_only=False, idle_hold=idle_hold,
@@ -392,7 +393,7 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
             request_stop=lambda: None,
             position_gate=None,
             request_complete=None,
-            request_retake=None,
+            request_retake=None, join_spec=None, session_id="test",
         )
 
     def _fake_run_capture(kind, *, idle_hold):
@@ -404,6 +405,7 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
     monkeypatch.setattr(correction_capture, "_run_capture", _fake_run_capture)
+    monkeypatch.setattr(correction_capture, "_stage_capture", _fake_run_capture)
 
     correction_handlers._handle_crossover_v2_capture(None, verify_only=verify_only)
 

@@ -777,13 +777,11 @@ def _isolated_v2_state(tmp_path, monkeypatch):
 
 
 def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch):
-    """Existing endpoint tests in test_correction_crossover_v2_endpoints.py
-    call prepare_v2_session with status={}, which refuses BEFORE reaching
-    resolve_conductor_context — that's how the dead playback_device seam
-    shipped with zero coverage. This drives prepare_v2_session with a full
-    status against a real, resolvable topology so resolve_conductor_context
-    actually runs; only the evidence-store bundle I/O (a different, already
-    fail-soft seam) is stubbed."""
+    from jasper.active_speaker import preflight_live
+    from tests.test_preflight import ready_facts
+    from tests.test_crossover_v2_stage_bridge import _inline_body
+
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
     # The subject is the CONTEXT resolver, so the mic is named rather than
@@ -796,7 +794,7 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     )
 
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=None
+        _inline_body(), status=_status(), run_async=None, camilla_factory=None
     )
 
     assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION

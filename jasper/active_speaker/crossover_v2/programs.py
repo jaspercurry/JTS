@@ -175,22 +175,14 @@ class SessionExcitation:
         """This session's pilot pair."""
         return pilot_gains(hi_gain_db)
 
-    def check_program(self) -> ExcitationProgram:
-        """CHECK's two-pilot behavioural probe, clamped PER ROLE.
-
-        Each driver's pilot base is clamped so the loudest (hi) pilot's effective
-        peak stays under that driver's cap folded through the session volume; the
-        tweeter (compression driver, deep cap) rides a base ~40 dB below the
-        woofer's. Both pilots keep their fixed ``DEFAULT_PILOT_LEVELS_DB`` offsets
-        against that per-role base, so the 10 dB behavioral-linearity delta is
-        preserved while the absolute level degrades honestly.
-        """
+    def check_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
+        """Clamp per role, then attenuate both pilots together for a retry."""
         role_base = {
             rb.role: back_off_gain(
                 BASE_STIMULUS_PEAK_DBFS,
                 self.session_volume_db,
                 self.caps_dbfs.get(rb.role, 0.0),
-            )
+            ) - max(0.0, extra_backoff_db)
             for rb in self.roles
         }
         return build_check_program(

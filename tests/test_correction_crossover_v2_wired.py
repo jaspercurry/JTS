@@ -770,3 +770,35 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     assert [call[0] for call in gate.grants] == [1, 1, 2]
     assert max(progress["budget"]["by_household"] for progress in gate.progress) == 1
     assert fakes.volume.releases == fakes.graph.restores == 1
+
+
+@pytest.mark.parametrize("phase", ["check", "measure", "verify"])
+def test_host_composes_each_clip_retry_at_its_assessed_level(phase):
+    from dataclasses import replace
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.audio_measurement.program import STIMULUS_KINDS
+    from jasper.web.correction_plan_capture import bind_plan_analysis, compose_plan_program
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor, _check_analysis, _measure_analysis, _verify_analysis
+
+    factory = {"check": _check_analysis, "measure": _measure_analysis, "verify": _verify_analysis}[phase]
+    def clipped(program):
+        analysis = factory(program)
+        return replace(analysis, locations=tuple(replace(loc, clipped=True) for loc in analysis.locations))
+    conductor = _conductor(FakeSeams(**{phase: clipped}), index_phase_map={1: phase},
+                           gain_plan_db={"woofer": -11.0, "tweeter": -13.0})
+    analyze, assessor = bind_plan_analysis(conductor, SimpleNamespace(enrich=None),
+        manifest=SimpleNamespace(calibration={}), evidence={}, verify_only=phase == "verify")
+    spec = MeasureSpec(kind="baseline", graph_scope="speaker_tune" if phase == "verify" else "drivers", program_phase=phase)
+    gain = None
+    for attempt in range(1, 4):
+        program = compose_plan_program(conductor, spec, gain)
+        peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
+        if gain is not None:
+            assert peak == pytest.approx(gain)
+        analysis = analyze({"index": 1, "attempt": attempt, "program": program.to_dict()}, "take")
+        verdict = assessor(analysis, phase=phase, program=program)
+        assert verdict.fault == "clipped"
+        assert verdict.next == "retake_quieter"
+        assert verdict.charge == "speaker"
+        gain = verdict.next_gain_db
+        assert gain < peak

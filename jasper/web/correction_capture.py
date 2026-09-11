@@ -309,7 +309,7 @@ def _join_capture(index: int, attempt: int) -> dict[str, Any] | None:
     kind, idle_hold = pending
     try:
         return _run_capture(kind, idle_hold=idle_hold)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - publish admission faults, then propagate
         if kind.position_gate is not None:
             envelope = refusal_envelope(exc)
             if not envelope["code"]:

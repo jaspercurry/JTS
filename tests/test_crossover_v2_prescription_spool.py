@@ -97,6 +97,7 @@ from tests.test_crossover_v2_driver_prescription import (
 # for the reason ``test_crossover_v2_round_wiring`` states: pytest activates an
 # autouse fixture by its presence in this namespace, and nothing here calls one.
 from tests.test_crossover_v2_stage_bridge import (
+    _inline_body,
     _isolated_v2_state as _isolated_v2_state,
     _open_prepared,
     _production_host_seams as _production_host_seams,
@@ -238,7 +239,7 @@ def _prepare(monkeypatch) -> Any:
         lambda: {"blend_correction": [dict(f) for f in _APPLIED_INCUMBENT]},
     )
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=None,
+        _inline_body(), status=_status(), run_async=None, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
     return conductor

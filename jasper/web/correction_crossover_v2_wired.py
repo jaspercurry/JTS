@@ -147,7 +147,7 @@ def build_v2_wired_run_and_consume(
                 if result.reason == "user_stopped" or result.cancelled:
                     raise CaptureStopped("capture stopped")
                 raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - drain the held resources on every exit
             envelope = refusal_envelope(exc)
             code = envelope["code"] or "internal_error"
             if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):

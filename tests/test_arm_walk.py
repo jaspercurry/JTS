@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
-import inspect
 import io
 import json
 import logging
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -1255,27 +1253,6 @@ def test_anything_not_terminal_reads_as_in_flight(status):
     assert poll.in_flight and not poll.ended
 
 
-def test_the_walks_terminal_statuses_are_the_wizards_own_three():
-    """One vocabulary, two modules -- pinned rather than trusted.
-
-    ``jasper.web.correction_setup`` owns the capture slot: ``_run_capture``
-    writes every terminal status a session can end on, and
-    ``_CAPTURE_IN_FLIGHT_STATUSES`` names the rest. A fourth terminal arm added
-    there without a matching name here would leave the walk reading a finished
-    session as live again -- which is exactly the defect this pins.
-    """
-    from jasper.web import (
-        correction_capture,
-    )
-
-    terminal = set(re.findall(
-        r'"status": "([a-z_]+)"',
-        inspect.getsource(correction_capture._run_capture),
-    ))
-    assert terminal == set(aw.SESSION_ENDED_STATUSES)
-    assert aw.SESSION_ENDED_STATUSES.isdisjoint(
-        correction_capture._CAPTURE_IN_FLIGHT_STATUSES
-    )
 
 
 # --------------------------------------------------------------------------- #

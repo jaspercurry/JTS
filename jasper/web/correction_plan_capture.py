@@ -10,7 +10,7 @@ from typing import Any
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
-from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
+from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, STIMULUS_KINDS, ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
 
@@ -51,7 +51,10 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                        if phase == PHASE_VERIFY else
                        conductor._consume_cloud_position(PHASE_CLOUD_VERIFY, index, attempt, analysis, answer))
         else:
-            return assess(analysis, **{**kwargs, "gain_ceiling_db": conductor._measure_gain_ceiling_db})
+            assessed = assess(analysis, **{**kwargs, "gain_ceiling_db": conductor._measure_gain_ceiling_db})
+            if phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
+                conductor._rearm_measure_after_transient(assessed)
+            return assessed
         if verdict.accepted:
             conductor._note_accepted(phase, index)
         return TakeVerdict(verdict.accepted, fault=verdict.code, evidence=verdict.evidence,
@@ -65,19 +68,26 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None) -> Any:
     excitation = conductor._excitation
     if spec.program_phase == PHASE_CHECK:
-        return excitation.check_program()
+        program = excitation.check_program()
+        peak = max(segment.gain_db for segment in program.segments if segment.kind in STIMULUS_KINDS)
+        conductor._check_program = excitation.check_program(
+            extra_backoff_db=0.0 if stimulus_dbfs is None else peak - stimulus_dbfs)
+        return conductor._check_program
     if spec.graph_scope == "drivers":
         gains = conductor._gain_plan_db
         if not gains:
             raise ValueError("The CHECK level solve is unavailable")
-        if stimulus_dbfs is not None:
+        if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
             gains = {role: stimulus_dbfs for role in gains}
         return excitation.measure_program(gains)
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-    program = excitation.verify_program(
-        extra_backoff_db=0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs,
-        sweep_s=spec.sweep_s,
-    )
+    backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+    program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
+               else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
+    if spec.program_phase == PHASE_VERIFY:
+        conductor._verify_program = program
+    elif spec.program_phase == PHASE_CLOUD_VERIFY:
+        conductor._cloud_program = program
     if spec.graph_scope == "candidate_branches":
         program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
     return program

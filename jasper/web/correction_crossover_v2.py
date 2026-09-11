@@ -3761,15 +3761,7 @@ def bind_v2_stage_seams(
 
 
 def _resolve_prepare_wired_mic() -> Any:
-    """The measurement mic this prepare opens on (#2662 W2b).
-
-    Resolved ONCE per prepare and threaded into ``_open`` — the mint and the
-    runner build must describe one decision, not two reads of a probe that can
-    change between them. The provider is imported lazily. A resolution error
-    (``WiredMicMissing``) refuses at the tap, before any evidence store or
-    durable state is touched, carrying the provider's own code so the journal
-    names the disclosure rather than quoting it.
-    """
+    """Resolve once at admission and keep the microphone's refusal code."""
     from jasper.audio_measurement.wired_capture import WiredCaptureError
     from jasper.web import correction_crossover_v2_wired as wired
 
@@ -4218,7 +4210,9 @@ def prepare_v2_session(
             declared_sensitivities=context.declared_sensitivities,
             provenance=capture_provenance,
             program_for_phase=lambda phase: conductor.program_for_phase(phase),
-            program_for_spec=None if verify_only else lambda spec, gain: compose_plan_program(conductor, spec, gain),
+            program_for_spec=lambda spec, gain: (
+                conductor.program_for_phase(spec.program_phase) if verify_only and gain is None
+                else compose_plan_program(conductor, spec, gain)),
         )
         session_graph = production_play.graph
         if verify_only:

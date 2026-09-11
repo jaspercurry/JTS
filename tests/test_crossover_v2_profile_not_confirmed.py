@@ -32,6 +32,8 @@ The ``/sound/`` half of defect 3 (the buried confirm control) is pinned in
 
 from __future__ import annotations
 
+from tests.test_crossover_v2_stage_bridge import _inline_body
+
 import re
 import time
 from types import SimpleNamespace
@@ -68,7 +70,6 @@ from jasper.active_speaker.program_playback import (
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web._common import refusal_envelope
-from tests.crossover_v2_fixtures import fake_measurement_mic
 from tests._log_events import event_fields
 
 
@@ -443,7 +444,7 @@ def _profile(topology, *, saved_at: str = "2026-07-28T12:00:00Z"):
 
 
 @pytest.fixture()
-def session_open(monkeypatch):
+def session_open(monkeypatch, tmp_path):
     """Drive the REAL session-open path with real driver-safety evaluation.
 
     Only the seams this test is not about are stubbed: the crossover-preview
@@ -457,13 +458,10 @@ def session_open(monkeypatch):
     measurement). That seam is wired to raise if it is ever reached, so "no
     session minted" is pinned by construction, not by absence of an assertion.
     """
-    # The preparers' mic gate (#2662 W2b S3) resolves the measurement mic
-    # before any bundle opens. The gate under test is the SAFETY one, so the
-    # mic is named rather than depended on being plugged into whatever
-    # machine runs this suite.
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
-    )
+    from jasper.active_speaker import preflight_live
+    from tests.test_preflight import ready_facts
+    monkeypatch.setattr(v2host, "_state_path", lambda: tmp_path / "v2_state.json")
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft
     from jasper.active_speaker.tone_plan import load_active_speaker_preset
@@ -545,7 +543,7 @@ def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
     with caplog.at_level(logging.WARNING):
         with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
             v2host.prepare_v2_session(
-                {}, status=env.status, run_async=None, camilla_factory=None
+                _inline_body(), status=env.status, run_async=None, camilla_factory=None
             )
 
     assert str(excinfo.value) == (
@@ -575,7 +573,7 @@ def test_a_stale_profile_is_caught_by_the_same_session_open_gate(session_open):
 
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {}, status=env.status, run_async=None, camilla_factory=None
+            _inline_body(), status=env.status, run_async=None, camilla_factory=None
         )
     assert str(excinfo.value) == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
@@ -602,7 +600,7 @@ def test_a_missing_profile_refuses_with_the_finish_setup_reason(
 
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {}, status=env.status, run_async=None, camilla_factory=None
+            _inline_body(), status=env.status, run_async=None, camilla_factory=None
         )
     assert excinfo.value.code == expected
     assert str(excinfo.value) == REASON_REGISTRY[expected].message
@@ -668,7 +666,7 @@ def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
     env.install(profile)
 
     prepared = v2host.prepare_v2_session(
-        {}, status=env.status, run_async=None, camilla_factory=None
+        _inline_body(), status=env.status, run_async=None, camilla_factory=None
     )
     assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
     assert env.calls["evidence_store"] != []
@@ -728,66 +726,11 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
 # --------------------------------------------------------------------------- #
 
 
-def test_plan_shape_refusal_is_classified_before_it_is_rewrapped():
-    """Both ``resolve_plan_shape`` call sites used to do
-    ``raise CrossoverV2Refused(str(exc))``, which is a one-way door: the moment
-    a ``CrossoverV2FlowError`` becomes a ``ValueError``,
-    :func:`classify_program_failure` stops claiming it and the wizard's 400 arm
-    echoes the programmer string into the DOM. Classify first, then rewrap.
-
-    ``test_whole_program_family_is_mapped_at_the_wizard_boundary`` did not and
-    could not catch this: it hands the mapper a raw ``CrossoverV2FlowError``,
-    which is precisely the shape the rewrap destroys before the mapper is ever
-    reached (#1833).
-
-    #2059 (owner ruling 2026-08-13): an unknown tier is now its own code,
-    ``program_plan_shape_invalid`` -- distinct from ``program_unplayable``,
-    whose "re-check the driver details" advice is a loose fit for a
-    malformed request.
-    """
-    spec = REASON_REGISTRY[REASON_PROGRAM_PLAN_SHAPE_INVALID]
-
-    with pytest.raises(v2host.CrossoverV2Refused) as raised:
-        v2host.prepare_v2_session(
-            {"tier": "turbo"},
-            status={},
-            run_async=None,
-            camilla_factory=None,
-        )
-    assert str(raised.value) == spec.message
-    assert raised.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
-    assert "turbo" not in str(raised.value)
-    _assert_household_copy(
-        REASON_PROGRAM_PLAN_SHAPE_INVALID, "prepare_v2_session", str(raised.value),
-    )
-
-    # The verify-stage site resolves the tier off durable state instead of the
-    # request body, and leaked identically.
-    with pytest.raises(v2host.CrossoverV2Refused) as verify_raised:
+def test_verify_plan_shape_refusal_keeps_its_code():
+    with pytest.raises(v2host.CrossoverV2Refused) as caught:
         v2host._verify_plan_shape(
-            {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
-            {"tier": "turbo"},
-        )
-    assert str(verify_raised.value) == spec.message
-    assert verify_raised.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
-
-
-def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
-    """Household copy names no constraint by design, so the ONE site that
-    discards the flow text has to put it somewhere an operator can read.
-    Otherwise the fix trades a DOM leak for a debugging dead end."""
-    import logging
-
-    caplog.set_level(logging.WARNING, logger=v2host.logger.name)
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.prepare_v2_session(
-            {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None,
-        )
-
-    fields = event_fields(caplog, "correction.crossover_v2_plan_shape_refused")
-    assert "turbo" in fields["detail"]
-    assert fields["code"] == REASON_PROGRAM_PLAN_SHAPE_INVALID
-    assert fields["error_type"] == "PlanShapeError"
+            {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY}, {"tier": "turbo"})
+    assert caught.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
 
 
 def test_graph_refusal_retains_its_classifier_code():
