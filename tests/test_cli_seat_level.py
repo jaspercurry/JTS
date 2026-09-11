@@ -27,6 +27,7 @@ from jasper.active_speaker.seat_level_reference import (
 )
 from jasper.cli import seat_level
 from jasper.cli._refusal import STATUS_BY_CODE
+from tests._log_events import event_records
 
 CAL_WITH_SENS = (
     '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n10.2\t-6.5\n'
@@ -677,7 +678,7 @@ def test_an_unreadable_applied_graph_falls_back_to_the_conservative_bound(
             stimulus, [{"target_fingerprint": "fp", "output_index": 0}]
         )
     assert peaks is None
-    assert "event=active_speaker.seat_level_branch_peaks_unavailable" in caplog.text
+    assert event_records(caplog, "active_speaker.seat_level_branch_peaks_unavailable")
 
     caplog.clear()
     missing = tmp_path / "gone.yml"
@@ -692,7 +693,7 @@ def test_an_unreadable_applied_graph_falls_back_to_the_conservative_bound(
             )
             is None
         )
-    assert "seat_level_branch_peaks_unavailable" in caplog.text
+    assert event_records(caplog, "active_speaker.seat_level_branch_peaks_unavailable")
 
 
 @pytest.mark.parametrize(
@@ -730,7 +731,7 @@ def test_an_unreadable_graph_DOCUMENT_still_reaches_the_conservative_fallback(
             stimulus, [{"target_fingerprint": "fp", "output_index": 0}]
         )
     assert peaks is None, shape
-    assert "event=active_speaker.seat_level_branch_peaks_unavailable" in caplog.text
+    assert event_records(caplog, "active_speaker.seat_level_branch_peaks_unavailable")
 
 
 def _jts3_shaped_graph(*, woofer_channel: int, tweeter_channel: int, fc_hz=1648.7):

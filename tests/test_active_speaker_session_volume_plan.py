@@ -42,6 +42,7 @@ from jasper.active_speaker.session_volume_plan import (
     session_measurement_volume_db,
 )
 from tests.active_speaker_fixtures import mono_output_topology
+from tests._log_events import event_fields
 
 
 def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -70.0):
@@ -330,10 +331,9 @@ def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
     ):
         assert _cap("woofer") == pytest.approx(expected_woofer_cap)
         assert _cap("tweeter") == pytest.approx(expected_tweeter_cap)
-    line = caplog.text
-    assert "event=active_speaker.excitation_ceiling_superseded" in line
-    assert f"anchor={anchor}" in line
-    assert f"anchor_cap_dbfs={expected_woofer_cap:.1f}" in line
+    fields = event_fields(caplog, "active_speaker.excitation_ceiling_superseded")
+    assert fields["anchor"] == anchor
+    assert fields["anchor_cap_dbfs"] == f"{expected_woofer_cap:.1f}"
     # The shift is exactly the anchor's own shift, and nothing else.
     assert expected_tweeter_cap - expected_woofer_cap == pytest.approx(-10.8)
 
@@ -355,15 +355,16 @@ def test_the_declared_caps_are_disclosed_beside_the_ceiling(caplog):
             stimulus_peak_dbfs=-12.0,
             declared_sensitivities=sensitivities,
         )
-    line = caplog.text
-    assert "event=active_speaker.unsegmented_ceiling_bound" in line
-    assert "ceiling_db=12.00" in line
+    fields = event_fields(caplog, "active_speaker.unsegmented_ceiling_bound")
+    assert fields["ceiling_db"] == "12.00"
     # The ceiling the declared caps alone would have produced, and the gap.
-    assert "declared_cap_ceiling_db=-18.80" in line
-    assert "headroom_over_declared_caps_db=+30.80" in line
-    # Per driver: its cap, what it receives at this ceiling, and the overshoot.
-    assert "cap=-30.80" in line and "at_ceiling=0.00" in line
-    assert "past_cap=+30.80" in line and "past_cap=+20.00" in line
+    assert fields["declared_cap_ceiling_db"] == "-18.80"
+    assert fields["headroom_over_declared_caps_db"] == "+30.80"
+    # Per driver: its cap, what it receives at this ceiling, and the overshoot,
+    # one comma-joined token per driver packed into `drivers` -- not reducible
+    # to a single `==` pin.
+    assert "cap=-30.80" in fields["drivers"] and "at_ceiling=0.00" in fields["drivers"]
+    assert "past_cap=+30.80" in fields["drivers"] and "past_cap=+20.00" in fields["drivers"]
 
 
 def test_the_unsegmented_ceiling_refuses_a_non_finite_stimulus_peak():
@@ -551,10 +552,9 @@ def test_which_bound_was_used_is_logged_with_the_per_driver_numbers(caplog):
             declared_sensitivities=_JTS3_PADDED_SENS,
             branch_peaks_dbfs=branch,
         )
-    used = caplog.text
-    assert "event=active_speaker.unsegmented_ceiling_bound" in used
-    assert "bound=per_branch" in used
-    assert "cap=-18.80" in used and "branch=-22.66" in used
+    fields = event_fields(caplog, "active_speaker.unsegmented_ceiling_bound")
+    assert fields["bound"] == "per_branch"
+    assert "cap=-18.80" in fields["drivers"] and "branch=-22.66" in fields["drivers"]
 
     caplog.clear()
     with caplog.at_level("INFO", logger="jasper.active_speaker.session_volume_plan"):
@@ -565,13 +565,13 @@ def test_which_bound_was_used_is_logged_with_the_per_driver_numbers(caplog):
             declared_sensitivities=_JTS3_PADDED_SENS,
             branch_peaks_dbfs={targets["woofer"]: -18.03},
         )
-    fell_back = caplog.text
-    assert "bound=full_band" in fell_back
-    assert "reason=branch_peaks_incomplete" in fell_back
+    fell_back = event_fields(caplog, "active_speaker.unsegmented_ceiling_bound")
+    assert fell_back["bound"] == "full_band"
+    assert fell_back["reason"] == "branch_peaks_incomplete"
     # An incomplete render is disclosed as incomplete: the branch fact that DID
     # resolve is not quoted as though it had bounded anything.
-    assert "branch=none" in fell_back
-    assert "branch=-18.03" not in fell_back
+    assert "branch=none" in fell_back["drivers"]
+    assert "branch=-18.03" not in fell_back["drivers"]
 
 
 def test_the_session_measurement_volume_is_untouched_by_branch_facts():

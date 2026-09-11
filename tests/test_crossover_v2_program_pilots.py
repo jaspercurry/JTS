@@ -67,6 +67,7 @@ from jasper.audio_measurement.program_analysis import (
     analysis_diagnostic_summary,
     analyze_program_capture,
 )
+from tests._log_events import event_fields, event_records
 
 SR = 48_000
 FC_HZ = 1600.0
@@ -979,12 +980,12 @@ def test_integrity_warns_only_on_a_failure_and_names_both_lists(caplog):
         _verify_capture_integrity(prog, SR, [
             _sweep_location(confidence=0.9, residual=over_ceiling),
         ], _unreported_ledger())
-    assert "event=program_analysis.capture_integrity" in caplog.text
-    assert f"failed={INTEGRITY_CHECK_SWEEP_SCHEDULE}" in caplog.text
-    assert INTEGRITY_CHECK_REPEAT_EPSILON in caplog.text
+    fields = event_fields(caplog, "program_analysis.capture_integrity")
+    assert fields["failed"] == INTEGRITY_CHECK_SWEEP_SCHEDULE
+    assert INTEGRITY_CHECK_REPEAT_EPSILON in fields["not_evaluated"].split(",")
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
         _verify_capture_integrity(prog, SR, [
             _sweep_location(confidence=0.9, residual=0.0),
         ], _unreported_ledger())
-    assert "event=program_analysis.capture_integrity" not in caplog.text
+    assert not event_records(caplog, "program_analysis.capture_integrity")

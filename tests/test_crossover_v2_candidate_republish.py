@@ -62,6 +62,7 @@ from tests.test_active_speaker_measured_crossover_candidate import (
     _room_correction,
 )
 from tests.active_speaker_fixtures import mono_output_topology
+from tests._log_events import event_fields
 
 BUNDLE = "bundle0000aa"
 CAPTURE = "capture-session-1"
@@ -619,13 +620,10 @@ def test_republish_emits_its_event_with_fingerprint_and_source_bundle(bank, capl
     with caplog.at_level("INFO"):
         republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
 
-    line = next(
-        r.getMessage() for r in caplog.records
-        if "correction.crossover_v2_candidate_republished" in r.getMessage()
-    )
-    assert f"candidate_fingerprint={candidate.fingerprint}" in line
-    assert f"bundle_session_id={BUNDLE}" in line
-    assert f"capture_session_id={CAPTURE}" in line
+    fields = event_fields(caplog, "correction.crossover_v2_candidate_republished")
+    assert fields["candidate_fingerprint"] == candidate.fingerprint
+    assert fields["bundle_session_id"] == BUNDLE
+    assert fields["capture_session_id"] == CAPTURE
 
 
 @pytest.mark.parametrize(
@@ -660,11 +658,8 @@ def test_every_refusal_reaches_the_journal(bank, caplog, setup, payload, expecte
         with pytest.raises(v2host.CrossoverV2Refused):
             republish.handle_v2_republish(body)
 
-    line = next(
-        r.getMessage() for r in caplog.records
-        if "correction.crossover_v2_republish_refused" in r.getMessage()
-    )
-    assert f"code={expected_code}" in line
+    fields = event_fields(caplog, "correction.crossover_v2_republish_refused")
+    assert fields["code"] == expected_code
 
 
 def test_republish_stamps_the_callers_time_not_a_clock_read(bank):

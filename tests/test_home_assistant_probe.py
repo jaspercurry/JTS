@@ -17,6 +17,7 @@ import pytest
 
 import jasper.home_assistant as ha_mod
 from jasper.home_assistant import HAClient, probe_status
+from tests._log_events import event_fields, event_records
 
 
 # ---- Auto-reset cache between tests ----------------------------------------
@@ -322,8 +323,9 @@ async def test_logs_reachable_on_first_connected_probe(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="jasper.home_assistant"):
         await probe_status("http://ha.local:8123", "tok")
 
-    assert any("event=ha.reachable" in r.message for r in caplog.records)
-    assert any("Home" in r.message and "2026.5.1" in r.message for r in caplog.records)
+    fields = event_fields(caplog, "ha.reachable")
+    assert fields["instance"] == "Home"
+    assert fields["version"] == "2026.5.1"
 
 
 async def test_logs_unreachable_on_transition(monkeypatch, caplog):
@@ -351,7 +353,7 @@ async def test_logs_unreachable_on_transition(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.home_assistant"):
         await probe_status("http://ha.local:8123", "tok", force=True)
 
-    assert any("event=ha.unreachable" in r.message for r in caplog.records)
+    assert event_records(caplog, "ha.unreachable")
 
 
 async def test_no_log_when_state_unchanged(monkeypatch, caplog):
@@ -372,4 +374,4 @@ async def test_no_log_when_state_unchanged(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="jasper.home_assistant"):
         await probe_status("http://ha.local:8123", "tok", force=True)
 
-    assert not any("event=ha.reachable" in r.message for r in caplog.records)
+    assert not event_records(caplog, "ha.reachable")

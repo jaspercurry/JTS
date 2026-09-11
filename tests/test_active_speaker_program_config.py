@@ -42,6 +42,7 @@ from jasper.active_speaker.graph_safety import (
 # Reuse the canonical preset fixtures (mono 2-way == JTS3 single cabinet:
 # output 0 = woofer, output 1 = tweeter).
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+from tests._log_events import event_field_maps
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 ROLE_CHANNELS = {"woofer": 0, "tweeter": 1}
@@ -269,14 +270,23 @@ def test_program_config_discloses_a_shallow_tweeter_crossover_never_refuses_it(
     view = view_from_emitted_text(out)
     assert unprotected_tweeter_outputs(view, tweeter_channels={1}) == ()
     # …and the shortfall reached the journal instead of the caller.
-    messages = [r.getMessage() for r in caplog.records]
-    assert any(
-        "result=tweeter_hp_slope_below_commissioning_floor" in m
-        and "slope_db_per_octave=12" in m
-        and "commissioning_floor_db_per_octave=24" in m
-        for m in messages
-    ), messages
-    assert not any("blocked_tweeter_hp_slope_below_floor" in m for m in messages)
+    (fields,) = event_field_maps(
+        caplog, "active_speaker.program_emit_gate",
+        result="tweeter_hp_slope_below_commissioning_floor",
+    )
+    assert fields["slope_db_per_octave"] == "12"
+    assert fields["commissioning_floor_db_per_octave"] == "24"
+    # …and no "blocked_*" result fired for this preset — the shallow slope
+    # only disclosed, it never refused (this function's whole reason to
+    # exist per the docstring above; "blocked_tweeter_hp_below_floor" is the
+    # one this same function could wrongly emit if the corner gate above it
+    # regressed onto the slope path).
+    blocked_results = {
+        fields["result"]
+        for fields in event_field_maps(caplog, "active_speaker.program_emit_gate")
+        if fields["result"].startswith("blocked_")
+    }
+    assert not blocked_results, blocked_results
 
 
 def test_program_config_still_refuses_a_crossover_below_the_declared_corner():
@@ -333,11 +343,13 @@ def test_protected_neutral_emit_refuses_unsafe_tweeter_protection(
                 playback_device=ACTIVE_PCM, protection_sections_by_role=sections,
             )
     # …and the floor refusal reaches the journal, as its predecessor's does.
-    logged = any(
-        "result=blocked_tweeter_protection_below_floor" in r.getMessage()
-        for r in caplog.records
+    blocked = event_field_maps(
+        caplog, "active_speaker.program_emit_gate",
+        result="blocked_tweeter_protection_below_floor",
     )
-    assert logged is (match == "program floor"), [r.getMessage() for r in caplog.records]
+    assert bool(blocked) is (match == "program floor"), [
+        r.getMessage() for r in caplog.records
+    ]
 
 
 def test_program_config_refuses_local_subwoofer_preset():

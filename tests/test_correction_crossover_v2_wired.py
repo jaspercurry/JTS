@@ -75,6 +75,7 @@ from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 
 from tests.test_wired_capture import UMIK2_USB_ID, _make_card
 from tests.wired_capture_fixtures import FakePcm
+from tests._log_events import event_field_maps
 
 RATE = 48_000
 
@@ -1005,10 +1006,9 @@ def test_a_retake_with_no_take_to_replace_is_dropped_by_name(monkeypatch, caplog
     with caplog.at_level(logging.WARNING):
         _run(runner, plan=_plan(target=1, max_attempts=3))
 
-    assert any(
-        "crossover_v2_wired_retake_refused" in r.getMessage()
-        and "reason=no_take_to_replace" in r.getMessage()
-        for r in caplog.records
+    assert event_field_maps(
+        caplog, "correction.crossover_v2_wired_retake_refused",
+        reason="no_take_to_replace",
     )
     # ...and the walk it interrupted still ran, on its own first attempt.
     assert ("authorize", 1, 1) in conductor.events
@@ -1063,8 +1063,9 @@ def test_a_retake_past_the_plans_attempt_budget_is_refused_not_fatal(
     with caplog.at_level(logging.WARNING):
         asyncio.run(_drive())
 
-    assert any(
-        "reason=plan_attempts_spent" in r.getMessage() for r in caplog.records
+    assert event_field_maps(
+        caplog, "correction.crossover_v2_wired_retake_refused",
+        reason="plan_attempts_spent",
     )
     # The set still closed on the household's own signal.
     assert ("confirm",) in conductor.events

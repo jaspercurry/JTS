@@ -30,6 +30,7 @@ from jasper.web import rooms_peers as rooms
 from jasper.web import active_speaker_flow, sync_flow
 
 from ._async_wait import wait_until, wait_until_sync
+from ._log_events import event_fields
 from ._web_test_helpers import patch_measurement_window
 
 
@@ -523,13 +524,8 @@ def test_play_watcher_schedule_failure_terminates_reaps_and_clears(
     assert proc.wait_count == 1
     assert sync_flow.handle_status()["phase"] == "measuring"
     assert sync_flow.handle_status()["playing"] is False
-    events = [
-        record.getMessage()
-        for record in caplog.records
-        if "event=sync.play_watch_schedule_failed" in record.getMessage()
-    ]
-    assert len(events) == 1
-    assert "reaped=true" in events[0]
+    fields = event_fields(caplog, "sync.play_watch_schedule_failed")
+    assert fields["reaped"] == "true"
 
 
 def test_stale_play_spawn_cannot_attach_to_new_session(monkeypatch):
@@ -873,13 +869,8 @@ def test_play_watcher_failure_kills_a_marker_that_ignores_terminate(
         assert status == HTTPStatus.INTERNAL_SERVER_ERROR
         assert payload["ok"] is False
         assert signals == ["terminate", "kill"]
-        events = [
-            record.getMessage()
-            for record in caplog.records
-            if "event=sync.play_watch_schedule_failed" in record.getMessage()
-        ]
-        assert len(events) == 1
-        assert "reaped=false" in events[0]
+        fields = event_fields(caplog, "sync.play_watch_schedule_failed")
+        assert fields["reaped"] == "false"
     finally:
         with sync_flow._lock:
             sync_flow._reset_locked()
