@@ -20,6 +20,7 @@ import numpy as np
 from .assistant_loudness import (
     AssistantSourceMeter,
     DEFAULT_PROFILE_PATH as ASSISTANT_LOUDNESS_PROFILE_PATH,
+    INPUT_RATE as ASSISTANT_INPUT_RATE,
     UPSAMPLE_2X_CONTEXT,
     confidence_for_measurement,
     profile_for_outputd,
@@ -654,7 +655,12 @@ class TtsPlayout:
     mix boundary.
     """
 
-    INPUT_RATE = 24000
+    # The two ends of this class's resample, published so callers that count
+    # frames on either side read the rate from the code that converts them.
+    # Provider PCM arrives at the rate the loudness module measures it at;
+    # the fan-in wire is fixed at the rate this module writes.
+    INPUT_RATE = ASSISTANT_INPUT_RATE
+    OUTPUT_RATE = _OUTPUTD_SAMPLE_RATE
 
     # Floor — below this, TTS is effectively silent. Used when the
     # user mutes, when Camilla is unreachable at startup, or when a
