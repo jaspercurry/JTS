@@ -9,9 +9,6 @@ A :class:`QualityModel` holds one layer's gate as data; two profiles ship —
 near-field). Both carry equal values today: the driver capture path already
 used room correction's ``assess_capture`` verbatim, and the driver-verdict
 fields coincide with the dataclass defaults.
-The level ramp's live control-loop tuning is NOT here — it lives on
-:class:`~jasper.audio_measurement.ramp.MeasurementRamp`, because those are not
-gates ``assess_capture`` reads.
 
 This module also owns the WORDS those thresholds are reported in, so the
 numbers and the vocabulary answering one question keep one owner.
