@@ -117,6 +117,7 @@ rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/ref.wav" "$OUT_LOCAL/" >&2
 PY_BIN="$(resolve_repo_python)"
 if ! "$PY_BIN" -c 'import numpy' 2>/dev/null; then
     echo "ERROR: no python3 with numpy found ($PY_BIN)" >&2
+    echo "  Fix: uv sync --extra full --extra streambox (see CONTRIBUTING.md Quick start)" >&2
     exit 1
 fi
 echo "Analysing with: $PY_BIN"

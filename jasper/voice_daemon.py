@@ -2,15 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The wake -> LLM loop: ``WakeLoop`` is the sole consumer of the primary mic.
-
-Dispatches each frame to either the wake-word detector (WAKE state) or the
-active live turn (SESSION state); any of the configured wake legs
-(``jasper.wake_legs``) can trigger a wake event, OR-gated through a shared
-refractory lock. See ``WakeLoop``'s own docstring for the per-leg detail.
-``main()`` here is a thin shim to the real composition root,
-``jasper.voice.daemon_main``.
-"""
+"""The wake -> LLM loop: ``WakeLoop`` is the sole consumer of the primary mic."""
 
 from __future__ import annotations
 

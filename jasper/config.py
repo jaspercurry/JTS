@@ -15,6 +15,7 @@ from .accounts import legacy_cache_path, registry_path
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (
+    TRANSIT_DISPLAY_NAME_ENV,
     TRANSIT_LAT_ENV,
     TRANSIT_LON_ENV,
     WEATHER_DEFAULT_LOCATION_ENV,
@@ -487,7 +488,7 @@ class Config:
                 else:
                     if not weather_default_display_name:
                         weather_default_display_name = _env(
-                            "JASPER_TRANSIT_DISPLAY_NAME", "",
+                            TRANSIT_DISPLAY_NAME_ENV, "",
                         ).strip()
         if not weather_default_display_name:
             weather_default_display_name = weather_default_location
