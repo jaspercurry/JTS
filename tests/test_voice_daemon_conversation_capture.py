@@ -129,3 +129,46 @@ async def test_capture_includes_transcript_from_the_close_handshake(
 
     (row,) = store.recent(10)
     assert row.assistant_text == "Four minutes, from Union Square."
+
+
+class _RecordingCapture:
+    """Stands in for `ConversationCapture`, recording each `record()` call
+    instead of persisting it — isolates the loop's mic-muted wiring from
+    the real capture's own settings/store gating (covered separately in
+    tests/test_conversation_capture.py)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def record(
+        self,
+        user_text,
+        assistant_text,
+        *,
+        data_json=None,
+        provider=None,
+        session_id,
+        mic_muted,
+    ) -> None:
+        self.calls.append({"user_text": user_text, "mic_muted": mic_muted})
+
+
+async def test_end_turn_records_the_loops_live_mic_muted_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """`_release_and_capture` reads `_mic_muted` at teardown through the
+    injected callable — a muted turn's transcript must never reach
+    capture, and this is the only path that knows the live mic state."""
+    wl, _store = _wake_loop(tmp_path, monkeypatch)
+    fake_capture = _RecordingCapture()
+    wl._turns._conversation_capture = fake_capture
+    _put_in_session(wl, _FakeTurn("what is the next train", "Four minutes."))
+    wl._mic_muted = True
+
+    await wl._turns.end("mic_muted")
+    await wl._turns.pending_release
+
+    assert fake_capture.calls == [
+        {"user_text": "what is the next train", "mic_muted": True},
+    ]

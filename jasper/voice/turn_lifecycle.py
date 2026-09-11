@@ -12,7 +12,7 @@ journal a no-answer turn and cue it.
 
 `WakeLoop` builds one at construction time, writes the owned attributes
 directly when the loop causes the change, and reads them for
-`session_status`. The four loop-side reads the teardown needs are
+`session_status`. The loop-side reads the teardown needs are
 injected as late-bound callables so a test rebinding `WakeLoop._play_cue`
 still intercepts the teardown cue.
 """

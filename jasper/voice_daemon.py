@@ -114,7 +114,7 @@ PRE_ROLL_FRAMES = 7
 # JASPER_VAD_BARGE_IN_THRESHOLD (default 0.5) — that one is tuned
 # strict to avoid TTS-bleed false-positives in the barge-in gate;
 # this one is tuned LOOSE so soft / quiet speech still flips
-# `_user_speech_seen` so the silence detector arms.
+# `_turns.user_speech_seen` so the silence detector arms.
 # Range: AirPlay music vocals scored 0.13 (0.10 was loose enough to let
 # them flip the flag and feed a false wake to the model); real user
 # speech in the same session bottomed out at 0.19. 0.15 sits between
@@ -127,7 +127,7 @@ END_OF_UTTERANCE_SPEECH_THRESHOLD = 0.15
 # Sustained-speech threshold for arming the end-of-utterance silence
 # detector. After wake fires, Silero must report ≥ THRESHOLD
 # speech-probability for at least this many seconds *continuously*
-# before `_user_speech_seen` flips. Then — and only then — does
+# before `_turns.user_speech_seen` flips. Then — and only then — does
 # trailing silence start counting toward end-of-utterance.
 #
 # 200 ms, not the 0.3 s default of OpenVoiceOS's dinkum-listener
@@ -513,6 +513,9 @@ class WakeLoop:
 
     def close_conversation_store(self) -> None:
         self._conversation_capture.close()
+
+    def request_conversation_end(self) -> None:
+        self._turns.request_conversation_end()
 
     async def _play_dynamic_text(self, text: str) -> bool:
         return await self._assistant_output.play_dynamic_text(text)
@@ -1811,9 +1814,6 @@ class WakeLoop:
         # Silero's internal LSTM state must not leak across turns. A
         # push-to-talk-only daemon has no VAD to reset (see __init__).
         self._reset_session_input()
-        # `_turn_started_at_loop` anchors NO_SPEECH_ABORT_SEC,
-        # HARD_RECORDING_CAP_SEC and the push-to-talk hold cap; it is read on
-        # the asyncio loop clock to match what the silence detector reads.
         self._turns.user_speech_seen = False
         self._turns.input_ended = False
         self._turns.continuous_speech_started = self._turns.continuous_last_speech = 0.0
