@@ -535,7 +535,6 @@ class LocalSubwoofer:
 class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""
 
-    initial_sweep_level_db_spl: float = 65.0
     # Owner ruling 2026-08-23: the commissioning SPL stop rides this dataclass
     # default; construction sites must not restate it. Two staging sites
     # hardcoded 80.0, which hid this default and cost a bench night: the ruled
@@ -557,7 +556,6 @@ class SafetyEnvelope:
     # runs. That is exactly why neither end may be restated alone.
     # ``tests/test_active_speaker_safety_envelope_ssot.py`` is the tripwire.
     max_commissioning_level_db_spl: float = 85.0
-    escalation_step_db: float = 5.0
     require_physical_tweeter_protection: bool = True
     require_channel_identity_before_drivers: bool = True
     emergency_stop_required: bool = True
@@ -569,10 +567,6 @@ class SafetyEnvelope:
         if not isinstance(raw, dict):
             raise ActiveSpeakerConfigError("safety must be an object")
         return cls(
-            initial_sweep_level_db_spl=_finite_float(
-                raw.get("initial_sweep_level_db_spl", 65.0),
-                "initial_sweep_level_db_spl",
-            ),
             max_commissioning_level_db_spl=_finite_float(
                 # The dataclass default is the ONE owner of this value; a
                 # literal here would be a second (owner ruling 2026-08-23).
@@ -581,9 +575,6 @@ class SafetyEnvelope:
                     cls.max_commissioning_level_db_spl,
                 ),
                 "max_commissioning_level_db_spl",
-            ),
-            escalation_step_db=_positive_float(
-                raw.get("escalation_step_db", 5.0), "escalation_step_db"
             ),
             require_physical_tweeter_protection=_bool(
                 raw.get("require_physical_tweeter_protection", True),
@@ -600,16 +591,10 @@ class SafetyEnvelope:
         )
 
     def validate(self) -> None:
-        if not 45 <= self.initial_sweep_level_db_spl <= 85:
-            raise ActiveSpeakerConfigError("initial sweep level must be 45-85 dB SPL")
         if not 45 <= self.max_commissioning_level_db_spl <= 85:
             raise ActiveSpeakerConfigError(
                 "max commissioning level must be 45-85 dB SPL"
             )
-        if self.initial_sweep_level_db_spl > self.max_commissioning_level_db_spl:
-            raise ActiveSpeakerConfigError("initial sweep level must be <= max level")
-        if self.escalation_step_db > 10:
-            raise ActiveSpeakerConfigError("escalation step must be <= 10 dB")
         if not self.emergency_stop_required:
             raise ActiveSpeakerConfigError("emergency stop must be required")
         if not self.require_channel_identity_before_drivers:
@@ -623,9 +608,7 @@ class SafetyEnvelope:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "initial_sweep_level_db_spl": self.initial_sweep_level_db_spl,
             "max_commissioning_level_db_spl": self.max_commissioning_level_db_spl,
-            "escalation_step_db": self.escalation_step_db,
             "require_physical_tweeter_protection": (
                 self.require_physical_tweeter_protection
             ),
