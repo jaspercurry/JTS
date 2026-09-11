@@ -314,17 +314,15 @@ def test_nmcli_secret_argv_never_logs_the_psk(monkeypatch, caplog, psk):
 
     proc = wifi_setup._run_nmcli_secret(cmd, timeout=1)
 
-    warnings = [
-        record
-        for record in caplog.records
-        if record.name == wifi_setup.logger.name and record.levelno == logging.WARNING
-    ]
+    warnings = event_records(caplog, "wifi.nmcli_timeout")
 
     assert proc.returncode == 124
     # Without a record to look at, the absence pin below is satisfied by an
     # empty log.
     assert len(warnings) == 1
-    assert "password <redacted>" in warnings[0].getMessage()
+    assert event_fields(caplog, "wifi.nmcli_timeout")["argv"] == (
+        "nmcli device wifi connect HomeNet password <redacted>"
+    )
     assert psk not in caplog.text
 
 
@@ -499,7 +497,7 @@ def test_get_state_response_disconnect_does_not_attempt_secondary_502(
 
     assert calls == ["state"]
     assert response_attempts == [200]
-    assert "/state failed" not in caplog.text
+    assert not event_records(caplog, "wifi.state_failed")
 
 
 def test_post_unknown_route_404s():
