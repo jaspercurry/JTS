@@ -4,7 +4,7 @@
 > revision — not its adoption date: it was adopted 2026-07-29 (round-3
 > architect session) and kept taking amendments after that (its M3 row records
 > #1999's 2026-08-01 close, its M7 row #2609). Tagged historical 2026-08-22,
-> superseded by [`tuning-master-plan.md`](../tuning-master-plan.md), which
+> superseded by the decisions in the [ADR index](../adr/README.md). The later plan
 > absorbed the open work orders: "P1 (reverse-null probe) → the `verify`
 > program; P6/M6 (harmonic extraction) → ticket 1.4; P2 (position variance) →
 > tickets 1.2/1.3; WO-7's serial dial-in loop → Loop B's tournament
