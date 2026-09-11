@@ -35,8 +35,12 @@ from typing import Any, Callable, Mapping, Sequence
 
 from jasper.log_event import log_event
 
+from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
+from jasper.audio_measurement.wired_capture import WiredSplMonitor
+
 from .angle_capture import (
     WALK_CEILING_ABOVE_STOP,
+    WALK_SPL_CALIBRATION_REQUIRED,
     WALK_STIMULUS_NOT_ACCEPTED,
     AngleCaptureRequest,
     LateralWalkRefused,
@@ -69,6 +73,7 @@ __all__ = [
     "run_plan",
     "run_specs",
     "spl_monitor_note",
+    "spl_watch",
     "take_spl_ceiling",
 ]
 
@@ -135,6 +140,40 @@ def spl_monitor_note(ceiling_db_spl: float | None) -> str:
     if ceiling_db_spl is None:
         return SPL_MONITOR_UNAVAILABLE
     return f"ceiling_{float(ceiling_db_spl):g}_db_spl"
+
+
+def spl_watch(
+    stated_db_spl: float | None,
+    *,
+    commissioning_stop_db_spl: float,
+    sensitivity: Any | None,
+    device: Any,
+) -> tuple[WiredSplMonitor | None, str]:
+    """The monitor one session's takes record under, and its SPL disclosure.
+
+    ONE owner for both doors that play a stated walk -- ``jasper-measure`` and
+    the wizard's session open -- so the same walk is bounded the same way
+    whichever took it. Every run is bounded, not only one that typed a ceiling:
+    :func:`take_spl_ceiling` resolves the number, refusing one above the box's
+    own commissioning stop.
+
+    ``sensitivity`` is ``None`` on a box that cannot turn a recording into dB
+    SPL. That DISCLOSES when the run stated no ceiling of its own, and REFUSES
+    when it stated one: a bound nothing can enforce is something an operator
+    must be able to act on rather than a number quietly ignored.
+    """
+    ceiling = take_spl_ceiling(
+        stated_db_spl, commissioning_stop_db_spl=commissioning_stop_db_spl,
+    )
+    if sensitivity is None:
+        if stated_db_spl is None:
+            return None, SPL_MONITOR_UNAVAILABLE
+        raise LateralWalkRefused(
+            WALK_SPL_CALIBRATION_REQUIRED,
+            "an SPL ceiling requires a resolvable microphone sensitivity",
+        )
+    channel = int(SUPPORTED_MODELS[device.model_key].get("capture_channel", 0))
+    return WiredSplMonitor(sensitivity, ceiling, channel), spl_monitor_note(ceiling)
 
 
 # --------------------------------------------------------------------------- #

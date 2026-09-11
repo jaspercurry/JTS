@@ -116,6 +116,7 @@ __all__ = [
     "WALK_LEVEL_POLICY_INVALID",
     "WALK_POLICY_UNSUPPORTED_YET",
     "WALK_CEILING_ABOVE_STOP",
+    "WALK_SPL_CALIBRATION_REQUIRED",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
@@ -863,6 +864,12 @@ WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
 #: only place that reads the box's own number.
 WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
 
+#: The walk states an SPL ceiling and no microphone sensitivity resolves, so
+#: nothing could turn a recording into dB SPL to watch it. Decided beside the
+#: ceiling, where the watch is built (:func:`~.plan_run.spl_watch`). The value
+#: is the reason ``jasper-measure`` publishes for the same refusal.
+WALK_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
+
 #: The walk's stimulus statement is not one that can be played: a summed sweep
 #: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
 #: template field ``MeasureSpec`` refuses that is neither R-1 half
@@ -913,6 +920,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LEVEL_POLICY_INVALID,
     WALK_POLICY_UNSUPPORTED_YET,
     WALK_CEILING_ABOVE_STOP,
+    WALK_SPL_CALIBRATION_REQUIRED,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,

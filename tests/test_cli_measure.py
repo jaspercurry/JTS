@@ -1299,7 +1299,7 @@ def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
         lambda **kw: SimpleNamespace(),
     )
     monkeypatch.setattr(
-        "jasper.audio_measurement.mic_identity.SUPPORTED_MODELS",
+        "jasper.active_speaker.plan_run.SUPPORTED_MODELS",
         {"umik2": {"capture_channel": 0}},
     )
 

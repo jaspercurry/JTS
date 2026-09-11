@@ -49,7 +49,6 @@ REFUSE_SPEC_INVALID = "measure_spec_invalid"
 REFUSE_BOX_NOT_READY = "measure_box_not_ready"
 #: No measurement microphone answered, so nothing would record the stimulus.
 REFUSE_NO_MIC = "measure_no_wired_mic"
-REFUSE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REFUSE_SPL_CEILINGS_MIXED = "measure_spl_ceilings_mixed"
 #: ``--level-matched`` on a box whose banked evidence names no trims. Refused
 #: at open, where an operator can still act on it.
@@ -623,56 +622,38 @@ def _spl_monitor(
     device: Any,
     mic_serial: str | None,
 ) -> tuple[Any, str]:
-    """The monitor every take records under, and the run's SPL disclosure.
+    """This door's SPL watch, from the one owner every door asks
+    (:func:`~jasper.active_speaker.plan_run.spl_watch`).
 
-    EVERY run is bounded now, not only one that typed a ceiling: a run stating
-    none plays under this box's own commissioning stop, and a run stating one
-    above that stop is refused rather than clamped
-    (:func:`~jasper.active_speaker.plan_run.take_spl_ceiling`).
-
-    A box that cannot turn a recording into dB SPL gets no monitor and DISCLOSES
-    that, which is what the shipped walks already do — unless the operator
-    STATED a ceiling, where a bound nothing can enforce stays a refusal they can
-    act on.
+    What is this door's own: a batch states ONE ceiling, and the box declaration
+    it already resolved is where the commissioning stop is read from.
     """
+    # lazy: this door refuses flags and reads a declaration before it measures
+    # anything, and none of that should pay for the measurement stack (the
+    # calibration import also costs numpy, and a test patches it at call time).
     from jasper.active_speaker.angle_capture import LateralWalkRefused
     from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-    from jasper.active_speaker.plan_run import (
-        SPL_MONITOR_UNAVAILABLE,
-        spl_monitor_note,
-        take_spl_ceiling,
-    )
-    from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
-    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+    from jasper.active_speaker.plan_run import spl_watch
+    from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 
     stated = {spec.spl_ceiling_db_spl for spec in specs}
     if len(stated) > 1:
         raise BoxNotMeasurable(
             REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling",
         )
-    asked = next(iter(stated))
     try:
-        ceiling = take_spl_ceiling(
-            asked,
-            commissioning_stop_db_spl=commissioning_spl_ceiling_db(
-                box.topology, preset=box.preset,
-            ),
-        )
+        stop = commissioning_spl_ceiling_db(box.topology, preset=box.preset)
     except ValueError as exc:
         raise BoxNotMeasurable(REFUSE_BOX_NOT_READY, str(exc)) from exc
+    try:
+        return spl_watch(
+            next(iter(stated)),
+            commissioning_stop_db_spl=stop,
+            sensitivity=resolve_mic_sensitivity(mic_serial=mic_serial),
+            device=device,
+        )
     except LateralWalkRefused as exc:
         raise BoxNotMeasurable(exc.reason, exc.detail) from exc
-    sensitivity = resolve_mic_sensitivity(mic_serial=mic_serial)
-    if sensitivity is None:
-        if asked is not None:
-            raise BoxNotMeasurable(
-                REFUSE_SPL_CALIBRATION_REQUIRED,
-                "an SPL ceiling requires a resolvable microphone sensitivity",
-            )
-        return None, SPL_MONITOR_UNAVAILABLE
-    channel = int(SUPPORTED_MODELS[device.model_key].get("capture_channel", 0))
-    return WiredSplMonitor(sensitivity, ceiling, channel), spl_monitor_note(ceiling)
 
 
 def _wired_setup_reference() -> Mapping[str, Any] | None:
