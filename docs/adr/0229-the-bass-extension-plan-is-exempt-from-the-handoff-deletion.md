@@ -1,7 +1,8 @@
 # ADR-0229: The bass-extension plan is exempt from the HANDOFF deletion
 
 - **Date:** 2026-09-03
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0304](0304-the-bass-level-axis-is-fixed-level-windows.md)
 
 ## Context
 

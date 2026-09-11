@@ -1,7 +1,8 @@
 # ADR-0006: A staged request the session cannot honour refuses the open — it never degrades to a different session
 
 - **Date:** 2026-08-25
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0297](0297-the-plan-is-posted-in-the-run-body.md)
 
 ## Context
 
