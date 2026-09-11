@@ -716,16 +716,10 @@ class WakeLoop:
         self._input_ended: bool = False
         self._turn_started_at_loop: float = 0.0
         self._max_silero_score_in_turn: float = 0.0
-        # Anchor timestamp for the current run of continuous speech.
-        # Resets to 0 on any sub-threshold frame; once `now -
-        # _speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC` AND
-        # `_speech_run_max_silero >= SPEECH_RUN_PEAK_MIN`, arm the
-        # silence detector.
+        # Anchor and peak of the current speech run; `_sustained_run` owns
+        # both lifetimes. The peak rejects wake-tail audio — see
+        # SPEECH_RUN_PEAK_MIN.
         self._speech_run_started_at: float = 0.0
-        # Max Silero score observed within the current speech run.
-        # Resets to 0 on any sub-threshold frame (same lifetime as
-        # `_speech_run_started_at`). Used to reject wake-tail audio
-        # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
         # Decided once per turn in `_begin_turn_inner`: true when this turn's
         # session audio comes from a push-to-talk source, so the button owns
@@ -970,18 +964,32 @@ class WakeLoop:
             self._frozen_pre_roll = None
             self._response_transition = False
 
-    async def _handle_followup_frame(self, frame, now: float) -> None:
-        score = self._vad.predict(frame)
-        if score < END_OF_UTTERANCE_SPEECH_THRESHOLD:
+    def _sustained_run(self, score: float, threshold: float, now: float) -> bool:
+        """Advance the speech run with this frame; True once it has armed.
+
+        A frame at or above `threshold` extends the run and its peak; any
+        frame below ends it. Armed means the run has lasted
+        SUSTAINED_SPEECH_TO_ARM_SEC and peaked at SPEECH_RUN_PEAK_MIN, and
+        stays true for every later frame of the same run — what each caller
+        does on that is its own.
+        """
+        if score < threshold:
             self._speech_run_started_at = self._speech_run_max_silero = 0.0
-            return
-        # A word starting at the deadline gets time to meet the ordinary VAD gate.
-        self._followup.deadline = max(self._followup.deadline, now + SUSTAINED_SPEECH_TO_ARM_SEC)
+            return False
         if not self._speech_run_started_at:
             self._speech_run_started_at = now
         self._speech_run_max_silero = max(self._speech_run_max_silero, score)
-        if (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
-                and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
+        return (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
+                and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN)
+
+    async def _handle_followup_frame(self, frame, now: float) -> None:
+        score = self._vad.predict(frame)
+        armed = self._sustained_run(score, END_OF_UTTERANCE_SPEECH_THRESHOLD, now)
+        if score < END_OF_UTTERANCE_SPEECH_THRESHOLD:
+            return
+        # A word starting at the deadline gets time to meet the ordinary VAD gate.
+        self._followup.deadline = max(self._followup.deadline, now + SUSTAINED_SPEECH_TO_ARM_SEC)
+        if armed:
             await self._resume_followup()
 
     async def play_cue(self, slug: str) -> str:
@@ -2100,26 +2108,20 @@ class WakeLoop:
             await self._end_session_input("cap")
             return
 
+        armed = self._sustained_run(speech_prob, END_OF_UTTERANCE_SPEECH_THRESHOLD, now)
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
-            if self._speech_run_started_at == 0.0:
-                self._speech_run_started_at = now
-            self._speech_run_max_silero = max(self._speech_run_max_silero, speech_prob)
-            if (not self._user_speech_seen
-                    and now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
-                    and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
+            if armed and not self._user_speech_seen:
                 self._user_speech_seen = True
                 self._silero_aec_armed_at_ms = int(elapsed * 1000)
                 await self._wake_telemetry.stage("speech_detected")
             self._silence_started_at = 0.0
-        else:
-            self._speech_run_started_at = self._speech_run_max_silero = 0.0
-            if self._user_speech_seen:
-                if self._silence_started_at == 0.0:
-                    self._silence_started_at = now
-                    self._stamp_turn_stage("speech_end", first=False)
-                elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
-                    await self._end_session_input("end-of-utterance")
-                    return
+        elif self._user_speech_seen:
+            if self._silence_started_at == 0.0:
+                self._silence_started_at = now
+                self._stamp_turn_stage("speech_end", first=False)
+            elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
+                await self._end_session_input("end-of-utterance")
+                return
         await self._send_session_audio(frame)
 
     async def _handle_continuous_frame(self, frame, *, captured_at=None) -> None:
@@ -2138,12 +2140,9 @@ class WakeLoop:
         score = self._vad.predict(frame)
         threshold = self._cfg.vad_barge_in_threshold if speaking else END_OF_UTTERANCE_SPEECH_THRESHOLD
         self._max_silero_score_in_turn = max(self._max_silero_score_in_turn, score)
+        armed = self._sustained_run(score, threshold, now)
         if score >= threshold:
-            if not self._speech_run_started_at:
-                self._speech_run_started_at = now
-            self._speech_run_max_silero = max(self._speech_run_max_silero, score)
-            if (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
-                    and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
+            if armed:
                 if not self._continuous_speech_started or now - self._continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC:
                     self._continuous_speech_started = self._speech_run_started_at
                     if speaking and self._barge_in_active:
@@ -2154,11 +2153,9 @@ class WakeLoop:
                 self._continuous_last_speech = now
                 self._user_speech_seen = True
                 self._input_ended = False
-        else:
-            self._speech_run_started_at = self._speech_run_max_silero = 0.0
-            if (self._user_speech_seen and not self._input_ended
-                    and now - self._continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC):
-                await self._end_session_input("continuous speech pause")
+        elif (self._user_speech_seen and not self._input_ended
+                and now - self._continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC):
+            await self._end_session_input("continuous speech pause")
         await self._send_session_audio(frame)
 
     async def _drain_acquire_audio(self) -> tuple[int, bool]:
