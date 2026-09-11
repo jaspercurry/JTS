@@ -58,7 +58,7 @@ from .feature_optics import (
     detrend,
     feature_q,
 )
-from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures, played_graph_fingerprint
+from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures, document_capture_id, played_graph_fingerprint
 
 SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
@@ -1101,7 +1101,7 @@ def sweep_round(
     """Sweep selected captures with the same gate ladder and numerical frame."""
     rungs, wanted = _validated(rungs_ms, at_hz)
     captures = discover_captures(Path(round_dir), select=lambda doc: (
-        (take_ids is None or doc.get("take_id") in take_ids)
+        (take_ids is None or document_capture_id(doc) in take_ids)
         and (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
         and (graph_fingerprint is None or played_graph_fingerprint(doc) == graph_fingerprint)
     ))

@@ -46,7 +46,9 @@ def _runnable(
         TAKES_THIS_BUNDLE: inputs.session_dir,
         "<set-id>": set_id,
     }
-    takes = spec.takes
+    takes = tuple(token for index, token in enumerate(spec.takes)
+                  if set_id is not None or (token != "<set-id>" and spec.takes[index:index + 2] not in
+                                           (("--set", "<set-id>"), ("--after-set", "<set-id>"))))
     missing = [
         token for token in takes
         if token.startswith("<") and not bindings.get(token)
@@ -80,7 +82,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
                 else default_out(inputs, round_dir, spec.artifact, named)
             )
             stat = path.stat() if path.is_file() else None
-            produced_by, required_inputs = _runnable(view, spec, round_dir, inputs, set_id)
+            produced_by, required_inputs = _runnable(view, spec, round_dir, inputs, named)
             if selected and "<take-id>" in required_inputs and len(selected.selected_ids) == 1:
                 produced_by = produced_by.replace(shlex.quote("<take-id>"), shlex.quote(selected.take_id()))
                 required_inputs.remove("<take-id>")

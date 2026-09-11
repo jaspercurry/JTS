@@ -15,6 +15,8 @@ conductor test file; importers name this module instead.
 
 from __future__ import annotations
 
+from tests.run_manifest_fixture import write_manifest
+
 import dataclasses
 import hashlib
 import json
@@ -2078,19 +2080,7 @@ def bank_capture_round(
     radiated_band_hz: tuple[float, float] | None = (150.0, 20000.0),
     declared_sha: str | None = None,
 ) -> Path:
-    """A banked-round directory whose captures are known convolutions.
-
-    One capture per entry in ``irs``: the played program convolved with that
-    impulse response, peak-normalised, beside the sidecar declaring its pose —
-    so what a reader of this round should recover is knowable in advance.
-
-    Both programs are written whichever one played, so every round built here
-    exercises the binding a reader has to get right: a capture belongs to the
-    program its bytes HASH, never to the one its phase label names.
-
-    ``radiated_band_hz`` of ``None`` omits the ``curves`` key — the shape of a
-    round banked without a declared radiated band.
-    """
+    """Retained captures made from known convolutions."""
     bundle = root / "bundle" / "b0"
     programs = bundle / "crossover_v2" / "wired-test"
     summed = bundle / "summed"
@@ -2147,6 +2137,8 @@ def bank_capture_round(
         if radiated_band_hz is not None:
             doc["curves"] = [{"role": "summed", "band_hz": list(radiated_band_hz)}]
         (summed / f"{stem}.json").write_text(json.dumps(doc))
+    (bundle / "info.json").write_text(json.dumps({"session_id": "b0"}))
+    write_manifest(root)
     return root
 
 

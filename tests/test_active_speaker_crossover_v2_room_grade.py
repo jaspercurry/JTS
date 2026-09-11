@@ -468,22 +468,11 @@ def test_the_baseline_round_names_the_regressed_band(tmp_path, capsys):
     )
 
 
-def test_both_medians_can_be_named_away_from_their_rounds(tmp_path, capsys):
-    round_dir = bank_measure_round(tmp_path)
-    candidate = tmp_path / "candidate-median.json"
-    candidate.write_text(json.dumps(room_median_document()))
-    incumbent = tmp_path / "incumbent-median.json"
-    incumbent.write_text(json.dumps(room_median_document(**INCUMBENT)))
-
-    assert round_views.main([
-        "room-grade", str(round_dir),
-        "--room-median", str(candidate),
-        "--baseline-room-median", str(incumbent),
-    ]) == EXIT_OK
-
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["regressed_bands"] == [60.0]
-    assert answer["out"] == str(round_dir / "room_grade.json")
+@pytest.mark.parametrize("flag", ["--room-median", "--baseline-room-median"])
+def test_room_grade_rejects_median_path_flags(flag):
+    with pytest.raises(SystemExit) as exc:
+        round_views.build_parser().parse_args(["room-grade", "round", flag, "median.json"])
+    assert exc.value.code == 2
 
 
 @pytest.mark.parametrize(("write_median", "reason"), [

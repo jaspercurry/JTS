@@ -2,63 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One banked round, as the FLOW banks it — the shared real-shape fixture.
-
-A fixture library that IS a fixture library, on
-``tests/crossover_v2_round_harness.py``'s precedent and for its reason: a
-shared builder living in a collected test module makes that module
-undeletable. This one is imported by the round-views and forward-model
-suites.
-
-**Every artifact here is written by the product's own writer.** The bundle is
-:func:`~jasper.active_speaker.bundles.open_bundle`'s; the paths are
-:class:`~jasper.active_speaker.crossover_v2.record_store.BankedRecordStore`'s;
-the take records are :mod:`~jasper.active_speaker.crossover_v2.spatial`'s four
-builders; the banked VERIFY curve is
-:func:`~jasper.active_speaker.crossover_v2.durable_state._decimate_verify_measured`'s
-output. Nothing below hand-types a record shape, so a writer that changes
-fails the suites that read it instead of leaving a fixture agreeing with
-nothing that ships.
-
-**The two shapes are DISJOINT, and that is the finding they exist to hold.**
-``jasper.web.correction_crossover_v2``'s own words: *"stage 2 opens a new
-bundle under a new capture session id"*. So one ``bank-crossover-round.sh`` run
-banks ONE stage, and:
-
-* :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
-  carrying both per-driver solos, the lateral walk pose(s), and the ENTRY
-  BASELINE. No cloud group (``capture_plan.STAGE1_INCLUDES_CLOUD_MEASURE`` is
-  ``False``), therefore no ``cloud_verify.json``, therefore no cloud positions
-  and no graded ``spec`` block. Its flow state banks no VERIFY curve, because
-  ``verify_priors`` is rebuilt from the conductor on every persist and a
-  stage-1 conductor has measured no VERIFY.
-* :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state
-  carrying ``verify_priors.verify_measured``. No per-driver solos: a verify
-  stage walks none.
-* :func:`bank_seat_round` — the ``seat/cube`` walk (ADR-0260): one
-  ungated summed take per pose of the shipped program's own resolved walk, so
-  a reader of categorized poses gets seven takes that differ only in where the
-  microphone was. No solos and no VERIFY curve — a seat walk measures neither.
-
-No round carries both a prediction basis and a measured VERIFY sum, which is
-issue #3482's root fact; no round carries both an entry baseline and a graded
-spec, which is #3478's.
-
-**The cloud group is deliberately absent from BOTH.** Stage 2 banks one, but
-no reader these suites pin opens it, and the only way to build a
-``cloud_verify.json`` from its own writer is
-``spatial.assemble_cloud_group_result`` over a combiner result built from live
-captures. A hand-typed cloud payload here would be the one part of this
-fixture that could drift, so the position-graded views keep the payload
-builder that already lives with them. :func:`bank_cloud_echo_band` is the one
-exception and stays one: it banks that group's echo BAND and nothing else of
-it, for the readers that ask only which band the null detector ran on.
-
-**No WAVs.** ``bank-crossover-round.sh`` stopped pulling the capture-dump ring
-when the ring was removed, and no reader on these paths opens one.
-"""
+"""Banked capture fixtures built with the product record writers."""
 
 from __future__ import annotations
+
+from tests.run_manifest_fixture import write_manifest
 
 import asyncio
 import json
@@ -370,6 +318,7 @@ def bank_measure_round(
     (round_dir / "state.json").write_text(
         json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
     )
+    write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
 
@@ -422,6 +371,7 @@ def bank_verify_round(
             (VERIFY_GRID_HZ, measured, np.zeros_like(measured))
         ),
     )))
+    write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
 
@@ -484,6 +434,7 @@ def bank_seat_round(
     (round_dir / "state.json").write_text(
         json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
     )
+    write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
 

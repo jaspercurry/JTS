@@ -2,19 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The round-grading comparison views. Four ported from a laptop campaign
-(issue #2769): frozen-reference grading, per-seat curves including the
-VERIFY pose, session-to-session repeatability, and per-seat agreement. A
-fifth, audibility-weighted co-metrics (NBD/SM, Olive 2004), landed with
-ticket 6.13 / ADR-0202.
-
-Every fixture builds its ``cloud_verify.json`` ``spec`` block by calling the
-REAL :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` on a
-synthetic combined curve and persisting its own ``to_dict()`` — the same
-shape a real banked round carries — rather than hand-typing a partial dict,
-so a schema drift in :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
-fails this suite instead of silently going unnoticed.
-"""
+"""Round view artifacts, answers, and grades over retained evidence."""
 
 from __future__ import annotations
 
@@ -78,6 +66,7 @@ from tests.crossover_v2_banked_round import (
     bank_measure_round,
 )
 from tests.crossover_v2_fixtures import bank_capture_round
+from tests.run_manifest_fixture import write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
 # round's answer is as knowable here as it is there.
 from tests.test_crossover_v2_gate_sweep import FEATURE_HZ, _pose_ir
@@ -202,6 +191,7 @@ def _make_round_dir(
     (capture_dir / "findings_cloud_verify.json").write_text(json.dumps({
         "findings": [], "field_descriptions": {},
     }))
+    write_manifest(round_dir)
     return round_dir
 
 
@@ -1123,12 +1113,8 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
         "producer_needs_more_than_this_round"
     ] is False
 
-    # An ordinary summed round does not claim it carries a legacy solo basis.
-    assert rows["forward_model.json"]["next_command"] is None
-    assert rows["forward_model.json"]["required_inputs"] == ["<capture-id>"]
-    assert rows["forward_model.json"]["repair_reason"] == (
-        "forward_model_basis_missing"
-    )
+    assert rows["forward_model.json"]["required_inputs"] == []
+    assert rows["forward_model.json"]["next_command"] == f"jasper-round-views forward-model {round_dir}"
 
     # One row no view here writes: the banker's own pose index, named with the
     # command that makes it rather than with this tool's prog.
@@ -1474,6 +1460,7 @@ def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
         position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
     _bank_entry_baseline_take(round_dir, **kwargs)
+    write_manifest(round_dir)
     return round_dir
 
 
@@ -1542,13 +1529,13 @@ def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, caps
 
     round_dir = bank_measure_round(tmp_path)
 
-    assert cli.main(["entry", str(round_dir), "--out", "-"]) == 0
-    grade = json.loads(capsys.readouterr().out)
+    assert cli.main(["entry", str(round_dir)]) == 0
+    grade = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
     assert grade["available"] is True
     assert grade["round_ordinal"] == 1
 
-    assert cli.main(["frequency", str(round_dir), "--out", "-"]) == 0
-    view = json.loads(capsys.readouterr().out)
+    assert cli.main(["frequency", str(round_dir)]) == 0
+    view = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
     assert [s["kind"] for s in view["runs"][0]["series"]] == ["entry_baseline"]
 
 
@@ -1974,7 +1961,7 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 #: than re-asserted verb by verb.
 _SINGLE_ROUND_VIEWS = (
     "entry", "per-seat", "agreement", "co-metrics", "directivity",
-    "cloud-binding", "spec-sweep", "frequency", "inventory",
+    "cloud-binding", "sweep --scope verdict", "frequency", "inventory",
 )
 
 
@@ -2014,10 +2001,10 @@ def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
         },
     )
 
-    assert cli.main([view, str(round_dir)]) == cli.EXIT_OK
+    assert cli.main([*shlex.split(view), str(round_dir)]) == cli.EXIT_OK
 
     answer = json.loads(capsys.readouterr().out)
-    assert answer["view"] == view
+    assert answer["view"] == shlex.split(view)[0]
     # ``status`` is how a FAILURE is recognised; a success never carries one.
     assert "status" not in answer
     written = Path(answer["out"])
@@ -2456,11 +2443,16 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
         captures / "bundle" / "b0", round_dir / "bundle" / "sess1", dirs_exist_ok=True,
     )
 
+    shutil.rmtree(round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/banked")
+    write_manifest(round_dir)
     rc = main(
-        ["spec-sweep", str(round_dir), "--rungs-ms", "5", "20"],
+        ["sweep", "--scope", "verdict", str(round_dir), "--rungs-ms", "5", "20"],
     )
 
     assert rc == 0
+    from jasper.cli._report import render_report
+    expected = {"round_dir": str(round_dir), "spec": spec_with_gate_sensitivity(load_banked_round(round_dir), rungs_ms=[5, 20]).to_dict()}
+    assert (round_dir / "spec_gate_sensitivity.json").read_bytes() == (render_report(expected) + "\n").encode()
     payload = json.loads((round_dir / "spec_gate_sensitivity.json").read_text())
     assert payload["round_dir"] == str(round_dir)
     spec = payload["spec"]
@@ -2492,13 +2484,17 @@ def gate_sweep_round(tmp_path):
 
 def test_cli_gate_sweep_writes_its_report_beside_the_round(gate_sweep_round):
     from jasper.cli import round_views as cli
+    from jasper.cli._report import render_report
+    from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 
-    rc = cli.main(["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20"])
+    expected = sweep_round(gate_sweep_round, rungs_ms=[5, 20])
+    rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20"])
 
     assert rc == cli.EXIT_OK
     report = json.loads(
-        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact).read_text()
+        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["sweep --scope round"].artifact).read_text()
     )
+    assert (gate_sweep_round / "gate_sweep.json").read_bytes() == (render_report(expected) + "\n").encode()
     assert report["frame"]["rungs_ms"] == [5.0, 20.0]
     assert len(report["poses"]) == 3
 
@@ -2510,14 +2506,14 @@ def test_cli_gate_sweep_out_puts_the_report_where_it_is_told(
 
     elsewhere = tmp_path / "sweep.json"
     rc = cli.main(
-        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+        ["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20",
          "--out", str(elsewhere)]
     )
 
     assert rc == cli.EXIT_OK
     assert elsewhere.is_file()
     assert not (
-        gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact
+        gate_sweep_round / cli.ARTIFACT_BY_VIEW["sweep --scope round"].artifact
     ).exists()
 
 
@@ -2525,13 +2521,13 @@ def test_cli_gate_sweep_at_hz_reports_the_named_bin(gate_sweep_round):
     from jasper.cli import round_views as cli
 
     rc = cli.main(
-        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+        ["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20",
          "--at-hz", "800"]
     )
 
     assert rc == cli.EXIT_OK
     report = json.loads(
-        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact).read_text()
+        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["sweep --scope round"].artifact).read_text()
     )
     (feature,) = report["features"]
     assert feature["requested_hz"] == 800.0
@@ -2542,7 +2538,8 @@ def test_cli_gate_sweep_refusal_names_the_missing_input(tmp_path, capsys):
     stage bucket: which input was missing is the answer."""
     from jasper.cli import round_views as cli
 
-    assert cli.main(["gate-sweep", str(tmp_path)]) == cli.EXIT_REFUSED
+    root = bank_measure_round(tmp_path)
+    assert cli.main(["sweep", "--scope", "round", str(root)]) == cli.EXIT_REFUSED
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
@@ -2570,12 +2567,15 @@ def test_cli_gate_sweep_an_unusable_request_is_the_unreadable_exit(
     gate_sweep_round, capsys, argv
 ):
     from jasper.cli import round_views as cli
+    from jasper.cli._report import render_report
+    from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 
-    rc = cli.main(["gate-sweep", str(gate_sweep_round), *argv])
+    expected = sweep_round(gate_sweep_round, rungs_ms=[5, 20])
+    rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), *argv])
 
     assert rc == cli.EXIT_UNREADABLE
     assert not (
-        gate_sweep_round / cli.ARTIFACT_BY_VIEW["gate-sweep"].artifact
+        gate_sweep_round / cli.ARTIFACT_BY_VIEW["sweep --scope round"].artifact
     ).exists()
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "unreadable"
@@ -2590,7 +2590,7 @@ def test_cli_gate_sweep_an_unwritable_out_is_the_write_exit(gate_sweep_round, ca
     blocker.write_text("")
 
     rc = cli.main(
-        ["gate-sweep", str(gate_sweep_round), "--rungs-ms", "5", "20",
+        ["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20",
          "--out", str(blocker / "x.json")]
     )
 
@@ -2790,6 +2790,7 @@ def _bank_fitted_round(tmp_path: Path, name: str, *, nulls_hz) -> Path:
             program,
         ),
     }))
+    write_manifest(round_dir)
     return round_dir
 
 
@@ -2995,8 +2996,8 @@ def test_selected_seat_views_share_preparation_and_keep_standalone_results(
         _bank_verify_measured(round_dir, measured_db=_flat_curve(ripple_db=1))
     expected = {}
     for view in ("per-seat", "agreement", "directivity", "co-metrics"):
-        assert main([view, str(round_dir), "--out", "-"]) == 0
-        expected[view] = json.loads(capsys.readouterr().out)
+        assert main([view, str(round_dir)]) == 0
+        expected[view] = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
     calls = {}
     for name in ("_load_round", "verify_pose_curve", "per_seat_curves"):
         original = getattr(seats, name)
@@ -3005,17 +3006,17 @@ def test_selected_seat_views_share_preparation_and_keep_standalone_results(
             return _original(*args, **kwargs)
         monkeypatch.setattr(seats, name, counted)
     assert main([
-        "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics", "--out", "-",
+        "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics",
     ]) == 0
     results = json.loads(capsys.readouterr().out)["results"]
-    assert {view: row["detail"] for view, row in results.items()} == expected
+    assert {view: json.loads(Path(row["out"]).read_text()) for view, row in results.items()} == expected
     assert calls == {"_load_round": 1, "verify_pose_curve": 1, "per_seat_curves": 1}
     for row in results.values():
         assert row["sources"]["bundle"] == str(round_dir / "bundle/sess1")
         assert row["sources"]["session"]["capture_session_id"] == "cap1"
         assert row["sources"]["packet_fingerprint"]
         assert row["parameters"] and row["units"] and row["coverage"]
-        assert row["out"] is None
+        assert Path(row["out"]).is_file()
     assert results["per-seat"]["coverage"]["verify_pose_included"] is has_verify
     assert results["co-metrics"]["coverage"]["pooled_window_bearings_deg"] == []
     if not has_verify:
@@ -3058,7 +3059,7 @@ def test_default_per_seat_does_no_optional_work(tmp_path, monkeypatch, capsys):
         raise AssertionError("unrequested analysis")
     for name in ("agreement_table", "directivity_view", "audibility_co_metrics"):
         monkeypatch.setattr(seats, name, unexpected)
-    assert main(["per-seat", str(round_dir), "--out", "-"]) == 0
+    assert main(["per-seat", str(round_dir)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert len(result["seats"]) == 1
     assert "results" not in result
@@ -3073,8 +3074,8 @@ def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, c
     _bank_verify_measured(round_dir, measured_db=_flat_curve())
     profile = round_dir / "applied-profile.json"
     profile.write_text("{}")
-    assert main(["inventory", str(round_dir), "--out", "-"]) == 0
-    rows = {row["artifact"]: row for row in json.loads(capsys.readouterr().out)["artifacts"]}
+    assert main(["inventory", str(round_dir)]) == 0
+    rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
     command = shlex.split(rows["directivity.json"]["next_command"])
     assert command == ["jasper-round-views", "directivity", str(round_dir)]
     assert main(command[1:]) == 0

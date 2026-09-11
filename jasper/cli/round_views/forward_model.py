@@ -24,8 +24,9 @@ from ._common import (
 )
 
 ACCEPTANCE_RUNS = """jasper-round-views forward-model <basis-round> --set <basis-set>
+
 jasper-round-views forward-model <basis-round> --set <basis-set> \
-    --candidate-json <candidate.json> --measured-round <candidate-round> \
+    --candidate-json <candidate.json> --basis-candidate-json <basis-candidate.json> --measured-round <candidate-round> \
     --measured-set <candidate-set>
 """
 
