@@ -2391,11 +2391,17 @@ def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatc
         )
 
 
-@pytest.mark.parametrize("scope", ["candidate"])
-def test_tuning_review_does_not_warn_about_the_unused_speaker_verify_stage(monkeypatch, scope):
+@pytest.mark.parametrize("program", ["jts_saved_tune", "jts_candidate_composition"])
+@pytest.mark.parametrize("layer", ["room", "bass"])
+def test_tuning_review_does_not_warn_about_the_unused_speaker_verify_stage(monkeypatch, program, layer):
+    from jasper.active_speaker.crossover_v2.durable_state import _candidate_summary
+    from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+    candidate = _candidate(program_id=program, room_correction=_room_correction() if layer == "room" else {},
+                           bass_extension=BASS_EXTENSION if layer == "bass" else {})
     status = {"crossover_v2": {
         "phase": "review",
-        "candidate": {"fingerprint": "room", "trial_scope": scope, "program_id": v2host.COMPOSITION_KIND},
+        "candidate": _candidate_summary(candidate),
     }}
     monkeypatch.setattr(
         v2host, "resolve_conductor_context",
@@ -5788,7 +5794,7 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 # --- W6 hardware run 3, finding F: bind_production_play's config_dir SSOT -------
 
 
-def test_web_binding_uses_saved_profile_when_playback_is_composed(monkeypatch, tmp_path):
+def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch, tmp_path):
     from jasper.active_speaker.crossover_v2 import composition, door
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
@@ -5802,8 +5808,6 @@ def test_web_binding_uses_saved_profile_when_playback_is_composed(monkeypatch, t
         return "composer"
     monkeypatch.setattr(door, "bind_measurement_graph", bind_graph)
     monkeypatch.setattr(composition, "bind_program_composer", bind_compose)
-    monkeypatch.setattr(v2host, "_applied_profile_now", lambda: None)
-    monkeypatch.setattr(v2host, "load_applied_baseline_profile_state", lambda: {"profile": "applied"})
     protection = {"woofer": (), "tweeter": ()}
     play = v2host.bind_production_play(
         program_for_phase=lambda phase: phase, camilla_factory=lambda: None,
@@ -5814,7 +5818,6 @@ def test_web_binding_uses_saved_profile_when_playback_is_composed(monkeypatch, t
     )
     assert play.graph is graph and play.compose == "composer"
     assert bound["profile"].protection_sections_by_role is protection
-    assert bound["profile"].applied_profile == {"profile": "applied"}
     assert bound["graph_dir"] == bound["composer"]["config_dir"] == str(DEFAULT_CAMILLA_CONFIG_DIR)
     assert bound["composer"]["graph_yaml"]() == "graph"
 

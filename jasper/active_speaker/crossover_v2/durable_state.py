@@ -44,7 +44,7 @@ from jasper.active_speaker.attempts_loop import (
     AttemptIntegrity,
     AttemptRecord,
 )
-from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
+from jasper.active_speaker.candidate_trials import has_tuning_layers
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 
@@ -112,7 +112,6 @@ class V2ConductorSnapshot:
     applied: bool = False
     gain_plan_db: Mapping[str, float] | None = None
     measure_gain_ceiling_db: Mapping[str, float] | None = None
-    measure_gain_retry_used: bool = False
     # MEASURE's ACTUAL per-role sweep duration, read off the composed program
     # — a continuous float no offline search grid can reach, banked so
     # ``harmonic_evidence.rebuild_measure_program`` can REPLAY a fitted round's
@@ -156,7 +155,6 @@ class V2ConductorSnapshot:
             "applied": self.applied,
             "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
             "measure_gain_ceiling_db": dict(self.measure_gain_ceiling_db or {}),
-            "measure_gain_retry_used": self.measure_gain_retry_used,
             "measure_sweep_durations_s": (
                 dict(self.measure_sweep_durations_s)
                 if self.measure_sweep_durations_s else None
@@ -864,7 +862,7 @@ def _candidate_summary(
     return {
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
-        "trial_scope": candidate_trial_scope(candidate),
+        "tuning_layers": has_tuning_layers(candidate),
         "trims_db": dict(candidate.role_attenuations_db),
         # …and which of those trims the round did NOT solve: the household
         # copy must never word a pinned number as a measured result. The
@@ -1139,7 +1137,6 @@ def build_conductor_state(
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(getattr(snap, "measure_gain_ceiling_db", None) or {}),
-        "measure_gain_retry_used": bool(getattr(snap, "measure_gain_retry_used", False)),
         # MEASURE's realized per-role sweep duration, banked so
         # ``harmonic_evidence.rebuild_measure_program`` can replay a fitted
         # round's sweep instead of refusing PROGRAM_NOT_REPRODUCIBLE (#2923).

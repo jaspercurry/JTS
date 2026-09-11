@@ -2,582 +2,162 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The anchor phases' capture ladders (#2291 Phase 5a-vii).
-
-What these pin is what the extraction ASSERTS and nothing else checked: the two
-orderings bought with live incidents, the laziness of the two ports, the
-directive a MEASURE rung carries back, and the one deliberate difference
-between VERIFY's integrity ladder and the entry baseline's.
-"""
-
-from __future__ import annotations
-
+import ast
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
-from jasper.active_speaker.crossover_v2 import spatial, refusal_copy
-from jasper.audio_measurement.program_analysis.model import AnchorEvidence, DriftEstimate
-from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _run_phase
-
-
-# --------------------------------------------------------------------------- #
-# helpers — a facts object whose every field is stated, then one field moved
-# --------------------------------------------------------------------------- #
-
-
-def _check(**overrides) -> cd.CheckScreens:
-    base = dict(
-        stimulus_located=True,
-        anchor_ambiguous=False,
-        delta_implausible=False,
-        channel_map_ok=True,
-        pilot_snr_ok=True,
-        linearity_ok=True,
-        gain_plan_present=True,
-        gain_plan_snr_floor_ok=True,
-    )
-    base.update(overrides)
-    return cd.CheckScreens(**base)
-
-
-class _Counter:
-    """A port that records how many times it was asked."""
-
-    def __init__(self, answer: bool) -> None:
-        self.answer = answer
-        self.calls = 0
-
-    def __call__(self) -> bool:
-        self.calls += 1
-        return self.answer
-
-
-def _measure(**overrides) -> tuple[cd.MeasureScreens, _Counter, _Counter]:
-    schedule = overrides.pop("_schedule", _Counter(True))
-    plausible = overrides.pop("_plausible", _Counter(True))
-    base = dict(
-        stimulus_located=True,
-        pilot_snr_ok=True,
-        sweep_locate_confidence_ok=True,
-        glitch_detected=False,
-        any_sweep_clipped=False,
-        linearity_ok=True,
-        alignment_present=True,
-        alignment_status_ok=True,
-        anchor=None,
-        epsilon_ppm=None,
-        max_residual_samples=None,
-        discontinuity_samples=None,
-        peak_dbfs=None,
-        mic_meter_status=None,
-    )
-    base.update(overrides)
-    return (
-        cd.MeasureScreens(
-            sweep_schedule_ok=schedule, delay_physically_plausible=plausible, **base
-        ),
-        schedule,
-        plausible,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# CHECK
-# --------------------------------------------------------------------------- #
-
-
-def test_check_accepts_a_clean_capture():
-    assert cd.check_screens(_check()) is None
-
-
-@pytest.mark.parametrize(
-    ("override", "expected"),
-    [
-        ({"stimulus_located": False}, cd.SCREEN_LOCATE_FAILED),
-        ({"anchor_ambiguous": True}, cd.SCREEN_ANCHOR_AMBIGUOUS),
-        ({"delta_implausible": True}, cd.SCREEN_ANCHOR_AMBIGUOUS),
-        ({"channel_map_ok": False}, cd.SCREEN_CHANNEL_MAP_MISMATCH),
-        ({"pilot_snr_ok": False}, cd.SCREEN_SNR_FLOOR),
-        ({"gain_plan_present": False}, cd.SCREEN_SNR_FLOOR),
-        ({"gain_plan_snr_floor_ok": False}, cd.SCREEN_SNR_FLOOR),
-    ],
+from jasper.active_speaker.crossover_v2 import capture_dispatch as cd, refusal_copy
+from jasper.audio_measurement import snr_policy
+from jasper.audio_measurement.frame_ledger import FrameLedger
+from jasper.audio_measurement.program_analysis.model import (
+    AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
 )
-def test_check_rungs_report_their_own_finding(override, expected):
-    assert cd.check_screens(_check(**override)) == expected
+from jasper.audio_measurement.quality_model import DRIVER
+from tests.crossover_v2_fixtures import (
+    FakeSeams, _alignment, _conductor, _driver_response, _loc, _measure_analysis, _run_phase,
+)
+
+PHASES = ("check", "measure", "verify")
+GAINS = {"woofer": -30.0, "tweeter": -30.0}
 
 
-def test_check_never_refuses_on_an_unestablished_fact():
-    """``None`` is no evidence, not a failure — the convention the analysis uses.
-
-    A capture whose channel map or linearity could not be judged must not be
-    refused for it; only an explicit ``False`` is a finding.
-    """
-    assert cd.check_screens(_check(channel_map_ok=None, linearity_ok=None)) is None
-
-
-def test_a_bent_curve_blames_the_room_when_the_gain_solve_already_said_so():
-    """W6.12 — CHECK is the one phase that can tell the room from the phone.
-
-    Its gain solve has a band-resolved ambient verdict against THIS capture in
-    hand, so a linearity failure alongside a floor failure is the room's; with
-    the floor clear it is the recording chain's AGC.
-    """
-    assert cd.check_screens(
-        _check(linearity_ok=False, gain_plan_snr_floor_ok=False)
-    ) == cd.SCREEN_NOISY_ROOM_LINEARITY
-    assert cd.check_screens(
-        _check(linearity_ok=False, gain_plan_snr_floor_ok=True)
-    ) == cd.SCREEN_LINEARITY_FAILED
+def _analysis(**changes):
+    return replace(ProgramAnalysis(
+        phase="measure", program_id="take", locations=(_loc("sweep_w"),),
+        pilot_snr_ok=True, linearity_ok=True, channel_map_ok=True,
+        anchor=AnchorEvidence(presence=0.5, confidence=0.9, corroborated=True),
+        mic_meter_status="usable", alignment=_alignment(),
+        driver_responses=(_driver_response("woofer", 8.0),),
+        gain_plan=GainPlan(gain_db=GAINS, predicted_peak_dbfs=-30.0, snr_floor_ok=True),
+    ), **changes)
 
 
-def test_a_lost_ambient_window_blames_the_room_for_a_wiring_fault():
-    """A KNOWN DEFECT, pinned so it cannot drift out of sight (issue #2052).
-
-    These are the exact screens a real miswire produces when its ambient
-    window is lost — a silent non-anchor driver plus a late recording. The
-    analysis half is measured and pinned by
-    `test_channel_map_fallback_never_passes_a_driver_that_never_played`
-    (channel map UNKNOWN, linearity False); this is what the ladder then
-    answers.
-
-    ``noisy_room_linearity`` is the wrong remedy: it tells the household the
-    room bent the curve, when nothing here measured the room at all.
-    ``gain_plan_snr_floor_ok`` is ``False`` because
-    `program_analysis._snr_floor_ok` collapses "the ambient report is empty"
-    into the same bool as "the room's worst band is over the bound", so the
-    rung above reads no-evidence as a room verdict.
-
-    The refusal itself is correct and safety holds — this capture must not
-    commission a speaker, and it does not. What is wrong is only which lever
-    the household is pointed at. Fixing it needs a rung (or a rung condition)
-    that can tell the two apart, which is a change to THIS ladder; #2052
-    shipped the analysis half and left this recorded rather than guessed at.
-    When that fix lands, this test is the one that must change.
-    """
-    assert cd.check_screens(
-        _check(channel_map_ok=None, linearity_ok=False, gain_plan_snr_floor_ok=False)
-    ) == cd.SCREEN_NOISY_ROOM_LINEARITY
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize(("changes", "code", "next", "charge"), [
+    ({"locations": ()}, refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator"),
+    ({"anchor_ambiguous": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS, "fix_and_retake", "operator"),
+    ({"anchor": AnchorEvidence(corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET, "fix_and_retake", "speaker"),
+    ({"locations": (_loc("sweep_w", clipped=True),)}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
+    ({"glitch_detected": True}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
+    ({"frame_ledger": FrameLedger(received_frames=128, declared_frames=256)}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
+    ({"discontinuity_samples": -1066.7}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
+    ({"locations": (_loc("sweep_w", residual_samples=1200.0),)}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
+    ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake", "operator"),
+    ({"mic_meter_status": "clipping"}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
+    ({"mic_meter_status": "too_quiet"}, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE, "fix_and_retake", "operator"),
+])
+def test_integrity_verdict(phase, changes, code, next, charge):
+    verdict = cd.assess(_analysis(**changes), phase=phase, gain_db=GAINS)
+    assert not verdict.ok and verdict.fault == code
+    assert code in refusal_copy.REASON_REGISTRY
+    assert (verdict.next, verdict.charge) == (next, charge)
+    assert all(type(value) in (float, bool, str) for value in verdict.evidence.values())
+    assert not any(verdict.capabilities.values())
+    if next == "retake_quieter":
+        assert verdict.next_gain_db == -33.0
 
 
-def test_the_room_arm_needs_a_plan_to_have_said_it():
-    """No gain plan means no ambient verdict, so the room cannot be blamed."""
-    assert cd.check_screens(
-        _check(linearity_ok=False, gain_plan_present=False, gain_plan_snr_floor_ok=False)
-    ) == cd.SCREEN_LINEARITY_FAILED
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("status", [None, "unmeasured", "too_loud"])
+def test_absent_clipping_and_unknown_meter_evidence_do_not_refuse(phase, status):
+    verdict = cd.assess(_analysis(mic_meter_status=status), phase=phase)
+    assert verdict.ok and verdict.fault is None
+    assert verdict.evidence["mic_meter_status"] == (status or "unmeasured")
+    assert verdict.capabilities["mic_level"] is (status == "too_loud")
 
 
-def test_the_pilot_is_asked_before_linearity():
-    """Issue #1838's ordering, stated as the two-fact discriminator.
-
-    Below the floor the ambient-subtracted delta is not evidence either way, so
-    a capture failing BOTH must report the room and the level — never the
-    phone's microphone.  Swapping the two rungs turns this green→red.
-    """
-    assert cd.check_screens(
-        _check(pilot_snr_ok=False, linearity_ok=False)
-    ) == cd.SCREEN_SNR_FLOOR
+@pytest.mark.parametrize("phase", ["check", "verify"])
+def test_clip_auto_retry_comes_from_the_registry_without_a_gain_target(phase):
+    take = cd.assess(_analysis(locations=(_loc("sweep_w", clipped=True),)), phase=phase)
+    result = refusal_copy.PhaseVerdict.from_take(take).to_capture_dict()
+    assert result["code"] == refusal_copy.REASON_CLIPPED
+    assert result["template"] == refusal_copy.TEMPLATE_SILENT_AUTO_RETRY
+    assert result["next"] == "retake_quieter" and result["next_gain_db"] is None
+    assert result["auto_retry"] is True
 
 
-def test_the_stimulus_is_asked_before_everything():
-    assert cd.check_screens(
-        _check(stimulus_located=False, anchor_ambiguous=True,
-               channel_map_ok=False, pilot_snr_ok=False)
-    ) == cd.SCREEN_LOCATE_FAILED
+@pytest.mark.parametrize("frame_loss", [False, True])
+def test_a_mic_bump_costs_the_operator_but_frame_loss_costs_the_speaker(frame_loss):
+    result = cd.assess(_analysis(
+        glitch_detected=True, pilot_snr_ok=not frame_loss,
+        drift=DriftEstimate(30.0, 0.2, True, glitch_inputs=("repeat_level_disagree",)),
+        frame_ledger=FrameLedger(received_frames=128, declared_frames=256 if frame_loss else 128),
+    ), phase="measure")
+    assert result.charge == ("speaker" if frame_loss else "operator")
+    assert not result.ok and result.next == "retake_same"
 
 
-def test_an_unattributed_anchor_is_asked_before_the_wiring_verdict():
-    """Issue #2644's ordering, stated as the two-fact discriminator.
-
-    A capture the analyzer could not pin reads every per-driver window one
-    pilot spacing from where that driver played, so ``channel_map_ok=False``
-    beside it is a statement about WHERE the analyzer looked, not about how the
-    speaker is wired.  On 2026-08-16 exactly this pair sent a household to
-    check the wiring of a speaker that had passed the identical program two
-    hours earlier.  Swapping the two rungs turns this green→red.
-    """
-    assert cd.check_screens(
-        _check(anchor_ambiguous=True, channel_map_ok=False)
-    ) == cd.SCREEN_ANCHOR_AMBIGUOUS
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("alignment", [_alignment(status="unresolved"), _alignment(delay_us=2000.0), None])
+def test_solver_failure_preserves_the_recording(phase, alignment):
+    verdict = cd.assess(_analysis(alignment=alignment), phase=phase,
+                        priors=MeasurementPriors(alignment_delay_bounds_us=(50.0, 300.0)))
+    assert verdict.ok and verdict.fault is None
+    assert verdict.capabilities["delay_estimate"] is False
+    assert verdict.capabilities["magnitude"] is True
+    assert verdict.next == "accept"
 
 
-def test_an_impossible_delta_is_asked_before_the_wiring_verdict_even_with_a_confident_anchor():
-    """Issue #2647's ordering, the deferred half of #2644's fix.
-
-    The 2026-08-16 incident's anchor was a near-tie (`anchor_ambiguous` alone
-    already catches that shape). This pins the OTHER shape #2645 deliberately
-    left open: an anchor that confidently locked onto the WRONG spacing --
-    ``anchor_ambiguous`` stays False -- still leaves a captured pilot delta no
-    real wiring can produce (``delta_implausible``, #2647). That signal alone,
-    independent of the near-tie guard, must still out-rank
-    ``channel_map_mismatch``. Swapping the two rungs turns this green→red.
-    """
-    assert cd.check_screens(
-        _check(anchor_ambiguous=False, delta_implausible=True, channel_map_ok=False)
-    ) == cd.SCREEN_ANCHOR_AMBIGUOUS
-
-
-def test_a_plausible_mis_wire_delta_still_hard_stops_on_the_wiring_verdict():
-    """The rung this issue must NOT swallow: a genuine wiring fault.
-
-    Hardware-measured wiring shapes moved the isolation ratio by only
-    +/-0.4 dB (`CHANNEL_MAP_MIN_ISOLATION_DB`'s derivation) -- nowhere near
-    `DELTA_IMPLAUSIBLE_GAP_DB`'s 48 dB ceiling. A capture whose delta sits
-    inside that ceiling (``delta_implausible=False``) but whose channel map
-    still failed must keep reporting the wiring fault, not get routed to the
-    retriable anchor-ambiguous vocabulary.
-    """
-    assert cd.check_screens(
-        _check(anchor_ambiguous=False, delta_implausible=False, channel_map_ok=False)
-    ) == cd.SCREEN_CHANNEL_MAP_MISMATCH
-
-
-def test_an_unattributed_anchor_is_retriable_and_never_a_wiring_instruction():
-    """The point of the rung, at the copy layer rather than the ladder layer.
-
-    ``channel_map_mismatch`` is a HARD STOP with a zero retry budget whose
-    sentence tells the household to open its speaker.  The kind this rung
-    returns must be neither of those things — otherwise the ladder change is
-    cosmetic.
-    """
-    from jasper.active_speaker.crossover_v2 import refusal_copy
-
-    code = refusal_copy.SCREEN_KIND_REASONS[cd.SCREEN_ANCHOR_AMBIGUOUS]
-    spec = refusal_copy.REASON_REGISTRY[code]
-    assert spec.retry_budget > 0, "an un-attributed capture is fixed by retaking it"
-    assert code not in refusal_copy.NON_RETRIABLE_CODES
-    assert spec.template != refusal_copy.TEMPLATE_HARD_STOP
-    sentence = f"{spec.message} {spec.banner}".lower()
-    for forbidden in ("wiring", "wire", "rewire", "speaker wiring"):
-        assert forbidden not in sentence, (
-            f"anchor-ambiguous copy must not mention {forbidden!r}: {sentence!r}"
-        )
-
-
-# --------------------------------------------------------------------------- #
-# MEASURE
-# --------------------------------------------------------------------------- #
-
-
-def test_measure_accepts_a_clean_capture():
-    screens, schedule, plausible = _measure()
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0).kind is None
-    assert (schedule.calls, plausible.calls) == (1, 1)
-
-
-def test_too_quiet_is_reported_before_glitched():
-    """D3 (issue #1838), the rung order a live session bought.
-
-    Low SNR CAUSES the glitch signal.  With the glitch rung first, a session
-    playing 33 dB below flat was told its capture had glitched and silently
-    re-armed the same unwinnable level until it timed out.  Both facts are true
-    here; the honest one is the level.
-    """
-    screens, _, _ = _measure(pilot_snr_ok=False, glitch_detected=True)
-    screen = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert screen is not None
-    assert screen.kind == cd.SCREEN_PILOT_LEVEL_COLLAPSE
-
-
-def test_neither_level_rung_rearms():
-    """Re-running an inaudible measurement at the same level cannot succeed."""
-    for override in ({"stimulus_located": False}, {"pilot_snr_ok": False}):
-        screens, _, _ = _measure(**override)
-        screen = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-        assert screen is not None and screen.rearm is False
-
-
-def test_the_three_transient_rungs_rearm_and_only_the_clipped_one_backs_off():
-    screens, _, _ = _measure(glitch_detected=True)
-    glitch = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert glitch == cd.MeasureScreen(
-        cd.SCREEN_CAPTURE_GLITCH, rearm=True, evidence={"mic_meter_status": "unmeasured"},
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("pilot_ok", [True, False])
+def test_low_snr_prices_a_louder_take(phase, pilot_ok):
+    band = snr_policy.band_snr_verdicts(
+        decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -40}],
+        noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000, 4000), model=DRIVER,
     )
-
-    screens, _, _ = _measure(_schedule=_Counter(False))
-    schedule = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert schedule == cd.MeasureScreen(
-        cd.SCREEN_CAPTURE_GLITCH, guard="sweep_schedule", rearm=True,
-        evidence={"mic_meter_status": "unmeasured"},
-    )
-
-    screens, _, _ = _measure(any_sweep_clipped=True)
-    clipped = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert clipped == cd.MeasureScreen(
-        cd.SCREEN_CLIPPED, rearm=True, rearm_backoff_db=3.0,
-        evidence={"mic_meter_status": "unmeasured"},
-    )
+    response = replace(_driver_response("woofer", 8.0), snr={"alignment": band})
+    verdict = cd.assess(_analysis(driver_responses=(response,), pilot_snr_ok=pilot_ok), phase=phase,
+                        gain_db=GAINS, gain_ceiling_db={"woofer": -20.0})
+    assert verdict.ok is pilot_ok
+    assert verdict.next == "retake_louder" and verdict.next_gain_db == -20.0
+    assert type(verdict.next_gain_db) is float
+    assert verdict.charge == "speaker"
+    assert verdict.evidence["snr.woofer.alignment.shortfall_db"] == 5.0
+    assert verdict.evidence["snr.woofer.alignment.estimated_snr_db"] == 30.0
 
 
-def test_the_backoff_is_the_callers_number_not_a_constant_here():
-    """Stated, never reached for — so a policy change lands in one place."""
-    screens, _, _ = _measure(any_sweep_clipped=True)
-    screen = cd.measure_screens(screens, clip_retry_backoff_db=7.5)
-    assert screen is not None and screen.rearm_backoff_db == 7.5
+@pytest.mark.parametrize("phase", PHASES)
+def test_quiet_pilot_explains_a_false_glitch(phase):
+    verdict = cd.assess(_analysis(pilot_snr_ok=False, glitch_detected=True), phase=phase)
+    assert verdict.fault == (refusal_copy.REASON_SNR_FLOOR if phase == "check" else refusal_copy.REASON_PILOT_LEVEL_COLLAPSE)
+    assert verdict.next == "fix_and_retake"
 
 
-def test_the_two_shared_code_rungs_are_told_apart_by_guard():
-    """§5.2 reuses one household code; ``guard=`` is telemetry's only handle."""
-    screens, _, _ = _measure(sweep_locate_confidence_ok=False)
-    locate = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert locate == cd.MeasureScreen(
-        cd.SCREEN_LOCATE_FAILED, guard="sweep_locate_confidence",
-        evidence={"mic_meter_status": "unmeasured"},
-    )
-    screens, _, _ = _measure(stimulus_located=False)
-    plain = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert plain is not None and plain.guard == ""
+@pytest.mark.parametrize(("changes", "code"), [
+    ({"channel_map_ok": False, "pilot_snr_ok": False}, refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
+    ({"gain_plan": None}, refusal_copy.REASON_SNR_FLOOR),
+    ({"delta_implausible": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS),
+    ({"linearity_ok": False, "gain_plan": GainPlan(GAINS, -30.0, False)}, refusal_copy.REASON_NOISY_ROOM_LINEARITY),
+])
+def test_check_gates(changes, code):
+    assert cd.assess(_analysis(**changes), phase="check").fault == code
 
 
-def test_the_schedule_port_is_not_asked_when_a_rung_above_refuses():
-    """The laziness that makes it a port rather than a value.
-
-    ``sweep_schedule_ok`` reaches ``program_for_phase``, which RAISES when
-    MEASURE has no composed program.  Resolving it eagerly would move that
-    failure above the three rungs the shipped ladder answers first.
-    """
-    for override in (
-        {"stimulus_located": False},
-        {"pilot_snr_ok": False},
-        {"anchor": AnchorEvidence(corroborated=False)},
-        {"sweep_locate_confidence_ok": False},
-        {"glitch_detected": True},
-    ):
-        screens, schedule, _ = _measure(**override)
-        cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-        assert schedule.calls == 0, override
+@pytest.mark.parametrize("has_drivers", [False, True])
+def test_measure_purpose_decides_whether_delay_is_required(has_drivers):
+    analysis = _analysis(alignment=_alignment(status="unresolved"))
+    if not has_drivers:
+        analysis = replace(analysis, driver_responses=(), summed_response=_driver_response("summed", 8.0))
+    take = cd.assess(analysis, phase="measure")
+    assert take.ok and take.fault is None
+    assert flow._measure_sufficient(take, analysis) is (not has_drivers)
 
 
-def test_the_plausibility_port_is_asked_only_of_a_resolved_trusted_estimate():
-    """Fix 3's backstop is the last alignment rung, and only that.
-
-    A trims-only capture has no estimate and an unresolved one is already
-    refused.  Asking anyway would call the preset-bound check on alignments the
-    shipped ladder never handed it.  An UNTRUSTED estimate is no longer one of
-    those cases: the confidence rung was demoted to a disclosure, so a
-    low-confidence resolved estimate now reaches this port like any other.
-    """
-    for override in (
-        {"alignment_present": False},
-        {"alignment_status_ok": False},
-    ):
-        screens, _, plausible = _measure(**override)
-        cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-        assert plausible.calls == 0, override
+@pytest.mark.parametrize("ok", [False, True])
+def test_phase_verdict_publishes_take_fields(ok):
+    take = cd.assess(_analysis(glitch_detected=not ok), phase="measure")
+    result = refusal_copy.PhaseVerdict.from_take(take).to_capture_dict()
+    for field in ("evidence", "capabilities", "next", "next_gain_db", "charge"):
+        assert result[field] == getattr(take, field)
 
 
-def test_a_trims_only_capture_skips_every_alignment_rung():
-    screens, _, _ = _measure(alignment_present=False, alignment_status_ok=False)
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0).kind is None
-
-
-def test_the_two_alignment_rungs_report_their_own_finding():
-    """One kind each, which is the split the confidence demotion required.
-
-    Both rungs shared ``low_alignment_confidence`` until the burn-down, so the
-    physics backstop rendered a sentence about mic placement. It has its own
-    kind now, and the household sentence behind it names the delay.
-    """
-    screens, _, _ = _measure(alignment_status_ok=False)
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_ALIGNMENT_UNRESOLVED, evidence={"mic_meter_status": "unmeasured"},
-    )
-    screens, _, _ = _measure(_plausible=_Counter(False))
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_DELAY_IMPLAUSIBLE, evidence={"mic_meter_status": "unmeasured"},
-    )
-
-
-def test_an_unresolved_alignment_is_reported_before_an_implausible_delay():
-    """Two findings, two household actions; the resolve verdict comes first.
-
-    The backstop is asked only of a RESOLVED estimate, so an unresolved one
-    that would also fail it must still say ``alignment_unresolved``.
-    """
-    screens, _, _ = _measure(alignment_status_ok=False, _plausible=_Counter(False))
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_ALIGNMENT_UNRESOLVED, evidence={"mic_meter_status": "unmeasured"},
-    )
-
-
-# --------------------------------------------------------------------------- #
-# the ripple disclosure — a rung that accepts
-# --------------------------------------------------------------------------- #
-
-
-def test_the_ripple_reservation_is_due_only_above_the_threshold():
-    assert cd.ripple_reservation_due(
-        predicted_ripple_db=15.1, has_alignment=True, disclosure_threshold_db=15.0
-    )
-    assert not cd.ripple_reservation_due(
-        predicted_ripple_db=15.0, has_alignment=True, disclosure_threshold_db=15.0
-    )
-
-
-def test_a_trims_only_path_owes_no_reservation():
-    """The alignment half of the converted gate's skip (#2087)."""
-    assert not cd.ripple_reservation_due(
-        predicted_ripple_db=99.0, has_alignment=False, disclosure_threshold_db=15.0
-    )
-
-
-# --------------------------------------------------------------------------- #
-# VERIFY
-# --------------------------------------------------------------------------- #
-
-
-class _Integrity:
-    def __init__(self, failed) -> None:
-        self.failed = failed
-
-    def to_dict(self) -> dict:
-        return {"failed": list(self.failed)}
-
-
-class _Analysis:
-    def __init__(self, *, pilot_snr_ok=True, linearity_ok=True, capture_integrity=None):
-        self.pilot_snr_ok = pilot_snr_ok
-        self.linearity_ok = linearity_ok
-        self.capture_integrity = capture_integrity
-
-
-def test_verify_accepts_a_clean_capture_and_goes_on_grading():
-    assert (
-        cd.verify_integrity_screens(_Analysis(), stimulus_located=True) is None
-    )
-
-
-def test_verify_reports_the_level_rungs_before_the_record():
-    assert cd.verify_integrity_screens(
-        _Analysis(pilot_snr_ok=False, capture_integrity=_Integrity(["x"])),
-        stimulus_located=True,
-    ) == cd.VerifyIntegrityScreen(cd.SCREEN_PILOT_LEVEL_COLLAPSE)
-    assert cd.verify_integrity_screens(
-        _Analysis(pilot_snr_ok=False), stimulus_located=False
-    ) == cd.VerifyIntegrityScreen(cd.SCREEN_LOCATE_FAILED)
-
-
-def test_one_integrity_record_produces_two_kinds():
-    """#1838's D3: a sweep nobody heard and a spliced timeline differ.
-
-    The first is a level/mic problem re-running cannot fix; the second is the
-    transient capture-glitch class, which auto-retries.
-    """
-    heard = _Integrity([flow.INTEGRITY_CHECK_SWEEP_HEARD])
-    screen = cd.verify_integrity_screens(
-        _Analysis(capture_integrity=heard), stimulus_located=True
-    )
-    assert screen is not None
-    assert screen.kind == cd.SCREEN_LOCATE_FAILED
-    assert screen.integrity_payload == {"capture_integrity": {"failed": [
-        flow.INTEGRITY_CHECK_SWEEP_HEARD
-    ]}}
-
-    spliced = _Integrity(["timeline_spliced"])
-    screen = cd.verify_integrity_screens(
-        _Analysis(capture_integrity=spliced), stimulus_located=True
-    )
-    assert screen is not None
-    assert screen.kind == cd.SCREEN_CAPTURE_GLITCH
-    assert screen.integrity_payload == {
-        "capture_integrity": {"failed": ["timeline_spliced"]}
-    }
-
-
-def test_only_the_integrity_arm_carries_a_payload():
-    screen = cd.verify_integrity_screens(
-        _Analysis(linearity_ok=False), stimulus_located=True
-    )
-    assert screen == cd.VerifyIntegrityScreen(cd.SCREEN_LINEARITY_FAILED)
-    assert screen.integrity_payload is None
-
-
-def test_an_absent_record_continues_here_and_refuses_at_the_entry_baseline():
-    """The ONE deliberate difference between the two sibling ladders.
-
-    ``None`` is the pre-#1971 shape and means no evidence, so VERIFY carries on
-    and its diagnostic prints ``integrity=unavailable``.  The entry baseline
-    exists ONLY to be compared, so a before-side nobody graded fails closed
-    rather than seeding a before→after claim it cannot support.  If these two
-    ever answer the same way, one of the two documented contracts has moved.
-    """
-    assert cd.verify_integrity_screens(
-        _Analysis(capture_integrity=None), stimulus_located=True
-    ) is None
-    baseline = spatial.entry_baseline_screens(
-        _Analysis(capture_integrity=None), stimulus_located=True, reference_mark="m",
-    )
-    assert baseline.kind == cd.SCREEN_CAPTURE_GLITCH
-
-
-def test_a_passing_record_is_not_a_refusal():
-    assert cd.verify_integrity_screens(
-        _Analysis(capture_integrity=_Integrity([])), stimulus_located=True
-    ) is None
-
-
-# --------------------------------------------------------------------------- #
-# the vocabulary boundary this module exists behind
-# --------------------------------------------------------------------------- #
-
-
-def test_no_household_vocabulary_reaches_this_module():
-    """A kind is all that leaves; the sentence is the flow's.
-
-    Enumerated from the AST rather than argued, because "the module does not
-    import the registry" is exactly the property a future convenience import
-    would quietly remove — and a substring scan would be fooled by the prose
-    above, which names all three symbols on purpose.
-
-    The package-wide no-flow/no-web guard lives in ``test_crossover_v2_journey``
-    and walks every module; this one is narrower and names the three household
-    symbols whose absence is THIS extraction's load-bearing claim.
-    """
-    import ast
-
-    source = cd.__file__ or ""
-    assert source
-    tree = ast.parse(open(source).read())
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            imported.add(node.module or "")
-            imported.update(a.name for a in node.names)
-    for symbol in (
-        "REASON_REGISTRY",
-        "reason_message",
-        "TRANSIENT_AUTO_RETRY_CODES",
-        "PhaseVerdict",
-    ):
-        assert symbol not in imported, symbol
-    assert not any("crossover_v2_flow" in name for name in imported)
-    assert not any(name.startswith("jasper.web") for name in imported)
-
-
-@pytest.mark.parametrize("corroborated", [False, True, None])
-def test_measure_anchor_precedes_sweep_confidence(corroborated):
-    screens, schedule, _ = _measure(
-        anchor=AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=corroborated),
-        sweep_locate_confidence_ok=False,
-    )
-    screen = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert screen.kind == (
-        cd.SCREEN_ANCHOR_UNCONFIRMED if corroborated is False else cd.SCREEN_LOCATE_FAILED
-    )
-    assert screen.rearm is False
-    assert schedule.calls == 0
-    if corroborated is False:
-        assert screen.evidence == {
-            "presence": 0.0156, "confidence": 0.18, "corroborated": False,
-            "mic_meter_status": "unmeasured",
-        }
-        assert type(screen.evidence["corroborated"]) is bool
-        assert type(screen.evidence["presence"]) is float
-        assert type(screen.evidence["confidence"]) is float
+@pytest.mark.parametrize(("ripple", "alignment", "due"), [(15.1, True, True), (15.0, True, False), (99, False, False)])
+def test_ripple_is_a_disclosure(ripple, alignment, due):
+    assert cd.ripple_reservation_due(predicted_ripple_db=ripple, has_alignment=alignment, disclosure_threshold_db=15.0) is due
 
 
 @pytest.mark.parametrize(
@@ -586,7 +166,7 @@ def test_measure_anchor_precedes_sweep_confidence(corroborated):
         ({}, None, {}),
         ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, {}),
         ({"anchor": AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET,
-         {"presence": 0.0156, "confidence": 0.18, "corroborated": False}),
+         {"anchor_presence": 0.0156, "anchor_confidence": 0.18, "anchor_corroborated": False}),
         ({"glitch_detected": True, "discontinuity_samples": -1066.7,
           "drift": DriftEstimate(-3106.0, 1066.7, True, discontinuity_samples=-1066.7)},
          refusal_copy.REASON_DRIFT_BASELINES_DISAGREE,
@@ -604,16 +184,35 @@ def test_measure_evidence_reaches_capture_result_and_journal(monkeypatch, fault,
     fault = dict(fault)
     clipped = fault.pop("clipped", False)
     fakes = FakeSeams(measure=lambda program: replace(
-        _measure_analysis(program, clipped=clipped), mic_meter_status="too_loud", **fault,
+        _measure_analysis(program, clipped=clipped), mic_meter_status="usable", **fault,
     ))
     conductor = _conductor(fakes)
     _run_phase(conductor, 1, 1)
     verdict = _run_phase(conductor, 2, 1)
     assert verdict["accepted"] is (code is None)
     assert verdict.get("code") == code
-    assert verdict["evidence"] == {"mic_meter_status": "too_loud", **figures}
+    assert verdict["evidence"].items() >= {"mic_meter_status": "usable", **figures}.items()
     for key, value in figures.items():
         assert type(verdict["evidence"][key]) is type(value)
     journal = next(fields for event, fields in events
                    if event == "correction.crossover_v2_measure_diag")
     assert journal["evidence"] == verdict["evidence"]
+
+
+def test_no_household_vocabulary_reaches_this_module():
+    """The assessor emits codes; refusal_copy owns household rendering."""
+    assert cd.__file__
+    tree = ast.parse(Path(cd.__file__).read_text())
+    imported: set[str] = set()
+    reached: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Attribute):
+            reached.add(node.attr)
+    assert not {"REASON_REGISTRY", "reason_message", "TRANSIENT_AUTO_RETRY_CODES", "PhaseVerdict"} & (imported | reached)
+    assert not any("crossover_v2_flow" in name for name in imported)
+    assert not any(name.startswith("jasper.web") for name in imported)

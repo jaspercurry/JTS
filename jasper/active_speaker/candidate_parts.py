@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, cast
 
@@ -29,7 +29,8 @@ from .measured_crossover_candidate import (
     prove_candidate_config,
 )
 
-from .profile import ActiveSpeakerPreset, required_driver_roles
+from .measurement_emit import MeasurementGraphRefused
+from .profile import ActiveSpeakerPreset
 from .measurement_programs import baseline_scope
 
 COMPOSITION_KIND = "jts_candidate_composition"
@@ -60,14 +61,6 @@ def candidate_from_applied_profile(
     if snapshot is None:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
     preset = ActiveSpeakerPreset.from_mapping(dict(snapshot["preset"]))
-    if purpose is not None and baseline_scope(purpose) == "preset":
-        candidate = MeasuredCrossoverCandidate(
-            program_id="jts_saved_tune", source_preset=preset,
-            analysis={"measurement_status": "unmeasured"},
-            role_attenuations_db={role: 0.0 for role in required_driver_roles(preset.way_count)},
-        )
-        prove_candidate_config(candidate, compile_candidate_config(candidate, playback_device="null"))
-        return candidate
     corrections = snapshot["corrections"]
     sections = sections_by_role(preset.crossover_regions)
     candidate = MeasuredCrossoverCandidate(
@@ -84,6 +77,8 @@ def candidate_from_applied_profile(
         bass_extension=snapshot.get("bass_extension", {}),
     )
     if driver_corrections(candidate) != corrections:
+        # The current candidate model can refine one region; verify its inverse
+        # through the same correction reducer instead of inventing another one.
         for role, values in corrections.items():
             for polarity in ("keep", "invert"):
                 try:
@@ -107,17 +102,24 @@ def candidate_from_applied_profile(
     if any(desired.get(key) != actual.get(key) for key in ("filters", "mixers", "processors", "pipeline")):
         raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "candidate would change saved processing or protection")
     prove_candidate_config(candidate, emitted)
-    if purpose is not None:
-        candidate = replace(candidate, bass_extension={}, room_correction=(
-            candidate.room_correction if baseline_scope(purpose) == "room" else {}
-        ))
-    return candidate
+    scope = baseline_scope(purpose) if purpose is not None else None
+    return candidate if scope is None else replace(candidate, bass_extension={},
+                   room_correction=candidate.room_correction if scope == "room" else {},
+                   linearization={} if scope == "preset" else candidate.linearization,
+                   blend_correction=() if scope == "preset" else candidate.blend_correction)
 
 
-def baseline_candidate_id(purpose: str | None) -> str:
-    return publish_authored_candidate(candidate_from_applied_profile(
-        load_output_topology_strict(), load_applied_baseline_profile_state() or {}, purpose=purpose or "speaker",
-    )).fingerprint
+def baseline_candidate_ids(purposes: Iterable[str | None]) -> dict[str, str]:
+    programs = set(purpose or "speaker" for purpose in purposes)
+    if not programs:
+        return {}
+    try:
+        topology, applied = load_output_topology_strict(), load_applied_baseline_profile_state() or {}
+        return {purpose: publish_authored_candidate(candidate_from_applied_profile(
+            topology, applied, purpose=purpose,
+        )).fingerprint for purpose in sorted(programs)}
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
 
 
 def compose_candidate(
@@ -198,6 +200,8 @@ def compose_candidate(
         blend_correction=blend.candidate.blend_correction,
         room_correction=room, bass_extension=bass,
     )
+    # The room set is emitted here so the emitter's headroom charge runs at
+    # compose rather than at apply.
     prove_candidate_config(candidate, compile_candidate_config(
         candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
     ))

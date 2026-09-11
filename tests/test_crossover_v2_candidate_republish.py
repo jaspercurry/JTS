@@ -1088,7 +1088,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     assert child.bass_extension["low_boost_db"] == BASS_EXTENSION["low_boost_db"]
     profile = MeasurementGraphProfile(
         ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
-        {"woofer": 0, "tweeter": 1}, "null", applied_profile=applied,
+        {"woofer": 0, "tweeter": 1}, "null",
     )
     baseline = yaml.safe_load(compile_tuning_graph(profile, candidate=candidate_from_applied_profile(topology, applied, purpose="bass")))
     proposed = yaml.safe_load(compile_tuning_graph(profile, scope="candidate", candidate=child))

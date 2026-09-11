@@ -46,7 +46,6 @@ from .angle_capture import (
     WALK_STIMULUS_NOT_ACCEPTED,
     AngleCaptureRequest,
     LateralWalkRefused,
-    refuse_unplayable_walk_policy,
     resolve_request,
     stop_specs,
 )
@@ -59,7 +58,6 @@ from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.session import MeasureOutcome, TuningSession
-from .measured_crossover_candidate import candidate_trial_scope
 
 logger = logging.getLogger(__name__)
 
@@ -313,20 +311,13 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
 
 
 def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
-    """Each named candidate's scope: the one that compiles its complete graph.
-
-    ONE owner for both doors that play a stated walk, so a walk measures the
-    same graph whichever ran it. The bank's own vocabulary rides out UNWRAPPED
-    under this module's refusal type: a second slug for "no such candidate"
-    would send an operator looking in the wrong place.
-    """
+    """Verify named candidates at run open; every trial uses its composed graph."""
     try:
-        return {
-            candidate_id: candidate_trial_scope(
-                candidate_bank.find_banked_candidate(candidate_id).candidate
-            )
-            for candidate_id in sorted(set(candidate_ids) - {""})
-        }
+        scopes = {}
+        for candidate_id in sorted(set(candidate_ids) - {""}):
+            candidate_bank.find_banked_candidate(candidate_id)
+            scopes[candidate_id] = "candidate"
+        return scopes
     except candidate_bank.CandidateBankRefusal as exc:
         raise LateralWalkRefused(exc.code, exc.detail) from exc
 
@@ -362,19 +353,22 @@ async def run_plan(
     and is SKIPPED here, counted in ``takes_skipped``: composing a phase program
     is the session host's, not this loop's.
     """
+    from .candidate_parts import baseline_candidate_ids  # lazy: baseline composition loads DSP analysis
+
     fingerprint = request_fingerprint(request)
     try:
-        refuse_unplayable_walk_policy(request)
         resolved = resolve_request(request)
         prompts = tuple(stop.prompt for stop in resolved)
         try:
             specs = stop_specs(
                 request, candidate_scopes=candidate_scopes, prompts=prompts,
+                baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
+                                                    if stop.plays_summed and not stop.candidate_id),
             )
         except ValueError as exc:
             # Only the stop's own pose is new on that construction; the spec's
             # own sentence names the field it refused.
-            raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+            raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
         # The playable subset, resolved ONCE and numbered over itself. The gate
         # carries a pose's grant on the pair ``(index - 1, attempt - 1)``, so a
         # skipped stop counted in the numbering would ask a second placement
@@ -392,8 +386,8 @@ async def run_plan(
     except LateralWalkRefused as exc:
         return _refused(fingerprint, exc, spl_monitor=spl_monitor)
 
-    stops = [resolved[offset] for offset, _spec in playable]
-    places = [request.stops[offset].place for offset, _spec in playable]
+    stops = [resolved[offset // request.repeats] for offset, _spec in playable]
+    places = [request.stops[offset // request.repeats].place for offset, _spec in playable]
     batches = [
         [offset for offset, _place in group]
         for _key, group in groupby(enumerate(places), key=lambda row: row[1])

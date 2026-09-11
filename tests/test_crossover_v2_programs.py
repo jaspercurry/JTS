@@ -468,7 +468,6 @@ def test_the_flow_re_exports_resolve_to_the_one_definition():
     assert flow.SUMMED_SWEEP_PHASES is programs.SUMMED_SWEEP_PHASES
     assert flow.GAIN_CAP_BACKOFF_DB == programs.GAIN_CAP_BACKOFF_DB
     assert flow.PILOT_LEVEL_DELTA_DB == programs.PILOT_LEVEL_DELTA_DB
-    assert flow.courtesy_prelude_for_phase is programs.courtesy_prelude_for_phase
 
 
 @pytest.mark.parametrize("limit", [1.0, 2.0, 4.0])

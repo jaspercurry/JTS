@@ -431,7 +431,6 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
     from jasper.web import correction_crossover_v2 as host
 
     profile = _profile()
-    monkeypatch.setattr(host, "_applied_profile_now", lambda: profile.applied_profile)
     playback = host.bind_production_play(
         camilla_factory=lambda: object(),
         evidence_store=SimpleNamespace(bundle_dir=tmp_path),

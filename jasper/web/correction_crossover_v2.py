@@ -71,11 +71,9 @@ from typing import (
 )
 
 from jasper.atomic_io import atomic_write_text
-from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.bundles import mark_state
-from jasper.active_speaker.candidate_parts import COMPOSITION_KIND
 from jasper.active_speaker.candidate_trials import (
-    tuning_trial_matches_candidate,
+    has_tuning_layers, tuning_trial_matches_candidate,
     tuning_trial_reference,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
@@ -304,8 +302,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     the ``code=`` lets the 400 body pick up that reason's ``next_action`` when
     it declares one. Today the classifier routes here to ``program_unplayable``
     (the rest of the ``CrossoverV2FlowError`` family) or to
-    ``program_plan_shape_invalid`` (:class:`PlanShapeError`); neither
-    declares a ``next_action``, so today's 400 carries the sentence alone.
+    ``program_plan_shape_invalid`` (:class:`PlanShapeError`).
 
     The raw text is logged here rather than dropped: this is the one site that
     discards it, and it is the only place the failed constraint is named. The
@@ -2072,6 +2069,7 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
+    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at run open
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
     try:
         spl_monitor, spl_note = spl_watch(
@@ -2100,11 +2098,11 @@ def _take_staged_angle_walk(
     try:
         placed = stop_specs(
             request, candidate_scopes=candidate_scopes, prompts=prompts,
+            baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
+                                                if stop.plays_summed and not stop.candidate_id),
         )
     except ValueError as exc:
-        # Only the stop's own pose is new on those constructions; the spec's own
-        # sentence names the field.
-        raise refused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+        raise refused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
     for index, spec in zip(
         sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
         placed,
@@ -3342,13 +3340,11 @@ def bind_production_play(
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
     resolved_config_dir = config_dir or str(DEFAULT_CAMILLA_CONFIG_DIR)
-    applied_profile = load_applied_baseline_profile_state() or {}
     session_graph = bind_measurement_graph(
         MeasurementGraphProfile(
             preset=preset, topology=topology, role_channels=role_channels,
             playback_device=playback_device,
             protection_sections_by_role=protection_sections_by_role,
-            applied_profile=applied_profile,
         ), camilla_factory=camilla_factory, config_dir=resolved_config_dir,
     )
 
@@ -3371,7 +3367,6 @@ def bind_production_play(
             graph_kind="tuning_measurement", program=program,
             phase=phase, artifact=artifact,
             read_volume_plan=session_volume_plan,
-            speaker_candidate_id=spec.candidate_id or None,
         )
 
     compose = bind_program_composer(
@@ -3524,7 +3519,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     candidate = v2.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
-    if candidate.get("program_id") == COMPOSITION_KIND:
+    if candidate.get("tuning_layers"):
         v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
         return
     try:
@@ -4204,17 +4199,18 @@ def _bind_engine_measure_leg(
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
+    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at session open
+    purposes = {index: "room" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "speaker"
+                for index, phase in index_phase_map.items() if phase in SUMMED_SWEEP_PHASES and index not in (specs_by_index or {})}
+    baselines = baseline_candidate_ids(purposes.values())
     specs = {}
     for index, phase in index_phase_map.items():
-        from jasper.active_speaker.candidate_parts import baseline_candidate_id  # lazy: only summed captures compose a baseline
         default = (specs_by_index or {}).get(index) or MeasureSpec(
             kind="verify" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "candidate",
             graph_scope="candidate" if phase in SUMMED_SWEEP_PHASES else "drivers",
-            candidate_id=baseline_candidate_id("room" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "speaker") if phase in SUMMED_SWEEP_PHASES else "",
+            candidate_id=baselines[purposes[index]] if index in purposes else "",
         )
-        specs[index] = dataclasses.replace(
-            default, program_phase=phase,
-        )
+        specs[index] = dataclasses.replace(default, program_phase=phase)
 
     def _raise_incident(incident: str) -> NoReturn:
         if incident == STIMULUS_ADMISSION_REFUSED:
@@ -4891,7 +4887,6 @@ def prepare_v2_session(
                 applied=bool(prior_raw.get("applied")),
                 gain_plan_db=prior_raw.get("gain_plan_db"),
                 measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
-                measure_gain_retry_used=bool(prior_raw.get("measure_gain_retry_used")),
                 attempt_history=attempt_history_from_state(prior_raw),
                 last_attempt_decision=(
                     dict(prior_decision)
@@ -5109,7 +5104,6 @@ def prepare_v2_session(
                 applied=True,
                 gain_plan_db=state.get("gain_plan_db"),
                 measure_gain_ceiling_db=state.get("measure_gain_ceiling_db"),
-                measure_gain_retry_used=bool(state.get("measure_gain_retry_used")),
                 index_phase_map=opening.plan.index_phase_map,
                 measure_predicted_sum=predicted_sum,
                 measure_predicted_spec_report=predicted_spec,
@@ -5492,7 +5486,7 @@ def handle_v2_apply(
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
     from jasper.active_speaker.candidate_trials import require_candidate_trial
 
-    tuning_apply = bool(candidate.room_correction or candidate.bass_extension)
+    tuning_apply = has_tuning_layers(candidate)
     applied_tuning_trial = None
     if not tuning_apply:
         try:

@@ -25,8 +25,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_CLOUD_GEOMETRY_LOCKED
+from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
 from jasper.active_speaker.crossover_v2_flow import (
-    AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
     CAPTURE_PLAN_MAX_ATTEMPTS,
@@ -68,7 +68,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     cloud_geometry_retry_reach_cm,
     cloud_walk_reach_cm,
     cloud_walk_shape,
-    courtesy_prelude_for_phase,
     express_cloud_measure_positions,
     format_position_distance,
     resolve_plan_shape,
@@ -504,10 +503,6 @@ def test_the_verify_anchor_keeps_its_confirm_tap_on_stage_2s_own_begin():
     )
     # No apply to arm on, so no on_apply policy anywhere in either stage.
     assert verify.screen["auto_advance"] == AUTO_ADVANCE_TAP
-    assert all(
-        e.screen.get("auto_advance") != AUTO_ADVANCE_ON_APPLY
-        for e in build_v2_capture_plan(_roles(), FC_HZ).entries
-    )
     # An older cached page reads title/body — and reads something TRUE.
     assert "mark" in verify.screen["title"]
     assert verify.screen["body"]
@@ -867,7 +862,7 @@ def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
     # hardcodes ``driver_caps_dbfs=CAPS``, which collides with overriding it
     # here. Skipping ``_conductor()``'s entry-baseline stash is safe: that
     # stash is for stage-1 cloud grading this test never reaches, and CHECK's
-    # own accept ladder (``check_screens``) does not read it.
+    # assessor (``capture_dispatch.assess``) does not read it.
     c = CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),
@@ -1899,4 +1894,3 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
             f"{label} v2 capture plan wire bytes changed: "
             f"len={len(raw)} sha256={actual_sha}"
         )
-

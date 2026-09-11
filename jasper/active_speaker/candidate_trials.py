@@ -15,17 +15,15 @@ from jasper.json_fields import finite_float
 
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
-from .measured_crossover_candidate import candidate_trial_scope
-from .crossover_v2.measure_spec import CANDIDATE_SCOPES
 
 
-TUNING_TRIAL_SCOPES = CANDIDATE_SCOPES - {"candidate_branches"}
+def has_tuning_layers(candidate: Any) -> bool:
+    return bool(candidate.room_correction or candidate.bass_extension)
 
 
 def tuning_trial_reference(candidate: Any, trial: Mapping[str, Any] | None) -> dict[str, str] | None:
     """Compact durable pointer to the exact captured tuning graph, when present."""
-    scope = candidate_trial_scope(candidate)
-    if not (candidate.room_correction or candidate.bass_extension):
+    if not has_tuning_layers(candidate):
         return None
     record = trial if isinstance(trial, Mapping) else {}
     candidate_id = str(record.get("candidate_id") or "")
@@ -33,7 +31,7 @@ def tuning_trial_reference(candidate: Any, trial: Mapping[str, Any] | None) -> d
     record_path = str(record.get("record_path") or "")
     if (
         candidate_id != candidate.fingerprint
-        or record.get("graph_scope") != scope
+        or record.get("graph_scope") != "candidate"
         or re.fullmatch(r"[0-9a-f]{16}", graph_fingerprint) is None
         or not record_path
     ):
@@ -43,7 +41,7 @@ def tuning_trial_reference(candidate: Any, trial: Mapping[str, Any] | None) -> d
         )
     return {
         "candidate_fingerprint": candidate_id,
-        "graph_scope": scope,
+        "graph_scope": "candidate",
         "graph_fingerprint": graph_fingerprint,
         "record_path": record_path,
     }
@@ -57,7 +55,7 @@ def tuning_trial_matches_candidate(reference: Any, candidate_fingerprint: Any) -
         str(reference.get("candidate_fingerprint") or "")
         == str(candidate_fingerprint or "")
         != ""
-        and reference.get("graph_scope") in TUNING_TRIAL_SCOPES
+        and reference.get("graph_scope") == "candidate"
         and re.fullmatch(
             r"[0-9a-f]{16}", str(reference.get("graph_fingerprint") or "")
         ) is not None
@@ -77,14 +75,13 @@ def require_candidate_trial(
     """
     if (
         candidate.analysis.get("measurement_status") != "unmeasured"
-        and not (candidate.room_correction or candidate.bass_extension)
+        and not has_tuning_layers(candidate)
     ):
         return None
     from .commissioning_evidence_store import EVIDENCE_ROOT  # lazy: apply-only evidence reader
     from .crossover_v2.record_index import bundle_measurements, reopen_measurement_capture  # lazy: pulls the tuning engine
     from .crossover_v2.round_inputs import iter_round_sessions  # lazy: pulls the tuning engine
 
-    scope = candidate_trial_scope(candidate)
     source = find_banked_candidate(candidate.fingerprint, root=root).path.parents[5]
     for bundle in iter_round_sessions(source):
         for row in bundle_measurements(bundle, candidate_id=candidate.fingerprint):
@@ -94,7 +91,7 @@ def require_candidate_trial(
                 if (
                     wav is None
                     or record.get("candidate_id") != candidate.fingerprint
-                    or record.get("graph_scope") != scope
+                    or record.get("graph_scope") != "candidate"
                     or record.get("incident") != ""
                     or finite_float(record.get("level_db")) is None
                     or re.fullmatch(r"[0-9a-f]{16}", str(record.get("graph_fingerprint") or "")) is None

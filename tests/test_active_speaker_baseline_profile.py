@@ -4931,7 +4931,7 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     verify_graph = compile_tuning_graph(MeasurementGraphProfile(
         ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
         topology, {"woofer": 0, "tweeter": 1}, applied["recomposition_snapshot"]["playback_device"],
-        applied_profile=applied, protection_sections_by_role=confirmed_protection_sections(safety, targets),
+         protection_sections_by_role=confirmed_protection_sections(safety, targets),
     ), candidate=candidate)
     requirement = safety["targets"][0]["required_protection_filters"][0]
     for text in (config_text, emitted, verify_graph):

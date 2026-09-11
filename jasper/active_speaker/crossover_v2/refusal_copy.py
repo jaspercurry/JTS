@@ -7,18 +7,15 @@
 The one module here that owns household-facing copy rather than a decision:
 the codes, the templates, the :data:`REASON_REGISTRY` binding a code to its
 sentence and retry budget, the selectors that pick between two sentences for
-one code, and :class:`PhaseVerdict`. :data:`SCREEN_KIND_REASONS` covers
-:data:`~.capture_dispatch.CAPTURE_SCREEN_KINDS` exactly and names only
-:data:`REASON_REGISTRY` codes (pinned in ``tests/test_crossover_v2_spatial.py``),
-so a new rung cannot ship without a household sentence. Every sibling answers with a *kind* and
-never renders a sentence. Where this vocabulary belongs is still open (#2390).
+one code, and :class:`PhaseVerdict`. Spatial screens still use
+:data:`SCREEN_KIND_REASONS`; the per-take assessor returns registry codes directly.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -27,7 +24,6 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.log_event import log_event
 
-from . import capture_dispatch as _dispatch
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -69,7 +65,7 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # the recording rather than the speaker: the alternative,
 # `REASON_CHANNEL_MAP_MISMATCH`, is a hard stop telling a household to open its
 # speaker, and the evidence cannot support that. Ladder rung:
-# `capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS`.
+# `capture_dispatch.assess`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_CLIPPED = "clipped"
@@ -134,6 +130,8 @@ REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 # which is not true of a genuine host fault. Terminal.
 REASON_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
 
+REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
+REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH = "measurement_candidate_speaker_mismatch"
 REASON_MEASUREMENT_CANDIDATE_REQUIRED = "measurement_candidate_required"
 REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
 REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
@@ -143,7 +141,9 @@ REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
-REASON_WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
+REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
+REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
+REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
@@ -664,6 +664,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not start the measurement because this link's settings "
         "(the tier or number of positions) are not ones this build "
         "recognizes. Start over from this page to pick a tier.",
+        next_action={
+            "id": "select_tier",
+            "label": "Start over",
+            "href": "/sound/speaker/crossover/",
+        },
     ),
     REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
         REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",
@@ -766,6 +771,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         },
     ),
     # Measurement graph and walk refusals (tracking issue #4942).
+    REASON_MEASUREMENT_BASELINE_UNAVAILABLE: ReasonSpec(
+        REASON_MEASUREMENT_BASELINE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not build this program's baseline. Review the saved speaker setup before measuring.",
+        next_action={"id": "speaker_setup", "label": "Review speaker setup", "href": "/sound/speaker/"},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        "The selected tuning uses a different speaker setup. Select a tuning for this speaker.",
+        next_action={"id": "speaker_setup", "label": "Review speaker outputs", "href": "/sound/speaker/"},
+    ),
     REASON_MEASUREMENT_CANDIDATE_REQUIRED: ReasonSpec(
         REASON_MEASUREMENT_CANDIDATE_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
         'This measurement needs a saved tuning to test. Select the tuning, then measure again.',
@@ -807,8 +822,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_WALK_MOVER_MISMATCH: ReasonSpec(
         REASON_WALK_MOVER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The measurement plan and the session disagree about how the microphone moves. Make their '
-        'movement settings match.',
+        'Match the microphone movement settings in the plan and session.',
         next_action={"id": 'match_walk_mover', "label": 'Match the movement settings',
                      "href": '/sound/speaker/crossover/'},
     ),
@@ -821,17 +835,23 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_WALK_LEVEL_POLICY_INVALID: ReasonSpec(
         REASON_WALK_LEVEL_POLICY_INVALID, TEMPLATE_HARD_STOP, 0, "",
-        'The measurement levels do not match the selected level mode. Correct the level settings '
-        'before starting.',
+        'Correct the measurement level settings before starting.',
         next_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
                      "href": '/sound/speaker/crossover/'},
     ),
-    REASON_WALK_POLICY_UNSUPPORTED_YET: ReasonSpec(
-        REASON_WALK_POLICY_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
-        'JTS cannot change the volume between these positions yet. Use one fixed reference level '
-        'for this measurement.',
-        next_action={"id": 'use_reference_level', "label": 'Use a fixed reference level',
+    REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET: ReasonSpec(
+        REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
+        'Use one fixed reference level for this measurement.',
+    ),
+    REASON_WALK_REPEATS_UNSUPPORTED_YET: ReasonSpec(
+        REASON_WALK_REPEATS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
+        'Use one take per position in the guided measurement.',
+        next_action={"id": 'correct_walk_repeats', "label": 'Set one take per position',
                      "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
+        REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
+        'Restage the measurement plan with the current request format.',
     ),
     REASON_WALK_CEILING_ABOVE_STOP: ReasonSpec(
         REASON_WALK_CEILING_ABOVE_STOP, TEMPLATE_HARD_STOP, 0, "",
@@ -1173,13 +1193,6 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-    _dispatch.SCREEN_ANCHOR_AMBIGUOUS: REASON_ANCHOR_AMBIGUOUS,
-    _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
-    _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
-    _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,
-    _dispatch.SCREEN_ALIGNMENT_UNRESOLVED: REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
-    _dispatch.SCREEN_DELAY_IMPLAUSIBLE: REASON_DELAY_IMPLAUSIBLE,
-    _dispatch.SCREEN_ANCHOR_UNCONFIRMED: REASON_ANCHOR_TOO_QUIET,
 }
 
 
@@ -1308,6 +1321,27 @@ NON_RETRIABLE_CODES = frozenset(
 )
 
 
+TakeNext = Literal["accept", "retake_same", "retake_louder", "retake_quieter", "fix_and_retake", "stop"]
+TakeCharge = Literal["speaker", "operator", "none"]
+
+
+@dataclass(frozen=True)
+class TakeVerdict:
+    ok: bool
+    fault: str | None = None
+    evidence: dict[str, float | bool | str] = field(default_factory=dict)
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    next: TakeNext = "accept"
+    # Absolute stimulus dBFS. Per-role targets are carried in evidence.
+    next_gain_db: float | None = None
+    charge: TakeCharge = "none"
+
+    @property
+    def gain_targets(self) -> dict[str, float]:
+        return {key.removeprefix("next_gain_db."): float(value)
+                for key, value in self.evidence.items() if key.startswith("next_gain_db.")}
+
+
 @dataclass(frozen=True)
 class PhaseVerdict:
     """A consume verdict: the capture dict + the internal reason (if any)."""
@@ -1327,6 +1361,17 @@ class PhaseVerdict:
     reflection_measured: bool | None = None
 
     evidence: dict[str, float | bool | str] = field(default_factory=dict)
+
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    next: TakeNext | None = None
+    next_gain_db: float | None = None
+    charge: TakeCharge = "operator"
+
+    @classmethod
+    def from_take(cls, take: TakeVerdict) -> PhaseVerdict:
+        return cls(take.ok and take.fault is None and take.next == "accept", take.fault,
+                   evidence=take.evidence, capabilities=take.capabilities, next=take.next,
+                   next_gain_db=take.next_gain_db, charge=take.charge)
 
     def to_capture_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.
@@ -1353,11 +1398,16 @@ class PhaseVerdict:
                     reflection_measured=self.reflection_measured,
                 ),
                 banner=spec.banner,
-                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES,
+                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES and not self.payload.get("terminal"),
                 pilot_heard=self.pilot_heard,
             )
             if self.code == REASON_VERIFY_INCONCLUSIVE:
                 out["reflection_measured"] = self.reflection_measured
         out.update(self.payload)
-        out["evidence"] = dict(self.evidence)
+        out.update(evidence=dict(self.evidence), capabilities=dict(self.capabilities),
+                   next=self.next or ("accept" if self.accepted else "fix_and_retake"),
+                   next_gain_db=self.next_gain_db,
+                   charge="none" if self.accepted else self.charge)
+        if self.payload.get("terminal"):
+            out["next"] = "stop"
         return out

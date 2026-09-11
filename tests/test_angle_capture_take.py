@@ -27,7 +27,7 @@ from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
-from tests.test_crossover_v2_tuning_scope import banked_program_baseline  # noqa: F401
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import candidate_bank
@@ -603,9 +603,10 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
 ):
     preset = _banked(monkeypatch)
     regime = ac.REGIME_PER_DRIVER if candidate_ids is None else ac.REGIME_SUMMED
-    spool.stage_angle_request(ac.AngleCaptureRequest(stops=tuple(
-        ac.AngleStop(20, regime, 5, cid) for cid in (candidate_ids or ("",))
-    )))
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        candidates=tuple(cid or "base" for cid in candidate_ids or ()),
+        stops=tuple(ac.AngleStop(20, regime, 5, cid) for cid in candidate_ids or ("",)),
+    ))
     prompts, consumer, specs, _trims, claims = _take(preset=preset)
     index_phases = flow.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(), include_cloud_measure=False,
@@ -710,8 +711,8 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
     program = mp.program(program_id, coverage)
     preset = _banked(monkeypatch, room_correction={"filters": []}) if room_candidate else None
     candidate_ids = ("room-fp",) if room_candidate else ()
-    spool.stage_angle_request(ac.request_for_program(program, candidates=candidate_ids))
-    prompts, consumer, specs, _trims, claims = _take(preset=preset)
+    spool.stage_angle_request(ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=candidate_ids))
+    prompts, consumer, specs, _trims, claims = _take(_arm_shape() if program.mover == ac.MOVER_ARM else None, preset=preset)
     index_phases = _seat_index_phases(prompts)
     fakes = FakeSeams()
     records, analyses = [], []
@@ -814,7 +815,7 @@ def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(
         delay_us=delay_us, bass_extension=bass_extension,
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
+        candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
     ))
     prompts, _consumer, specs, trims, claims = _take(preset=preset)
 
@@ -1097,9 +1098,7 @@ def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=stated,
-        ),
+        spl_ceiling_db_spl=stated,
     ))
 
     if reason:
@@ -1122,6 +1121,42 @@ def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
     assert event["spl_monitor"] == (
         f"ceiling_{ceiling:g}_db_spl" if calibrated else SPL_MONITOR_UNAVAILABLE
     )
+
+
+def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
+    """A household calibration for a DIFFERENT mic than the wired device must
+    not scale an SPL ceiling — treated as unresolved, same as no household
+    mic at all, so the walk hits the same calibration refusal.
+    """
+    from jasper.audio_measurement import calibration, household_mic
+
+    monkeypatch.setattr(
+        household_mic, "resolved_household_mic",
+        lambda: (
+            SimpleNamespace(model_key="dayton_imm6"),
+            SimpleNamespace(model="dayton_imm6", raw_path="/unused"),
+        ),
+    )
+    # A resolvable, non-``None`` sensitivity: if the identity check did not
+    # run, this is what would scale the ceiling instead of a refusal.
+    monkeypatch.setattr(
+        calibration, "resolve_mic_sensitivity", lambda **_kwargs: SimpleNamespace(),
+    )
+    preset = SimpleNamespace(
+        safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
+    )
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+        spl_ceiling_db_spl=80.0,
+    ))
+
+    # _take_full's device defaults to _MIC (minidsp_umik2); the household
+    # record above is a dayton_imm6, so the identity check must refuse this
+    # exactly as if no household mic had resolved at all.
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        _take_full(preset=preset)
+    assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
+    assert refused.value.__cause__.reason == ac.WALK_SPL_CALIBRATION_REQUIRED
 
 
 def _stub_evidence_loaders(monkeypatch):
@@ -1242,35 +1277,21 @@ def test_a_hand_edited_template_refuses_the_open_in_the_specs_own_words(slot, ca
 # --- the take opens the session, whatever the document does -------------------
 
 
-def test_a_stop_the_seam_can_no_longer_build_refuses_instead_of_escaping(
-    slot, caplog,
-):
-    """A hand-edited angle reaches the take as the seam's OWN exception.
-
-    ``take_staged_angle_request`` deliberately re-raises the seam's own
-    ``CrossoverV2FlowError`` un-wrapped for a banked stop that no longer
-    satisfies the contract, because ``_validated_angle``'s sentence beats a
-    second vocabulary. That is a third refusal class, and it reaches
-    ``prepare_v2_session`` — so it is caught here, given the slug it arrived
-    without, and re-raised as the host's own refusal rather than escaping as a
-    flow error nothing on this path claims.
-    """
+def test_an_invalid_banked_stop_refuses_as_a_malformed_request(slot, monkeypatch, caplog):
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
     path = spool.angle_request_spool_path()
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["stops"][1]["angle_deg"] = 999
     path.write_text(json.dumps(doc), encoding="utf-8")
-
-    with caplog.at_level(logging.WARNING):
-        sentence = _refused()
-
-    assert ac.WALK_STOP_NO_LONGER_VALID in sentence
-    line, = _events(caplog)
-    assert f"reason={ac.WALK_STOP_NO_LONGER_VALID}" in line
-    # The producing module's own sentence survives as the detail rather than
-    # being re-worded by a second validator.
-    assert "+999 deg" in line
-    assert "consumed=true" in line
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        _take()
+    assert isinstance(refused.value.__cause__, spool.AngleRequestRefused)
+    assert refused.value.__cause__.reason == spool.SPOOL_MALFORMED
+    event, = [json.loads(line) for line in _events(caplog)]
+    assert event["reason"] == spool.SPOOL_MALFORMED
+    assert event["consumed"] is True
+    assert event["session_continues"] is False
     assert spool.staged_angle_request_pending() is False
 
 
@@ -1396,3 +1417,20 @@ def test_arm_plan_preserves_upstream_layers_without_changing_positions(slot, pro
     assert {p.purpose for p in prompts} == {purpose}
     assert {s.graph_scope for s in specs.values() if s.kind == MEASURE_KIND_VERIFY} == {scope}
     assert {claim.measurement_purpose for claim in claims} == {purpose}
+
+
+@pytest.mark.parametrize("repeats", [1, 2, 3])
+def test_wizard_repeats_require_the_plan_executor(slot, repeats):
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED), ac.AngleStop(-20, ac.REGIME_SUMMED)),
+        repeats=repeats,
+    ))
+    if repeats == 1:
+        prompts, _, specs, _, _ = _take()
+        assert [flow.position_angle_deg(prompt) for prompt in prompts] == [0, -20]
+        assert [spec.positions for index, spec in sorted(specs.items()) if index != _MEASURE_INDEX] == [(0,), (-20,)]
+    else:
+        with pytest.raises(v2host.CrossoverV2Refused) as refused:
+            _take()
+        assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
+        assert refused.value.__cause__.reason == ac.WALK_REPEATS_UNSUPPORTED_YET
