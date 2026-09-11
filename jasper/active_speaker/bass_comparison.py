@@ -19,7 +19,7 @@ from .measurement_bass import BASS_BANDS_HZ
 CHANGE_FIELDS = {
     "candidate": GRAPH_FIELDS,
     "volume": ("level_db", "loudness_volume_db"),
-    "demand": ("stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_wav_sha256"),
+    "demand": ("stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_wav_sha256", "program_id"),
     "diagnostic": (),
 }
 

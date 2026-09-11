@@ -125,15 +125,11 @@ def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, An
         raw = evidence.get("basis")
         return {**(raw if isinstance(raw, Mapping) else {}),
                 "n_positions": value.n_positions, "pose_keys": evidence.get("pose_keys")}
-    comparison = compare_capture_basis(basis(median), basis(incumbent),
-                                       required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"))
-    aligned = {"level_db", "program_id"}
-    comparison["mismatched_fields"] = [key for key in comparison["incompatible_fields"] if key in aligned]
-    comparison["incompatible_fields"] = [key for key in comparison["incompatible_fields"] if key not in aligned]
-    comparison["basis_status"] = (
-        "incompatible" if comparison["incompatible_fields"] else "unknown" if comparison["unknown_fields"] else "compatible"
+    return compare_capture_basis(
+        basis(median), basis(incumbent), required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"),
+        # Aux1 changes the loudness response, so it cannot be normalised away.
+        exempt=("level_db", "program_id"),
     )
-    return comparison
 
 
 def _support(median: RoomMedian) -> tuple[float, float]:
