@@ -62,6 +62,7 @@ import importlib
 import json
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -79,6 +80,7 @@ from jasper.active_speaker import excitation_safety_plan as excitation_safety_pl
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
+    PHASE_VERIFY,
     PHASE_CLOUD_MEASURE,
     PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
@@ -99,7 +101,10 @@ from jasper.output_topology import (
 )
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
-from tests.crossover_v2_fixtures import fake_measurement_mic
+from tests.crossover_v2_fixtures import _check_analysis, _verify_analysis, fake_measurement_mic
+from tests.engine_twin import FakeSeams as EngineFakeSeams
+from jasper.audio_measurement.program import STIMULUS_KINDS
+from jasper.active_speaker.crossover_v2.capture_dispatch import CLIP_RETRY_BACKOFF_DB
 
 
 # Production refuses a session with no volume owner; stand one up.
@@ -2362,6 +2367,25 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
     conductor, _state = _stage_1(monkeypatch)
     captured["conductor"] = conductor
     return captured
+
+
+@pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
+def test_prepared_flow_prices_clip_retries_from_the_played_program(monkeypatch, phase):
+    conductor = _session_from_real_open(monkeypatch, EngineFakeSeams())["conductor"]
+    program = conductor.program_for_phase(phase)
+    analysis_factory, assess = {
+        PHASE_CHECK: (_check_analysis, conductor._check_verdict),
+        PHASE_VERIFY: (_verify_analysis, conductor._verify_verdict),
+    }[phase]
+    analysis = analysis_factory(program)
+    verdict = assess(replace(analysis, locations=tuple(
+        replace(location, clipped=True) for location in analysis.locations
+    )))
+    assert verdict.code == "clipped" and not verdict.accepted
+    assert verdict.charge == "speaker" and verdict.next == "retake_quieter"
+    assert type(verdict.next_gain_db) is float
+    played_gain = max(segment.gain_db for segment in program.segments if segment.kind in STIMULUS_KINDS)
+    assert verdict.next_gain_db == pytest.approx(played_gain - CLIP_RETRY_BACKOFF_DB)
 
 
 def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):

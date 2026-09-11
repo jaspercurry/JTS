@@ -12,6 +12,7 @@ import types
 import pytest
 from dataclasses import replace
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -342,39 +343,26 @@ def test_stimulus_locate_floor_is_per_role_not_per_capture():
     assert not _stimulus_locate_ok(_analysis(()))
 
 
-def test_locate_failed_and_budget_exhaustion():
-    """The planned capture plus THREE extra tries, then the honest end.
-
-    Transformed from a per-code budget (this reason's ``retry_budget`` of 1 gave
-    two attempts total) to the owner's pooled per-position bound (#2086). CHECK
-    is a single-capture phase: there are no other positions to proceed with, so
-    exhaustion ends the session — but the refusal names the spent tries, and
-    the code it attributes is the condition actually observed, never a generic
-    exhaustion code.
-    """
+@pytest.mark.parametrize(("fault", "code", "charge", "budget"), [
+    ({"locate_confidence": 0.01}, "locate_failed", "speaker", MAX_AUTOMATIC_RETAKES_PER_POSITION),
+    ({"linearity": False}, "agc_behavioral_fail", "operator", flow.MAX_EXTRA_ATTEMPTS_PER_POSITION),
+])
+def test_check_faults_exhaust_only_the_responsible_attempt_budget(fault, code, charge, budget):
     fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis(program, locate_confidence=0.01)
+    fakes.check = lambda program: _check_analysis(program, **fault)
     c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["code"] == "locate_failed"
-    assert verdict["template"] == "fix_and_retry"
-    # The planned capture spent nothing; three extras are on offer, and the
-    # count the phone renders says so.
-    assert verdict["attempts"]["by_household"] == 0
-    assert verdict["attempts"]["left"] == 3
-    for extra in (1, 2, 3):
+    for extra in range(budget + 1):
         verdict = _run_phase(c, 1, 1 + extra)
-        assert verdict["code"] == "locate_failed"
-        assert verdict["attempts"]["by_household"] == extra
-        assert verdict["attempts"]["left"] == 3 - extra
-        # The household asked for every one of them — nothing was system-forced.
-        assert verdict["attempts"]["by_household"] == extra
-        assert verdict["attempts"]["by_speaker"] == 0
+        assert verdict["code"] == code and verdict["charge"] == charge
+        assert verdict["attempts"]["by_household"] == (extra if charge == "operator" else 0)
+        assert verdict["attempts"]["by_speaker"] == (extra if charge == "speaker" else 0)
+        assert verdict["attempts"]["left"] == flow.MAX_EXTRA_ATTEMPTS_PER_POSITION - verdict["attempts"]["by_household"]
 
+    assert verdict["next"] == "stop"
     armed_before = c.armed_capture
     with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, 5)
-    assert excinfo.value.code == "locate_failed"
+        c.authorize_begin(1, budget + 2)
+    assert excinfo.value.code == code
     assert c.armed_capture == armed_before
 
 

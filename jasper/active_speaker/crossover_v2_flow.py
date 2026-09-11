@@ -2316,7 +2316,7 @@ class CrossoverV2Session:
 
     def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         gain_plan = analysis.gain_plan
-        verdict = PhaseVerdict.from_take(_dispatch.assess(analysis, phase=PHASE_CHECK))
+        verdict = PhaseVerdict.from_take(_dispatch.assess(analysis, phase=PHASE_CHECK, program=self._check_program))
         if not verdict.accepted:
             return verdict
         assert gain_plan is not None
@@ -4125,8 +4125,8 @@ class CrossoverV2Session:
             analysis.summed_response,
             declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
         )
-        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, pilot_transfer_prior=self._verify_pilot_baseline,
-                                measure_gate_window_ms=self._measure_gate_window_ms)
+        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, program=self._verify_program,
+                                pilot_transfer_prior=self._verify_pilot_baseline, measure_gate_window_ms=self._measure_gate_window_ms)
         verdict = PhaseVerdict.from_take(take)
         if "pilot_transfer_step_db" in take.evidence:
             self._verify_pilot_transfer_step_db = float(take.evidence["pilot_transfer_step_db"])

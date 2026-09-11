@@ -2,7 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -195,3 +197,22 @@ def test_measure_evidence_reaches_capture_result_and_journal(monkeypatch, fault,
     journal = next(fields for event, fields in events
                    if event == "correction.crossover_v2_measure_diag")
     assert journal["evidence"] == verdict["evidence"]
+
+
+def test_no_household_vocabulary_reaches_this_module():
+    """The assessor emits codes; refusal_copy owns household rendering."""
+    assert cd.__file__
+    tree = ast.parse(Path(cd.__file__).read_text())
+    imported: set[str] = set()
+    reached: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Attribute):
+            reached.add(node.attr)
+    assert not {"REASON_REGISTRY", "reason_message", "TRANSIENT_AUTO_RETRY_CODES", "PhaseVerdict"} & (imported | reached)
+    assert not any("crossover_v2_flow" in name for name in imported)
+    assert not any(name.startswith("jasper.web") for name in imported)
