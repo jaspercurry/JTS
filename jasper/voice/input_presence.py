@@ -32,6 +32,12 @@ and `/state` (``voice.parked_no_mic``).
 Negative polarity fails **open**: voice runs unless the reconciler
 positively said otherwise. It lives in ``/var/lib/jasper`` (persistent,
 not ``/run``) so a no-input box is gated from boot's first instant.
+
+The accessory OR preserves the cold-boot property: a box with no input at all
+still carries the marker from its last reconcile and is gated at instant
+zero, while a box whose accessory satisfies the gate boots with it open. A
+pairing change made while the box was off converges on the first accessory
+reconcile of the next boot, without a reboot.
 """
 from __future__ import annotations
 
