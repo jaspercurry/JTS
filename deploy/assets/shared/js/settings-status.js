@@ -84,11 +84,17 @@ function renderSnapshot(snap, titleFollowsSpeakerName) {
 }
 
 // Gate on `caps` synchronously — before any fetch — then keep the sublabels
-// current. `onSnapshot`, when given, also sees the raw parsed snapshot on
-// every tick — a page with its own faster-changing use for the same payload
-// (the landing page's volume safety-mute banner) rides this one poll at its
-// own `intervalMs` instead of running a second fetch against the same
-// socket-activated endpoint. Returns startPolling's stop().
+// current. `onSnapshot`, when given, sees the raw parsed snapshot on EVERY
+// tick, at `intervalMs` — a page with its own faster-changing use for the
+// same payload (the landing page's volume safety-mute banner) rides this one
+// poll at its own cadence instead of running a second fetch against the same
+// socket-activated endpoint. renderSnapshot() does not ride that faster
+// cadence: a 5 s intervalMs override is for onSnapshot's benefit, and the
+// sublabels it repaints change rarely enough that redrawing them (up to five
+// DOM writes plus an unconditional document.title write) on every one of
+// those ticks would be wasted work, so it still refreshes only every
+// POLL_MS, tracked via `lastRenderAt` (always true on the first tick).
+// Returns startPolling's stop().
 export function initSettingsStatus({
   caps, titleFollowsSpeakerName, intervalMs = POLL_MS, onSnapshot,
 } = {}) {
@@ -102,10 +108,15 @@ export function initSettingsStatus({
   if (!document.querySelector('[id^="status-"], #system-summary')) {
     return () => {};
   }
+  let lastRenderAt = null;
   return startPolling(
     async () => {
       const snap = await getJSON("/system/data.json");
-      renderSnapshot(snap, titleFollowsSpeakerName);
+      const now = Date.now();
+      if (lastRenderAt === null || now - lastRenderAt >= POLL_MS) {
+        renderSnapshot(snap, titleFollowsSpeakerName);
+        lastRenderAt = now;
+      }
       if (onSnapshot) onSnapshot(snap);
     },
     { intervalMs },

@@ -10,7 +10,9 @@
 // without ever re-driving that layout. A caller with its own faster-changing
 // use for the same snapshot (the landing page's safety-mute banner) can
 // override the poll interval and see the raw snapshot via onSnapshot,
-// instead of opening a second fetch against the same endpoint.
+// instead of opening a second fetch against the same endpoint — and that
+// override speeds up onSnapshot alone: the sublabel render stays on its own
+// 20 s cadence no matter how often the underlying poll ticks.
 //
 // startPolling()'s own scheduling — the cadence, the hidden-tab backoff,
 // stop() — is polling_test.mjs's subject, so this only pins the interval this
@@ -22,10 +24,18 @@ import { loadEsm, repoPath } from "./_loader.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
 // Enough of a timer to let startPolling schedule; the delay it asks for is
-// the only scheduling fact this module owns.
+// the only scheduling fact this module owns. `scheduled` mirrors `delays`
+// with the callback itself, so a test can fire the NEXT tick on demand
+// instead of waiting on a real clock.
 const delays = [];
-globalThis.setTimeout = (fn, delay) => { delays.push(delay); return 0; };
+const scheduled = [];
+globalThis.setTimeout = (fn, delay) => { delays.push(delay); scheduled.push(fn); return 0; };
 globalThis.clearTimeout = () => {};
+
+// The render-cadence gate reads wall-clock time, not tick count, so its test
+// drives a fake clock rather than counting ticks.
+let clockNow = 0;
+Date.now = () => clockNow;
 
 function gatedRow(cap) {
   const row = new FakeElement("a");
@@ -83,6 +93,7 @@ async function settle() {
 function start(caps, extra = {}) {
   fetched = [];
   delays.length = 0;
+  scheduled.length = 0;
   rows.forEach((row) => { row.hidden = false; });
   return initSettingsStatus(caps === undefined ? extra : { caps, ...extra });
 }
@@ -190,6 +201,32 @@ async function an_onsnapshot_hook_rides_the_same_poll_at_its_own_interval() {
   stop();
 }
 
+// A caller's faster intervalMs is for onSnapshot alone — renderSnapshot()
+// still waits out the full 20 s POLL_MS before repainting the sublabels, so
+// a tick landing sooner reaches onSnapshot without touching the DOM.
+async function a_faster_onsnapshot_cadence_does_not_speed_up_the_render() {
+  clockNow = 0;
+  snapshot = { voice_provider: "openai" };
+  const seen = [];
+  const stop = start(
+    { pair_management: true },
+    { intervalMs: 5000, onSnapshot: (snap) => seen.push(snap) },
+  );
+  await settle();
+
+  check(text("status-voice") === "OpenAI", "the first tick always renders");
+  check(seen.length === 1, "...and onSnapshot sees it too");
+
+  clockNow += 5000;
+  snapshot = { voice_provider: "grok" };
+  await scheduled[scheduled.length - 1]();
+  await settle();
+
+  check(text("status-voice") === "OpenAI", "a tick 5 s later, under the 20 s cadence, does not repaint");
+  check(seen.length === 2, "but onSnapshot sees every tick");
+  stop();
+}
+
 // /system/data.json is a socket-activated wizard: a surface must not hold it
 // awake for sublabels it does not have.
 async function a_surface_with_no_live_sublabel_never_polls() {
@@ -214,6 +251,7 @@ await runTestFunctions(
     a_thin_snapshot_leaves_the_rendered_sublabels_alone,
     the_tab_title_is_left_alone_unless_the_page_asks,
     an_onsnapshot_hook_rides_the_same_poll_at_its_own_interval,
+    a_faster_onsnapshot_cadence_does_not_speed_up_the_render,
     a_surface_with_no_live_sublabel_never_polls,
   ],
   () => passed,
