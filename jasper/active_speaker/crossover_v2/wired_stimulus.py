@@ -2,19 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One wired recording placed in a bundle, and one annotated take record.
-
-The capture kernel itself — the answer type, the minter, the recorder factory
-and the capture budget — is the LEAF's
-(:mod:`jasper.audio_measurement.wired_capture`), so the bass bench and the CLI
-doors reach it without importing this package. What stays here is what needs
-the engine: placing the raw bytes in a bundle's artifact registry, and the
-play-seam capture half that drives the recorder around a program.
-"""
+"""Bundle placement and record annotation over the shared wired capture kernel."""
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 
 from dataclasses import dataclass, field, replace
@@ -89,6 +82,7 @@ class WiredStimulusCapture:
     recorder_factory: Callable[[int, float], Any] | None = None
     setup_reference: Callable[[], Mapping[str, Any] | None] | None = None
     spl_monitor: WiredSplMonitor | None = None
+    read_loudness_volume_db: Callable[[], float | None | Awaitable[float | None]] | None = None
     _pending: list[WiredCaptureAnswer] = field(default_factory=list)
 
     async def around(self, play: Callable[[], Awaitable[None]], *, program: Any) -> str:
@@ -240,6 +234,9 @@ class CapturedRecordStore:
         for name in ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt"):
             if name in metadata:
                 payload[name] = metadata[name]
+        read_loudness = getattr(self.capture, "read_loudness_volume_db", None)
+        loudness = read_loudness() if read_loudness else None
+        payload["loudness_volume_db"] = await loudness if inspect.isawaitable(loudness) else loudness
         if answer is not None:
             payload.update({
                 **({"capture_integrity": answer.capture_integrity} if answer.capture_integrity else {}),

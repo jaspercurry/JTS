@@ -2,34 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The WIRED capture provider's promises (#2662 W2b).
-
-Five layers, least to most integrated:
-
-1. **Mic resolution** — the measurement-class mic is picked when present, and
-   absence is disclosed rather than measured around.
-2. **The host's wiring** — one resolved mic drives the mint and the runner,
-   and the host's refusal translation reaches the tap.
-3. **The wired runner** — drives the conductor conversation (gate → admission
-   → capture-while-play → consume) with the host-owned error mapping; the
-   walked-away volume guarantee holds on every exit; a death never persists a
-   transport claim.
-4. **The fake-ALSA end-to-end** — extends the #2701 wired-readiness pin from
-   a contract-only answer to a REAL engine capture consumed through the REAL
-   host path: a real ``CrossoverV2Session`` (recovery re-verify shape), the
-   real ``bind_production_analyze`` binding decoding the provider's own
-   32-bit 48 kHz WAV, the real calibration-resolver injection point, and the
-   real durable-state persist.
-5. **The play seam's capture half** — the same box plays and records, so one
-   stimulus is one transaction: the recorder rolls before the first sample,
-   stops after the last, and the bytes land in the bundle under a path the
-   engine's record can carry.
-
-Equal-or-more scrutiny is pinned here as behavior: every wired answer carries
-all four frame-ledger counters with real values (so the analyzer's frame
-checks EVALUATE — a wired capture can never pass on "not evaluated"), plus
-the re-homed zero-run disclosure.
-"""
+"""Wired capture, host binding, record metadata, and frame integrity."""
 from __future__ import annotations
 
 import asyncio
@@ -1672,16 +1645,37 @@ async def test_a_capture_that_cannot_be_placed_says_so_after_the_play(
     assert played == ["played"], "the stimulus really did play"
 
 
-def test_the_capture_half_records_into_this_sessions_bundle():
+@pytest.mark.parametrize("source", ["cli", "wizard", "unbound"])
+@pytest.mark.parametrize("level", [-23.0, None])
+@pytest.mark.parametrize("answer", [WiredCaptureAnswer(wav=b"heard"), None])
+async def test_the_capture_half_records_into_this_sessions_bundle(source, level, answer):
     store = SimpleNamespace(bundle_dir="/var/lib/jasper/bundle")
+    banked = []
 
-    half = v2host._wired_stimulus_capture(_device(), store)
+    async def read_loudness():
+        return level
+
+    async def bank(record):
+        banked.append(record)
+        return "record-id"
+
+    provider = read_loudness if source == "wizard" else (lambda: level) if source == "cli" else None
+    half = (
+        v2host._wired_stimulus_capture(_device(), store, read_loudness_volume_db=provider)
+        if source == "wizard" else core_capture.WiredStimulusCapture(
+            _device(), Path(store.bundle_dir), read_loudness_volume_db=provider,
+        )
+    )
 
     assert isinstance(half, v2wired.WiredStimulusCapture)
     assert half.device.model_key == "minidsp_umik2"
-    # The bundle this session's evidence lands in, so the path the record
-    # carries resolves against the same root `analyze` will be declared.
     assert half.bundle_dir == Path("/var/lib/jasper/bundle")
+    records = core_capture.CapturedRecordStore(
+        SimpleNamespace(bank=bank), half, enrich=lambda *_: {"loudness_volume_db": -99},
+    )
+    for level in (level, -17.0):
+        assert await records.bank_answer({"loudness_volume_db": -88}, answer) == "record-id"
+        assert banked[-1]["loudness_volume_db"] == (None if source == "unbound" else level)
 
 
 # --------------------------------------------------------------------------- #

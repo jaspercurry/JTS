@@ -302,14 +302,7 @@ class _Answer:
 
 
 class _Capture:
-    """The host's capture half, minus the microphone.
-
-    Rolls around the play exactly as the wired one does, so the transaction
-    still decides ``played`` from what it OBSERVED, and hands back a
-    bundle-relative path so the banked record carries a real pointer.
-    ``take_answer`` is take-and-CLEAR like the real one, which is what the
-    record annotation relies on.
-    """
+    """The host's capture half, minus the microphone."""
 
     def __init__(self) -> None:
         self.arounds = 0
@@ -361,10 +354,15 @@ def speaker(tmp_path, monkeypatch):
 
     real_open_bundle = bundles.open_bundle
 
+    def _capture(**kwargs):
+        capture.read_loudness_volume_db = kwargs["read_loudness_volume_db"]
+        return capture
+
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
+    capture_factory.side_effect = _capture
     monkeypatch.setattr(wired, "WiredStimulusCapture", capture_factory)
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",

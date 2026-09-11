@@ -30,7 +30,6 @@ def bass_capture_context(take: Mapping[str, Any]) -> dict[str, Any]:
         **capture_basis(record), "pose_key": doc_pose_key(record),
         "position_axis": record.get("position_axis"),
         "mark_distance_m": record.get("mark_distance_m"),
-        "loudness_volume_db": record.get("loudness_volume_db"),
         "sweep_band_hz": take["sweep_band_hz"], "sweep_duration_s": take["sweep_duration_s"],
         "analysis_calibration": take["calibration"],
     }
@@ -53,8 +52,8 @@ def common_bass_bins(a: Mapping[str, Any], b: Mapping[str, Any], value: str, qua
 
 def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, change: str) -> dict[str, Any]:
     interventions = CHANGE_FIELDS[change]
-    required = tuple(dict.fromkeys((*CAPTURE_FIELDS, *GRAPH_FIELDS, "loudness_volume_db",
-        "pose_key", "position_axis", "mark_distance_m", "speaker_candidate_id", "sweep_band_hz", "sweep_duration_s", "analysis_calibration")))
+    required = (*CAPTURE_FIELDS, *GRAPH_FIELDS,
+        "pose_key", "position_axis", "mark_distance_m", "speaker_candidate_id", "sweep_band_hz", "sweep_duration_s", "analysis_calibration")
     context = compare_capture_basis(bass_capture_context(after), bass_capture_context(before), interventions=interventions,
                                     required=tuple(key for key in required if key not in interventions))
     result: dict[str, Any] = {"schema": "jts_bass_comparison/1", "change": change, "context": context,

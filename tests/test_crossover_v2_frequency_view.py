@@ -31,8 +31,7 @@ from jasper.active_speaker.crossover_v2.frequency_view import (
 )
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
-from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series
-from jasper.active_speaker.frequency_view import build_frequency_view as neutral_view
+from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view
 from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
@@ -851,12 +850,13 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
 
 
 @pytest.mark.parametrize('change,main_delta,stimulus_delta', [('candidate', 0, 0), ('volume', 3, 0), ('demand', 0, 3)])
-def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta):
+@pytest.mark.parametrize('mismatch,field', [({'position_deg': 20}, 'pose_key'), ({'program': {'program_id': 'changed-gains'}}, 'program_id'), ({'loudness_volume_db': -23}, 'loudness_volume_db'), ({'level_db': -23}, 'level_db')])
+def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta, mismatch, field):
     before = {
         'record_path': 'before.json',
         'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'bass_candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
-                   'position_deg': 0, 'vertical_deg': 0},
+                   'position_deg': 0, 'vertical_deg': 0, 'program': {'program_id': 'program'}, 'loudness_volume_db': -20},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
         'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
         'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
@@ -879,11 +879,11 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert band['harmonics']['3']['qualified_bins'] == 1
     assert band['harmonics']['3']['change_db'] == 0
     assert result['context']['unknown_fields']
-    after['record']['position_deg'] = 20
-    assert not compare_bass_takes(before, after, change=change)['available']
+    after['record'].update(mismatch)
+    assert not compare_bass_takes(before, after, change='candidate')['available']
     diagnostic = compare_bass_takes(before, after, change='diagnostic')
     assert diagnostic['available']
-    assert 'pose_key' in diagnostic['context']['incompatible_fields']
+    assert field in diagnostic['context']['incompatible_fields']
 
 
 @pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
