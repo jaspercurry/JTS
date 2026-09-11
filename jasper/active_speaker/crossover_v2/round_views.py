@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -37,7 +37,7 @@ from jasper.active_speaker.flat_spec_views import (
     _pool,
 )
 from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
-from jasper.active_speaker.crossover_v2 import forward_model, position_cycle
+from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.driver_prescription import (
     DECLARED_TILT_FIELD, EXPECTED_DELTA_FIELD,
@@ -110,7 +110,6 @@ __all__ = [
     "BankedRound",
     "ENTRY_STATE_UNREADABLE",
     "EntryStateGrade",
-    "ForwardModelDeltaResult",
     "FrozenReferenceResult",
     "PooledWindowResult",
     "RepeatabilityMetric",
@@ -125,7 +124,6 @@ __all__ = [
     "default_agreement_lo_hz",
     "directivity_view",
     "entry_state_grade",
-    "forward_model_verify_delta",
     "frozen_reference_grade",
     "load_banked_round",
     "per_seat_curves",
@@ -801,12 +799,6 @@ def _banked_verify_curve(
     """``((freqs_hz, measured_db), "")`` off the round's flow state, or
     ``(None, reason)``.
 
-    The ONE reader of ``verify_priors.verify_measured`` on this side of the seam,
-    because two consumers want the curve differently: :func:`verify_pose_curve`
-    puts it on the round's cloud-position grid, and
-    :func:`forward_model_verify_delta` takes it VERBATIM, since that comparison
-    interpolates onto the prediction's own grid and a round with no cloud group
-    has no third grid to detour through (#3482).
     """
     state_path = inputs.state_path
     if state_path is None or not state_path.is_file():
@@ -840,9 +832,7 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
     The banked curve is block-averaged in dB to
     :data:`~.durable_state.MAX_PERSISTED_SUM_POINTS`, not smoothed at a
     fractional-octave width, so :attr:`PositionCurve.smoothing_fraction` is
-    reported as ``0`` — this module's spelling for *not attested*. The resample
-    is for the SEATS and only they should pay it, which is why
-    :func:`forward_model_verify_delta` reads the same source verbatim.
+    reported as ``0`` — this module's spelling for *not attested*.
     """
     banked_curve, reason = _banked_verify_curve(banked.inputs)
     if banked_curve is None:
@@ -862,128 +852,6 @@ def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
         take_id="",
     )
     return VerifyPoseResult(curve, "")
-
-
-@dataclass(frozen=True)
-class ForwardModelDeltaResult:
-    """A predicted sum, its delta against a measured VERIFY sum, or why neither.
-
-    ``prediction`` is ``None`` only when the basis banked no summable pair —
-    the one shape with no forward model at all. ``delta`` is ``None`` exactly
-    when ``reason`` is non-empty, so a prediction nothing measured comes back
-    WITH its curve and a reason saying nothing judged it. Never raises: a round
-    that banked no per-driver solos, none at this pose, or no VERIFY curve, is
-    a normal shape.
-
-    ``basis_round_dir`` / ``measured_round_dir`` name the two rounds the halves
-    came from, ALWAYS — equal when one round supplied both — and ``candidate``
-    names WHAT was predicted: a filed record whose curve cannot be attributed to
-    a chain is a prediction with no provenance. Additive evidence: it carries no
-    verdict, tolerance or score (invariant 3).
-    """
-
-    delta: Mapping[str, Any] | None
-    reason: str
-    #: Required, not defaulted: an unattributed prediction is the thing these
-    #: three exist to make impossible.
-    basis_round_dir: str
-    measured_round_dir: str
-    candidate: "forward_model.SummationCandidate"
-    prediction: "forward_model.PredictedSum | None" = None
-
-    @property
-    def acceptance(self) -> dict[str, Any]:
-        """Whether a measurement judged this prediction, and which one (#3481).
-
-        Derived rather than passed in: a delta IS the judging. The vocabulary is
-        :func:`~.forward_model.acceptance_block`'s, so the record cannot spell
-        the fact one way here and another way beside the prediction.
-        """
-        return forward_model.acceptance_block(
-            self.measured_round_dir if self.delta is not None else None
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "acceptance": self.acceptance,
-            "basis_round_dir": self.basis_round_dir,
-            "candidate": asdict(self.candidate),
-            "measured_round_dir": self.measured_round_dir,
-            "prediction": (
-                None if self.prediction is None else self.prediction.to_dict()
-            ),
-            "predicted_minus_measured": (
-                None if self.delta is None else dict(self.delta)
-            ),
-            "reason": self.reason,
-        }
-
-
-def forward_model_verify_delta(
-    basis: BankedRound,
-    candidate: "forward_model.SummationCandidate",
-    *,
-    measured: BankedRound | None = None,
-    phase: str = PHASE_MEASURE,
-    position_deg: int = DESIGN_AXIS_DEG,
-) -> ForwardModelDeltaResult:
-    """Predict a summed response from ``basis``'s per-driver solos, and delta it
-    against the VERIFY sum ``measured`` banked.
-
-    The two halves the question needs: a PREDICTION BASIS (a banked take at
-    ``position_deg`` carrying both driver solos, magnitude and phase, per ruling
-    R9) and a MEASURED VERIFY SUM. Either absent, and the result says which.
-
-    They come from two different banked rounds because that is where the flow
-    puts them (#3482): the measure stage walks the solos and never reaches
-    VERIFY; the verify stage measures the sum in a NEW bundle under a new capture
-    session id. So the join is disclosed on the result. ``candidate`` is a
-    PARAMETER rather than the round's incumbent — the question is usually what
-    some candidate WOULD have measured.
-
-    The PREDICTION is made first and returned whether or not a measured half
-    exists, so "what would this candidate measure" is answerable over a round
-    nothing has verified — with the result's own ``acceptance`` saying that
-    nothing judged it (#3481).
-    """
-
-    measured = basis if measured is None else measured
-    basis_dir = str(basis.round_dir)
-    measured_dir = str(measured.round_dir)
-    try:
-        pair = forward_model.load_branch_pair(
-            basis.session_dir, phase=phase, position_deg=position_deg
-        )
-    except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(
-            None, str(exc), basis_dir, measured_dir, candidate
-        )
-    if pair is None:
-        return ForwardModelDeltaResult(
-            None,
-            f"no {phase} take at {position_deg} deg banks both driver solos",
-            basis_dir,
-            measured_dir,
-            candidate,
-        )
-    predicted = forward_model.predict_sum(pair, candidate)
-    verify_curve, reason = _banked_verify_curve(measured.inputs)
-    if verify_curve is None:
-        return ForwardModelDeltaResult(
-            None, reason, basis_dir, measured_dir, candidate, predicted
-        )
-    measured_freqs_hz, measured_db = verify_curve
-    try:
-        delta = forward_model.predicted_minus_measured_db(
-            predicted, measured_freqs_hz, measured_db
-        )
-    except forward_model.ForwardModelError as exc:
-        return ForwardModelDeltaResult(
-            None, str(exc), basis_dir, measured_dir, candidate, predicted
-        )
-    return ForwardModelDeltaResult(
-        delta, "", basis_dir, measured_dir, candidate, predicted
-    )
 
 
 # --------------------------------------------------------------------------- #

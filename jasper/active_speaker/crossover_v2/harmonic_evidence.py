@@ -27,10 +27,12 @@ from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSIO
 from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.program import write_program_wav
 
+from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
+from .round_inputs import banked_round_of, round_inputs
+
 from ..profile import DRIVER_ROLES_BY_WAY
 from .evidence_packet import (
     HARMONICS_ARTIFACT,
-    NO_ROUND_ARTIFACTS_REASON,
     RING_SIDECAR_GLOB,
     applied_profile_source,
     round_artifact_dir,
@@ -1122,46 +1124,27 @@ def read_round_harmonics(
 
 
 def read_bundle_harmonics(
-    bundle_dir: Path,
-    dumps_dir: Path,
-    state_path: Path,
+    bank_dir: Path,
     band_overrides: Mapping[str, tuple[float, float]],
     *,
     calibration_path: Path | None = None,
-    applied_profile_path: Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    """One bundle's round (``info.json`` beside ``evidence/v1/artifacts/``),
-    resolved by :func:`~.evidence_packet.round_artifact_dir` so the reading
-    lands where the packet reader looks. Raises ``OSError``/``ValueError`` for
-    what cannot be read, :class:`HarmonicEvidenceRefused` on a decline.
-    """
+    """Read the bank's capture ring and its matching saved inputs."""
+    inputs = round_inputs(banked_round_of(bank_dir) or bank_dir)
+    bundle_dir = inputs.session_dir
     round_dir, why = round_artifact_dir(bundle_dir)
     if round_dir is None:
-        if why == NO_ROUND_ARTIFACTS_REASON:
-            why += (
-                " — the bundle must hold info.json beside "
-                "evidence/v1/artifacts/crossover_v2/<capture-session-id>/"
-            )
         raise ValueError(why)
-
-    info = json.loads((bundle_dir / "info.json").read_text())
-    state = json.loads(state_path.read_text())
+    if inputs.state_path is None:
+        raise HarmonicEvidenceRefused(STATE_UNREADABLE, {"reason": inputs.state_reason})
+    state = json.loads(inputs.state_path.read_text())
     if not isinstance(state, dict):
-        raise ValueError(f"the flow state at {state_path} is not a JSON object")
-    session_id = info.get("session_id") if isinstance(info, dict) else None
-
+        raise HarmonicEvidenceRefused(STATE_UNREADABLE, {})
     artifact = read_round_harmonics(
-        round_dir,
-        dumps_dir,
-        state,
+        round_dir, bundle_dir / CAPTURE_RING_DIR, state,
         round_bands_hz(state, band_overrides),
-        session_id=session_id if isinstance(session_id, str) else None,
-        # The file's CONTENTS, not a parsed curve: the sign convention it must
-        # be read under comes from the microphone this round's own captures
-        # recorded through, which only the instrument can see.
-        calibration_text=(
-            calibration_path.read_text() if calibration_path is not None else None
-        ),
-        applied_profile_path=applied_profile_path,
+        session_id=bundle_session_id(bundle_dir),
+        calibration_text=calibration_path.read_text() if calibration_path else None,
+        applied_profile_path=inputs.applied_profile_path,
     )
     return round_dir, artifact

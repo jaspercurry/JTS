@@ -2,18 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round bank``: one live session into the on-box campaign home.
-
-The source session is the real one ``tests/crossover_v2_banked_round.py``
-builds through the product's own writers, so the tree this banks is the tree
-the flow actually produces — and every layout assertion here goes through
-``round_views``' own reader rather than re-spelling the layout.
-"""
+"""Bank live sessions and read the resulting evidence through its consumers."""
 
 from __future__ import annotations
 
 import errno
 import json
+import hashlib
+import wave
+
+import numpy as np
 from pathlib import Path
 
 import pytest
@@ -27,7 +25,13 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 )
 from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_KEY, POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.feature_classifier import load_round_captures
+from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
+from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
+from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.round_bank import (
+    CAPTURE_RING_DIR,
     REASON_ALREADY_BANKED,
     REASON_NOT_A_BUNDLE,
     REASON_SESSION_UNFINISHED,
@@ -40,11 +44,6 @@ from tests.crossover_v2_banked_round import bank_measure_round
 
 
 def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
-    """``(live session bundle, the flow state banked beside it)``.
-
-    Banking is a post-apply act, so the bundle is marked ``applied`` unless a
-    test is about an unfinished one.
-    """
     source = bank_measure_round(tmp_path / "live")
     session_dir = round_inputs(source).session_dir
     mark_state(session_dir, state)
@@ -52,10 +51,6 @@ def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path
 
 
 def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]:
-    """The non-state SSOT paths, written or absent.
-
-    ``absent`` names one of them to leave unwritten while the rest are present.
-    """
     paths = {
         "design_draft_path": tmp_path / "ssot" / "design_draft.json",
         "applied_profile_path": tmp_path / "ssot" / "applied_profile.json",
@@ -72,40 +67,15 @@ def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]
     return paths
 
 
-@pytest.mark.parametrize(
-    "present, absent, missing",
-    [
-        (True, "", []),
-        (
-            False,
-            "",
-            [
-                "design-draft.json",
-                "applied-profile.json",
-                "repeat-floor.json",
-                "declared-geometry.json",
-                "camilla-statefile.yml",
-            ],
-        ),
-        (True, "repeat_floor_path", ["repeat-floor.json"]),
-        (True, "declared_geometry_path", ["declared-geometry.json"]),
-        (True, "statefile_path", ["camilla-statefile.yml"]),
-    ],
-    ids=[
-        "ssot-present",
-        "ssot-absent",
-        "repeat-floor-absent",
-        "declared-geometry-absent",
-        "statefile-absent",
-    ],
-)
+@pytest.mark.parametrize("present, absent, missing", [
+    (True, "", []),
+    (False, "", ["design-draft.json", "applied-profile.json", "repeat-floor.json",
+                 "declared-geometry.json", "camilla-statefile.yml"]),
+    (True, "repeat_floor_path", ["repeat-floor.json"]),
+    (True, "declared_geometry_path", ["declared-geometry.json"]),
+    (True, "statefile_path", ["camilla-statefile.yml"]),
+])
 def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, missing):
-    """The assembled tree loads back through ``load_banked_round`` either way:
-    an absent SSOT document is named in ``provenance.json``, never a refusal.
-
-    The repeat floor and the declared geometry are two of the five the reader
-    opens, so a round banked without one says so rather than dropping it
-    silently."""
     session_dir, state_path = _live_session(tmp_path)
 
     banked = bank_round(
@@ -115,15 +85,11 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, mis
         **_ssot(tmp_path, present=present, absent=absent),
     )
 
-    # The round id is the receipt's, not the bundle's session id.
     assert banked.path == tmp_path / "campaigns" / "r1"
     assert round_inputs(banked.path).session_dir.name == session_dir.name
     assert (banked.path / "bundle" / session_dir.name / "info.json").is_file()
-    assert load_banked_round(banked.path).session_dir == round_inputs(
-        banked.path
-    ).session_dir
+    assert load_banked_round(banked.path).session_dir == round_inputs(banked.path).session_dir
     provenance = json.loads((banked.path / "provenance.json").read_text())
-    # What the caller is handed is what landed on disk -- no re-read needed.
     assert provenance == banked.provenance
     assert provenance["source"] == "on-box"
     assert provenance["session_id"] == session_dir.name
@@ -140,8 +106,6 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, mis
 
 
 def test_the_banked_round_carries_its_own_pose_index(tmp_path):
-    """The bank derives the index, so a reader of a banked round never needs a
-    second tool to say which take was measured at which pose."""
     session_dir, state_path = _live_session(tmp_path)
 
     banked = bank_round(
@@ -157,9 +121,6 @@ def test_the_banked_round_carries_its_own_pose_index(tmp_path):
 
 
 def test_a_round_with_no_walk_to_index_is_banked_without_one(tmp_path):
-    """Most rounds run no lateral walk, so having nothing to index is an
-    ordinary shape: the bank keeps everything it pulled and names the index
-    absent, rather than refusing the round or unwinding it."""
     session_dir, state_path = _live_session(tmp_path)
     for take in session_dir.rglob("positions/lateral_*.json"):
         take.unlink()
@@ -197,63 +158,7 @@ def test_provenance_records_the_installed_build_or_says_it_cannot(
 
     assert banked.provenance["installed_sha"] == sha
     assert banked.provenance["git_absent"] is git_absent
-    # One key spelling across both banking paths (scripts/bank-crossover-round.sh).
     assert banked.provenance["banked_at_utc"].endswith("Z")
-
-
-def test_banked_bundle_files_are_hard_linked_not_copied(tmp_path):
-    """A hard link shares bytes at zero copy cost and survives the sessions
-    ring's later unlink of the source -- ``bank_round`` must not byte-copy a
-    finished bundle that can run hundreds of MB on a 1 GB Pi."""
-    session_dir, state_path = _live_session(tmp_path)
-
-    banked = bank_round(
-        session_dir,
-        campaign_root=tmp_path / "campaigns",
-        state_path=state_path,
-        **_ssot(tmp_path, present=False),
-    )
-
-    banked_session_dir = round_inputs(banked.path).session_dir
-    for source_file in session_dir.rglob("*"):
-        if source_file.is_file():
-            banked_file = banked_session_dir / source_file.relative_to(session_dir)
-            assert banked_file.stat().st_ino == source_file.stat().st_ino
-    assert load_banked_round(banked.path).session_dir == banked_session_dir
-
-
-def test_banked_bundle_falls_back_to_a_copy_when_linking_is_forbidden(
-    tmp_path, monkeypatch
-):
-    """Raspberry Pi OS's fs.protected_hardlinks=1 makes ``os.link`` raise
-    EPERM for a non-root, non-owning operator -- ``bank_round`` must still
-    complete, by copying, rather than surfacing that as a bank failure."""
-    # Build the fixture bundle before patching os.link -- the fixture writer
-    # (bundles.open_bundle) links its own admission marker and must not see
-    # the forbidden stub meant only for bank_round's copy.
-    session_dir, state_path = _live_session(tmp_path)
-
-    def _forbidden_link(source, destination):
-        raise OSError(errno.EPERM, "Operation not permitted")
-
-    monkeypatch.setattr("jasper.active_speaker.round_bank.os.link", _forbidden_link)
-
-    banked = bank_round(
-        session_dir,
-        campaign_root=tmp_path / "campaigns",
-        state_path=state_path,
-        **_ssot(tmp_path, present=False),
-    )
-
-    banked_session_dir = round_inputs(banked.path).session_dir
-    linked_any = False
-    for source_file in session_dir.rglob("*"):
-        if source_file.is_file():
-            banked_file = banked_session_dir / source_file.relative_to(session_dir)
-            assert banked_file.stat().st_ino != source_file.stat().st_ino
-            linked_any = True
-    assert linked_any
-    assert load_banked_round(banked.path).session_dir == banked_session_dir
 
 
 def test_a_banked_round_is_never_overwritten(tmp_path):
@@ -287,8 +192,6 @@ def test_a_directory_that_is_not_a_bundle_is_refused(tmp_path):
 def test_an_unfinished_session_is_refused_rather_than_claiming_its_round_id(
     tmp_path, state
 ):
-    """A round id is banked once and never overwritten, so banking a session
-    still in flight would permanently claim it for a partial round."""
     session_dir, state_path = _live_session(tmp_path, state=state)
 
     with pytest.raises(RoundBankError) as excinfo:
@@ -304,8 +207,6 @@ def test_an_unfinished_session_is_refused_rather_than_claiming_its_round_id(
 def test_a_round_id_that_is_not_a_plain_token_falls_back_to_the_session_id(
     tmp_path, round_id
 ):
-    """The round id names a directory under the campaign root; anything that
-    could walk out of it banks under the session id instead."""
     session_dir, state_path = _live_session(tmp_path)
     round_dir, _why = round_artifact_dir(session_dir)
     receipt_path = round_dir / "round_receipt.json"
@@ -323,8 +224,6 @@ def test_a_round_id_that_is_not_a_plain_token_falls_back_to_the_session_id(
 def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
     tmp_path, monkeypatch, capsys
 ):
-    """An OSError that is not "no bundle here" must not read as a refusal: the
-    operator gets the filesystem-failure exit, not "not a session bundle"."""
     session_dir, _state = _live_session(tmp_path)
 
     def _denied(self: Path, *args: object, **kwargs: object) -> str:
@@ -402,3 +301,103 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
         assert "state.json" in banked.provenance["missing"]
     (banked.path / "state.json").write_text(state_path.read_text())
     assert load_banked_round(banked.path).packet["verify"]["available"] is snapshot
+
+SR = 48000
+
+def _ring_wav(path: Path, seed: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    samples = rng.normal(0, 0.2, SR // 10)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(SR)
+        handle.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
+
+
+def _capture_bundle(root: Path, *, takes: tuple[tuple[str, str, object], ...]) -> Path:
+    bundle = root / "bundle/bank-session"
+    positions = bundle / "evidence/v1/artifacts/crossover_v2/capture-id/positions"
+    positions.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": "bank-session"}))
+    programs = bundle / "crossover_v2/capture-id"
+    for index, (take_id, phase, captured_at) in enumerate(takes):
+        program = programs / f"{phase}_program.wav"
+        _ring_wav(program, seed=index + 1)
+        wav = bundle / f"summed/{take_id}.wav"
+        _ring_wav(wav, seed=index + 2)
+        (positions / f"{take_id}.json").write_text(json.dumps({
+            "kind": POSITION_EVIDENCE_KIND, MEASURE_KIND_KEY: "verify",
+            "take_id": take_id, "phase": phase, "captured_at": captured_at,
+            "session_id": "capture-id", "wav_path": str(wav.relative_to(bundle)),
+            "wav_sha256": hashlib.sha256(wav.read_bytes()).hexdigest(),
+            "diagnostic": {"epsilon_ppm": 1.0 + index},
+            "capture_integrity": {"capture_chain": "alsa_s32le"},
+            "frame_ledger": {"received_frames": 4800},
+            "provenance": {"stimulus": {"wav_sha256": hashlib.sha256(program.read_bytes()).hexdigest()}},
+        }))
+    return bundle
+
+
+@pytest.mark.parametrize("fallback", [None, errno.EXDEV, errno.EPERM, errno.EACCES])
+def test_banking_writes_the_ring_both_instruments_read(tmp_path, monkeypatch, fallback):
+    session = _capture_bundle(tmp_path / "live", takes=(
+        ("verify-a", "verify", "2026-08-31T00:19:52Z"),
+        ("lateral-b", "lateral", 1788135592.4),
+        ("measure-c", "measure", 1788135592.9),
+    ))
+    if fallback:
+        def denied(*args, **kwargs):
+            raise OSError(fallback, "link unavailable")
+        monkeypatch.setattr("jasper.active_speaker.round_bank.os.link", denied)
+    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
+    bundle = round_inputs(bank.path).session_dir
+    for source in session.rglob("*"):
+        if source.is_file():
+            copy = bundle / source.relative_to(session)
+            assert copy.read_bytes() == source.read_bytes()
+            assert (copy.stat().st_ino == source.stat().st_ino) is (fallback is None)
+    ring = bundle / CAPTURE_RING_DIR
+    directory, _ = round_artifact_dir(bundle)
+    programs = round_program_dir(bundle, directory, ("verify", "lateral", "measure"))
+    captures = load_round_captures(programs, ring, session_id="bank-session")
+    assert {c.phase for c in captures} == {"verify", "lateral"}
+    assert {c.stamp for c in captures} == {1788135592.0}
+    bound, scope = _scope_captures(_bind_measure_captures(ring), "bank-session")
+    assert len(bound) == 1 and scope["session_id"] == "bank-session"
+    assert bank.provenance["capture_ring"] == {"written": 3, "skipped": []}
+    assert len(list((ring / "wav").glob("*.wav"))) == 3
+    for sidecar in (ring / "sidecar").glob("*.json"):
+        document = json.loads(sidecar.read_text())
+        identity = read_session_identity(document)
+        assert identity.session_id == "bank-session"
+        assert identity.aliases["capture_session_id"] == "capture-id"
+        assert all(key in document for key in ("diagnostic", "capture_integrity", "frame_ledger", "wav_sha256"))
+        wav = ring / "wav" / f"{sidecar.stem}.wav"
+        source = bundle / document["wav_path"]
+        assert wav.read_bytes() == source.read_bytes()
+        assert (wav.stat().st_ino == source.stat().st_ino) is (fallback is None)
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("timestamp", "no_captured_at"), ("path", "no_wav_path"),
+    ("escape", "wav_escapes_bundle"), ("missing", "wav_missing"),
+])
+def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reason):
+    session = _capture_bundle(tmp_path / "live", takes=(("take", "verify", "2026-08-31T00:19:52Z"),))
+    take = next(session.glob("evidence/v1/artifacts/**/positions/*.json"))
+    document = json.loads(take.read_text())
+    if fault == "timestamp":
+        document["captured_at"] = "invalid"
+    elif fault == "path":
+        document.pop("wav_path")
+    elif fault == "escape":
+        document["wav_path"] = "../outside.wav"
+    else:
+        (session / document["wav_path"]).unlink()
+    take.write_text(json.dumps(document))
+    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
+    assert bank.provenance["capture_ring"]["written"] == 0
+    assert bank.provenance["capture_ring"]["skipped"] == [{
+        "path": "crossover_v2/capture-id/positions/take.json", "reason": reason,
+    }]

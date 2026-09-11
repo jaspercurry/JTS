@@ -29,14 +29,6 @@ loses is the phase class, which every row reports as ``ambiguous`` beside
 no filter can be vouched for by an instrument that failed its own
 known-answer check.
 
-**Only the summed post-apply capture shapes are admissible.** A ``lateral``
-capture replays the per-driver MEASURE program one driver at a time, so it
-cannot answer a question about the summed system's features and is a HARD
-refusal by name (:data:`LATERAL_CAPTURE_SHAPE`) rather than a silent skip.
-The pre-apply half of ``programs.SUMMED_SWEEP_PHASES``
-(``entry_baseline`` / ``cloud_measure``) is not admitted either: it measures
-a DIFFERENT graph, and pooling the two would classify a mixture.
-
 It lives here rather than under :mod:`jasper.audio_measurement` because
 ``tests/test_audio_measurement_boundary_ssot.py``'s
 ``test_package_boundary_holds`` forbids that
@@ -122,7 +114,6 @@ __all__ = [
     "classifiable_band_hz",
     "CLASSIFICATION_REFUSAL_REASONS",
     "CLASSIFICATION_SCHEMA_VERSION",
-    "LATERAL_CAPTURE_SHAPE",
     "NO_ADMISSIBLE_CAPTURES",
     "NO_FEATURES_DETECTED",
     "PROGRAM_MISSING",
@@ -137,12 +128,6 @@ __all__ = [
 ]
 
 
-#: A ``lateral`` capture was bound to this round. See the module docstring.
-LATERAL_CAPTURE_SHAPE = "classification_lateral_capture_shape"
-
-#: This round's captures were found, and every one of them names a phase this
-#: instrument cannot read — a MEASURE-only round is the common case. The
-#: remedy is a different ROUND: point at a verify-shaped one.
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
 
 #: No capture of this round reached the instrument at all — an empty ring,
@@ -170,7 +155,6 @@ PROGRAM_MISSING = "classification_program_missing"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 
 CLASSIFICATION_REFUSAL_REASONS = frozenset({
-    LATERAL_CAPTURE_SHAPE,
     ROUND_SHAPE_INADMISSIBLE,
     NO_ADMISSIBLE_CAPTURES,
     CAPTURES_UNREADABLE,
@@ -205,9 +189,6 @@ CAPTURE_OTHER_SESSION = "other_session"
 #: The capture's phase is not in :data:`ADMISSIBLE_PHASES`.
 CAPTURE_PHASE_NOT_ADMISSIBLE = "phase_not_admissible"
 
-#: A ``lateral`` capture — the per-driver shape that refuses the whole round.
-CAPTURE_LATERAL_SHAPE = "lateral_capture_shape"
-
 #: No program in the round directory carries the bytes this capture's sidecar
 #: banked as ``provenance.stimulus.wav_sha256``.
 CAPTURE_PROGRAM_MISSING = "program_missing"
@@ -235,10 +216,7 @@ _REFUSAL_FOR_CAPTURE_REASON: dict[str, str | None] = {
     # carries no session id, exactly like one carrying somebody else's.
     CAPTURE_UNREADABLE_SIDECAR: NO_ADMISSIBLE_CAPTURES,
     CAPTURE_OTHER_SESSION: NO_ADMISSIBLE_CAPTURES,
-    # The round answered a different question; a verify-shaped round answers
-    # this one. (A lateral row is claimed earlier by LATERAL_CAPTURE_SHAPE.)
     CAPTURE_PHASE_NOT_ADMISSIBLE: ROUND_SHAPE_INADMISSIBLE,
-    CAPTURE_LATERAL_SHAPE: ROUND_SHAPE_INADMISSIBLE,
     # The round is the right shape and the take is what cannot be read. (A
     # program-missing row is claimed earlier by PROGRAM_MISSING.)
     CAPTURE_PROGRAM_MISSING: CAPTURES_UNREADABLE,
@@ -262,8 +240,7 @@ _NO_CAPTURE_REMEDY = {
         "it was pointed at and the session id it was scoped by"
     ),
     ROUND_SHAPE_INADMISSIBLE: (
-        "this round banked no capture shape carrying a summed-system response; "
-        "point at a verify-shaped round"
+        "this round banked no admissible capture shape"
     ),
     CAPTURES_UNREADABLE: (
         "the round shape is right and its takes are what cannot be read; the "
@@ -284,10 +261,7 @@ class FeatureClassificationRefused(RuntimeError):
         self.detail: dict[str, Any] = dict(detail or {})
 
 
-#: The capture shapes whose response IS the summed system, post-apply. The
-#: pre-apply members of ``programs.SUMMED_SWEEP_PHASES`` are deliberately not
-#: here — see the module docstring.
-ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY})
+ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
 
 #: The artifact's own version. Deliberately not a new number: the row shape is
 #: the one the register already reads and the 2026-08-19 records already carry.
@@ -473,7 +447,7 @@ class RoundCapture:
     phase: str
     #: Capture stamp, seconds. The dump filename's own microsecond stamp.
     stamp: float
-    #: Commanded turntable angle, when a walk log covered this capture.
+    #: Commanded angle from the take, or a matching turntable walk release.
     degrees: int | None
     #: The band this capture's DUT actually radiates, off its own sidecar
     #: curves. ``None`` when the sidecar banks none, which refuses the window
@@ -548,16 +522,14 @@ def load_round_captures(
     ``dumps_dir`` is the banked capture ring's root: sidecar JSON beside its
     WAV, found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` —
     :func:`~.harmonic_evidence.read_round_harmonics` reads the same ring
-    through the same constant, so ``--dumps`` cannot come to mean two
-    different directories.
+    through the same constant.
 
     ``session_id`` scopes the ring to this round. It is the BUNDLE session id
     (``info.json``'s), which is what a sidecar stamps into
     ``jts_session_identity``; the capture id that names ``round_dir`` is a
     different namespace. Omitting it admits every capture in the ring, which
-    is correct only when the ring holds one round. ``walk_logs`` are optional:
-    without them captures carry no angle and the timing test says it did not
-    run.
+    is correct only when the ring holds one round. ``walk_logs`` supply angles
+    only for captures without a banked position.
 
     Raises :class:`FeatureClassificationRefused` — never returns empty, "no
     captures" being a finding a caller must be told by name. EVERY refusal
@@ -576,7 +548,6 @@ def load_round_captures(
 
     captures: list[RoundCapture] = []
     seen_phases: dict[str, int] = {}
-    lateral: list[str] = []
     missing_program: list[str] = []
     census: list[dict[str, Any]] = []
 
@@ -628,10 +599,6 @@ def load_round_captures(
             note(sidecar, phase, CAPTURE_OTHER_SESSION, banked)
             continue
         seen_phases[phase] = seen_phases.get(phase, 0) + 1
-        if phase == PHASE_LATERAL:
-            lateral.append(sidecar.name)
-            note(sidecar, phase, CAPTURE_LATERAL_SHAPE, banked)
-            continue
         if phase not in ADMISSIBLE_PHASES:
             note(sidecar, phase, CAPTURE_PHASE_NOT_ADMISSIBLE, banked)
             continue
@@ -660,26 +627,14 @@ def load_round_captures(
                 program=program,
                 phase=phase,
                 stamp=stamp,
-                degrees=_bind_angle(stamp, releases),
+                degrees=(doc["position_deg"] if type(doc.get("position_deg")) is int
+                         else _bind_angle(stamp, releases)),
                 # One owner for the E5 rule, and one parse of it: the sibling
                 # round loader the gate sweep reads through owns this.
                 radiated_band_hz=radiated_band_of(doc),
             )
         )
 
-    if lateral:
-        raise FeatureClassificationRefused(
-            LATERAL_CAPTURE_SHAPE,
-            {
-                "lateral_captures": len(lateral),
-                "note": (
-                    "a lateral capture replays the per-driver MEASURE program "
-                    "one driver at a time, so it carries no summed-system "
-                    "response for a feature verdict to be about"
-                ),
-                "captures": census,
-            },
-        )
     if missing_program:
         # Refused rather than pooled without them. A round whose bundle does
         # not carry the bytes one of its captures heard is incomplete,
@@ -1484,9 +1439,7 @@ def _sweep_ladder(
     rather than reading :data:`GATE_STABLE` off a test that never ran.
 
     ``poses`` is who each pose row of every feature IS, banked once for the
-    round beside the frame, in the order those rows are in. Position is the
-    join, not ``pose_key``: a ring capture carries an angle only when a walk
-    log bound one.
+    round beside the frame, in the order those rows are in.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     frame = frame_descriptor(rungs, analysis_grid())
