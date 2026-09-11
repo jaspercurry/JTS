@@ -310,9 +310,7 @@ def _two_way_preset() -> dict:
             "null_depth_threshold_db": 25,
         }],
         "safety": {
-            "initial_sweep_level_db_spl": 65,
             "max_commissioning_level_db_spl": 85,
-            "escalation_step_db": 5,
             "require_physical_tweeter_protection": True,
             "require_channel_identity_before_drivers": True,
             "emergency_stop_required": True,

@@ -77,9 +77,15 @@ def _restating_sites(tree: ast.AST) -> list[int]:
     return lines
 
 
-def test_the_ruled_stop_is_the_dataclass_default() -> None:
+@pytest.mark.parametrize("legacy", [
+    {},
+    {"initial_sweep_level_db_spl": 55.0, "escalation_step_db": 1.0},
+])
+def test_the_ruled_stop_is_the_dataclass_default(legacy: dict) -> None:
     """The ruling in one assertion, so a silent default change is loud."""
     assert RULED_STOP_DB_SPL == 85.0
+    assert SafetyEnvelope.from_mapping(legacy) == SafetyEnvelope()
+    assert not legacy.keys() & SafetyEnvelope.from_mapping(legacy).to_dict().keys()
     # The ruled value is the validated ceiling, not an arbitrary number.
     SafetyEnvelope(max_commissioning_level_db_spl=85.0).validate()
     with pytest.raises(ActiveSpeakerConfigError):
@@ -155,13 +161,6 @@ def test_preview_compiled_preset_rides_the_ruled_stop() -> None:
     assert [i for i in issues if i.get("severity") == "blocker"] == []
     assert preset is not None
     assert preset.safety.max_commissioning_level_db_spl == RULED_STOP_DB_SPL
-    # The two envelope fields that DIFFER from their dataclass defaults stay
-    # restated, and are pinned here only so a later cleanup cannot delete them
-    # as if they were restatements too. This asserts what they ARE, not what
-    # they do: neither has a production reader today (pre-existing, and not
-    # this change's to fix).
-    assert preset.safety.initial_sweep_level_db_spl == 55.0
-    assert preset.safety.escalation_step_db == 1.0
 
 
 def test_passive_sub_preset_rides_the_ruled_stop() -> None:

@@ -843,10 +843,7 @@ def _preset_from_crossover_preview(
             },
             crossover_regions=tuple(regions),
             local_subwoofer=local_subwoofer,
-            safety=SafetyEnvelope(
-                initial_sweep_level_db_spl=55.0,
-                escalation_step_db=1.0,
-            ),
+            safety=SafetyEnvelope(),
             notes="Derived from jts_active_speaker_crossover_preview; review before load.",
         )
         preset.validate()
@@ -1008,10 +1005,7 @@ def build_passive_mains_preset(
             },
             crossover_regions=(),
             local_subwoofer=local_subwoofer,
-            safety=SafetyEnvelope(
-                initial_sweep_level_db_spl=55.0,
-                escalation_step_db=1.0,
-            ),
+            safety=SafetyEnvelope(),
             notes="Derived from a passive-mains topology; no inter-driver crossover.",
         )
         preset.validate()

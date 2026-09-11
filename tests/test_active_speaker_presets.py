@@ -57,7 +57,6 @@ def test_epique_f110m_safe_bringup_preset_is_valid():
     assert preset.drivers["tweeter"].manufacturer == "Eminence"
     assert preset.drivers["tweeter"].model == "F110M-8"
     assert preset.crossover_regions[0].fc_hz == 2500
-    assert preset.safety.initial_sweep_level_db_spl == 60
     assert preset.safety.max_commissioning_level_db_spl == 85
 
 

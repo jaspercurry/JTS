@@ -5,7 +5,7 @@
 """Measurement quality checks for sweep captures.
 
 The DSP math produces a curve for almost any WAV, including a clipped, silent,
-or browser-processed recording; this module states the capture's quality facts
+or noisy recording; this module states the capture's quality facts
 before deconvolution. Thresholds come only from a
 :class:`~jasper.audio_measurement.quality_model.QualityModel` profile
 (:func:`assess_capture` defaults to ``ROOM``), never from constants here.
@@ -97,10 +97,6 @@ def dbfs(value: float, floor: float = DBFS_FLOOR) -> float:
     return max(floor, 20.0 * math.log10(value))
 
 
-def _optional_bool(value: Any) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
 def assess_capture(
     captured: np.ndarray,
     *,
@@ -108,11 +104,10 @@ def assess_capture(
     expected_sample_rate: int,
     sweep_n_samples: int,
     has_mic_calibration: bool,
-    input_device: dict[str, Any] | None = None,
     truncated_from_samples: int | None = None,
     quality_model: QualityModel = ROOM,
 ) -> CaptureQuality:
-    """Assess a browser-uploaded sweep capture.
+    """Assess a sweep capture.
 
     ``truncated_from_samples`` is the capture's length BEFORE the caller bounded
     it for memory (:func:`~jasper.audio_measurement.deconv.cap_capture_length`);
@@ -215,42 +210,6 @@ def assess_capture(
             severity="warn",
             message="no measurement-mic calibration was applied",
         ))
-
-    if input_device:
-        for key, code, label in [
-            (
-                "echo_cancellation",
-                "browser_echo_cancellation",
-                "echo cancellation",
-            ),
-            (
-                "noise_suppression",
-                "browser_noise_suppression",
-                "noise suppression",
-            ),
-            (
-                "auto_gain_control",
-                "browser_auto_gain_control",
-                "auto gain control",
-            ),
-        ]:
-            if _optional_bool(input_device.get(key)) is True:
-                issues.append(QualityIssue(
-                    code=code,
-                    severity="warn",
-                    message=f"browser reported {label} enabled",
-                ))
-        channel_count = input_device.get("channel_count")
-        if isinstance(channel_count, (int, float)) and int(channel_count) != 1:
-            issues.append(QualityIssue(
-                code="browser_channel_count",
-                severity="warn",
-                message=(
-                    f"browser reported {channel_count:g} input channels; "
-                    "expected mono"
-                ),
-                details={"channel_count": channel_count},
-            ))
 
     return CaptureQuality(
         sample_rate=int(sample_rate),
