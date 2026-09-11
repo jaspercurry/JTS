@@ -77,6 +77,7 @@ JASPER_RETIRED_LEFTOVERS=(
     # with nothing left to read or write them.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/active_speaker_commissioning_run.json ${STATE_DIR}/.active_speaker_commissioning_run.json.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json|the retired v1 commissioning run record and its lock/mutation sidecars"
+    "file|${STATE_DIR}/active_speaker_capture_entry.json|the retired capture-entry anchor stash"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort
