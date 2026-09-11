@@ -425,7 +425,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._audio_q.put_nowait(None)
 
     def _tools_may_run(self) -> bool:
-        return self._conn._can_respond(self)
+        return self._conn._owns_turn(self) and not self._cancel_requested and not self._server_turn_complete
 
     async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
         if not call.id:
@@ -462,12 +462,14 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             self._on_connection_lost()
             return False
 
-    async def _finish_tool_round(self) -> None:
+    async def _finish_tool_round(self) -> bool:
         self._tool_round_pending = False
         try:
             await self._conn._send_event({"type": "response.create"}, turn=self)
         except Exception:  # noqa: BLE001
             self._on_connection_lost()
+            return False
+        return True
 
     def _on_assistant_text_delta(self, delta: str) -> None:
         if not delta:
@@ -649,9 +651,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             and self._conn is not None and turn._session is self._conn
             and self._connected_event.is_set()
         )
-
-    def _can_respond(self, turn: OpenAIRealtimeTurn) -> bool:
-        return self._owns_turn(turn) and not turn._cancel_requested and not turn._server_turn_complete
 
     async def _send_event(self, event: dict, *, turn: OpenAIRealtimeTurn | None = None) -> bool:
         async with self._send_lock:

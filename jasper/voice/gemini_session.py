@@ -268,11 +268,11 @@ class GeminiLiveTurn(BaseLiveTurn):
         tool_call = getattr(response, "tool_call", None)
         if tool_call is not None:
             self._tool_round_pending = True
-            self._tool_responses = []
             self._start_tool_calls([
                 ToolCall(id=fc.id, name=fc.name, args=dict(fc.args or {}))
                 for fc in tool_call.function_calls
             ])
+            self._tool_responses = []
 
         # Server content: turn_complete + interrupted.
         turn_just_completed = False
@@ -327,15 +327,16 @@ class GeminiLiveTurn(BaseLiveTurn):
         self._note_activity()
         return True
 
-    async def _finish_tool_round(self) -> None:
+    async def _finish_tool_round(self) -> bool:
         async with self._conn._send_lock:
             if not self._tools_may_run():
-                return
+                return False
             assert self._session is not None
             await self._session.send_tool_response(function_responses=self._tool_responses)
             self._tool_round_pending = False
         if self._conn._owns_turn(self):
             self._note_activity()
+        return True
 
 
 class GeminiLiveConnection(BaseLiveConnection):

@@ -223,11 +223,11 @@ class BaseLiveTurn:
                 return
         if not self._tools_may_run():
             return
-        await self._finish_tool_round()
-        self._conn._logger.info(
-            "%s tool round answered: %d call(s) in %.0fms", self._conn._log_tag,
-            len(calls), (_time.monotonic() - started) * 1000,
-        )
+        if await self._finish_tool_round():
+            self._conn._logger.info(
+                "%s tool round answered: %d call(s) in %.0fms", self._conn._log_tag,
+                len(calls), (_time.monotonic() - started) * 1000,
+            )
 
     def _tools_may_run(self) -> bool:
         """Whether the model would still accept this round's results."""
@@ -237,8 +237,8 @@ class BaseLiveTurn:
         """Send one result, or hold it for the flush. False abandons the round."""
         raise NotImplementedError
 
-    async def _finish_tool_round(self) -> None:
-        """Flush anything held back and let the model continue."""
+    async def _finish_tool_round(self) -> bool:
+        """Flush anything held back and let the model continue. False if nothing was sent."""
         raise NotImplementedError
 
     def discard_input(self) -> None:

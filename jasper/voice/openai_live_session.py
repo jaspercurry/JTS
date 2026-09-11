@@ -70,14 +70,21 @@ SESSION_OPEN_ATTEMPTS = 2
 
 def _parse_call(call: dict) -> ToolCall:
     """A backend `function_call` item. Arguments that are not a JSON
-    object are answered without dispatching the tool."""
+    object are answered without dispatching the tool.
+
+    Must be total: this runs in `on_event`, ahead of the round task, so a
+    raise here would escape `_receive`'s exception boundary and drop the
+    whole connection instead of just this round.
+    """
+    call_id = call.get("call_id", "")
+    name = call.get("name", "")
     try:
-        args = json.loads(call["arguments"])
+        args = json.loads(call.get("arguments", ""))
         if not isinstance(args, dict):
             raise ValueError("tool arguments must be an object")
     except (ValueError, TypeError):
-        return ToolCall(call["call_id"], call["name"], {}, {"error": "invalid_arguments"})
-    return ToolCall(call["call_id"], call["name"], args)
+        return ToolCall(call_id, name, {}, {"error": "invalid_arguments"})
+    return ToolCall(call_id, name, args)
 
 
 class OpenAILiveTurn(BaseLiveTurn):
@@ -269,6 +276,9 @@ class OpenAILiveTurn(BaseLiveTurn):
             if calls:
                 # A correction cancels the old round before a new round is started.
                 await self._drain_tool_round()
+                # Must stay after the drain above: setting this before the
+                # old round's task is cancelled would let it answer under
+                # the new delegation.
                 self._round_delegation = delegation
                 self._start_tool_calls([_parse_call(c) for c in calls])
             else:
@@ -287,8 +297,9 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._note_activity()
         return True
 
-    async def _finish_tool_round(self) -> None:
+    async def _finish_tool_round(self) -> bool:
         await self._conn._send({"type": "response.create"})
+        return True
 
 
 class OpenAILiveConnection(BaseLiveConnection):
