@@ -22,6 +22,10 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     PACKET_SCHEMA_VERSION, PacketSchemaUnsupported,
     build_crossover_evidence_packet, validate_packet,
 )
+from jasper.active_speaker.crossover_v2.fc_sweep import (
+    FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
+    fc_rejection_scenarios,
+)
 from jasper.active_speaker.crossover_v2.prescription_contract import (
     CONTRACT_COMMAND, SECTIONS, contract_digests, contract_json, prescription_contracts,
 )
@@ -131,6 +135,49 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     assert speaker["alignment"]["bounds"]["lobe_us"] == alignment.half_period_us(corner)
     assert speaker["topology"]["bounds"]["fc_hz"] == [1000.0, 4000.0]
     assert speaker["topology"]["bounds"]["supported_orders"] == sorted(topology.SUPPORTED_LR_ORDERS)
+    assert speaker["topology"]["bounds"]["declared_fc_refusal"] is None
+    assert speaker["topology"]["bounds"]["fc_rejection"] == {
+        "below_minimum": FC_REJECT_BELOW_DECLARED_FLOOR,
+        "above_maximum": FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
+        "at_minimum": None, "at_maximum": None,
+    }
+
+
+@pytest.mark.parametrize("corner,refusal", [
+    (None, None), (999.0, FC_REJECT_BELOW_DECLARED_FLOOR),
+    (1000.0, None), (4000.0, None), (4001.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
+])
+def test_declared_corner_uses_the_same_rejection_rule_as_the_bounds(corner, refusal):
+    result = fc_rejection_scenarios(1000.0, 4000.0, declared_fc_hz=corner)
+    assert result["declared_fc_refusal"] == refusal
+
+
+@pytest.mark.parametrize("surface", ["contract", "packet"])
+def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
+    bank, session = round_bank
+    profile = bank / "applied-profile.json"
+    profile.write_text(json.dumps(applied_profile(preset=_two_way_preset())))
+    reads = dict.fromkeys((
+        bank / "design-draft.json", profile,
+        session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/round_receipt.json",
+    ), 0)
+    path_open = Path.open
+
+    def counted_open(path, *args, **kwargs):
+        if path in reads:
+            reads[path] += 1
+        return path_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counted_open)
+    if surface == "contract":
+        assert cli.main(["contract", "--round", str(bank)]) == 0
+        assert set(json.loads(capsys.readouterr().out)) == set(SECTIONS)
+    else:
+        packet = build_crossover_evidence_packet(
+            session, driver_draft_path=bank / "design-draft.json", applied_profile_path=profile,
+        )
+        assert set(packet["contracts"]) == set(SECTIONS)
+    assert list(reads.values()) == [1, 1, 1]
 
 
 @pytest.mark.parametrize("section", SECTIONS)
