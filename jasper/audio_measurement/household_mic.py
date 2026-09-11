@@ -45,10 +45,14 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.audio_measurement.wired_capture import WiredMicDevice
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +376,16 @@ def resolved_household_mic() -> tuple[HouseholdMicRecord, Any] | None:
     return household, resolved
 
 
+def resolved_household_sensitivity(device: WiredMicDevice) -> MicSensitivity | None:
+    """Resolve household sensitivity, rejecting known mic model mismatches."""
+    from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
+
+    found = resolved_household_mic()
+    if found is None or _wrong_mic(found[1], {"label": device.model_label}) is not None:
+        return None
+    return resolve_mic_sensitivity(calibration_file=found[1].raw_path)
+
+
 def _label_token(value: str) -> str:
     """Lowercase, punctuation-stripped comparison key for a device label.
 
@@ -420,11 +434,20 @@ def _wrong_mic(record: Any, device: Mapping[str, Any] | None) -> str | None:
             _label_token(alias) in token
             for alias in model_label_aliases(other_key)
         ):
-            return (
+            mismatch = (
                 f'stored calibration is for "{SUPPORTED_MODELS[model_key]["label"]}" '
                 f'but the captured device "{label}" looks like a '
                 f'"{spec["label"]}"'
             )
+            log_event(
+                logger,
+                "correction.calibration_device_identity_mismatch",
+                level=logging.WARNING,
+                stored_model=model_key,
+                device_label=label[:160],
+                reason=mismatch,
+            )
+            return mismatch
     return None
 
 
@@ -484,19 +507,4 @@ def resolve_setup_calibration(
             "the remembered microphone calibration is no longer available; "
             "set it up again"
         )
-    mismatch = _wrong_mic(resolved, device)
-    if mismatch is None:
-        return resolved
-    device_label = (
-        str(device.get("label") or device.get("browser_label") or "")
-        if isinstance(device, Mapping) else ""
-    )
-    log_event(
-        logger,
-        "correction.calibration_device_identity_mismatch",
-        level=logging.WARNING,
-        stored_model=str(getattr(resolved, "model", "") or ""),
-        device_label=device_label[:160],
-        reason=mismatch,
-    )
-    return None
+    return resolved if _wrong_mic(resolved, device) is None else None

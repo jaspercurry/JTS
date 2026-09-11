@@ -3,7 +3,8 @@
 - **Date:** 2026-09-08
 - **Status:** Accepted. Supersedes (partial)
   [ADR-0231](0231-four-rulings-that-lived-only-in-code-comments.md) §5, the
-  D11 boundary note; §§1–4 stand. Amends
+  D11 boundary note; §§2–4 stand. Section 1 is superseded by
+  [ADR-0303](0303-a-trial-plays-the-candidate-as-composed.md). Amends
   [ADR-0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) §1.
 - Refs: `seat-tuning-program/PLAN.md` §1–§4 on branch
   `claude/loudspeaker-tuning-architecture-iephfa` (the plan of record, never

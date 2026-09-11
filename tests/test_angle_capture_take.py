@@ -56,7 +56,7 @@ from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
-from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase, bank_into
+from tests.crossover_v2_fixtures import FakeSeams, _conductor, _preset, _run_phase, bank_into
 from tests.test_bass_extension_dynamic import _descriptor
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
@@ -82,6 +82,7 @@ def slot(tmp_path, monkeypatch):
         "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
         tmp_path / "session_volume.json",
     )
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
     try:
         yield
     finally:
@@ -102,7 +103,7 @@ def _arm_shape():
 
 
 #: A measurement mic whose registry row names the channel an SPL watch reads.
-_MIC = SimpleNamespace(model_key="minidsp_umik2")
+_MIC = SimpleNamespace(model_key="minidsp_umik2", model_label="UMIK-2")
 
 
 def _take_full(
@@ -114,17 +115,13 @@ def _take_full(
         base_entries=base_entries,
         lateral_group_present=lateral_group_present,
         plans_cloud_group=plans_cloud_group,
-        # Read ONLY by the level-match resolution and by a STATED SPL ceiling,
-        # neither of which an ordinary walk reaches — it pays no statefile read.
-        preset=preset,
+        preset=preset if preset is not None else _preset(),
         topology=topology,
         device=device,
     )
 
 
 def _take(shape=None, **kwargs):
-    """The walk's own shape. The SPL watch the take also returns is pinned by
-    ``test_a_stated_ceiling_buys_a_watch_or_refuses_the_open`` alone."""
     taken = _take_full(shape, **kwargs)
     return taken if taken is None else taken[:5]
 
@@ -570,7 +567,7 @@ def _banked(monkeypatch, *, room_correction=None, bass_extension=None, **alignme
         fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
         lower_driver="woofer", upper_driver=DRIVER_ROLE_TWEETER,
     )
-    preset = SimpleNamespace(crossover_regions=(region,))
+    preset = SimpleNamespace(crossover_regions=(region,), safety=_preset().safety)
     monkeypatch.setattr(
         candidate_bank, "find_banked_candidate",
         lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
@@ -1072,76 +1069,56 @@ def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
 
 
 @pytest.mark.parametrize(
-    ("stated", "calibrated", "watched"),
-    [(None, True, False), (80.0, True, True), (80.0, False, None)],
-    ids=["no-ceiling-no-watch", "ceiling-watched", "ceiling-uncalibrated"],
+    ("stated", "calibrated", "stop", "reason"),
+    [
+        (None, True, 85.0, ""), (None, True, 75.0, ""),
+        (None, False, 85.0, ""), (80.0, True, 85.0, ""),
+        (85.0, True, 85.0, ""), (80.0, False, 85.0, ac.WALK_SPL_CALIBRATION_REQUIRED),
+        (85.1, True, 85.0, ac.WALK_CEILING_ABOVE_STOP),
+        (85.1, False, 85.0, ac.WALK_CEILING_ABOVE_STOP),
+        (None, True, None, ac.WALK_COMMISSIONING_STOP_UNSET),
+        (80.0, True, None, ac.WALK_COMMISSIONING_STOP_UNSET),
+    ],
 )
-def test_a_stated_ceiling_buys_a_watch_or_refuses_the_open(
-    slot, monkeypatch, caplog, stated, calibrated, watched,
+def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
+    slot, monkeypatch, caplog, stated, calibrated, stop, reason,
 ):
-    """A walk's SPL ceiling is a bound the session must actually hold.
-
-    The door that plays a walk installs the monitor that watches it, and a box
-    whose microphone cannot be turned into dB SPL refuses such a walk instead of
-    playing it at the level the commissioning stop proved. A walk stating no
-    ceiling asks for no live watch: the held session level is already bounded by
-    that stop, and the journal says so in the SAME vocabulary a stated ceiling
-    would (``plan_run.spl_monitor_note``), not a second ad hoc spelling.
-    """
     from jasper.active_speaker.plan_run import SPL_MONITOR_UNAVAILABLE
     from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
     monkeypatch.setattr(
-        v2host, "_household_mic_sensitivity",
+        v2host, "resolved_household_sensitivity",
         lambda device: SimpleNamespace() if calibrated else None,
     )
     preset = SimpleNamespace(
-        safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
+        safety=SimpleNamespace(max_commissioning_level_db_spl=stop),
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
         spl_ceiling_db_spl=stated,
     ))
 
-    if watched is None:
+    if reason:
         with pytest.raises(v2host.CrossoverV2Refused) as refused:
             _take_full(preset=preset)
-        assert ac.WALK_SPL_CALIBRATION_REQUIRED in str(refused.value)
-        assert ac.WALK_SPL_CALIBRATION_REQUIRED in ac.WALK_REFUSAL_REASONS
+        assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
+        assert refused.value.__cause__.reason == reason
+        event, = [json.loads(line) for line in _events(caplog)]
+        assert event["reason"] == reason
         return
 
     with caplog.at_level(logging.INFO):
         monitor = _take_full(preset=preset)[5]
-    assert isinstance(monitor, WiredSplMonitor) is watched
-    if watched:
-        assert monitor.ceiling_db_spl == stated
-    expected_note = (
-        SPL_MONITOR_UNAVAILABLE if stated is None else f"ceiling_{stated:g}_db_spl"
+    ceiling = stop if stated is None else stated
+    assert isinstance(monitor, WiredSplMonitor) is calibrated
+    if calibrated:
+        assert monitor.ceiling_db_spl == ceiling
+    event, = [json.loads(line) for line in _events(caplog)]
+    assert event["event"] == "correction.crossover_v2_angle_walk_taken"
+    assert event["spl_monitor"] == (
+        f"ceiling_{ceiling:g}_db_spl" if calibrated else SPL_MONITOR_UNAVAILABLE
     )
-    line, = _events(caplog)
-    assert f"spl_monitor={expected_note}" in line
-
-
-def test_a_stated_ceiling_with_no_box_stop_refuses_not_500(slot, monkeypatch):
-    """The preset declaring no finite commissioning stop is a box-config
-    problem, not the walk's — it must refuse the open, not let a bare
-    ``ValueError`` escape this seam as a 500.
-    """
-    monkeypatch.setattr(
-        v2host, "_household_mic_sensitivity", lambda device: SimpleNamespace(),
-    )
-    preset = SimpleNamespace(
-        safety=SimpleNamespace(max_commissioning_level_db_spl=None),
-    )
-    spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        spl_ceiling_db_spl=80.0,
-    ))
-
-    with pytest.raises(v2host.CrossoverV2Refused) as refused:
-        _take_full(preset=preset)
-    assert ac.WALK_COMMISSIONING_STOP_UNSET in str(refused.value)
-    assert ac.WALK_COMMISSIONING_STOP_UNSET in ac.WALK_REFUSAL_REASONS
 
 
 def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
@@ -1176,7 +1153,8 @@ def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
     # exactly as if no household mic had resolved at all.
     with pytest.raises(v2host.CrossoverV2Refused) as refused:
         _take_full(preset=preset)
-    assert ac.WALK_SPL_CALIBRATION_REQUIRED in str(refused.value)
+    assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
+    assert refused.value.__cause__.reason == ac.WALK_SPL_CALIBRATION_REQUIRED
 
 
 def _stub_evidence_loaders(monkeypatch):

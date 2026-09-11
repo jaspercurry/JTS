@@ -1,7 +1,8 @@
 # ADR-0285: Wake detection is off for the whole measurement hold
 
 - **Date:** 2026-09-10
-- **Status:** Accepted
+- **Status:** Accepted. Amended by
+  [ADR-0305](0305-the-measurement-hold-spans-a-whole-run.md).
 
 ## Context
 

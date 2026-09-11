@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -246,6 +247,39 @@ def test_resolved_household_mic_pairs_the_record_with_its_stored_calibration(
 
     Path(record.metadata_path).unlink()
     assert hm.resolved_household_mic() is None
+
+
+@pytest.mark.parametrize("source", ["missing", "matched", "mismatched", "curve_only", "missing_file"])
+def test_household_sensitivity_requires_a_matching_mic_and_absolute_reference(
+    tmp_path, monkeypatch, caplog, source,
+):
+    path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(path))
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "calibrations"))
+    if source != "missing":
+        record = _store(
+            tmp_path,
+            model="dayton_imm6" if source == "mismatched" else "minidsp_umik2",
+            text=("" if source == "curve_only" else "Sens Factor =-12.07dB, AGain =18dB\n") + SAMPLE_CAL,
+        )
+        hm.write_household_mic(hm.household_mic_from_calibration(record), path=path)
+        if source == "missing_file":
+            Path(record.raw_path).unlink()
+
+    sensitivity = hm.resolved_household_sensitivity(SimpleNamespace(model_label="UMIK-2"))
+
+    if source == "matched":
+        assert sensitivity == calibration.MicSensitivity(sens_factor_db=-12.07, analog_gain_db=18.0)
+    else:
+        assert sensitivity is None
+    event = "correction.calibration_device_identity_mismatch"
+    if source == "mismatched":
+        fields = event_fields(caplog, event)
+        assert fields["stored_model"] == "dayton_imm6"
+        assert fields["device_label"] == "UMIK-2"
+        assert event_records(caplog, event)[0].levelno == logging.WARNING
+    else:
+        assert not event_records(caplog, event)
 
 
 # --- the one writer: save_household_mic --------------------------------------
