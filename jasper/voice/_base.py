@@ -104,7 +104,6 @@ class BaseLiveTurn:
     """
 
     owns_interruption = False
-    host_followup_window = False
     continuous_input = False
 
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:

@@ -196,11 +196,6 @@ class LiveTurn(Interruptible, Protocol):
     delegated work.
     """
 
-    # True when the host may hold this turn open for a local follow-up
-    # after playout drains, instead of closing it. `_base.BaseLiveTurn`
-    # carries the default; a continuous session runs its own window.
-    host_followup_window: bool
-
     # True when the adapter streams the microphone for the whole
     # conversation instead of one endpointed utterance per turn. Must
     # agree with the provider's `catalog.ProviderCatalogEntry` field of
