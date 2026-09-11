@@ -2,374 +2,190 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Which screens an anchor capture must clear, and in what order (#2291 5a-vii).
-
-:mod:`.spatial` owns the ladders of the three phases a household WALKS; this one
-owns the three it SITS STILL for: CHECK, MEASURE and VERIFY.
-
-**This module DECIDES; it does not act.** A ladder answers "is this recording
-evidence about the speaker, and if not, which finding is the honest one".
-Everything a finding then CAUSES stays with the session, and a pure ladder asked
-the same question twice answers the same way — which is what makes a replayed
-capture safe to re-screen.
-
-**No household vocabulary lives here.** A refusal leaves as a *kind*;
-:mod:`.refusal_copy` maps it through ``SCREEN_KIND_REASONS`` and renders the
-sentence. No ``jasper.web`` import and nothing from
-:mod:`jasper.active_speaker.crossover_v2_flow`.
-
-Two MEASURE facts arrive as CALLABLES rather than values because they are asked
-ONLY once the rungs above them pass: ``sweep_schedule_ok`` reaches
-``program_for_phase``, which raises when MEASURE has no composed program, so
-resolving it eagerly would move an observable failure above the glitch rung.
-"""
+"""Per-take recording integrity, capabilities and the next capture action."""
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, Mapping
 
+from jasper.audio_measurement import gate_disclosure
 from jasper.audio_measurement.program import KIND_SWEEP, STIMULUS_KINDS
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
     channel_map_isolation_db,
 )
-
-from .spatial import (
-    SCREEN_CAPTURE_GLITCH,
-    SCREEN_CLIPPED,
-    SCREEN_KINDS,
-    SCREEN_LINEARITY_FAILED,
-    SCREEN_LOCATE_FAILED,
-    SCREEN_PILOT_LEVEL_COLLAPSE,
+from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
+from jasper.audio_measurement.program_analysis.model import (
+    DRIVER_SNR_ALIGNMENT_KEY, MeasurementPriors, ProgramAnalysis,
 )
+from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
+from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
+from jasper.json_fields import finite_float
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from jasper.audio_measurement.program_analysis.model import AnchorEvidence
-    from jasper.audio_measurement.program_analysis import ProgramAnalysis
+from . import refusal_copy as reasons
+from .refusal_copy import TakeCharge, TakeNext, TakeVerdict as TakeVerdict
 
-__all__ = [
-    "ANCHOR_SCREEN_KINDS",
-    "CAPTURE_SCREEN_KINDS",
-    "LOCATE_MIN_CONFIDENCE",
-    "SCREEN_ALIGNMENT_UNRESOLVED",
-    "SCREEN_ANCHOR_AMBIGUOUS",
-    "SCREEN_ANCHOR_UNCONFIRMED",
-    "SCREEN_CHANNEL_MAP_MISMATCH",
-    "SCREEN_DELAY_IMPLAUSIBLE",
-    "SCREEN_NOISY_ROOM_LINEARITY",
-    "SCREEN_SNR_FLOOR",
-    "SWEEP_LOCATE_CONFIDENCE_FLOOR",
-    "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
-    "CheckScreens",
-    "MeasureScreen",
-    "MeasureScreens",
-    "VerifyIntegrityScreen",
-    "check_screens",
-    "measure_screens",
-    "ripple_reservation_due",
-    "verify_integrity_screens",
-]
+if TYPE_CHECKING:
+    from jasper.audio_measurement.program import ExcitationProgram
+
+# Clip retries lower stimulus gain, never the admitted hardware ceiling.
+CLIP_RETRY_BACKOFF_DB = 3.0
+# dB, recorder transfer stability; see ADR-0182.
+VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 
-# --------------------------------------------------------------------------- #
-# the kinds this module adds to the screen vocabulary
-# --------------------------------------------------------------------------- #
-#
-# :mod:`.spatial` declares the five kinds the walked phases produce; the anchor
-# phases produce those five plus these five. Two owners rather than one shared
-# set, because a completeness test over one set would assert that a cloud
-# position can report a channel-map mismatch, which it cannot.
+def assess(
+    analysis: ProgramAnalysis, *, phase: str,
+    priors: MeasurementPriors | None = None,
+    program: ExcitationProgram | None = None,
+    gain_db: Mapping[str, float] | None = None,
+    gain_ceiling_db: Mapping[str, float] | None = None,
+    pilot_transfer_prior: Mapping[str, float] | None = None,
+    measure_gate_window_ms: float | None = None,
+) -> TakeVerdict:
+    """Assess one recording without a session, player or mutable retry state."""
+    if phase not in {"check", "measure", "verify"}:
+        raise ValueError(f"unsupported assessment phase: {phase}")
+    priors = priors or MeasurementPriors()
+    gains = dict(gain_db) if gain_db is not None else {
+        seg.role or "summed": seg.gain_db for seg in program.segments
+        if seg.kind in STIMULUS_KINDS
+    } if program is not None else {}
+    ceilings = gain_ceiling_db or {}
+    anchor, drift, alignment = analysis.anchor, analysis.drift, analysis.alignment
+    sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
+    schedule_residual_ms, _ = _sweep_schedule_diag_fields(analysis, sample_rate)
+    stimuli = [loc for loc in analysis.locations if loc.kind in STIMULUS_KINDS]
+    evidence: dict[str, float | bool | str] = {
+        "mic_meter_status": analysis.mic_meter_status or "unmeasured",
+        "anchor_ambiguous": analysis.anchor_ambiguous or bool(anchor and anchor.ambiguous),
+        "glitch_detected": bool(analysis.glitch_detected),
+        "frame_loss": bool(analysis.frame_ledger and analysis.frame_ledger.lost_at),
+        "glitch_inputs": ",".join(drift.glitch_inputs) if drift else "",
+    }
+    figures = {
+        "anchor_presence": anchor.presence if anchor else None,
+        "anchor_confidence": anchor.confidence if anchor else None,
+        "anchor_corroborated": anchor.corroborated if anchor else None,
+        "epsilon_ppm": drift.epsilon_ppm if drift else None,
+        "max_residual_samples": drift.max_residual_samples if drift else None,
+        "schedule_residual_ms_worst": schedule_residual_ms,
+        "repeat_level_delta_db": drift.repeat_level_delta_db if drift else None,
+        "discontinuity_samples": analysis.discontinuity_samples,
+        "peak_dbfs": max((loc.peak_dbfs for loc in stimuli), default=None),
+        "locate_confidence_min": min((loc.confidence for loc in stimuli), default=None),
+    }
+    evidence.update({key: value if isinstance(value, bool) else float(value)
+                     for key, value in figures.items() if value is not None})
+    responses = (*analysis.driver_responses, *((analysis.summed_response,) if analysis.summed_response else ()))
+    capabilities = {
+        "magnitude": bool(responses),
+        "mic_level": analysis.mic_meter_status not in {None, "unmeasured"},
+        "delay_estimate": alignment is not None and alignment.status == ALIGNMENT_OK,
+        "level_solve": analysis.gain_plan is not None and analysis.gain_plan.snr_floor_ok,
+    }
+    for response in responses:
+        for decision, snr_verdict in (("magnitude", driver_snr_verdict(response)),
+                                      (DRIVER_SNR_ALIGNMENT_KEY, driver_alignment_snr_verdict(response))):
+            block = (response.snr or {}) if decision == "magnitude" else (response.snr or {}).get(DRIVER_SNR_ALIGNMENT_KEY, {})
+            worst = block.get("worst_relevant") or {}
+            band: Mapping[str, Any] = next((row for row in block.get("bands", ())
+                         if row.get("band_id") == worst.get("band_id")), {})
+            prefix = f"snr.{response.role}.{decision}"
+            if worst.get("band_id") is not None:
+                evidence[f"{prefix}.band_id"] = str(worst["band_id"])
+            for key in ("estimated_snr_db", "shortfall_db"):
+                value = finite_float(band.get(key))
+                if value is not None:
+                    evidence[f"{prefix}.{key}"] = value
+            evidence[f"{prefix}.verdict"] = snr_verdict or "unknown"
+            if snr_verdict == "insufficient":
+                capabilities["delay_estimate" if decision == "alignment" else "magnitude"] = False
+    if alignment is not None:
+        evidence.update(alignment_status=alignment.status, delay_us=float(alignment.delay_us))
+        bounds = priors.alignment_delay_bounds_us
+        plausible = bounds is None or bounds[0] <= abs(alignment.delay_us) <= bounds[1]
+        evidence["delay_physically_plausible"] = plausible
+        capabilities["delay_estimate"] &= plausible
 
-#: CHECK heard the drivers on the wrong outputs.
-SCREEN_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
-#: The capture's timeline could not be attributed to the program it played.
-#: Ahead of the one above in CHECK's ladder on purpose (#2644): a mis-anchored
-#: capture reads every driver's window one pilot spacing from where that driver
-#: actually played, which is how a correctly-wired speaker produced a
-#: confident-looking "the drivers played out of order".
-SCREEN_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
-SCREEN_ANCHOR_UNCONFIRMED = "anchor_unconfirmed"
-#: The capture cleared its gates but sits too close to the room's own floor.
-SCREEN_SNR_FLOOR = "snr_floor"
-#: The curve bent, and this capture's OWN ambient evidence says the room did it.
-SCREEN_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
-#: An alignment estimate exists and did not resolve inside its search window.
-SCREEN_ALIGNMENT_UNRESOLVED = "alignment_unresolved"
-#: An alignment estimate resolved to a delay physics rules out — the GCC
-#: estimator returning a CONFIDENTLY WRONG lag, a measured failure mode rather
-#: than a prior (a hardware run reported a confident −631 us against a declared
-#: [50, 300] us search bound). Its own kind rather than shared with the 0.6 GCC
-#: trust floor, so demoting that floor did not take this rejection's voice with
-#: it: a physics fact and a prior are different answers.
-SCREEN_DELAY_IMPLAUSIBLE = "delay_implausible"
+    verdict = TakeVerdict(True, evidence=evidence, capabilities=capabilities)
 
-ANCHOR_SCREEN_KINDS = frozenset({
-    SCREEN_ANCHOR_AMBIGUOUS,
-    SCREEN_ANCHOR_UNCONFIRMED,
-    SCREEN_CHANNEL_MAP_MISMATCH,
-    SCREEN_SNR_FLOOR,
-    SCREEN_NOISY_ROOM_LINEARITY,
-    SCREEN_ALIGNMENT_UNRESOLVED,
-    SCREEN_DELAY_IMPLAUSIBLE,
-})
+    def refuse(code: str, *, next: TakeNext = "fix_and_retake", charge: TakeCharge = "operator",
+               targets: Mapping[str, float] | None = None, ok: bool = False) -> TakeVerdict:
+        targets = targets or {}
+        return replace(verdict, ok=ok, fault=code, next=next, charge=charge,
+                       next_gain_db=max(targets.values(), default=None),
+                       evidence={**evidence, **{f"next_gain_db.{role}": float(gain)
+                                               for role, gain in targets.items()}},
+                       capabilities=capabilities if ok else {key: False for key in capabilities})
 
-#: Every kind any capture ladder in this package can return.
-#: :mod:`.refusal_copy`'s ``SCREEN_KIND_REASONS`` is checked for completeness
-#: against THIS set, so a new rung in either owner cannot ship without a
-#: household sentence.
-CAPTURE_SCREEN_KINDS = SCREEN_KINDS | ANCHOR_SCREEN_KINDS
+    adjusted = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
 
+    def quiet(code: str) -> TakeVerdict:
+        return refuse(code, next="retake_louder" if adjusted else "fix_and_retake",
+                      charge="speaker" if gains else "operator", targets=adjusted)
 
-# --------------------------------------------------------------------------- #
-# CHECK — is this room, at this level, measurable at all
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class CheckScreens:
-    """Every fact CHECK's ladder reads, stated by the caller.
-
-    All fields are required, the rule :class:`~.spatial.CaptureScreens` set: a
-    permissive default is how a caller that forgot to establish a fact gets a
-    pass instead of an error.
-
-    ``gain_plan_present`` and ``gain_plan_snr_floor_ok`` are two fields rather
-    than one optional because the ladder reads them at two rungs and means
-    different things by them: the linearity rung asks "did the gain solve ALREADY
-    judge this room noisy", the final rung refuses an absent plan outright.
-
-    ``delta_implausible`` is a SECOND, independent signal that this capture's
-    timeline is not trustworthy (#2647): a captured/programmed pilot-delta gap
-    no real wiring can produce, set at the point the delta is computed
-    (`PilotObservation.delta_implausible`) rather than inside anchor
-    resolution, so it does not become a second writer of `anchor_ambiguous`.
-    Which retriable code it maps to depends on ``pilot_snr_ok`` (see
-    :func:`check_screens`'s rung-2 docstring) — the field itself is DETECTED
-    the same way regardless, since the 2026-08-16 incident's own SNR reading
-    was corrupted and detection must not depend on it.
-    """
-
-    stimulus_located: bool
-    anchor_ambiguous: bool
-    delta_implausible: bool
-    channel_map_ok: bool | None
-    pilot_snr_ok: bool | None
-    linearity_ok: bool | None
-    gain_plan_present: bool
-    gain_plan_snr_floor_ok: bool
-
-
-def check_screens(screens: CheckScreens) -> str | None:
-    """CHECK's ladder: the refusal kind, or ``None`` to accept.
-
-    Order is load-bearing:
-
-    1. **Stimulus located.** A capture whose stimulus was never found is not
-       evidence about anything.
-    2. **Anchor attributed.** Every rung below reads per-driver windows, and the
-       channel map is the rung that turns a slid window into a household
-       instruction to rewire a correctly-wired speaker (#2644). Retriable,
-       because re-recording is exactly what fixes it. ``delta_implausible``
-       joins this rung as a second, independent tell (#2647): a captured
-       pilot delta no real wiring can produce, even when the anchor itself
-       cleared the near-tie margin -- but only while ``pilot_snr_ok`` is
-       ``True``. #1838's shape (a quiet pilot buried by room noise) also
-       clears `DELTA_IMPLAUSIBLE_GAP_DB`, and there the honest, actionable
-       finding is the SNR floor below, never a retake instruction the room's
-       own level will keep failing; the near-tie guard itself (``anchor_ambiguous``)
-       keeps its own, unconditional precedence at this rung.
-    3. **Channel map.** Explicit ``False`` only — ``None`` is no evidence.
-    4. **Pilot SNR**, ahead of linearity (#1838): below the floor the
-       ambient-subtracted two-pilot delta is not evidence either way, so the
-       honest finding is the room and the level, never the microphone. A
-       ``delta_implausible`` capture whose SNR already failed is answered
-       here too (from rung 2), ahead of the channel map: a retake in a
-       quieter room also cures the mis-anchoring a buried pilot invites.
-    5. **Linearity.** CHECK is the one phase that can tell the room from
-       the microphone, because its gain solve already produced a band-resolved
-       ambient verdict against THIS capture.
-    6. **The gain solve itself.** No plan, or a plan that could not clear the
-       floor, and there is nothing for MEASURE to play.
-    """
-    if not screens.stimulus_located:
-        return SCREEN_LOCATE_FAILED
-    if screens.anchor_ambiguous:
-        return SCREEN_ANCHOR_AMBIGUOUS
-    if screens.delta_implausible:
-        return (
-            SCREEN_ANCHOR_AMBIGUOUS
-            if screens.pilot_snr_ok is True
-            else SCREEN_SNR_FLOOR
-        )
-    if screens.channel_map_ok is False:
-        return SCREEN_CHANNEL_MAP_MISMATCH
-    if screens.pilot_snr_ok is False:
-        return SCREEN_SNR_FLOOR
-    if screens.linearity_ok is False:
-        if screens.gain_plan_present and not screens.gain_plan_snr_floor_ok:
-            return SCREEN_NOISY_ROOM_LINEARITY
-        return SCREEN_LINEARITY_FAILED
-    if not screens.gain_plan_present or not screens.gain_plan_snr_floor_ok:
-        return SCREEN_SNR_FLOOR
-    return None
-
-
-# --------------------------------------------------------------------------- #
-# MEASURE — is this the per-driver evidence a candidate may be built on
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class MeasureScreen:
-    """One MEASURE rung's finding, and what it asks the session to do.
-
-    ``guard`` is the telemetry label that tells two rungs sharing one household
-    code apart (§5.2 forbids a new user-facing code for a capture-glitch class,
-    so the journal's ``guard=`` field is the only way to know which fired).
-    Empty when the kind alone is the whole finding.
-
-    ``rearm`` asks for the silent auto-retry; ``rearm_backoff_db`` is the level
-    it comes back at, ``0.0`` reproducing the no-argument call exactly.
-    """
-
-    kind: str | None
-    guard: str = ""
-    rearm: bool = False
-    rearm_backoff_db: float = 0.0
-    evidence: dict[str, float | bool | str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class MeasureScreens:
-    """Every fact MEASURE's ladder reads.
-
-    Two are **callables**, not values, and the module docstring says why. The
-    rest are plain answers already in the caller's hand.
-
-    The three alignment fields encode the shipped alignment ladder without
-    importing its thresholds: ``alignment_present`` gates both rungs (a
-    trims-only candidate has no estimate and skips them),
-    ``alignment_status_ok`` is the resolve verdict, and
-    ``delay_physically_plausible`` is the physics backstop, asked ONLY of a
-    resolved estimate. The GCC trust floor is a receipt disclosure, not a
-    ladder rung here.
-    """
-
-    stimulus_located: bool
-    pilot_snr_ok: bool | None
-    sweep_locate_confidence_ok: bool
-    glitch_detected: bool
-    sweep_schedule_ok: Callable[[], bool]
-    any_sweep_clipped: bool
-    linearity_ok: bool | None
-    alignment_present: bool
-    alignment_status_ok: bool
-    delay_physically_plausible: Callable[[], bool]
-    anchor: AnchorEvidence | None
-    epsilon_ppm: float | None
-    max_residual_samples: float | None
-    discontinuity_samples: float | None
-    peak_dbfs: float | None
-    mic_meter_status: str | None
-
-    @classmethod
-    def from_analysis(
-        cls, analysis: ProgramAnalysis, *,
-        sweep_schedule_ok: Callable[[], bool],
-        delay_physically_plausible: Callable[[], bool],
-    ) -> MeasureScreens:
-        drift, alignment = analysis.drift, analysis.alignment
-        clipped = _clipped_stimulus_peaks(analysis)
-        return cls(
-            stimulus_located=_stimulus_locate_ok(analysis),
-            pilot_snr_ok=analysis.pilot_snr_ok,
-            sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
-            glitch_detected=bool(analysis.glitch_detected),
-            sweep_schedule_ok=sweep_schedule_ok,
-            any_sweep_clipped=bool(clipped),
-            linearity_ok=analysis.linearity_ok,
-            alignment_present=alignment is not None,
-            alignment_status_ok=alignment is not None and alignment.status == ALIGNMENT_OK,
-            delay_physically_plausible=delay_physically_plausible,
-            anchor=analysis.anchor,
-            epsilon_ppm=float(drift.epsilon_ppm) if drift else None,
-            max_residual_samples=float(drift.max_residual_samples) if drift else None,
-            discontinuity_samples=analysis.discontinuity_samples,
-            peak_dbfs=max(clipped, default=None),
-            mic_meter_status=analysis.mic_meter_status,
-        )
-
-    def evidence(self, **values: float | bool | str | None) -> dict[str, float | bool | str]:
-        return {
-            "mic_meter_status": self.mic_meter_status or "unmeasured",
-            **{key: value for key, value in values.items() if value is not None},
-        }
-
-
-def measure_screens(
-    screens: MeasureScreens, *, clip_retry_backoff_db: float
-) -> MeasureScreen:
-    """MEASURE's ladder: evidence and a finding, with ``kind=None`` to accept.
-
-    **"Too quiet" runs before "glitched"** (D3, #1838). A capture nobody could
-    hear produces the same symptoms as a spliced one — the locator lands the
-    sweeps wrong, the residual blows past its ceiling, and the glitch signal
-    fires on noise. Low SNR CAUSES the glitch signal, so the level verdicts have
-    to be asked first or the reported cause is never the real one.
-
-    **The level rungs do not re-arm**: re-running an inaudible measurement at the
-    same level cannot succeed. The three transient rungs (glitch, schedule, clipped) re-arm
-    silently, and the clipped one comes back quieter. ``sweep_schedule`` is the
-    xrun detector — a uniform whole-capture shift the repeat-pair drift check is
-    structurally blind to — and it shares the glitch kind with ``guard`` as the
-    discriminator.
-
-    ``clip_retry_backoff_db`` is stated rather than imported: it is the flow's
-    policy number, and inputs are stated, never reached for.
-    """
-    if not screens.stimulus_located:
-        return MeasureScreen(SCREEN_LOCATE_FAILED, evidence=screens.evidence())
-    if screens.pilot_snr_ok is False:
-        return MeasureScreen(SCREEN_PILOT_LEVEL_COLLAPSE, evidence=screens.evidence())
+    if evidence["frame_loss"]:
+        return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
+    if not _stimulus_locate_ok(analysis):
+        return quiet(reasons.REASON_LOCATE_FAILED)
+    if evidence["anchor_ambiguous"]:
+        return refuse(reasons.REASON_ANCHOR_AMBIGUOUS)
+    if analysis.delta_implausible:
+        return (refuse(reasons.REASON_ANCHOR_AMBIGUOUS) if analysis.pilot_snr_ok is True
+                else quiet(reasons.REASON_SNR_FLOOR))
+    if phase == "check" and analysis.channel_map_ok is False:
+        return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
+    if analysis.pilot_snr_ok is False:
+        return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
     # Retire when locate can resolve the timeline without a corroborating witness.
-    if screens.anchor is not None and screens.anchor.corroborated is False:
-        return MeasureScreen(SCREEN_ANCHOR_UNCONFIRMED, evidence=screens.evidence(
-            presence=screens.anchor.presence, confidence=screens.anchor.confidence,
-            corroborated=screens.anchor.corroborated,
-        ))
-    if not screens.sweep_locate_confidence_ok:
-        return MeasureScreen(
-            SCREEN_LOCATE_FAILED, guard="sweep_locate_confidence", evidence=screens.evidence(),
-        )
-    if screens.glitch_detected:
-        return MeasureScreen(SCREEN_CAPTURE_GLITCH, rearm=True, evidence=screens.evidence(
-            epsilon_ppm=screens.epsilon_ppm, max_residual_samples=screens.max_residual_samples,
-            discontinuity_samples=screens.discontinuity_samples,
-        ))
-    if not screens.sweep_schedule_ok():
-        return MeasureScreen(
-            SCREEN_CAPTURE_GLITCH, guard="sweep_schedule", rearm=True,
-            evidence=screens.evidence(),
-        )
-    if screens.any_sweep_clipped:
-        return MeasureScreen(
-            SCREEN_CLIPPED, rearm=True, rearm_backoff_db=clip_retry_backoff_db,
-            evidence=screens.evidence(peak_dbfs=screens.peak_dbfs),
-        )
-    if screens.linearity_ok is False:
-        return MeasureScreen(SCREEN_LINEARITY_FAILED, evidence=screens.evidence())
-    if screens.alignment_present and not screens.alignment_status_ok:
-        return MeasureScreen(SCREEN_ALIGNMENT_UNRESOLVED, evidence=screens.evidence())
-    if (
-        screens.alignment_present
-        and screens.alignment_status_ok
-        and not screens.delay_physically_plausible()
-    ):
-        return MeasureScreen(SCREEN_DELAY_IMPLAUSIBLE, evidence=screens.evidence())
-    return MeasureScreen(None, evidence=screens.evidence())
+    if anchor is not None and anchor.corroborated is False:
+        return quiet(reasons.REASON_ANCHOR_TOO_QUIET)
+    if analysis.mic_meter_status in {"low", "too_quiet"}:
+        return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
+    if not _sweep_locate_confidence_ok(analysis):
+        evidence["guard"] = "sweep_locate_confidence"
+        return quiet(reasons.REASON_LOCATE_FAILED)
+    integrity = analysis.capture_integrity
+    if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
+        return quiet(reasons.REASON_LOCATE_FAILED)
+    if _any_sweep_clipped(analysis) or analysis.mic_meter_status == "clipping":
+        targets = {role: gain - CLIP_RETRY_BACKOFF_DB for role, gain in gains.items()}
+        return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
+    if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
+        charge: TakeCharge = ("operator" if drift and drift.glitch_inputs == ("repeat_level_disagree",)
+                              and not analysis.discontinuity_samples else "speaker")
+        return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge)
+    if not _sweep_schedule_ok(analysis, sample_rate):
+        evidence["guard"] = "sweep_schedule"
+        return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
+    if analysis.linearity_ok is False:
+        code = (reasons.REASON_NOISY_ROOM_LINEARITY if phase == "check" and analysis.gain_plan
+                and not analysis.gain_plan.snr_floor_ok else reasons.REASON_AGC_BEHAVIORAL_FAIL)
+        return refuse(code)
+    if phase == "check" and not capabilities["level_solve"]:
+        return quiet(reasons.REASON_SNR_FLOOR)
+    verify_gate = _gate_window_ms(analysis.summed_response)
+    # A shorter VERIFY gate manufactures overlay differences (§5.2).
+    if (phase == "verify" and measure_gate_window_ms is not None and verify_gate is not None
+            and verify_gate + 1e-6 < measure_gate_window_ms):
+        evidence.update(measure_gate_window_ms=measure_gate_window_ms, verify_gate_window_ms=verify_gate)
+        return refuse(reasons.REASON_VERIFY_INCONCLUSIVE, ok=True)
+    if phase == "verify" and pilot_transfer_prior:
+        transfer = _pilot_transfer_by_role(analysis)
+        step = max((abs(value - pilot_transfer_prior[role]) for role, value in transfer.items()
+                    if role in pilot_transfer_prior), default=None)
+        if step is not None:
+            evidence["pilot_transfer_step_db"] = float(step)
+            if step > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
+                return refuse(reasons.REASON_VERIFY_LEVEL_SHIFT, ok=True)
+    if adjusted:
+        return replace(verdict, next="retake_louder", next_gain_db=max(adjusted.values()), charge="speaker",
+                       evidence={**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}})
+    return verdict
 
 
 def _clipped_stimulus_peaks(analysis: ProgramAnalysis) -> list[float]:
@@ -401,69 +217,6 @@ def ripple_reservation_due(
     if not has_alignment:
         return False
     return predicted_ripple_db > disclosure_threshold_db
-
-
-# --------------------------------------------------------------------------- #
-# VERIFY — is this replay evidence at all, before anything is graded from it
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class VerifyIntegrityScreen:
-    """One VERIFY integrity finding, with the payload its screen needs.
-
-    ``integrity_payload`` is set only on the capture-integrity arm, the same
-    shape :class:`~.spatial.EntryBaselineScreen` carries: the household screen
-    wants the record beside the code.
-    """
-
-    kind: str
-    integrity_payload: Mapping[str, Any] | None = None
-
-
-def verify_integrity_screens(
-    analysis: "ProgramAnalysis", *, stimulus_located: bool
-) -> VerifyIntegrityScreen | None:
-    """VERIFY's pre-grade ladder: a refusal, or ``None`` to go on grading.
-
-    Everything below this in the shipped verdict reads session state that
-    outlives one capture, so it stays with the session. What leaves is the part
-    that asks only about THIS recording, and it runs first: a spliced or clipped
-    recording is not evidence about the speaker.
-
-    **The one difference from** :func:`~.spatial.entry_baseline_screens`: an
-    ABSENT integrity record is no-evidence-and-continue here and UNUSABLE there.
-    ``None`` is the pre-#1971 analysis shape and means no evidence — the
-    convention ``linearity_ok`` and ``pilot_snr_ok`` use — and the diagnostic
-    prints ``integrity=unavailable`` for it. The entry baseline fails closed on
-    the same input because it exists ONLY to be compared.
-
-    Two kinds out of one record, because the two failures need different
-    household actions and #1838's D3 is explicit they must not share one: a
-    sweep nobody could hear is a level/mic problem re-running cannot fix, while a
-    spliced or clipped timeline is the transient capture-glitch class.
-
-    ``analysis`` arrives whole and ``stimulus_located`` separately because this
-    ladder CONSUMES the integrity record, while ``stimulus_located`` is the
-    answer of a flow-side predicate MEASURE's and CHECK's verdicts also share.
-    """
-    if not stimulus_located:
-        return VerifyIntegrityScreen(SCREEN_LOCATE_FAILED)
-    if analysis.pilot_snr_ok is False:
-        return VerifyIntegrityScreen(SCREEN_PILOT_LEVEL_COLLAPSE)
-    integrity = analysis.capture_integrity
-    if integrity is not None and integrity.failed:
-        payload = {"capture_integrity": integrity.to_dict()}
-        if INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
-            return VerifyIntegrityScreen(
-                SCREEN_LOCATE_FAILED, integrity_payload=payload,
-            )
-        return VerifyIntegrityScreen(
-            SCREEN_CAPTURE_GLITCH, integrity_payload=payload,
-        )
-    if analysis.linearity_ok is False:
-        return VerifyIntegrityScreen(SCREEN_LINEARITY_FAILED)
-    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -609,8 +362,6 @@ def _gate_trusted_band_hz(response: Any) -> tuple[float, float] | None:
     """
     if response is None or not getattr(response, "gating", None):
         return None
-    from jasper.audio_measurement import gate_disclosure
-
     return gate_disclosure.build_gate_disclosure(response.gating).delta_band_hz
 
 
@@ -623,8 +374,6 @@ def _gate_disclosure(response: Any) -> str | None:
     """
     if response is None or not getattr(response, "gating", None):
         return None
-    from jasper.audio_measurement import gate_disclosure
-
     return gate_disclosure.describe_gate(response.gating)
 
 
@@ -642,8 +391,6 @@ def _gate_moved_rms_db(response: Any) -> float | None:
     """
     if response is None or not getattr(response, "gating", None):
         return None
-    from jasper.audio_measurement import gate_disclosure
-
     return gate_disclosure.build_gate_disclosure(response.gating).delta_rms_db
 
 
@@ -660,8 +407,6 @@ def _gate_reflection_delay_ms(response: Any) -> float | None:
     """
     if response is None or not getattr(response, "gating", None):
         return None
-    from jasper.audio_measurement import gate_disclosure
-
     return gate_disclosure.build_gate_disclosure(response.gating).reflection_delay_ms
 
 
@@ -681,8 +426,6 @@ def _gate_entanglement_floor(
     than the window's. ``(None, unknown)`` is the honest — and ordinary — pair
     when nothing was declared and nothing was measured.
     """
-    from jasper.audio_measurement import gate_disclosure
-
     d = gate_disclosure.build_gate_disclosure(
         getattr(response, "gating", None),
         declared_first_bounce_s=declared_first_bounce_s,
@@ -712,8 +455,6 @@ def _gate_record(
     """
     if response is None or not getattr(response, "gating", None):
         return None
-    from jasper.audio_measurement import gate_disclosure
-
     typed = gate_disclosure.build_gate_disclosure(
         response.gating, declared_first_bounce_s=declared_first_bounce_s
     )

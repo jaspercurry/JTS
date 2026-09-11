@@ -912,27 +912,14 @@ def test_a_calibrated_measure_banks_no_calibration_reservation():
     assert c.measure_calibration_reservation is None
 
 
-def test_no_alignment_estimate_skips_the_confidence_gate():
-    """A trims-only candidate (no alignment estimate at all) is never
-    confidence-gated — same condition the former nudge used."""
-    from dataclasses import replace
-
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverAlignment,
-    )
-
-    fakes = FakeSeams()
-
-    def _measure_no_alignment(program):
-        return replace(_measure_analysis(program), alignment=None)
-
-    fakes.measure = _measure_no_alignment
+def test_missing_delay_preserves_evidence_but_cannot_build_a_driver_candidate():
+    fakes = FakeSeams(measure=lambda program: replace(_measure_analysis(program), alignment=None))
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
-    assert fakes.published_candidates[0].alignment == MeasuredCrossoverAlignment()
+    assert not verdict["accepted"] and not verdict["capabilities"]["delay_estimate"]
+    assert verdict["kept_measurement"]
+    assert not fakes.published_candidates
 
 
 def test_implausible_delay_rejects_measure_even_at_high_confidence():
@@ -1079,23 +1066,6 @@ def test_predicted_ripple_threshold_boundary_exact_is_silent_just_above_disclose
     assert c2.measure_ripple_reservation is not None
 
 
-def test_predicted_ripple_disclosure_skips_when_no_alignment():
-    """A trims-only candidate (no alignment estimate at all) banks no ripple
-    reservation — the same skip condition the confidence floor and Fix 3 use
-    (see test_no_alignment_estimate_skips_the_confidence_gate), kept through
-    the conversion because a reservation about a candidate built without an
-    alignment estimate would describe something else."""
-    from dataclasses import replace
-
-    fakes = FakeSeams()
-    fakes.measure = lambda program: replace(
-        _measure_analysis(program, predicted_ripple_db=27.316), alignment=None,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert c.measure_ripple_reservation is None
 
 
 def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():
@@ -1118,7 +1088,7 @@ def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():
     fakes.measure = lambda program: _measure_analysis(
         program, predicted_ripple_db=9.0,
     )
-    c._rearm_measure_after_transient()
+    c._rearm_measure_after_transient(flow.PhaseVerdict(False, next="retake_same"))
     _run_phase(c, 2, 2)
     assert c.measure_ripple_reservation is None
 

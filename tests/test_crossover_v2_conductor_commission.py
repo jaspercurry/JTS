@@ -867,7 +867,7 @@ def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
     # hardcodes ``driver_caps_dbfs=CAPS``, which collides with overriding it
     # here. Skipping ``_conductor()``'s entry-baseline stash is safe: that
     # stash is for stage-1 cloud grading this test never reaches, and CHECK's
-    # own accept ladder (``check_screens``) does not read it.
+    # assessor (``capture_dispatch.assess``) does not read it.
     c = CrossoverV2Session(
         session_id=SESSION,
         source_preset=_preset(),

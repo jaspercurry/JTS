@@ -17,11 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Collection, Container
 
+from .refusal_copy import TakeCharge
+
 __all__ = [
     "ATTEMPT_INITIATOR_HOUSEHOLD",
     "ATTEMPT_INITIATOR_SPEAKER",
     "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
+    "MAX_AUTOMATIC_RETAKES_PER_POSITION",
     "SETTLE_BELOW_POSITION_FLOOR",
     "SETTLE_CONDITION_NOT_RETRIABLE",
     "SETTLE_GROUP_CLOSE_REQUIRED",
@@ -36,7 +39,6 @@ __all__ = [
     "BeginDecision",
     "SlotAttempts",
     "assess_begin",
-    "extra_initiator",
     "extras_spent_message",
     "pilot_heard_for",
     "reflection_measured_for",
@@ -46,19 +48,10 @@ __all__ = [
 ]
 
 
-# Bounded-retry ruling #2086: one prompted position gets its PLANNED capture
-# plus at most this many EXTRA attempts, POOLED across everyone who can ask
-# — the household's "Try again" and voluntary retakes, and the session's own
-# geometry retakes. Deliberately NOT derived from ``ReasonSpec.retry_budget``:
-# the bound belongs to the position and the household's patience, not to
-# whichever condition happened to fire last.
 MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
+# Six automatic retakes per pose bound USB-fault work without billing the operator.
+MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
 
-# Who asked for one extra attempt. Pooled against the single bound above, but
-# recorded separately so the count the household reads is truthful about who
-# spent what. Observed at the REJECTION that kept the plan alive, never at
-# the capture's ``retake`` flag: a geometry rung rejects a good capture to hold
-# the runner on the same index, so it travels with ``retake=false``.
 ATTEMPT_INITIATOR_HOUSEHOLD = "household"
 ATTEMPT_INITIATOR_SPEAKER = "speaker"
 
@@ -101,40 +94,27 @@ DECISION_KINDS = frozenset({
 
 @dataclass
 class SlotAttempts:
-    """One prompted position's attempt ledger (#2086).
-
-    ``admitted`` counts every attempt the session let start; the first is the
-    PLANNED capture and is free, and each one after it spends an extra against
-    :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`, attributed to whoever asked. An
-    ACCEPTED capture consumes no budget of its own, so a position measured
-    cleanly on the first take still has its full three extras. Mutable on
-    purpose: this is per-session state the session advances.
-    """
-
     admitted: int = 0
     by_household: int = 0
     by_speaker: int = 0
+    charge: TakeCharge = "operator"
 
     @property
     def extras_used(self) -> int:
-        return self.by_household + self.by_speaker
+        return self.by_household
 
     @property
     def extras_left(self) -> int:
-        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.extras_used)
+        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household)
 
-    def spend(self, initiator: str) -> None:
-        """Charge one extra attempt to ``initiator``.
+    def can_retry(self, charge: TakeCharge) -> bool:
+        return (self.by_speaker < MAX_AUTOMATIC_RETAKES_PER_POSITION
+                if charge == "speaker" else self.extras_left > 0)
 
-        Callers gate on :attr:`extras_left` first; an unchecked overspend raises
-        rather than silently capping.
-        """
-        if self.extras_left <= 0:
-            raise AttemptOverspendError(
-                "slot has no extra attempts left "
-                f"({self.extras_used}/{MAX_EXTRA_ATTEMPTS_PER_POSITION})"
-            )
-        if initiator == ATTEMPT_INITIATOR_SPEAKER:
+    def spend(self, charge: TakeCharge) -> None:
+        if not self.can_retry(charge):
+            raise AttemptOverspendError("slot has no attempts left for this initiator")
+        if charge == "speaker":
             self.by_speaker += 1
         else:
             self.by_household += 1
@@ -147,11 +127,12 @@ class SlotAttempts:
         the count truthful about who spent what.
         """
         return {
-            "used": self.extras_used,
             "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
             "left": self.extras_left,
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,
+            "automatic_left": max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_speaker),
+            "automatic_allowed": MAX_AUTOMATIC_RETAKES_PER_POSITION,
         }
 
 
@@ -170,24 +151,6 @@ class BeginDecision:
     initiator: str = ""
 
 
-def extra_initiator(last_reason: str | None, *, geometry_locked_code: str) -> str:
-    """Who is asking for the extra attempt about to be admitted.
-
-    Read off the rejection that kept the plan alive, the only place the
-    distinction is visible: a geometry rung is the session demanding a wider
-    take of an otherwise fine capture, and it travels the ordinary begin path
-    with ``retake=false`` (rejecting is the only lever that holds a
-    fixed-length plan on the same index). Everything else is the household
-    choosing to spend one. ``geometry_locked_code`` is stated rather than
-    imported: the reason codes are the flow's.
-    """
-    return (
-        ATTEMPT_INITIATOR_SPEAKER
-        if last_reason == geometry_locked_code
-        else ATTEMPT_INITIATOR_HOUSEHOLD
-    )
-
-
 def extras_spent_message(
     ledger: SlotAttempts, *, diagnosis: str, outcome: str,
 ) -> str:
@@ -196,7 +159,7 @@ def extras_spent_message(
     Deliberately does NOT reuse the full registry ``message``: retriable rows
     end by inviting an action the flow will no longer grant.
     """
-    used = ledger.extras_used
+    used = ledger.by_household + ledger.by_speaker
     tries = "try" if used == 1 else "tries"
     count = (
         f"JTS measured this spot {ledger.admitted} times — the planned one "
@@ -267,7 +230,6 @@ def assess_begin(
     last_reason: str | None,
     non_retriable: Container[str],
     default_code: str,
-    geometry_locked_code: str,
 ) -> BeginDecision:
     """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
 
@@ -290,13 +252,6 @@ def assess_begin(
         if failure_code:
             return BeginDecision(REFUSE_APPLY_FAILED, code=failure_code)
         return BeginDecision(DEFER_AWAITING_APPLY)
-    # ONE pooled meter per slot: the planned capture, then at most
-    # MAX_EXTRA_ATTEMPTS_PER_POSITION extras, whoever asks for them. The first
-    # attempt of any slot is always admitted and always free, and nothing is
-    # charged before the answer is ADMIT, so the hold above leaves no ledger
-    # entry behind. Both halves state this function's PRECONDITION: "no attempts
-    # yet" is expressible as no ledger at all or as a ledger with
-    # ``admitted == 0``, and both must mean a free first attempt.
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
     # The ``is not None`` half narrows the type and changes no answer: the flow
@@ -307,14 +262,12 @@ def assess_begin(
         # outran the terminal verdict :data:`SETTLE_CONDITION_NOT_RETRIABLE`,
         # which names the same code, so the two accounts agree.
         return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
-    if ledger.extras_left <= 0:
+    if not ledger.can_retry(ledger.charge):
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
     return BeginDecision(
         ADMIT,
         spends_extra=True,
-        initiator=extra_initiator(
-            last_reason, geometry_locked_code=geometry_locked_code
-        ),
+        initiator=ATTEMPT_INITIATOR_SPEAKER if ledger.charge == "speaker" else ATTEMPT_INITIATOR_HOUSEHOLD,
     )
 
 
@@ -397,7 +350,7 @@ def settle_spent_slot(
     """
     if code is not None and code in non_retriable:
         return SETTLE_CONDITION_NOT_RETRIABLE
-    if ledger is None or ledger.extras_left > 0:
+    if ledger is None or ledger.can_retry(ledger.charge):
         return SETTLE_RETRY_REMAINS
     return (
         SETTLE_GROUP_CLOSE_REQUIRED if is_group()

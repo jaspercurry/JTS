@@ -105,7 +105,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.program import (
-    KIND_SWEEP,
     ExcitationProgram,
     RoleBand,
 )
@@ -118,7 +117,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
 )
-from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -248,6 +246,7 @@ wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 
 # Substituting one of these names here binds only for readers inside this module.
 
+from jasper.active_speaker.crossover_v2 import refusal_copy as _reasons
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     NON_RETRIABLE_CODES,
     REASON_CLOUD_GEOMETRY_LOCKED,
@@ -353,8 +352,6 @@ def _declared_first_bounce_s(distance_m: float | None) -> float | None:
 # --- tuning constants -----------------------------------------------------
 
 GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
-# Per gain-adjusted clip retry, drop the offending program's level by this much.
-CLIP_RETRY_BACKOFF_DB = 3.0
 PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
 LOCATE_MIN_CONFIDENCE = _dispatch.LOCATE_MIN_CONFIDENCE
 VERIFY_TOLERANCE_DB = _contracts.VERIFY_TOLERANCE_DB
@@ -381,7 +378,7 @@ MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 # Measurement-honesty gate G3, dB: how far VERIFY's leading pilot-pair transfer
 # may step between attempts before the recorder itself is suspect. See
 # ADR-0182.
-VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
+VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = _dispatch.VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
 
 # dB. How close two consecutive graded VERIFY attempts must land before the
 # mismatch is called DETERMINISTIC rather than transient (#1873). See ADR-0183
@@ -441,21 +438,9 @@ def alignment_delay_search_bounds_us(
     return lo_ms * 1000.0, hi_ms * 1000.0
 
 
-def alignment_delay_plausible(
-    delay_us: float | None,
-    source_preset: Any,
-    *,
-    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-) -> bool:
-    """True when ``|delay_us|`` is inside the preset's declared ``delay_range_ms``."""
-    if delay_us is None:
-        return True
-    declared = _declared_alignment_delay_range_ms(source_preset)
-    if declared is None:
-        return True
-    _region, lo_ms, hi_ms = declared
-    delay_ms = abs(float(delay_us)) / 1000.0
-    return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
+def _measure_sufficient(take: _dispatch.TakeVerdict, analysis: ProgramAnalysis) -> bool:
+    return take.ok and (not analysis.driver_responses or analysis.measure_pair_not_evaluated is not None
+                        or take.capabilities["delay_estimate"])
 
 
 _analysis_json = _planning.analysis_json
@@ -773,7 +758,6 @@ class CrossoverV2Session:
         applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
         measure_gain_ceiling_db: Mapping[str, float] | None = None,
-        measure_gain_retry_used: bool = False,
         index_phase_map: Mapping[int, str] | None = None,
         post_apply_verifies: bool | None = None,
         measure_predicted_sum: Any = None,
@@ -915,7 +899,6 @@ class CrossoverV2Session:
         )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
-        self._measure_gain_retry_used = measure_gain_retry_used
         # CHECK's measured room floor, held until ``_measure_priors`` reads it (#1830).
         # In-memory only: §5.6 invalidates CHECK/MEASURE evidence across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
@@ -1761,7 +1744,6 @@ class CrossoverV2Session:
             applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
-            measure_gain_retry_used=self._measure_gain_retry_used,
             measure_sweep_durations_s=_priors.measure_sweep_durations_s(
                 self._measure_program
             ),
@@ -1809,7 +1791,6 @@ class CrossoverV2Session:
                 applied=snapshot.applied,
                 gain_plan_db=snapshot.gain_plan_db,
                 measure_gain_ceiling_db=snapshot.measure_gain_ceiling_db,
-                measure_gain_retry_used=snapshot.measure_gain_retry_used,
                 **journey,
                 **kwargs,
             )
@@ -1846,7 +1827,6 @@ class CrossoverV2Session:
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
-            geometry_locked_code=REASON_CLOUD_GEOMETRY_LOCKED,
         )
         if decision.kind == _admission.REFUSE_APPLY_FAILED:
             self._last_failure_code = decision.code
@@ -1915,11 +1895,7 @@ class CrossoverV2Session:
         ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
         if decision.spends_extra:
             try:
-                ledger.spend(
-                    _admission.ATTEMPT_INITIATOR_SPEAKER
-                    if self._last_reason.get(slot) == REASON_MEASURE_GAIN_ADJUSTED
-                    else decision.initiator
-                )
+                ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
             except _admission.AttemptOverspendError as exc:
                 # The flow's own error type is what every caller already handles;
                 # the ledger is pure and has no business knowing it.
@@ -2050,9 +2026,10 @@ class CrossoverV2Session:
             pilot_heard=analysis.pilot_snr_ok,
             reflection_measured=reflection_measured,
         )
+        ledger = self._slot_attempts.get(slot)
+        if ledger is not None:
+            ledger.charge = "operator" if verdict.accepted else verdict.charge
         if not verdict.accepted and verdict.code is not None:
-            # Recorded BEFORE the settle so both readers see it: the settle's
-            # attribution fallback, and ``admission.extra_initiator`` next begin.
             self._last_reason[slot] = verdict.code
             self._last_pilot_evidence[slot] = (
                 verdict.code,
@@ -2338,28 +2315,10 @@ class CrossoverV2Session:
         )
 
     def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
-        """CHECK's verdict: the ladder's answer, then the accept-side banking."""
         gain_plan = analysis.gain_plan
-        kind = _dispatch.check_screens(
-            _dispatch.CheckScreens(
-                stimulus_located=_stimulus_locate_ok(analysis),
-                anchor_ambiguous=analysis.anchor_ambiguous,
-                delta_implausible=analysis.delta_implausible,
-                channel_map_ok=analysis.channel_map_ok,
-                pilot_snr_ok=analysis.pilot_snr_ok,
-                linearity_ok=analysis.linearity_ok,
-                gain_plan_present=gain_plan is not None,
-                # Read only when a plan exists; ``False`` is the value the ladder
-                # ignores in that case, never a claim that an absent solve cleared it.
-                gain_plan_snr_floor_ok=(
-                    bool(gain_plan.snr_floor_ok) if gain_plan is not None else False
-                ),
-            )
-        )
-        if kind is not None:
-            return PhaseVerdict(False, _screen_refusal_code(kind))
-        # mypy: the ladder's final rung refuses an absent plan, so reaching
-        # here proves one exists — restated because the checker cannot see it.
+        verdict = PhaseVerdict.from_take(_dispatch.assess(analysis, phase=PHASE_CHECK, program=self._check_program))
+        if not verdict.accepted:
+            return verdict
         assert gain_plan is not None
         self._gain_plan_db = dict(gain_plan.gain_db)
         self._measure_gain_ceiling_db = {
@@ -2373,26 +2332,20 @@ class CrossoverV2Session:
         )
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.records.check(gain_plan, analysis.ambient_report or {})
-        return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
+        return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
 
     def _consume_measure(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
-        if verdict.code == REASON_MEASURE_GAIN_ADJUSTED:
-            # Bank with the program that made THIS response before composing its retry.
+        if verdict.payload.get("kept_measurement"):
             self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
-            self._gain_plan_db = verdict.payload["gain_adjustment"]["next_gain_db"]
-            self._measure_gain_retry_used = True
-            self._rearm_measure_after_transient()
-            verdict.payload["gain_adjustment"]["next_program_id"] = (
-                self.program_for_phase(PHASE_MEASURE).program_id
-            )
-            log_event(
-                logger, "correction.crossover_v2_measure_gain_adjusted",
-                session_id=self.session_id,
-                **verdict.payload["gain_adjustment"],
-            )
+        if verdict.next in {"retake_same", "retake_louder", "retake_quieter"}:
+            self._rearm_measure_after_transient(verdict)
+            if "gain_adjustment" in verdict.payload:
+                verdict.payload["gain_adjustment"]["next_program_id"] = self.program_for_phase(PHASE_MEASURE).program_id
+                log_event(logger, "correction.crossover_v2_measure_gain_adjusted",
+                          session_id=self.session_id, **verdict.payload["gain_adjustment"])
         return self._consume_unprompted(
             PHASE_MEASURE, index, attempt, analysis, result,
             verdict, self._log_measure_diag,
@@ -2533,55 +2486,30 @@ class CrossoverV2Session:
         self._measure_ripple_reservation = None
         self._measure_alignment_reservation = None
         self._measure_calibration_reservation = None
-        screen = _dispatch.measure_screens(
-            _dispatch.MeasureScreens.from_analysis(
-                analysis,
-                sweep_schedule_ok=lambda: _sweep_schedule_ok(
-                    analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
-                ),
-                # A callable: the physical backstop is asked ONLY of an estimate
-                # that already cleared the rung above.
-                delay_physically_plausible=lambda: (
-                    analysis.alignment is None
-                    or alignment_delay_plausible(
-                        analysis.alignment.delay_us, self._preset
-                    )
-                ),
-            ),
-            clip_retry_backoff_db=CLIP_RETRY_BACKOFF_DB,
+        take = _dispatch.assess(
+            analysis, phase=PHASE_MEASURE,
+            priors=MeasurementPriors(alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset)),
+            program=self._measure_program,
+            gain_ceiling_db={role: _programs.back_off_gain(
+                ceiling, self._excitation.session_volume_db, self._excitation.caps_dbfs.get(role, 0.0),
+            ) for role, ceiling in self._measure_gain_ceiling_db.items()},
         )
-        if screen.kind is not None:
-            if screen.guard:
-                self._last_measure_guard = screen.guard
-            if screen.rearm:
-                self._rearm_measure_after_transient(
-                    extra_backoff_db=screen.rearm_backoff_db
-                )
-            return PhaseVerdict(
-                False, _screen_refusal_code(screen.kind), evidence=screen.evidence,
-            )
-        ledger = self._slot_attempts.get(PHASE_MEASURE)
-        if not self._measure_gain_retry_used and (ledger is None or ledger.extras_left > 0):
-            program = self.program_for_phase(PHASE_MEASURE)
-            gains = {seg.role: seg.gain_db for seg in program.segments
-                     if seg.kind == KIND_SWEEP and seg.role is not None}
-            ceilings = {
-                role: _programs.back_off_gain(
-                    ceiling, self._excitation.session_volume_db,
-                    self._excitation.caps_dbfs.get(role, 0.0),
-                )
-                for role, ceiling in self._measure_gain_ceiling_db.items()
-            }
-            adjusted = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
-            if adjusted:
-                return PhaseVerdict(False, REASON_MEASURE_GAIN_ADJUSTED, payload={
-                    "gain_adjustment": {
-                        "source_program_id": program.program_id,
-                        "previous_gain_db": gains,
-                        "next_gain_db": {**gains, **adjusted},
-                    },
+        self._last_measure_guard = str(take.evidence.get("guard", ""))
+        verdict = PhaseVerdict.from_take(take)
+        if not verdict.accepted:
+            if take.ok and take.next == "retake_louder":
+                return replace(verdict, code=REASON_MEASURE_GAIN_ADJUSTED, payload={
+                    "gain_adjustment": {"source_program_id": analysis.program_id,
+                                        "previous_gain_db": dict(self._gain_plan_db or {}),
+                                        "next_gain_db": {**(self._gain_plan_db or {}), **take.gain_targets}},
                     "kept_measurement": True,
-                }, evidence=screen.evidence)
+                })
+            return verdict
+        if not _measure_sufficient(take, analysis):
+            code = (_reasons.REASON_DELAY_IMPLAUSIBLE if take.evidence.get("delay_physically_plausible") is False
+                    else _reasons.REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
+            return replace(verdict, accepted=False, code=code, next="fix_and_retake", charge="operator",
+                           payload={"kept_measurement": True})
         # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
         # does not refuse.** The capture is ACCEPTED and carries a reservation, which
         # changes what the household is TOLD and nothing about what is built.
@@ -2630,13 +2558,13 @@ class CrossoverV2Session:
         # fit's input and must outlive the cloud walk. Exactly one is ever held.
         if PHASE_CLOUD_MEASURE in self._journey.plan.phases:
             self._measure_analysis = analysis
-            return PhaseVerdict(True, payload={
+            return replace(verdict, payload={
                 "measurement_phase": PHASE_MEASURE, **pair_claim,
-            }, evidence=screen.evidence)
+            })
         # The no-deferral shape. The entry baseline is the "before" the round grades
         # against, not the fit's input, so it defers nothing.
-        return PhaseVerdict(
-            True, evidence=screen.evidence,
+        return replace(
+            verdict,
             payload={
                 "measurement_phase": PHASE_MEASURE,
                 **pair_claim,
@@ -2993,7 +2921,7 @@ class CrossoverV2Session:
                 min(retake.rung, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
             ]
             return PhaseVerdict(
-                False, REASON_CLOUD_GEOMETRY_LOCKED,
+                False, REASON_CLOUD_GEOMETRY_LOCKED, charge="speaker",
                 payload={"prompt": prompt, "geometry": dict(verdict)},
             )
         # #1872: a retake of the group's LAST position can land AFTER the group closed
@@ -4193,65 +4121,26 @@ class CrossoverV2Session:
         self._verify_graded_band_hz = None
         self._verify_frame = None
         self._verify_claims = None
-        # THIS attempt's gate, as a LOCAL: computed before the early returns because
-        # the gate-comparability refusal needs it, but it becomes session state only
-        # through ``_set_verify_outcome``. ``verify_gate`` below is a WINDOW in ms.
         gate_record = _gate_record(
             analysis.summed_response,
             declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
         )
-        # The pre-grade ladder belongs to ``capture_dispatch.verify_integrity_screens``
-        # and runs ahead of EVERY grade. What stays here is every rung that reads state
-        # outliving ONE capture.
-        integrity_screen = _dispatch.verify_integrity_screens(
-            analysis, stimulus_located=_stimulus_locate_ok(analysis),
-        )
-        if integrity_screen is not None:
-            payload = (
-                dict(integrity_screen.integrity_payload)
-                if integrity_screen.integrity_payload is not None else {}
-            )
-            return PhaseVerdict(
-                False,
-                _screen_refusal_code(integrity_screen.kind),
-                payload=payload,
-            )
-        # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
-        # overlay differences that aren't driver alignment ⇒ inconclusive.
-        verify_gate = _gate_window_ms(analysis.summed_response)
-        if (
-            self._measure_gate_window_ms is not None
-            and verify_gate is not None
-            and verify_gate + 1e-6 < self._measure_gate_window_ms
-        ):
-            self._set_verify_outcome(
-                "inconclusive", REASON_VERIFY_INCONCLUSIVE, gate_record,
-            )
-            return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
-        # G3: the tracking-max comparison below is exactly what a shifted recording
-        # chain invalidates, so check the chain's OWN consistency first. The first
-        # usable attempt of the session only records the reference (#1927).
+        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, program=self._verify_program,
+                                pilot_transfer_prior=self._verify_pilot_baseline, measure_gate_window_ms=self._measure_gate_window_ms)
+        verdict = PhaseVerdict.from_take(take)
+        if "pilot_transfer_step_db" in take.evidence:
+            self._verify_pilot_transfer_step_db = float(take.evidence["pilot_transfer_step_db"])
+        if not verdict.accepted:
+            if verdict.code in {REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_INCONCLUSIVE}:
+                self._set_verify_outcome("inconclusive", verdict.code, gate_record)
+            if analysis.capture_integrity is not None and analysis.capture_integrity.failed:
+                verdict = replace(verdict, payload={"capture_integrity": analysis.capture_integrity.to_dict()})
+            return verdict
         transfer = _pilot_transfer_by_role(analysis)
-        if transfer:
-            if self._verify_pilot_baseline is None:
-                self._verify_pilot_baseline = dict(transfer)
-                self._verify_pilot_baseline_at = time.time()
-                self._note_level_reference_reset(transfer)
-            else:
-                shared = [r for r in transfer if r in self._verify_pilot_baseline]
-                if shared:
-                    self._verify_pilot_transfer_step_db = max(
-                        abs(transfer[r] - self._verify_pilot_baseline[r])
-                        for r in shared
-                    )
-        if (
-            self._verify_pilot_transfer_step_db is not None
-            and self._verify_pilot_transfer_step_db > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
-        ):
-            self._set_verify_outcome(
-                "inconclusive", REASON_VERIFY_LEVEL_SHIFT, gate_record,
-            )
-            return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
+        if transfer and self._verify_pilot_baseline is None:
+            self._verify_pilot_baseline = dict(transfer)
+            self._verify_pilot_baseline_at = time.time()
+            self._note_level_reference_reset(transfer)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verification._verify_evidence_from_tracking(tracking)
         self._verify_graded_band_hz = _verification._verify_graded_band_from_tracking(
@@ -4283,7 +4172,7 @@ class CrossoverV2Session:
                 mismatch_payload["terminal_outcome"] = (
                     VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
                 )
-            return PhaseVerdict(False, code, payload=mismatch_payload)
+            return replace(verdict, accepted=False, code=code, payload=mismatch_payload, next="fix_and_retake", charge="operator")
         # Graded and inside tolerance: the mismatch did NOT repeat, so the pair #1873's
         # discriminator would draw its claim from is broken.
         self._verify_last_mismatch_max_db = None
@@ -4298,8 +4187,8 @@ class CrossoverV2Session:
         self._run_delta_probe()
         # Absolute remains independent; the terminal owner classifies its miss.
         self._set_verify_outcome("pass", None, gate_record)
-        return PhaseVerdict(
-            True, payload={
+        return replace(
+            verdict, payload={
                 "measurement_phase": PHASE_VERIFY,
                 "tracking": dict(tracking),
                 **(
@@ -4401,18 +4290,13 @@ class CrossoverV2Session:
 
     # --- helpers -------------------------------------------------------------
 
-    def _rearm_measure_after_transient(self, *, extra_backoff_db: float = 0.0) -> None:
-        """Recompose the MEASURE program for the automatic retry (§5.10 t1)."""
+    def _rearm_measure_after_transient(self, verdict: PhaseVerdict) -> None:
         if self._gain_plan_db is not None:
-            self._measure_program = self._compose_measure_program(
-                self._gain_plan_db, extra_backoff_db=extra_backoff_db
-            )
-            self._gain_plan_db = {
-                seg.role: seg.gain_db for seg in self._measure_program.segments
-                if seg.kind == KIND_SWEEP and seg.role is not None
-            }
-            if extra_backoff_db > 0:
-                # A stronger SNR retry must not undo a measured clipping backoff.
+            self._gain_plan_db.update({key.removeprefix("next_gain_db."): float(value)
+                                      for key, value in verdict.evidence.items()
+                                      if key.startswith("next_gain_db.")})
+            self._measure_program = self._compose_measure_program(self._gain_plan_db)
+            if verdict.next == "retake_quieter":
                 self._measure_gain_ceiling_db = {
                     role: min(ceiling, self._gain_plan_db[role])
                     for role, ceiling in self._measure_gain_ceiling_db.items()
