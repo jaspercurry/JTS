@@ -44,11 +44,6 @@ from ...local_sources import (
     local_source_park_units,
 )
 from ...log_event import log_event
-from ...platform.uds import (
-    local_status_json,
-    mux_socket_command,
-    voice_socket_command,
-)
 from ...service_units import JASPER_VOICE_SERVICE
 from .. import aec_endpoints
 from .. import debug_control
@@ -374,13 +369,10 @@ class SystemRoutes(ControlHandlerMixin):
         try:
             state = self._state_response_cache.get_or_compute(
                 lambda: asyncio.run(
-                    state_aggregate._get_state(
+                    self._collect_state(
                         camilla_host=self._camilla_host,
                         camilla_port=self._camilla_port,
                         voice_socket_path=self._voice_socket_path,
-                        voice_socket_command=voice_socket_command,
-                        mux_socket_command=mux_socket_command,
-                        local_status_json=local_status_json,
                         # shairport's MPRIS PlaybackStatus from the health
                         # sampler that already holds it, so `/state` runs no
                         # `busctl` of its own (ADR-0233 rules 1 and 2).

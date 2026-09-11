@@ -29,7 +29,6 @@ import json
 import logging
 import os
 import signal
-import subprocess
 import threading
 import time
 from http import HTTPStatus
@@ -45,10 +44,6 @@ if TYPE_CHECKING:
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..platform.control_client import CONTROL_PORT
-from ..fanin.latency_mode import (
-    options as _usb_latency_options,
-    read_state as _read_usb_latency_state,
-)
 from . import (
     debug_control,
     grouping_supervisor,
@@ -57,16 +52,12 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from ..music_sources import MUSIC_SOURCE_SPECS
-from ..local_sources import local_source_audio_refresh_units
-from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_profile_allows_voice_brain,
     install_role_for_profile,
     read_install_profile,
 )
-from . import aec_endpoints as _aec_endpoints
 from . import control_token
 from . import household_credential
 from . import restart_broker
@@ -81,18 +72,6 @@ from ..platform.uds import (
 )
 
 logger = logging.getLogger(__name__)
-SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
-CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
-LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
-_USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
-_AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
-_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
-_usb_mic_leg_apply_lock = threading.Lock()
-_usb_mic_leg_apply_pending: tuple[str, float] | None = None
-# Serializes POST /aec/commission's check-then-start across
-# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
-# probe before either start lands.
-_aec_commission_start_lock = threading.Lock()
 
 
 # Streambox is the restricted profile: these are the management + audio
@@ -136,34 +115,6 @@ _ASSISTANT_POST_ROUTES = frozenset({
     "/system/restart/voice",
 })
 
-
-def _active_speaker_volume_block() -> dict[str, Any] | None:
-    setup = read_active_speaker_setup_status()
-    if setup.get("volume_allowed") is not True:
-        return setup
-    return None
-
-
-def _active_speaker_grouping_evaluation(
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Return the public grouping-readiness verdict and any blocking setup.
-
-    Both GET /grouping's preflight projection and POST /grouping/set's final
-    mutation guard call this one policy seam, so the advisory read can never
-    drift from the target-side fail-closed decision.
-    """
-    setup = read_active_speaker_setup_status()
-    if setup.get("grouping_allowed") is not True:
-        detail = str(
-            setup.get("detail")
-            or "active speaker setup is not ready for grouping"
-        )
-        return {"allowed": False, "detail": detail}, setup
-    return {"allowed": True, "detail": "ready"}, None
-
-
-def _active_speaker_grouping_block() -> dict[str, Any] | None:
-    return _active_speaker_grouping_evaluation()[1]
 
 # The high-impact mutations the control token gates (SECURITY.md).
 # The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
@@ -281,181 +232,6 @@ STATE_RESPONSE_WAIT_SEC = 2.0
 
 _read_volume_state = _volume_ops.read_volume_state
 
-_USB_LATENCY_APPLY_GRACE_SEC = 30.0
-_usb_latency_applying: tuple[str, float] | None = None
-
-
-def _mark_usb_latency_applying(mode: str) -> None:
-    global _usb_latency_applying
-    _usb_latency_applying = (mode, time.monotonic() + _USB_LATENCY_APPLY_GRACE_SEC)
-
-
-def _usb_latency_applying_mode() -> str | None:
-    global _usb_latency_applying
-    current = _usb_latency_applying
-    if current is None:
-        return None
-    if current[1] <= time.monotonic():
-        _usb_latency_applying = None
-        return None
-    return current[0]
-
-
-def _safe_usb_latency_state(airplay_health: Any = None) -> dict[str, Any]:
-    global _usb_latency_applying
-    try:
-        applying_mode = _usb_latency_applying_mode()
-        state = _read_usb_latency_state(
-            airplay_health,
-            applying_mode=applying_mode,
-        )
-        if applying_mode is not None and state.get("state") != "applying":
-            if (
-                _usb_latency_applying is not None
-                and _usb_latency_applying[0] == applying_mode
-            ):
-                _usb_latency_applying = None
-        return state
-    except Exception as e:  # noqa: BLE001
-        logger.exception("USB latency state read failed")
-        return {
-            "selected_mode": "low",
-            "applied_mode": None,
-            "effective_mode": None,
-            "state": "error",
-            "detail": "USB latency state could not be read.",
-            "error": str(e),
-            "live_buffer_frames": None,
-            "live_buffer_ms": None,
-            "options": _usb_latency_options(),
-        }
-
-
-def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["systemctl", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=5.0,
-    )
-
-
-def _reset_oneshot_unit(unit: str, *, event: str) -> None:
-    """Fail-soft and best-effort: a reset-failed failure must never block
-    the start/restart it precedes.  Both callers' units are bare oneshots
-    with no RemainAfterExit, so systemd normally GCs them between runs, and
-    reset-failed against an already-unloaded unit routinely exits nonzero
-    (#3237)."""
-    try:
-        result = _run_unit_systemctl("reset-failed", unit)
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_event(
-            logger,
-            event,
-            unit=unit,
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return
-    if result.returncode != 0:
-        log_event(
-            logger,
-            event,
-            unit=unit,
-            returncode=result.returncode,
-            detail=(result.stderr or result.stdout).strip().replace(
-                "\n", " | ",
-            ),
-            level=logging.WARNING,
-        )
-
-
-def _run_oneshot_start(
-    unit: str,
-    verb: str,
-    *,
-    event_prefix: str,
-    extra_fields: dict[str, Any] | None = None,
-) -> bool:
-    """Reset then no-block start/restart one maintenance oneshot, observably.
-
-    ``event_prefix`` is ``<owner>.<action>``: the failure/scheduled events are
-    ``<event_prefix>_failed`` / ``<event_prefix>_scheduled`` and the
-    best-effort reset logs ``<owner>.reset_failed_skipped``. ``extra_fields``
-    ride on the scheduled event only. The reset clears systemd's
-    failure/start-rate state so each explicit user action gets a fresh,
-    bounded retry budget.
-    """
-    owner = event_prefix.rsplit(".", 1)[0]
-    _reset_oneshot_unit(unit, event=f"{owner}.reset_failed_skipped")
-    try:
-        result = _run_unit_systemctl(verb, "--no-block", unit)
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_event(
-            logger,
-            f"{event_prefix}_failed",
-            unit=unit,
-            phase="enqueue",
-            error=str(exc),
-            level=logging.ERROR,
-        )
-        return False
-    if result.returncode != 0:
-        log_event(
-            logger,
-            f"{event_prefix}_failed",
-            unit=unit,
-            phase="enqueue",
-            returncode=result.returncode,
-            detail=(result.stderr or result.stdout).strip().replace(
-                "\n", " | ",
-            ),
-            level=logging.ERROR,
-        )
-        return False
-    log_event(
-        logger,
-        f"{event_prefix}_scheduled",
-        unit=unit,
-        **(extra_fields or {}),
-    )
-    return True
-
-
-def _schedule_usb_gadget_recompose() -> bool:
-    """Hand delayed, debounced apply to systemd before returning to the client.
-
-    Restarting an already-running oneshot cancels its 350 ms grace sleep and
-    begins it again, so rapid switch changes naturally debounce.  Unlike an
-    in-process Timer, the durable intent's apply job survives jasper-control
-    exiting after this request.
-    """
-
-    return _run_oneshot_start(
-        _USB_MIC_APPLY_UNIT,
-        "restart",
-        event_prefix="usb_mic.recompose",
-        extra_fields={"grace_ms": 350, "max_attempts": 4},
-    )
-
-
-def _aec_commission_running() -> bool:
-    return _aec_endpoints._unit_active(_aec_endpoints._AEC_COMMISSION_SERVICE)
-
-
-def _start_aec_commission() -> bool:
-    """Hand the audible re-commissioning run to systemd before returning.
-
-    ``--no-block``: the run takes minutes and the browser only needs the job
-    accepted — the /aec poll's ``commission.running`` probe tracks the rest.
-    """
-    return _run_oneshot_start(
-        _aec_endpoints._AEC_COMMISSION_SERVICE,
-        "start",
-        event_prefix="aec_commission.start",
-    )
-
 
 async def _get_state(
     *,
@@ -498,13 +274,6 @@ def _make_duck_active_probe(
     return _volume_ops._make_duck_active_probe(
         voice_socket_path,
         voice_socket_command=_voice_socket_command,
-    )
-
-
-async def _dispatch_transport(action: str) -> dict:
-    return await _volume_ops._dispatch_transport(
-        action,
-        spotify_router_factory=_volume_ops._build_spotify_router_or_none,
     )
 
 
@@ -737,6 +506,28 @@ def _make_handler(
                 logger.exception("%s failed", log_label)
                 self._send_json({"error": str(e)}, status=502)
                 return None
+
+        def _collect_state(
+            self,
+            *,
+            camilla_host: str,
+            camilla_port: int,
+            voice_socket_path: str,
+            airplay_playing_snapshot: Any = None,
+            audio_health_snapshot: Any = None,
+        ) -> Any:
+            # A bare-name call, not `self._x` or a captured closure: this
+            # must re-look-up `_get_state` on every call so a test can
+            # monkeypatch the module attribute after the handler is built
+            # (server_with_coordinator builds it in the fixture, before the
+            # test body's own patch runs).
+            return _get_state(
+                camilla_host=camilla_host,
+                camilla_port=camilla_port,
+                voice_socket_path=voice_socket_path,
+                airplay_playing_snapshot=airplay_playing_snapshot,
+                audio_health_snapshot=audio_health_snapshot,
+            )
 
         def _guard_management_read(self) -> bool:
             if self.path == "/healthz":

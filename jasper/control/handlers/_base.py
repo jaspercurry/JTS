@@ -40,6 +40,23 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     _voice_socket_path: str
     server: ThreadingHTTPServer
 
+    def _collect_state(
+        self,
+        *,
+        camilla_host: str,
+        camilla_port: int,
+        voice_socket_path: str,
+        airplay_playing_snapshot: Any = None,
+        audio_health_snapshot: Any = None,
+    ) -> Any:
+        """The cross-daemon /state aggregate, as an awaitable.
+
+        A whole-callable seam (not one of the per-op attributes above):
+        route-level tests replace it outright to test caching/error
+        handling without running the real aggregation.
+        """
+        raise NotImplementedError
+
     def _guard_control_token(self) -> bool:
         raise NotImplementedError
 

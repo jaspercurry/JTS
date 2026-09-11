@@ -315,7 +315,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         ),
     )
     monkeypatch.setattr(
-        srv_mod._aec_endpoints,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {"JASPER_AUDIO_INPUT_PROFILE": "fresh"},
     )
@@ -384,7 +384,7 @@ def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
     import jasper.control.server as srv_mod
 
     choices = [{"value": "primary", "label": "Same as JTS voice"}]
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(
         aec_mod,
@@ -425,7 +425,7 @@ def test_usb_mic_leg_same_value_is_noop(
             },
         },
     }
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(
         aec_mod,
         "usb_mic_leg_choices",
@@ -475,7 +475,7 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
     }
     monkeypatch.setattr(aec_endpoints, "_usb_mic_leg_apply_pending", None)
     monkeypatch.setattr(aec_endpoints.time, "monotonic", lambda: clock["now"])
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
@@ -549,7 +549,7 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
         },
     }
     monkeypatch.setattr(aec_endpoints, "_usb_mic_leg_apply_pending", None)
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
@@ -599,7 +599,7 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
         {"value": "primary", "label": "Same as JTS voice"},
         {"value": "chip_aec_210", "label": "Rear hardware beam"},
     ]
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
