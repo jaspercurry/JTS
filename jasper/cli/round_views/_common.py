@@ -41,7 +41,7 @@ from jasper.cli._refusal import (
 )
 from jasper.cli._report import write_report
 
-AUTHORITY_TIER = "advisory (analysis views save artifacts; `classify-features` also updates the bundle)"
+AUTHORITY_TIER = "advisory (analysis views save artifacts)"
 
 #: What every round-directory positional takes, said once. Both shapes, named
 #: in the order an operator meets them: the live one is what a round leaves on

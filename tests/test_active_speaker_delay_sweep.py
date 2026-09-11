@@ -16,6 +16,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.test_active_speaker_audition import _applied_profile
+from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
@@ -444,9 +447,6 @@ def test_delay_landscape_reads_only_the_common_gate_coverage(tmp_path, capsys):
 
 @pytest.mark.parametrize("override", [False, True])
 def test_delay_defaults_come_from_the_selected_banked_take(tmp_path, capsys, override):
-    from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
-    from tests.test_active_speaker_audition import _applied_profile
-    from tests.test_active_speaker_runtime_contract import _active_topology
 
     bundle = _bank(tmp_path / "round" / "bundle" / "session", curves=[_curve("woofer"), _curve("tweeter")],
                    phase=PHASE_LATERAL, position_deg=15, take_id="lateral")

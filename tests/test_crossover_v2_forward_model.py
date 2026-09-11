@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behaviour pins for the forward model: a predicted sum nothing has played.
-
-Closed-form fixtures throughout — two branches whose analytic sum is known
-before the model runs — so a pin says the arithmetic is RIGHT rather than that
-it is unchanged. One pin crosses instruments: the same synthetic pair read for
-null depth through this model and through the delay landscape must agree, or
-the two predictors of one physical quantity have drifted.
-"""
+"""Exact capture reconstruction, candidate forecasts, and measured comparisons."""
 
 import json
 import re
@@ -314,21 +307,6 @@ def _bind_candidate_take(
         ),
     }
     path.write_text(json.dumps(document))
-
-
-# --------------------------------------------------------------------------- #
-# the arithmetic
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# the cross-instrument pin
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# the loader
-# --------------------------------------------------------------------------- #
 
 
 def test_the_shared_complex_parse_inverts_the_banked_serialization() -> None:

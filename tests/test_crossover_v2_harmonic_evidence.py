@@ -25,6 +25,11 @@ from typing import Any
 
 import numpy as np
 import pytest
+from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
+from jasper.cli.round_views import main
+from jasper.active_speaker.round_bank import bank_round
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
 from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
 from jasper.active_speaker.crossover_v2.feature_classifier import (
@@ -1417,11 +1422,6 @@ def test_harmonics_output_directory_name_is_not_capture_identity(harmonic_captur
 
 @pytest.mark.parametrize("first", ["distortion", "classify-features"])
 def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_path, capsys, first):
-    from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-    from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-    from jasper.active_speaker.round_bank import bank_round
-    from jasper.cli.round_views import main
-    from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
 
     _, compose, _, wav, document = harmonic_capture
     session = tmp_path / "session"

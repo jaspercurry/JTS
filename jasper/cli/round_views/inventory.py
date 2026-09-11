@@ -49,8 +49,6 @@ def _runnable(
     bindings = {
         TAKES_THIS_ROUND: round_dir,
         TAKES_THIS_BUNDLE: inputs.session_dir,
-        "<flow-state>": inputs.state_path,
-        "<applied-profile>": inputs.applied_profile_path,
     }
     takes = spec.takes if takes is None else takes
     missing = [
@@ -59,8 +57,6 @@ def _runnable(
     ]
     tokens = [str(bindings.get(token) or token) for token in takes]
     return shlex.join([*shlex.split(spec.producer or f"{PROG} {view}"), *tokens]), missing
-
-
 
 
 def _forward_model_takes(

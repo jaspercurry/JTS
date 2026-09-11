@@ -447,7 +447,7 @@ class RoundCapture:
     phase: str
     #: Capture stamp, seconds. The dump filename's own microsecond stamp.
     stamp: float
-    #: Commanded turntable angle, when a walk log covered this capture.
+    #: Commanded angle from the take, or a matching turntable walk release.
     degrees: int | None
     #: The band this capture's DUT actually radiates, off its own sidecar
     #: curves. ``None`` when the sidecar banks none, which refuses the window
@@ -528,9 +528,8 @@ def load_round_captures(
     (``info.json``'s), which is what a sidecar stamps into
     ``jts_session_identity``; the capture id that names ``round_dir`` is a
     different namespace. Omitting it admits every capture in the ring, which
-    is correct only when the ring holds one round. ``walk_logs`` are optional:
-    without them captures carry no angle and the timing test says it did not
-    run.
+    is correct only when the ring holds one round. ``walk_logs`` supply angles
+    only for captures without a banked position.
 
     Raises :class:`FeatureClassificationRefused` — never returns empty, "no
     captures" being a finding a caller must be told by name. EVERY refusal
@@ -1440,9 +1439,7 @@ def _sweep_ladder(
     rather than reading :data:`GATE_STABLE` off a test that never ran.
 
     ``poses`` is who each pose row of every feature IS, banked once for the
-    round beside the frame, in the order those rows are in. Position is the
-    join, not ``pose_key``: a ring capture carries an angle only when a walk
-    log bound one.
+    round beside the frame, in the order those rows are in.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     frame = frame_descriptor(rungs, analysis_grid())

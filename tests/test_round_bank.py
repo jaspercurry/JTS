@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round bank``: one live session into the on-box campaign home.
-
-The source session is the real one ``tests/crossover_v2_banked_round.py``
-builds through the product's own writers, so the tree this banks is the tree
-the flow actually produces — and every layout assertion here goes through
-``round_views``' own reader rather than re-spelling the layout.
-"""
+"""Bank live sessions and read the resulting evidence through its consumers."""
 
 from __future__ import annotations
 
@@ -73,33 +67,14 @@ def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]
     return paths
 
 
-@pytest.mark.parametrize(
-    "present, absent, missing",
-    [
-        (True, "", []),
-        (
-            False,
-            "",
-            [
-                "design-draft.json",
-                "applied-profile.json",
-                "repeat-floor.json",
-                "declared-geometry.json",
-                "camilla-statefile.yml",
-            ],
-        ),
-        (True, "repeat_floor_path", ["repeat-floor.json"]),
-        (True, "declared_geometry_path", ["declared-geometry.json"]),
-        (True, "statefile_path", ["camilla-statefile.yml"]),
-    ],
-    ids=[
-        "ssot-present",
-        "ssot-absent",
-        "repeat-floor-absent",
-        "declared-geometry-absent",
-        "statefile-absent",
-    ],
-)
+@pytest.mark.parametrize("present, absent, missing", [
+    (True, "", []),
+    (False, "", ["design-draft.json", "applied-profile.json", "repeat-floor.json",
+                 "declared-geometry.json", "camilla-statefile.yml"]),
+    (True, "repeat_floor_path", ["repeat-floor.json"]),
+    (True, "declared_geometry_path", ["declared-geometry.json"]),
+    (True, "statefile_path", ["camilla-statefile.yml"]),
+])
 def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, missing):
     session_dir, state_path = _live_session(tmp_path)
 
@@ -110,15 +85,11 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, mis
         **_ssot(tmp_path, present=present, absent=absent),
     )
 
-    # The round id is the receipt's, not the bundle's session id.
     assert banked.path == tmp_path / "campaigns" / "r1"
     assert round_inputs(banked.path).session_dir.name == session_dir.name
     assert (banked.path / "bundle" / session_dir.name / "info.json").is_file()
-    assert load_banked_round(banked.path).session_dir == round_inputs(
-        banked.path
-    ).session_dir
+    assert load_banked_round(banked.path).session_dir == round_inputs(banked.path).session_dir
     provenance = json.loads((banked.path / "provenance.json").read_text())
-    # What the caller is handed is what landed on disk -- no re-read needed.
     assert provenance == banked.provenance
     assert provenance["source"] == "on-box"
     assert provenance["session_id"] == session_dir.name
@@ -187,7 +158,6 @@ def test_provenance_records_the_installed_build_or_says_it_cannot(
 
     assert banked.provenance["installed_sha"] == sha
     assert banked.provenance["git_absent"] is git_absent
-    # One key spelling across both banking paths (scripts/bank-crossover-round.sh).
     assert banked.provenance["banked_at_utc"].endswith("Z")
 
 
