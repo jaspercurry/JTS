@@ -29,7 +29,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
-    AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
@@ -1210,12 +1209,6 @@ def test_capture_plan_entries_carry_auto_advance_policy():
             # supporting clause is the body and may legitimately be empty.
             assert entry.screen["title"]
             assert "body" in entry.screen
-    # No entry of a STAGE-1 plan arms on an apply — there is no apply in this
-    # session to arm on (work order D1/D10).
-    assert all(
-        entry.screen.get("auto_advance") != AUTO_ADVANCE_ON_APPLY
-        for entry in plan.entries
-    )
     # …and the END screen is stage 2's, not stage 1's: nothing here may claim
     # the speaker is tuned. (The generic page fallback a stage-1 plan therefore
     # falls back to is PR-T4's; see the work order's D7 list.)

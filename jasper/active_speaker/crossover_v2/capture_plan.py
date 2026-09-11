@@ -1347,10 +1347,6 @@ AUTO_ADVANCE_COUNTDOWN_S = 5
 # which is opaque to the schema.
 AUTO_ADVANCE_TAP = "tap"            # requires the user's tap (first capture)
 AUTO_ADVANCE_COUNTDOWN = "countdown"  # auto-begins behind a cancelable countdown
-# Armed by the apply-complete host event. Emitted by no plan today — stage 1 has
-# no VERIFY entry and stage 2 opens already-applied — and kept only as
-# plan-grammar the page and the runner still understand.
-AUTO_ADVANCE_ON_APPLY = "on_apply"
 
 # Phone-inactivity budget for the very FIRST begin of a v2 session, before any
 # capture: the microphone-check screen's placement instructions take longer to
