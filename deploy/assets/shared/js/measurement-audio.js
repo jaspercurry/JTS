@@ -258,11 +258,11 @@ export async function createMonoRecorder(options = {}) {
     // test here, so `silent_blocks` read 0 on all 13 events of the 2026-08-15
     // measurement campaign while a whole 128-sample quantum of digital silence
     // sat in each capture. The witness for that shape is a scan of the ASSEMBLED
-    // BUFFER (`scanZeroFillRuns` in capture-page/js/capture-integrity.js), which
-    // sees every zero-filled quantum this counter cannot and reports where each
-    // one landed. A second counter in here would only restate what that scan
-    // already proves — `len / quantum` recovers the block count — at the price
-    // of new work on the real-time render thread, so there deliberately is not
+    // BUFFER after capture, which sees every zero-filled quantum this counter
+    // cannot and reports where each one landed. A second counter here would
+    // only restate what that scan already proves — `len / quantum` recovers the
+    // block count — at the price of new work on the real-time render thread, so
+    // there deliberately is not
     // one.
     //
     // `frames` (issue #2094) is the left edge of the host's end-to-end frame

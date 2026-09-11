@@ -11,8 +11,8 @@ separate concerns:
   reach) and the ANGLES derived from the same prompt table the hand-walked
   tiers read;
 * the position GATE, which replaces the tap a hand-walked pose gets — held on
-  the shipped ``CaptureBeginDeferred`` soft-hold, so no capture-page change is
-  involved; and
+  the shipped ``CaptureBeginDeferred`` soft-hold, so no browser change is
+  required; and
 * the promise that adding all of it changed NOTHING for ``full`` / ``express``.
   That last one is load-bearing: the golden wire digests in
   ``tests/crossover_v2_fixtures`` already prove byte-identity, and the pins here
@@ -408,10 +408,11 @@ def test_the_recovery_re_verify_has_no_tier_and_keeps_its_tap():
 
 
 def test_a_remote_stage_2_anchor_drops_the_confirm_tap_it_cannot_answer():
-    """``entryConfirmsBeforeArming`` (capture-page/js/main.js) holds the tone
-    until somebody taps whenever ``confirm_title`` is present. Carrying it into
-    an unattended session would park the anchor forever; the position gate makes
-    the same promise instead."""
+    """The confirmation UI holds the tone while ``confirm_title`` is present.
+
+    Carrying it into an unattended session would park the anchor forever; the
+    position gate makes the same promise instead.
+    """
     remote_anchor = _stage2(TIER_REMOTE).entries[0].screen
     assert "confirm_title" not in remote_anchor
     assert "confirm_body" not in remote_anchor
