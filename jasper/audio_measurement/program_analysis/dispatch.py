@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
 import numpy as np
 
-from jasper.active_speaker.calibration_level import classify_mic_meter
+from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
 from .branches import analyze_branches
 

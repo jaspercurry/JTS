@@ -98,6 +98,7 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
         "reason": REASON_REGISTRY["clipped"].banner,
         "banner": REASON_REGISTRY["clipped"].banner,
         "auto_retry": True,
+        "evidence": {"mic_meter_status": "unmeasured", "peak_dbfs": -12.0},
         # See the same key in
         # `test_low_alignment_confidence_rejects_measure_before_building_candidate`
         # — the pilot evidence rides every rejection (#2085), not only the

@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.mic_meter import (
+    MIC_TOO_QUIET_BELOW_DBFS,
+    MIC_USABLE_MIN_DBFS,
+    MIC_USABLE_MAX_DBFS,
+    classify_mic_meter,
+)
 from jasper.json_fields import utc_now_iso as _utc_now
 
 from ._common import finite_float as _finite_float
@@ -32,11 +38,6 @@ DEFAULT_TEST_LEVEL_DBFS = MIN_TEST_LEVEL_DBFS
 MAX_TEST_LEVEL_DBFS = 0.0
 TEST_LEVEL_STEP_DB = 1.0
 AUDIBLE_RAMP_STEP_DB = 10.0
-
-MIC_TOO_QUIET_BELOW_DBFS = -55.0
-MIC_USABLE_MIN_DBFS = -45.0
-MIC_USABLE_MAX_DBFS = -18.0
-
 
 def _state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
@@ -60,58 +61,6 @@ def clamp_test_level_dbfs(value: Any) -> float:
     if out is None:
         out = DEFAULT_TEST_LEVEL_DBFS
     return min(max(out, MIN_TEST_LEVEL_DBFS), MAX_TEST_LEVEL_DBFS)
-
-
-def classify_mic_meter(
-    *,
-    observed_dbfs: Any = None,
-    clipping: bool = False,
-) -> dict[str, Any]:
-    """Classify a future microphone meter reading into coarse guidance.
-
-    The thresholds are intentionally in capture dBFS, not SPL. SPL depends on
-    microphone sensitivity and calibration provenance, while clipping/usable
-    capture headroom is the first safety signal this contract can own
-    deterministically.
-    """
-
-    observed = _finite_float(observed_dbfs)
-    if clipping:
-        return {
-            "status": "clipping",
-            "tone": "danger",
-            "observed_dbfs": observed,
-            "recommendation": "stop_or_lower",
-        }
-    if observed is None:
-        return {
-            "status": "unmeasured",
-            "tone": "idle",
-            "observed_dbfs": None,
-            "recommendation": "start_at_minimum",
-        }
-    if observed < MIC_TOO_QUIET_BELOW_DBFS:
-        status = "too_quiet"
-        tone = "warn"
-        recommendation = "raise_slowly"
-    elif observed < MIC_USABLE_MIN_DBFS:
-        status = "low"
-        tone = "warn"
-        recommendation = "raise_slowly"
-    elif observed <= MIC_USABLE_MAX_DBFS:
-        status = "usable"
-        tone = "ok"
-        recommendation = "hold_level"
-    else:
-        status = "too_loud"
-        tone = "danger"
-        recommendation = "lower_level"
-    return {
-        "status": status,
-        "tone": tone,
-        "observed_dbfs": round(observed, 1),
-        "recommendation": recommendation,
-    }
 
 
 def calibration_level_payload(
