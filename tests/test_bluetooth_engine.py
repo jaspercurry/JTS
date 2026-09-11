@@ -24,6 +24,7 @@ from jasper.bluetooth.models import (
     BluetoothDevice,
     UUID_HOGP,
 )
+from tests._log_events import event_fields, event_records
 
 from ._async_wait import wait_signalled
 
@@ -413,8 +414,8 @@ async def test_an_unwritable_request_keeps_the_device_action_successful(
 
     assert result.ok is True
     assert "optional accessory refresh will retry at boot" in result.message
-    assert "event=bluetooth.accessory_reconcile_failed" in caplog.text
-    assert f"reason=bluetooth-{action}" in caplog.text
+    fields = event_fields(caplog, "bluetooth.accessory_reconcile_failed")
+    assert fields["reason"] == f"bluetooth-{action}"
 
 
 @pytest.mark.parametrize("bond_succeeds", (True, False))
@@ -568,9 +569,9 @@ async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
 
     assert result == BluetoothActionResult(True, "removed")
     assert reasons == ["bluetooth-forget"]
-    assert "event=bluetooth.device_forget" in caplog.text
-    assert "address=CA:AC:04:04:09:D7" in caplog.text
-    assert "ok=true" in caplog.text
+    fields = event_fields(caplog, "bluetooth.device_forget")
+    assert fields["address"] == "CA:AC:04:04:09:D7"
+    assert fields["ok"] == "true"
 
 
 async def test_scan_natural_expiry_stops_bluez_and_clears_task_identity():
@@ -666,7 +667,7 @@ async def test_bus_recovery_survives_an_observer_that_cannot_start(caplog):
 
     assert observer.start_calls == 1
     assert observer.started is False
-    assert "event=bluetooth.observer_restart_failed" in caplog.text
+    assert event_records(caplog, "bluetooth.observer_restart_failed")
     assert adapter.start_calls == 1
 
 
@@ -849,9 +850,9 @@ async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
     assert engine._bus is None
     assert engine._bus_recovery_required is True
     assert bus is not None and bus.disconnected is True
-    assert "event=bluetooth.scan_start_cleanup_failed" in caplog.text
-    assert "error_type=TimeoutError" in caplog.text
-    assert 'error="BlueZ StopDiscovery timed out after 0.01s"' in caplog.text
+    fields = event_fields(caplog, "bluetooth.scan_start_cleanup_failed")
+    assert fields["error_type"] == "TimeoutError"
+    assert fields["error"] == "BlueZ StopDiscovery timed out after 0.01s"
 
 
 async def test_pair_recovers_shared_bus_after_auto_stop_failure(monkeypatch):
@@ -1032,9 +1033,9 @@ async def test_scan_auto_stop_timeout_logs_and_clears_timer(monkeypatch, caplog)
     assert engine._scan_task is None
     assert engine._bus is None
     assert bus.disconnected is True
-    assert "event=bluetooth.scan_auto_stop_failed" in caplog.text
-    assert "error_type=TimeoutError" in caplog.text
-    assert 'error="BlueZ StopDiscovery timed out after 0.01s"' in caplog.text
+    fields = event_fields(caplog, "bluetooth.scan_auto_stop_failed")
+    assert fields["error_type"] == "TimeoutError"
+    assert fields["error"] == "BlueZ StopDiscovery timed out after 0.01s"
 
 
 async def test_scan_manual_stop_timeout_preserves_deadline_and_propagates(
@@ -1145,7 +1146,7 @@ async def test_device_operations_surface_shared_bus_recovery_failure(
     assert disconnect_result == expected
     assert engine._bus is None
     assert engine._bus_recovery_required is True
-    assert caplog.text.count("event=bluetooth.bus_recovery_failed") == 3
+    assert len(event_records(caplog, "bluetooth.bus_recovery_failed")) == 3
 
 
 async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
@@ -1230,9 +1231,9 @@ async def test_scan_auto_stop_logs_unexpected_bluez_failure(caplog):
     assert adapter.discovering is False
     assert engine._scan_task is None
     assert engine._bus is None
-    assert "event=bluetooth.scan_auto_stop_failed" in caplog.text
-    assert "error_type=DBusError" in caplog.text
-    assert 'error="controller I/O failure"' in caplog.text
+    fields = event_fields(caplog, "bluetooth.scan_auto_stop_failed")
+    assert fields["error_type"] == "DBusError"
+    assert fields["error"] == "controller I/O failure"
 
 
 async def test_scan_start_accepts_only_exact_in_progress_error():

@@ -38,6 +38,7 @@ from jasper.multiroom.config import (
     local_sources_parked,
 )
 from tests._bonded_member import bonded_grouping_env
+from tests._log_events import event_field_maps, event_fields, event_records
 
 from jasper.audio_hardware import dac as _dac
 from jasper.fanin_coupling import dac_content_lane_marker_armed
@@ -2443,14 +2444,9 @@ def test_main_unknown_topology_preserves_graph_before_any_mutation(
     assert "leader_restore" not in order
     assert "follower_restore" not in order
     assert "passive_restore" not in order
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.active_restore_blocked" in record.message
-    ]
-    assert len(events) == 1
-    assert "reason=active_speaker_topology_unknown" in events[0]
-    assert "action=preserve_runtime_graph" in events[0]
+    fields = event_fields(caplog, "multiroom.reconcile.active_restore_blocked")
+    assert fields["reason"] == "active_speaker_topology_unknown"
+    assert fields["action"] == "preserve_runtime_graph"
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"blocked_reason": "active_speaker_topology_unknown"' in status
 
@@ -2493,14 +2489,9 @@ def test_main_solo_active_box_blocks_restore_when_crossover_state_unknown(
     assert "write" not in order
     assert "outputd_restart" not in order
     assert "apply" not in order
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.active_restore_blocked" in record.message
-    ]
-    assert len(events) == 1
-    assert "reason=crossover_ownership_state_unknown" in events[0]
-    assert "action=preserve_runtime_graph" in events[0]
+    fields = event_fields(caplog, "multiroom.reconcile.active_restore_blocked")
+    assert fields["reason"] == "crossover_ownership_state_unknown"
+    assert fields["action"] == "preserve_runtime_graph"
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"blocked_reason": "crossover_ownership_state_unknown"' in status
 
@@ -3267,14 +3258,9 @@ def test_restart_unit_contains_spawn_oserror(monkeypatch, caplog):
     with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
         assert reconcile_mod._restart_unit("jasper-outputd.service") is False
 
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.unit_restart_failed" in record.message
-    ]
-    assert len(events) == 1
-    assert "unit=jasper-outputd.service" in events[0]
-    assert 'error="cannot allocate process"' in events[0]
+    fields = event_fields(caplog, "multiroom.reconcile.unit_restart_failed")
+    assert fields["unit"] == "jasper-outputd.service"
+    assert fields["error"] == "cannot allocate process"
 
 
 def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
@@ -3289,14 +3275,9 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
     with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
         assert reconcile_mod._disable_crossover_unit() is False
 
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.crossover_unit_failed" in record.message
-    ]
-    assert len(events) == 1
-    assert "action=disabled" in events[0]
-    assert 'error="cannot spawn systemctl"' in events[0]
+    fields = event_fields(caplog, "multiroom.reconcile.crossover_unit_failed")
+    assert fields["action"] == "disabled"
+    assert fields["error"] == "cannot spawn systemctl"
 
 
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
@@ -3348,13 +3329,9 @@ def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
         assert reconcile_mod.output_topology_state()[0] is None
         assert reconcile_mod.is_active_speaker_box() is False
 
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.active_speaker_probe_failed" in record.message
-    ]
-    assert len(events) == 2
-    assert all("corrupt topology" in event for event in events)
+    maps = event_field_maps(caplog, "multiroom.reconcile.active_speaker_probe_failed")
+    assert len(maps) == 2
+    assert all(fields["error"] == "corrupt topology" for fields in maps)
 
 
 def test_unit_state_vocabulary_has_explicit_jts_intent_semantics(monkeypatch):
@@ -3443,15 +3420,10 @@ def test_unit_state_completed_manager_error_is_unknown(monkeypatch, caplog):
         )
 
     assert state is None
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.unit_state_probe_failed" in record.message
-    ]
-    assert len(events) == 1
-    assert "rc=1" in events[0]
-    assert "state=(none)" in events[0]
-    assert "Failed to connect to bus" in events[0]
+    fields = event_fields(caplog, "multiroom.reconcile.unit_state_probe_failed")
+    assert fields["rc"] == "1"
+    assert fields["state"] == "(none)"
+    assert "Failed to connect to bus" in fields["stderr"]
 
 
 def test_unit_state_query_oserror_is_safe_false_and_observable(
@@ -3475,16 +3447,12 @@ def test_unit_state_query_oserror_is_safe_false_and_observable(
         )
         assert reconcile_mod._unit_is_active("audio.service") is False
 
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.unit_state_probe_failed" in record.message
-    ]
-    assert len(events) == 2
-    assert "unit=raw.service" in events[0]
-    assert "query=is-enabled" in events[0]
-    assert "unit=audio.service" in events[1]
-    assert "query=is-active" in events[1]
+    maps = event_field_maps(caplog, "multiroom.reconcile.unit_state_probe_failed")
+    assert len(maps) == 2
+    assert maps[0]["unit"] == "raw.service"
+    assert maps[0]["query"] == "is-enabled"
+    assert maps[1]["unit"] == "audio.service"
+    assert maps[1]["query"] == "is-active"
 
 
 def test_unit_state_query_timeout_is_unknown_and_observable(monkeypatch, caplog):
@@ -3506,10 +3474,8 @@ def test_unit_state_query_timeout_is_unknown_and_observable(monkeypatch, caplog)
             is None
         )
 
-    assert any(
-        "event=multiroom.reconcile.unit_state_probe_failed" in record.message
-        and "unit=audio.service" in record.message
-        for record in caplog.records
+    assert event_field_maps(
+        caplog, "multiroom.reconcile.unit_state_probe_failed", unit="audio.service"
     )
 
 
@@ -3534,10 +3500,7 @@ def test_unit_state_query_missing_systemctl_is_silent_false(
         )
         assert reconcile_mod._unit_is_active("audio.service") is False
 
-    assert not any(
-        "event=multiroom.reconcile.unit_state_probe_failed" in record.message
-        for record in caplog.records
-    )
+    assert not event_records(caplog, "multiroom.reconcile.unit_state_probe_failed")
 
 
 def test_ensure_unit_active_continues_after_probe_and_reset_oserrors(
@@ -3571,14 +3534,8 @@ def test_ensure_unit_active_continues_after_probe_and_reset_oserrors(
         ["systemctl", "reset-failed", "jasper-camilla.service"],
         ["systemctl", "start", "jasper-camilla.service"],
     ]
-    assert any(
-        "event=multiroom.reconcile.unit_state_probe_failed" in record.message
-        for record in caplog.records
-    )
-    assert any(
-        "event=multiroom.reconcile.reset_failed_error" in record.message
-        for record in caplog.records
-    )
+    assert event_records(caplog, "multiroom.reconcile.unit_state_probe_failed")
+    assert event_records(caplog, "multiroom.reconcile.reset_failed_error")
 
 
 def test_ensure_unit_active_contains_start_oserror(monkeypatch, caplog):
@@ -3603,15 +3560,10 @@ def test_ensure_unit_active_contains_start_oserror(monkeypatch, caplog):
             is False
         )
 
-    events = [
-        record.message
-        for record in caplog.records
-        if "event=multiroom.reconcile.unit_start_failed" in record.message
-    ]
-    assert len(events) == 1
-    assert "unit=jasper-camilla.service" in events[0]
-    assert "reason=active-leader-bake" in events[0]
-    assert 'error="cannot spawn systemctl"' in events[0]
+    fields = event_fields(caplog, "multiroom.reconcile.unit_start_failed")
+    assert fields["unit"] == "jasper-camilla.service"
+    assert fields["reason"] == "active-leader-bake"
+    assert fields["error"] == "cannot spawn systemctl"
 
 
 def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
@@ -3637,10 +3589,10 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
             is False
         )
 
-    assert any(
-        "event=multiroom.reconcile.unit_start_failed" in record.message
-        and "jasper-camilla.service" in record.message
-        for record in caplog.records
+    assert event_field_maps(
+        caplog,
+        "multiroom.reconcile.unit_start_failed",
+        unit="jasper-camilla.service",
     )
 
 
@@ -3868,9 +3820,8 @@ def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         main([])
 
-    assert not any(
-        "event=multiroom.reconcile.ring_armed_bond_blocked" in record.message
-        for record in caplog.records
+    assert not event_records(
+        caplog, "multiroom.reconcile.ring_armed_bond_blocked"
     ), "the ring gate fired on a box whose dac_content lane is cleared"
 
     import json
