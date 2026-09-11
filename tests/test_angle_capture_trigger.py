@@ -1042,14 +1042,12 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
     assert (body["program"], body["size"]) == ("baseline", "full")
     assert body["mover"] == MOVER_HUMAN
     assert body["stops_count"] == mp.program("baseline", "full").capture_count
-    # The walk itself, one record per stop; a walk that measures the speaker as
-    # it stands names no variant.
     assert body["stops"][0] == {
         "index": 1,
         "azimuth_deg": 0,
         "vertical_deg": 0,
         "regime": REGIME_PER_DRIVER,
-        "candidate_id": None,
+        "candidate_id": "base",
         "purpose": "speaker",
         "baseline_scope": "base",
         "prompt": resolve_request(request_for_program(mp.program("baseline", "full")))[0].prompt.text,

@@ -539,9 +539,7 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
                 "purpose": stop["purpose"],
                 "baseline_scope": stop["baseline_scope"],
                 "prompt": stop["prompt"],
-                # ``None`` rather than ``""``: a walk that measures the speaker
-                # as it stands names no variant.
-                "candidate_id": stop["candidate_id"] or None,
+                "candidate_id": stop["candidate_id"],
                 # Only off the mark, so a bearing's receipt reads as it always did.
                 **({"kind": stop["kind"]} if stop["kind"] != POSE_KIND_BEARING else {}),
             }
