@@ -34,6 +34,8 @@ from jasper.local_sources import (
     local_source_park_units,
 )
 
+from tests._log_events import parse_event
+
 # The broker's peer-cred auth uses SO_PEERCRED (Linux-only — the broker runs on
 # the Pi). On a macOS dev box the constant is absent, so the server round-trip
 # tests are skipped there; CI on Linux is the source of truth. The pure-helper
@@ -605,8 +607,9 @@ def test_the_reaper_journals_only_a_nonzero_detached_spawn(
     assert len(denials) == expected_events
     if expected_events:
         # The child's own stderr rode along, i.e. it was piped, not DEVNULL'd.
-        assert "rc=1" in denials[0].getMessage()
-        assert "Interactive authentication required" in denials[0].getMessage()
+        _, fields = parse_event(denials[0].getMessage())
+        assert fields["rc"] == "1"
+        assert "Interactive authentication required" in fields["detail"]
 
 
 def test_the_reaper_kills_and_journals_a_wedged_detached_child(monkeypatch, caplog):
