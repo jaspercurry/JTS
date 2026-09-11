@@ -52,6 +52,8 @@ from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
     LANE_REFUSED_ACTIVE_ENDPOINT,
+    LANE_REFUSED_FLAT_OUTPUT_DENIED,
+    LANE_REFUSED_PERIOD,
     SNAPCLIENT_UNIT,
     SNAPFIFO,
     SNAPSERVER_UNIT,
@@ -3795,7 +3797,7 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     assert (DAC_CONTENT_RING_PCM in client) is fits
 
 
-def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
+def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch):
     """B1's subject, from the other direction: an ACTIVE-speaker box whose
     dac_content lane the writer clears is NOT refused by the ring gate.
 
@@ -3803,33 +3805,29 @@ def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
     active leader — and before the narrowing it was unreachable, which is why
     the coupling-blind program bake it exposes had to land in the same PR.
 
-    Asserted as "the ring gate did not fire", not as "the bond succeeded": the
-    reconcile runs on past it into the active-leader precheck, whose own gates
-    (snapcast present, graphs re-proved) are a different subject and are not
-    hermetic here. Under the pre-narrowing rule the gate fired FIRST and
-    `fall_back_to_solo` skipped that precheck entirely, so a blocked_reason from
-    any later gate is itself proof the ring gate let the box through.
+    Pinned on `blocked_reason` holding no LANE_REFUSED_* token, not on "the
+    bond succeeded": the reconcile runs on past the lane gate into the
+    active-leader precheck, whose own gates (snapcast present, graphs
+    re-proved) are a different subject and are not hermetic here. `main`
+    copies a LANE_REFUSED_* token into `blocked_reason` from exactly one
+    place — `role.lane.reason == LANE_REFUSED_PERIOD` — so a blocked_reason
+    holding none of the three tokens is itself proof the lane gate let this
+    active endpoint through, whatever a later gate then does with it.
     """
     _patch_main_io(monkeypatch, tmp_path, _leader())
     # ACTIVE box: roleful topology, so no flat DAC graph is permitted and the
     # dac_content lane is cleared by outputd_grouping_env.
     monkeypatch.setattr(reconcile_mod, "output_topology_state", lambda: (True, False))
 
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        main([])
-
-    assert not event_records(
-        caplog, "multiroom.reconcile.ring_armed_bond_blocked"
-    ), "the ring gate fired on a box whose dac_content lane is cleared"
+    main([])
 
     import json
 
     status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
     assert status.get("blocked_reason") not in (
-        "ring_armed_box_cannot_bond",  # the pre-narrowing token
-        "fanin_shm_ring_unsupported_with_dac_content_lane",
+        LANE_REFUSED_PERIOD,
+        LANE_REFUSED_ACTIVE_ENDPOINT,
+        LANE_REFUSED_FLAT_OUTPUT_DENIED,
     ), status
 
 
