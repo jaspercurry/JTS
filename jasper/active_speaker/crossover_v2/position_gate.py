@@ -81,6 +81,7 @@ class PositionGate:
         self._current: dict[str, Any] | None = None
         self._released: set[tuple[int, int]] = set()
         self._opened_at: float | None = None
+        self._progress: dict[str, Any] | None = None
         self._session_ceiling_expired = False
         self._last: tuple[int, int, tuple[int, int, int, int]] | None = None
 
@@ -168,6 +169,10 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
+    def publish(self, progress: dict[str, Any]) -> None:
+        with self._lock:
+            self._progress = deepcopy(progress)
+
     def published(self) -> dict[str, dict[str, Any] | None]:
         """The hold awaiting a release and the entry a grant is executing.
 
@@ -176,7 +181,10 @@ class PositionGate:
         fresh executing entry, a state the gate itself never holds.
         """
         with self._lock:
-            return {"pending": deepcopy(self._pending), "current": deepcopy(self._current)}
+            result = {"pending": deepcopy(self._pending), "current": deepcopy(self._current)}
+            if self._progress is not None:
+                result["run"] = deepcopy(self._progress)
+            return result
 
     def note_session_ceiling_expired(self) -> None:
         """Latch the session volume owner's ceiling finding, including after drain."""
