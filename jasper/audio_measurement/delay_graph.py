@@ -12,14 +12,12 @@ authority: the caller owns the writer lock, the apply, and the read-back.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Any, Literal, Mapping, NoReturn, TypeAlias
 
 from jasper.camilla_emit import fmt
 
 from .null_walk import (
     MAX_DSP_DELAY_US,
-    DelayWalkScope,
     DspPredecessor,
     NullWalkError,
 )
@@ -163,45 +161,6 @@ def _pipeline_filter_placement(
             f"bound filter {filter_name!r} must occur in exactly one pipeline step",
         )
     return placements[0]
-
-
-@dataclass(frozen=True)
-class DelayCandidateConfirmation:
-    """Content proof for one context-bound zero-relative candidate graph."""
-
-    scope: DelayWalkScope
-    topology_id: str
-    crossover_fc_hz: float
-    snapshot_fingerprint: str
-    predecessor_fingerprint: str
-    predecessor_graph_fingerprint: str
-    candidate_fingerprint: str
-    readback_graph_fingerprint: str
-    relative_delay_us: float
-    readback_relative_delay_us: float
-    delay_target: str | None
-    delay_filter: str | None
-    delay_us: float
-    effective_delay_us: float
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": 2,
-            "scope": self.scope,
-            "topology_id": self.topology_id,
-            "crossover_fc_hz": self.crossover_fc_hz,
-            "snapshot_fingerprint": self.snapshot_fingerprint,
-            "predecessor_fingerprint": self.predecessor_fingerprint,
-            "predecessor_graph_fingerprint": self.predecessor_graph_fingerprint,
-            "candidate_fingerprint": self.candidate_fingerprint,
-            "readback_graph_fingerprint": self.readback_graph_fingerprint,
-            "relative_delay_us": self.relative_delay_us,
-            "readback_relative_delay_us": self.readback_relative_delay_us,
-            "delay_target": self.delay_target,
-            "delay_filter": self.delay_filter,
-            "delay_us": self.delay_us,
-            "effective_delay_us": self.effective_delay_us,
-        }
 
 
 def prove_static_delay_binding(

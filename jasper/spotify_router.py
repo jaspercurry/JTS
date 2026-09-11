@@ -549,15 +549,7 @@ class Router:
         playing_matches: list[AccountClient] = []
         n_data = 0
         n_none = 0
-        n_error = 0
         for ac, pb in zip(self.clients.values(), playbacks):
-            if isinstance(pb, Exception):
-                n_error += 1
-                logger.warning(
-                    "router: account %s current_playback raised: %s",
-                    ac.account.name, pb,
-                )
-                continue
             if pb is None:
                 n_none += 1
                 logger.debug(
@@ -604,15 +596,15 @@ class Router:
         else:
             logger.info(
                 "router: sender=%r title=%r → no match "
-                "(probed %d accounts in %dms: %d data, %d none, %d error)",
+                "(probed %d accounts in %dms: %d data, %d none)",
                 client_name, mpris_title,
-                len(self.clients), elapsed_ms, n_data, n_none, n_error,
+                len(self.clients), elapsed_ms, n_data, n_none,
             )
 
         # Retry only when the API state looks transient — i.e. nothing
         # usable came back at all. Real data with no title match is a
         # non-Spotify sender; retrying won't help, fall through to DACP.
-        retry_advised = chosen is None and n_data == 0 and (n_none > 0 or n_error > 0)
+        retry_advised = chosen is None and n_data == 0 and n_none > 0
         return chosen, retry_advised
 
     def invalidate_cache(self) -> None:
