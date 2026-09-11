@@ -56,7 +56,6 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "mic": ("control", "jasper"),
     "peering": ("control", "jasper", "peering"),
     "pricing": ("voice", "web"),
-    "research": ("research", "voice"),
     "session": ("jasper", "voice"),
     "sound": ("cli", "sound", "web"),
     "source": ("control", "jasper"),

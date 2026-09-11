@@ -335,7 +335,7 @@ async def test_confirmation_context_uses_manual_realtime_input_after_a_completed
         sess.sent_realtime.clear()
 
         turn = await conn.acquire_turn()
-        context = "Answer yes or no about research job abc."
+        context = "Answer yes or no about the pending question."
         await turn.send_text_context(context)
         await turn.send_audio(b"\x00\x00")
 

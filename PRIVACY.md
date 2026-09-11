@@ -63,9 +63,8 @@ Conversation history is separate from spend accounting. When
 conversation-history env file enables capture), JTS stores text-only turns in
 `/var/lib/jasper/conversation_history.db` by default
 (`JASPER_CONVERSATION_HISTORY_DB`): the perceived user command transcript, the
-assistant transcript or research report, provider/session metadata, and optional
-feature metadata such as a research job id. It never stores speech audio in this
-database, and capture is skipped while the voice assistant is paused. Capture is
+assistant transcript, and provider/session metadata. It never stores speech
+audio in this database, and capture is skipped while the voice assistant is paused. Capture is
 default-off; retained rows stay on the speaker, are pruned by the configured
 conversation-history retention window and row cap, and can be cleared from
 `/assistant/chat/`.

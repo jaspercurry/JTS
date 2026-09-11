@@ -61,7 +61,7 @@ async def _stop_playback(wl):
     await asyncio.gather(*wl._bg_tasks, return_exceptions=True)
 
 
-@pytest.mark.parametrize("trigger", ["wake", "manual", "remote", "research"])
+@pytest.mark.parametrize("trigger", ["wake", "manual", "remote"])
 async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkeypatch, trigger):
     wl = _acquire_loop(monkeypatch)
     entered, release, delivered = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -82,7 +82,7 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
     if trigger == "remote":
         wl._push_to_talk.sources["remote"] = SimpleNamespace(mic=remote)
     source = remote if trigger == "remote" else mic
-    wl._legs["on"].detector.score_frame = lambda frame: float(trigger in {"wake", "research"} and frame[0] == 0)
+    wl._legs["on"].detector.score_frame = lambda frame: float(trigger == "wake" and frame[0] == 0)
     wl._play_listening_chirp = AsyncMock()
 
     async def send(pcm):
@@ -95,17 +95,9 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
         await asyncio.sleep(0)
 
     async def acquire():
-        if trigger != "research":
-            entered.set()
-            await release.wait()
+        entered.set()
+        await release.wait()
         return _stub_turn(send_audio=send)
-
-    if trigger == "research":
-        async def cancel_research():
-            entered.set()
-            await release.wait()
-            return True
-        wl._research.cancel_for_wake = cancel_research
 
     wl._connection.acquire_turn = acquire
     runner = asyncio.create_task(wl.run())
@@ -114,7 +106,7 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
         for tag in range(1 - PRE_ROLL_FRAMES, 1):
             mic.queue.put_nowait(_frame(tag))
         await asyncio.wait_for(mic.queue.join(), 1.0)
-        if trigger not in {"wake", "research"}:
+        if trigger != "wake":
             starter = asyncio.create_task(wl.manual_session_start(
                 "remote" if trigger == "remote" else None,
             ))

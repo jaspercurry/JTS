@@ -107,9 +107,9 @@ keeps its own detailed contract doc; this table is the map.
 |---|---|---|---|
 | **Tools** | a tool (grouped into a pack) | an LLM-callable action; declared to the provider at connect time; spends the model's token budget; dispatched uniformly | [`tool-platform-plan.md`](tool-platform-plan.md) |
 | **Sources** | a music/audio source | enters the real-time fan-in topology; touches the hot Rust path, mux arbitration, and the loud-output safety chain | [`audio-paths.md`](audio-paths.md) |
-| **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (realtime `LiveConnection` for voice; a simpler request→text layer for background work) | [`research-tool-plan.md`](research-tool-plan.md) |
+| **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (the realtime `LiveConnection`) | the provider catalog, `jasper/voice/catalog.py` |
 | **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | the pattern-selector table (Step 2, below) |
-| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md), [`research-tool-plan.md`](research-tool-plan.md) |
+| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md) |
 
 The first four are mature and shipped to varying degrees. The fifth — the
 **Feature** — is the one with no agreed contract yet, and it is the gap this
@@ -120,11 +120,11 @@ doctrine most exists to close.
 ## 4. The Feature contract (the new one)
 
 A **Feature** is a self-contained vertical that the host *composes*. Today
-JTS has one forming (the async "research" feature) and one shipped (the
-conversation-history page). Each currently
-reinvents the same plumbing — its own store, its own LLM-provider layer, its
-own web surface, its own background-work and proactive-speech hooks. That
-duplication is the signal that the shape is real.
+JTS has exactly one: the conversation-history page, with its own store, its
+own web surface, and its own background-work and proactive-speech hooks. One
+instance cannot show which of those the host should own, so the contract
+below stays a sketch until a second Feature arrives and the duplication
+becomes visible.
 
 The answer is the **Django-app / Backstage-plugin / Rails-engine** model:
 **the Feature *declares* its contributions; the host *owns and injects* the
@@ -141,12 +141,12 @@ A Feature **declares**:
 
 The **host owns and injects** (a Feature never builds these itself):
 - the **storage substrate** — one host-created, host-migrated SQLite db per
-  Feature (the `ResearchJobStore` shape is the seed),
+  Feature (the `ConversationStore` shape is the seed),
 - the **web mount** — the existing wizard server + `canonical_page`,
 - **one shared scheduler / worker pool** — Features do **not** spawn their
   own threads (on a 1 GB Pi that is a memory-safety requirement, not tidiness),
 - **one shared text-LLM-provider facility** — Features do **not** each build
-  their own (research currently does; that is the duplication to collapse),
+  their own,
 - **voice/audio arbitration and the safety/duck guards**,
 - **secrets and account/credential lifecycles**.
 
@@ -166,7 +166,7 @@ composition contract right only on the second iteration, by evolving it.
 > Status: the generic Feature *contract* is **not built yet** (by design —
 > it crystallizes on the second instance). Its first proving instance,
 > `conversation-history`, has substantially shipped; the shared helpers get
-> extracted from what it and `research` duplicate.
+> extracted once a second Feature needs them.
 
 ---
 

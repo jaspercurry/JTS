@@ -109,7 +109,7 @@ def test_vad_file_routes_to_voice_and_vad_docs():
     report = docs_impact.impact_report(subsystems, ("jasper/vad.py",))
 
     assert [item["id"] for item in report] == ["voice-runtime-and-providers"]
-    assert "docs/research-tool-plan.md" in report[0]["docs"]
+    assert "docs/extensibility.md" in report[0]["docs"]
 
 
 def test_state_aggregate_routes_to_state_surface_docs():

@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """jasper-voice's conversation-history capture: the single write path
-that turns a finished turn (or a research delivery) into a persisted
-`ConversationTurn` row, gated on live capture settings and mic-mute.
+that turns a finished turn into a persisted `ConversationTurn` row,
+gated on live capture settings and mic-mute.
 """
 
 from __future__ import annotations
@@ -85,9 +85,8 @@ class ConversationCapture:
     ) -> None:
         """Persist one conversation-history row.
 
-        The single write path for ordinary wake turns and feature-fed
-        entries such as research delivery. Fail-soft by design: capture
-        must never block turn teardown or a proactive announcement.
+        Fail-soft by design: capture must never block turn teardown or a
+        proactive announcement.
         """
         if mic_muted:
             return

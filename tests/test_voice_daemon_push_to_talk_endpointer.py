@@ -551,16 +551,11 @@ async def _torn_down_mid_hold(
              "reason": "mic_muted"},
             None, 0, "mic_muted", id="mic_muted",
         ),
-        # Same for a shutdown, and for a wake taking the turn over.
+        # Same for a shutdown.
         pytest.param(
             {"chunks": 0, "input_ended": True, "user_speech": True,
              "reason": "stopping"},
             None, 0, "stopping", id="shutdown",
-        ),
-        pytest.param(
-            {"chunks": 0, "input_ended": True, "user_speech": True,
-             "reason": "research_window_wake"},
-            None, 0, "research_window_wake", id="wake_interruption",
         ),
     ],
 )

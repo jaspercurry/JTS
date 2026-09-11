@@ -142,18 +142,6 @@ CUES: tuple[CueDef, ...] = (
         fallback="cant_connect",
     ),
     CueDef(
-        slug="research_failed",
-        template=(
-            "Sorry, I couldn't finish that research. Please ask me again."
-        ),
-        description=(
-            "Provider-agnostic proactive cue text for async research jobs "
-            "that fail after the user has already been promised a later "
-            "answer. WakeLoop rate-limits failed research announcements to "
-            "once per hour to avoid nagging during bursts."
-        ),
-    ),
-    CueDef(
         slug=NO_ROOM_MIC_CUE_SLUG,
         template=(
             "I don't have a microphone of my own. Hold the button on your "

@@ -263,7 +263,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
 
     wl = wake_loop_for_tests(cues=_Cues())
 
-    assert await wl._play_dynamic_text("Your research is ready.") is False
+    assert await wl._play_dynamic_text("Your timer is up.") is False
     assert events == ["rendered", "turn_active=turn"]
     assert turn_task is not None
     await asyncio.wait_for(turn_task, timeout=1.0)

@@ -475,10 +475,10 @@ class UsageStore:
     ) -> float:
         """Record one short-lived non-voice job against the spend ledger.
 
-        Background jobs such as async research do not have a live voice
-        session id to close. Keep that as an explicit API so callers that
-        forget a normal session id fail loudly instead of creating a
-        phantom row.
+        Background jobs such as a backend's own server-side lookup do not
+        have a live voice session id to close. Keep that as an explicit
+        API so callers that forget a normal session id fail loudly
+        instead of creating a phantom row.
         """
         session_id = self.open_session(provider)
         pricing = (

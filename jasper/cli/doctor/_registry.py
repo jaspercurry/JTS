@@ -52,7 +52,6 @@ MODULE_ROSTER: tuple[str, ...] = (
     "privsep",
     "secret_compartments",
     "web",
-    "research",
     "correction",
     "memory",
     "drift",

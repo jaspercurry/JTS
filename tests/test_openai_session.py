@@ -543,7 +543,7 @@ async def test_send_text_context_adds_text_item_without_response_create():
         turn = await conn.acquire_turn()
         baseline = len(sess.sent)
 
-        await turn.send_text_context("Answer yes or no about research job abc.")
+        await turn.send_text_context("Answer yes or no about the pending question.")
 
         new = sess.sent[baseline:]
         assert new == [{
@@ -553,7 +553,7 @@ async def test_send_text_context_adds_text_item_without_response_create():
                 "role": "user",
                 "content": [{
                     "type": "input_text",
-                    "text": "Answer yes or no about research job abc.",
+                    "text": "Answer yes or no about the pending question.",
                 }],
             },
         }]

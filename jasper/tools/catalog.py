@@ -49,16 +49,14 @@ CATALOG_SCHEMA_VERSION = 2
 DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
 
 # Tools that are REAL registry/manifest entries but are NOT independently
-# user-toggleable, so they get no /assistant/tools/ card. home_assistant_confirm is the
-# confirmation half of the Home Assistant consequential-action safety flow and
-# read_research_result is the one-shot confirmation half of async research.
-# Both are internal companions, not browsable capabilities. Listing either lets
-# a user disable the companion alone and strand the parent flow; they follow the
-# parent tool. They stay in the registry + manifest (the model uses them);
-# they're only hidden from the catalog UI.
+# user-toggleable, so they get no /assistant/tools/ card. home_assistant_confirm
+# is the confirmation half of the Home Assistant consequential-action safety
+# flow — an internal companion, not a browsable capability. Listing it would let
+# a user disable the companion alone and strand the parent flow; it follows the
+# parent tool. It stays in the registry + manifest (the model uses it); it's
+# only hidden from the catalog UI.
 _CATALOG_HIDDEN: frozenset[str] = frozenset({
     "home_assistant_confirm",
-    "read_research_result",
 })
 
 def _catalog_pack_payload(pack: CatalogPack | None) -> dict[str, Any] | None:
@@ -114,7 +112,6 @@ def _sentinel_tool_deps() -> ToolDeps:
         google_setup_url="http://sentinel.invalid/google",
         transit_tools=_sentinel_transit_tools(), google_routes=object(),
         ha=object(), timer_scheduler=object(),
-        research_scheduler=object(),
         google_clients=types.SimpleNamespace(list_account_names=lambda: ["seed"]),
         wake_event_store=object(),
     )

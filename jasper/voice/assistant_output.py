@@ -414,12 +414,7 @@ class AssistantOutput:
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.warning("dynamic text drain cleanup failed: %s", e)
 
-    async def play_cue(
-        self,
-        slug: str,
-        *,
-        episode: AssistantOutputEpisode | None = None,
-    ) -> bool:
+    async def play_cue(self, slug: str) -> bool:
         """Best-effort cue playback, ducking music via CamillaDSP for the
         cue's duration. Without ducking the cue is drowned out by playing
         music; TTS-side level math alone cannot make it audible over a
@@ -432,22 +427,9 @@ class AssistantOutput:
         The cue plays even if ducking fails: unducked but audible beats
         silence on a wake-blocking condition. The finally restores
         unconditionally — a duck that reported failure may still have
-        delivered the attenuation, so the release has to run anyway.
-
-        ``episode`` is for the one caller that cannot let this method take
-        its own admission: the research cancel timeout has to end the turn
-        episode blocking the cue and take the cue's in the same lock hold
-        (`AssistantOutputGate.hand_over_if_current`), or a queued turn
-        wins the gap and the wake goes unanswered. A handed-in episode is
-        this method's to release on EVERY exit, the unconfigured-cues one
-        included — otherwise it leaks the gate and the speaker goes deaf to
-        every later cue."""
+        delivered the attenuation, so the release has to run anyway."""
         cues = self._cues
         if cues is None:
-            if episode is not None:
-                await self.finish_ducked_episode_after_drain(
-                    episode, self._ducker.restore, cleanup_label=f"cue {slug}",
-                )
             # Cues are how the user hears why the speaker did not respond.
             # With no cue manager the speaker is silent on every failure, so
             # make that state diagnosable in the journal. Once per daemon
@@ -467,8 +449,7 @@ class AssistantOutput:
                     level=logging.WARNING,
                 )
             return False
-        if episode is None:
-            episode = await self._output_gate.begin_if_idle("admin")
+        episode = await self._output_gate.begin_if_idle("admin")
         if episode is None:
             reason = self.admission_refusal() or REASON_OUTPUT_ACTIVE
             log_event(
@@ -756,7 +737,7 @@ class AssistantOutput:
             ("output_episode_release", lambda: self._output_gate.end_turn(episode), True),
         ))
         for phase, operation, needs_output in steps:
-            # Research transfers the episode and duck, not the turn's meters.
+            # A handover transfers the episode and duck, not the turn's meters.
             if needs_output and (
                 episode is None or not self._output_gate.is_current(episode)
             ):

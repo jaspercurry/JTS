@@ -36,7 +36,6 @@ from .config import Config
 from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
-from .research import ResearchJob, ResearchScheduler
 from .usage import (
     SpendCap,
     UsageStore,
@@ -60,7 +59,6 @@ from .voice.push_to_talk import (
     PushToTalk,
     keepalive_ticks,
 )
-from .voice.research_announcer import HostCondition, ResearchAnnouncer
 from .voice.wake_telemetry import LEG_DB, LegFireScore, WakeTelemetry
 from .voice.assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
@@ -145,7 +143,6 @@ WAKE_REFRACTORY_SEC = 0.2
 NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "mic_muted",
     "stopping",
-    "research_window_wake",
     "barge_in",
     "conversation_ended",
     "measurement_active",
@@ -419,78 +416,6 @@ def configured_wake_legs(
     return legs
 
 
-class _ResearchTurnHost:
-    """`ResearchAnnouncer`'s whole view of the wake loop."""
-
-    def __init__(self, loop: "WakeLoop") -> None:
-        self._loop = loop
-
-    def condition(self) -> HostCondition:
-        loop = self._loop
-        return HostCondition(
-            in_session=loop._state is State.SESSION,
-            in_wake=loop._state is State.WAKE,
-            output_active=loop._output_gate.is_active,
-            measurement_active=loop._measurement_active.is_set(),
-            mic_muted=loop._mic_muted,
-            spend_allowed=loop._spend_cap.allowed(),
-            connection_paused=loop._connection.is_paused(),
-        )
-
-    def hold_wake_refractory(self, sec: float) -> None:
-        loop = self._loop
-        loop._refractory_until = max(
-            loop._refractory_until,
-            asyncio.get_event_loop().time() + sec,
-        )
-
-    def record_conversation_turn(
-        self,
-        query: str | None,
-        assistant_text: str | None,
-        *,
-        data_json: dict,
-    ) -> None:
-        loop = self._loop
-        loop._conversation_capture.record(
-            query,
-            assistant_text,
-            data_json=data_json,
-            session_id=loop._session_id,
-            mic_muted=loop._mic_muted,
-        )
-
-    async def play_dynamic_text(self, text: str) -> bool:
-        return await self._loop._play_dynamic_text(text)
-
-    async def play_cue(self, slug: str) -> bool:
-        return await self._loop._play_cue(slug)
-
-    async def begin_turn(
-        self, *, pre_roll: bool, text_context: str | None,
-    ) -> None:
-        await self._loop._begin_turn(
-            pre_roll=pre_roll, text_context=text_context,
-        )
-
-    async def end_turn(self, reason: str) -> None:
-        await self._loop._end_turn(reason)
-
-    async def play_cancel_timeout_cue(self) -> None:
-        """Transfer the stalled opener's output and duck to its refusal cue."""
-        loop = self._loop
-        surrendered = loop._turn_output_episode
-        cue_episode = (
-            await loop._output_gate.hand_over_if_current(
-                surrendered, "admin",
-            )
-            if surrendered is not None else None
-        )
-        await loop._play_cue(
-            INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
-        )
-
-
 class WakeLoop:
     """Sole consumer of the primary mic. Dispatches each frame to either
     the wake-word detector (WAKE state) or the active live turn (SESSION
@@ -610,7 +535,6 @@ class WakeLoop:
         self._conversation_capture = ConversationCapture(
             store=conversation_store, voice_provider=cfg.voice_provider,
         )
-        self._research = ResearchAnnouncer(host=_ResearchTurnHost(self))
         self._stop_event = stop_event
         # Bumped on every mic frame — proof that audio capture is alive
         # AND the async loop is iterating. If either dies (PortAudio
@@ -890,7 +814,7 @@ class WakeLoop:
             await self._end_turn(reason)
             await self._play_cue(reason)
             return
-        if (self._followup.deadline or self._manual_endpoint_this_turn or self._research.window_active
+        if (self._followup.deadline or self._manual_endpoint_this_turn
                 or self._followup.seconds <= 0 or reason not in {"ended", "barge_in"}
                 or self._turn.turn_lost() or self._conversation_end_requested
                 or not self._playback_report.accepted_audio
@@ -1016,19 +940,6 @@ class WakeLoop:
             return self._assistant_output.admission_refusal() or "skipped_output_active"
         return await self.play_cue(slug)
 
-    def set_research_scheduler(
-        self,
-        scheduler: ResearchScheduler | None,
-        *,
-        provider_id: str | None = None,
-        model: str | None = None,
-    ) -> None:
-        """Wire the research scheduler so announcements can mark jobs
-        announced only after the wake loop has attempted the spoken path."""
-        self._research.set_scheduler(
-            scheduler, provider_id=provider_id, model=model,
-        )
-
     async def announce_timer(self, timer: "Timer") -> None:
         """Public hook called by `TimerScheduler` when a timer fires.
 
@@ -1061,31 +972,14 @@ class WakeLoop:
         )
         await self._play_dynamic_text(text)
 
-    async def announce_research_ready(self, job: ResearchJob) -> None:
-        """Public hook `ResearchScheduler` calls when a job finishes."""
-        await self._research.announce_ready(job)
-
-    def record_research_delivery(
-        self,
-        job: ResearchJob,
-        assistant_text: str | None,
-        decision: str,
-    ) -> None:
-        self._research.record_delivery(job, assistant_text, decision)
-
     def close_conversation_store(self) -> None:
         self._conversation_capture.close()
 
     async def _play_dynamic_text(self, text: str) -> bool:
         return await self._assistant_output.play_dynamic_text(text)
 
-    async def _play_cue(
-        self,
-        slug: str,
-        *,
-        episode: AssistantOutputEpisode | None = None,
-    ) -> bool:
-        return await self._assistant_output.play_cue(slug, episode=episode)
+    async def _play_cue(self, slug: str) -> bool:
+        return await self._assistant_output.play_cue(slug)
 
     def _leg_task_dead(self, task: "asyncio.Task[None]") -> bool:
         """A leg or manual-mic consumer task that exited on its own — not
@@ -1257,10 +1151,6 @@ class WakeLoop:
                 else:
                     if self._push_to_talk.active_source is not None:
                         continue
-                    if self._research.window_active:
-                        await self._handle_wake_frame(frame, leg="on")
-                        if self._acquiring or self._state is State.WAKE:
-                            continue
                     await self._handle_session_frame(frame, captured_at=captured_at)
         finally:
             # Cancel + join every leg loop before sweeping tracked side-work.
@@ -1348,8 +1238,6 @@ class WakeLoop:
             if self._acquiring:
                 continue
             if self._state is State.WAKE:
-                await self._handle_wake_frame(frame, leg=leg_name)
-            elif self._state is State.SESSION and self._research.window_active:
                 await self._handle_wake_frame(frame, leg=leg_name)
             elif self._state is State.SESSION and rt.shadow_vad is not None:
                 await self._shadow_vad_score_raw(frame)
@@ -1718,8 +1606,6 @@ class WakeLoop:
         local rather than connectivity.
         """
         try:
-            if not await self._research.cancel_for_wake():
-                return
             # mute_mic / MeasurementHold.pause_response can fire after
             # _handle_wake_frame spawned this task but before it is scheduled.
             # Both are user-deliberate "stop listening" signals; a chirp plus
@@ -2548,7 +2434,6 @@ class WakeLoop:
             # whether a barge-in durably stops the assistant (OpenAI/Grok) or
             # only flushes locally while the server may resume (Gemini).
             "barge_in_reconcile": self._barge_in_reconcile.value,
-            "research": self._research.status(),
             "cues": self._cues.snapshot() if self._cues is not None else None,
         }
 
@@ -2952,14 +2837,12 @@ class WakeLoop:
         if self._ending:
             return
         async with self._turn_transition_lock:
-            ended = await self._end_turn_owned(reason)
-        if ended:
-            await self._research.drain()
+            await self._end_turn_owned(reason)
 
-    async def _end_turn_owned(self, reason: str) -> bool:
+    async def _end_turn_owned(self, reason: str) -> None:
         # SESSION must cover the chirp and refusal cue so neither wakes itself.
         if self._ending or self._turn is None:
-            return False
+            return
         self._ending = True
         self._turn.discard_input()
         try:
@@ -2968,7 +2851,6 @@ class WakeLoop:
             )
         finally:
             self._ending = False
-        return True
 
     async def _end_turn_inner(self, reason: str = "ended") -> None:
         episode = self._turn_output_episode
@@ -3059,7 +2941,7 @@ class WakeLoop:
             raise error
 
     async def _release_and_capture(
-        self, turn: LiveTurn, *, session_id: int, mic_muted: bool, capture: bool,
+        self, turn: LiveTurn, *, session_id: int, mic_muted: bool,
     ) -> None:
         """Release the turn, then persist what it transcribed.
 
@@ -3067,32 +2949,29 @@ class WakeLoop:
         handshake, so a capture read before `release()` returns loses the
         tail of the assistant's line. The turn's own session id and mute
         state are passed in: `_reset_turn` clears them, and the next turn
-        opens its session before it awaits this task. `capture` is false
-        for a turn that handed off to a research job: `ResearchAnnouncer`
-        records that exchange itself once its answer arrives.
+        opens its session before it awaits this task.
         """
         try:
             await self._release_turn(turn)
         finally:
-            if capture:
-                try:
-                    captured = turn.capture()
-                except (RuntimeError, TypeError, ValueError) as exc:
-                    log_event(
-                        logger,
-                        "turn.capture_failed",
-                        exc_type=type(exc).__name__,
-                        level=logging.WARNING,
-                    )
-                    captured = None
-                if captured is not None:
-                    self._conversation_capture.record(
-                        captured.user_text,
-                        captured.assistant_text,
-                        data_json=captured.data,
-                        session_id=session_id,
-                        mic_muted=mic_muted,
-                    )
+            try:
+                captured = turn.capture()
+            except (RuntimeError, TypeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "turn.capture_failed",
+                    exc_type=type(exc).__name__,
+                    level=logging.WARNING,
+                )
+                captured = None
+            if captured is not None:
+                self._conversation_capture.record(
+                    captured.user_text,
+                    captured.assistant_text,
+                    data_json=captured.data,
+                    session_id=session_id,
+                    mic_muted=mic_muted,
+                )
 
     async def _record_and_release_turn(
         self, reason: str, episode: AssistantOutputEpisode | None,
@@ -3103,7 +2982,6 @@ class WakeLoop:
             # the anchor also moves on transcript deltas and turn_complete,
             # which arrive after the audio and would shorten the tail.
             drain_wait_sec = max(0.0, time.monotonic() - last_chunk_at)
-        research_window = self._research.window_snapshot()
         turn = self._turn
         assert turn is not None
         phases: list[tuple[str, Callable[[], object]]] = [
@@ -3140,7 +3018,6 @@ class WakeLoop:
                 turn,
                 session_id=session_id,
                 mic_muted=self._mic_muted,
-                capture=research_window.job is None,
             ),
             name="turn-release",
         )
@@ -3155,11 +3032,6 @@ class WakeLoop:
         )
         bytes_sent = turn.bytes_sent()
         chunks_received = turn.chunks_received()
-        expected_research_silence_dismiss = (
-            research_window.undecided
-            and not self._user_speech_seen
-            and not self._input_ended
-        )
         lost_mid_reply = self._reply_lost()
         silent = not self._playback_report.accepted_audio and not turn.turn_lost()
         if reason == "playback_failed":
@@ -3171,7 +3043,7 @@ class WakeLoop:
                 chunks_received=chunks_received,
                 bytes_sent=bytes_sent,
             )
-        elif bytes_sent == 0 and not expected_research_silence_dismiss:
+        elif bytes_sent == 0:
             self._log_no_answer(
                 "turn.silent_response",
                 end_reason=reason,
@@ -3181,11 +3053,7 @@ class WakeLoop:
                 turn_lost=lost_mid_reply,
                 endpointer=self._endpointer_label(),
             )
-        elif (
-            bytes_sent > 0
-            and (silent or lost_mid_reply)
-            and not expected_research_silence_dismiss
-        ):
+        elif bytes_sent > 0 and (silent or lost_mid_reply):
             model = self._cfg.active_voice_model
             if self._input_ended:
                 diagnosis: dict[str, object] = (
@@ -3243,11 +3111,7 @@ class WakeLoop:
                     turn_lost=lost_mid_reply,
                     endpointer=self._endpointer_label(),
                 )
-        elif (
-            bytes_sent > 0
-            and turn.audio_dropped_bytes() > 0
-            and not expected_research_silence_dismiss
-        ):
+        elif bytes_sent > 0 and turn.audio_dropped_bytes() > 0:
             play_no_answer_cue = self._log_no_answer(
                 "turn.truncated_response",
                 end_reason=reason,
@@ -3270,7 +3134,6 @@ class WakeLoop:
             ", turn_lost" if turn.turn_lost() else "",
         )
 
-        self._research.finish_window(research_window)
         if cleanup_base_error is not None:
             raise cleanup_base_error
         return play_no_answer_cue

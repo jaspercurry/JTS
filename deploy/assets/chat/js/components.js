@@ -9,7 +9,7 @@
 
 import { h } from "/assets/shared/js/dom.js";
 
-export { badge, actionButton, titledCard } from "/assets/shared/js/ui.js";
+export { actionButton, titledCard } from "/assets/shared/js/ui.js";
 
 export function livePill(initial = "Loading...") {
   const label = h("p.eyebrow", null, initial);

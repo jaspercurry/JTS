@@ -38,7 +38,6 @@ from .diagnostic import make_diagnostic_tools
 from .gmail import make_gmail_tools
 from .home_assistant import make_home_assistant_tools
 from .spotify import make_spotify_tools
-from .research import make_research_tools
 from .time import make_time_tools
 from .timer import make_timer_tools
 from .transport import make_transport_tools
@@ -50,9 +49,7 @@ if TYPE_CHECKING:
     from ..google_routes import GoogleRoutesClient
     from ..home_assistant import HAClient
     from ..renderer import RendererClient
-    from ..research import ResearchScheduler
     from ..spotify_router import Router
-    from ..usage import SpendCap
     from ..timers import TimerScheduler
     from ..volume_coordinator import VolumeCoordinator
     from ..wake_events import WakeEventStore
@@ -89,7 +86,6 @@ class ToolDeps:
     google_routes: GoogleRoutesClient | None
     ha: HAClient | None
     timer_scheduler: TimerScheduler | None
-    research_scheduler: ResearchScheduler | None
     google_clients: GoogleClients | None
     wake_event_store: WakeEventStore | None
     # Shared untrusted-content taint monitor: the gmail/calendar packs stamp
@@ -97,8 +93,6 @@ class ToolDeps:
     # gate consequential actions. None is fail-safe (gmail no-ops its mark,
     # home_assistant always confirms). The daemon passes a real one.
     untrusted_monitor: UntrustedContentMonitor | None = None
-    spend_cap: SpendCap | None = None
-    research_delivery_recorder: Callable[..., None] | None = None
 
 
 @dataclass(frozen=True)
@@ -213,11 +207,6 @@ TIMERS_PACK = CatalogPack(
     "Timers",
     "Set, list, update, and cancel household timers.",
 )
-RESEARCH_PACK = CatalogPack(
-    "research",
-    "Research",
-    "Start short background research reports and announce them when ready.",
-)
 GOOGLE_PACK = CatalogPack(
     "google",
     "Google",
@@ -307,17 +296,6 @@ TOOL_PACKS: tuple[CapabilityPack, ...] = (
         gate=lambda d: d.timer_scheduler is not None,
         category="Productivity",
         catalog_pack=TIMERS_PACK,
-    ),
-    CapabilityPack(
-        "research",
-        lambda d: make_research_tools(
-            d.research_scheduler,
-            spend_cap=d.spend_cap,
-            record_delivery=d.research_delivery_recorder,
-        ),
-        gate=lambda d: d.research_scheduler is not None,
-        category="Productivity",
-        catalog_pack=RESEARCH_PACK,
     ),
     # calendar + gmail stamp the shared taint monitor when they return
     # third-party text (arming home_assistant's confirmation window).

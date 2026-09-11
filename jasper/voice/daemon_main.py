@@ -49,7 +49,6 @@ from ..install_profile import (
 )
 from ..mic_presence import voice_park_is_transient
 from ..renderer import RendererClient
-from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
@@ -141,39 +140,6 @@ def _wire_billable_activity_meter(
     logger.info(
         "realtime activity meter: enabled for %s at $%.2f/hour",
         provider, flat_per_hour_usd,
-    )
-    return True
-
-
-def _warn_if_research_model_unpriced(
-    research_model: str,
-    *,
-    pricing_overrides,
-) -> bool:
-    """Warn (and report) when the research model has no rate.
-
-    Mirrors the voice-model unpriced guard in ``run`` and the
-    ``_wire_billable_activity_meter`` shape: if ``JASPER_RESEARCH_OPENAI_MODEL``
-    is overridden to a model with no rate, research cost records $0 and the
-    daily spend cap silently under-counts. Make it observable. Returns ``True``
-    when the warning fired (the model is unpriced), ``False`` otherwise — so the
-    decision is unit-testable without standing up the daemon.
-    """
-    research_pricing = pricing_for_model(research_model, overrides=pricing_overrides)
-    if not research_pricing.label.startswith("unpriced:"):
-        return False
-    log_event(
-        logger,
-        "pricing.unpriced",
-        model=research_model,
-        surface="research",
-        note=(
-            "no rate for the research model; research cost will read "
-            "$0 and the daily spend cap cannot bound it until you add a "
-            "jasper/data/model_pricing.json row (or a "
-            "/var/lib/jasper/pricing.json override)"
-        ),
-        level=logging.WARNING,
     )
     return True
 
@@ -507,9 +473,6 @@ def _build_registry(
     volume_coordinator: "VolumeCoordinator",
     spotify_router: Router | None = None,
     timer_scheduler: TimerScheduler | None = None,
-    research_scheduler: ResearchScheduler | None = None,
-    spend_cap: SpendCap | None = None,
-    research_delivery_recorder=None,
     google_clients: GoogleClients | None = None,
     google_routes=None,
     ha: HAClient | None = None,
@@ -546,12 +509,9 @@ def _build_registry(
         google_routes=google_routes,
         ha=ha,
         timer_scheduler=timer_scheduler,
-        research_scheduler=research_scheduler,
         google_clients=google_clients,
         wake_event_store=wake_event_store,
         untrusted_monitor=untrusted_monitor,
-        spend_cap=spend_cap,
-        research_delivery_recorder=research_delivery_recorder,
     )
     # Stash the per-pack registration outcomes on the registry (the object
     # that crosses back to run()) so a silently-missing tool family is
@@ -834,29 +794,6 @@ async def run() -> None:
 
         timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
 
-        active_research = active_research_provider(os.environ)
-        research_scheduler: ResearchScheduler | None = None
-        if active_research is not None:
-            _arelease(stack, "active_research", active_research.aclose)
-            research_scheduler = ResearchScheduler(
-                active_research.client,
-                db_path=cfg.research_db_path,
-                max_runtime_sec=cfg.research_max_runtime_sec,
-                concurrency=cfg.research_concurrency,
-                max_result_chars=cfg.research_max_result_chars,
-                retention=cfg.research_retention,
-                usage_store=usage_store,
-                usage_provider=active_research.provider_id,
-                usage_model=str(getattr(active_research.client, "model", "")),
-            )
-            # The store opens in __init__; stop() is registered at the start()
-            # site below, so the unwind cancels jobs before closing the store.
-            _release(stack, "research_store", research_scheduler.close)
-            _warn_if_research_model_unpriced(
-                str(getattr(active_research.client, "model", "")),
-                pricing_overrides=pricing_overrides,
-            )
-        research_configured = research_scheduler is not None
 
         # Cue manager — built early so timer tools can pre-render their
         # fire announcements at set_timer time. The TtsPlayout isn't open
@@ -895,21 +832,11 @@ async def run() -> None:
             )
             wake_event_store = None
 
-        research_delivery_recorder_ref = {"fn": None}
-
-        def _record_research_delivery(job, assistant_text, decision) -> None:
-            fn = research_delivery_recorder_ref["fn"]
-            if fn is not None:
-                fn(job, assistant_text, decision)
-
         registry = _build_registry(
             cfg, renderer, weather, transit_tools,
             volume_coordinator=volume_coordinator,
             spotify_router=volume_spotify_router,
             timer_scheduler=timer_scheduler,
-            research_scheduler=research_scheduler,
-            spend_cap=spend_cap,
-            research_delivery_recorder=_record_research_delivery,
             google_clients=google_clients,
             google_routes=google_routes,
             ha=ha,
@@ -1040,7 +967,6 @@ async def run() -> None:
                 default_google_account=google_default_account,
                 transit_configured=transit_configured,
                 travel_routes_configured=travel_routes_configured,
-                research_configured=research_configured,
                 ha_configured=ha_configured,
                 hostname=cfg.hostname,
                 provider=cfg.voice_provider,
@@ -1208,9 +1134,6 @@ async def run() -> None:
         # above speaks through the wake loop's TtsPlayout, so the connection
         # must stop before that playout and the mics unwind.
         _arelease(stack, "connection", connection.stop)
-        research_delivery_recorder_ref["fn"] = (
-            wake_loop.record_research_delivery
-        )
         # Wire timer announcements through the wake loop's
         # session-aware playback (duck + speak_text + restore,
         # with up-to-5s deferral if a voice turn is in flight).
@@ -1223,15 +1146,6 @@ async def run() -> None:
         # Registered after the TtsPlayout so the unwind cancels in-flight
         # announcements before the playout they speak through closes.
         _arelease(stack, "timer_scheduler", timer_scheduler.stop)
-        if research_scheduler is not None:
-            wake_loop.set_research_scheduler(
-                research_scheduler,
-                provider_id=active_research.provider_id,
-                model=str(getattr(active_research.client, "model", "")),
-            )
-            research_scheduler.set_on_done(wake_loop.announce_research_ready)
-            await research_scheduler.start()
-            _arelease(stack, "research_scheduler", research_scheduler.stop)
         control_socket = await control_socket_mod.serve(
             wake_loop, cfg.voice_control_socket,
         )

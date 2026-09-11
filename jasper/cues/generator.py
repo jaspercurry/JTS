@@ -505,7 +505,7 @@ def write_dynamic_text(
     if os.path.isfile(path):
         return path
     os.makedirs(sounds_dir, exist_ok=True)
-    # Log shape, not content: dynamic text (research results, timer labels) can
+    # Log shape, not content: dynamic text (timer labels) can
     # be personal and the journal is persistent. Full text only at DEBUG.
     logger.info(
         "cue: synthesising dynamic text (%d chars) voice=%s model=%s hash=%s",

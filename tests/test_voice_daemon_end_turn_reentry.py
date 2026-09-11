@@ -239,7 +239,7 @@ async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_pat
     assert wl._turn is None and wl._state is State.WAKE
 
 
-@pytest.mark.parametrize("reason", ["ended", "mic_muted", "stopping", "research_window_wake"])
+@pytest.mark.parametrize("reason", ["ended", "mic_muted", "stopping"])
 @pytest.mark.parametrize("write_fails", [False, True])
 async def test_teardown_joins_accepted_prefix_before_its_final_outcome(reason, write_fails, caplog):
     wl, turn = await _response_loop()

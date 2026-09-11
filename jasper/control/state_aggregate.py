@@ -130,7 +130,6 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "manual_mic_sources",
     "active_manual_mic_source",
     "barge_in_reconcile",
-    "research",
     "cues",
 })
 

@@ -586,7 +586,7 @@ class AudioCueManager:
             await wait_tts_drained_owned(
                 self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
             )
-        # Dynamic cue text (research results, timer labels) can be personal and
+        # Dynamic cue text (timer labels) can be personal and
         # the journal is persistent — log a short preview + length at INFO, full
         # text only at DEBUG.
         logger.info(
