@@ -49,7 +49,7 @@ __all__ = [
 
 
 MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
-# Six automatic retakes per pose bound USB-fault work without billing the operator.
+# Six extra takes per pose bound USB-fault work; planned configs/repeats spend none.
 MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
 
 ATTEMPT_INITIATOR_HOUSEHOLD = "household"
@@ -98,6 +98,7 @@ class SlotAttempts:
     by_household: int = 0
     by_speaker: int = 0
     charge: TakeCharge = "operator"
+    retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
     @property
     def extras_used(self) -> int:
@@ -105,13 +106,17 @@ class SlotAttempts:
 
     @property
     def extras_left(self) -> int:
-        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household)
+        return max(0, min(self.retries_per_pose - self.by_household, self.automatic_left))
 
-    def can_retry(self) -> bool:
-        return self.extras_left > 0 and self.by_speaker < MAX_AUTOMATIC_RETAKES_PER_POSITION
+    @property
+    def automatic_left(self) -> int:
+        return max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_household - self.by_speaker)
+
+    def can_retry(self, charge: TakeCharge = "operator") -> bool:
+        return (self.automatic_left if charge == "speaker" else self.extras_left) > 0
 
     def spend(self, charge: TakeCharge) -> None:
-        if not self.can_retry():
+        if not self.can_retry(charge):
             raise AttemptOverspendError("slot has no attempts left for this initiator")
         if charge == "speaker":
             self.by_speaker += 1
@@ -119,18 +124,12 @@ class SlotAttempts:
             self.by_household += 1
 
     def to_payload(self) -> dict[str, Any]:
-        """The honest count, as the phone renders it.
-
-        Numbers only — the page composes the eyebrow, because the §2.1 screen
-        grammar makes the counter the page's slot. ``by_speaker`` is what makes
-        the count truthful about who spent what.
-        """
         return {
-            "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            "allowed": self.retries_per_pose,
             "left": self.extras_left,
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,
-            "automatic_left": max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_speaker),
+            "automatic_left": self.automatic_left,
             "automatic_allowed": MAX_AUTOMATIC_RETAKES_PER_POSITION,
         }
 

@@ -14,9 +14,6 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from jasper.atomic_io import atomic_write_json
-from ..bundles import BUNDLE_FILE_MODE
-
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.audio_measurement.bundles import record_artifact
 
@@ -28,10 +25,7 @@ from jasper.attribution.session_identity import (
 )
 from jasper.attribution.storage import findings_relative_path
 
-from ..commissioning_evidence_store import (
-    EVIDENCE_ROOT, CommissioningEvidenceStore, CommissioningEvidenceStoreError,
-    CommissioningEvidenceStoreErrorCode,
-)
+from ..commissioning_evidence_store import CommissioningEvidenceStore
 from ..run_manifest import RUN_MANIFEST_KIND, RUN_MANIFEST_FILENAME
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
 from .contracts import (
@@ -258,15 +252,7 @@ class BankedRecordStore:
         self, relative: str, payload: Mapping[str, Any], route: _Route,
     ) -> None:
         if route.live:
-            # The run owns a live document; raw take records remain write-once (ADR-0017).
-            path = self.evidence._target(f"{EVIDENCE_ROOT}/artifacts/{relative}")
-            self.evidence._prepare_parent(path.parent)
-            try:
-                atomic_write_json(path, payload, mode=BUNDLE_FILE_MODE)
-            except OSError as exc:
-                raise CommissioningEvidenceStoreError(
-                    CommissioningEvidenceStoreErrorCode.PERSIST_FAILED, str(exc),
-                ) from exc
+            self.evidence.write_live(relative, payload)
             return
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if _measure_kind(payload) is not None and payload.get("wav_path"):

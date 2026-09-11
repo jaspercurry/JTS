@@ -30,7 +30,7 @@ from .angle_capture_spool import angle_request_document
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
-    MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
 )
 from .crossover_v2.capture_dispatch import assess
 from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
@@ -235,8 +235,9 @@ async def run_specs(
 ) -> RunManifest:
     manifest.request_fingerprint = json_fingerprint({"specs": [s.to_dict() for s in specs]})
     manifest.spl_monitor = spl_monitor
-    pose = {"kind": "bearing", "deg": (specs[0].positions or (0,))[0],
-            "elevation_deg": specs[0].vertical_deg, "distance_m": None, "place": None}
+    pose = _pose(SimpleNamespace(kind="bearing", angle_deg=(specs[0].positions or (0,))[0],
+                                elevation_deg=specs[0].vertical_deg, distance_m=None,
+                                place=None, seat_offset_m=None))
     manifest.asked = {"poses": [pose], "candidates": [s.candidate_id or "base" for s in specs],
                       "ceiling": specs[0].spl_ceiling_db_spl, "mover": "fixed",
                       "level": {"reference_volume_db": session.measurement_level_db}, "repeats": 1}
@@ -263,18 +264,6 @@ async def _grant(gate: PositionGate, index: int, attempt: int, entry: Any, signa
             await asyncio.sleep(POSITION_HOLD_POLL_S)
 
 
-def _can_retry(ledger: SlotAttempts, verdict: TakeVerdict, retries: int) -> bool:
-    # Planned configs/repeats never consume extras. Bound USB-fault work per pose.
-    return (ledger.by_household + ledger.by_speaker < MAX_AUTOMATIC_RETAKES_PER_POSITION
-            and (verdict.charge == "speaker" or ledger.by_household < retries))
-
-
-def _budget(ledger: SlotAttempts, retries: int) -> dict[str, int]:
-    return {"allowed": retries, "left": max(0, retries - ledger.by_household),
-            "by_household": ledger.by_household, "by_speaker": ledger.by_speaker,
-            "automatic_left": MAX_AUTOMATIC_RETAKES_PER_POSITION - ledger.by_household - ledger.by_speaker}
-
-
 async def _run(
     work: Sequence[_Work], *, session: TuningSession, manifest: RunManifest, analyze: Analyze,
     gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
@@ -283,7 +272,7 @@ async def _run(
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, asyncio.CancelledError)
     started = clock()
-    ledgers = {item.pose_index: SlotAttempts() for item in work}
+    ledgers = {item.pose_index: SlotAttempts(retries_per_pose=retries) for item in work}
     attempts = [0] * len(work)
     offset, grant_epoch = 0, 0
     previous: int | None = None
@@ -293,11 +282,11 @@ async def _run(
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
     progress: dict[str, Any] = {}
-    await manifest.persist()
     try:
+        await manifest.persist()
         while offset < len(work):
             if signals.complete.is_set():
-                manifest.reason = "complete_requested" if offset < len(work) else ""
+                manifest.reason = "complete_requested"
                 break
             if signals.retake.is_set():
                 signals.retake.clear()
@@ -307,7 +296,7 @@ async def _run(
             item = work[offset]
             ledger = ledgers[item.pose_index]
             if retry is not None:
-                if not _can_retry(ledger, retry, retries):
+                if not ledger.can_retry(retry.charge):
                     manifest.reason = retry.fault or "retries_spent"
                     break
                 if retry.next == "fix_and_retake":
@@ -327,11 +316,11 @@ async def _run(
             progress = {"pose": item.pose_index + 1, "poses": len(ledgers),
                         "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
-                        "budget": _budget(ledger, retries)}
+                        "budget": ledger.to_payload()}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": REASON_REGISTRY[retry.fault].message})
-            take_started = clock()
+            take_started: float | None = None
             try:
                 if gate:
                     gate.publish(progress)
@@ -339,12 +328,10 @@ async def _run(
                     if item.pose_index not in moved:
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
+                take_started = clock()
                 if retry is not None:
-                    if retry.charge == "speaker":
-                        ledger.by_speaker += 1
-                    else:
-                        ledger.by_household += 1
-                    progress["budget"] = _budget(ledger, retries)
+                    ledger.spend(retry.charge)
+                    progress["budget"] = ledger.to_payload()
                     if gate:
                         gate.publish(progress)
                 attempts[offset] = attempt
@@ -372,8 +359,10 @@ async def _run(
                                                next="stop", evidence={"incident": incident})
                     if not outcome.complete:
                         incident = str(record.get("incident") or next((s.incident for s in outcome.stimuli if s.incident), ""))
-                        assessed = replace(assessed, fault=incident if incident in REASON_REGISTRY else REASON_INTERNAL_ERROR,
-                                           next="stop", charge="none", evidence={**assessed.evidence, "incident": incident})
+                        assessed = replace(assessed, ok=False,
+                                           fault=assessed.fault or (incident if incident in REASON_REGISTRY else REASON_INTERNAL_ERROR),
+                                           next="stop" if assessed.next == "accept" else assessed.next,
+                                           evidence={**assessed.evidence, "incident": incident})
                     await manifest.append(record, record_id, assessed, complete=outcome.complete,
                                           started_s=take_started - started, ended_s=clock() - started, ordinal=ordinal)
                     if verdict is None or (verdict.next != "stop" and assessed.next != "accept"):
@@ -381,9 +370,6 @@ async def _run(
                 assert verdict is not None
                 if gate:
                     gate.publish({**progress, "fault": verdict.fault, "next_action": verdict.next})
-                while len(manifest.wall_s) <= item.pose_index:
-                    manifest.wall_s.append(0.0)
-                manifest.wall_s[item.pose_index] += clock() - take_started
                 if verdict.next == "stop":
                     manifest.reason = verdict.fault or "take_stopped"
                     break
@@ -412,13 +398,20 @@ async def _run(
                     manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
                 fault = manifest.reason if manifest.reason in REASON_REGISTRY else REASON_INTERNAL_ERROR
                 already_banked = {take["artifacts"]["record_id"] for take in manifest.takes}
+                ended = clock()
                 for record, record_id in manifest.pending_records or [({}, "")]:
                     if record_id and record_id in already_banked:
                         continue
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
-                                          started_s=take_started - started, ended_s=clock() - started)
+                                          started_s=(take_started if take_started is not None else ended) - started,
+                                          ended_s=ended - started)
                 break
+            finally:
+                if take_started is not None:
+                    while len(manifest.wall_s) <= item.pose_index:
+                        manifest.wall_s.append(0.0)
+                    manifest.wall_s[item.pose_index] += clock() - take_started
     except BaseException:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
         manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
         raise
@@ -426,10 +419,9 @@ async def _run(
         manifest.finalized = True
         if gate:
             gate.abandon_hold()
+            gate.publish({**progress, "status": manifest.status, "fault": manifest.reason or (verdict.fault if verdict else None),
+                          "next_action": "accept" if manifest.status == "complete" else "stop"})
+        log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
+                  takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)
         await manifest.persist()
-    if gate:
-        gate.publish({**progress, "status": manifest.status, "fault": manifest.reason or (verdict.fault if verdict else None),
-                      "next_action": "accept" if manifest.status == "complete" else "stop"})
-    log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
-              takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)
     return manifest

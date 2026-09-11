@@ -30,6 +30,7 @@ from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.active_speaker.round_bank import bank_round
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_KIND
 from jasper.cli import measure
 from jasper.cli.measure import (
     EXIT_OK,
@@ -1246,7 +1247,8 @@ def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path
     document = json.loads(
         (Path(payload["bundle_dir"]) / ARTIFACTS / payload["run_manifest"]).read_text()
     )
-    assert document["kind"] == "jts_run_manifest"
+    assert document["kind"] == RUN_MANIFEST_KIND
+    assert document["asked"]["poses"][0]["seat_offset_m"] is None
     assert document["status"] == "complete"
     assert document["honoured"]["takes_measured"] == payload["n_takes"] == 2
     assert [group["capture_basis"]["candidate_id"] for group in document["sets"]] == ["a", "b"]
@@ -1394,9 +1396,9 @@ def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsy
 
 
 def test_manifest_write_failure_reports_banked_takes_and_restores(speaker, monkeypatch, capsys):
-    from jasper.active_speaker.crossover_v2 import record_store
+    from jasper.active_speaker import commissioning_evidence_store
 
-    write = record_store.atomic_write_json
+    write = commissioning_evidence_store.atomic_write_json
     calls = 0
 
     def fail_after_open(*args, **kwargs):
@@ -1406,7 +1408,7 @@ def test_manifest_write_failure_reports_banked_takes_and_restores(speaker, monke
             raise OSError("disk unavailable")
         return write(*args, **kwargs)
 
-    monkeypatch.setattr(record_store, "atomic_write_json", fail_after_open)
+    monkeypatch.setattr(commissioning_evidence_store, "atomic_write_json", fail_after_open)
     code = measure.main(["--kind", MEASURE_KIND_BASELINE])
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_REFUSED

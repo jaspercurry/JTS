@@ -48,7 +48,6 @@ class RunManifest:
     planned: list[dict[str, Any]] = field(default_factory=list)
     specs: dict[int, MeasureSpec] = field(default_factory=dict, repr=False)
     outcomes: list[tuple[MeasureOutcome, str]] = field(default_factory=list, repr=False)
-    takes: list[dict[str, Any]] = field(default_factory=list)
     mic_moves: int = 0
     spl_monitor: str = ""
     wall_s: list[float] = field(default_factory=list)
@@ -62,8 +61,12 @@ class RunManifest:
     _context: dict[str, Any] = field(default_factory=dict, repr=False)
     _ordinal: int = 0
     _attempts: int = 0
-    _bases: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    _sets: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _chosen: dict[tuple[int, int], str] = field(default_factory=dict, repr=False)
+
+    @property
+    def takes(self) -> list[dict[str, Any]]:
+        return [take for group in self._sets.values() for take in group["takes"]]
 
     @property
     def attempts(self) -> int:
@@ -138,13 +141,13 @@ class RunManifest:
                 # The composer can cap the requested rung; report the emitted sweep gain.
                 basis["stimulus_dbfs"] = max(gains)
             set_id = json_fingerprint(basis)
-            self._bases[set_id] = basis
+            group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis, "takes": []})
             curve = curves.get(role, {})
             band = curve.get("band_hz")
             if band:
                 lower = max(band[0], curve.get("validity_floor_hz") or band[0])
                 band = [lower, band[1]] if lower < band[1] else None
-            row = {**self._context, "take_id": take_id, "set_id": set_id, "stimulus_ordinal": ordinal,
+            row = {**self._context, "take_id": take_id, "stimulus_ordinal": ordinal,
                    "side": basis["side"], "role": role,
                    "level": {key: basis.get(key) for key in
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
@@ -155,20 +158,18 @@ class RunManifest:
                    "artifacts": {"record_id": record_id, "wav_sha256": record.get("wav_sha256"),
                                  "wav_path": record.get("wav_path")},
                    "timing": {"started_s": started_s, "ended_s": ended_s}}
-            self.takes.append(row)
+            group["takes"].append(row)
         if complete and verdict.ok:
             self._chosen[(self._context["index"], ordinal)] = take_id
         await self.persist()
 
     async def persist(self) -> None:
+        # Tens to low hundreds of takes fit full atomic snapshots (ADR-0017);
+        # revisit the write cost if walks grow to thousands of takes.
         self.path = await self.records.bank(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
         chosen = set(self._chosen.values())
-        groups: dict[str, dict[str, Any]] = {key: {"set_id": key, "capture_basis": basis, "takes": []} for key, basis in self._bases.items()}
-        for take in self.takes:
-            groups[take["set_id"]]["takes"].append(
-                {k: v for k, v in take.items() if k != "set_id"} | {"selected": take["take_id"] in chosen})
         return {
             "kind": RUN_MANIFEST_KIND, "schema_version": 1, "run_id": self.run_id,
             "program": self.program, "request_fingerprint": self.request_fingerprint,
@@ -177,7 +178,8 @@ class RunManifest:
             "honoured": {"spl_monitor": self.spl_monitor, "mic_moves": self.mic_moves,
                          "stops_planned": self.stops_planned, "takes_measured": self.takes_measured,
                          "takes_refused": len({t["take_id"] for t in self.takes if t["quality"]["status"] != TAKE_MEASURED})},
-            "sets": list(groups.values()),
+            "sets": [{**group, "takes": [take | {"selected": take["take_id"] in chosen}
+                                         for take in group["takes"]]} for group in self._sets.values()],
             "status": self.status, "finalized": self.finalized,
             "reason": self.reason, "detail": self.detail, "stopped_at": self.stopped_at,
             "not_measured": self.not_measured, "attempts": self.attempts, "wall_s": self.wall_s,

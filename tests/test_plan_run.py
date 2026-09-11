@@ -14,6 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
+from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
@@ -184,14 +185,16 @@ def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, ne
 
 
 @pytest.mark.parametrize("charge", ["speaker", "operator"])
-def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charge):
+@pytest.mark.parametrize("budget", [0, 3])
+def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charge, budget):
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(False,
         REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge))
     gate = AnsweredGate()
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), gate=gate))
+    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=budget), gate=gate))
     assert result.status == "partial"
-    assert len(fakes.banked) == (1 + plan_run.MAX_AUTOMATIC_RETAKES_PER_POSITION if charge == "speaker" else 1)
-    assert gate.progress[-1]["budget"]["by_household"] == 0
+    assert len(fakes.banked) == 1 + (MAX_AUTOMATIC_RETAKES_PER_POSITION if charge == "speaker" else budget)
+    assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else budget)
+    assert gate.progress[-1]["budget"]["left"] == 0
     assert result.reason == REASON_DRIFT_BASELINES_DISAGREE
 
 
@@ -241,11 +244,69 @@ def test_progress_and_manifest_are_published_during_the_run():
     assert result.records.snapshots[-1]["status"] == "complete"
 
 
-def test_incomplete_engine_take_cannot_complete_a_run():
-    seams = FakeSeams(play=FakePlay(default=("restore", "capture_not_bound")))
-    result, _ = asyncio.run(_run_gated(_walk([0]), seams=seams))
-    assert result.status == "partial"
+@pytest.mark.parametrize(("stage", "action", "budget", "retried"), [
+    ("restore", "stop", 1, False), ("restore", "accept", 1, False),
+    ("restore", "retake_same", 1, True), ("restore", "retake_louder", 1, True),
+    ("restore", "retake_quieter", 1, True), ("restore", "retake_same", 0, False),
+    ("ready", "stop", 1, False),
+])
+def test_incomplete_take_obeys_verdict_and_accounts_for_remaining_stops(monkeypatch, stage, action, budget, retried):
+    verdicts = iter([TakeVerdict(False, REASON_CLIPPED, next=action, charge="operator",
+                               next_gain_db=-15 if action == "retake_louder" else -24),
+                     TakeVerdict(True), TakeVerdict(True)])
+    monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
+    seams = FakeSeams(play=FakePlay(script=[(stage, REASON_CLIPPED)]))
+    result, _ = asyncio.run(_run_gated(replace(_walk([0, 20]), retries_per_pose=budget), seams=seams))
+    assert result.status == ("complete" if retried else "partial")
+    assert seams.play.bearings == ([0, 0, 20] if retried else [0])
     assert result.takes[0]["quality"]["status"] == TAKE_INCOMPLETE
+    assert result.takes[0]["quality"]["fault"] == REASON_CLIPPED
+    assert result.takes[0]["next_action"] == ("stop" if action == "accept" else action)
+    assert [stop["index"] for stop in result.not_measured] == ([] if retried else [1, 2])
+    assert all(stop["reason"] == REASON_CLIPPED for stop in result.not_measured)
+
+
+@pytest.mark.parametrize("failure", [None, SeamFailure, RuntimeError, asyncio.CancelledError])
+def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypatch, failure):
+    now = 0.0
+    class MovingGate(AnsweredGate):
+        def gate(self, *args):
+            nonlocal now
+            now += 60.0
+            return super().gate(*args)
+    class TimedPlay(FakePlay):
+        async def run(self, **kwargs):
+            nonlocal now
+            now += 5.0
+            if failure:
+                raise failure()
+            return await super().run(**kwargs)
+    gate, fakes = MovingGate(), FakeSeams(play=TimedPlay())
+    store = _Store(fakes.records)
+    manifest = RunManifest("run", store)
+    event = Mock(wraps=plan_run.log_event)
+    monkeypatch.setattr(plan_run, "log_event", event)
+    async def run():
+        async with open_session(replace(fakes, records=manifest)) as (session, _):
+            return await plan_run.run_plan(_walk([0]), session=session, manifest=manifest, analyze=_analysis,
+                                           gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, clock=lambda: now)
+    if failure is RuntimeError:
+        with pytest.raises(RuntimeError):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    terminal = store.snapshots[-1]
+    expected = "cancelled" if failure is asyncio.CancelledError else "partial" if failure else "complete"
+    assert terminal["wall_s"] == [5.0]
+    assert terminal["status"] == gate.published()["run"]["status"] == expected
+    assert terminal["finalized"] is True
+    assert gate.published()["pending"] is None
+    if failure:
+        assert gate.published()["run"]["fault"] == terminal["reason"]
+        assert gate.published()["run"]["next_action"] == "stop"
+    for take in _takes(terminal):
+        assert take["timing"] == {"started_s": 60.0, "ended_s": 65.0}
+    assert event.call_args.kwargs["status"] == expected
 
 
 @pytest.mark.parametrize("accepted", [True, False])
