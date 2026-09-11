@@ -1581,7 +1581,6 @@ class WakeLoop:
                 ),
             },
             "spend_allowed": self._spend_cap.allowed(),
-            "followup_timeout_sec": self._cfg.followup_timeout_sec,
             "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
             # The provider's own reason for the outage that
@@ -1663,10 +1662,6 @@ class WakeLoop:
             "barge_in_count_session": self._barge_in_count,
             "barge_in_last_at": self._barge_in_last_at,
             "barge_in_last_leg": self._barge_in_last_leg,
-            # Reconcile kind for the active provider so the dashboard can show
-            # whether a barge-in durably stops the assistant (OpenAI/Grok) or
-            # only flushes locally while the server may resume (Gemini).
-            "barge_in_reconcile": self._barge_in_reconcile.value,
             "cues": self._cues.snapshot() if self._cues is not None else None,
         }
 
