@@ -12,7 +12,7 @@ import json
 from ...cues.manager import REASON_BUSY, REASON_UNKNOWN_SLUG
 from ...log_event import log_event
 from ...platform import wire
-from .. import server as _server
+from ...platform.uds import voice_socket_command
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
 
@@ -30,7 +30,7 @@ class VoiceRoutes(ControlHandlerMixin):
             return
         try:
             st = asyncio.run(
-                _server._voice_socket_command(
+                voice_socket_command(
                     self._voice_socket_path,
                     wire.STATUS,
                     timeout=2.0,
@@ -193,7 +193,7 @@ class VoiceRoutes(ControlHandlerMixin):
         # and the daemon's flag is authoritative.
         try:
             st = asyncio.run(
-                _server._voice_socket_command(
+                voice_socket_command(
                     self._voice_socket_path,
                     wire.STATUS,
                     timeout=2.0,

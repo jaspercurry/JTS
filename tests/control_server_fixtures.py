@@ -286,8 +286,10 @@ def server_with_voice_socket(monkeypatch):
         received_cmds.append(cmd)
         return voice_responses.pop(0) if voice_responses else {"result": "OK"}
 
+    import jasper.control.handlers.voice as voice_mod
     import jasper.control.server as srv_mod
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    monkeypatch.setattr(voice_mod, "voice_socket_command", fake_command)
 
     # Coordinator is also patched — session-only tests don't touch
     # volume routes, but the handler factory still needs the wiring.
