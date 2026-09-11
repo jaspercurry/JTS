@@ -14,12 +14,11 @@ selected by `JASPER_VOICE_PROVIDER` in `/var/lib/jasper/voice_provider.env`
 (`gemini`, `openai`, or `grok`). That provider performs the realtime
 speech-to-speech turn.
 
-Wake conversations can stay open for follow-ups (five seconds by default;
-`JASPER_FOLLOWUP_TIMEOUT_SEC=0` disables the window). The closing chirp marks
-listening ending. GPT-Live streams the admitted microphone during the active
-conversation, including pauses and assistant speech; its session closes when
-JTS ends that conversation. Endpointed adapters close the conversation as soon
-as playback drains.
+Endpointed adapters close the conversation as soon as playback drains. GPT-Live
+streams the admitted microphone during the active conversation, including pauses
+and assistant speech, and holds it open for a follow-up (five seconds by default;
+`JASPER_FOLLOWUP_TIMEOUT_SEC=0` closes immediately); its session closes when JTS
+ends that conversation. The closing chirp marks listening ending.
 
 Voice tools may also send tool results back to that same voice provider so it
 can answer the question. For example, Gmail and Calendar tools are read-only

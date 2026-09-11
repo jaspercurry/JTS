@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
 from typing import Callable
 
 from ..tools import ToolRegistry, tool
@@ -19,18 +18,6 @@ END_OF_UTTERANCE_SILENCE_SEC = 0.8
 WATCHDOG_POLL_SEC = 0.25
 NO_SPEECH_ABORT_SEC = 5.0
 END_CONVERSATION_TOOL = "end_conversation"
-
-
-@dataclass
-class FollowupWindow:
-    seconds: float
-    deadline: float = 0.0
-
-    def open(self, now: float) -> None:
-        self.deadline = now + self.seconds
-
-    def expired(self, now: float) -> bool:
-        return bool(self.deadline and now >= self.deadline)
 
 
 def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[], None]) -> None:
@@ -48,7 +35,6 @@ def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[]
 
 
 async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, user_activity, spend_allowed=lambda: True):
-    window = FollowupWindow(followup_seconds)
     started_at = time.monotonic()
     next_spend_check = started_at
     pending_count, progressed_at = 0, started_at
@@ -67,10 +53,8 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
                 return "no_speech"
             continue
         if now - last_speech < END_OF_UTTERANCE_SILENCE_SEC:
-            window.deadline = 0.0
             continue
         if turn.backend_pending:
-            window.deadline = 0.0
             if now - turn.last_activity_at() >= stall_seconds:
                 return "response_stalled"
             continue
@@ -85,6 +69,8 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
             if now - progressed_at >= stall_seconds:
                 return "playout_stalled"
             continue
-        window.open(max(last_speech, turn.last_chunk_at(), turn.last_activity_at(), tts.expected_drain_at()))
-        if window.expired(now):
+        deadline = followup_seconds + max(
+            last_speech, turn.last_chunk_at(), turn.last_activity_at(), tts.expected_drain_at(),
+        )
+        if deadline and now >= deadline:
             return "followup_timeout"
