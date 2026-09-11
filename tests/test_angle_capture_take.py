@@ -883,6 +883,52 @@ def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
     assert (ordinary.delayed_role, ordinary.delay_us) == ("", 0.0)
 
 
+def test_a_staged_stimulus_reaches_every_spec_the_walk_plays(slot, monkeypatch):
+    """Request-level, so EVERY spec this walk plays carries it -- the design-axis
+    MEASURE capture and each stop alike. Dropped between the document and the
+    spec, the session would play the program's own single stimulus and bank it
+    as the matched batch the operator staged.
+    """
+    ladder = (-20.0, -14.0)
+    spool.stage_angle_request(replace(ac.summed_at([0, 7]), level_ladder_dbfs=ladder))
+    _prompts, _consumer, specs, _trims, _claims = _take()
+
+    # Both construction sites, named by the scope only each one builds: the
+    # walk-level design-axis spec and the per-stop summed specs.
+    assert {spec.graph_scope for spec in specs.values()} == {"drivers", "base"}
+    assert {spec.level_ladder_dbfs for spec in specs.values()} == {ladder}
+    assert _played_measure_spec(
+        specs[_MEASURE_INDEX], monkeypatch
+    ).level_ladder_dbfs == ladder
+
+    # …and a walk that states none builds the spec it always did.
+    spool.stage_angle_request(ac.summed_at([0, 7]))
+    _prompts, _consumer, bare, _trims, _claims = _take()
+    assert {spec.level_ladder_dbfs for spec in bare.values()} == {()}
+
+
+def test_a_stimulus_the_specs_refuse_refuses_the_open_in_the_specs_own_words(
+    slot, caplog
+):
+    """The stimulus is judged by the SPEC, at adoption, like R-1's two pairs: a
+    summed sweep band cannot ride the per-driver design-axis MEASURE capture, so
+    the walk refuses the open rather than measuring the band nobody can play.
+    """
+    spool.stage_angle_request(
+        replace(ac.summed_at([0]), sweep_band_hz=(200.0, 3000.0))
+    )
+    with caplog.at_level(logging.WARNING):
+        sentence = _refused()
+
+    assert ac.WALK_STIMULUS_NOT_ACCEPTED in sentence
+    with pytest.raises(ValueError) as spec_refusal:
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, sweep_band_hz=(200.0, 3000.0))
+    assert str(spec_refusal.value) in sentence
+
+    line, = _events(caplog)
+    assert f"reason={ac.WALK_STIMULUS_NOT_ACCEPTED}" in line
+
+
 def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):
     """Answer the level-match evidence question with a stated verdict.
 

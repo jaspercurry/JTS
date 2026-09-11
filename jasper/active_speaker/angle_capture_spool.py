@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Mapping, NoReturn
@@ -37,7 +38,12 @@ from typing import Any, Mapping, NoReturn
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
-from .angle_capture import AngleCaptureRequest, AngleStop, LEVEL_HOLD_REFERENCE
+from .angle_capture import (
+    AngleCaptureRequest,
+    AngleStop,
+    LEVEL_HOLD_REFERENCE,
+    refuse_unplayable_walk_policy,
+)
 from .measurement_programs import POSE_KIND_BEARING
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2_flow import CrossoverV2FlowError
@@ -159,7 +165,12 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
     Write is atomic, mode ``0o640`` with the parent's group (matching the flow state
     file), STRICT: a silent fallback to the writer's own group would publish a document
     ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
+
+    A walk stating a policy no player honours yet is refused HERE rather than at the
+    statement (:func:`~.angle_capture.refuse_unplayable_walk_policy`), so a dry run
+    still prices what is coming while the slot only ever holds a runnable walk.
     """
+    refuse_unplayable_walk_policy(request)
     busy = live_measurement_session()
     if busy is not None:
         _refuse(SESSION_ALREADY_LIVE, busy)
@@ -358,15 +369,68 @@ def _consume(pending: Path) -> None:
     )
 
 
-def _coerced_delay_us(raw: Any) -> float:
-    """``delay_us`` as a number, or the spool's own refusal naming the field."""
+def _coerced_number(field: str, raw: Any) -> float:
+    """One banked number, or the spool's own refusal naming the field."""
     try:
-        return float(raw or 0.0)
+        value = float(raw or 0.0)
     except (TypeError, ValueError):
         _refuse(
             SPOOL_MALFORMED,
-            f"the staged walk's delay_us is not a number: {raw!r}",
+            f"the staged walk's {field} is not a number: {raw!r}",
         )
+    if not math.isfinite(value):
+        _refuse(
+            SPOOL_MALFORMED,
+            f"the staged walk's {field} is not a finite number: {raw!r}",
+        )
+    return value
+
+
+def _coerced_optional_number(field: str, raw: Any) -> float | None:
+    """The same, for a field whose ABSENCE is a statement: ``None`` stays ``None``."""
+    return None if raw is None else _coerced_number(field, raw)
+
+
+def _coerced_numbers(field: str, raw: Any) -> tuple[float, ...]:
+    """A banked LIST of numbers. A bare string is refused rather than iterated: it
+    would otherwise read back as one rung per character."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        _refuse(
+            SPOOL_MALFORMED,
+            f"the staged walk's {field} is not a list of numbers: {raw!r}",
+        )
+    return tuple(_coerced_number(field, entry) for entry in raw)
+
+
+def _coerced_optional_numbers(field: str, raw: Any) -> tuple[float, ...] | None:
+    """The same, for a field whose absence is a statement. The list's SHAPE (two
+    ascending bounds) is :class:`~.angle_capture.AngleCaptureRequest`'s to judge;
+    only the element type is this document's."""
+    return None if raw is None else _coerced_numbers(field, raw)
+
+
+#: Every banked field read back as a NUMBER, and the shape it is read into.
+#: One table so a seventh number joins by adding a row, and so no field can be
+#: handed to :class:`~.angle_capture.AngleCaptureRequest` uncoerced -- a string
+#: ``sweep_s`` would otherwise reach ``math.isfinite`` as a ``TypeError`` past
+#: every caller catching ``CrossoverV2FlowError``.
+_NUMBER_FIELDS = {
+    "delay_us": _coerced_number,
+    "sweep_band_hz": _coerced_optional_numbers,
+    "sweep_s": _coerced_optional_number,
+    "level_ladder_dbfs": _coerced_numbers,
+    "main_volume_series_db": _coerced_numbers,
+    "ceiling_db_spl": _coerced_optional_number,
+}
+
+
+def _coerced_numbers_of(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """:data:`_NUMBER_FIELDS`, read off one document as constructor keywords."""
+    return {field: read(field, doc.get(field)) for field, read in _NUMBER_FIELDS.items()}
+
+
 def _validate(raw: bytes) -> AngleCaptureRequest:
     """Rebuild the request from the banked fields, through its own constructors.
 
@@ -379,16 +443,15 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     would truncate ``0.4`` to an on-axis capture nobody asked for. R-1's two pairs
     (delay, polarity) are ADDITIVE and defaulted, so a document spooled before either
     existed still reads as a normal walk; neither is judged here -- ``MeasureSpec``
-    judges them when the host adopts the walk. ``delay_us`` is the one field COERCED
-    through ``float``, refusing as :data:`SPOOL_MALFORMED` rather than a bare
-    ``ValueError`` (the page's price peek catches only ``CrossoverV2FlowError``).
-    ``level_matched`` is a BOOLEAN, never numbers.
+    judges them when the host adopts the walk. ``level_matched`` is a BOOLEAN, never
+    numbers.
 
-    The stimulus/level-policy fields (``sweep_band_hz`` onward) are additive and
-    defaulted the same way, uncoerced like the angle fields: ``sweep_band_hz``,
-    ``sweep_s`` and ``level_ladder_dbfs`` are judged by ``MeasureSpec`` when the host
-    adopts the walk; ``level_mode`` and ``ceiling_db_spl`` are judged by
-    ``AngleCaptureRequest`` itself, right here, on reconstruction.
+    :data:`_NUMBER_FIELDS` is the exception to "uncoerced": every banked NUMBER is
+    read through ``float``, refusing as :data:`SPOOL_MALFORMED` rather than a bare
+    ``ValueError``/``TypeError`` (the page's price peek catches only
+    ``CrossoverV2FlowError``). The stimulus/level-policy fields are additive and
+    defaulted like R-1's pairs, so a document spooled before they existed still
+    reads as a ``hold_reference`` walk stating no stimulus.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -431,25 +494,19 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
                 seat_offset_m=tuple(offset) if isinstance(offset, list) else None,  # type: ignore[arg-type]
             )
         )
-    sweep_band_raw = doc.get("sweep_band_hz")
-    return AngleCaptureRequest(
+    request = AngleCaptureRequest(
         stops=tuple(stops),
         mover=str(doc.get("mover")),
         polarity=str(doc.get("polarity") or POLARITY_NORMAL),
         inverted_role=str(doc.get("inverted_role") or ""),
         delayed_role=str(doc.get("delayed_role") or ""),
-        delay_us=_coerced_delay_us(doc.get("delay_us")),
         level_matched=bool(doc.get("level_matched")),
-        sweep_band_hz=(
-            tuple(sweep_band_raw) if isinstance(sweep_band_raw, list) else None
-        ),
-        sweep_s=doc.get("sweep_s"),
-        level_ladder_dbfs=tuple(doc.get("level_ladder_dbfs") or ()),
         level_mode=str(doc.get("level_mode") or LEVEL_HOLD_REFERENCE),
-        main_volume_series_db=tuple(doc.get("main_volume_series_db") or ()),
-        ceiling_db_spl=doc.get("ceiling_db_spl"),
         program=str(doc.get("program") or ""),
+        **_coerced_numbers_of(doc),
     )
+    refuse_unplayable_walk_policy(request)
+    return request
 
 
 def withdraw_staged_angle_request() -> bool:

@@ -32,6 +32,7 @@ from jasper.cli._refusal import (
     STATUS_BY_CODE,
     failed,
 )
+from jasper.cli._stimulus_args import add_stimulus_args
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -1056,20 +1057,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="carry this box's own banked per-driver level trims in the graph",
     )
-    parser.add_argument(
-        "--level-dbfs",
-        type=float,
-        action="append",
-        default=[],
-        metavar="DBFS",
-        help="one stimulus level per ladder rung, repeatable",
-    )
-    parser.add_argument(
-        "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
-        help="summed-sweep bounds in Hz; protected graph admission still applies",
-    )
-    parser.add_argument("--spl-ceiling-db-spl", type=float, default=None)
-    parser.add_argument("--sweep-s", type=float, help="summed sweep duration; still bounded by declared driver duration caps")
+    add_stimulus_args(parser)
     parser.add_argument("--mic-serial", default=None)
     parser.add_argument(
         "--candidate-id",

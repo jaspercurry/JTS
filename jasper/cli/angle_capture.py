@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
+from ._stimulus_args import add_stimulus_args
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
@@ -72,7 +73,6 @@ from jasper.active_speaker.candidate_bank import (
     find_banked_candidate,
 )
 from jasper.active_speaker.angle_capture_spool import (
-    AngleRequestRefused,
     angle_request_spool_path,
     peek_staged_angle_request,
     stage_angle_request,
@@ -233,7 +233,7 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
         "level_ladder_dbfs": tuple(args.level_dbfs),
         "level_mode": args.level_mode,
         "main_volume_series_db": tuple(args.level_series),
-        "ceiling_db_spl": args.ceiling_db_spl,
+        "ceiling_db_spl": args.spl_ceiling_db_spl,
     }
 
 
@@ -481,6 +481,12 @@ def _print_walk(payload: dict[str, Any]) -> None:
     say(
         f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
         f"up to {price['ceiling_min']} min for the session that takes it"
+        # Only when the walk picked a sweep duration: a walk that has not
+        # states no stimulus time rather than a wrong one.
+        + (
+            f" ({price['stimulus_s']:g} s of stimulus)"
+            if price["stimulus_s"] is not None else ""
+        )
     )
     level = payload["level"]
     say(
@@ -600,7 +606,10 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     payload = _walk_payload(request, level)
     try:
         path = stage_angle_request(request)
-    except AngleRequestRefused as exc:
+    except CrossoverV2FlowError as exc:
+        # Both slugs, one door: the slot's own refusals (``AngleRequestRefused``
+        # subclasses this) and the walk-policy refusal it raises for a request
+        # no player honours yet.
         return _refuse(exc)
     except OSError as exc:
         return failed(
@@ -844,28 +853,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "box with none refuses the walk rather than measuring unmatched"
         ),
     )
-    parser.add_argument(
-        "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
-        help=(
-            "summed-sweep bounds in Hz for every stop in this walk (MeasureSpec's "
-            "own field; protected graph admission still applies)"
-        ),
-    )
-    parser.add_argument(
-        "--sweep-s", type=float, default=None,
-        help=(
-            "summed sweep duration in seconds for every stop, still bounded by "
-            "declared driver duration caps (MeasureSpec's own field)"
-        ),
-    )
-    parser.add_argument(
-        "--level-dbfs",
-        type=float,
-        action="append",
-        default=[],
-        metavar="DBFS",
-        help="one stimulus level per ladder rung, repeatable, for every stop in this walk",
-    )
+    # The stimulus half is ``MeasureSpec``'s own, so it is spelled where
+    # ``jasper-measure`` spells it; stated once here for every stop in the walk.
+    add_stimulus_args(parser)
     parser.add_argument(
         "--level-mode",
         default=LEVEL_HOLD_REFERENCE,
@@ -873,8 +863,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "how main volume behaves across this walk's stops: hold_reference "
             "leaves the anchor level untouched throughout (the default), "
-            "acquire_at_anchor re-acquires it at each stop, series steps "
-            "through --level-series in turn"
+            "acquire_at_anchor measures it once at the anchor pose and holds "
+            "that across every stop, series steps through --level-series in "
+            "turn"
         ),
     )
     parser.add_argument(
@@ -882,14 +873,10 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         action="append",
         default=[],
-        metavar="DBFS",
-        help=f"--level-mode {LEVEL_SERIES} only: one main-volume rung, repeatable",
-    )
-    parser.add_argument(
-        "--ceiling-db-spl", type=float, default=None,
+        metavar="DB",
         help=(
-            "a walk-level SPL ceiling at the mic, finite and positive; "
-            "validated here, enforced by whatever plays this walk"
+            f"--level-mode {LEVEL_SERIES} only: one main-volume rung in dB, "
+            "repeatable"
         ),
     )
 

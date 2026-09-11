@@ -105,7 +105,8 @@ __all__ = [
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
     "WALK_LEVEL_POLICY_INVALID",
-    "WALK_CEILING_NOT_POSITIVE",
+    "WALK_POLICY_UNSUPPORTED_YET",
+    "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
@@ -115,6 +116,7 @@ __all__ = [
     "WALK_CANDIDATE_NOT_MEASURABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
+    "refuse_unplayable_walk_policy",
     "session_lateral_walk",
 ]
 
@@ -134,9 +136,12 @@ MOVERS = (MOVER_ARM, MOVER_HUMAN)
 
 #: How the SESSION's main volume behaves across a walk's stops. ``hold_reference``
 #: (the default) leaves the anchor level untouched throughout; ``acquire_at_anchor``
-#: re-acquires it at each stop; ``series`` steps through ``main_volume_series_db``
-#: in turn. Judged here (unlike the stimulus fields) because it is this module's
-#: own walk-level policy, not one ``MeasureSpec`` carries.
+#: measures the level ONCE at the anchor (first) pose and holds THAT across every
+#: stop -- never re-acquired per stop, which would move the drive voltage between
+#: takes the walk exists to compare; ``series`` steps through
+#: ``main_volume_series_db`` in turn. Judged here (unlike the stimulus values)
+#: because it is this module's own walk-level policy, not one ``MeasureSpec``
+#: carries.
 LEVEL_HOLD_REFERENCE = "hold_reference"
 LEVEL_ACQUIRE_AT_ANCHOR = "acquire_at_anchor"
 LEVEL_SERIES = "series"
@@ -277,12 +282,17 @@ class AngleCaptureRequest:
 
     ``sweep_band_hz``/``sweep_s``/``level_ladder_dbfs`` are ``MeasureSpec``'s own
     stimulus fields, stated request-level so every stop in a batch is matched by
-    construction; not re-validated here -- see ``MeasureSpec.__post_init__``, which
-    judges them when the host adopts the walk. ``level_mode`` is this module's OWN
-    walk-level policy -- how main volume behaves across stops -- with
-    ``main_volume_series_db`` naming the rungs ``level_mode=series`` steps through.
-    ``ceiling_db_spl`` is a walk-level SPL ceiling; checked here since no downstream
-    spec owns it.
+    construction, and ``ceiling_db_spl`` is its ``spl_ceiling_db_spl``. A campaign
+    that needs TWO stimuli (matched full-range takes plus focused bass takes) is
+    two requests, one per program, the same one-program-one-purpose shape
+    :func:`request_for_program` has. Only ``sweep_band_hz``'s SHAPE is judged here
+    -- two ascending finite bounds, since one bound names no band to price; every
+    value question after that (Nyquist, the summed scope, the duration, the
+    ceiling) is ``MeasureSpec.__post_init__``'s when the host adopts the walk.
+
+    ``level_mode`` is this module's OWN walk-level policy -- how main volume
+    behaves across stops (:data:`LEVEL_MODES`) -- with ``main_volume_series_db``
+    naming the rungs ``level_mode=series`` steps through.
     """
 
     stops: tuple[AngleStop, ...]
@@ -331,6 +341,12 @@ class AngleCaptureRequest:
                 f"mover={self.mover!r} turns bearings at the mark, so it cannot "
                 f"reach a {', '.join(unreachable)} pose",
             )
+        self._refuse_bad_level_policy()
+        self._refuse_bad_sweep_band()
+
+    def _refuse_bad_level_policy(self) -> None:
+        """The walk-level volume policy: a mode this module names, and rungs only
+        where something steps through them."""
         if self.level_mode not in LEVEL_MODES:
             raise LateralWalkRefused(
                 WALK_LEVEL_POLICY_INVALID,
@@ -342,13 +358,31 @@ class AngleCaptureRequest:
                 f"level_mode={LEVEL_SERIES!r} needs at least one "
                 "main_volume_series_db rung",
             )
-        if self.ceiling_db_spl is not None and (
-            not math.isfinite(self.ceiling_db_spl) or self.ceiling_db_spl <= 0
+        if self.main_volume_series_db and self.level_mode != LEVEL_SERIES:
+            # Dead data otherwise: only ``series`` steps through the rungs, so a
+            # walk stating them under another mode would price and play as if it
+            # had not, at a level the operator did not mean.
+            raise LateralWalkRefused(
+                WALK_LEVEL_POLICY_INVALID,
+                f"main_volume_series_db is stepped through only under "
+                f"level_mode={LEVEL_SERIES!r}, not {self.level_mode!r}",
+            )
+
+    def _refuse_bad_sweep_band(self) -> None:
+        """The band's SHAPE alone -- what it takes to name a band at all. Nyquist and
+        the summed-scope rule stay ``MeasureSpec``'s."""
+        band = self.sweep_band_hz
+        if band is None:
+            return
+        if (
+            len(band) != 2
+            or not all(isinstance(hz, (int, float)) and math.isfinite(hz) for hz in band)
+            or not band[0] < band[1]
         ):
             raise LateralWalkRefused(
-                WALK_CEILING_NOT_POSITIVE,
-                f"ceiling_db_spl must be finite and positive, got "
-                f"{self.ceiling_db_spl!r}",
+                WALK_STIMULUS_NOT_ACCEPTED,
+                "sweep_band_hz is two ascending finite bounds in Hz, got "
+                f"{band!r}",
             )
 
     def _refuse_beyond_reach(
@@ -365,6 +399,27 @@ class AngleCaptureRequest:
                 + ", ".join(f"{deg:+d}" for deg in outside)
                 + " deg",
             )
+
+    @property
+    def measure_spec_stimulus(self) -> dict[str, object]:
+        """This walk's stimulus as ``MeasureSpec`` keywords, STATED fields only.
+
+        The one owner of the pairing, because the two spellings differ
+        (``ceiling_db_spl`` is the spec's ``spl_ceiling_db_spl``) and an absent
+        band is ``None`` here and ``()`` there. Omitting what was not stated is
+        load-bearing: an ordinary walk must build the spec it always did,
+        keyword for keyword, or its captures stop being byte-identical.
+        """
+        stated: dict[str, object] = {}
+        if self.sweep_band_hz is not None:
+            stated["sweep_band_hz"] = self.sweep_band_hz
+        if self.sweep_s is not None:
+            stated["sweep_s"] = self.sweep_s
+        if self.level_ladder_dbfs:
+            stated["level_ladder_dbfs"] = self.level_ladder_dbfs
+        if self.ceiling_db_spl is not None:
+            stated["spl_ceiling_db_spl"] = self.ceiling_db_spl
+        return stated
 
     @property
     def externally_positioned(self) -> bool:
@@ -500,9 +555,10 @@ def request_for_program(
 ) -> AngleCaptureRequest:
     """Expand a plan position-first, with adjacent repeats and candidate trials.
 
-    ``sweep_band_hz`` onward are the request-level stimulus/level fields
-    (:class:`AngleCaptureRequest`); forwarded, never judged here, same as the
-    graph fields above them.
+    ``sweep_band_hz`` onward are the request-level stimulus/level fields, handed
+    straight to :class:`AngleCaptureRequest` to judge, same as the graph fields
+    above them. ONE program per request, so one stimulus: a campaign wanting a
+    second stimulus calls this again for that program.
     """
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or not candidates[0]):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
@@ -546,33 +602,36 @@ def request_for_program(
 
 def walk_price(
     request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
-) -> dict[str, int | float | bool]:
+) -> dict[str, int | float | None]:
     """What this walk costs the person holding the microphone. ``ceiling_min`` prices the
-    SESSION (base entries plus these stops), rounded UP to whole minutes. ``plan_shape``
-    is ``None`` for a surface pricing a walk before any tier is chosen.
+    SESSION (base entries plus these captures), rounded UP to whole minutes.
+    ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
+
+    A ``level_mode=series`` walk plays every stop once per ``main_volume_series_db``
+    rung, so the rungs MULTIPLY ``captures`` and the wall clock; ``mic_moves`` does
+    not move -- the rungs are played where the microphone already stands.
 
     ``stimulus_s`` is the STIMULUS time alone (captures times ``sweep_s`` times the
     level-ladder rung count, or 1 rung for no ladder) -- narrower than ``ceiling_min``,
-    which also prices settle and advance time. ``stimulus_known`` is false, and
-    ``stimulus_s`` is 0, when the walk states no ``sweep_s`` -- a program that has not
-    picked a stimulus duration prices no stimulus time rather than a wrong one.
+    which also prices settle and advance time. ``None`` when the walk states no
+    ``sweep_s``: a program that has not picked a stimulus duration prices no stimulus
+    time rather than a wrong one.
     """
-    captures = len(request.stops)
-    stimulus_known = request.sweep_s is not None
-    stimulus_s = (
-        captures * request.sweep_s * max(1, len(request.level_ladder_dbfs))
-        if stimulus_known else 0
+    rungs = (
+        len(request.main_volume_series_db)
+        if request.level_mode == LEVEL_SERIES else 1
     )
+    captures = len(request.stops) * rungs
     return {
         "mic_moves": len({s.place for s in request.stops}),
         "captures": captures,
         "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(
-                stage1_base_entries(plan_shape) + len(request.stops)
-            ) / 60
+            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + captures) / 60
         ),
-        "stimulus_s": stimulus_s,
-        "stimulus_known": stimulus_known,
+        "stimulus_s": (
+            None if request.sweep_s is None
+            else captures * request.sweep_s * max(1, len(request.level_ladder_dbfs))
+        ),
     }
 
 
@@ -695,14 +754,26 @@ WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
-#: The walk's ``level_mode`` is not one :data:`LEVEL_MODES` names, or
-#: ``level_mode=series`` states no ``main_volume_series_db`` rung to step
-#: through. Decided by :class:`AngleCaptureRequest` at statement time, like
+#: The walk's ``level_mode`` is not one :data:`LEVEL_MODES` names, or its
+#: ``main_volume_series_db`` rungs and its mode disagree. Decided by
+#: :class:`AngleCaptureRequest` at statement time, like
 #: :data:`WALK_OVER_MOVER_ENVELOPE`.
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
-#: The walk's ``ceiling_db_spl`` is not finite and positive.
-WALK_CEILING_NOT_POSITIVE = "walk_ceiling_not_positive"
+#: The walk states a policy nothing that PLAYS it can honour yet -- an SPL
+#: ceiling (no walk installs a
+#: :class:`~jasper.audio_measurement.wired_capture.WiredSplMonitor`) or a
+#: ``level_mode`` past :data:`LEVEL_HOLD_REFERENCE` (no walk steps the main
+#: volume). Raised by :func:`refuse_unplayable_walk_policy` where a walk is
+#: STAGED, so ``plan`` still prices what is coming. REMOVE each arm as the
+#: executor lane (#4873) lands the behaviour it names.
+WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
+
+#: The walk's stimulus statement is not one that can be played: a band that is
+#: not two ascending bounds (:class:`AngleCaptureRequest`, statement time), or a
+#: field ``MeasureSpec`` refuses when the host builds the walk's specs -- detail
+#: is the spec's own sentence.
+WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
@@ -738,7 +809,8 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
-    WALK_CEILING_NOT_POSITIVE,
+    WALK_POLICY_UNSUPPORTED_YET,
+    WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
@@ -761,6 +833,37 @@ class LateralWalkRefused(CrossoverV2FlowError):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+
+
+def refuse_unplayable_walk_policy(request: AngleCaptureRequest) -> None:
+    """Refuse a walk stating a policy no player HONOURS yet.
+
+    Not in :meth:`AngleCaptureRequest.__post_init__`: the request is legal to
+    STATE and to price, so ``plan`` reports its cost; what is missing is the
+    playing half. Called where a walk is banked for a session instead, both
+    writing and reading it, so a hand-written document refuses the same way a
+    staged one does.
+
+    Each arm names what would have to exist, and goes when that lands
+    (#4873): the SPL ceiling wants the walk's capture leg to install a
+    :class:`~jasper.audio_measurement.wired_capture.WiredSplMonitor`, and the
+    level modes past :data:`LEVEL_HOLD_REFERENCE` want a session that moves the
+    main volume between stops.
+    """
+    if request.ceiling_db_spl is not None:
+        raise LateralWalkRefused(
+            WALK_POLICY_UNSUPPORTED_YET,
+            "no walk enforces an SPL ceiling yet: nothing on the capture leg "
+            "watches the mic against one, so a staged ceiling_db_spl would be "
+            "a promise this walk cannot keep",
+        )
+    if request.level_mode != LEVEL_HOLD_REFERENCE:
+        raise LateralWalkRefused(
+            WALK_POLICY_UNSUPPORTED_YET,
+            f"no walk moves the main volume between stops yet, so "
+            f"level_mode={request.level_mode!r} would play as "
+            f"{LEVEL_HOLD_REFERENCE!r}",
+        )
 
 
 def session_lateral_walk(

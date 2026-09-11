@@ -1972,7 +1972,11 @@ def _take_staged_angle_walk(
     here rather than checked: the same objects the engine leg plays, so no
     second construction can disagree with the validated one. The design-axis
     MEASURE index always carries the walk-level spec; a STOP is in the map only
-    when it names a candidate, which only the engine leg can install.
+    when it names a candidate, which only the engine leg can install. EVERY spec
+    carries the walk's stimulus statement
+    (:attr:`~jasper.active_speaker.angle_capture.AngleCaptureRequest.measure_spec_stimulus`),
+    so a stated field either plays or refuses the open — never both silently
+    dropped and reported as staged.
     ``claims`` is what each stop's graph CARRIED, for the pose records the flow
     banks.
 
@@ -2006,6 +2010,7 @@ def _take_staged_angle_walk(
         WALK_LEVEL_MATCH_NO_EVIDENCE,
         WALK_DELAY_NOT_ACCEPTED,
         WALK_POLARITY_NOT_ACCEPTED,
+        WALK_STIMULUS_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
         session_lateral_walk,
@@ -2079,6 +2084,7 @@ def _take_staged_angle_walk(
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
         raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
+    stimulus = request.measure_spec_stimulus
     try:
         # Its own arm rather than a fourth clause on the block above: only THIS
         # construction may be read as a polarity refusal, and a ``ValueError``
@@ -2090,15 +2096,20 @@ def _take_staged_angle_walk(
             delayed_role=request.delayed_role,
             delay_us=request.delay_us,
             level_matched=request.level_matched,
+            **stimulus,
         )
     except ValueError as exc:
         # Attributed by which half the request STATED, never by re-judging
         # validity here — that rule has one owner and a second copy drifts. A
         # request stating a delay reads as a delay refusal; the detail is the
         # spec's own sentence either way, so it always names the real field.
+        # Ordered as ``MeasureSpec.__post_init__`` checks them, so the arm named
+        # is the arm that raised.
         stated_delay = bool(request.delayed_role or request.delay_us)
         raise refused(
-            WALK_DELAY_NOT_ACCEPTED if stated_delay else WALK_POLARITY_NOT_ACCEPTED,
+            WALK_STIMULUS_NOT_ACCEPTED if stimulus
+            else WALK_DELAY_NOT_ACCEPTED if stated_delay
+            else WALK_POLARITY_NOT_ACCEPTED,
             str(exc),
         ) from exc
     level_trims, trim_source = _resolve_measurement_level_trims(
@@ -2155,6 +2166,7 @@ def _take_staged_angle_walk(
                 positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
                 pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
                 graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else scope,
+                **stimulus,
             )
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
