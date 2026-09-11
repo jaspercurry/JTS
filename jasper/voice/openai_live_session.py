@@ -82,7 +82,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._input_q = asyncio.Queue(maxsize=16)
         self._input_admitted = True
         self._sender = None
-        self._transcripts = {"user": [], "assistant": []}
+        self._transcript_intervals = {"user": [], "assistant": []}
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
@@ -144,9 +144,9 @@ class OpenAILiveTurn(BaseLiveTurn):
 
     def capture(self) -> TurnCapture:
         return TurnCapture(
-            user_text="".join(p["delta"] for p in self._transcripts["user"]) or None,
-            assistant_text="".join(p["delta"] for p in self._transcripts["assistant"]) or None,
-            data={"transcript_intervals": self._transcripts, "voice_usage": self.usage().breakdown},
+            user_text=self.user_transcript() or None,
+            assistant_text=self.assistant_transcript() or None,
+            data={"transcript_intervals": self._transcript_intervals, "voice_usage": self.usage().breakdown},
         )
 
     async def release(self) -> None:
@@ -184,7 +184,8 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._on_output_audio(base64.b64decode(event["delta"]))
         elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
             speaker = "user" if kind == "session.input_transcript.delta" else "assistant"
-            self._transcripts[speaker].append({k: event[k] for k in ("delta", "start_ms", "end_ms")})
+            self._transcript_intervals[speaker].append({k: event[k] for k in ("delta", "start_ms", "end_ms")})
+            self.add_transcript(**{speaker: event["delta"]})
             self._note_activity()
         elif kind == "session.delegation.created":
             delegation = event["delegation"]

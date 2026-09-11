@@ -140,6 +140,45 @@ async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
     assert socket.closed
 
 
+@pytest.mark.parametrize("deltas, user_text, assistant_text, transcript_intervals", [
+    ([], None, None, {"user": [], "assistant": []}),
+    (
+        [("input", "turn on ", 0, 500), ("input", "the lights", 500, 900)],
+        "turn on the lights", None,
+        {
+            "user": [
+                {"delta": "turn on ", "start_ms": 0, "end_ms": 500},
+                {"delta": "the lights", "start_ms": 500, "end_ms": 900},
+            ],
+            "assistant": [],
+        },
+    ),
+    (
+        [("input", "hi", 0, 200), ("output", "Hello", 300, 700), ("output", " there", 700, 900)],
+        "hi", "Hello there",
+        {
+            "user": [{"delta": "hi", "start_ms": 0, "end_ms": 200}],
+            "assistant": [
+                {"delta": "Hello", "start_ms": 300, "end_ms": 700},
+                {"delta": " there", "start_ms": 700, "end_ms": 900},
+            ],
+        },
+    ),
+])
+async def test_capture_joins_transcript_deltas_per_speaker_beside_their_intervals(
+    deltas, user_text, assistant_text, transcript_intervals,
+):
+    async with live_turn() as turn:
+        for direction, delta, start_ms, end_ms in deltas:
+            await turn.on_event({
+                "type": f"session.{direction}_transcript.delta",
+                "delta": delta, "start_ms": start_ms, "end_ms": end_ms,
+            })
+        capture = turn.capture()
+    assert (capture.user_text, capture.assistant_text) == (user_text, assistant_text)
+    assert capture.data["transcript_intervals"] == transcript_intervals
+
+
 async def test_correction_discards_stale_tool_results():
     socket = LiveSocket()
     registry = ToolRegistry()
