@@ -164,6 +164,8 @@ REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
 # None for an unreadable statefile and for a readable one missing its
 # `config_path:` line.
 REASON_CAMILLA_STATEFILE_UNREADABLE = "camilla_statefile_unreadable"
+REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
+REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
 
 
 # Wall-clock before this reads as "the clock was not set yet", not as an age:
@@ -181,8 +183,7 @@ def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
         return "with the clock unset at park time"
     age = (time.time() if now is None else now) - parked_at
     return f"{age:.0f}s ago"
-REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
-REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
+
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)

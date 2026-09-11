@@ -32,8 +32,8 @@ from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
-    FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET,
-    STATUS_MAX_BYTES, read_status_socket_or_none,
+    FANIN_STALE_MS, MUX_CONTROL_SOCKET_PATH, OUTPUTD_STALE_MS,
+    OUTPUTD_STATUS_SOCKET, STATUS_MAX_BYTES, read_status_socket_or_none,
 )
 from ..service_units import (
     FANIN_SERVICE,
@@ -59,7 +59,6 @@ from .transport_eligibility import (
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
 from ..platform import wire
-from ..platform.status_socket import MUX_CONTROL_SOCKET_PATH
 from ..platform.uds import mux_socket_command
 
 logger = logging.getLogger(__name__)
