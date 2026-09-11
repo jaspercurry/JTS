@@ -53,12 +53,19 @@ _FANIN_DIRECT_CAPTURE_RS = (
 )
 _OUTPUTD_TYPES_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "types.rs"
 _RING_IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
+_RING_LAYOUT_RS = _REPO_ROOT / "rust" / "jasper-ring" / "src" / "layout.rs"
 
 
 def _config_rs_text() -> str:
     if not _FANIN_CONFIG_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_CONFIG_RS}")
     return _FANIN_CONFIG_RS.read_text(encoding="utf-8")
+
+
+def _ring_layout_rs_text() -> str:
+    if not _RING_LAYOUT_RS.exists():
+        pytest.skip(f"rust source not present: {_RING_LAYOUT_RS}")
+    return _RING_LAYOUT_RS.read_text(encoding="utf-8")
 
 
 def _lane_resampler_rs_text() -> str:
@@ -283,12 +290,22 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     # Rust side (source pin — the crate does not build on macOS). The daemon
     # bails on the same range with the same bound constants, and its from_env
     # fail-loud is exercised by the Rust unit test in the CI rust job.
+    # jasper-fanin re-exports the ring crate's own bounds rather than
+    # restating them, so the values are pinned at their real source
+    # (jasper-ring) and fanin's re-export is pinned separately.
     text = _config_rs_text()
-    assert f"pub const RING_SLOTS_MIN: u32 = {RING_SLOTS_MIN};" in text, (
-        "Rust RING_SLOTS_MIN must match the Python RING_SLOTS_MIN bound"
+    assert "MIN_N_SLOTS as RING_SLOTS_MIN" in text, (
+        "jasper-fanin must re-export jasper_ring::MIN_N_SLOTS, not restate it"
     )
-    assert f"pub const RING_SLOTS_MAX: u32 = {RING_SLOTS_MAX};" in text, (
-        "Rust RING_SLOTS_MAX must match the Python RING_SLOTS_MAX bound"
+    assert "MAX_N_SLOTS as RING_SLOTS_MAX" in text, (
+        "jasper-fanin must re-export jasper_ring::MAX_N_SLOTS, not restate it"
+    )
+    layout_text = _ring_layout_rs_text()
+    assert f"pub const MIN_N_SLOTS: u32 = {RING_SLOTS_MIN};" in layout_text, (
+        "jasper_ring::MIN_N_SLOTS must match the Python RING_SLOTS_MIN bound"
+    )
+    assert f"pub const MAX_N_SLOTS: u32 = {RING_SLOTS_MAX};" in layout_text, (
+        "jasper_ring::MAX_N_SLOTS must match the Python RING_SLOTS_MAX bound"
     )
     # The out-of-range guard returns an Err, it does NOT clamp.
     opener = "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {"
