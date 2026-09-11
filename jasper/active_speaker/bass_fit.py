@@ -17,7 +17,14 @@ from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from .bass_comparison import bass_capture_context, common_bass_bins, compare_bass_takes
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key
+from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measurement_bass import BASS_BANDS_HZ
+from .measurement_programs import PURPOSE_BASS, baseline_scope
+
+
+class BassFitCoverageUnavailable(CrossoverV2Refused):
+    def __init__(self) -> None:
+        super().__init__(code="bass_fit_common_coverage_unavailable")
 
 
 def fit_bass_shape(
@@ -30,28 +37,29 @@ def fit_bass_shape(
     ty = np.asarray(target["magnitude_db"], dtype=float)
     if (tf.ndim != 1 or len(tf) < 2 or ty.shape != tf.shape or not np.isfinite(tf).all()
             or not np.isfinite(ty).all() or tf[0] < 20 or tf[-1] > 200 or not np.all(np.diff(tf) > 0)):
-        raise ValueError("bass_target_invalid")
+        raise CrossoverV2Refused(code="bass_target_invalid")
     if not pairs or not 0 < reference_band_hz[0] < reference_band_hz[1]:
-        raise ValueError("bass_fit_inputs_missing")
+        raise CrossoverV2Refused(code="bass_fit_inputs_missing")
     grid = np.geomspace(tf[0], tf[-1], 121)
     desired = np.interp(np.log(grid), np.log(tf), ty)
     grouped: dict[Any, list[tuple[np.ndarray, np.ndarray]]] = defaultdict(list)
     sources = []
     first = bass_capture_context(pairs[0][0])
     for before, after in pairs:
-        if before["record"].get("graph_scope") != "room_tune" or after["record"].get("candidate_id") != candidate_id:
-            raise ValueError("bass_fit_requires_room_baseline_and_exact_candidate")
+        if before["record"].get("graph_scope") != baseline_scope(PURPOSE_BASS) or after["record"].get("candidate_id") != candidate_id:
+            raise CrossoverV2Refused(code="bass_fit_requires_room_baseline_and_exact_candidate")
         match = compare_bass_takes(before, after, change="candidate")
         context = bass_capture_context(before)
         across = compare_capture_basis(context, first, interventions=("pose_key",),
                                        required=tuple(key for key in first if key != "pose_key"))
-        if not match["available"] or across["incompatible_fields"]:
-            raise ValueError("bass_fit_capture_context_changed")
+        if match["context"]["incompatible_fields"] or across["incompatible_fields"]:
+            raise CrossoverV2Refused({"pair": match["context"], "across": across}, code="bass_fit_capture_context_changed")
         curve = before["frequency_curve"]
         rf, ry = np.asarray(curve["freqs_hz"]), np.asarray(curve["magnitude_db"])
         anchor = (rf >= reference_band_hz[0]) & (rf <= reference_band_hz[1]) & np.isfinite(ry)
-        if not anchor.any():
-            raise ValueError("bass_fit_reference_band_unavailable")
+        if (not before["sweep_band_hz"][0] <= reference_band_hz[0] < reference_band_hz[1] <= before["sweep_band_hz"][1]
+                or not anchor.any()):
+            raise CrossoverV2Refused(code="bass_fit_reference_band_unavailable")
         reference = float(np.median(ry[anchor]))
         # Use the full qualification masks when resampling so holes stay holes.
         curves = []
@@ -67,7 +75,7 @@ def fit_bass_shape(
             values[shared] = smooth_fractional_octave(grid[shared], values[shared], fraction=3)
         pose = doc_pose_key(before["record"])
         if before["record"].get("position_deg") is None and before["record"].get("seat_offset_m") is None:
-            raise ValueError("bass_fit_pose_missing")
+            raise CrossoverV2Refused(code="bass_fit_pose_missing")
         grouped[pose].append((curves[0], curves[1]))
         sources.append({"before": before["record_path"], "after": after["record_path"],
                         "reference_db": reference, "comparison": match["context"], "across_positions": across})
@@ -88,7 +96,7 @@ def fit_bass_shape(
     a, b = np.asarray(baseline), np.asarray(treated)
     valid = np.isfinite(a).all(axis=0) & np.isfinite(b).all(axis=0)
     if valid.sum() < 2:
-        raise ValueError("bass_fit_common_coverage_unavailable")
+        raise BassFitCoverageUnavailable()
     delta = b[:, valid] - a[:, valid]
     error = desired[valid] - a[:, valid]
     energy = float(np.sum(delta ** 2))
@@ -99,6 +107,7 @@ def fit_bass_shape(
         rms = np.sqrt(np.mean((prediction - desired[valid]) ** 2, axis=1))
         choices.append({"scale": scale, "descriptor": {**settings, "low_boost_db": scale * settings["low_boost_db"]} if scale else None,
                         "mean_pose_rms_db": float(np.mean(rms)), "per_pose_rms_db": rms.tolist(),
+                        "max_abs_error_db": float(np.max(np.abs(prediction - desired[valid]))),
                         "predicted_median_db": np.median(prediction, axis=0).tolist()})
     return {"schema": "jts_bass_fit/1", "candidate_id": candidate_id, "source_descriptor": settings,
             "sources": sources, "positions": positions, "position_count": len(positions), "take_pair_count": len(pairs),
