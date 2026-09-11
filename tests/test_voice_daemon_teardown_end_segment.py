@@ -34,31 +34,13 @@ import asyncio
 import pytest
 
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-from tests._wake_loop import FakeTts, wake_loop_for_tests
+from tests._playout import FakeTts
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
-class _RecordingTts(FakeTts):
-    """TtsPlayout stand-in that records end_segment and flush calls."""
 
-    def __init__(self, *, end_segment_raises: bool = False) -> None:
-        self.end_segment_calls = 0
-        self.flush_calls = 0
-        self._raises = end_segment_raises
-
-    async def flush(self):
-        self.flush_calls += 1
-
-    async def end_segment(self):
-        self.end_segment_calls += 1
-        if self._raises:
-            raise OSError("fan-in socket gone")
-
-
-
-
-
-def _make_wakeloop(tts: _RecordingTts):
+def _make_wakeloop(tts: FakeTts):
     from jasper.voice_daemon import State
 
     class _Noop:
@@ -121,7 +103,7 @@ def test_teardown_calls_end_segment_once():
     whose audio iterator (and so play_responses' own end_segment call)
     is still open when the turn is torn down — the Gemini shape.
     """
-    tts = _RecordingTts()
+    tts = FakeTts()
     wl = _make_wakeloop(tts)
 
     asyncio.run(_teardown_owning_output(wl))
@@ -135,7 +117,7 @@ def test_teardown_calls_end_segment_once():
 )
 def test_teardown_drops_the_queued_tail_only_when_it_must_not_be_heard(reason, flushes):
     """A dismissal is as much a "do not play the rest" as a failed output."""
-    tts = _RecordingTts()
+    tts = FakeTts()
     wl = _make_wakeloop(tts)
 
     asyncio.run(_teardown_owning_output(wl, reason))
@@ -149,7 +131,7 @@ def test_teardown_survives_end_segment_failure():
     the rest of teardown: usage row still closes, state flips to WAKE."""
     from jasper.voice_daemon import State
 
-    tts = _RecordingTts(end_segment_raises=True)
+    tts = FakeTts(end_segment_error=OSError("fan-in socket gone"))
     wl = _make_wakeloop(tts)
 
     asyncio.run(_teardown_owning_output(wl))

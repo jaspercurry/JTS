@@ -46,6 +46,7 @@ from jasper.tts_playout import (
 
 from .fanin_env_fixtures import declare_fanin_env
 from tests._log_events import event_fields, event_records
+from tests._playout import FakeOutputdStream
 
 _REPO = Path(__file__).resolve().parents[1]
 _RESAMPLER_RS = _REPO / "rust" / "jasper-resampler" / "src" / "lib.rs"
@@ -78,32 +79,9 @@ def _probe_pcm(n: int = 2_400) -> bytes:
     return bytes(out)
 
 
-class _Recorder:
-    """Stand-in for `_OutputdStreamAdapter` that keeps the emitted bytes."""
-
-    def __init__(self) -> None:
-        self.payload = bytearray()
-        self.closed = False
-
-    def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-        self.closed = True
-
-    def write(self, data: bytes) -> None:
-        self.payload += data
-
-    def set_gain_db(self, db: float) -> None:
-        pass
-
-    def start_segment(self, **kwargs) -> None:
-        pass
-
-    def end_segment(self) -> None:
-        pass
-
-
 def _emit(pcm: bytes, *, wide: bool, **write_kwargs) -> bytes:
     tts = TtsPlayout(socket_path="/nonexistent.sock", wire_wide=wide)
-    rec = _Recorder()
+    rec = FakeOutputdStream()
     tts._stream = rec
 
     async def _ready():
@@ -111,7 +89,7 @@ def _emit(pcm: bytes, *, wide: bool, **write_kwargs) -> bytes:
 
     tts._current_outputd_stream = _ready
     asyncio.run(tts.write_segment(pcm, segment_kind="cue", **write_kwargs))
-    return bytes(rec.payload)
+    return b"".join(rec.writes)
 
 
 # ---------------------------------------------------------------------------

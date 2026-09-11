@@ -56,7 +56,8 @@ from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
 # The voice daemon's boot-park pins own these fakes; both parks now play
 # through the same jasper.cues.park seam, so they are shared, not re-rolled.
-from tests.test_voice_input_gate import _ParkCues, _ParkPlayout
+from tests._playout import FakeTts
+from tests.test_voice_input_gate import _ParkCues
 
 # jasper.cli.aec_bridge reads ports off BridgeConfig / leg_default_port at
 # runtime, never module-level constants — compute the expected values the
@@ -291,7 +292,7 @@ def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
     from jasper.cues import park as cue_park
 
     spy = _ParkCues(cue_result)
-    monkeypatch.setattr(cue_park, "TtsPlayout", _ParkPlayout())
+    monkeypatch.setattr(cue_park, "TtsPlayout", lambda **_kw: FakeTts())
     monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
     return spy
 

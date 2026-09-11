@@ -10,24 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-
-class _FakeTts:
-    def __init__(self) -> None:
-        self.calls: list[tuple[bytes, dict]] = []
-
-    def set_emission_admission(self, _admission) -> None:
-        return None
-
-    async def write_segment(self, pcm: bytes, on_first_write=None, **kwargs) -> None:
-        self.calls.append((pcm, kwargs))
-        if on_first_write is not None:
-            await on_first_write()
-
-    async def wait_drained(self) -> None:
-        return None
-
-    def expected_drain_at(self) -> float:
-        return 0.0
+from tests._playout import FakeTts
 
 
 class _FakeDucker:
@@ -38,7 +21,7 @@ class _FakeDucker:
         return None
 
 
-def _output(tts: _FakeTts):
+def _output(tts: FakeTts):
     from jasper.voice.assistant_output import AssistantOutput
 
     return AssistantOutput(
@@ -63,7 +46,7 @@ async def test_mute_click_uses_matched_cue_path():
         updated_at="static",
         method="synthetic_generated",
     )
-    tts = _FakeTts()
+    tts = FakeTts()
     output = _output(tts)
     # STATED, not inherited: the bake width comes from `tts_wire_is_wide()`,
     # which reads the box's own fanin.env — absent on a test runner, and an
@@ -77,17 +60,15 @@ async def test_mute_click_uses_matched_cue_path():
 
     await output.play_mute_click(going_on=True)
 
-    assert tts.calls == [
-        (
-            b"on",
-            {
-                "segment_kind": "cue",
-                "source_profile": profile,
-                # The earcon bake's width travels with its bytes. This
-                # output is DECLARED narrow above, so the flag reads False.
-                "pcm_wide": False,
-            },
-        )
+    assert tts.segments == [
+        {
+            "pcm": b"on",
+            "segment_kind": "cue",
+            "source_profile": profile,
+            # The earcon bake's width travels with its bytes. This output is
+            # DECLARED narrow above, so the flag reads False.
+            "pcm_wide": False,
+        }
     ]
 
 
@@ -104,7 +85,7 @@ async def test_listening_chirp_uses_matched_chirp_path():
         updated_at="static",
         method="synthetic_generated",
     )
-    tts = _FakeTts()
+    tts = FakeTts()
     stamped: list[str] = []
     output = _output(tts)
     # STATED, not inherited — see the mute-click test above.
@@ -122,21 +103,19 @@ async def test_listening_chirp_uses_matched_chirp_path():
 
     await output.listening_chirp(going_on=True, on_attempt=attempt, on_first_write=accepted)
 
-    assert tts.calls == [
-        (
-            b"wake",
-            {
-                "segment_kind": "chirp",
-                "source_profile": profile,
-                "pcm_wide": False,
-            },
-        )
+    assert tts.segments == [
+        {
+            "pcm": b"wake",
+            "segment_kind": "chirp",
+            "source_profile": profile,
+            "pcm_wide": False,
+        }
     ]
     assert stamped == ["attempt", "accepted"]
 
 
 async def test_admission_and_drain_are_open_while_the_gate_is_idle():
-    output = _output(_FakeTts())
+    output = _output(FakeTts())
 
     assert output.admission_refusal() is None
     assert await output.drain_inflight(timeout_sec=0.0) is True
@@ -147,7 +126,7 @@ async def test_chirp_markers_report_attempt_and_transport_acceptance(result):
     import asyncio
 
     markers = []
-    tts = _FakeTts()
+    tts = FakeTts()
     async def attempt():
         markers.append("attempt")
     async def accepted():
