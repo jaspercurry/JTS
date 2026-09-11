@@ -40,6 +40,10 @@ class FakeCamilla:
         return True
 
     async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
+        if not isinstance(patch, dict) or not patch:
+            if best_effort:
+                return False
+            raise ValueError("patch must be a non-empty mapping")
         self.patches.append((patch, best_effort))
         if self.fail_set and not best_effort:
             raise RuntimeError("patch failed")

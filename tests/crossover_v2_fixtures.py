@@ -2217,6 +2217,10 @@ class FakeCam:
         return True
 
     async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
+        if not isinstance(patch, dict) or not patch:
+            if best_effort:
+                return False
+            raise ValueError("patch must be a non-empty mapping")
         self.ops.append(("patch", patch))
         return True
 

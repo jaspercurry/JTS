@@ -154,6 +154,7 @@ class FakeCoordinator:
     async def unmute(self, fallback_level: int = 50) -> int:
         self._maybe_fail()
         target = self._pre_mute_level if self._pre_mute_level is not None else fallback_level
+        target = max(0, min(100, int(target)))
         self._pre_mute_level = None
         self._level = target
         self.calls.append(("unmute", target))
