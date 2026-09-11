@@ -63,7 +63,8 @@ from jasper.voice_daemon import State, WakeLoop
 from ._async_wait import wait_signalled
 from ._cue_spy import SpyCues
 from ._log_events import event_fields, event_records
-from ._wake_loop import FakeTts, wake_loop_for_tests
+from ._playout import FakeOutputdStream, FakeTts
+from ._wake_loop import wake_loop_for_tests
 
 
 class _FakeMonotonic:
@@ -179,16 +180,14 @@ class _EndCountingGate(AssistantOutputGate):
 
 
 class _TailHeldTts(FakeTts):
-    """TTS fake whose write returns before its physical tail drains."""
+    """Playout whose write returns before its physical tail drains."""
 
     def __init__(self) -> None:
         self.drain_started = asyncio.Event()
         self.release_drain = asyncio.Event()
+        super().__init__(on_drain=self._hold_tail)
 
-    async def write_segment(self, *_args, **_kwargs) -> None:
-        return None
-
-    async def wait_drained(self) -> None:
+    async def _hold_tail(self) -> None:
         self.drain_started.set()
         await self.release_drain.wait()
 
@@ -365,16 +364,10 @@ async def test_idle_output_never_waits() -> None:
 
 async def test_pause_setup_error_restores_output_admission_once() -> None:
     class _FailingPauseTts(FakeTts):
-        def __init__(self) -> None:
-            self.resume_calls = 0
-
         async def pause_content_meter_for_measurement(
             self, deadline_monotonic: float,
         ) -> None:
             raise RuntimeError("meter pause failed")
-
-        async def resume_content_meter(self) -> None:
-            self.resume_calls += 1
 
     gate = _CountingGate()
     tts = _FailingPauseTts()
@@ -386,7 +379,7 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
     assert not wl._measurement_active.is_set()
     assert not gate.admission_paused
     assert gate.resume_calls == 1
-    assert tts.resume_calls == 0
+    assert tts.meter_resumes == 0
 
 
 @pytest.mark.parametrize("error_type", [AssertionError, SystemExit])
@@ -468,14 +461,7 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
                 await wait_signalled(release_note, "release volume guard setup")
                 raise RuntimeError("volume guard failed")
 
-    class _Meter(FakeTts):
-        def __init__(self) -> None:
-            self.resume_calls = 0
-
-        async def resume_content_meter(self) -> None:
-            self.resume_calls += 1
-
-    meter = _Meter()
+    meter = FakeTts()
     wl = wake_loop_for_tests(volume_coordinator=_FailingVolume(), tts=meter)
 
     pause = asyncio.create_task(wl.measurement_hold.pause_response())
@@ -497,7 +483,7 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
     assert not wl._output_gate.admission_paused
     assert wl.measurement_hold._safety_task is None
     assert safety.done()
-    assert meter.resume_calls == 0
+    assert meter.meter_resumes == 0
     assert measurement_hold_mod.MEASUREMENT_AUTOCLEAR_SEC > 0
 
 
@@ -610,33 +596,9 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     import jasper.tts_playout as tts_mod
     from jasper.tts_playout import TtsPlayout
 
-    class _FailSecondWrite:
-        def __init__(self) -> None:
-            self.closed = False
-            self.attempts = 0
-
-        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-            self.closed = True
-
-        def set_gain_db(self, _db: float) -> None:
-            return None
-
-        def start_segment(self, **_kwargs) -> None:
-            return None
-
-        def write(self, _data: bytes) -> None:
-            self.attempts += 1
-            if self.attempts == 2:
-                raise OSError("second AUDIO command failed")
-
-        def prepare_assistant(self, **kwargs) -> None:
-            return None
-
-        def pause_content_meter(self, deadline_monotonic=None) -> None:
-            return None
-
-        def resume_content_meter(self) -> None:
-            return None
+    def fail_second_write(_data: bytes) -> None:
+        if stream.write_attempts == 2:
+            raise OSError("second AUDIO command failed")
 
     monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
@@ -674,7 +636,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
         # WIDE since #3655 — so the width has to be declared here.
         wire_wide=False,
     )
-    stream = _FailSecondWrite()
+    stream = FakeOutputdStream(on_write=fail_second_write)
     tts._stream = stream  # type: ignore[assignment]
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
@@ -690,7 +652,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
         "partial mute write accepted-prefix drain",
         producer=click,
     )
-    assert stream.attempts == 2
+    assert stream.write_attempts == 2
     assert wl._output_gate.active_kind == "feedback"
 
     pause = asyncio.create_task(wl.measurement_hold.pause_response())
@@ -718,32 +680,11 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     release_write = threading.Event()
     write_returned = threading.Event()
 
-    class _BlockingWrite:
-        closed = False
-
-        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-            self.closed = True
-
-        def set_gain_db(self, _db: float) -> None:
-            return None
-
-        def start_segment(self, **_kwargs) -> None:
-            return None
-
-        def write(self, _data: bytes) -> None:
-            write_started.set()
-            if not release_write.wait(timeout=2.0):
-                raise TimeoutError("test did not release AUDIO write")
-            write_returned.set()
-
-        def prepare_assistant(self, **kwargs) -> None:
-            return None
-
-        def pause_content_meter(self, deadline_monotonic=None) -> None:
-            return None
-
-        def resume_content_meter(self) -> None:
-            return None
+    def block_write(_data: bytes) -> None:
+        write_started.set()
+        if not release_write.wait(timeout=2.0):
+            raise TimeoutError("test did not release AUDIO write")
+        write_returned.set()
 
     tts = TtsPlayout(
         socket_path=tts_socket,
@@ -755,7 +696,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
         # WIDE since #3655 — so the width has to be declared here.
         wire_wide=False,
     )
-    tts._stream = _BlockingWrite()  # type: ignore[assignment]
+    tts._stream = FakeOutputdStream(on_write=block_write)  # type: ignore[assignment]
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
     )
@@ -815,36 +756,12 @@ async def test_cancelled_cue_tail_retains_output_episode(
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
-    class _AcceptedStream:
-        closed = False
-
-        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-            self.closed = True
-
-        def set_gain_db(self, _db: float) -> None:
-            return None
-
-        def start_segment(self, **_kwargs) -> None:
-            return None
-
-        def write(self, _data: bytes) -> None:
-            return None
-
-        def prepare_assistant(self, **kwargs) -> None:
-            return None
-
-        def pause_content_meter(self, deadline_monotonic=None) -> None:
-            return None
-
-        def resume_content_meter(self) -> None:
-            return None
-
     tts = TtsPlayout(
         socket_path=tts_socket,
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
-    tts._stream = _AcceptedStream()  # type: ignore[assignment]
+    tts._stream = FakeOutputdStream()  # type: ignore[assignment]
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
     )
@@ -1186,21 +1103,6 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
                 raise AssertionError("test did not release PROGRAM_DUCK_OFF")
             return True
 
-    class _Tts(FakeTts):
-        def __init__(self) -> None:
-            self.prepare_calls = 0
-            self.pause_calls = 0
-            self.resume_calls = 0
-
-        async def prepare_assistant_context(self, **_kwargs) -> None:
-            self.prepare_calls += 1
-
-        async def pause_content_meter(self) -> None:
-            self.pause_calls += 1
-
-        async def resume_content_meter(self) -> None:
-            self.resume_calls += 1
-
     class _ContentActivity:
         music_dbfs = None
 
@@ -1248,7 +1150,7 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         return await asyncio.to_thread(_blocking_duck, on)
 
     ducker = FanInDucker(SimpleNamespace(program_duck=program_duck))
-    tts = _Tts()
+    tts = FakeTts()
     content = _ContentActivity()
     volume = _Volume()
     usage = _UsageStore()
@@ -1281,7 +1183,7 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         assert gate.active_kind == "turn"
         assert volume.session_calls == [True]
         assert content.pause_calls == 1
-        assert tts.pause_calls == 1
+        assert tts.meter_pauses == 1
 
         beginning.cancel()
         for _ in range(5):
@@ -1315,9 +1217,9 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         assert cleanup_calls == 1
         assert gate.end_calls == 1
         assert not gate.is_active
-        assert tts.prepare_calls == 1
-        assert tts.pause_calls == 1
-        assert tts.resume_calls == 1
+        assert len(tts.prepares) == 1
+        assert tts.meter_pauses == 1
+        assert tts.meter_resumes == 1
         assert content.refresh_calls == 1
         assert content.pause_calls == 1
         assert content.resume_calls == 1
@@ -1411,13 +1313,6 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
             restore_started.set()
             await release_restore.wait()
 
-    class _Tts(FakeTts):
-        def __init__(self) -> None:
-            self.resume_calls = 0
-
-        async def resume_content_meter(self) -> None:
-            self.resume_calls += 1
-
     class _ContentActivity:
         def __init__(self) -> None:
             self.resume_calls = 0
@@ -1437,7 +1332,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
         await asyncio.Event().wait()
 
     ducker = _HeldRestoreDucker()
-    tts = _Tts()
+    tts = FakeTts()
     content = _ContentActivity()
     volume = _Volume()
     gate = _EndCountingGate()
@@ -1507,7 +1402,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     assert beginning.cancelled()
     assert cleanup_calls == 1
     assert ducker.restore_calls == 1
-    assert tts.resume_calls == 1
+    assert tts.meter_resumes == 1
     assert content.resume_calls == 1
     assert volume.session_calls == [False]
     assert gate.end_calls == 1
@@ -1619,11 +1514,8 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
             self.resume_calls += 1
 
     class _Tts(FakeTts):
-        def __init__(self) -> None:
-            self.resume_calls = 0
-
         async def resume_content_meter(self) -> None:
-            self.resume_calls += 1
+            await super().resume_content_meter()
             if failure_kind == "meter_exception":
                 raise RuntimeError("meter resume failed")
 
@@ -1677,7 +1569,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     assert ducker.restore_calls == 1
     assert volume.session_calls == [False]
     assert content.resume_calls == 1
-    assert tts.resume_calls == 1
+    assert tts.meter_resumes == 1
     assert usage.close_calls == 1
     assert wl._turn is None
     assert wl._session_id is None
@@ -1710,9 +1602,8 @@ async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
 ) -> None:
     """Drain/restore Exceptions are both logged; exact release still wins."""
 
-    class _FailingDrainTts(FakeTts):
-        async def wait_drained(self) -> None:
-            raise RuntimeError("physical drain exploded")
+    async def exploding_drain() -> None:
+        raise RuntimeError("physical drain exploded")
 
     restore_calls = 0
 
@@ -1722,7 +1613,7 @@ async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
         raise ValueError("duck restore exploded")
 
     gate = _EndCountingGate()
-    wl = wake_loop_for_tests(output_gate=gate, tts=_FailingDrainTts())
+    wl = wake_loop_for_tests(output_gate=gate, tts=FakeTts(on_drain=exploding_drain))
     episode = await gate.begin_if_idle("admin")
     assert episode is not None
 
@@ -1754,16 +1645,15 @@ async def test_duck_cleanup_preserves_base_exception_precedence(
     drain_error = _CleanupAbort("drain aborted")
     restore_error = _CleanupAbort("restore aborted")
 
-    class _FailingDrainTts(FakeTts):
-        async def wait_drained(self) -> None:
-            raise drain_error
+    async def aborting_drain() -> None:
+        raise drain_error
 
     async def restore() -> None:
         if restore_fails:
             raise restore_error
 
     gate = _EndCountingGate()
-    wl = wake_loop_for_tests(output_gate=gate, tts=_FailingDrainTts())
+    wl = wake_loop_for_tests(output_gate=gate, tts=FakeTts(on_drain=aborting_drain))
     episode = await gate.begin_if_idle("admin")
     assert episode is not None
 
@@ -1821,30 +1711,6 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     restored = asyncio.Event()
     restore_calls = 0
 
-    class _AcceptedStream:
-        closed = False
-
-        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-            self.closed = True
-
-        def set_gain_db(self, _db: float) -> None:
-            return None
-
-        def start_segment(self, **_kwargs) -> None:
-            return None
-
-        def write(self, _data: bytes) -> None:
-            return None
-
-        def prepare_assistant(self, **kwargs) -> None:
-            return None
-
-        def pause_content_meter(self, deadline_monotonic=None) -> None:
-            return None
-
-        def resume_content_meter(self) -> None:
-            return None
-
     class _Ducker:
         async def duck(self) -> None:
             return None
@@ -1864,7 +1730,7 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
-    tts._stream = _AcceptedStream()  # type: ignore[assignment]
+    tts._stream = FakeOutputdStream()  # type: ignore[assignment]
 
     async def controlled_drain() -> None:
         drain_started.set()
@@ -2161,8 +2027,6 @@ async def test_uds_setup_expiry_rolls_back_inside_declared_total(
             clock.advance(0.40 if active else 0.10)
 
     class _ExpiringMeter(FakeTts):
-        resume_calls = 0
-
         async def pause_content_meter_for_measurement(
             self,
             deadline_monotonic: float,
@@ -2172,9 +2036,6 @@ async def test_uds_setup_expiry_rolls_back_inside_declared_total(
 
         async def pause_content_meter(self) -> None:
             raise AssertionError("measurement-specific path must be selected")
-
-        async def resume_content_meter(self) -> None:
-            self.resume_calls += 1
 
     meter = _ExpiringMeter()
     wl = wake_loop_for_tests(volume_coordinator=_SlowVolume(), tts=meter)
@@ -2198,7 +2059,7 @@ async def test_uds_setup_expiry_rolls_back_inside_declared_total(
         )
         assert not wl._measurement_active.is_set()
         assert not wl._output_gate.admission_paused
-        assert meter.resume_calls == 0
+        assert meter.meter_resumes == 0
     finally:
         server.close()
         await server.wait_closed()
@@ -2223,16 +2084,7 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     tts._stream = poisoned  # type: ignore[assignment]
     connect_calls = 0
 
-    class _Replacement:
-        closed = False
-
-        def __init__(self) -> None:
-            self.meter_pauses = 0
-
-        def pause_content_meter(self) -> None:
-            self.meter_pauses += 1
-
-    replacement = _Replacement()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         nonlocal connect_calls

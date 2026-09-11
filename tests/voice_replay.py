@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 
-from tests._wake_loop import FakeTts
+from tests._playout import FakeTts
 
 
 class RecordingPlayout(FakeTts):
     """An immediate virtual drain, never evidence of physical or acoustic output."""
 
     def __init__(self) -> None:
+        super().__init__()
         self._audio = bytearray()
         self._events: list[dict] = []
         self.flush_ack: dict | None = None

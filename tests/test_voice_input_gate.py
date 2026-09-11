@@ -61,6 +61,7 @@ from jasper.voice_daemon import (
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
 )
 from tests._log_events import event_fields, event_records
+from tests._playout import FakeTts
 from tests._wake_loop import wake_loop_for_tests
 from tests.systemd_unit_helpers import value_for
 
@@ -310,26 +311,6 @@ def test_input_device_unavailable_carries_device() -> None:
     assert "No input device matching" in str(exc)
 
 
-class _ParkPlayout:
-    """Stands in for TtsPlayout in the boot-park cue: an async context
-    manager that either opens, or fails its connect the way a dead fan-in
-    socket does. Callable, so it also stands in for the class itself."""
-
-    def __init__(self, *, connect_error: BaseException | None = None) -> None:
-        self.connect_error = connect_error
-
-    def __call__(self, **_kwargs) -> "_ParkPlayout":
-        return self
-
-    async def __aenter__(self) -> "_ParkPlayout":
-        if self.connect_error is not None:
-            raise self.connect_error
-        return self
-
-    async def __aexit__(self, *_exc) -> bool:
-        return False
-
-
 class _ParkCues:
     """Cue-manager stand-in for the boot-park path: records what was asked
     for, then returns a play() verdict or raises the failure under test."""
@@ -362,9 +343,8 @@ def _parking_daemon(
 
     spy = _ParkCues(cue_result)
     monkeypatch.setattr(daemon_main, "run", _boom)
-    monkeypatch.setattr(
-        cue_park, "TtsPlayout", _ParkPlayout(connect_error=connect_error),
-    )
+    playout = FakeTts(connect_error=connect_error)
+    monkeypatch.setattr(cue_park, "TtsPlayout", lambda **_kw: playout)
     monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
     return daemon_main, spy
 

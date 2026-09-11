@@ -18,7 +18,8 @@ from jasper.voice.conversation import (
 from jasper.voice_daemon import State
 from tests._async_wait import wait_until
 from tests._live_turn_fake import FakeLiveTurn
-from tests._wake_loop import wake_loop_for_tests, FakeTts
+from tests._playout import FakeTts
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 

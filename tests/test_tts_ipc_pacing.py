@@ -39,36 +39,17 @@ import numpy as np
 import jasper.tts_playout as tts_mod
 from jasper.tts_playout import TtsPlayout
 
-
-class _CaptureStream:
-    def __init__(self) -> None:
-        self.closed = False
-        self.writes: list[bytes] = []
-
-    def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-        self.closed = True
-
-    def set_gain_db(self, db: float) -> None:
-        pass
-
-    def start_segment(self, *, kind, provider_item_id, profile=None) -> None:
-        pass
-
-    def end_segment(self) -> None:
-        pass
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
+from tests._playout import FakeOutputdStream
 
 
-def _make_playout(monkeypatch) -> tuple[TtsPlayout, _CaptureStream]:
+def _make_playout(monkeypatch) -> tuple[TtsPlayout, FakeOutputdStream]:
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
-    stream = _CaptureStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
     return p, stream
 

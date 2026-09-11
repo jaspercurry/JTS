@@ -21,50 +21,12 @@ from jasper.voice.catalog import InterruptReconcile
 from jasper.voice.wake_detect import CAPTURE_RING_FRAMES, LegRuntime
 from jasper.voice_daemon import WakeEventStore, WakeLoop
 from jasper.wake_legs import by_token
+from tests._playout import FakeTts
 
 # Sentinel for `wake_loop_for_tests` constructor-time knobs, so a test can
 # pass an explicit empty list (no legs) and have it mean "none" rather than
 # "use the default".
 _UNSET = object()
-
-
-class FakeTts:
-    def set_emission_admission(self, _admission) -> None:
-        return None
-
-    async def write_segment(self, *_args, on_first_write=None, **_kwargs) -> bool:
-        if on_first_write is not None:
-            await on_first_write()
-        return True
-
-    async def resume_content_meter(self) -> None:
-        return None
-
-    async def pause_content_meter(self) -> None:
-        return None
-
-    async def pause_content_meter_for_measurement(
-        self, deadline_monotonic: float,
-    ) -> None:
-        return None
-
-    async def prepare_assistant_context(self, **_kwargs) -> None:
-        return None
-
-    async def end_segment(self) -> None:
-        return None
-
-    async def wait_drained(self) -> None:
-        return None
-
-    async def flush(self):
-        return None
-
-    def expected_drain_at(self) -> float:
-        return 0.0
-
-    def take_paced_sec(self) -> float:
-        return 0.0
 
 
 def wake_loop_for_tests(

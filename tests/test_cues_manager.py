@@ -31,6 +31,7 @@ from jasper.cues.registry import (
 )
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields
+from tests._playout import FakeTts
 
 
 # --- Fakes ---
@@ -44,34 +45,6 @@ class _FakeBackend:
     def synthesise(self, text: str) -> TTSResult:
         self.calls.append(text)
         return TTSResult(pcm_24k=self._pcm)
-
-
-class _FakeTtsPlayout:
-    """Captures bytes/segment metadata that would be played back."""
-
-    def __init__(self) -> None:
-        self.writes: list[bytes] = []
-        self.segments: list[dict] = []
-        self.waits = 0
-        self.fail_with: Exception | None = None
-        self.accept = True
-
-    async def write(self, pcm: bytes) -> None:
-        if self.fail_with is not None:
-            raise self.fail_with
-        self.writes.append(pcm)
-
-    async def write_segment(self, pcm: bytes, **kwargs) -> bool:
-        if self.fail_with is not None:
-            raise self.fail_with
-        if not self.accept:
-            return False
-        self.segments.append({"pcm": pcm, **kwargs})
-        self.writes.append(pcm)
-        return True
-
-    async def wait_drained(self) -> None:
-        self.waits += 1
 
 
 def _tone_pcm(
@@ -270,7 +243,7 @@ def _assert_outcome(mgr, outcome, reason, *, slug, count=1):
 
 def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     backend = _FakeBackend(samples_24k=240)
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=backend, tts_playout=tts,
@@ -280,7 +253,7 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is True
     assert len(tts.writes) == 1
-    assert tts.waits == 1
+    assert tts.drain_calls == 1
     # WAVs are at Gemini's native 24kHz mono — 240 samples = 480 bytes.
     # TtsPlayout upsamples to 48k internally; the manager doesn't.
     assert len(tts.writes[0]) == 480
@@ -291,7 +264,7 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
 def test_play_passes_measured_cue_source_profile(tmp_path):
     cue = find("spend_cap_reached")
     pcm = _tone_pcm()
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         tts_playout=tts,
@@ -317,7 +290,7 @@ def test_play_passes_measured_cue_source_profile(tmp_path):
 def test_speak_text_passes_measured_dynamic_source_profile(tmp_path):
     pcm = _tone_pcm(freq_hz=660.0)
     backend = _FakeBackend(pcm=pcm)
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=backend, tts_playout=tts,
@@ -349,7 +322,7 @@ class _RaisingSynthesisBackend:
 def _speak_text_delivered(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     return mgr, lambda: mgr.speak_text("hello")
 
@@ -365,7 +338,7 @@ def _speak_text_no_playout(tmp_path):
 def _speak_text_no_backend(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=None, tts_playout=_FakeTtsPlayout(),
+        backend=None, tts_playout=FakeTts(),
     )
     return mgr, lambda: mgr.speak_text("hello")
 
@@ -373,7 +346,7 @@ def _speak_text_no_backend(tmp_path):
 def _speak_text_stale_pre_synth(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     return mgr, lambda: mgr.speak_text("hello", should_play=lambda: False)
 
@@ -381,7 +354,7 @@ def _speak_text_stale_pre_synth(tmp_path):
 def _speak_text_synthesis_error(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_RaisingSynthesisBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_RaisingSynthesisBackend(), tts_playout=FakeTts(),
     )
     return mgr, lambda: mgr.speak_text("hello")
 
@@ -389,7 +362,7 @@ def _speak_text_synthesis_error(tmp_path):
 def _speak_text_read_error(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     path = dynamic_text_path(str(tmp_path), "hello", "Aoede", TTS_MODEL)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -401,7 +374,7 @@ def _speak_text_read_error(tmp_path):
 def _speak_text_stale_post_synth(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     calls = {"n": 0}
 
@@ -413,8 +386,7 @@ def _speak_text_stale_post_synth(tmp_path):
 
 
 def _speak_text_write_error(tmp_path):
-    tts = _FakeTtsPlayout()
-    tts.fail_with = RuntimeError("ALSA hates us today")
+    tts = FakeTts(write_error=RuntimeError("ALSA hates us today"))
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=_FakeBackend(), tts_playout=tts,
@@ -465,7 +437,7 @@ def test_snapshot_never_leaks_dynamic_text(tmp_path):
     secret = "the launch code is 12345 zebra unicorn"
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
 
     assert asyncio.run(mgr.speak_text(secret)) is True
@@ -488,7 +460,7 @@ def test_play_returns_false_with_no_tts_playout(tmp_path):
 def test_play_unknown_slug_returns_false(tmp_path):
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     assert asyncio.run(mgr.play("not_a_real_slug")) is False
 
@@ -504,7 +476,7 @@ def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
     stale_path = tmp_path / f"{cue.slug}-stale01.wav"
     _hand_write_wav(str(stale_path), b"\x00\x00" * 100)
 
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="current.local", voice="Aoede",
         tts_playout=tts,
@@ -514,7 +486,7 @@ def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is True
     assert len(tts.writes) == 1
-    assert tts.waits == 1
+    assert tts.drain_calls == 1
 
     _assert_outcome(mgr, "stale", "ok", slug="spend_cap_reached")
 
@@ -523,7 +495,7 @@ def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
     """Empty sounds dir + no stale fallback → silent failure but no
     exception. Same UX we have today, but the warning surfaces in
     logs / jasper-doctor so an operator can see the cause."""
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         tts_playout=tts,
@@ -539,9 +511,10 @@ def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
 @pytest.mark.parametrize("failure", ["exception", "refused"])
 def test_cue_write_failure_is_reported(tmp_path, operation, failure):
     backend = _FakeBackend()
-    tts = _FakeTtsPlayout()
-    tts.fail_with = OSError("output unavailable") if failure == "exception" else None
-    tts.accept = False
+    tts = FakeTts(
+        write_error=OSError("output unavailable") if failure == "exception" else None,
+        accept=False,
+    )
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=backend, tts_playout=tts,
@@ -555,7 +528,7 @@ def test_cue_write_failure_is_reported(tmp_path, operation, failure):
         slug = "text"
     assert ok is False
     assert tts.writes == []
-    assert tts.waits == 1
+    assert tts.drain_calls == 1
     _assert_outcome(mgr, "failed", "write_error", slug=slug)
 
 
@@ -565,7 +538,7 @@ def test_play_records_failed_on_wav_read_error(tmp_path):
     cue = find("spend_cap_reached")
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     os.makedirs(os.path.dirname(mgr.expected_path(cue)), exist_ok=True)
     with open(mgr.expected_path(cue), "wb") as f:
@@ -585,14 +558,12 @@ async def test_cue_manager_defers_repeated_cancellation_through_drain(
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
-    class _HeldDrainTts(_FakeTtsPlayout):
-        async def wait_drained(self) -> None:
-            self.waits += 1
-            drain_started.set()
-            await wait_signalled(release_drain, "release cue manager drain")
+    async def hold_drain() -> None:
+        drain_started.set()
+        await wait_signalled(release_drain, "release cue manager drain")
 
     backend = _FakeBackend()
-    tts = _HeldDrainTts()
+    tts = FakeTts(on_drain=hold_drain)
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path),
         hostname="jts.local",
@@ -692,7 +663,7 @@ def test_speak_text_cache_keyed_on_backend_model(tmp_path):
     different model synthesises fresh instead of reusing the old
     model's audio."""
     text = "Your timer is up."
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     backend_a = _ModelledBackend("model-a")
     mgr_a = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local",
@@ -731,7 +702,7 @@ def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(
     its LAST full-profile step, so an install that aborted while staging
     assets leaves the very cue that fault plays with no WAV. Without the
     fallback that park is silent (non-negotiable 6)."""
-    tts = _FakeTtsPlayout()
+    tts = FakeTts()
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=_FakeBackend(), tts_playout=tts,
@@ -753,7 +724,7 @@ def test_play_reports_the_delegates_failure_when_the_fallback_is_unbaked(tmp_pat
     fallback — regenerating the delegate is what would fix the silence."""
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+        backend=_FakeBackend(), tts_playout=FakeTts(),
     )
     assert find("provider_out_of_credit").fallback == "cant_connect"
     assert asyncio.run(mgr.play("provider_out_of_credit")) is False
@@ -776,7 +747,7 @@ def test_play_terminates_on_a_fallback_cycle(tmp_path, monkeypatch):
     monkeypatch.setattr(manager_mod, "find_cue", cycle.get)
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        tts_playout=_FakeTtsPlayout(),
+        tts_playout=FakeTts(),
     )
 
     assert asyncio.run(mgr.play("a_cue")) is False
@@ -788,13 +759,12 @@ def test_play_records_cancellation_and_re_raises(tmp_path):
     """Barge-in cancels the drain wait on the busiest cue path. The attempt
     is a recorded skip; the cancellation still reaches the caller."""
 
-    class _CancellingDrain(_FakeTtsPlayout):
-        async def wait_drained(self) -> None:
-            raise asyncio.CancelledError
+    async def cancel_drain() -> None:
+        raise asyncio.CancelledError
 
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        tts_playout=_CancellingDrain(),
+        tts_playout=FakeTts(on_drain=cancel_drain),
     )
     _hand_write_wav(mgr.expected_path(find("spend_cap_reached")), b"\x00\x00" * 100)
 
@@ -810,7 +780,7 @@ def test_play_records_an_unexpected_error_and_returns_false(tmp_path, monkeypatc
     leave the attempt unrecorded."""
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
-        tts_playout=_FakeTtsPlayout(),
+        tts_playout=FakeTts(),
     )
 
     def _boom(_cue):

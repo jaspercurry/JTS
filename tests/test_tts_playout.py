@@ -20,12 +20,13 @@ to track real ring contents through write/idle/flush/append cycles.
 ``expected_drain_at`` / ``wait_drained`` are exercised directly against a
 bare ``TtsPlayout`` — no stream needed, the deadline is a plain field.
 The ring-population side — the write path that advances the deadline as
-audio is queued — needs a capturing fake stream (``_CaptureOutputdStream``)
-instead of opening a real socket.
+audio is queued — needs a capturing fake stream (``FakeOutputdStream``,
+tests/_playout.py) instead of opening a real socket.
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import socket
 import threading
@@ -45,94 +46,12 @@ from jasper.tts_playout import TtsPlayout
 
 from ._async_wait import wait_signalled
 from ._log_events import event_fields
+from ._playout import FakeOutputdStream, FakeTts
 
 
 def _make() -> TtsPlayout:
     """Construct without entering the async context (no ALSA open)."""
     return TtsPlayout(gain_db=-8.0)
-
-
-class _CaptureOutputdStream:
-    def __init__(self) -> None:
-        self.closed = False
-        self.gains: list[float] = []
-        self.writes: list[bytes] = []
-        self.segments_started: list[tuple[str, str | None, object | None]] = []
-        self._active_segment: tuple[str, str | None, object | None] | None = None
-        self.segments_ended = 0
-        self.flush_acks: list[dict] = []
-        self.prepares: list[tuple[str, str, str, float]] = []
-        self.volume_contexts: list[object | None] = []
-        self.meter_pauses = 0
-        self.meter_resumes = 0
-        self.ducks: list[bool] = []
-        self.poison_reason: str | None = None
-
-    def set_gain_db(self, db: float) -> None:
-        self.gains.append(db)
-
-    def program_duck(self, on: bool) -> None:
-        self.ducks.append(on)
-
-    def prepare_assistant(
-        self,
-        *,
-        provider: str,
-        model: str,
-        voice: str,
-        tts_envelope_lufs: float,
-        volume_context=None,
-    ) -> None:
-        self.prepares.append((provider, model, voice, tts_envelope_lufs))
-        self.volume_contexts.append(volume_context)
-
-    def pause_content_meter(self) -> None:
-        self.meter_pauses += 1
-
-    def resume_content_meter(self) -> None:
-        self.meter_resumes += 1
-
-    def start_segment(
-        self,
-        *,
-        kind: str,
-        provider_item_id: str | None,
-        profile=None,
-    ) -> None:
-        segment = (kind, provider_item_id, profile)
-        if self._active_segment == segment:
-            return
-        self._active_segment = segment
-        self.segments_started.append(segment)
-
-    def end_segment(self) -> None:
-        self.segments_ended += 1
-        self._active_segment = None
-
-    def write(self, data: bytes) -> None:
-        self.writes.append(data)
-
-    def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
-        self.closed = True
-        self.poison_reason = poison_reason if poison_reason is not None else reason
-
-    def close(self) -> None:
-        self.closed = True
-
-    def flush_sync(self) -> dict:
-        ack = {
-            "ok": True,
-            "requests": 1,
-            "pending_frames": 2400,
-            "events": [{"segment": 1, "kind": "assistant", "provider_item_id": None,
-                        "queued_frames": 8400, "written_frames": 6000,
-                        "drained_frames": 6000, "flushed_frames": 2400}],
-            "segments": 1,
-            "flushed_frames": 2400,
-            "max_audio_played_ms": 125,
-        }
-        self.flush_acks.append(ack)
-        return ack
 
 
 def _make_outputd(*, drain_tail_sec: float = 0.0) -> TtsPlayout:
@@ -143,7 +62,7 @@ def _make_outputd(*, drain_tail_sec: float = 0.0) -> TtsPlayout:
         gain_db=-8.0,
         drain_tail_sec=drain_tail_sec,
     )
-    p._stream = _CaptureOutputdStream()  # type: ignore[assignment]
+    p._stream = FakeOutputdStream()  # type: ignore[assignment]
     return p
 
 
@@ -409,7 +328,7 @@ def _playout_with_capture_stream():
         # The comparisons below are in i16 sample units.
         wire_wide=False,
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
     return p, stream
 
@@ -466,7 +385,7 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
         # the resolver made these assertions depend on the host's /var/lib state.
         wire_wide=False,
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([10000, -10000], dtype=np.int16)
@@ -491,7 +410,7 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
         # S16 frame bytes are what the chunk boundaries below are counted in.
         wire_wide=False,
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
@@ -506,16 +425,9 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
     monkeypatch,
 ):
 
-    class _FailSecondWrite(_CaptureOutputdStream):
-        def __init__(self) -> None:
-            super().__init__()
-            self.attempts = 0
-
-        def write(self, data: bytes) -> None:
-            self.attempts += 1
-            if self.attempts == 2:
-                raise OSError("second AUDIO command failed")
-            super().write(data)
+    def fail_second_write(_data: bytes) -> None:
+        if stream.write_attempts == 2:
+            raise OSError("second AUDIO command failed")
 
     monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
@@ -524,7 +436,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
         gain_db=-8.0,
         drain_tail_sec=1.0,
     )
-    stream = _FailSecondWrite()
+    stream = FakeOutputdStream(on_write=fail_second_write)
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
@@ -537,7 +449,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
         await p.write_segment(mono.tobytes(), on_first_write=first_write)
 
     assert accepted == [1]
-    assert stream.attempts == 2
+    assert stream.write_attempts == 2
     assert len(stream.writes) == 1
     assert p._ring_end_monotonic is not None
     assert p.expected_drain_at() > time.monotonic()
@@ -548,14 +460,12 @@ async def test_cancelled_write_observes_accepted_chunk_before_exit():
     entered = asyncio.Event()
     release = threading.Event()
 
-    class BlockedStream(_CaptureOutputdStream):
-        def write(self, data):
-            loop.call_soon_threadsafe(entered.set)
-            assert release.wait(1)
-            super().write(data)
+    def block_write(_data: bytes) -> None:
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(1)
 
     p = _make_outputd()
-    p._stream = stream = BlockedStream()
+    p._stream = stream = FakeOutputdStream(on_write=block_write)
     observed = []
 
     async def first_write():
@@ -624,7 +534,7 @@ async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2], dtype=np.int16)
@@ -668,7 +578,7 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
         voice="verse",
         profile_path="/tmp/profiles.json",
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2], dtype=np.int16)
@@ -719,7 +629,7 @@ async def test_outputd_transport_pins_assistant_profile_for_one_turn(monkeypatch
         voice="verse",
         profile_path="/tmp/profiles.json",
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
     measurement = LoudnessMeasurement(
         source_lufs=-14.0, source_peak_dbfs=-1.0,
@@ -788,7 +698,7 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
         voice="verse",
         profile_path="/tmp/profiles.json",
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2], dtype=np.int16)
@@ -808,7 +718,7 @@ async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2], dtype=np.int16)
@@ -825,7 +735,7 @@ async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
 async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
     events: list[str] = []
 
-    class _OrderingStream(_CaptureOutputdStream):
+    class _OrderingStream(FakeOutputdStream):
         def flush_sync(self) -> dict:
             events.append("flush")
             return super().flush_sync()
@@ -855,7 +765,7 @@ async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch
     """
     events: list[str] = []
 
-    class _OrderingStream(_CaptureOutputdStream):
+    class _OrderingStream(FakeOutputdStream):
         def end_segment(self) -> None:
             events.append("end")
             super().end_segment()
@@ -1116,7 +1026,7 @@ async def test_meter_control_recovers_on_access_after_stuck_lock(
         adapter._lock.release()
     assert adapter.closed
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1141,7 +1051,7 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
     p._stream = closed_stream  # type: ignore[assignment]
     connect_entered = asyncio.Event()
     release_connect = asyncio.Event()
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
     connect_calls = 0
 
     async def fake_connect():
@@ -1255,7 +1165,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     assert adapter.closed
     assert len(observed) == int(accepted_prefix)
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1339,7 +1249,7 @@ async def test_program_duck_reconnects_after_a_closed_socket(monkeypatch):
     child.close()
     p._stream = closed_stream  # type: ignore[assignment]
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1370,7 +1280,7 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
     child.close()
     p._stream = closed_stream  # type: ignore[assignment]
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1404,7 +1314,7 @@ async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1438,7 +1348,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1465,7 +1375,7 @@ async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
         gain_db=-8.0,
         drain_tail_sec=0.0,
     )
-    stream = _CaptureOutputdStream()
+    stream = FakeOutputdStream()
     p._stream = stream  # type: ignore[assignment]
 
     await p.prepare_assistant_context(
@@ -1533,7 +1443,7 @@ async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
-    replacement = _CaptureOutputdStream()
+    replacement = FakeOutputdStream()
 
     async def fake_connect():
         return replacement
@@ -1569,3 +1479,61 @@ async def test_outputd_meter_control_reconnect_failure_is_best_effort(
 
     assert broken_stream.closed
     assert p._stream is broken_stream
+
+
+# ---------------------------------------------------------------------------
+# The shared fakes, against the objects they stand in for.
+# ---------------------------------------------------------------------------
+
+
+def _accepted_keywords(func) -> set[str]:
+    params = inspect.signature(func).parameters
+    return {
+        name for name, p in params.items()
+        if name != "self"
+        and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    }
+
+
+def _takes_var_keywords(func) -> bool:
+    return any(
+        p.kind is p.VAR_KEYWORD
+        for p in inspect.signature(func).parameters.values()
+    )
+
+
+@pytest.mark.parametrize(
+    ("fake", "real"),
+    [
+        (FakeOutputdStream, tts_mod._OutputdStreamAdapter),
+        (FakeTts, TtsPlayout),
+    ],
+    ids=["stream", "playout"],
+)
+def test_the_shared_playout_fakes_track_the_real_surface(fake, real):
+    """A fake that has drifted from the object it stands in for passes while
+    the defect it should catch is present — a real adapter method gained a
+    keyword its hand-rolled fakes lacked, so cancellation raised TypeError inside the tests.
+
+    So: no PUBLIC method the real class does not have (no invented surface —
+    a `_`-prefixed name is either the real one's, checked below, or the fake's
+    own bookkeeping), and wherever both classes have the name, every keyword
+    the REAL method accepts must be accepted by the fake, since production
+    code calls the fake through the real call sites.
+    """
+    for name, member in vars(fake).items():
+        if name.startswith("__"):
+            continue
+        if not (inspect.isfunction(member) or isinstance(member, property)):
+            continue
+        real_member = getattr(real, name, None)
+        if real_member is None:
+            assert name.startswith("_"), (
+                f"{fake.__name__}.{name} is not on {real.__name__}"
+            )
+            continue
+        if isinstance(member, property):
+            continue
+        assert _takes_var_keywords(member) or (
+            _accepted_keywords(real_member) <= _accepted_keywords(member)
+        ), f"{fake.__name__}.{name} cannot accept every call {real.__name__}.{name} takes"
