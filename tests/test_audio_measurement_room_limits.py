@@ -93,12 +93,13 @@ def test_cut_floor_and_boost_cap_carry_the_taper():
     assert cap[3] == pytest.approx(0.0, abs=1e-12)
 
 
-@pytest.mark.parametrize("base_max_cut_db", [-3.0, room_limits.ROOM_MAX_CUT_DB, -20.0])
+@pytest.mark.parametrize("base_max_cut_db", [-3.0, -4.0, room_limits.ROOM_MAX_CUT_DB, -20.0])
 def test_unknown_spread_caps_cuts_at_the_boost_envelope(base_max_cut_db):
     freqs = np.array([50.0, KNEE_HZ, MID_TAPER_HZ, CEILING_HZ, 1000.0])
     floor = room_limits.cut_floor_db(None, freqs, CEILING_HZ, base_max_cut_db=base_max_cut_db)
 
     assert np.all(np.isfinite(floor))
+    assert np.all(floor >= base_max_cut_db)
     assert np.all((-room_limits.ROOM_MAX_FILTER_BOOST_DB <= floor) & (floor <= 0.0))
     assert floor == pytest.approx(
         max(base_max_cut_db, -room_limits.ROOM_MAX_FILTER_BOOST_DB)

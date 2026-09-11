@@ -21,6 +21,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from jasper.cli.round_views._common import ARTIFACT_BY_VIEW
+from jasper.audio_measurement.room_limits import spatial_support
 
 
 #: The median's own grid: 1/12 octave from the room floor to the last rung
@@ -50,6 +51,7 @@ def median_document(
     *,
     ceiling_hz: float = CEILING_HZ,
     ceiling_source: str = "applied_candidate",
+    n_positions: int = N_POSITIONS,
 ) -> dict[str, Any]:
     """That document around ANY curve, for a suite whose median is its own.
 
@@ -58,14 +60,16 @@ def median_document(
     """
     bins = len(freqs_hz)
     fan = np.where(np.arange(bins) % 2 == 0, 1.0, -1.0)
+    support = spatial_support(n_positions)
     return {
         "freqs_hz": list(freqs_hz),
         "median_db": list(median_db),
-        "spread_db": [SPREAD_DB] * bins,
-        "n_positions": N_POSITIONS,
+        "spread_db": [SPREAD_DB] * bins if support["sufficient"] else None,
+        "n_positions": n_positions,
+        "spatial_support": support,
         "positions": [
             {"id": f"seat-{index}", "deviation_db": (fan * index).tolist()}
-            for index in range(N_POSITIONS)
+            for index in range(n_positions)
         ],
         "ceiling_hz": ceiling_hz,
         "ceiling_source": ceiling_source,
@@ -80,6 +84,7 @@ def room_median_document(
     ripple_db: Sequence[float] = RIPPLE_DB,
     mode_db: float = MODE_DB,
     dip_db: float = DIP_DB,
+    n_positions: int = N_POSITIONS,
 ) -> dict[str, Any]:
     """One seat cube's median, as lane B's ``room_median.json`` carries it."""
     grid = GRID_HZ[GRID_HZ <= ceiling_hz]
@@ -92,7 +97,7 @@ def room_median_document(
     median_db[int(np.argmin(np.abs(grid - DIP_HZ)))] = dip_db
     return median_document(
         grid.tolist(), median_db.tolist(),
-        ceiling_hz=ceiling_hz, ceiling_source=ceiling_source,
+        ceiling_hz=ceiling_hz, ceiling_source=ceiling_source, n_positions=n_positions,
     )
 
 

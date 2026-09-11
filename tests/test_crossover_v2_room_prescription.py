@@ -179,11 +179,13 @@ def test_no_document_is_the_deterministic_path():
     ) is None
 
 
-def test_a_median_whose_rows_do_not_match_its_grid_is_not_evidence():
-    """Every fault in the median is one reason: a median that cannot be read
-    into limits is evidence this door does not have."""
+@pytest.mark.parametrize("break_document", [
+    lambda raw: raw["positions"][0].update(deviation_db=[0.0, 0.0]),
+    lambda raw: raw.pop("spread_db"),
+], ids=["row_length", "missing_spread"])
+def test_an_unreadable_median_is_not_evidence(break_document):
     broken = _room_median()
-    broken["positions"][0]["deviation_db"] = [0.0, 0.0]
+    break_document(broken)
     with pytest.raises(RoomPrescriptionRefused) as excinfo:
         read_room_median(broken)
     assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
