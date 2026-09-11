@@ -960,3 +960,58 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
         assert drained == [True]
     finally:
         v2host.set_volume_plan_for_tests(None)
+
+
+def test_crossover_reset_and_recover_volume_ignore_a_legacy_volume_safety_file(
+    monkeypatch, tmp_path,
+) -> None:
+    """CrossoverLevelLease's read side used to hydrate
+    active_speaker_crossover_volume_safety.json as an unresolved latch even
+    after its writer was deleted, so a box that had not re-run install (the
+    file's retirement is a deploy/lib/install/retirements.sh row) got
+    /crossover/reset refused forever. The lease no longer reads any such
+    file at all -- writing one here only reproduces the on-disk scenario,
+    neither route below consults it -- and /crossover/recover-volume stays
+    decided by the v2 session-volume plan alone."""
+    import json
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    (tmp_path / "active_speaker_crossover_volume_safety.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "jts_crossover_volume_safety",
+            "status": "active",
+            "reason": None,
+            "source": "driver_sweep",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "original_main_volume_db": -27.0,
+            "emergency_volume_db": -60.0,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(
+        correction_handlers,
+        "_handle_crossover_reset",
+        lambda: ({"status": "cleared"}, HTTPStatus.OK),
+    )
+
+    reset_resp = _drive("/crossover/reset", "POST", body=b"{}")
+
+    assert b"200" in reset_resp.split(b"\r\n", 1)[0]
+    assert json.loads(reset_resp.split(b"\r\n\r\n", 1)[1])["status"] == "cleared"
+
+    v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
+    try:
+        recover_resp = _drive(
+            "/crossover/recover-volume", method="POST", body=b"{}"
+        )
+    finally:
+        v2host.set_volume_plan_for_tests(None)
+
+    assert b"409" in recover_resp.split(b"\r\n", 1)[0]
+    recover_body = json.loads(recover_resp.split(b"\r\n\r\n", 1)[1])
+    assert recover_body["status"] == "refused"
+    assert recover_body["reason"] == "crossover_volume_recovery_not_required"

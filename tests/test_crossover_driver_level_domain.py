@@ -126,48 +126,6 @@ def test_driver_level_geometry_writer_rejects_non_active_role():
         driver_level_geometry("mono", "subwoofer", "reference_axis")
 
 
-def test_unresolved_volume_safety_hydrates_from_a_crash_mid_transition(tmp_path):
-    """A process that crashes mid-transition leaves ``status: "active"`` on
-    disk (a lost setter response never gets the chance to mark it resolved
-    OR unresolved); the next process must hydrate that as unresolved rather
-    than forgetting the speaker was parked loud with no confirmed restore."""
-
-    import json
-
-    from jasper.web.correction_crossover_backend import (
-        _VOLUME_SAFETY_SCHEMA_VERSION,
-        _VOLUME_SAFETY_STATE_KIND,
-        CrossoverLevelLease,
-    )
-
-    state_path = tmp_path / "volume-safety.json"
-    state_path.write_text(
-        json.dumps({
-            "schema_version": _VOLUME_SAFETY_SCHEMA_VERSION,
-            "kind": _VOLUME_SAFETY_STATE_KIND,
-            "status": "active",
-            "reason": None,
-            "source": "driver_sweep",
-            "speaker_group_id": "mono",
-            "role": "woofer",
-            "original_main_volume_db": -27.0,
-            "emergency_volume_db": -60.0,
-        }),
-        encoding="utf-8",
-    )
-
-    restarted = CrossoverLevelLease(volume_safety_state_path=state_path)
-    assert restarted.unresolved_volume_safety == {
-        "status": "unresolved",
-        "reason": "service_restarted_during_volume_transition",
-        "source": "driver_sweep",
-        "speaker_group_id": "mono",
-        "role": "woofer",
-        "original_main_volume_db": -27.0,
-        "emergency_volume_db": -60.0,
-    }
-
-
 def test_effective_excitation_includes_driver_main_lock():
     from jasper.active_speaker.baseline_profile import _effective_excitation_dbfs
 

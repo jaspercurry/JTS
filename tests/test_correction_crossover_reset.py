@@ -23,8 +23,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from jasper.web import correction_crossover_backend as backend
 from jasper.web import correction_crossover_flow as flow
 
@@ -101,23 +99,6 @@ def test_reset_measurement_journey_reports_actual_outcome_not_static_intent(
     assert "measurements" not in result["cleared_ids"]
     assert result["missing_ids"] == ["measurements"]
     assert result["error_ids"] == []
-
-
-def test_reset_measurement_journey_refuses_when_volume_safety_unresolved(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    _seed(monkeypatch, tmp_path)
-    fresh_lease = backend.CrossoverLevelLease()
-    fresh_lease._volume_safety_state = {"status": "unresolved"}
-    monkeypatch.setattr(backend, "level_lease", lambda: fresh_lease)
-
-    with pytest.raises(backend.MeasurementJourneyResetRefused) as exc_info:
-        backend.reset_measurement_journey()
-
-    assert exc_info.value.reason == "crossover_volume_safety_unresolved"
-    # Fail-closed: nothing was cleared.
-    for filename in _JOURNEY_ENVS.values():
-        assert (tmp_path / filename).exists()
 
 
 def test_handle_reset_maps_refusal_to_409(monkeypatch) -> None:

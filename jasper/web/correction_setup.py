@@ -398,22 +398,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
             handler._send_json({"ok": False, "error": str(e)}, status=500)
         return
 
-    from . import correction_crossover_backend as crossover_backend
-
-    volume_sensitive_routes = {
-        "/crossover/reset",
-    }
-    lease = crossover_backend.level_lease()
-    if (
-        path in volume_sensitive_routes
-        and lease.unresolved_volume_safety is not None
-    ):
-        handler._send_json(
-            correction_capture._crossover_volume_safety_refusal(),
-            status=HTTPStatus.CONFLICT,
-        )
-        return
-
     try:
         if path == "/crossover/recover-volume":
             # The v2 session plan is the only source of an unresolved (or

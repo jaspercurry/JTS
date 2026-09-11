@@ -68,6 +68,12 @@ JASPER_RETIRED_LEFTOVERS=(
     # up, with nothing left to read or expire them.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/research_jobs.db|the retired background-research job store"
+    # The pre-v2 per-step leveler's writer (CrossoverLevelLease's volume-safety
+    # latch and the crossover_level_run store) lost its last caller before this
+    # lands, so an already-deployed box can carry a stuck "active"/"unresolved"
+    # latch nothing will ever resolve.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${STATE_DIR}/active_speaker_crossover_volume_safety.json ${STATE_DIR}/active_speaker_crossover_level_run.json ${STATE_DIR}/.active_speaker_crossover_level_run.json.lock|the retired per-step crossover level-run store and volume-safety latch"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort

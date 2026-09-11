@@ -6,100 +6,30 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import threading
-from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker import web_commissioning
 from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
-from jasper.active_speaker.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
-# The emergency floor is owned by the shared volume_latch leaf so this
-# per-step lease and the session-scoped SessionVolumePlan cannot drift.
-# Re-exported at the historical name for this module's importers.
-EMERGENCY_SWEEP_VOLUME_DB = EMERGENCY_MEASUREMENT_VOLUME_DB
-_VOLUME_SAFETY_STATE_KIND = "jts_crossover_volume_safety"
-_VOLUME_SAFETY_SCHEMA_VERSION = 1
-_DEFAULT_VOLUME_SAFETY_STATE_PATH = Path(
-    "/var/lib/jasper/active_speaker_crossover_volume_safety.json"
-)
-
-
-def _malformed_volume_safety(reason: str) -> dict[str, Any]:
-    return {
-        "status": "unresolved",
-        "reason": reason,
-        "source": "unknown",
-        "speaker_group_id": "",
-        "role": "",
-        "original_main_volume_db": None,
-        "emergency_volume_db": EMERGENCY_SWEEP_VOLUME_DB,
-    }
-
-
-def _load_volume_safety_state(path: Path | None) -> dict[str, Any] | None:
-    if path is None:
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError):
-        return _malformed_volume_safety("volume_safety_state_unreadable")
-    if (
-        not isinstance(raw, Mapping)
-        or raw.get("kind") != _VOLUME_SAFETY_STATE_KIND
-        or raw.get("schema_version") != _VOLUME_SAFETY_SCHEMA_VERSION
-    ):
-        return _malformed_volume_safety("volume_safety_state_malformed")
-    if raw.get("status") == "resolved":
-        return None
-    original = raw.get("original_main_volume_db")
-    if original is not None and (
-        isinstance(original, bool)
-        or not isinstance(original, (int, float))
-        or not math.isfinite(float(original))
-        or float(original) > 0
-    ):
-        original = None
-    status = raw.get("status")
-    if status not in {"active", "unresolved"}:
-        return _malformed_volume_safety("volume_safety_state_malformed")
-    return {
-        "status": "unresolved",
-        "reason": (
-            "service_restarted_during_volume_transition"
-            if status == "active"
-            else str(raw.get("reason") or "volume_restore_unconfirmed")
-        ),
-        "source": str(raw.get("source") or "unknown"),
-        "speaker_group_id": str(raw.get("speaker_group_id") or ""),
-        "role": str(raw.get("role") or ""),
-        "original_main_volume_db": (float(original) if original is not None else None),
-        "emergency_volume_db": EMERGENCY_SWEEP_VOLUME_DB,
-    }
 
 
 class CrossoverLevelLease:
-    """Geometry-keyed durable volume-safety latch and repeat-progress cache.
+    """In-process repeat-progress cache feeding the crossover status payload.
 
-    A thin domain owner: single-flight lifetime and observability for the
-    active-crossover status/reset surface. The process-global production
-    lease injects a durable state path; ordinary test instances stay
-    in-memory unless they opt into one. It deliberately owns no CamillaDSP
-    client.
+    Tracks the comparison context a level run is keyed to and caches the
+    durable repeat-admission snapshot (``set_durable_repeat_progress``) so
+    ``/crossover/status`` can render it (``level_match_snapshot``) without
+    re-reading the repeat-admission ledger on every poll. A thin domain
+    owner: single-flight lifetime and observability for the active-crossover
+    status/reset surface. It deliberately owns no CamillaDSP client.
     """
 
-    def __init__(
-        self,
-        *,
-        volume_safety_state_path: str | Path | None = None,
-    ) -> None:
+    def __init__(self) -> None:
         self.session_id = "active-crossover"
         self._level_result_lock = threading.RLock()
         self.context_id: str | None = None
@@ -109,35 +39,9 @@ class CrossoverLevelLease:
         self._repeat_lock = threading.RLock()
         self._repeat_failures: dict[str, dict[str, Any]] = {}
         self._durable_repeat_progress: dict[str, Any] = {}
-        self._volume_safety_state_path = (
-            Path(volume_safety_state_path)
-            if volume_safety_state_path is not None
-            else None
-        )
-        self._volume_safety_state = _load_volume_safety_state(
-            self._volume_safety_state_path
-        )
-
-    @property
-    def unresolved_volume_safety(self) -> dict[str, Any] | None:
-        state = self._volume_safety_state
-        return (
-            dict(state)
-            if state is not None and state.get("status") == "unresolved"
-            else None
-        )
-
-    def assert_volume_safety_resolved(self) -> None:
-        if self._volume_safety_state is not None:
-            raise RuntimeError(
-                "the crossover listening volume is not confirmed safe; JTS must "
-                "restore it or apply emergency attenuation before another action"
-            )
 
     def invalidate_comparison_context(self) -> None:
         """Drop a prior lock/setup before a newly acquired level run begins."""
-
-        self.assert_volume_safety_resolved()
 
         with self._level_result_lock:
             self.context_id = None
@@ -404,20 +308,13 @@ class CrossoverLevelLease:
             or self.context_id == current_context_id
         )
         return {
-            # No production path locks a per-geometry level anymore (the
-            # pre-v2 leveler owned that); kept as an empty dict so the
-            # status wire shape stays stable for existing consumers.
-            "locks": {},
             "context_id": self.context_id,
             "valid": context_valid,
-            "unresolved_volume_safety": self.unresolved_volume_safety,
             "repeats": self.repeat_snapshot(),
         }
 
 
-_LEVEL_LEASE = CrossoverLevelLease(
-    volume_safety_state_path=_DEFAULT_VOLUME_SAFETY_STATE_PATH,
-)
+_LEVEL_LEASE = CrossoverLevelLease()
 
 
 def level_lease() -> CrossoverLevelLease:
@@ -449,12 +346,6 @@ def reset_measurement_journey() -> dict[str, Any]:
     ``jasper.web.correction_setup``, which reuses the capture-cancel path
     first. This function only owns the in-process lease and the durable
     journey files; it never touches CamillaDSP.
-
-    Fails closed: :meth:`CrossoverLevelLease.invalidate_comparison_context`
-    raises if a level match is still running or the crossover volume-safety
-    state is unresolved — in either case nothing here is cleared. Re-raised
-    as :class:`MeasurementJourneyResetRefused` with a stable ``reason`` the
-    HTTP layer can map to a household-facing message.
     """
 
     from jasper.active_speaker.reset import (
@@ -464,20 +355,7 @@ def reset_measurement_journey() -> dict[str, Any]:
     )
 
     lease = level_lease()
-    if lease.unresolved_volume_safety is not None:
-        raise MeasurementJourneyResetRefused(
-            "the crossover listening volume is not confirmed safe; JTS must "
-            "restore it before starting over",
-            reason="crossover_volume_safety_unresolved",
-        )
-    try:
-        lease.invalidate_comparison_context()
-    except RuntimeError as exc:
-        raise MeasurementJourneyResetRefused(
-            "a crossover measurement is still stopping; try Start over again "
-            "in a moment",
-            reason="measurement_in_progress",
-        ) from exc
+    lease.invalidate_comparison_context()
 
     reset_result = clear_active_speaker_measurement_journey()
     # Report what actually happened, not the static intent: a file that failed
