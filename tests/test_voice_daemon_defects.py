@@ -15,7 +15,7 @@ import pytest
 from jasper.mic_capture import InputDeviceUnavailable
 from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON
 from jasper.voice.turn_lifecycle import State
-from jasper.voice_daemon import idle_watchdog
+from jasper.voice.turn_playback import idle_watchdog
 
 from ._log_events import event_fields
 from ._wake_loop import wake_loop_for_tests
@@ -292,7 +292,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
         wl._peering.arbitrate = _win
         wl._prepare_assistant_loudness_context = _noop
         wl._play_listening_chirp = _noop
-        wl._begin_turn_inner = _begin_boom
+        wl._turns.begin_inner = _begin_boom
         wl._play_cue = _rec
 
         try:
@@ -358,7 +358,7 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
     wl._peering.arbitrate = _win
     wl._prepare_assistant_loudness_context = _noop
     wl._play_listening_chirp = _noop
-    wl._begin_turn_inner = _begin_boom
+    wl._turns.begin_inner = _begin_boom
 
     try:
         await wl._arbitrate_acquire_drain(
@@ -452,7 +452,7 @@ def test_capture_gap_resets_wake_history_and_reports_input_age():
 async def test_acquire_drain_failure_releases_started_resources(monkeypatch, path, cancel):
     from unittest.mock import AsyncMock
 
-    from jasper import voice_daemon
+    from jasper.voice import turn_lifecycle
     from jasper.voice.turn_lifecycle import State
     from tests._async_wait import wait_signalled
     from tests._live_turn_fake import FakeLiveTurn
@@ -493,8 +493,8 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
             assert "SESSION_STARTED test-wake" in peer_commands
         raise RuntimeError("acquired input drain failed")
 
-    monkeypatch.setattr(voice_daemon, "play_responses", worker)
-    monkeypatch.setattr(voice_daemon, "idle_watchdog", worker)
+    monkeypatch.setattr(turn_lifecycle, "play_responses", worker)
+    monkeypatch.setattr(turn_lifecycle, "idle_watchdog", worker)
     wl._peering._send = send
     wl._drain_acquire_audio = fail_drain
     turn.release = release

@@ -377,7 +377,7 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
         wl, bytes_sent=4096, chunks_received=1,
         input_ended=True, manual=False, user_speech=True,
     )
-    await wl._begin_turn_output_episode()
+    await wl._turns.begin_output_episode()
     await wl._ducker.duck()
     opener_episode = wl._turns.output_episode
     assert opener_episode is not None

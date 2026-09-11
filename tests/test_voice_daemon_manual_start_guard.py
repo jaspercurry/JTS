@@ -67,7 +67,7 @@ def _make_wake_loop(**collaborators):
     wl._begin_turn = _SpyCalls()
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
-    wl._cleanup_after_failed_begin = _SpyCalls()
+    wl._turns.cleanup_after_failed_begin = _SpyCalls()
     return wl
 
 
@@ -270,12 +270,12 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
 
     wl = wake_loop_for_tests()
     cleanup_calls = 0
-    cleanup_method = type(wl)._cleanup_after_failed_begin
+    cleanup_method = type(wl._turns).cleanup_after_failed_begin
 
     async def counted_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
-        await cleanup_method(wl)
+        await cleanup_method(wl._turns)
 
     async def noop_prepare() -> None:
         return None
@@ -287,9 +287,9 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
         coro.close()
         return None
 
-    wl._cleanup_after_failed_begin = counted_cleanup
+    wl._turns.cleanup_after_failed_begin = counted_cleanup
     wl._prepare_assistant_loudness_context = noop_prepare
-    wl._begin_turn_inner = failed_inner
+    wl._turns.begin_inner = failed_inner
     wl._create_fire_and_forget_task = discard_task
 
     assert await wl.manual_session_start() == "ERROR"
@@ -304,19 +304,19 @@ async def test_manual_start_cleans_prefix_failure_before_turn_inner():
     wl = wake_loop_for_tests()
     cleanup_calls = 0
     inner = _SpyCalls()
-    cleanup_method = type(wl)._cleanup_after_failed_begin
+    cleanup_method = type(wl._turns).cleanup_after_failed_begin
 
     async def counted_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
-        await cleanup_method(wl)
+        await cleanup_method(wl._turns)
 
     async def fail_prepare() -> None:
         raise RuntimeError("pre-begin loudness preparation failed")
 
-    wl._cleanup_after_failed_begin = counted_cleanup
+    wl._turns.cleanup_after_failed_begin = counted_cleanup
     wl._prepare_assistant_loudness_context = fail_prepare
-    wl._begin_turn_inner = inner
+    wl._turns.begin_inner = inner
 
     assert await wl.manual_session_start() == "ERROR"
     assert inner.called is False
@@ -482,7 +482,7 @@ def _ptt_only_wake_loop():
     wl._begin_turn = _SpyCalls()
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
-    wl._cleanup_after_failed_begin = _SpyCalls()
+    wl._turns.cleanup_after_failed_begin = _SpyCalls()
     return wl
 
 

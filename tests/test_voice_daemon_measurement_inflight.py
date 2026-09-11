@@ -1165,14 +1165,14 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         usage_store=usage,
     )
     cleanup_calls = 0
-    real_cleanup = wl._cleanup_after_failed_begin
+    real_cleanup = wl._turns.cleanup_after_failed_begin
 
     async def counted_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
         await real_cleanup()
 
-    monkeypatch.setattr(wl, "_cleanup_after_failed_begin", counted_cleanup)
+    monkeypatch.setattr(wl._turns, "cleanup_after_failed_begin", counted_cleanup)
     beginning = asyncio.create_task(wl._begin_turn(pre_roll=False))
 
     try:
@@ -1267,14 +1267,14 @@ async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
     gate = _EndCountingGate()
     wl = wake_loop_for_tests(output_gate=gate, content_activity=content)
     cleanup_calls = 0
-    real_cleanup = wl._cleanup_after_failed_begin
+    real_cleanup = wl._turns.cleanup_after_failed_begin
 
     async def counted_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
         await real_cleanup()
 
-    monkeypatch.setattr(wl, "_cleanup_after_failed_begin", counted_cleanup)
+    monkeypatch.setattr(wl._turns, "cleanup_after_failed_begin", counted_cleanup)
 
     with pytest.raises(_BeginAbort) as caught:
         await wl._begin_turn(pre_roll=False)
@@ -1345,14 +1345,14 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     )
     monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", held_prepare)
     cleanup_calls = 0
-    real_cleanup = wl._cleanup_after_failed_begin
+    real_cleanup = wl._turns.cleanup_after_failed_begin
 
     async def counted_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
         await real_cleanup()
 
-    monkeypatch.setattr(wl, "_cleanup_after_failed_begin", counted_cleanup)
+    monkeypatch.setattr(wl._turns, "cleanup_after_failed_begin", counted_cleanup)
 
     if path == "wake":
         async def win_arbitration(**_kwargs) -> str:
@@ -1448,7 +1448,7 @@ async def test_begin_turn_centralizes_feedback_prefix_without_reordering(
         return None
 
     monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", prepare)
-    monkeypatch.setattr(wl, "_begin_turn_inner", inner)
+    monkeypatch.setattr(wl._turns, "begin_inner", inner)
     monkeypatch.setattr(wl._assistant_output, "start_turn_feedback", schedule)
 
     await wl._begin_turn(listening_feedback=listening_feedback)
@@ -1558,7 +1558,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     wl._acquiring = True
     wl._turns.state = State.SESSION
     wl._wake_legs.refractory_until = -1.0
-    wl._begin_turn_inner = failed_inner
+    wl._turns.begin_inner = failed_inner
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         with pytest.raises(RuntimeError) as caught:
@@ -2253,7 +2253,7 @@ async def test_failed_begin_drains_opening_feedback_without_completion_chirp():
     wl._tts.write_segment = write
     wl._tts.wait_drained = drain
     wl._ducker.restore = AsyncMock()
-    wl._begin_turn_inner = fail
+    wl._turns.begin_inner = fail
     beginning = asyncio.create_task(wl._begin_turn(listening_feedback=True))
     try:
         await wait_signalled(accepted, "opening feedback", producer=beginning)

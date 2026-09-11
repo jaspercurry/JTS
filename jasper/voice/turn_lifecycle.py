@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-voice's turn: what is open, and how it ends.
+"""jasper-voice's turn: how one opens, what is open, and how it ends.
 
 Owns the in-flight turn — the provider turn object, the wake/session
 state, the usage session id, the background response tasks — and the
@@ -12,9 +12,9 @@ journal a no-answer turn and cue it.
 
 `WakeLoop` builds one at construction time, writes the owned attributes
 directly when the loop causes the change, and reads them for
-`session_status`. The loop-side reads the teardown needs are
-injected as late-bound callables so a test rebinding `WakeLoop._play_cue`
-still intercepts the teardown cue.
+`session_status`. The loop-side reads it needs are injected as
+late-bound callables so a test rebinding `WakeLoop._play_cue` still
+intercepts the teardown cue.
 """
 
 from __future__ import annotations
@@ -23,11 +23,13 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import Enum
+from typing import NoReturn
 
 from jasper.log_event import log_event
 
-from ..usage import UsageStore
+from ..usage import SpendCap, UsageStore
 from ._tasks import cancel_tracked_tasks
 from .assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
@@ -36,12 +38,19 @@ from .assistant_output import (
     capture_cleanup_error,
 )
 from .content_activity import ContentActivityTracker
+from .conversation import continuous_watchdog
 from .conversation_capture import ConversationCapture
 from .output_gate import AssistantOutputEpisode
 from .peering_client import PeeringClient
+from .provider_state import read_barge_in_enabled
 from .push_to_talk import PushToTalk
 from .session import LiveConnection, LiveTurn
-from .turn_playback import PRE_RESPONSE_CAPPED_REASON, PlaybackReport
+from .turn_playback import (
+    PRE_RESPONSE_CAPPED_REASON,
+    PlaybackReport,
+    idle_watchdog,
+    play_responses,
+)
 from .turn_timeline import TurnTimeline
 from .wake_telemetry import WakeTelemetry
 
@@ -65,6 +74,14 @@ class InputAdmissionClosed(RuntimeError):
         super().__init__(result)
 
 
+@dataclass(frozen=True)
+class TurnInput:
+    """The loop's input window as the opening turn sees it."""
+
+    epoch: float
+    frames: tuple
+
+
 class State(Enum):
     WAKE = "wake"
     SESSION = "session"
@@ -79,12 +96,20 @@ class TurnLifecycle:
         connection: LiveConnection,
         content_activity: ContentActivityTracker,
         usage_store: UsageStore,
+        spend_cap: SpendCap,
         push_to_talk: PushToTalk,
         *,
         timeline: TurnTimeline,
         peering: PeeringClient,
         wake_telemetry: WakeTelemetry,
         conversation_capture: ConversationCapture,
+        measurement_active: asyncio.Event,
+        check_admission: Callable[[float], None],
+        turn_input: Callable[..., TurnInput],
+        acquire_anchor: Callable[[], float],
+        reset_input: Callable[[], None],
+        prepare_loudness: Callable[[], Awaitable[None]],
+        barge_in_reference: Callable[[], bool],
         spawn: Callable[..., "asyncio.Task"],
         arm_refractory: Callable[[], None],
         play_cue: Callable[[str], Awaitable[bool]],
@@ -94,11 +119,19 @@ class TurnLifecycle:
         self._connection = connection
         self._content_activity = content_activity
         self._usage_store = usage_store
+        self._spend_cap = spend_cap
         self._push_to_talk = push_to_talk
         self._timeline = timeline
         self._peering = peering
         self._telemetry = wake_telemetry
         self._conversation_capture = conversation_capture
+        self._measurement_active = measurement_active
+        self._check_admission = check_admission
+        self._turn_input = turn_input
+        self._acquire_anchor = acquire_anchor
+        self._reset_input = reset_input
+        self._prepare_loudness = prepare_loudness
+        self._barge_in_reference = barge_in_reference
         self._spawn = spawn
         self._arm_refractory = arm_refractory
         self._play_cue = play_cue
@@ -138,7 +171,7 @@ class TurnLifecycle:
         self.max_silero_raw: float = 0.0
         self.silero_aec_armed_at_ms: int | None = None
         self.silero_raw_armed_at_ms: int | None = None
-        # Decided once per turn in `_begin_turn_inner`: true when this turn's
+        # Decided once per turn in `begin_inner`: true when this turn's
         # session audio comes from a push-to-talk source, so the button owns
         # both boundaries and local VAD must not become a second writer of
         # end-of-input.
@@ -155,10 +188,321 @@ class TurnLifecycle:
 
         self._bg_end_scheduled: bool = False
         self._transition_lock = asyncio.Lock()
+        # Once per daemon, not per turn: see `_resolve_barge_in_for_turn`.
+        self._barge_in_no_ref_warned: bool = False
+        self._barge_in_ptt_warned: bool = False
 
     def take_pending_release(self) -> "asyncio.Task | None":
         release, self.pending_release = self.pending_release, None
         return release
+
+    async def begin_inner(
+        self,
+        *,
+        pre_roll: bool = True,
+        text_context: str | None = None,
+        anchor_at: float = 0.0,
+    ) -> None:
+        turn_input = self._turn_input(pre_roll=pre_roll)
+        input_epoch = turn_input.epoch
+        self._check_admission(input_epoch)
+        pre_roll_frames = turn_input.frames
+        if self.output_episode is None:
+            await self.begin_output_episode()
+        t_begin = time.monotonic()
+        # sched_lag is wake→picked-up-by-the-loop; a turn no wake opened has
+        # no lag to report and must not charge itself the episode await.
+        t_wake = anchor_at or t_begin
+        # One endpointer decision per turn. A turn whose audio comes from a
+        # push-to-talk source is closed by the button release
+        # (`manual_session_end`), so local Silero must not also try.
+        # `active_source` is set by `manual_session_start` before it
+        # calls us and is the same flag `_manual_mic_loop` gates on, so "the
+        # button owns this turn" and "manual-source frames are the session
+        # audio" are one fact, not two.
+        self.manual_endpoint_this_turn = (
+            self._push_to_talk.active_source is not None
+        )
+        # Silero's internal LSTM state must not leak across turns.
+        self._reset_input()
+        self.user_speech_seen = False
+        self.input_ended = False
+        self.continuous_speech_started = self.continuous_last_speech = 0.0
+        self.started_at_loop = (
+            anchor_at or self._acquire_anchor() or asyncio.get_event_loop().time()
+        )
+        self.max_silero_aec = 0.0
+        self.max_silero_raw = 0.0
+        self.silero_raw_armed_at_ms = None
+        self.silero_aec_armed_at_ms = None
+        self._resolve_barge_in_for_turn()
+        t_after_state = time.monotonic()
+        await self._content_activity.refresh_now()
+        await self._prepare_loudness()
+        await self._output.tts.pause_content_meter()
+        self._content_activity.pause()
+        self._output.volume_coordinator.note_voice_session(
+            True,
+            camilla_volume_locked=getattr(
+                self._output.ducker, "locks_camilla_volume", True,
+            ),
+        )
+        t_after_loudness_prepare = time.monotonic()
+        await self._output.ducker.duck()
+        t_after_duck = time.monotonic()
+        self.session_id = self._usage_store.open_session(
+            provider=self._output.cfg.voice_provider,
+        )
+        if (release := self.take_pending_release()) is not None:
+            await asyncio.gather(release, return_exceptions=True)
+        self.turn = await self._connection.acquire_turn()
+        t_after_acquire = time.monotonic()
+        self._check_admission(input_epoch)
+
+        if text_context:
+            await self.turn.send_text_context(text_context)
+            if self.turn.turn_lost():
+                raise RuntimeError("live turn lost while sending text context")
+
+        logger.info(
+            "turn acquire done in %.0fms "
+            "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f acquire=%.0f) "
+            "(wake→activity_start)",
+            (time.monotonic() - t_wake) * 1000,
+            (t_begin - t_wake) * 1000,
+            (t_after_state - t_begin) * 1000,
+            (t_after_loudness_prepare - t_after_state) * 1000,
+            (t_after_duck - t_after_loudness_prepare) * 1000,
+            (t_after_acquire - t_after_duck) * 1000,
+        )
+        # Drain the recent-mic ring into the turn so the user's first phoneme,
+        # which preceded the wake firing, reaches the model. The frame that
+        # fired the wake is the most-recently-appended entry and is included.
+        if pre_roll_frames:
+            self._timeline.stamp("first_audio_to_provider")
+        for frame in pre_roll_frames:
+            self._check_admission(input_epoch)
+            await self.turn.send_audio(frame.tobytes())
+        self._check_admission(input_epoch)
+        self.playback_report = PlaybackReport()
+        playback = asyncio.create_task(
+            play_responses(
+                self.turn, self._output.tts, barge_in_enabled=self.barge_in_active,
+                report=self.playback_report,
+                continuous=self.turn.continuous_input,
+                admission_refusal=self._output.admission_refusal,
+                on_response_started=self._timeline.observer("first_response", event_stage="response_started"),
+                on_first_write=self._timeline.observer("first_write"),
+            )
+        )
+        continuous = self.turn.continuous_input
+        idle = asyncio.create_task(
+            continuous_watchdog(
+                self.turn, self._output.tts, followup_seconds=self._output.cfg.followup_timeout_sec,
+                stall_seconds=self._output.cfg.response_stall_timeout_sec,
+                user_activity=lambda: (self.continuous_speech_started, self.continuous_last_speech),
+                spend_allowed=self._spend_cap.allowed,
+            ) if continuous else idle_watchdog(
+                self.turn,
+                self._output.tts,
+                self._output.cfg.idle_timeout_sec,
+                self._output.cfg.response_stall_timeout_sec,
+            )
+        )
+        self.bg_tasks = {playback, idle}
+        self.state = State.SESSION
+        self.arm_background_end()
+
+    async def begin_output_episode(self) -> None:
+        """Take the turn's output episode, or abandon the turn to a measurement.
+
+        `AssistantOutputGate.begin_turn` queues behind paused admission with
+        no bound, and `MeasurementHold` closes admission and sets
+        `_measurement_active` without awaiting in between — so a wake that
+        cleared `_check_input_admission` a moment earlier would otherwise wait
+        here for the whole window (up to MEASUREMENT_AUTOCLEAR_SEC), deaf and
+        uncued. Arbitrating the two bounds that wait by the window's opening
+        instead.
+
+        Which side wins is a real race, and both outcomes are safe. A wake
+        that loses is dropped silently, like one `_wake_late_cancelled`
+        catches at a checkpoint. A wake whose claim lands in the SAME wait as
+        the pause keeps its episode and proceeds — the window closed input
+        admission before it set `_measurement_active`, so that turn is refused
+        at the next `_check_input_admission` and every emission through the
+        episode is refused at the seam `play_responses` reads
+        (`AssistantOutputGate.admission_refusal`): no audio escapes into the
+        capture either way.
+        """
+        if self._measurement_active.is_set():
+            self._refuse_output_episode_for_measurement()
+        gate = self._output.gate
+        if not gate.admission_paused and not gate.is_active:
+            # Uncontended: `begin_turn` cannot suspend, so the claim lands in
+            # this same event-loop turn — no task, no extra hop for a turn
+            # that races nothing. The gate's lock is never held across an
+            # await, so the two reads above are still true when it acquires.
+            self.output_episode = (
+                await self._output.begin_turn_episode(
+                    self.output_episode,
+                )
+            )
+            return
+        taking = asyncio.ensure_future(
+            self._output.begin_turn_episode(self.output_episode),
+        )
+        measuring = asyncio.ensure_future(self._measurement_active.wait())
+        try:
+            await asyncio.wait(
+                (taking, measuring), return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            measuring.cancel()
+            # `asyncio.wait` has returned and nothing has awaited since, so a
+            # task that is not done cannot have taken the gate — cancelling it
+            # strands no episode. One that IS done is adopted even when this
+            # task was itself cancelled, or the gate stays owned forever.
+            if not taking.done():
+                taking.cancel()
+            elif not taking.cancelled() and taking.exception() is None:
+                self.output_episode = taking.result()
+        if not taking.done():
+            self._refuse_output_episode_for_measurement()
+        # The episode is already stored; this only re-raises a real failure.
+        taking.result()
+
+    @staticmethod
+    def _refuse_output_episode_for_measurement() -> NoReturn:
+        log_event(
+            logger,
+            "wake.late_cancel",
+            reason="measurement_active",
+            phase="output_episode",
+        )
+        raise InputAdmissionClosed("MEASURING")
+
+    def _resolve_barge_in_for_turn(self) -> None:
+        """Decide whether in-session barge-in is active for the turn about
+        to open. `reset_input`, called earlier in `begin_inner`, owns the
+        per-turn speech-run reset.
+
+        Reads the per-provider enable flag from the SSOT file (not the
+        start-time ``Config``) so a wizard / operator toggle takes effect
+        without a daemon restart — jasper-voice is restarted on a *provider*
+        switch but not on a barge-in toggle. The read is mtime-gated
+        (``read_barge_in_enabled``), so the steady-state per-turn cost is a
+        single ``os.stat``, not a full open+read+parse. DEFAULT OFF.
+
+        Self-interrupt-loop guard: when barge-in is requested but the
+        primary mic leg has no AEC reference (the ``direct_mic`` profile),
+        hard-disable it for the turn and WARN once per daemon, rather than
+        let un-cancelled TTS bleed self-trip the gate every turn.
+
+        Push-to-talk turns refuse it loudly for a related reason: the frames
+        ``_handle_playback_frame`` would score come from the accessory's mic,
+        while ``_barge_in_reference_available`` was computed from
+        ``cfg.mic_device`` — a different stream — so the self-interrupt guard
+        has not cleared the audio barge-in would run on."""
+        want = read_barge_in_enabled(self._output.cfg.voice_provider)
+        if want and self.manual_endpoint_this_turn:
+            # Its own latch, not `_barge_in_no_ref_warned`: on a speaker with
+            # both a room mic and a remote, sharing one would let a
+            # push-to-talk turn swallow the different no-reference warning a
+            # later wake turn owes the operator.
+            if not self._barge_in_ptt_warned:
+                self._barge_in_ptt_warned = True
+                log_event(
+                    logger,
+                    "barge.disabled_push_to_talk",
+                    provider=self._output.cfg.voice_provider,
+                    source=self._push_to_talk.active_source or "primary",
+                    detail=(
+                        "barge-in scores the primary mic leg, which a "
+                        "push-to-talk turn does not use"
+                    ),
+                    level=logging.WARNING,
+                )
+            want = False
+        if want and not self._barge_in_reference():
+            if not self._barge_in_no_ref_warned:
+                self._barge_in_no_ref_warned = True
+                log_event(
+                    logger,
+                    "barge.disabled_no_reference",
+                    provider=self._output.cfg.voice_provider,
+                    mic_device=self._output.cfg.mic_device,
+                    level=logging.WARNING,
+                )
+            want = False
+        self.barge_in_active = want
+
+    async def cleanup_after_failed_begin(self) -> None:
+        if self.ending:
+            return
+        self.ending = True
+        try:
+            await await_output_cleanup_owned(
+                self._release_failed_turn(), task_name="turn-begin-cleanup",
+            )
+        finally:
+            self.ending = False
+
+    async def _release_failed_turn(self) -> None:
+        first_base_error: BaseException | None = None
+
+        def record_failure(phase: str, error: BaseException) -> None:
+            nonlocal first_base_error
+            if isinstance(error, Exception):
+                log_event(
+                    logger,
+                    "turn.begin_cleanup_phase_failed",
+                    phase=phase,
+                    exc_type=type(error).__name__,
+                    err=str(error),
+                    level=logging.WARNING,
+                )
+            elif first_base_error is None:
+                # Cancellation and other BaseExceptions must not skip later
+                # cleanup: re-raise the first only after every phase has run.
+                first_base_error = error
+
+        async def run_phase(
+            phase: str,
+            operation: Callable[[], object],
+        ) -> None:
+            error = await capture_cleanup_error(operation)
+            if error is not None:
+                record_failure(phase, error)
+
+        turn = self.turn
+        session_id = self.session_id
+        episode = self.output_episode
+        # First, so `total_ms` is the failure moment rather than the failure
+        # plus the cleanup awaits below.
+        await run_phase(
+            "turn_timeline",
+            lambda: self._timeline.emit("aborted"),
+        )
+        await run_phase(
+            "peering_end", lambda: self._peering.session_ended("acquire_error"),
+        )
+        await run_phase("background_stop", lambda: cancel_tracked_tasks(self.bg_tasks))
+        if turn is not None:
+            await run_phase("turn_release", turn.release)
+        await run_phase(
+            "output_cleanup",
+            lambda: self._output.finish_turn_episode(episode, completed=False),
+        )
+        if session_id is not None:
+            await run_phase(
+                "usage_session_close",
+                lambda: self._usage_store.close_session(session_id, 0, 0),
+            )
+
+        await run_phase("local_state_reset", self._reset)
+
+        if first_base_error is not None:
+            raise first_base_error
 
     def arm_background_end(self) -> None:
         """End the turn when a response/playback background task completes.
@@ -242,7 +586,7 @@ class TurnLifecycle:
             return "no_speech_abort"
         return label
 
-    def reset(self) -> None:
+    def _reset(self) -> None:
         try:
             self._content_activity.resume()
         finally:
@@ -333,7 +677,7 @@ class TurnLifecycle:
                     elif error is not None:
                         raise error
             finally:
-                self.reset()
+                self._reset()
 
     def _reply_lost(self) -> bool:
         assert self.turn is not None

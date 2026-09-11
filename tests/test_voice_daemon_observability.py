@@ -217,7 +217,7 @@ async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
     wl = _timeline_loop(wake=True)
     await wl._play_listening_chirp(going_on=True)
 
-    await wl._cleanup_after_failed_begin()
+    await wl._turns.cleanup_after_failed_begin()
 
     (aborted,) = event_field_maps(caplog, "turn.timeline", outcome="aborted")
     assert aborted["anchor"] == "wake"

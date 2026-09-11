@@ -795,9 +795,9 @@ def test_barge_in_refused_on_a_button_turn_and_says_why(
     wl._push_to_talk.active_source = "wiim_remote_2"
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wl._resolve_barge_in_for_turn()
+        wl._turns._resolve_barge_in_for_turn()
         first = event_records(caplog, "barge.disabled_push_to_talk")
-        wl._resolve_barge_in_for_turn()
+        wl._turns._resolve_barge_in_for_turn()
         second = event_records(caplog, "barge.disabled_push_to_talk")
 
     assert wl._turns.barge_in_active is False
@@ -821,7 +821,7 @@ def test_barge_in_still_enabled_on_a_wake_turn(monkeypatch, tmp_path):
     wl._barge_in_reference_available = True
     wl._turns.manual_endpoint_this_turn = False
 
-    wl._resolve_barge_in_for_turn()
+    wl._turns._resolve_barge_in_for_turn()
 
     assert wl._turns.barge_in_active is True
 
@@ -844,10 +844,10 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         wl._turns.manual_endpoint_this_turn = True
-        wl._resolve_barge_in_for_turn()
+        wl._turns._resolve_barge_in_for_turn()
         # Now a wake turn on the same daemon.
         wl._turns.manual_endpoint_this_turn = False
-        wl._resolve_barge_in_for_turn()
+        wl._turns._resolve_barge_in_for_turn()
 
     assert len(event_records(caplog, "barge.disabled_push_to_talk")) == 1
     assert event_fields(caplog, "barge.disabled_no_reference")["mic_device"] == (

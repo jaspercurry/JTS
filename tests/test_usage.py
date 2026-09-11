@@ -1252,7 +1252,7 @@ async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
             began = time.monotonic()
             tick = asyncio.create_task(asyncio.sleep(0.01))
             with pytest.raises(RuntimeError):
-                await wl._begin_turn_inner(pre_roll=False)
+                await wl._turns.begin_inner(pre_roll=False)
             wl._connection.acquire_turn.assert_awaited_once()
             assert wl._turns.session_id != _UNRECORDED_SESSION
             store.close_session(wl._turns.session_id, 0, 0)
