@@ -399,16 +399,18 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
 
 async def test_a_surrender_inside_the_teardown_stops_every_later_write() -> None:
     """NN-6, inside `_end_turn_inner`: ownership is re-asked AT each output
-    action, so a surrender landing in an await before them stops all of
-    them — the END_SEGMENT included, which goes down the shared TTS stream
-    and would close the segment of whatever took the gate and bill its
-    loudness to this turn. One answer read at the top lets every one
-    through."""
+    action, so a surrender landing in an await before them stops every later
+    one. The writes this turn owned — its END_SEGMENT and its hang-up chirp —
+    happened while it still held the gate; one answer read at the top would
+    instead let the ones after the surrender through, down the shared TTS
+    stream and into the segment of whatever took the gate."""
     wl, timeline = await _surrender_inside_end_turn_inner()
 
-    # Nothing after the surrender: no end_segment, no chirp write, no drain
-    # wait, no duck restore.
-    assert timeline == ["duck", "peering_notify", "surrender", "peering_resumed"]
+    # Nothing after the surrender: no drain wait, no duck restore.
+    assert timeline == [
+        "duck", "end_segment", "peering_notify", "write_chirp", "surrender",
+        "peering_resumed",
+    ]
     # The cue that took the gate still owns it — the teardown released
     # nothing — while the opener still finished the turn it was holding.
     assert wl._output_gate.active_kind == "admin"

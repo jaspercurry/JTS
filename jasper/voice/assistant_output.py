@@ -193,6 +193,9 @@ class AssistantOutput:
         self._opening_feedback: tuple[
             AssistantOutputEpisode | None, asyncio.Task[None]
         ] | None = None
+        self._closing_feedback: tuple[
+            AssistantOutputEpisode | None, asyncio.Task[None]
+        ] | None = None
         # One admission authority for assistant audio, asked twice: the gate
         # refuses an episode that has not started yet, this hook refuses the
         # bytes of one that already had (issue #1913).
@@ -715,11 +718,19 @@ class AssistantOutput:
             episode, asyncio.create_task(operation, name="listening-chirp-on"),
         )
 
+    def start_end_feedback(
+        self, episode: AssistantOutputEpisode | None, operation: Coroutine[object, object, None],
+    ) -> None:
+        """Start the turn's closing cue now, so the household hears the
+        hang-up while the teardown below still runs; the join is a step of
+        `finish_turn_episode`."""
+        self._closing_feedback = (
+            episode, asyncio.create_task(operation, name="listening-chirp-off"),
+        )
+
     async def finish_turn_episode(
         self,
         episode: AssistantOutputEpisode | None,
-        *,
-        completed: bool,
     ) -> None:
         """Release only this turn's output, after its completion feedback drains."""
         first_base_error: BaseException | None = None
@@ -727,8 +738,11 @@ class AssistantOutput:
         opening = self._opening_feedback
         if opening is not None and opening[0] == episode:
             steps.append(("opening_feedback", lambda: opening[1], True))
-        if completed:
-            steps.append(("chirp", lambda: self.listening_chirp(going_on=False), True))
+        closing = self._closing_feedback
+        if closing is not None and closing[0] == episode:
+            # Joined whether or not this episode still holds the gate: the
+            # task exists either way and something must await it.
+            steps.append(("closing_feedback", lambda: closing[1], False))
         steps.extend((
             ("drain", lambda: wait_tts_drained_owned(self.tts), True),
             ("duck_restore", self.ducker.restore, True),
@@ -753,6 +767,8 @@ class AssistantOutput:
                 first_base_error = error
         if self._opening_feedback is opening:
             self._opening_feedback = None
+        if self._closing_feedback is closing:
+            self._closing_feedback = None
         if first_base_error is not None:
             raise first_base_error
 

@@ -492,7 +492,7 @@ class TurnLifecycle:
             await run_phase("turn_release", turn.release)
         await run_phase(
             "output_cleanup",
-            lambda: self._output.finish_turn_episode(episode, completed=False),
+            lambda: self._output.finish_turn_episode(episode),
         )
         if session_id is not None:
             await run_phase(
@@ -661,9 +661,7 @@ class TurnLifecycle:
             play_no_answer_cue = await self._record_and_release_turn(reason, episode)
         finally:
             try:
-                await self._output.finish_turn_episode(
-                    episode, completed=reason != "playback_failed",
-                )
+                await self._output.finish_turn_episode(episode)
                 self.barge_in_active = False
                 if play_no_answer_cue:
                     # A paused connection owns its remedy cue. Keep SESSION
@@ -679,6 +677,17 @@ class TurnLifecycle:
                         raise error
             finally:
                 self._reset()
+
+    def _start_end_chirp(
+        self, reason: str, episode: AssistantOutputEpisode | None,
+    ) -> None:
+        if reason == "playback_failed" or episode is None:
+            return
+        if not self._output.gate.is_current(episode):
+            return
+        self._output.start_end_feedback(
+            episode, self._output.listening_chirp(going_on=False),
+        )
 
     def _reply_lost(self) -> bool:
         assert self.turn is not None
@@ -780,10 +789,7 @@ class TurnLifecycle:
             drain_wait_sec = max(0.0, time.monotonic() - last_chunk_at)
         turn = self.turn
         assert turn is not None
-        phases: list[tuple[str, Callable[[], object]]] = [
-            ("turn_outcome", lambda: self._record_turn_outcome(reason)),
-            ("peering_end", lambda: self._peering.session_ended(reason)),
-        ]
+
         async def end_segment() -> None:
             if episode is not None and self._output.gate.is_current(episode):
                 try:
@@ -794,7 +800,16 @@ class TurnLifecycle:
                 finally:
                     await self._output.tts.end_segment()
 
-        phases.append(("end_segment", end_segment))
+        # Order is the point: the chirp goes out ahead of the bookkeeping and
+        # the provider release, so the hang-up is audible when the turn ends
+        # rather than a second later. It still follows `end_segment`, whose
+        # flush would otherwise drop it.
+        phases: list[tuple[str, Callable[[], object]]] = [
+            ("end_segment", end_segment),
+            ("end_chirp", lambda: self._start_end_chirp(reason, episode)),
+            ("turn_outcome", lambda: self._record_turn_outcome(reason)),
+            ("peering_end", lambda: self._peering.session_ended(reason)),
+        ]
         if self.input_ended or self.user_speech_seen or self.manual_endpoint_this_turn:
             phases.append(("end_input", lambda: asyncio.wait_for(turn.end_input(), timeout=2.0)))
         cleanup_base_error: BaseException | None = None

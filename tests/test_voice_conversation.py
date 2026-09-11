@@ -24,8 +24,8 @@ from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
-def answered_loop():
-    loop = wake_loop_for_tests(usage_store=FakeUsageStore())
+def answered_loop(tts=None):
+    loop = wake_loop_for_tests(usage_store=FakeUsageStore(), tts=tts)
     loop._turns.state = State.SESSION
     loop._turns.turn = FakeLiveTurn(chunks_received=1)
     loop._turns.session_id = 7
@@ -172,3 +172,42 @@ async def test_a_user_run_that_draws_no_audio_is_bounded_by_the_followup_window(
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("reason", ["followup_timeout", "conversation_ended"])
+async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(reason):
+    """The teardown runs behind the cue, not in front of it."""
+    order: list[str] = []
+    chirped = asyncio.Event()
+
+    def note(call: str) -> None:
+        order.append(call)
+        if call == "write_segment":
+            chirped.set()
+
+    async def teardown(_reason):
+        order.append("teardown")
+        try:
+            await asyncio.wait_for(chirped.wait(), timeout=0.25)
+        except TimeoutError:
+            order.append("still_silent")
+
+    async def release():
+        order.append("release")
+
+    async def restore():
+        order.append("unduck")
+
+    tts = FakeTts(on_call=note)
+    loop = answered_loop(tts=tts)
+    loop._peering.session_ended = teardown
+    loop._turns.turn.release = release
+    loop._assistant_output.ducker.restore = restore
+    loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
+    await loop._turns.end(reason)
+    assert tts.writes == [loop._assistant_output._chirp_off_pcm]
+    assert "still_silent" not in order
+    chirp = order.index("write_segment")
+    assert chirp < order.index("release")
+    assert chirp < order.index("unduck")
+    await loop._cancel_fire_and_forget_tasks()
