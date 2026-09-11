@@ -134,16 +134,14 @@ def allowed_depth_db(
     )
 
 
-def ceiling_taper(freqs_hz: Any, ceiling_hz: float) -> np.ndarray:
-    """Multiplier in [0, 1] handing the band back to the direct-sound stage.
+def taper_knee_hz(ceiling_hz: float) -> float:
+    return float(ceiling_hz) / 2.0 ** ROOM_TAPER_OCTAVES
 
-    ``1.0`` at or below ``ceiling_hz / 2**ROOM_TAPER_OCTAVES``, ``0.0`` at or
-    above ``ceiling_hz``, linear in log-frequency between. Scales BOTH the cut
-    floor and the boost cap, so the hand-off is continuous rather than a hard
-    edge (ADR-0256 rule 2).
-    """
+
+def ceiling_taper(freqs_hz: Any, ceiling_hz: float) -> np.ndarray:
+    """Log-frequency taper from the knee to zero at the ceiling (ADR-0256)."""
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    knee_hz = float(ceiling_hz) / 2.0 ** ROOM_TAPER_OCTAVES
+    knee_hz = taper_knee_hz(ceiling_hz)
     # A non-positive frequency has no log; it sits below the knee either way.
     safe = np.where(freqs > 0.0, freqs, knee_hz)
     fraction = 1.0 - np.log2(safe / knee_hz) / ROOM_TAPER_OCTAVES

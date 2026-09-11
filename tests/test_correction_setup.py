@@ -335,8 +335,8 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     assert seen["orchestrator"] is idle_hold
 
     # ...and the route reads it off the handler class make_server binds.
-    # (main() handing tracker.hold to make_server is pinned at runtime by
-    # test_web_correction_setup::test_main_wires_idle_tracker_to_capture_entry_restore.)
+    # main() handing tracker.hold to make_server is pinned by the shared wizard
+    # CLI contract tests.
     from jasper.platform import systemd as _systemd
 
     built: dict[str, object] = {}
@@ -952,8 +952,8 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
     assert hint.model == "minidsp_umik2"
     assert hint.serial_display == "8494"
     assert hint.calibration_id == record.calibration_id
-    # A record that resolves cleanly gates the phone page's one-tap "stored"
-    # confirm (a separate capture-page PR) on this flag.
+    # A record that resolves cleanly gates the phone's one-tap "stored"
+    # confirmation on this flag.
     assert hint.resolvable is True
 
 
@@ -1059,5 +1059,4 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
 # silently invalidates the measurement. The browser blocks it, but this
 # server-side gate is the reliable backstop. Reproduces the cmm31555 iMM-6C
 # run on 2026-06-04 where input_device.browser_label was "iPhone Microphone".
-
 

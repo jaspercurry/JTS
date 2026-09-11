@@ -32,8 +32,7 @@ WIZARDS = [
     ),
     (
         correction_setup, "jasper-correction-web", 8770,
-        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
-        correction_setup._idle_exit_restore_capture_entry,
+        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC, None,
     ),
     (
         system_setup, "jasper-system-web", 8772,

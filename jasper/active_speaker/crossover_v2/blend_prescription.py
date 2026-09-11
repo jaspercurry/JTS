@@ -433,13 +433,6 @@ def prescription_response_format() -> dict[str, Any]:
     return {
         "artifact_schema_version": PRESCRIPTION_SCHEMA_VERSION,
         "kind": "jts_crossover_blend_prescription_contract",
-        # A reader handed one contract must be able to find the other.
-        "the_other_class": (
-            "this contract is for the SUMMED blend region. One driver's own "
-            "full-band shape is a different class with different bounds and its "
-            "own contract in this packet's 'driver_response_format' block; a "
-            "filter aimed outside this region is refused here at any Q"
-        ),
         "required_top_level": {
             "artifact_schema_version": PRESCRIPTION_SCHEMA_VERSION,
             "kind": PRESCRIPTION_KIND,

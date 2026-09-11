@@ -41,6 +41,7 @@ from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     FakeSeams,
+    _check_analysis,
     _cloud_conductor,
     _conductor,
     _run_phase,
@@ -118,6 +119,28 @@ def test_an_ordinary_begin_never_asks_the_apply_seam():
     with pytest.raises(CaptureBeginDeferred):
         c.authorize_begin(3, 3)
     assert len(asked) == 1
+
+
+@pytest.mark.parametrize(("fault", "budget", "counter", "last_fault", "code"), [
+    ({"glitch_detected": True}, admission.MAX_AUTOMATIC_RETAKES_PER_POSITION, "by_speaker",
+     {"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL),
+    ({"linearity_ok": False}, admission.MAX_EXTRA_ATTEMPTS_PER_POSITION, "by_household",
+     {"glitch_detected": True}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE),
+])
+def test_a_spent_budget_stays_terminal_when_the_fault_owner_changes(fault, budget, counter, last_fault, code):
+    fakes = FakeSeams()
+    fakes.check = lambda program: replace(_check_analysis(program), **fault)
+    c = _conductor(fakes)
+    for attempt in range(1, budget + 1):
+        _run_phase(c, 1, attempt)
+    fakes.check = lambda program: replace(_check_analysis(program), **last_fault)
+    final = _run_phase(c, 1, budget + 1)
+    assert final["attempts"][counter] == budget
+    assert final["terminal"] is True and final["next"] == "stop"
+    assert final["code"] == code
+    with pytest.raises(CaptureBeginRefused) as refused:
+        c.authorize_begin(1, budget + 2)
+    assert refused.value.code == code
 
 
 def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):

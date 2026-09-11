@@ -344,12 +344,12 @@ def test_stimulus_locate_floor_is_per_role_not_per_capture():
 
 
 @pytest.mark.parametrize(("fault", "code", "charge", "budget"), [
-    ({"locate_confidence": 0.01}, "locate_failed", "speaker", MAX_AUTOMATIC_RETAKES_PER_POSITION),
-    ({"linearity": False}, "agc_behavioral_fail", "operator", flow.MAX_EXTRA_ATTEMPTS_PER_POSITION),
+    ({"glitch_detected": True}, "drift_baselines_disagree", "speaker", MAX_AUTOMATIC_RETAKES_PER_POSITION),
+    ({"linearity_ok": False}, "agc_behavioral_fail", "operator", flow.MAX_EXTRA_ATTEMPTS_PER_POSITION),
 ])
 def test_check_faults_exhaust_only_the_responsible_attempt_budget(fault, code, charge, budget):
     fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis(program, **fault)
+    fakes.check = lambda program: replace(_check_analysis(program), **fault)
     c = _conductor(fakes)
     for extra in range(budget + 1):
         verdict = _run_phase(c, 1, 1 + extra)

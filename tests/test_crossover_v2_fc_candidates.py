@@ -158,6 +158,7 @@ def test_the_refusal_vocabulary_is_exactly_the_two_damage_stops():
     assert set(fc_sweep.__all__) == {
         "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
         "FC_REJECT_BELOW_DECLARED_FLOOR",
+        "fc_rejection_scenarios",
         "recornered_preset",
     }
 

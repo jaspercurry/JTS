@@ -1130,6 +1130,7 @@ def test_the_banked_seat_level_reference_is_published_either_way(
 _STATUS_DOCUMENT_KEYS = {
     "speaker",
     "packet_fingerprint",
+    "contracts",
     "packet_error",
     "selected_round",
     "recent_rounds",

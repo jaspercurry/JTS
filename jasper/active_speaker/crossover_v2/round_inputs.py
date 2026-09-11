@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
 from jasper.json_fields import finite_float
 from jasper.active_speaker import bundles
@@ -42,44 +42,24 @@ from jasper.active_speaker.environment import (
 )
 
 __all__ = [
-    "APPLIED_PROFILE_DEFAULT_PATH",
-    "APPLIED_PROFILE_FILENAME",
-    "CAPTURE_STATE_FILENAME",
-    "DECLARED_GEOMETRY_DEFAULT_PATH",
-    "DECLARED_GEOMETRY_FILENAME",
-    "DESIGN_DRAFT_FILENAME",
-    "DRIVERS_DEFAULT_PATH",
-    "REPEAT_FLOOR_DEFAULT_PATH",
-    "REPEAT_FLOOR_FILENAME",
-    "RoundInputs",
-    "RoundViewsError",
-    "STATE_DEFAULT_PATH",
-    "STATE_FILENAME",
-    "STATE_SESSION_UNKNOWN",
-    "STATEFILE_DEFAULT_PATH",
-    "STATEFILE_FILENAME",
-    "banked_round_of",
-    "iter_round_sessions",
-    "matching_state_path",
-    "recent_round_sessions",
-    "state_matches_capture",
-    "round_inputs",
+    'APPLIED_PROFILE_DEFAULT_PATH', 'APPLIED_PROFILE_FILENAME', 'CAPTURE_STATE_FILENAME',
+    'DECLARED_GEOMETRY_DEFAULT_PATH', 'DECLARED_GEOMETRY_FILENAME', 'DESIGN_DRAFT_FILENAME',
+    'DRIVERS_DEFAULT_PATH', 'REPEAT_FLOOR_DEFAULT_PATH', 'REPEAT_FLOOR_FILENAME',
+    'RoundInputs', 'RoundViewsError', 'STATE_DEFAULT_PATH',
+    'STATE_FILENAME', 'STATE_SESSION_UNKNOWN', 'STATEFILE_DEFAULT_PATH',
+    'STATEFILE_FILENAME', 'banked_round_of', 'iter_round_sessions',
+    'matching_state_path', 'recent_round_sessions', 'state_matches_capture',
+    'round_inputs', 'contract_sources', 'default_out',
 ]
 
-#: The six names ``bank-crossover-round.sh`` writes beside the copied bundle.
 STATE_FILENAME = "state.json"
 CAPTURE_STATE_FILENAME = "crossover-v2-state.json"
 DESIGN_DRAFT_FILENAME = "design-draft.json"
 APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
-#: CamillaDSP's durable statefile, banked so an offline read of
-#: ``applied_profile_displacement`` (#2537) answers "at bank time", never the
-#: reading machine's own live statefile (#3316).
 STATEFILE_FILENAME = "camilla-statefile.yml"
 
-#: The household's declared rig geometry; single writer
-#: ``jasper-declare-geometry set``.
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 
 STATE_SESSION_UNKNOWN = "state_session_unknown"
@@ -106,11 +86,7 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
 
 
 class RoundViewsError(CrossoverEvidencePacketError):
-    """A round directory could not be read into a comparable view.
-
-    A subclass of :class:`CrossoverEvidencePacketError` so the prescriber's one
-    "the evidence could not be read" arm keeps catching every shape of it.
-    """
+    """A round view could not be read."""
 
 
 @dataclass(frozen=True)
@@ -132,6 +108,14 @@ def state_matches_capture(state: object, capture_id: str) -> bool:
     return isinstance(state, Mapping) and state.get("session_id") == capture_id
 
 
+def _read_json_mapping(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
 def matching_state_path(
     session_dir: Path, fallback: Path | None,
 ) -> tuple[Path | None, str]:
@@ -143,11 +127,7 @@ def matching_state_path(
     for path in (session_dir / CAPTURE_STATE_FILENAME, fallback):
         if path is None or not path.is_file():
             continue
-        try:
-            state = json.loads(path.read_text())
-        except (OSError, UnicodeDecodeError, ValueError):
-            reason = STATE_SESSION_UNKNOWN
-            continue
+        state = _read_json_mapping(path)
         if state_matches_capture(state, round_dir.name):
             return path, ""
         reason = STATE_SESSION_UNKNOWN
@@ -160,10 +140,7 @@ def _sibling(round_dir: Path, name: str) -> Path | None:
 
 
 def round_inputs(path: Path) -> RoundInputs:
-    """Resolve ``path`` — a banked round tree or a live session bundle.
-
-    Raises :class:`RoundViewsError` when it is neither, naming both shapes.
-    """
+    """Read banked or live round paths."""
     path = Path(path)
     bundle_dir = path / "bundle"
     if bundle_dir.is_dir():
@@ -205,7 +182,7 @@ def round_inputs(path: Path) -> RoundInputs:
 
 
 def banked_round_of(session_dir: Path) -> Path | None:
-    """The bank containing this bundle, if it resolves back to the same bundle."""
+    """Find the bank containing this bundle."""
     candidate = session_dir.parent.parent
     try:
         inputs = round_inputs(candidate)
@@ -229,12 +206,7 @@ def iter_round_sessions(session_dir: Path) -> Iterator[Path]:
 
 
 def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -> list[Path]:
-    """Read a bounded window from adjacent live and campaign stores.
-
-    Directory times select the window; capture times order the evidence.
-    Duplicate bundle ids are read from the requested store first.
-    No selected session uses the configured live and adjacent campaign stores.
-    """
+    """Read recent live and banked rounds."""
     bank = banked_round_of(session_dir) if session_dir is not None else None
     root = (bank.parent if bank else session_dir.parent) if session_dir else bundles.sessions_dir()
     sessions: dict[str, tuple[float, Path]] = {}
@@ -248,12 +220,45 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
         for directory in directories:
             try:
                 bundle = round_inputs(directory).session_dir
-                info = json.loads((bundle / "info.json").read_text())
-                if not isinstance(info, dict):
-                    continue
-            except (OSError, ValueError, CrossoverEvidencePacketError):
+            except (OSError, CrossoverEvidencePacketError):
+                continue
+            info = _read_json_mapping(bundle / "info.json")
+            if info is None:
                 continue
             sessions.setdefault(str(info.get("session_id") or bundle.name), (
                 finite_float(info.get("started_at")) or 0.0, bundle,
             ))
     return [bundle for _started_at, bundle in sorted(sessions.values(), reverse=True)][:max(0, limit)]
+
+
+def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
+    """Where a view lands when the operator named no ``--out``.
+
+    A BANKED round tree is the operator's own directory, so its views stay
+    beside the evidence they were computed from — including a view pointed at
+    the bundle INSIDE that tree, which is the only way the bundle-taking verbs
+    can be called: filing beside the caller there would leave every artifact
+    somewhere ``inventory`` never looks. A LIVE session bundle is the daemon's
+    (``/var/lib/jasper/active_speaker/sessions/<id>``, written by the web host
+    as its own user): defaulting inside it made the ordinary invocation —
+    grade the round I just ran — raise ``PermissionError`` for the operator
+    this door was added for (#3498). So a live round's view lands beside the
+    caller instead, named by the session it came from so two sessions graded
+    in one directory do not overwrite each other.
+    """
+    root = round_dir if inputs.banked else banked_round_of(inputs.session_dir)
+    return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
+
+
+def contract_sources(session_dir: Path) -> dict[str, Any]:
+    """Read candidate and room evidence; callers supply their receipt and context."""
+    artifact_dir, reason = round_artifact_dir(session_dir)
+    if artifact_dir is None:
+        raise CrossoverEvidencePacketError(reason)
+    inputs = round_inputs(session_dir)
+    paths = {
+        "candidate": artifact_dir / "candidate.json",
+        **{key: default_out(inputs, session_dir, f"{key}.json")
+           for key in ("room_median", "room_persistence", "room_ceiling")},
+    }
+    return {name: _read_json_mapping(path) or {} for name, path in paths.items()}

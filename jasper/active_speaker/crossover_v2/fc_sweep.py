@@ -13,12 +13,14 @@ no sweep remains.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Any
 
 __all__ = [
     "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
     "FC_REJECT_BELOW_DECLARED_FLOOR",
+    "fc_rejection_scenarios",
     "recornered_preset",
 ]
 
@@ -39,6 +41,26 @@ def _fc_rejection(
     if fc_hz > float(lower_driver_hard_ceiling_hz):
         return FC_REJECT_ABOVE_LOWER_DRIVER_BAND
     return None
+
+
+def fc_rejection_scenarios(
+    floor_hz: float, ceiling_hz: float, *, declared_fc_hz: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "declared_fc_refusal": (
+            _fc_rejection(declared_fc_hz, floor_hz, ceiling_hz)
+            if declared_fc_hz is not None else None
+        ),
+        "fc_rejection": {
+            name: _fc_rejection(fc_hz, floor_hz, ceiling_hz)
+            for name, fc_hz in (
+                ("below_minimum", math.nextafter(floor_hz, -math.inf)),
+                ("above_maximum", math.nextafter(ceiling_hz, math.inf)),
+                ("at_minimum", floor_hz),
+                ("at_maximum", ceiling_hz),
+            )
+        },
+    }
 
 
 def recornered_preset(preset: Any, *, fc_hz: float, order: int | None = None) -> Any:
