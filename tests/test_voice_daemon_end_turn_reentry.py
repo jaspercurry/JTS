@@ -140,7 +140,7 @@ async def _response_loop(pcm=bytes(8)):
     turn = wl._turn
     turn._bytes_sent, turn._chunks_received = 4096, 1
     wl._input_ended = True
-    wl._anchor_turn_timeline()
+    wl._turn_timeline.anchor_at()
     wl._turn_output_episode = await wl._output_gate.begin_turn()
     wl._wake_telemetry.outcome = AsyncMock()
     wl._assistant_output.listening_chirp = AsyncMock()
@@ -163,8 +163,8 @@ def _start_playback(wl):
     return asyncio.create_task(play_responses(
         wl._turn, wl._tts, report=wl._playback_report,
         admission_refusal=wl._assistant_output.admission_refusal,
-        on_response_started=wl._turn_observer("first_response"),
-        on_first_write=wl._turn_observer("first_write"),
+        on_response_started=wl._turn_timeline.observer("first_response"),
+        on_first_write=wl._turn_timeline.observer("first_write"),
     ))
 
 
@@ -181,7 +181,7 @@ async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_pat
     turn.turn_lost = lambda: mode.startswith("lost_")
     turn.server_turn_complete = lambda: mode == "lost_after_complete"
     wl._wake_telemetry.stage = AsyncMock()
-    wl._last_turn_ms = previous = {"event_id": "previous"}
+    wl._turn_timeline.last_turn_ms = previous = {"event_id": "previous"}
     if mode == "paused_error":
         wl._connection.is_paused = lambda: True
     if mode == "measurement":

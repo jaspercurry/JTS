@@ -102,7 +102,7 @@ def _arm_turn(wl, *, wake: bool) -> None:
     wl._input_ended = False
     wl._silence_started_at = 0.0
     wl._turn_started_at_loop = asyncio.get_event_loop().time()
-    wl._anchor_turn_timeline(time.monotonic() if wake else 0.0)
+    wl._turn_timeline.anchor_at(time.monotonic() if wake else 0.0)
 
 
 def _timeline_loop(*, wake: bool):
@@ -140,9 +140,9 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     await asyncio.sleep(0.002)
     await wl._end_session_input("test")
     await asyncio.sleep(0.002)
-    await wl._turn_observer("first_response", event_stage="response_started")()
+    await wl._turn_timeline.observer("first_response", event_stage="response_started")()
     await asyncio.sleep(0.002)
-    await wl._turn_observer("first_write")()
+    await wl._turn_timeline.observer("first_write")()
     await wl._end_turn("test")
 
     fields = event_fields(caplog, "turn.timeline")
@@ -196,7 +196,7 @@ async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
     wl = _timeline_loop(wake=False)
     wl._wake_event_at_monotonic = time.monotonic() - 300.0
 
-    wl._anchor_turn_timeline()
+    wl._turn_timeline.anchor_at()
     await wl._end_session_input("test")
     await wl._end_turn("test")
 
@@ -222,7 +222,7 @@ async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
     (aborted,) = event_field_maps(caplog, "turn.timeline", outcome="aborted")
     assert aborted["anchor"] == "wake"
     assert int(aborted["cue_accepted_ms"]) >= 0
-    assert wl._turn_anchor == 0.0
+    assert wl._turn_timeline.anchor == 0.0
     assert wl.session_status()["last_turn_ms"] == {}
 
     # The next turn anchors fresh rather than inheriting the dead anchor.
@@ -262,8 +262,8 @@ async def test_session_status_publishes_the_last_turn_timeline():
     assert wl.session_status()["last_turn_ms"] == {}
 
     await wl._end_session_input("test")
-    await wl._turn_observer("first_response", event_stage="response_started")()
-    await wl._turn_observer("first_write")()
+    await wl._turn_timeline.observer("first_response", event_stage="response_started")()
+    await wl._turn_timeline.observer("first_write")()
     await wl._end_turn("test")
 
     last = wl.session_status()["last_turn_ms"]
@@ -284,7 +284,7 @@ async def test_acquire_drain_stamps_first_audio_before_it_sends():
 
     async def _send_audio(_pcm) -> None:
         stamped_when_sent.append(
-            "first_audio_to_provider" in wl._turn_timeline,
+            "first_audio_to_provider" in wl._turn_timeline.stages,
         )
 
     wl._turn.send_audio = _send_audio
@@ -526,7 +526,7 @@ def test_session_status_tool_packs_defaults_empty():
 
 async def test_turn_clock_opens_before_chirp_preparation_failure():
     wl = _timeline_loop(wake=True)
-    old_event = wl._turn_event_id
+    old_event = wl._turn_timeline.event_id
     observed = []
     async def fail_prepare():
         observed.append(wl.session_status()["turn_event_id"])
@@ -535,4 +535,4 @@ async def test_turn_clock_opens_before_chirp_preparation_failure():
     with pytest.raises(OSError):
         await wl._begin_turn(listening_feedback=True)
     assert observed[0] is not None and observed[0] != old_event
-    assert wl._turn_anchor == 0.0
+    assert wl._turn_timeline.anchor == 0.0
