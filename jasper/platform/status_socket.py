@@ -24,14 +24,11 @@ logger = logging.getLogger("jasper.platform.status_socket")
 # deadline was made total.
 DEFAULT_STATUS_TIMEOUT_SECONDS = 3.0
 _RECV_CHUNK_BYTES = 65536
-# The one ceiling every local STATUS read shares, sync and async alike
-# (jasper.platform.uds consumes it). A safety bound on a wedged or runaway
-# local daemon, not a size estimate: a daemon's STATUS reply is a few KiB, and
-# jasper-outputd's — the largest — is tens of KiB on a chip-AEC box, so this
-# sits far above what any of them answers and growing a diagnostic surface
-# cannot quietly blind a reader. A caller reading a narrower surface passes its
-# own smaller `max_bytes`.
-STATUS_MAX_BYTES = 256 * 1024
+# 1 MiB: the one ceiling every local STATUS read shares (sync here, async via
+# jasper.platform.uds) — far above any real reply, so growing a diagnostic
+# surface can never blind a reader. A caller reading a narrower surface passes
+# its own smaller `max_bytes`.
+STATUS_MAX_BYTES = 1024 * 1024
 
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"

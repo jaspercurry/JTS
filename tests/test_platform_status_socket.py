@@ -289,9 +289,9 @@ def test_converged_consumers_keep_limits_and_failure_policy(monkeypatch, consume
 
 @pytest.mark.parametrize("consumer, cap", [
     (read_fanin_status, 64 * 1024),
-    (audio_health._read_local_status, 256 * 1024),
+    (audio_health._read_local_status, 1024 * 1024),
     (system_soak._status_socket, 64 * 1024),
-    (status_socket.read_status_socket, 256 * 1024),
+    (status_socket.read_status_socket, 1024 * 1024),
 ])
 @pytest.mark.parametrize("extra_bytes", [0, 1])
 def test_status_consumers_keep_default_caps(monkeypatch, consumer, cap, extra_bytes):

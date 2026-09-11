@@ -604,7 +604,7 @@ def check_camilla_recover_park() -> CheckResult:
         if isinstance(last_park, dict):
             detail += (
                 f" (parked {_parked_ago(last_park.get('parked_at'))}, since "
-                f"recovered: {last_park.get('reason') or '?'})"
+                f"retired: {last_park.get('reason') or '?'})"
             )
         return CheckResult(label, "ok", detail)
 

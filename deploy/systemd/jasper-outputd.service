@@ -96,14 +96,20 @@ ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${J
 # once per short window across every failure class so a crash loop cannot spawn
 # a reconciler pass per restart. Its --no-restart keeps that reconciler from
 # controlling jasper-outputd from inside this unit's stop transaction.
+#
+# JASPER_OUTPUTD_RECONCILE_PARK_STATE is the one park-record path: this
+# helper's own PARK_RECORD default and the Python reader's default
+# (jasper/outputd_failure_reconcile_state.py) already agree on it, and
+# jasper-unpark's argv below now does too, so a drop-in overriding this
+# Environment= moves every participant together.
+Environment="JASPER_OUTPUTD_RECONCILE_PARK_STATE=/run/jasper-outputd-failure-reconcile.park"
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
 # Retire the helper's park record. Type=notify, so this runs only once outputd
 # has sent READY=1 — a start attempt that exits 78 again never reaches it and
 # the record stands. jasper-unpark copies the record's fields plus unparked_at
-# to a .last sibling before removing it (R15, #4416). Path duplicated from
-# jasper/outputd_failure_reconcile_state.py.
-ExecStartPost=-/usr/local/sbin/jasper-unpark /run/jasper-outputd-failure-reconcile.park outputd.unparked
+# to a .last sibling before removing it (R15, #4416).
+ExecStartPost=-/usr/local/sbin/jasper-unpark $JASPER_OUTPUTD_RECONCILE_PARK_STATE outputd.unparked
 
 [Install]
 WantedBy=multi-user.target

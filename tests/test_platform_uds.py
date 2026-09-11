@@ -358,7 +358,7 @@ async def test_status_consumers_reassemble_fragmented_json(
         "grouping": grouping_supervisor.GroupingSupervisor().outputd_status,
         "mux": mux.Mux(mode_state_path=str(tmp_path / "mode"))._fanin_status_best_effort,
     }
-    cap = 65_536 if consumer == "mux" else 262_144
+    cap = 65_536 if consumer == "mux" else 1024 * 1024
     payload = {
         "small": b'{"inputs":[]}',
         "outputd": _outputd_status_payload(),

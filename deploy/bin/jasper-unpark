@@ -16,9 +16,10 @@
 #
 # Before removing the record, its fields plus `unparked_at` are copied to a
 # `.last` sibling so a reader can answer "was this parked, and for how long"
-# after the park record itself is gone (R15, #4416). Fail-open: always exits
-# 0, so a write/copy failure never turns the parked unit's own start into a
-# failure.
+# after the park record itself is gone (R15, #4416). Usage errors (a missing
+# argument) exit 1 so a wiring mistake is visible in the journal; every
+# runtime path below exits 0, so a write/copy failure never turns the parked
+# unit's own start into a failure.
 
 set -uo pipefail
 
