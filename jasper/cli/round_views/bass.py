@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from jasper.active_speaker.measurement_bass import bass_view
@@ -51,7 +52,7 @@ def _cmd(args: argparse.Namespace) -> int:
             payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, bass_view, inputs.session_dir,
                             calibration_root=args.calibration_root)
             payload["takes"] = [take for take in payload["takes"] if take["record"]["take_id"] in selected.selected_ids]
-            summary = {"takes": len(payload["takes"])}
+            summary: dict[str, Any] = {"takes": len(payload["takes"])}
         elif args.command == "bass-compare":
             payload, destination = compare_sets(args)
             summary = {key: payload[key] for key in ("available", "context", "bands")}

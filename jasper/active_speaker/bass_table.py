@@ -15,7 +15,7 @@ from jasper.json_fields import finite_float
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
 from .bass_fit import BassFitCoverageUnavailable, fit_bass_shape
 from .crossover_v2.measurement_context import compare_capture_basis
-from .crossover_v2.refusal_copy import CrossoverV2Refused
+from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 
 LEVEL_FIELDS = (*CHANGE_FIELDS["volume"], "program_id")
 
@@ -68,7 +68,8 @@ def fit_bass_table(
             fit = fit_bass_shape(group, candidate_id=candidate_id, descriptor=descriptor,
                                 target=target, reference_band_hz=reference_band_hz)
         except BassFitCoverageUnavailable as refusal:
-            levels.append({**row, "outcome": "insufficient_evidence", "code": refusal.code, "fit": None,
+            levels.append({**row, "outcome": "insufficient_evidence", "code": refusal.code,
+                           "next_action": refusal_copy_for(refusal.code)[1], "fit": None,
                            "selected_is_measured": False, "within_tolerance_on_qualified_bins": None,
                            "selected_scale": None, "selected_descriptor": None})
             continue

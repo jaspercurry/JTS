@@ -38,7 +38,7 @@ from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, pred
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
 from jasper.cli._refusal import EXIT_UNREADABLE
-from jasper.cli.round_views import main as round_views_main
+from jasper.cli.round_views import build_parser, main as round_views_main
 from jasper.web import correction_measurements
 
 
@@ -1071,6 +1071,7 @@ def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_run, capsys, 
         assert table['levels'][-1]['fit']['selected_scale'] == pytest.approx(.6)
     if fault == 'zero_coverage':
         assert table['levels'][-1]['code'] == 'bass_fit_common_coverage_unavailable'
+        assert table['levels'][-1]['next_action'] == REASON_REGISTRY[table['levels'][-1]['code']].next_action
 
 
 @pytest.mark.parametrize('field', ['level_db', 'loudness_volume_db', 'program_id'])
@@ -1095,7 +1096,7 @@ def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
 
 
 @pytest.mark.parametrize('case,reason', [
-    ('one_level', None), ('repeat', None), ('two_candidates', None),
+    ('one_level', None), ('same_main', None), ('repeat', None), ('two_candidates', None),
     ('unselected', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
     ('duplicate', 'bass_fit_pairs_unavailable'), ('run', 'bass_fit_run_mismatch'),
     ('candidate', 'bass_fit_candidate_unreadable'),
@@ -1105,6 +1106,9 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
     selected = None
     if case == 'one_level':
         takes = takes[:2]
+    elif case == 'same_main':
+        for take in takes[2:4]:
+            take['record']['level_db'] = -10
     elif case in ('repeat', 'duplicate', 'two_candidates', 'unselected'):
         originals = takes[1::2] if case == 'two_candidates' else takes[:2]
         if case == 'unselected':
@@ -1150,8 +1154,6 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
 
 
 def test_bass_fit_verb_is_retired():
-    from jasper.cli.round_views import build_parser  # lazy: parser behavior under test
-
     with pytest.raises(SystemExit) as caught:
         build_parser().parse_args(['bass-fit', 'request.json'])
     assert caught.value.code == 2

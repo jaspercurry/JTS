@@ -61,7 +61,7 @@ def fit_run(inputs: RoundInputs, args) -> dict[str, Any]:
                                         code="bass_table_capture_context_changed")
             key = (level, basis.get("side"), basis.get("role"), doc_pose_key(take["record"]),
                    entry.get("repeat", 0), entry.get("stimulus_ordinal", 0))
-            if basis.get("graph_scope") == baseline_scope(PURPOSE_BASS) and not basis.get("candidate_id"):
+            if basis.get("graph_scope") == baseline_scope(PURPOSE_BASS):
                 baseline[key].append(take)
             else:
                 candidate_id = basis.get("candidate_id")
