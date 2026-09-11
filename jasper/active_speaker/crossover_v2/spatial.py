@@ -48,6 +48,9 @@ from .contracts import (
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
+    POSITION_AXES,
+    POSITION_AXIS_HORIZONTAL,
+    POSITION_AXIS_VERTICAL,
     CaptureValidity,
 )
 from .journey import (
@@ -598,23 +601,6 @@ def lateral_pose_curve(
 # --------------------------------------------------------------------------- #
 # what a retained take records
 # --------------------------------------------------------------------------- #
-
-
-#: A pose whose stated displacement from the mark lies in the HORIZONTAL plane.
-#: It names where the pose's STATED offset lies, not a promise that nothing else
-#: moved: the second geometry-retake rung asks for a sideways move AND a rise,
-#: and records that rise only in its ``prompt``.
-POSITION_AXIS_HORIZONTAL = "horizontal"
-
-#: A pose stated as a move ABOVE or BELOW mark height. Nothing rotates in
-#: elevation, so such a pose commands no horizontal bearing
-#: (:attr:`PositionGeometry.degrees` is ``None``), which is a different fact
-#: from "0°". Where it was raised to is
-#: :attr:`PositionGeometry.vertical_deg`.
-POSITION_AXIS_VERTICAL = "vertical"
-
-#: Every axis a pose can be stated on, so a reader can CHECK the value.
-POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 
 
 @dataclass(frozen=True)

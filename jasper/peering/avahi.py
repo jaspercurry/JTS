@@ -12,14 +12,12 @@ Python side, which would hit the dual-stack conflict
 Static template at `/etc/jasper/avahi-templates/jasper-peer.service`
 is installed by `deploy/install.sh`. At runtime, this module
 substitutes `peer_id`, `room`, and `primary` and writes the rendered
-file to `/etc/avahi/services/jasper-peer.service`. Avahi auto-reloads
-via inotify (with SIGHUP as the deterministic fallback).
+file to `/etc/avahi/services/jasper-peer.service`. Avahi picks up the
+change on its own via inotify.
 
-When peering is turned off, the rendered file is removed and Avahi
-reloaded so other peers stop seeing us in their browse results.
-Removal is the single switch that distinguishes "peering off" from
-"peering on" at the network level — when off, we're invisible to
-other JTS speakers.
+When peering is turned off, the rendered file is removed. Removal is
+the single switch that distinguishes "peering off" from "peering on"
+at the network level — when off, we're invisible to other JTS speakers.
 """
 from __future__ import annotations
 
@@ -49,7 +47,6 @@ def render_and_install(
     primary: bool,
     template_path: str = DEFAULT_TEMPLATE_PATH,
     rendered_path: str = DEFAULT_RENDERED_PATH,
-    reload_avahi: bool = True,
 ) -> bool:
     """Render the Avahi service template with this peer's metadata
     and atomic-write it into /etc/avahi/services/.
@@ -59,7 +56,7 @@ def render_and_install(
     caller should log + fall back to running without advertising —
     still browses + arbitrates, just won't be visible to others).
 
-    Unchanged content skips both the write and the reload.
+    Unchanged content skips the write.
     """
     substitutions = {
         "__PEER_ID__": peer_id,
@@ -72,7 +69,6 @@ def render_and_install(
         rendered_path,
         substitutions,
         escape=True,
-        reload=reload_avahi,
     )
     if result is RenderResult.FAILED:
         return False
@@ -91,22 +87,19 @@ def render_and_install(
 def uninstall(
     *,
     rendered_path: str = DEFAULT_RENDERED_PATH,
-    reload_avahi: bool = True,
 ) -> None:
     """Remove the rendered Avahi service file (best-effort).
 
     Called when peering is turned off via the wizard. Other peers on
-    the network stop seeing us in their browse results within ~1
-    second of Avahi's next reload. Idempotent: if the file is already
-    missing, this is a no-op.
+    the network stop seeing us in their browse results once Avahi's
+    inotify watch picks up the removal. Idempotent: if the file is
+    already missing, this is a no-op.
     """
     try:
         os.unlink(rendered_path)
         log_event(logger, "peering.avahi.uninstalled", path=rendered_path)
     except FileNotFoundError:
-        return  # already gone — nothing to do, no need to reload
+        return  # already gone — nothing to do
     except OSError as e:
         logger.warning("peering: could not remove %s: %s", rendered_path, e)
         return
-    if reload_avahi:
-        avahi_service.reload_avahi()

@@ -54,14 +54,36 @@ from ._common import (
     send_see_other,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page
-from ._service_state import unit_active as _unit_active
 from ..service_units import (
     FANIN_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
+    read_unit_states,
+    unit_active as _unit_state_active,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _unit_active(unit: str) -> bool:
+    """Whether systemd currently reports ``unit`` active, read fresh.
+
+    5 s timeout (not the 2 s ``read_unit_states`` default): mirrors the
+    old ``_service_state.systemctl`` probe this converged onto. A timed
+    out/unavailable probe is logged so a skipped USB-gadget rebuild
+    (the ``jasper-usbgadget.service`` caller) leaves evidence.
+    """
+    states = read_unit_states((unit,), timeout=5.0)
+    if states is None:
+        log_event(
+            logger,
+            "speaker_setup.unit_state_unreadable",
+            unit=unit,
+            level=logging.WARNING,
+        )
+        return False
+    return _unit_state_active(states.get(unit))
+
 
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"
 

@@ -8,8 +8,8 @@ Avahi (the system mDNS-SD daemon installed on Pi OS by default) is the
 only mDNS responder on the host. Several JTS subsystems advertise a
 service by rendering a static template (with ``__FOO__`` placeholders,
 kept outside ``/etc/avahi/services`` so Avahi doesn't try to parse the
-placeholder as XML) into ``/etc/avahi/services/<name>.service`` and
-nudging Avahi to reload:
+placeholder as XML) into ``/etc/avahi/services/<name>.service``, which
+Avahi picks up on its own via inotify:
 
   - ``jasper/net/control_advert.py`` renders ``_jasper-control._tcp`` with
     the speaker's user-facing display name (a free-form, XML-escaped
@@ -17,9 +17,9 @@ nudging Avahi to reload:
   - ``jasper/peering/avahi.py`` renders ``_jasper-peer._udp`` with the
     peer id / room / primary metadata (mDNS-safe values).
 
-Both grew their own copy of the same render+guard+atomic-write+reload
-body. This module is the single extracted implementation; the two
-callers route through ``render_service`` and the shared ``reload_avahi``.
+Both grew their own copy of the same render+guard+atomic-write body. This
+module is the single extracted implementation; the two callers route
+through ``render_service``.
 
 ``render_service`` is FAIL-SOFT and NEVER raises into the caller. The
 callers run on hot paths (/speaker save, /rooms peering save, deploy/install.sh)
@@ -28,7 +28,7 @@ failure — missing/unreadable template, a stray ``__FOO__`` placeholder,
 a write failure — logs and returns ``RenderResult.FAILED``. Retry belongs to
 each caller; for the control advert, the retry opportunities are a later
 /speaker apply or deploy/install render, not a jasper-control restart. The
-render is idempotent (a byte-stable render skips the write+reload, so a
+render is idempotent (a byte-stable render skips the write, so a
 long-lived advert like
 ``_jasper-control._tcp`` never tears down and re-adds its service-group)
 and atomic through :func:`jasper.atomic_io.atomic_write_text`.
@@ -51,11 +51,9 @@ markers, e.g. ``{"__SPEAKER_NAME__": name}``.
 ``render_service`` returns a 3-state ``RenderResult`` (``WROTE`` /
 ``UNCHANGED`` / ``FAILED``) rather than a lossy bool. The distinction
 the bool couldn't carry is WROTE-vs-UNCHANGED: a caller that wants to
-log / reload only on an actual on-disk change can read it directly off
-the result instead of bracketing the call with two reads of the output
-file to diff before/after. The explicit reload is internal and attempted only
-after a write — ``render_service`` is the single owner of "did the bytes
-change."
+log only on an actual on-disk change can read it directly off the result
+instead of bracketing the call with two reads of the output file to diff
+before/after.
 """
 
 from __future__ import annotations
@@ -63,7 +61,6 @@ from __future__ import annotations
 import enum
 import logging
 import re
-import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
@@ -87,10 +84,9 @@ class RenderResult(enum.Enum):
     three states make that distinction first-class:
 
       - ``WROTE``     — the rendered bytes differed from disk; the file
-                        was atomic-written (and a reload was attempted if
-                        ``reload``).
+                        was atomic-written.
       - ``UNCHANGED`` — the render matched disk byte-for-byte; nothing was
-                        written and nothing reloaded (the idempotent path).
+                        written (the idempotent path).
       - ``FAILED``    — a handled failure (missing/unreadable template,
                         stray placeholder, write OSError); nothing written.
 
@@ -111,38 +107,32 @@ def render_service(
     substitutions: dict[str, str],
     *,
     escape: bool = True,
-    reload: bool = True,
 ) -> RenderResult:
     """Render an Avahi ``*.service`` template and atomic-write it.
 
     Reads ``template_path``, replaces each ``token`` in ``substitutions``
     with its value (XML-escaped first when ``escape`` is True), refuses
     to install a half-rendered file (any leftover ``__FOO__``), and
-    atomic-writes the result to ``out_path`` (mode 0644). When ``reload``
-    is True and a write happened, nudges avahi-daemon to reload.
+    atomic-writes the result to ``out_path`` (mode 0644). Avahi picks up
+    the change on its own via inotify.
 
     ``substitutions`` keys are the FULL placeholder tokens including the
     ``__..__`` markers, e.g. ``{"__SPEAKER_NAME__": "Kitchen"}``.
 
     Returns a :class:`RenderResult`:
 
-      - ``WROTE``     — the file was atomic-written (bytes changed); a
-                        reload was attempted when ``reload`` is True. A
-                        best-effort reload exception does not undo the
-                        publication or change this result.
+      - ``WROTE``     — the file was atomic-written (bytes changed).
       - ``UNCHANGED`` — the render matched disk, so nothing was written
-                        and nothing reloaded (the idempotent path — a
-                        long-lived advert never tears down + re-adds its
-                        service-group on a byte-stable render).
+                        (the idempotent path — a long-lived advert never
+                        tears down + re-adds its service-group on a
+                        byte-stable render).
       - ``FAILED``    — a handled failure (missing/unreadable template,
                         stray placeholder, write failure); nothing
-                        written, nothing reloaded.
+                        written.
 
     NEVER raises — callers degrade gracefully and own their retry policy. For
     the control advert, a later /speaker apply or deploy/install render retries
-    a failure; jasper-control startup does not render it. Reload is attempted
-    ONLY on ``WROTE``, so a caller can drive its own reload off the result
-    without re-reading the output file to detect whether a write happened.
+    a failure; jasper-control startup does not render it.
     """
     try:
         text = Path(template_path).read_text()
@@ -185,7 +175,7 @@ def render_service(
         )
         return RenderResult.FAILED
 
-    # Idempotence: if the render matches what's on disk, skip write+reload.
+    # Idempotence: if the render matches what's on disk, skip the write.
     # Critical for long-lived adverts — a byte-stable render never tears
     # down and re-adds the service-group, so browsers never see a gap.
     try:
@@ -209,30 +199,4 @@ def render_service(
         return RenderResult.FAILED
 
     log_event(logger, "avahi_service.installed", path=out_path)
-    if reload:
-        reload_avahi()
     return RenderResult.WROTE
-
-
-def reload_avahi() -> None:
-    """Best-effort reload of avahi-daemon (the shared reload).
-
-    inotify usually catches changes on its own but an explicit reload is
-    deterministic and fast (<100 ms). Same pattern as deploy/install.sh's
-    install_avahi_jasper_control. Fail-soft — never raises.
-    """
-    try:
-        subprocess.run(
-            ["systemctl", "reload", "avahi-daemon"],
-            check=False,
-            timeout=4,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        log_event(
-            logger,
-            "avahi_service.reload_failed",
-            error=e,
-            level=logging.DEBUG,
-        )

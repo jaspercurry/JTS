@@ -3435,7 +3435,7 @@ def test_unpark_reports_a_masked_unit_it_cannot_put_back(
     assert "jasper-voice.service" not in run.active
     assert "left off on purpose" not in run.syslog, run.syslog
     assert (
-        "event=build_sandbox.low_memory_build_unpark_failed "
+        "event=build_sandbox.unpark_failed "
         "unit=jasper-voice.service recover=systemctl unmask "
         "jasper-voice.service && systemctl start jasper-voice.service "
         f"&& {remask}" in run.syslog
@@ -3496,7 +3496,7 @@ def test_unpark_logs_a_stable_event_token_when_a_unit_will_not_restart(
     assert "shairport-sync.service" not in run.active
     assert "could not restart shairport-sync.service" in run.stderr
     assert (
-        "event=build_sandbox.low_memory_build_unpark_failed "
+        "event=build_sandbox.unpark_failed "
         "unit=shairport-sync.service recover=systemctl start "
         "shairport-sync.service" in run.syslog
     ), run.syslog
@@ -3505,7 +3505,7 @@ def test_unpark_logs_a_stable_event_token_when_a_unit_will_not_restart(
     assert "unmask" not in run.stderr, run.stderr
     assert "unmask" not in run.syslog, run.syslog
     # The summary carries counts even when the failure above happened.
-    assert "event=build_sandbox.low_memory_build_unpark " in run.syslog
+    assert "event=build_sandbox.unpark " in run.syslog
     assert "restored=1 failed=1" in run.syslog, run.syslog
     # jasper-control was restored despite the earlier failure.
     assert "jasper-control.service" in run.active
@@ -3518,7 +3518,7 @@ def test_unpark_summary_records_the_zero_restored_case(tmp_path):
     run = _run_park_cycle(
         tmp_path, active=units, scenario=f"{restart}; mark_trap; exit 0"
     )
-    assert "event=build_sandbox.low_memory_build_unpark " in run.syslog
+    assert "event=build_sandbox.unpark " in run.syslog
     assert "restored=0 failed=0" in run.syslog, run.syslog
 
 
@@ -3602,7 +3602,7 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
 
     The two guards in `install_exit_cleanup` do different jobs. The one on
     `cleanup_build_swap` keeps the unpark REACHABLE (pinned above). The one on
-    `unpark_low_memory_build_units` keeps it COMPLETABLE: a caller's `|| true`
+    `unpark_recorded_units` keeps it COMPLETABLE: a caller's `|| true`
     suspends `set -e` for the callee's entire body, and that is the only reason
     the unpark's three bare `_build_sandbox_log` calls — the deliberate-off
     skip, the failed-restart report, and the closing summary — cannot abort the
@@ -3618,13 +3618,13 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
 
     Measured on the harness's own shell (bash 3.2.57), six parked units with
     `jasper-fanin.service` refusing to start: with the guard, exit 5, five of
-    six back and the summary emitted; with `unpark_low_memory_build_units`
+    six back and the summary emitted; with `unpark_recorded_units`
     bare, exit 1, ONE of six back and no summary at all. Deliberately NOT
     measured on the bash 5.2.x the installer runs under (no 5.x available on
     the authoring host) — 3.2's `set -e` is the looser of the two, so an abort
     seen here is expected to hold there, but that step is inference.
     """
-    # Restore order is the JASPER_LOW_MEMORY_UNPARK_FIRST entries that were
+    # Restore order is the JASPER_UNIT_UNPARK_FIRST entries that were
     # parked — here jasper-outputd, jasper-fanin, jasper-camilla, jasper-mux
     # (jasper-camilla-crossover is in that list but not running) — then the
     # rest in park order. Failing the SECOND one restored puts four units
@@ -3653,7 +3653,7 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
     # The failing branch really was exercised — otherwise the log stub never
     # runs from inside the loop and this test proves nothing.
     assert (
-        "event=build_sandbox.low_memory_build_unpark_failed "
+        "event=build_sandbox.unpark_failed "
         "unit=jasper-fanin.service" in run.syslog
     ), run.syslog
     # Every unit ordered AFTER the failure still came back.

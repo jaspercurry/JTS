@@ -191,8 +191,8 @@ async def test_start_failure_unwinds_exactly_what_it_acquired(
 async def test_retry_does_not_rerender_avahi_advert(monkeypatch):
     """A failed multicast bind is retried by re-calling start() (see
     jasper.control.handlers.peering's supervisor tick); the Avahi advert
-    render/install (a systemctl reload fork) must happen once per daemon
-    lifetime, not once per retry."""
+    render/install (an atomic file write Avahi picks up via inotify) must
+    happen once per daemon lifetime, not once per retry."""
     render_calls: list[int] = []
     monkeypatch.setattr(
         daemon_mod.avahi, "render_and_install",
@@ -262,8 +262,8 @@ async def test_cancel_during_uds_bind_still_lets_stop_close_the_socket(
 
 async def test_mode_off_start_is_noop(monkeypatch, avahi_uninstalls):
     """An OFF household is the default: neither start() nor stop() may
-    reach the filesystem or spawn an avahi reload on a jasper-control
-    restart."""
+    reach the filesystem (render or remove the Avahi service file) on a
+    jasper-control restart."""
     transport_constructed = []
     monkeypatch.setattr(
         daemon_mod, "MulticastTransport",

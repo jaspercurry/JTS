@@ -1330,9 +1330,19 @@ DRIVER_ROLE_WOOFER = "woofer"
 DRIVER_ROLE_TWEETER = "tweeter"
 DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)
 
-#: The pose axes. Owner: `spatial.POSITION_AXES`.
+#: A pose whose stated displacement from the mark lies in the HORIZONTAL
+#: plane. Names where the pose's STATED offset lies, not a promise that
+#: nothing else moved: a compound move records its extra rise in
+#: `spatial.PositionGeometry.vertical_deg`, never in `axis`.
 POSITION_AXIS_HORIZONTAL = "horizontal"
+
+#: A pose stated as a move ABOVE or BELOW mark height. Nothing rotates in
+#: elevation, so such a pose commands no horizontal bearing
+#: (`spatial.PositionGeometry.degrees` is `None`), a different fact from
+#: "0 deg". Where it was raised to is `spatial.PositionGeometry.vertical_deg`.
 POSITION_AXIS_VERTICAL = "vertical"
+
+#: Every axis a pose can be stated on, so a reader can CHECK the value.
 POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 
 #: The design axis, in `PositionGeometry`'s own spelling: a capture with no

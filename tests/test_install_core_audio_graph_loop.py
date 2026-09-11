@@ -641,9 +641,9 @@ done
 _PARK_RECORD_CHAIN = (
     "park_audio_clients_for_core_graph_restart",
     "forget_core_graph_park_record",
-    "unpark_low_memory_build_units",
-    "_record_low_memory_parked_unit",
-    "_unpark_one_low_memory_unit",
+    "unpark_recorded_units",
+    "_record_parked_unit",
+    "_unpark_one_unit",
     "_jasper_unit_in_list",
     "_jasper_unit_was_off_at_park",
 )

@@ -896,7 +896,7 @@ park_audio_clients_for_core_graph_restart() {
     # forget_core_graph_park_record() drops the record again once they finish.
     local unit
     for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
-        _record_low_memory_parked_unit "${unit}"
+        _record_parked_unit "${unit}"
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
@@ -929,8 +929,8 @@ forget_core_graph_park_record() {
     # remains the sole restore for that phase, so its entries stay recorded.
     local unit dropped=0
     local -a parked=()
-    if (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )); then
-        for unit in "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; do
+    if (( ${#JASPER_UNIT_PARK_RECORD[@]} )); then
+        for unit in "${JASPER_UNIT_PARK_RECORD[@]}"; do
             if _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; then
                 dropped=$(( dropped + 1 ))
                 continue
@@ -938,12 +938,12 @@ forget_core_graph_park_record() {
             parked+=("${unit}")
         done
     fi
-    JASPER_LOW_MEMORY_PARK_RECORD=()
+    JASPER_UNIT_PARK_RECORD=()
     # Re-assign guarded: bash 3.2 under `set -u` rejects "${empty[@]}".
     if (( ${#parked[@]} )); then
-        JASPER_LOW_MEMORY_PARK_RECORD=("${parked[@]}")
+        JASPER_UNIT_PARK_RECORD=("${parked[@]}")
     fi
-    # JASPER_LOW_MEMORY_PARK_OFF_AT_PARK needs no pruning: it is only ever read
+    # JASPER_UNIT_PARK_OFF_AT_PARK needs no pruning: it is only ever read
     # for a unit still IN the record.
     _build_sandbox_log "core_graph_park_forgotten" "dropped=${dropped}"
 }
@@ -1031,14 +1031,14 @@ JASPER_LOW_MEMORY_BUILD_PARK_UNITS=(
 # put back exactly what it took away: no more (a unit the profile deliberately
 # keeps parked must stay parked) and no less. The core-graph half leaves again
 # through forget_core_graph_park_record once the restart tail has converged.
-JASPER_LOW_MEMORY_PARK_RECORD=()
+JASPER_UNIT_PARK_RECORD=()
 
 # The subset of the record that was ALREADY `disabled`/`masked` when it was
 # parked. Restore skips a unit whose enablement CHANGED to off during this
 # install, which is not the same question as whether it is off right now:
 # several units run while permanently disabled because a reconciler starts
-# them and systemd never does. See _unpark_one_low_memory_unit.
-JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
+# them and systemd never does. See _unpark_one_unit.
+JASPER_UNIT_PARK_OFF_AT_PARK=()
 
 # 1 once any restart-tail step WARNed instead of converging. Every one of those
 # steps is non-fatal, so this is the only signal that the reconcilers did NOT
@@ -1052,7 +1052,7 @@ JASPER_CORE_GRAPH_TAIL_DEGRADED=0
 # renderers that attach to them avoids handing a renderer a graph that has no
 # sink yet. Everything not named here is restored afterwards, in park order.
 # Entries that were not parked are simply absent from the record and skipped.
-JASPER_LOW_MEMORY_UNPARK_FIRST=(
+JASPER_UNIT_UNPARK_FIRST=(
     jasper-outputd.service
     jasper-fanin.service
     jasper-camilla.service
@@ -1077,11 +1077,11 @@ _jasper_unit_was_off_at_park() {
     # empty on an ordinary install, and bash 3.2 under `set -u` treats
     # "${empty[@]}" as an unbound variable (the test harness runs on macOS
     # bash; verified 3.2.57 errors, 5.2.37 does not).
-    (( ${#JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]} )) || return 1
-    _jasper_unit_in_list "$1" "${JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]}"
+    (( ${#JASPER_UNIT_PARK_OFF_AT_PARK[@]} )) || return 1
+    _jasper_unit_in_list "$1" "${JASPER_UNIT_PARK_OFF_AT_PARK[@]}"
 }
 
-_record_low_memory_parked_unit() {
+_record_parked_unit() {
     # $1 = unit the park is about to stop. Records it only if it is RUNNING,
     # together with whether its enablement was already off, so restore can tell
     # "this install turned it off" from "it was always off and something other
@@ -1090,24 +1090,24 @@ _record_low_memory_parked_unit() {
     # park_low_memory_build_units pre-snapshots JASPER_CORE_GRAPH_PARK_UNITS,
     # then calls park_audio_clients_for_core_graph_restart, which records the
     # same list again. Emptiness check first, per _jasper_unit_was_off_at_park.
-    if (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )) &&
-        _jasper_unit_in_list "${unit}" "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; then
+    if (( ${#JASPER_UNIT_PARK_RECORD[@]} )) &&
+        _jasper_unit_in_list "${unit}" "${JASPER_UNIT_PARK_RECORD[@]}"; then
         return 0
     fi
     systemctl is-active --quiet "${unit}" 2>/dev/null || return 0
-    JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
+    JASPER_UNIT_PARK_RECORD+=("${unit}")
     enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
     # `masked-runtime` is systemd's documented transient counterpart to
     # `masked` (a /run rather than /etc mask) and is just as much an off
     # state. Kept in step with the identical case in
-    # _unpark_one_low_memory_unit: if one site calls a state off and the
+    # _unpark_one_unit: if one site calls a state off and the
     # other does not, a unit that was ALWAYS off reads as one this install
     # turned off, and the restore skips it as deliberate instead of
     # reporting a unit it could not put back. No in-repo path produces the
     # state today, so this is vocabulary completeness, not a fixed defect.
     case "${enablement}" in
         disabled|masked|masked-runtime)
-            JASPER_LOW_MEMORY_PARK_OFF_AT_PARK+=("${unit}")
+            JASPER_UNIT_PARK_OFF_AT_PARK+=("${unit}")
             ;;
     esac
     return 0
@@ -1117,8 +1117,8 @@ park_low_memory_build_units() {
     build_swap_required || return 0
     _build_sandbox_log "low_memory_build_park" \
         "stopping runtime units before constrained install/build steps"
-    JASPER_LOW_MEMORY_PARK_RECORD=()
-    JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
+    JASPER_UNIT_PARK_RECORD=()
+    JASPER_UNIT_PARK_OFF_AT_PARK=()
     local unit
     # Snapshot BOTH phases before anything is stopped. Recording after the
     # phase-one park would miss every renderer plus the output owner and mux —
@@ -1129,13 +1129,13 @@ park_low_memory_build_units() {
     # Record only what was RUNNING. Restoring a unit that was already stopped
     # would start something this box had deliberately off.
     for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
-        _record_low_memory_parked_unit "${unit}"
+        _record_parked_unit "${unit}"
     done
     for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
         # The two lists overlap by jasper-camilla-crossover today; skip so the
         # record cannot hold a unit twice regardless of future edits.
         _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
-        _record_low_memory_parked_unit "${unit}"
+        _record_parked_unit "${unit}"
     done
 
     # jasper-fanin must stop before park_audio_clients_for_core_graph_restart
@@ -1155,10 +1155,10 @@ park_low_memory_build_units() {
 
 # Outcome counters for one unpark pass. Module-scope because the per-unit
 # helper below is called from two ordered loops and bash 3.2 has no nameref.
-_JASPER_LOW_MEMORY_UNPARK_RESTORED=0
-_JASPER_LOW_MEMORY_UNPARK_FAILED=0
+_JASPER_UNPARK_RESTORED=0
+_JASPER_UNPARK_FAILED=0
 
-_unpark_one_low_memory_unit() {
+_unpark_one_unit() {
     local unit="$1" enablement
     # Already back — the normal success path restarted it. The trap must not
     # churn a live graph.
@@ -1190,7 +1190,7 @@ _unpark_one_low_memory_unit() {
     case "${enablement}" in
         disabled|masked|masked-runtime)
             if ! _jasper_unit_was_off_at_park "${unit}"; then
-                _build_sandbox_log "low_memory_build_unpark_skip" \
+                _build_sandbox_log "unpark_skip" \
                     "unit=${unit} state=${enablement} left off on purpose"
                 return 0
             fi
@@ -1198,10 +1198,10 @@ _unpark_one_low_memory_unit() {
     esac
 
     if systemctl start "${unit}" 2>/dev/null; then
-        _JASPER_LOW_MEMORY_UNPARK_RESTORED=$(( _JASPER_LOW_MEMORY_UNPARK_RESTORED + 1 ))
+        _JASPER_UNPARK_RESTORED=$(( _JASPER_UNPARK_RESTORED + 1 ))
         return 0
     fi
-    _JASPER_LOW_MEMORY_UNPARK_FAILED=$(( _JASPER_LOW_MEMORY_UNPARK_FAILED + 1 ))
+    _JASPER_UNPARK_FAILED=$(( _JASPER_UNPARK_FAILED + 1 ))
     # A masked unit reaches here precisely because it was masked and running
     # when the park stopped it (the branch above sends a newly-masked one down
     # the deliberate-off skip). systemd refuses to start it, so handing the
@@ -1221,7 +1221,7 @@ _unpark_one_low_memory_unit() {
     # matching branch returns 0 while a false `[[ ]] &&` list returns 1, so
     # these lines stay safe even if the trap's guard is ever dropped. That is
     # defence in depth, NOT what keeps the recovery alive: the trap calls this
-    # via `unpark_low_memory_build_units || true`, and a caller's guard
+    # via `unpark_recorded_units || true`, and a caller's guard
     # suspends `set -e` for the whole call tree beneath it — which is also why
     # the unguarded `_build_sandbox_log` below cannot abort the loop.
     local recover="systemctl start ${unit}"
@@ -1237,13 +1237,13 @@ _unpark_one_low_memory_unit() {
             recover_sudo="sudo systemctl unmask ${unit} && ${recover_sudo} && sudo ${remask}"
             ;;
     esac
-    _build_sandbox_log "low_memory_build_unpark_failed" \
+    _build_sandbox_log "unpark_failed" \
         "unit=${unit} recover=${recover}"
     echo "  WARN: could not restart ${unit} after a failed install;" >&2
     echo "  recover with: ${recover_sudo}" >&2
 }
 
-unpark_low_memory_build_units() {
+unpark_recorded_units() {
     # Recovery for an install that dies between the park above and the systemd
     # step that would normally restart these. Without it, ANY abort in that
     # window leaves the speaker silently dead: every daemon exited cleanly, so
@@ -1254,25 +1254,25 @@ unpark_low_memory_build_units() {
     # Called from install.sh's EXIT trap. Idempotent and best-effort: a unit
     # that is already back is skipped, and a failure to restore one unit must
     # not stop the others.
-    (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )) || return 0
+    (( ${#JASPER_UNIT_PARK_RECORD[@]} )) || return 0
     local unit
-    _JASPER_LOW_MEMORY_UNPARK_RESTORED=0
-    _JASPER_LOW_MEMORY_UNPARK_FAILED=0
-    for unit in "${JASPER_LOW_MEMORY_UNPARK_FIRST[@]}"; do
-        _jasper_unit_in_list "${unit}" "${JASPER_LOW_MEMORY_PARK_RECORD[@]}" || continue
-        _unpark_one_low_memory_unit "${unit}"
+    _JASPER_UNPARK_RESTORED=0
+    _JASPER_UNPARK_FAILED=0
+    for unit in "${JASPER_UNIT_UNPARK_FIRST[@]}"; do
+        _jasper_unit_in_list "${unit}" "${JASPER_UNIT_PARK_RECORD[@]}" || continue
+        _unpark_one_unit "${unit}"
     done
-    for unit in "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; do
-        _jasper_unit_in_list "${unit}" "${JASPER_LOW_MEMORY_UNPARK_FIRST[@]}" && continue
-        _unpark_one_low_memory_unit "${unit}"
+    for unit in "${JASPER_UNIT_PARK_RECORD[@]}"; do
+        _jasper_unit_in_list "${unit}" "${JASPER_UNIT_UNPARK_FIRST[@]}" && continue
+        _unpark_one_unit "${unit}"
     done
     # Unconditional: restored=0 is the normal success path (the trap ran and
     # found nothing to do) and needs to be distinguishable in the journal from
     # the trap never running at all.
-    _build_sandbox_log "low_memory_build_unpark" \
-        "parked=${#JASPER_LOW_MEMORY_PARK_RECORD[@]} restored=${_JASPER_LOW_MEMORY_UNPARK_RESTORED} failed=${_JASPER_LOW_MEMORY_UNPARK_FAILED}"
-    JASPER_LOW_MEMORY_PARK_RECORD=()
-    JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
+    _build_sandbox_log "unpark" \
+        "parked=${#JASPER_UNIT_PARK_RECORD[@]} restored=${_JASPER_UNPARK_RESTORED} failed=${_JASPER_UNPARK_FAILED}"
+    JASPER_UNIT_PARK_RECORD=()
+    JASPER_UNIT_PARK_OFF_AT_PARK=()
 }
 
 park_streambox_brain_units() {

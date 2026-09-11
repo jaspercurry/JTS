@@ -106,9 +106,10 @@ class PeeringDaemon:
         self._start_attempted = False
         # R18 (#4416): a failed multicast bind (#4391) is retried by the
         # caller re-invoking start() on a supervisor tick. The Avahi advert
-        # is unaffected by that failure and its install already forks a
-        # `systemctl reload avahi-daemon` (via avahi.render_and_install), so
-        # it must render once per daemon lifetime, not once per retry.
+        # is unaffected by that failure — avahi.render_and_install
+        # atomic-writes the service file and Avahi picks up the change via
+        # inotify — so it must render once per daemon lifetime, not once
+        # per retry.
         self._advert_installed = False
 
     # ---------- public lifecycle ----------
@@ -139,11 +140,11 @@ class PeeringDaemon:
 
         # Install the Avahi service file (best-effort — non-fatal if
         # the template is missing; we'll still arbitrate). Off the loop:
-        # it renders a file and shells out to `systemctl reload
-        # avahi-daemon` (up to 4 s), and this loop is shared with
-        # jasper-control's supervisors. Once per daemon lifetime — a
-        # multicast-bind retry (below) must not re-render/re-install an
-        # advert that hasn't changed.
+        # it does file I/O (reads the template, atomic-writes the
+        # rendered file), and this loop is shared with jasper-control's
+        # supervisors. Once per daemon lifetime — a multicast-bind retry
+        # (below) must not re-render/re-install an advert that hasn't
+        # changed.
         if not self._advert_installed:
             await asyncio.to_thread(
                 avahi.render_and_install,
@@ -240,8 +241,8 @@ class PeeringDaemon:
             self._transport = None
 
         # Unpublish Avahi so peers stop seeing us promptly. Off the loop
-        # for the same reason as the install, and so a slow reload cannot
-        # eat jasper-control's shutdown budget.
+        # for the same reason as the install (file I/O): the unlink
+        # itself must not eat jasper-control's shutdown budget.
         await asyncio.to_thread(avahi.uninstall)
         self._advert_installed = False
 

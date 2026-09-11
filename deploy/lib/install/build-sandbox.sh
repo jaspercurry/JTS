@@ -243,7 +243,7 @@ install_exit_cleanup() {
     # parked units with one refusing to start: guarded -> exit 5, 5 of 6
     # restored, summary emitted; bare -> exit 1, 1 of 6 restored, no summary.
     # Pinned by test_exit_trap_finishes_the_unpark_when_its_own_logging_fails.
-    _call_if_defined unpark_low_memory_build_units
+    _call_if_defined unpark_recorded_units
     # Last: an aborted install must not lift the gate — and re-arm the
     # level-triggered accessory .path — while the graph is still down.
     _call_if_defined clear_install_in_progress
