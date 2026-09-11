@@ -40,16 +40,13 @@ installed by `deploy/install.sh`. It lives OUTSIDE /etc/avahi/services
 so Avahi doesn't try to parse its `__SPEAKER_NAME__` placeholder as XML.
 At runtime, this module substitutes the escaped name and atomic-writes
 the rendered file to `/etc/avahi/services/jasper-control.service`. Avahi
-auto-reloads via inotify (with a deterministic systemctl reload as the
-fallback).
+picks up the change on its own via inotify.
 
 Every failure is fail-soft. A missing/unreadable template, stray placeholder,
-or write failure logs and returns ``False``. A best-effort reload invocation
-exception happens after publication, logs at DEBUG, and does not turn the
-render into a failure because Avahi also watches the directory through inotify.
-``render_control_advert`` NEVER raises into the caller — /speaker save and
-deploy/install.sh must not break because mDNS could not be re-rendered. A later
-/speaker apply or deploy/install render is the retry path.
+or write failure logs and returns ``False``. ``render_control_advert`` NEVER
+raises into the caller — /speaker save and deploy/install.sh must not break
+because mDNS could not be re-rendered. A later /speaker apply or
+deploy/install render is the retry path.
 """
 
 from __future__ import annotations
@@ -143,7 +140,6 @@ def render_control_advert(
     peer_id: str | None = None,
     template: str = CONTROL_AVAHI_TEMPLATE,
     out: str = CONTROL_AVAHI_SERVICE,
-    reload: bool = True,
 ) -> bool:
     """Render the always-on `_jasper-control._tcp` advert with the
     speaker's friendly name + stable peer identity and atomic-write it
@@ -162,18 +158,16 @@ def render_control_advert(
     deploy/install.sh) degrades gracefully; a later /speaker apply or deploy
     retries the render.
 
-    The render/guard/atomic-write/reload body is delegated to the shared
-    ``jasper.net.avahi_service.render_service``, which OWNS the reload: we pass
-    ``reload=reload`` and it reloads avahi-daemon only when it actually wrote
-    the file (``RenderResult.WROTE``). The name is a free-form user value, so
-    we substitute with ``escape=True`` (load-bearing: an unescaped
-    `&`/`<`/`>` would make Avahi drop the whole service-group and break
-    discovery). The availability property is unchanged — a byte-stable re-render
-    returns ``RenderResult.UNCHANGED`` and skips both the write and the
-    reload (a needless write+reload tears down and re-adds the service-group,
-    opening a discovery gap) — but because ``render_service`` reports
-    WROTE-vs-UNCHANGED-vs-FAILED directly, this no longer reads the rendered
-    file before/after to detect whether a write happened.
+    The render/guard/atomic-write body is delegated to the shared
+    ``jasper.net.avahi_service.render_service``. The name is a free-form
+    user value, so we substitute with ``escape=True`` (load-bearing: an
+    unescaped `&`/`<`/`>` would make Avahi drop the whole service-group and
+    break discovery). A byte-stable re-render returns
+    ``RenderResult.UNCHANGED`` and skips the write (a needless rewrite tears
+    down and re-adds the service-group, opening a discovery gap) — but
+    because ``render_service`` reports WROTE-vs-UNCHANGED-vs-FAILED
+    directly, this no longer reads the rendered file before/after to detect
+    whether a write happened.
     """
     resolved = _resolve_name(name)
     substitutions = {
@@ -186,7 +180,6 @@ def render_control_advert(
         out,
         substitutions,
         escape=True,
-        reload=reload,
     )
     if r is RenderResult.WROTE:
         log_event(

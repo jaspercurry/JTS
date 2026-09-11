@@ -30,8 +30,7 @@ speaker's friendly display name into a ``name=`` TXT record so the
     An empty/unset name falls back to the hostname so the TXT is never
     empty and the service always advertises something addressable.
 
-Renders into ``tmp_path`` so we never touch real ``/etc/avahi/services``;
-the avahi-daemon reload subprocess is mocked so tests never shell out.
+Renders into ``tmp_path`` so we never touch real ``/etc/avahi/services``.
 The real shipped template + static service file are read from the repo so
 the byte-equivalence and "renders valid XML" checks track what actually
 deploys (not a hand-copied approximation that could silently diverge).
@@ -52,41 +51,11 @@ _REPO = Path(__file__).resolve().parent.parent
 _TEMPLATE_SRC = _REPO / "deploy" / "avahi" / "jasper-control.service.template"
 _STATIC_SRC = _REPO / "deploy" / "avahi" / "jasper-control.service"
 
-# Captured at import time, before the autouse reload-mock fixture replaces it.
-# One swallow-path test restores this real implementation to exercise
-# avahi_service.reload_avahi's own OSError/SubprocessError handling.
-_REAL_RELOAD_AVAHI = avahi_service.reload_avahi
-
 # A name exercising every XML metacharacter at once: ampersand, angle
 # brackets, double quote, single quote. If escaping is wrong, minidom /
 # ElementTree parsing below raises and the whole service-group would be
 # rejected by Avahi at runtime (room discovery goes offline).
 HOSTILE_NAME = 'A & <b> "x" \''
-
-
-@pytest.fixture(autouse=True)
-def _mock_avahi_reload(monkeypatch):
-    """Mock the avahi-daemon reload for every test so none shells out.
-    Returns the recorder so a test can assert it was (or wasn't) called.
-
-    ``render_control_advert`` no longer drives its own reload — it delegates
-    to ``jasper.net.avahi_service.render_service``, which OWNS the reload and
-    fires it (only on ``RenderResult.WROTE``) through the shared
-    ``jasper.net.avahi_service.reload_avahi``. So we patch *that* boundary, not
-    ``subprocess.run`` (control_advert doesn't import subprocess anymore).
-    Mirrors tests/test_peering_avahi.py's render-path reload patch.
-    """
-
-    class _Recorder:
-        def __init__(self):
-            self.calls: list = []
-
-        def __call__(self, *args, **kwargs):
-            self.calls.append((args, kwargs))
-
-    rec = _Recorder()
-    monkeypatch.setattr(avahi_service, "reload_avahi", rec)
-    return rec
 
 
 @pytest.fixture
@@ -131,10 +100,10 @@ def test_module_path_constants_are_pinned():
 # ----------------------------------------------------------------------
 
 
-def test_render_fills_name_into_valid_xml(template, tmp_path, _mock_avahi_reload):
+def test_render_fills_name_into_valid_xml(template, tmp_path):
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "Kitchen", peer_id="pid-1", template=str(template), out=str(out), reload=True,
+        "Kitchen", peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     text = out.read_text()
@@ -148,8 +117,6 @@ def test_render_fills_name_into_valid_xml(template, tmp_path, _mock_avahi_reload
     # Both placeholders are fully consumed.
     assert "__SPEAKER_NAME__" not in text
     assert "__PEER_ID__" not in text
-    # Reload was attempted (reload=True).
-    assert len(_mock_avahi_reload.calls) == 1
 
 
 # ----------------------------------------------------------------------
@@ -165,7 +132,7 @@ def test_hostile_name_yields_valid_xml_and_round_trips(template, tmp_path):
     """
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        HOSTILE_NAME, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        HOSTILE_NAME, peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     text = out.read_text()
@@ -192,7 +159,7 @@ def test_hostile_name_does_not_break_out_of_service_group(template, tmp_path):
     didn't inject a sibling element."""
     out = tmp_path / "rendered.service"
     ca.render_control_advert(
-        HOSTILE_NAME, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        HOSTILE_NAME, peer_id="pid-1", template=str(template), out=str(out),
     )
     root = ET.fromstring(out.read_text())
     assert root.tag == "service-group"
@@ -211,7 +178,7 @@ def test_empty_name_falls_back_to_hostname(template, tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "myhost.local")
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        "", peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     txts = _txt_records(out.read_text())
@@ -226,7 +193,7 @@ def test_blank_whitespace_name_falls_back_to_hostname(template, tmp_path, monkey
     monkeypatch.setenv("JASPER_HOSTNAME", "ws.local")
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "   ", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        "   ", peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     assert _txt_records(out.read_text()) == ["name=ws.local", "peer_id=pid-1"]
@@ -238,7 +205,7 @@ def test_unset_hostname_uses_default_jts_local(template, tmp_path, monkeypatch):
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        "", peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     assert _txt_records(out.read_text()) == ["name=jts.local", "peer_id=pid-1"]
@@ -259,7 +226,7 @@ def test_none_name_reads_speaker_name_module(template, tmp_path, monkeypatch):
     monkeypatch.setattr("jasper.identity.speaker_name.runtime_name", lambda: "Living Room")
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        None, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        None, peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     assert _txt_records(out.read_text()) == ["name=Living Room", "peer_id=pid-1"]
@@ -283,7 +250,7 @@ def test_none_name_reader_failure_still_advertises_identity_default(template, tm
     monkeypatch.setenv("JASPER_HOSTNAME", "fallback.local")
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        None, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        None, peer_id="pid-1", template=str(template), out=str(out),
     )
     assert ok is True
     txts = _txt_records(out.read_text())
@@ -305,7 +272,7 @@ def test_rendered_service_block_byte_equivalent_to_static(template, tmp_path):
     """
     out = tmp_path / "rendered.service"
     ca.render_control_advert(
-        "Whatever", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+        "Whatever", peer_id="pid-1", template=str(template), out=str(out),
     )
 
     rendered_block = _service_block(out.read_text())
@@ -346,16 +313,15 @@ def test_template_service_block_only_adds_txt_record():
 # ----------------------------------------------------------------------
 
 
-def test_missing_template_returns_false_never_raises(tmp_path, _mock_avahi_reload):
+def test_missing_template_returns_false_never_raises(tmp_path):
     """A missing template (fresh install before install.sh staged it) must
-    return False, not write an output file, not reload, and never raise."""
+    return False, not write an output file, and never raise."""
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "x", template=str(tmp_path / "absent.service"), out=str(out), reload=True,
+        "x", template=str(tmp_path / "absent.service"), out=str(out),
     )
     assert ok is False
     assert not out.exists()
-    assert _mock_avahi_reload.calls == []  # no reload on the failure path
 
 
 def test_unreadable_template_returns_false(tmp_path, monkeypatch):
@@ -373,24 +339,23 @@ def test_unreadable_template_returns_false(tmp_path, monkeypatch):
         return real_read_text(self, *a, **k)
 
     monkeypatch.setattr(Path, "read_text", _boom)
-    ok = ca.render_control_advert("x", template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert("x", template=str(template), out=str(out))
     assert ok is False
     assert not out.exists()
 
 
-def test_stray_placeholder_refuses_to_install(template, tmp_path, _mock_avahi_reload):
+def test_stray_placeholder_refuses_to_install(template, tmp_path):
     """Template drift — a new __FOO__ token with no substitution must be
-    refused (returns False, writes nothing, doesn't reload) rather than
-    installing a half-rendered file that Avahi would reject wholesale."""
+    refused (returns False, writes nothing) rather than installing a
+    half-rendered file that Avahi would reject wholesale."""
     bad = _TEMPLATE_SRC.read_text().replace(
         "</service-group>", "  <x>__UNKNOWN_TOKEN__</x>\n</service-group>",
     )
     template.write_text(bad)
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("x", template=str(template), out=str(out), reload=True)
+    ok = ca.render_control_advert("x", template=str(template), out=str(out))
     assert ok is False
     assert not out.exists()
-    assert _mock_avahi_reload.calls == []
 
 
 def test_write_failure_returns_false_never_raises(template, tmp_path, monkeypatch):
@@ -402,61 +367,9 @@ def test_write_failure_returns_false_never_raises(template, tmp_path, monkeypatc
         raise OSError("disk full")
 
     monkeypatch.setattr(avahi_service, "atomic_write_text", _boom_write)
-    ok = ca.render_control_advert("x", template=str(template), out=str(out), reload=True)
+    ok = ca.render_control_advert("x", template=str(template), out=str(out))
     assert ok is False
     assert not out.exists()
-
-
-# ----------------------------------------------------------------------
-# Reload control + idempotence.
-# ----------------------------------------------------------------------
-
-
-def test_reload_false_does_not_shell_out(template, tmp_path, _mock_avahi_reload):
-    """reload=False writes the advert but skips the avahi-daemon reload
-    (install.sh batches its own reload; the wizard wants the live reload)."""
-    out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("x", template=str(template), out=str(out), reload=False)
-    assert ok is True
-    assert out.exists()
-    assert _mock_avahi_reload.calls == []
-
-
-def test_unchanged_render_skips_write_and_reload(template, tmp_path, _mock_avahi_reload):
-    """A byte-identical re-render returns True but does NOT reload — critical
-    because a needless write+reload tears down and re-adds the
-    service-group, opening a discovery gap."""
-    out = tmp_path / "rendered.service"
-    ca.render_control_advert("Stable", template=str(template), out=str(out), reload=True)
-    assert len(_mock_avahi_reload.calls) == 1
-    first = out.read_text()
-
-    # Second identical render: no write change, no second reload.
-    ok = ca.render_control_advert("Stable", template=str(template), out=str(out), reload=True)
-    assert ok is True
-    assert out.read_text() == first
-    assert len(_mock_avahi_reload.calls) == 1  # still just the first
-
-
-def test_reload_subprocess_failure_is_swallowed(template, tmp_path, monkeypatch):
-    """Even the reload itself is fail-soft: if `systemctl reload` raises
-    (OSError / SubprocessError), the render still returns True (the file is
-    on disk; Avahi's inotify will pick it up) and never propagates.
-
-    The reload is owned by ``avahi_service.render_service`` now, so we restore
-    the REAL ``avahi_service.reload_avahi`` (the autouse fixture stubs it) and
-    make the underlying ``avahi_service.subprocess.run`` raise — exercising
-    the actual swallow path in ``avahi_service.reload_avahi``."""
-    monkeypatch.setattr(avahi_service, "reload_avahi", _REAL_RELOAD_AVAHI)
-
-    def _boom_run(*a, **k):
-        raise OSError("systemctl not found")
-
-    monkeypatch.setattr(avahi_service.subprocess, "run", _boom_run)
-    out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("x", template=str(template), out=str(out), reload=True)
-    assert ok is True
-    assert out.exists()
 
 
 # ----------------------------------------------------------------------
@@ -488,7 +401,7 @@ def test_default_peer_id_reads_identity(template, tmp_path, monkeypatch):
     )
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "Kitchen", template=str(template), out=str(out), reload=False,
+        "Kitchen", template=str(template), out=str(out),
     )
     assert ok is True
     assert _txt_records(out.read_text()) == ["name=Kitchen", "peer_id=uuid-abc-123"]
@@ -504,7 +417,7 @@ def test_peer_id_reader_failure_never_breaks_advertising(template, tmp_path, mon
     monkeypatch.setattr("jasper.identity.reader.read_identity", _boom)
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "Kitchen", template=str(template), out=str(out), reload=False,
+        "Kitchen", template=str(template), out=str(out),
     )
     assert ok is True
     assert _txt_records(out.read_text()) == ["name=Kitchen", "peer_id="]
@@ -517,7 +430,7 @@ def test_hostile_peer_id_is_escaped_and_round_trips(template, tmp_path):
     hostile = 'p & <q> "r"'
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
-        "Kitchen", peer_id=hostile, template=str(template), out=str(out), reload=False,
+        "Kitchen", peer_id=hostile, template=str(template), out=str(out),
     )
     assert ok is True
     text = out.read_text()

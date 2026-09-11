@@ -2,13 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Peering Avahi files use temporary paths and a stubbed reload."""
+"""Peering Avahi files use temporary paths."""
 from __future__ import annotations
 
-
-import pytest
-
-from jasper.net import avahi_service
 from jasper.peering import avahi as avahi_mod
 
 
@@ -25,13 +21,6 @@ _TEMPLATE = """<?xml version="1.0" standalone='no'?>
   </service>
 </service-group>
 """
-
-
-@pytest.fixture(autouse=True)
-def _no_reload(monkeypatch):
-    calls = []
-    monkeypatch.setattr(avahi_service, "reload_avahi", lambda: calls.append(1))
-    return calls
 
 
 def test_render_substitutes_all_tokens(tmp_path):
@@ -102,19 +91,16 @@ def test_unknown_token_refused(tmp_path):
     assert not rendered.exists()
 
 
-@pytest.mark.parametrize("reload", [True, False])
-def test_uninstall_reloads_only_after_removal(tmp_path, _no_reload, reload):
+def test_uninstall_removes_the_file(tmp_path):
+    """Idempotent: uninstalling an already-removed file is a no-op."""
     target = tmp_path / "rendered.xml"
     target.write_text("anything")
-    avahi_mod.uninstall(rendered_path=str(target), reload_avahi=reload)
+    avahi_mod.uninstall(rendered_path=str(target))
     assert not target.exists()
-    assert _no_reload == ([1] if reload else [])
-    _no_reload.clear()
-    avahi_mod.uninstall(rendered_path=str(target), reload_avahi=reload)
-    assert _no_reload == []
+    avahi_mod.uninstall(rendered_path=str(target))
 
 
-def test_uninstall_failure_does_not_reload(tmp_path, monkeypatch, _no_reload):
+def test_uninstall_failure_leaves_file_and_does_not_raise(tmp_path, monkeypatch):
     target = tmp_path / "rendered.xml"
     target.write_text("anything")
 
@@ -124,13 +110,11 @@ def test_uninstall_failure_does_not_reload(tmp_path, monkeypatch, _no_reload):
     monkeypatch.setattr(avahi_mod.os, "unlink", fail_unlink)
     avahi_mod.uninstall(rendered_path=str(target))
     assert target.exists()
-    assert _no_reload == []
 
 
-def test_skip_write_when_unchanged(tmp_path, _no_reload):
+def test_skip_write_when_unchanged(tmp_path):
     """Idempotent re-render: if the rendered output matches what's on
-    disk, skip the write. Avoids spamming avahi reload on every
-    daemon restart."""
+    disk, skip the write."""
     template = tmp_path / "template.xml"
     template.write_text(_TEMPLATE)
     rendered = tmp_path / "rendered.xml"
@@ -142,7 +126,6 @@ def test_skip_write_when_unchanged(tmp_path, _no_reload):
         rendered_path=str(rendered),
     )
     original = rendered.read_text()
-    _no_reload.clear()
 
     # Second call with same params — should be a no-op write (UNCHANGED).
     avahi_mod.render_and_install(
@@ -150,24 +133,6 @@ def test_skip_write_when_unchanged(tmp_path, _no_reload):
         template_path=str(template),
         rendered_path=str(rendered),
     )
-    # File content unchanged; reload not triggered.
+    # Can't reliably assert mtime equality (filesystems have varying
+    # precision) — the load-bearing thing is the content is unchanged.
     assert rendered.read_text() == original
-    # Can't reliably assert mtime equality (filesystems have varying precision) — the load-bearing thing is no reload.
-    assert _no_reload == []
-
-
-@pytest.mark.parametrize("reload", [True, False])
-def test_render_reloads_after_write(tmp_path, _no_reload, reload):
-    template = tmp_path / "template.xml"
-    template.write_text(_TEMPLATE)
-    rendered = tmp_path / "rendered.xml"
-
-    ok = avahi_mod.render_and_install(
-        peer_id="alice", room="kitchen", primary=True,
-        template_path=str(template),
-        rendered_path=str(rendered),
-        reload_avahi=reload,
-    )
-    assert ok is True
-    assert rendered.exists()
-    assert _no_reload == ([1] if reload else [])
