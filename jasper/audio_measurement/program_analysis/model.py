@@ -827,6 +827,7 @@ class PilotObservation:
     channel_map_cross_rise_db: float | None = None
     programmed_hi_gain_db: float | None = None
     delta_implausible: bool = False
+    mic_meter_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -922,6 +923,14 @@ class GainPlan:
 
 
 @dataclass(frozen=True)
+class AnchorEvidence:
+    ambiguous: bool = False
+    presence: float | None = None
+    confidence: float | None = None
+    corroborated: bool | None = None
+
+
+@dataclass(frozen=True)
 class ProgramAnalysis:
     """The deterministic result of one ``(program, capture)`` pair."""
 
@@ -988,13 +997,11 @@ class ProgramAnalysis:
     # VERIFY turns into graded checks). ``None`` only on analyses built
     # directly rather than through `analyze_program_capture`.
     frame_ledger: FrameLedger | None = None
-    # True when `_resolve_anchor` could not tell this capture's competing
-    # timeline interpretations apart, so no number below reliably attributes
-    # energy to a driver. Set on every phase; only CHECK reads it (its
-    # pilots re-locate onto each other under the shift, producing a
-    # confident-looking wiring verdict instead of an honest "not found").
-    # ``False`` (not ``None``) default: unambiguous by construction.
     anchor_ambiguous: bool = False
+    anchor: AnchorEvidence | None = None
+    # An unresolved drift step has no numeric measurement.
+    discontinuity_samples: float | None = None
+    mic_meter_status: str | None = None
     # Any pilot's `PilotObservation.delta_implausible` (#2647) -- set ONLY by
     # `_analyze_check`, a second, independent signal alongside
     # `anchor_ambiguous` that this capture's timeline is not trustworthy. Never

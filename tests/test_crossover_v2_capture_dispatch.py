@@ -12,11 +12,15 @@ between VERIFY's integrity ladder and the entry baseline's.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
-from jasper.active_speaker.crossover_v2 import spatial
+from jasper.active_speaker.crossover_v2 import spatial, refusal_copy
+from jasper.audio_measurement.program_analysis.model import AnchorEvidence, DriftEstimate
+from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _run_phase
 
 
 # --------------------------------------------------------------------------- #
@@ -63,6 +67,12 @@ def _measure(**overrides) -> tuple[cd.MeasureScreens, _Counter, _Counter]:
         linearity_ok=True,
         alignment_present=True,
         alignment_status_ok=True,
+        anchor=None,
+        epsilon_ppm=None,
+        max_residual_samples=None,
+        discontinuity_samples=None,
+        peak_dbfs=None,
+        mic_meter_status=None,
     )
     base.update(overrides)
     return (
@@ -253,7 +263,7 @@ def test_an_unattributed_anchor_is_retriable_and_never_a_wiring_instruction():
 
 def test_measure_accepts_a_clean_capture():
     screens, schedule, plausible = _measure()
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) is None
+    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0).kind is None
     assert (schedule.calls, plausible.calls) == (1, 1)
 
 
@@ -282,18 +292,22 @@ def test_neither_level_rung_rearms():
 def test_the_three_transient_rungs_rearm_and_only_the_clipped_one_backs_off():
     screens, _, _ = _measure(glitch_detected=True)
     glitch = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
-    assert glitch == cd.MeasureScreen(cd.SCREEN_CAPTURE_GLITCH, rearm=True)
+    assert glitch == cd.MeasureScreen(
+        cd.SCREEN_CAPTURE_GLITCH, rearm=True, evidence={"mic_meter_status": "unmeasured"},
+    )
 
     screens, _, _ = _measure(_schedule=_Counter(False))
     schedule = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
     assert schedule == cd.MeasureScreen(
-        cd.SCREEN_CAPTURE_GLITCH, guard="sweep_schedule", rearm=True
+        cd.SCREEN_CAPTURE_GLITCH, guard="sweep_schedule", rearm=True,
+        evidence={"mic_meter_status": "unmeasured"},
     )
 
     screens, _, _ = _measure(any_sweep_clipped=True)
     clipped = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
     assert clipped == cd.MeasureScreen(
-        cd.SCREEN_CLIPPED, rearm=True, rearm_backoff_db=3.0
+        cd.SCREEN_CLIPPED, rearm=True, rearm_backoff_db=3.0,
+        evidence={"mic_meter_status": "unmeasured"},
     )
 
 
@@ -309,7 +323,8 @@ def test_the_two_shared_code_rungs_are_told_apart_by_guard():
     screens, _, _ = _measure(sweep_locate_confidence_ok=False)
     locate = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
     assert locate == cd.MeasureScreen(
-        cd.SCREEN_LOCATE_FAILED, guard="sweep_locate_confidence"
+        cd.SCREEN_LOCATE_FAILED, guard="sweep_locate_confidence",
+        evidence={"mic_meter_status": "unmeasured"},
     )
     screens, _, _ = _measure(stimulus_located=False)
     plain = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
@@ -326,6 +341,7 @@ def test_the_schedule_port_is_not_asked_when_a_rung_above_refuses():
     for override in (
         {"stimulus_located": False},
         {"pilot_snr_ok": False},
+        {"anchor": AnchorEvidence(corroborated=False)},
         {"sweep_locate_confidence_ok": False},
         {"glitch_detected": True},
     ):
@@ -354,7 +370,7 @@ def test_the_plausibility_port_is_asked_only_of_a_resolved_trusted_estimate():
 
 def test_a_trims_only_capture_skips_every_alignment_rung():
     screens, _, _ = _measure(alignment_present=False, alignment_status_ok=False)
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) is None
+    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0).kind is None
 
 
 def test_the_two_alignment_rungs_report_their_own_finding():
@@ -366,11 +382,11 @@ def test_the_two_alignment_rungs_report_their_own_finding():
     """
     screens, _, _ = _measure(alignment_status_ok=False)
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_ALIGNMENT_UNRESOLVED
+        cd.SCREEN_ALIGNMENT_UNRESOLVED, evidence={"mic_meter_status": "unmeasured"},
     )
     screens, _, _ = _measure(_plausible=_Counter(False))
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_DELAY_IMPLAUSIBLE
+        cd.SCREEN_DELAY_IMPLAUSIBLE, evidence={"mic_meter_status": "unmeasured"},
     )
 
 
@@ -382,7 +398,7 @@ def test_an_unresolved_alignment_is_reported_before_an_implausible_delay():
     """
     screens, _, _ = _measure(alignment_status_ok=False, _plausible=_Counter(False))
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_ALIGNMENT_UNRESOLVED
+        cd.SCREEN_ALIGNMENT_UNRESOLVED, evidence={"mic_meter_status": "unmeasured"},
     )
 
 
@@ -540,3 +556,64 @@ def test_no_household_vocabulary_reaches_this_module():
         assert symbol not in imported, symbol
     assert not any("crossover_v2_flow" in name for name in imported)
     assert not any(name.startswith("jasper.web") for name in imported)
+
+
+@pytest.mark.parametrize("corroborated", [False, True, None])
+def test_measure_anchor_precedes_sweep_confidence(corroborated):
+    screens, schedule, _ = _measure(
+        anchor=AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=corroborated),
+        sweep_locate_confidence_ok=False,
+    )
+    screen = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
+    assert screen.kind == (
+        cd.SCREEN_ANCHOR_UNCONFIRMED if corroborated is False else cd.SCREEN_LOCATE_FAILED
+    )
+    assert screen.rearm is False
+    assert schedule.calls == 0
+    if corroborated is False:
+        assert screen.evidence == {
+            "presence": 0.0156, "confidence": 0.18, "corroborated": False,
+            "mic_meter_status": "unmeasured",
+        }
+        assert type(screen.evidence["corroborated"]) is bool
+        assert type(screen.evidence["presence"]) is float
+        assert type(screen.evidence["confidence"]) is float
+
+
+@pytest.mark.parametrize(
+    ("fault", "code", "figures"),
+    [
+        ({}, None, {}),
+        ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, {}),
+        ({"anchor": AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET,
+         {"presence": 0.0156, "confidence": 0.18, "corroborated": False}),
+        ({"glitch_detected": True, "discontinuity_samples": -1066.7,
+          "drift": DriftEstimate(-3106.0, 1066.7, True, discontinuity_samples=-1066.7)},
+         refusal_copy.REASON_DRIFT_BASELINES_DISAGREE,
+         {"epsilon_ppm": -3106.0, "max_residual_samples": 1066.7,
+          "discontinuity_samples": -1066.7}),
+        ({"clipped": True}, refusal_copy.REASON_CLIPPED, {"peak_dbfs": -12.0}),
+    ],
+)
+def test_measure_evidence_reaches_capture_result_and_journal(monkeypatch, fault, code, figures):
+    events = []
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.diagnostics.log_event",
+        lambda logger, event, **fields: events.append((event, fields)),
+    )
+    fault = dict(fault)
+    clipped = fault.pop("clipped", False)
+    fakes = FakeSeams(measure=lambda program: replace(
+        _measure_analysis(program, clipped=clipped), mic_meter_status="too_loud", **fault,
+    ))
+    conductor = _conductor(fakes)
+    _run_phase(conductor, 1, 1)
+    verdict = _run_phase(conductor, 2, 1)
+    assert verdict["accepted"] is (code is None)
+    assert verdict.get("code") == code
+    assert verdict["evidence"] == {"mic_meter_status": "too_loud", **figures}
+    for key, value in figures.items():
+        assert type(verdict["evidence"][key]) is type(value)
+    journal = next(fields for event, fields in events
+                   if event == "correction.crossover_v2_measure_diag")
+    assert journal["evidence"] == verdict["evidence"]

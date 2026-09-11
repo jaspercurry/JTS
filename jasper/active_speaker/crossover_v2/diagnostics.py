@@ -19,10 +19,9 @@ import logging
 import math
 from typing import Any, Callable, Mapping, Sequence
 
-from jasper.active_speaker.calibration_level import (
+from jasper.audio_measurement.mic_meter import (
     MIC_USABLE_MAX_DBFS,
     MIC_USABLE_MIN_DBFS,
-    classify_mic_meter,
 )
 from jasper.active_speaker.crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION,
@@ -290,20 +289,8 @@ def _log_check_diag(
 def _log_check_pilot_rows(
     logger: logging.Logger, analysis: ProgramAnalysis, *, session_id: str,
 ) -> None:
-    """One event per driver present: which one failed, and how loud it was (#1922).
-
-    The CHECK verdict reduces every per-driver fact to one aggregate boolean, so a
-    ``channel_map_mismatch`` cannot say WHICH driver was silent even though the
-    system knows. A row per role restores that attribution without widening the
-    fixed woofer/tweeter diag line above.
-
-    ``level_sanity`` is the fact CHECK's gate chain never asks: every rung is
-    RELATIVE (rise above ambient, ratio within a pilot pair, SNR floor), so a
-    12 dB rise in a very quiet room passes at an absurdly low absolute level and
-    nothing bounds the top at all. Graded against the shipped microphone window
-    (:func:`~jasper.active_speaker.calibration_level.classify_mic_meter`) rather
-    than a number invented here. ADVISORY: it decides nothing, raises no declared
-    ceiling (#1894), and the refusal wiring is not built.
+    """Per-role levels expose absolute-level misses CHECK's relative gates cannot
+    detect; the mic grade remains advisory (issue #1894).
     """
     for pilot in analysis.pilots:
         log_event(
@@ -316,9 +303,7 @@ def _log_check_pilot_rows(
             # The gain-solve reference level, NOT the ambient-subtracted one:
             # `PilotObservation` forbids the latter reaching an ABSOLUTE consumer.
             peak_hi_dbfs=round(float(pilot.peak_hi_dbfs), 2),
-            level_sanity=classify_mic_meter(
-                observed_dbfs=float(pilot.peak_hi_dbfs)
-            )["status"],
+            level_sanity=pilot.mic_meter_status,
             level_usable_min_dbfs=MIC_USABLE_MIN_DBFS,
             level_usable_max_dbfs=MIC_USABLE_MAX_DBFS,
         )
@@ -415,6 +400,7 @@ def _log_measure_diag(
     log_event(
         logger, "correction.crossover_v2_measure_diag",
         session_id=session_id, accepted=verdict.accepted, code=verdict.code or "",
+        evidence=verdict.evidence,
         alignment_confidence=round(float(align.confidence), 4) if align else None,
         alignment_confidence_source=(align.confidence_source if align else None),
         alignment_seed_delay_us=(

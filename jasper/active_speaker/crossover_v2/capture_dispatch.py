@@ -27,11 +27,12 @@ resolving it eagerly would move an observable failure above the glitch rung.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.audio_measurement.program import KIND_SWEEP, STIMULUS_KINDS
 from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
     channel_map_isolation_db,
 )
@@ -46,6 +47,7 @@ from .spatial import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from jasper.audio_measurement.program_analysis.model import AnchorEvidence
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
 __all__ = [
@@ -54,6 +56,7 @@ __all__ = [
     "LOCATE_MIN_CONFIDENCE",
     "SCREEN_ALIGNMENT_UNRESOLVED",
     "SCREEN_ANCHOR_AMBIGUOUS",
+    "SCREEN_ANCHOR_UNCONFIRMED",
     "SCREEN_CHANNEL_MAP_MISMATCH",
     "SCREEN_DELAY_IMPLAUSIBLE",
     "SCREEN_NOISY_ROOM_LINEARITY",
@@ -88,6 +91,7 @@ SCREEN_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 #: actually played, which is how a correctly-wired speaker produced a
 #: confident-looking "the drivers played out of order".
 SCREEN_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
+SCREEN_ANCHOR_UNCONFIRMED = "anchor_unconfirmed"
 #: The capture cleared its gates but sits too close to the room's own floor.
 SCREEN_SNR_FLOOR = "snr_floor"
 #: The curve bent, and this capture's OWN ambient evidence says the room did it.
@@ -102,9 +106,9 @@ SCREEN_ALIGNMENT_UNRESOLVED = "alignment_unresolved"
 #: it: a physics fact and a prior are different answers.
 SCREEN_DELAY_IMPLAUSIBLE = "delay_implausible"
 
-#: The six kinds only an anchor phase can produce.
 ANCHOR_SCREEN_KINDS = frozenset({
     SCREEN_ANCHOR_AMBIGUOUS,
+    SCREEN_ANCHOR_UNCONFIRMED,
     SCREEN_CHANNEL_MAP_MISMATCH,
     SCREEN_SNR_FLOOR,
     SCREEN_NOISY_ROOM_LINEARITY,
@@ -231,10 +235,11 @@ class MeasureScreen:
     it comes back at, ``0.0`` reproducing the no-argument call exactly.
     """
 
-    kind: str
+    kind: str | None
     guard: str = ""
     rearm: bool = False
     rearm_backoff_db: float = 0.0
+    evidence: dict[str, float | bool | str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -263,12 +268,51 @@ class MeasureScreens:
     alignment_present: bool
     alignment_status_ok: bool
     delay_physically_plausible: Callable[[], bool]
+    anchor: AnchorEvidence | None
+    epsilon_ppm: float | None
+    max_residual_samples: float | None
+    discontinuity_samples: float | None
+    peak_dbfs: float | None
+    mic_meter_status: str | None
+
+    @classmethod
+    def from_analysis(
+        cls, analysis: ProgramAnalysis, *,
+        sweep_schedule_ok: Callable[[], bool],
+        delay_physically_plausible: Callable[[], bool],
+    ) -> MeasureScreens:
+        drift, alignment = analysis.drift, analysis.alignment
+        clipped = _clipped_stimulus_peaks(analysis)
+        return cls(
+            stimulus_located=_stimulus_locate_ok(analysis),
+            pilot_snr_ok=analysis.pilot_snr_ok,
+            sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
+            glitch_detected=bool(analysis.glitch_detected),
+            sweep_schedule_ok=sweep_schedule_ok,
+            any_sweep_clipped=bool(clipped),
+            linearity_ok=analysis.linearity_ok,
+            alignment_present=alignment is not None,
+            alignment_status_ok=alignment is not None and alignment.status == ALIGNMENT_OK,
+            delay_physically_plausible=delay_physically_plausible,
+            anchor=analysis.anchor,
+            epsilon_ppm=float(drift.epsilon_ppm) if drift else None,
+            max_residual_samples=float(drift.max_residual_samples) if drift else None,
+            discontinuity_samples=analysis.discontinuity_samples,
+            peak_dbfs=max(clipped, default=None),
+            mic_meter_status=analysis.mic_meter_status,
+        )
+
+    def evidence(self, **values: float | bool | str | None) -> dict[str, float | bool | str]:
+        return {
+            "mic_meter_status": self.mic_meter_status or "unmeasured",
+            **{key: value for key, value in values.items() if value is not None},
+        }
 
 
 def measure_screens(
     screens: MeasureScreens, *, clip_retry_backoff_db: float
-) -> MeasureScreen | None:
-    """MEASURE's ladder: the finding and its directive, or ``None`` to accept.
+) -> MeasureScreen:
+    """MEASURE's ladder: evidence and a finding, with ``kind=None`` to accept.
 
     **"Too quiet" runs before "glitched"** (D3, #1838). A capture nobody could
     hear produces the same symptoms as a spliced one — the locator lands the
@@ -276,9 +320,8 @@ def measure_screens(
     fires on noise. Low SNR CAUSES the glitch signal, so the level verdicts have
     to be asked first or the reported cause is never the real one.
 
-    **Neither level rung re-arms**: re-running an inaudible measurement at the
-    same level cannot succeed, and both kinds already carry a household action
-    that can. The three transient rungs (glitch, schedule, clipped) DO re-arm
+    **The level rungs do not re-arm**: re-running an inaudible measurement at the
+    same level cannot succeed. The three transient rungs (glitch, schedule, clipped) re-arm
     silently, and the clipped one comes back quieter. ``sweep_schedule`` is the
     xrun detector — a uniform whole-capture shift the repeat-pair drift check is
     structurally blind to — and it shares the glitch kind with ``guard`` as the
@@ -288,32 +331,54 @@ def measure_screens(
     policy number, and inputs are stated, never reached for.
     """
     if not screens.stimulus_located:
-        return MeasureScreen(SCREEN_LOCATE_FAILED)
+        return MeasureScreen(SCREEN_LOCATE_FAILED, evidence=screens.evidence())
     if screens.pilot_snr_ok is False:
-        return MeasureScreen(SCREEN_PILOT_LEVEL_COLLAPSE)
+        return MeasureScreen(SCREEN_PILOT_LEVEL_COLLAPSE, evidence=screens.evidence())
+    # Retire when locate can resolve the timeline without a corroborating witness.
+    if screens.anchor is not None and screens.anchor.corroborated is False:
+        return MeasureScreen(SCREEN_ANCHOR_UNCONFIRMED, evidence=screens.evidence(
+            presence=screens.anchor.presence, confidence=screens.anchor.confidence,
+            corroborated=screens.anchor.corroborated,
+        ))
     if not screens.sweep_locate_confidence_ok:
-        return MeasureScreen(SCREEN_LOCATE_FAILED, guard="sweep_locate_confidence")
+        return MeasureScreen(
+            SCREEN_LOCATE_FAILED, guard="sweep_locate_confidence", evidence=screens.evidence(),
+        )
     if screens.glitch_detected:
-        return MeasureScreen(SCREEN_CAPTURE_GLITCH, rearm=True)
+        return MeasureScreen(SCREEN_CAPTURE_GLITCH, rearm=True, evidence=screens.evidence(
+            epsilon_ppm=screens.epsilon_ppm, max_residual_samples=screens.max_residual_samples,
+            discontinuity_samples=screens.discontinuity_samples,
+        ))
     if not screens.sweep_schedule_ok():
         return MeasureScreen(
             SCREEN_CAPTURE_GLITCH, guard="sweep_schedule", rearm=True,
+            evidence=screens.evidence(),
         )
     if screens.any_sweep_clipped:
         return MeasureScreen(
             SCREEN_CLIPPED, rearm=True, rearm_backoff_db=clip_retry_backoff_db,
+            evidence=screens.evidence(peak_dbfs=screens.peak_dbfs),
         )
     if screens.linearity_ok is False:
-        return MeasureScreen(SCREEN_LINEARITY_FAILED)
+        return MeasureScreen(SCREEN_LINEARITY_FAILED, evidence=screens.evidence())
     if screens.alignment_present and not screens.alignment_status_ok:
-        return MeasureScreen(SCREEN_ALIGNMENT_UNRESOLVED)
+        return MeasureScreen(SCREEN_ALIGNMENT_UNRESOLVED, evidence=screens.evidence())
     if (
         screens.alignment_present
         and screens.alignment_status_ok
         and not screens.delay_physically_plausible()
     ):
-        return MeasureScreen(SCREEN_DELAY_IMPLAUSIBLE)
-    return None
+        return MeasureScreen(SCREEN_DELAY_IMPLAUSIBLE, evidence=screens.evidence())
+    return MeasureScreen(None, evidence=screens.evidence())
+
+
+def _clipped_stimulus_peaks(analysis: ProgramAnalysis) -> list[float]:
+    return [float(loc.peak_dbfs) for loc in analysis.locations
+            if loc.kind in STIMULUS_KINDS and loc.clipped]
+
+
+def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
+    return bool(_clipped_stimulus_peaks(analysis))
 
 
 def ripple_reservation_due(

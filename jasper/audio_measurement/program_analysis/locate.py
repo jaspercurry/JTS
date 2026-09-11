@@ -20,6 +20,7 @@ from jasper.audio_measurement.program import (
 from jasper.log_event import log_event
 from .model import (
     ANCHOR_DISCRIMINATION_RATIO,
+    AnchorEvidence,
     LOCATOR_RATE_HZ,
     logger,
     SEGMENT_SEARCH_S,
@@ -108,7 +109,7 @@ def _resolve_anchor(
     arrival: int,
     first: ProgramSegment,
     stimuli: dict[str, np.ndarray],
-) -> tuple[ProgramSegment, int, bool]:
+) -> tuple[ProgramSegment, int, AnchorEvidence | None]:
     """Decide WHICH shape-identical stimulus the located ``arrival`` really is,
     and say so when the evidence cannot decide.
 
@@ -142,9 +143,8 @@ def _resolve_anchor(
     if a near-tie pair (both above the confidence floor, presence within
     :data:`ANCHOR_DISCRIMINATION_RATIO` of each other) separates far less
     than a genuine witness reading does, an argmax between them is a coin
-    flip. The committed anchor is left unchanged, but the third return
-    value is True, and the CHECK ladder refuses the capture as retriable
-    rather than reading a verdict off that flip.
+    flip. The returned evidence carries that ambiguity and whether the
+    witness corroborated the anchor at all.
     """
     shape = _stimulus_shape(first)
     candidates = [
@@ -166,7 +166,7 @@ def _resolve_anchor(
         default=None,
     )
     if len(candidates) < 2 or witness is None:
-        return first, arrival - first.start_sample, False
+        return first, arrival - first.start_sample, None
 
     witness_stim = stimuli.get(witness.segment_id)
     if witness_stim is None:
@@ -241,20 +241,22 @@ def _resolve_anchor(
         ),
         runner_up_shift_ms=runner_up_shift_ms,
     )
-    return best_seg, best_offset, ambiguous
+    return best_seg, best_offset, AnchorEvidence(
+        ambiguous=ambiguous, presence=float(best_presence),
+        confidence=float(best_confidence), corroborated=bool(corroborated),
+    )
 
 
 def _global_offset(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int
-) -> tuple[int, ProgramSegment, dict[str, np.ndarray], bool]:
+) -> tuple[int, ProgramSegment, dict[str, np.ndarray], AnchorEvidence | None]:
     """Locate the anchor stimulus -> integer global offset G. Caches stimuli.
 
     The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ`; the
     coarse arrival is then refined at the full rate inside a tiny window, so
     the returned offset is full-rate-exact. That locate answers WHERE, not
     WHICH occurrence — :func:`_resolve_anchor` arbitrates that and owns the
-    returned segment. The fourth return value is its honesty flag: True
-    when the evidence could not tell interpretations apart.
+    returned segment. The fourth return value carries its measured evidence.
     """
     from scipy.signal import resample_poly
 
@@ -292,10 +294,10 @@ def _global_offset(
         )
     else:
         arrival = coarse
-    anchor, global_offset, ambiguous = _resolve_anchor(
+    anchor, global_offset, evidence = _resolve_anchor(
         program, capture, sample_rate, arrival, first, stimuli
     )
-    return global_offset, anchor, stimuli, ambiguous
+    return global_offset, anchor, stimuli, evidence
 
 
 def _locate_in_window(

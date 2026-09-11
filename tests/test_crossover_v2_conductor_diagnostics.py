@@ -25,7 +25,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     _analysis_json,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.active_speaker.calibration_level import (
+from jasper.audio_measurement.mic_meter import (
     MIC_USABLE_MAX_DBFS,
     MIC_USABLE_MIN_DBFS,
 )
@@ -41,6 +41,7 @@ from jasper.audio_measurement.program_analysis import (
     DriftEstimate,
     GainPlan,
     ProgramAnalysis,
+    analyze_program_capture,
 )
 from tests._log_events import event_field_maps, event_fields, event_records
 from tests.crossover_v2_fixtures import (
@@ -419,7 +420,7 @@ def test_check_emits_a_named_row_per_driver_with_its_absolute_level(caplog):
             _pilot_obs("woofer", peak_hi_dbfs=-24.0),
             # Present, correct, and far under the usable window's floor: the
             # exact shape every relative rung passes.
-            _pilot_obs("tweeter", peak_hi_dbfs=-72.0),
+            _pilot_obs("tweeter", peak_hi_dbfs=-72.0, mic_meter_status="too_quiet"),
         ),
         linearity_ok=True, channel_map_ok=True, pilot_snr_ok=True,
         gain_plan=GainPlan(
@@ -1243,3 +1244,26 @@ def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
     np.testing.assert_allclose(limit_floored, limit_raw)  # ...but not the envelope term they feed
 
 
+
+
+@pytest.mark.parametrize(
+    ("levels", "grades", "status"),
+    [([], [], None), ([-24.0], ["usable"], "usable"),
+     ([-24.0, -50.0], ["usable", "low"], "low"),
+     ([-24.0, -72.0], ["usable", "too_quiet"], "too_quiet"),
+     ([-72.0, -10.0], ["too_quiet", "too_loud"], "too_loud"),
+     ([-10.0, -72.0], ["too_loud", "too_quiet"], "too_loud")],
+)
+def test_analysis_owns_mic_grades(monkeypatch, levels, grades, status):
+    program = _conductor(FakeSeams()).program_for_phase(PHASE_CHECK)
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program_analysis.dispatch._analyze_check",
+        lambda *args: ProgramAnalysis(
+            program.phase, program.program_id, (),
+            pilots=tuple(_pilot_obs(str(index), peak_hi_dbfs=level, mic_meter_status=None)
+                         for index, level in enumerate(levels)),
+        ),
+    )
+    analysis = analyze_program_capture(program, np.zeros(program.total_samples), program.sample_rate_hz)
+    assert [pilot.mic_meter_status for pilot in analysis.pilots] == grades
+    assert analysis.mic_meter_status == status

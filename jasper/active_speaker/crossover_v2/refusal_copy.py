@@ -33,6 +33,8 @@ from .spatial import GEOMETRY_RETRY_POSITIONS
 
 logger = logging.getLogger(__name__)
 
+LOCATE_RETRY_ACTION = "Check the volume and the microphone, then try again."
+
 
 # The four generic screen templates, each parameterized by reason copy.
 TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
@@ -69,6 +71,7 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # speaker, and the evidence cannot support that. Ladder rung:
 # `capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
+REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_CLIPPED = "clipped"
 REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
@@ -428,7 +431,7 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     diagnosis = locate_failed_diagnosis(pilot_heard)
     if pilot_heard:
         return f"{diagnosis} Try again."
-    return f"{diagnosis} Check the volume and the microphone, then try again."
+    return f"{diagnosis} {LOCATE_RETRY_ACTION}"
 
 
 @dataclass(frozen=True)
@@ -610,7 +613,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # measured fact.
         RetryableReasonCopy(
             locate_failed_diagnosis(None),
-            "Check the volume and the microphone, then try again.",
+            LOCATE_RETRY_ACTION,
         ),
     ),
     REASON_CAPTURE_TIMEOUT: ReasonSpec(
@@ -951,6 +954,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "its own, so the new tuning is STILL APPLIED. Go back to the previous "
         "tuning, or measure again.",
     ),
+    REASON_ANCHOR_TOO_QUIET: _retriable_reason(
+        REASON_ANCHOR_TOO_QUIET, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "JTS heard the speaker, but the test tones were too quiet to line up.",
+            LOCATE_RETRY_ACTION,
+        ),
+    ),
 }
 
 # The transient codes whose first retry is automatic (a banner, no decision
@@ -972,16 +982,13 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-    # The six an ANCHOR phase adds. Two do not share their code's name
-    # either: an unresolved alignment renders as
-    # ``delay_exceeds_search_window``, and a bent curve the room caused renders
-    # as ``noisy_room_linearity``.
     _dispatch.SCREEN_ANCHOR_AMBIGUOUS: REASON_ANCHOR_AMBIGUOUS,
     _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
     _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
     _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,
     _dispatch.SCREEN_ALIGNMENT_UNRESOLVED: REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
     _dispatch.SCREEN_DELAY_IMPLAUSIBLE: REASON_DELAY_IMPLAUSIBLE,
+    _dispatch.SCREEN_ANCHOR_UNCONFIRMED: REASON_ANCHOR_TOO_QUIET,
 }
 
 
@@ -1128,6 +1135,8 @@ class PhaseVerdict:
     # diagnosis, not the registry's evidence-unknown fallback.
     reflection_measured: bool | None = None
 
+    evidence: dict[str, float | bool | str] = field(default_factory=dict)
+
     def to_capture_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.
 
@@ -1159,4 +1168,5 @@ class PhaseVerdict:
             if self.code == REASON_VERIFY_INCONCLUSIVE:
                 out["reflection_measured"] = self.reflection_measured
         out.update(self.payload)
+        out["evidence"] = dict(self.evidence)
         return out

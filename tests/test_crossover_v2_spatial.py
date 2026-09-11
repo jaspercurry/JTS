@@ -1316,6 +1316,12 @@ def test_every_screen_kind_has_a_household_sentence():
     assert set(refusal_copy.SCREEN_KIND_REASONS) == set(capture_dispatch.CAPTURE_SCREEN_KINDS)
     for code in refusal_copy.SCREEN_KIND_REASONS.values():
         assert code in flow.REASON_REGISTRY, code
+    code = refusal_copy.SCREEN_KIND_REASONS[capture_dispatch.SCREEN_ANCHOR_UNCONFIRMED]
+    assert code == refusal_copy.REASON_ANCHOR_TOO_QUIET
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert spec.retry_budget == refusal_copy.REASON_REGISTRY[refusal_copy.REASON_LOCATE_FAILED].retry_budget
+    assert spec.template == refusal_copy.TEMPLATE_FIX_AND_RETRY
+    assert code not in refusal_copy.TRANSIENT_AUTO_RETRY_CODES
 
 
 def test_an_unrecognised_kind_is_loud_rather_than_silent(caplog):
