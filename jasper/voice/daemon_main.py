@@ -328,7 +328,7 @@ def _make_connection(
             model=cfg.openai_model,
             voice=cfg.openai_voice,
             reasoning_effort=cfg.openai_reasoning_effort,
-            noise_reduction=speech_policy.openai_noise_reduction,
+            noise_reduction=speech_policy.noise_reduction,
             context_reset_sec=float(cfg.openai_context_reset_sec),
             session_max_sec=float(cfg.openai_session_max_sec),
             proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
@@ -634,8 +634,8 @@ def _log_speech_input_policy(cfg: Config) -> EffectiveSpeechInputPolicy:
         profile=policy.input_contract.profile,
         source=policy.input_contract.source,
         endpointing=policy.endpointing,
-        openai_noise_reduction=policy.openai_noise_reduction_label,
-        openai_noise_reduction_source=policy.openai_noise_reduction_source,
+        openai_noise_reduction=policy.noise_reduction_label,
+        openai_noise_reduction_source=policy.noise_reduction_source,
         contract=policy.input_contract.provenance,
     )
     for warning in policy.warnings:
@@ -1285,63 +1285,73 @@ async def run() -> None:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _BootParkArm:
+    """One boot-time failure kind `main()` parks the unit on rather than
+    crash-looping into `StartLimitAction=reboot` (AGENTS.md non-negotiable
+    6 is why `_announce_park_at_boot` runs for every arm the same way).
+
+    Matched by `isinstance`, first entry wins: `VoiceProviderNotConfigured`
+    is a `VoiceConfigError` subclass, so its arm must precede that one's.
+    """
+
+    exc_type: type[Exception]
+    event: str
+    exit_code: int
+    cue_slug: str
+    level: int
+    # Structured, not prose glued onto `reason=`, so a reader/log-shipper can
+    # act on it without parsing English. Nothing restarts a parked unit on
+    # its own (jasper-voice.service RestartPreventExitStatus=78).
+    remedy: str | None = None
+
+
+_BOOT_PARK_ARMS: tuple[_BootParkArm, ...] = (
+    _BootParkArm(
+        InputDeviceUnavailable, "voice.mic_unavailable",
+        VOICE_MIC_UNAVAILABLE_EXIT, NO_ROOM_MIC_CUE_SLUG, logging.WARNING,
+    ),
+    _BootParkArm(
+        VoiceProviderNotConfigured, "voice.unconfigured",
+        VOICE_PROVIDER_NOT_CONFIGURED_EXIT, VOICE_NOT_SET_UP_CUE_SLUG,
+        logging.WARNING,
+    ),
+    _BootParkArm(
+        VoiceConfigError, "voice.config_invalid",
+        VOICE_STARTUP_CONFIG_ERROR_EXIT, VOICE_ASSETS_MISSING_CUE_SLUG,
+        logging.ERROR, remedy="restart_unit",
+    ),
+    _BootParkArm(
+        SpeechVADSetupError, "voice.vad_setup_failed",
+        VOICE_STARTUP_CONFIG_ERROR_EXIT, VOICE_ASSETS_MISSING_CUE_SLUG,
+        logging.ERROR,
+    ),
+)
+
+_BOOT_PARK_EXCEPTIONS: tuple[type[Exception], ...] = tuple(
+    arm.exc_type for arm in _BOOT_PARK_ARMS
+)
+
+
 def main() -> None:
     try:
         asyncio.run(run())
-    except InputDeviceUnavailable as e:
+    except _BOOT_PARK_EXCEPTIONS as exc:
         configure_logging()
-        # Intentionally idle, not a crash: jasper-voice.service parks the
-        # unit on this code rather than restart-looping into
-        # StartLimitAction=reboot. The udev-triggered AEC reconciler restarts
-        # us when a mic reappears. See `_open_wake_legs`.
-        log_event(
-            logger,
-            "voice.mic_unavailable",
-            device=e.device,
-            detail=str(e),
-            level=logging.WARNING,
+        arm = next(a for a in _BOOT_PARK_ARMS if isinstance(exc, a.exc_type))
+        # InputDeviceUnavailable's message is reported as `detail` (plus
+        # `device`); every other arm reports it as `reason`.
+        fields: dict[str, object] = (
+            {"device": exc.device, "detail": str(exc)}
+            if isinstance(exc, InputDeviceUnavailable)
+            else {"reason": str(exc)}
         )
-        print(str(e), file=sys.stderr)
-        _announce_park_at_boot(NO_ROOM_MIC_CUE_SLUG)
-        sys.exit(VOICE_MIC_UNAVAILABLE_EXIT)
-    except VoiceProviderNotConfigured as e:
-        configure_logging()
-        log_event(
-            logger,
-            "voice.unconfigured",
-            reason=str(e),
-            level=logging.WARNING,
-        )
-        print(str(e), file=sys.stderr)
-        _announce_park_at_boot(VOICE_NOT_SET_UP_CUE_SLUG)
-        sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
-    except VoiceConfigError as e:
-        configure_logging()
-        log_event(
-            logger,
-            "voice.config_invalid",
-            reason=str(e),
-            # Nothing restarts a parked unit on its own (jasper-voice.service
-            # RestartPreventExitStatus=78) — a structured field, not prose
-            # glued onto reason=, so a reader/log-shipper can act on it
-            # without parsing English.
-            remedy="restart_unit",
-            level=logging.ERROR,
-        )
-        print(str(e), file=sys.stderr)
-        _announce_park_at_boot(VOICE_ASSETS_MISSING_CUE_SLUG)
-        sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
-    except SpeechVADSetupError as e:
-        configure_logging()
-        log_event(
-            logger,
-            "voice.vad_setup_failed",
-            reason=str(e),
-            level=logging.ERROR,
-        )
-        print(str(e), file=sys.stderr)
-        _announce_park_at_boot(VOICE_ASSETS_MISSING_CUE_SLUG)
-        sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
+        if arm.remedy is not None:
+            fields["remedy"] = arm.remedy
+        log_event(logger, arm.event, level=arm.level, **fields)
+        print(str(exc), file=sys.stderr)
+        _announce_park_at_boot(arm.cue_slug)
+        sys.exit(arm.exit_code)
     except KeyboardInterrupt:
         sys.exit(0)
 

@@ -38,8 +38,8 @@ def test_auto_disables_openai_noise_reduction_for_chip_aec_input():
     assert policy.input_contract.profile == "xvf_chip_aec"
     assert policy.input_contract.beamformed is True
     assert policy.input_contract.already_processed is True
-    assert policy.openai_noise_reduction is None
-    assert policy.openai_noise_reduction_source == "auto_processed_input"
+    assert policy.noise_reduction is None
+    assert policy.noise_reduction_source == "auto_processed_input"
     assert policy.warnings == ()
 
 
@@ -47,8 +47,8 @@ def test_auto_disables_openai_noise_reduction_for_software_aec3_input():
     policy = build_effective_speech_input_policy(_cfg(mic_device="udp:9876"))
 
     assert policy.input_contract.profile == "xvf_software_aec3"
-    assert policy.openai_noise_reduction is None
-    assert policy.openai_noise_reduction_source == "auto_processed_input"
+    assert policy.noise_reduction is None
+    assert policy.noise_reduction_source == "auto_processed_input"
 
 
 @pytest.mark.parametrize("chip", [False, True])
@@ -116,16 +116,16 @@ def test_auto_asks_for_far_intent_on_raw_direct_mic_input():
 
     assert policy.input_contract.profile == "direct_mic"
     assert policy.input_contract.raw is True
-    assert policy.openai_noise_reduction == "far"
-    assert policy.openai_noise_reduction_source == "auto_raw_far"
+    assert policy.noise_reduction == "far"
+    assert policy.noise_reduction_source == "auto_raw_far"
 
 
 def test_custom_udp_auto_leaves_provider_denoising_off_with_warning():
     policy = build_effective_speech_input_policy(_cfg(mic_device="udp:9999"))
 
     assert policy.input_contract.profile == "custom_udp"
-    assert policy.openai_noise_reduction is None
-    assert policy.openai_noise_reduction_source == "auto_unknown_udp"
+    assert policy.noise_reduction is None
+    assert policy.noise_reduction_source == "auto_unknown_udp"
     assert "Custom UDP input profile" in policy.warnings[0]
 
 
@@ -139,8 +139,8 @@ def test_explicit_knob_spelling_resolves_to_a_host_intent(knob, intent, warns):
         openai_noise_reduction=knob,
     ))
 
-    assert policy.openai_noise_reduction == intent
-    assert policy.openai_noise_reduction_source == "explicit"
+    assert policy.noise_reduction == intent
+    assert policy.noise_reduction_source == "explicit"
     assert bool(policy.warnings) is warns
 
 
