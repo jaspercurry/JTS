@@ -55,6 +55,7 @@ from .camilla_yaml import (
     emit_active_speaker_driver_domain_config,
     linearization_headroom_db,
 )
+from .candidate_trials import candidate_boost_issue
 from .crossover_contract import (
     TUNING_OWNERS,
     automatic_candidate_readiness,
@@ -3852,6 +3853,7 @@ async def _apply_baseline_profile_locked(
             "blocker", "candidate_trial_graph_mismatch",
             "the captured tuning graph does not match the compiled graph",
         )
+    graph_issue = graph_issue or candidate_boost_issue(measured_candidate)
     if graph_issue is not None:
         reviewed_candidate["permissions"]["may_apply"] = False
         reviewed_candidate["issues"] = [*reviewed_candidate.get("issues", []), graph_issue]

@@ -15,7 +15,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_CORRECTION_ROLLBACK_FAILED
 from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     GAIN_CAP_BACKOFF_DB,
@@ -1034,8 +1033,7 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
     # The round refuses (untrusted evidence, no rollback anchor) — #2537.
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
     assert fields["accepted"] == "true"
     assert fields["max_db_notch_excluded"] == "0.9"

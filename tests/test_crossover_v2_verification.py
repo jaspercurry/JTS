@@ -1019,7 +1019,7 @@ def test_the_model_departure_target_quotes_its_OWN_frequency():
 def test_an_absent_probe_is_reported_as_safe_but_ungraded():
     """An absent measurement is not evidence of a hazard.
 
-    ``DELTA_PROBE_ROLLBACK_VERDICTS`` already holds this line for the probe's
+    ``DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`` already holds this line for the probe's
     own rollback set, in as many words: rolling back on an absent measurement
     "would revert every session whose household closed the phone before the
     post-apply sweep". This axis must not contradict it.

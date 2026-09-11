@@ -2389,6 +2389,7 @@ def build_crossover_evidence_packet(
         "round": {
             "available": bool(receipt),
             "schema_version": receipt.get("schema_version"),
+            "advice": _mapping(receipt.get("advice")),
             "adoption": _mapping(receipt.get("adoption")),
             "verification": _mapping(receipt.get("verification")),
             "round_axes": _mapping(receipt.get("round_axes")),

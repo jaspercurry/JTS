@@ -32,7 +32,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_MIN_QUIET_COVERAGE,
     DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB,
     DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS,
-    DELTA_PROBE_ROLLBACK_VERDICTS,
+    DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS,
     DELTA_PROBE_SHORTFALL_GAIN_CEILING,
     DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
     DELTA_PROBE_TOLERANCE_HIGH_DB,
@@ -111,14 +111,14 @@ def test_rollback_verdicts_are_exactly_the_non_matched_measurable_ones():
     was short would be a false accusation against a correction that may be
     perfect.
     """
-    assert DELTA_PROBE_ROLLBACK_VERDICTS == {
+    assert DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS == {
         VERDICT_MODEL_ERROR,
         VERDICT_LEVEL_DEPENDENT_SHORTFALL,
         VERDICT_SPATIALLY_COSTLY,
     }
-    assert VERDICT_MATCHED not in DELTA_PROBE_ROLLBACK_VERDICTS
-    assert VERDICT_UNAVAILABLE not in DELTA_PROBE_ROLLBACK_VERDICTS
-    assert VERDICT_LEVEL_MISMATCH not in DELTA_PROBE_ROLLBACK_VERDICTS
+    assert VERDICT_MATCHED not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
+    assert VERDICT_UNAVAILABLE not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
+    assert VERDICT_LEVEL_MISMATCH not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
     assert VERDICT_LEVEL_MISMATCH in DELTA_PROBE_VERDICTS
 
 
@@ -128,12 +128,12 @@ def test_rollback_flag_is_derived_from_the_verdict_not_set_by_a_caller():
         _GRID_HZ, commanded, commanded, band_hz=_band()
     )
     assert matched.matched is True
-    assert matched.rollback is False
+    assert matched.advises_against_keep is False
     broken = classify_delta_probe(
         _GRID_HZ, commanded + 6.0 * np.sin(np.log2(_GRID_HZ)), commanded,
         band_hz=_band(),
     )
-    assert broken.rollback is (broken.verdict in DELTA_PROBE_ROLLBACK_VERDICTS)
+    assert broken.advises_against_keep is (broken.verdict in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,7 +160,7 @@ def test_a_correction_commanding_nothing_is_unavailable_not_a_pass():
     )
     assert probe.verdict == VERDICT_UNAVAILABLE
     assert probe.reason == "nothing_commanded"
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
 
 
 def test_the_probe_band_excludes_bins_below_the_commanded_floor():
@@ -261,7 +261,7 @@ def test_the_shelf_q_realization_error_class_is_caught():
     commanded = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, _HIGHSHELF_Q)
     realized = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, 0.476)
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.verdict == VERDICT_MODEL_ERROR
     # The magnitude the forensics measured: max pointwise error ~1.70 dB.
     assert probe.max_error_db == pytest.approx(1.70, abs=0.15)
@@ -298,7 +298,7 @@ def test_a_known_apply_offset_is_removed_before_classification():
 
     blind = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert blind.verdict == VERDICT_LEVEL_MISMATCH
-    assert blind.rollback is False
+    assert blind.advises_against_keep is False
     assert blind.residual_offset_db == pytest.approx(_LIVE_APPLY_OFFSET_DB)
 
     aware = classify_delta_probe(
@@ -306,7 +306,7 @@ def test_a_known_apply_offset_is_removed_before_classification():
         expected_offset_db=_LIVE_APPLY_OFFSET_DB,
     )
     assert aware.verdict == VERDICT_MATCHED
-    assert aware.rollback is False
+    assert aware.advises_against_keep is False
     assert aware.max_error_db == pytest.approx(0.0, abs=1e-9)
     assert aware.gain_factor == pytest.approx(1.0, abs=1e-9)
     # Both halves of the accounting are on the record.
@@ -328,7 +328,7 @@ def test_an_unknown_extra_offset_is_its_own_finding_not_a_model_error():
     assert probe.verdict == VERDICT_LEVEL_MISMATCH
     assert probe.reason == "uncommanded_level_shift"
     # Named, but not an accusation against the correction.
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     assert probe.residual_offset_db == pytest.approx(extra_db, abs=1e-9)
 
 
@@ -363,7 +363,7 @@ def test_the_shelf_q_keystone_still_classifies_under_a_known_offset():
         expected_offset_db=_LIVE_APPLY_OFFSET_DB,
     )
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.max_error_db == pytest.approx(1.70, abs=0.15)
     assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
 
@@ -400,7 +400,7 @@ def test_an_overshoot_confined_to_the_commanded_region_is_still_a_model_error():
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.residual_offset_db == pytest.approx(0.0, abs=1e-9)
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
 
 
 def test_a_residual_that_cannot_be_measured_is_reported_as_not_measured():
@@ -432,7 +432,7 @@ def test_a_verdict_reached_without_the_level_check_says_so():
         _GRID_HZ, commanded + 4.0, commanded, band_hz=_band(),
     )
     assert blind.residual_offset_db is None
-    assert blind.rollback is True
+    assert blind.advises_against_keep is True
     assert blind.reason.endswith("|level_check_unavailable")
     assert blind.reason.startswith("realized_shape_differs_from_commanded")
 
@@ -587,7 +587,7 @@ def test_a_matched_mark_with_a_widened_room_is_spatially_costly():
     )
     assert probe.verdict == VERDICT_SPATIALLY_COSTLY
     assert probe.reason == "cross_position_spread_widened"
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
 
 
 def test_a_chain_defect_outranks_the_spatial_arm():
@@ -631,7 +631,7 @@ def test_to_dict_carries_the_thresholds_it_judged_against():
     assert payload["tolerance_low_db"] == DELTA_PROBE_TOLERANCE_LOW_DB
     assert payload["tolerance_high_db"] == DELTA_PROBE_TOLERANCE_HIGH_DB
     assert payload["verdict"] == VERDICT_MATCHED
-    assert payload["rollback"] is False
+    assert payload["advises_against_keep"] is False
     # #1811: the level axis is part of the record too — every scalar above was
     # measured AFTER removing ``expected_offset_db``, so a reader cannot judge
     # them without knowing what was removed and what was left.
@@ -691,7 +691,7 @@ def test_a_sub_floor_gap_breaks_the_exceedance_run():
 
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.verdict == VERDICT_MATCHED
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     assert probe.exceedance_octaves < DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
 
 
@@ -705,7 +705,7 @@ def test_a_wide_error_inside_one_masked_region_is_still_caught():
         (_GRID_HZ >= 6_000.0) & (_GRID_HZ <= 16_000.0), 4.0, 0.0
     )
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
 
 
@@ -848,7 +848,7 @@ def test_content_above_the_trusted_ceiling_cannot_create_an_exceedance():
         band_hz=(_LIVE_TRUSTED_FLOOR_HZ, _TRUSTED_CEILING_HZ),
     )
     assert probe.verdict == VERDICT_MATCHED
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     assert probe.probe_band_hz[1] <= _TRUSTED_CEILING_HZ
     assert probe.worst_hz <= _TRUSTED_CEILING_HZ
     # The band it was HANDED is on the record beside the band it graded, so a
@@ -868,7 +868,7 @@ def test_the_same_content_graded_to_the_grid_edge_is_the_bug_it_was():
         _WIDE_GRID_HZ, realized, commanded,
         band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
     )
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.worst_hz > _TRUSTED_CEILING_HZ
 
 
@@ -893,7 +893,7 @@ def test_an_hf_bin_grazing_the_old_floor_is_no_longer_graded():
     loud = classify_delta_probe(
         _GRID_HZ, realized_real, commanded_real, band_hz=_band(),
     )
-    assert loud.rollback is True
+    assert loud.advises_against_keep is True
 
 
 def test_the_hf_graded_floor_agrees_with_the_hf_tolerance():
@@ -945,7 +945,7 @@ def test_a_broadband_tilt_is_disclosed_not_rolled_back():
 
     assert probe.verdict == VERDICT_FRAME_MISMATCH
     assert probe.reason == "uncommanded_frame_shift"
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     # The raw grade still SAW it — the demotion is a judgement about what the
     # finding means, not a failure to notice one.
     assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
@@ -987,7 +987,7 @@ def test_a_tilt_does_not_become_a_shortfall_either(depth):
     realized = depth * commanded - 0.9 * np.log2(_GRID_HZ / 1_000.0)
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.verdict != VERDICT_LEVEL_DEPENDENT_SHORTFALL
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     # 1e-3, for the reason
     # ``test_a_proportional_undershoot_of_a_lift_is_a_level_shortfall`` records:
     # the quiet bins admit commands up to ``DELTA_PROBE_MIN_COMMANDED_DB``, so a
@@ -1019,7 +1019,7 @@ def test_a_real_but_in_tolerance_shortfall_under_a_tilt_is_not_a_rollback():
         _GRID_HZ, 0.8 * lift - 0.9 * np.log2(_GRID_HZ / 1_000.0), lift,
         band_hz=_band(),
     )
-    assert tilted.rollback is False
+    assert tilted.advises_against_keep is False
     assert tilted.verdict == VERDICT_FRAME_MISMATCH
     # The number that made this a bug: the graded evidence, frame removed, is
     # nothing at all — so there was never anything here to refuse on.
@@ -1056,7 +1056,7 @@ def test_no_rollback_survives_a_zero_frame_removed_exceedance():
         probe = classify_delta_probe(
             _GRID_HZ, realized, commanded, band_hz=_band(),
         )
-        if probe.rollback:
+        if probe.advises_against_keep:
             rollbacks += 1
             assert probe.frame_removed_exceedance_octaves != 0.0, (
                 f"{probe.verdict} rolled back on evidence that is entirely "
@@ -1077,7 +1077,7 @@ def test_a_genuine_in_band_shape_error_still_rolls_back():
         _GRID_HZ, commanded + np.where(bump, 6.0, 0.0), commanded, band_hz=_band(),
     )
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
 
 
 def test_the_keystone_survives_frame_removal():
@@ -1095,7 +1095,7 @@ def test_the_keystone_survives_frame_removal():
     realized = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476)
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.frame.fitted is True
     assert (
         probe.frame_removed_exceedance_octaves
@@ -1152,7 +1152,7 @@ def test_an_unfitted_frame_demotes_nothing():
     assert probe.frame_removed_rms_db is None
     assert probe.frame_removed_exceedance_octaves is None
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
 
 
 def test_the_frame_gate_can_only_narrow_a_finding():
@@ -1186,7 +1186,7 @@ def test_the_frame_gate_can_only_narrow_a_finding():
     ]
     for realized, cmd in fixtures:
         probe = classify_delta_probe(_GRID_HZ, realized, cmd, band_hz=_band())
-        if probe.rollback:
+        if probe.advises_against_keep:
             assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
 
 
@@ -1210,7 +1210,7 @@ def test_a_spatially_costly_verdict_is_reached_without_the_frame_gate():
         ),
     )
     assert probe.verdict == VERDICT_SPATIALLY_COSTLY
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.frame.fitted is True
     assert probe.frame.tilt_db_per_octave == pytest.approx(-0.2, abs=1e-6)
 
@@ -1286,8 +1286,8 @@ def test_the_demotion_and_the_survival_are_the_same_gate():
     )
     assert demoted.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
     assert survived.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
-    assert demoted.rollback is False
-    assert survived.rollback is True
+    assert demoted.advises_against_keep is False
+    assert survived.advises_against_keep is True
     assert demoted.verdict == VERDICT_FRAME_MISMATCH
     assert survived.verdict == VERDICT_MODEL_ERROR
 
@@ -1296,7 +1296,7 @@ def test_frame_mismatch_is_a_finding_not_a_pass():
     """Like ``level_mismatch`` and ``unavailable``, it grants no permission: it
     leaves the shape question unanswered and is not ``matched``."""
     assert VERDICT_FRAME_MISMATCH in DELTA_PROBE_VERDICTS
-    assert VERDICT_FRAME_MISMATCH not in DELTA_PROBE_ROLLBACK_VERDICTS
+    assert VERDICT_FRAME_MISMATCH not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
     assert VERDICT_FRAME_MISMATCH != VERDICT_MATCHED
 
 
@@ -1437,7 +1437,7 @@ def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
     assert anchored.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
     assert anchored.residual_offset_db == pytest.approx(0.0, abs=1e-9)
     assert anchored.verdict != VERDICT_LEVEL_MISMATCH
-    assert anchored.rollback is False
+    assert anchored.advises_against_keep is False
 
 
 @pytest.mark.parametrize("grid", _GRID_SHAPES)
@@ -1458,7 +1458,7 @@ def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band(gri
     )
 
     assert probe.verdict == VERDICT_LEVEL_MISMATCH
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     assert probe.residual_offset_db == pytest.approx(-3.0, abs=1e-9)
     # The claim is band-scoped, not whole-band.
     assert probe.reason == REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND
@@ -1486,7 +1486,7 @@ def test_a_standing_model_offset_present_before_the_apply_never_reaches_it():
     assert anchored.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
     assert anchored.residual_offset_db == pytest.approx(0.0, abs=1e-9)
     assert anchored.verdict != VERDICT_LEVEL_MISMATCH
-    assert anchored.rollback is False
+    assert anchored.advises_against_keep is False
 
     blind = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert blind.entry_anchor_offset_db is None
@@ -1685,7 +1685,7 @@ def test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual(gr
     )
     assert masked.residual_offset_db == pytest.approx(0.0, abs=1e-9)
     assert masked.verdict != VERDICT_LEVEL_MISMATCH
-    assert masked.rollback is False
+    assert masked.advises_against_keep is False
     # The same evidence with no overlapping previous round names the shift.
     clean = classify_delta_probe(
         grid, this_round - 2.2, this_round, band_hz=band,
@@ -1958,7 +1958,7 @@ def test_the_1447_shape_is_a_model_error_that_realized_only_quieter():
     probe = _quieter_only_model_error()
 
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
     assert probe.realized_louder_than_commanded is False
     # Negative: the most POSITIVE disagreement in the whole graded band still
     # points quieter. That is what "entirely negative-direction" means, measured.
@@ -2220,7 +2220,7 @@ def test_only_the_realized_vs_commanded_classes_defer(verdict, defers):
     expected = SEAM_DEFERRED_QUIETER_THAN_COMMANDED if defers else ""
     assert seam_rollback_deferral(stub) == expected
     assert set(DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS) <= set(
-        DELTA_PROBE_ROLLBACK_VERDICTS
+        DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
     )
 
 
@@ -2238,7 +2238,7 @@ def test_only_the_realized_vs_commanded_classes_defer(verdict, defers):
 def test_a_map_that_never_reached_a_seam_rollback_records_no_deferral(probe):
     """Silence about a deferral is wrong; INVENTING one is equally wrong.
 
-    None of these verdicts is in ``DELTA_PROBE_ROLLBACK_VERDICTS``, so no seam
+    None of these verdicts is in ``DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS``, so no seam
     rollback was ever declined on them, and a receipt claiming otherwise would
     describe a decision the round never made.
     """
@@ -2331,7 +2331,7 @@ def test_above_ceiling_bins_cannot_move_the_verdict():
         trust_ceiling_hz=_TRUSTED_CEILING_HZ,
     )
     assert capped.verdict == VERDICT_MATCHED
-    assert capped.rollback is False
+    assert capped.advises_against_keep is False
     assert capped.graded_band_hz is not None
     assert capped.graded_band_hz[1] == pytest.approx(_TRUSTED_CEILING_HZ)
 
@@ -2347,7 +2347,7 @@ def test_the_mutation_control_without_a_ceiling_still_rolls_back():
         _WIDE_GRID_HZ, realized, commanded,
         band_hz=(_LIVE_TRUSTED_FLOOR_HZ, float(_WIDE_GRID_HZ[-1])),
     )
-    assert ungated.rollback is True
+    assert ungated.advises_against_keep is True
     assert ungated.graded_band_hz is not None
     assert ungated.graded_band_hz[1] > _TRUSTED_CEILING_HZ
 

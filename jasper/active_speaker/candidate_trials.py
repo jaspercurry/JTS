@@ -111,3 +111,34 @@ def require_candidate_trial(
         "candidate_trial_required",
         "Capture this complete candidate before applying it; no intact trial of this fingerprint was found.",
     )
+
+
+def candidate_boost_issue(candidate: Any) -> dict[str, str] | None:
+    """Refuse a candidate whose banked measurement found excess boost (AGENTS §2)."""
+    if candidate is None:
+        return None
+    from .crossover_v2.round_inputs import (  # lazy: apply-only evidence reader
+        _read_json_mapping, iter_round_sessions, round_artifact_dir,
+    )
+
+    try:
+        source = find_banked_candidate(candidate.fingerprint).path.parents[5]
+    except CandidateBankRefusal as exc:
+        if exc.code != "not_found":
+            raise
+        return None
+    for bundle in iter_round_sessions(source):
+        directory, _ = round_artifact_dir(bundle)
+        if directory is None:
+            continue
+        receipt = _read_json_mapping(directory / "round_receipt.json") or {}
+        if (receipt.get("evidence_identities") or {}).get("candidate_fingerprint") != candidate.fingerprint:
+            continue
+        safety = (receipt.get("round_axes") or {}).get("safety") or {}
+        if (safety.get("evidence") or {}).get("boost_over_declared_bound") is True:
+            return {
+                "severity": "blocker",
+                "code": "boost_over_declared_bound",
+                "message": "The measured candidate exceeded its declared boost.",
+            }
+    return None

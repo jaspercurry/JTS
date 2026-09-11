@@ -22,10 +22,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_CORRECTION_MODEL_ERROR,
-    REASON_CORRECTION_ROLLBACK_FAILED,
-)
+
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     CLAIM_FAIL,
@@ -177,8 +174,7 @@ def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
     assert fields["verify_gate_window_ms"] == "8.0"
@@ -363,8 +359,7 @@ def test_verify_pass_states_the_band_it_graded():
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     assert c.verify_outcome == "pass"
     assert c.verify_graded_band_hz == [2000.0, 4000.0]
@@ -398,8 +393,7 @@ def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     assert c.verify_outcome == "pass"
     assert c.verify_frame == {
@@ -449,8 +443,7 @@ def test_an_unfitted_frame_is_disclosed_as_absent_never_as_agreement():
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     assert c.verify_frame is None
 
@@ -913,36 +906,6 @@ def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
     assert verify_absolute_tolerance_db([17_000.0, 20_000.0]) is None
     assert verify_absolute_tolerance_db([1000.0]) is None
 
-
-def test_the_delta_probe_still_refuses_first_so_its_rollback_is_never_displaced():
-    """R18 is purely additive to the refusal order (resilience review finding).
-
-    A probe-class refusal carries an AUTOMATIC remedy — the graph comes off.
-    Gating ahead of it would let a capture that fails this claim AND warrants a
-    rollback get neither.
-
-    Injected at ``_grade_round_once``: since the fifth-principle routing the
-    probe reports and the ROUND decides, so "the probe's refusal" reaches this
-    ordering as the round's. The subject is unchanged — R18's absolute claim
-    must not displace it.
-    """
-    fakes = FakeSeams()
-    c = _verify_to_apply(fakes)
-    fakes.verify = lambda program: _verify_analysis(
-        program, max_db=0.069, verify_absolute=_absolute(3.98),
-    )
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow.CrossoverV2Session, "_grade_round_once",
-            lambda self, verdict: flow.PhaseVerdict(
-                False, REASON_CORRECTION_MODEL_ERROR,
-            ),
-        )
-        verdict = _run_phase(c, 3, 3)
-    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
-    # The claim was still GRADED and still says it failed — the ordering
-    # decides which refusal is reported, never whether the claim was made.
-    assert c.verify_claims["absolute"]["status"] == CLAIM_FAIL
 
 
 def test_the_crossover_region_claim_is_not_the_cloud_flatness_gauge():

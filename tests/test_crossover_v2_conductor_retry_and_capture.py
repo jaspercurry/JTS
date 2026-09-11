@@ -21,7 +21,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_CORRECTION_MODEL_ERROR,
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
@@ -390,56 +389,6 @@ def test_a_group_that_cannot_reach_the_floor_ends_honestly_not_with_retry_copy()
     assert "too few positions" in excinfo.value.user_message.lower()
 
 
-def test_a_spent_final_slot_terminalizes_its_close_time_refusal():
-    """The cloud-close hard stop replaces, rather than hides behind, X.
-
-    The last verify-cloud position spends its pooled extras on locate misses.
-    The group can still close without that spot, but its delta probe then
-    refuses with ``correction_model_error``. That closing finding is the final
-    truth: publish its exact code/copy as terminal on THIS capture, never the
-    earlier locate diagnosis plus a retry the ledger cannot admit.
-    """
-    fakes = FakeSeams()
-    fakes.apply_done = True
-    c = _conductor(
-        fakes,
-        index_phase_map=STAGE2_MAP,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-    )
-    # Isolate the close seam under test from delta-probe AND round-grading
-    # arithmetic; the real classifier's mapping/copy is independently
-    # exhaustive below. Injected at ``_grade_round_once`` rather than at the
-    # probe's own seam because the fifth-principle routing deleted that seam:
-    # a close-time refusal is now the ROUND's answer, and this is where it
-    # enters the close.
-    c._grade_round_once = (  # type: ignore[method-assign]
-        lambda verdict: (
-            flow.PhaseVerdict(False, REASON_CORRECTION_MODEL_ERROR)
-            if c.current_phase == PHASE_CLOUD_VERIFY
-            else verdict
-        )
-    )
-
-    attempt = _walk(c, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
-    last = CLOUD_VERIFY_INDEXES[-1]
-    fakes.verify = lambda program: _verify_analysis(
-        program, locate_confidence=0.0, pilot_snr_ok=True,
-    )
-    for _ in range(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-
-    closing_copy = REASON_REGISTRY[REASON_CORRECTION_MODEL_ERROR].message
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
-    assert verdict["reason"] == closing_copy
-    assert verdict["terminal"] is True
-    assert verdict["terminal_outcome"] == "phase_cannot_proceed"
-    assert verdict["attempts"]["left"] == 0
-    assert "unresolved" not in verdict
-    assert "could hear the speaker" not in verdict["reason"]
-    assert "previous sound has been put back" in verdict["reason"]
 
 
 def test_no_exhaustion_refusal_ever_carries_a_reasons_try_again_copy():

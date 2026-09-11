@@ -539,7 +539,6 @@ class FakeSeams:
             ),
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
-            rollback=self.rollback,
             # Follows ``rollback`` unless a test says otherwise — see the
             # field's own note for why an unbound anchor beside a bound
             # rollback models no real host.

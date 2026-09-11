@@ -48,7 +48,6 @@ suites co-run green in either order.
 
 from __future__ import annotations
 
-import itertools
 
 import dataclasses
 import json
@@ -61,51 +60,25 @@ from typing import Any, Mapping
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.delta_probe import (
-    DELTA_PROBE_ROLLBACK_VERDICTS,
+    DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS,
     SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
     VERDICT_MODEL_ERROR,
-)
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    DELTA_PROBE_REASON_BY_VERDICT,
-    correction_rollback_failed_message,
 )
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
-    AdoptionDecision,
     AdoptionOutcome,
-    IterationHeadroom,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
-    EvidenceTrust,
     QualityStatus,
-    SafetyStatus,
 )
 from jasper.active_speaker.crossover_v2.verification import (
-    ADOPTION_MEASURED_REGRESSION,
-    ADOPTION_REALIZED_AND_IMPROVED,
     HEADROOM_NO_OBJECTIVES,
     HEADROOM_REACHABLE,
-    ADOPTION_UNPROVEN,
-    ADOPTION_UNPROVEN_BOOST,
-    CAPTURE_INTEGRITY_FAILED,
-    CAPTURE_INTEGRITY_UNAVAILABLE,
-    REALIZATION_NO_COMPARATOR,
-    REALIZATION_NO_TRACKING,
-    SAFETY_BOOST_OVER_DECLARED_BOUND,
-    SAFETY_CLIPPED_CAPTURE,
-    SAFETY_NO_FINDING,
-    SAFETY_UNCOMMANDED_LEVEL_LOUDER,
-    TRUST_MEASURED,
     Verdict,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_CORRECTION_MEASURED_REGRESSION,
-    REASON_CORRECTION_ROLLBACK_FAILED,
-    REASON_CORRECTION_UNPROVEN_BOOST,
-    REASON_REGISTRY,
     REASON_VERIFY_OUT_OF_TOLERANCE,
 )
 from jasper.active_speaker.crossover_v2_flow import (
@@ -115,7 +88,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_records
 
 # The round harness: one staging of "a real stage 2, post-apply, with a
 # comparable before" — a fixture library rather than a test file, so no
@@ -123,7 +96,6 @@ from tests._log_events import event_fields, event_records
 from tests.crossover_v2_round_harness import (
     _bg_run_async,
     _consume_verify,
-    _household_sentence,
     _install_applied_graph,
     _install_entry_baseline,
     _post_apply_analysis,
@@ -158,7 +130,6 @@ from tests.test_crossover_v2_stage_bridge import (
 # --------------------------------------------------------------------------- #
 
 
-
 # Production refuses a session with no volume owner; stand one up.
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
@@ -170,16 +141,6 @@ def _hydrated_series_position(conductor: Any) -> Any:
     public reader because a session may only carry it, never re-derive it.
     """
     return conductor._series_position
-
-
-
-
-
-
-
-
-
-
 
 
 def _round_receipt_json(store: Any, capture_session_id: str) -> dict[str, Any]:
@@ -207,8 +168,6 @@ def _round_receipt_json(store: Any, capture_session_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # fixtures
 # --------------------------------------------------------------------------- #
-
-
 
 
 @pytest.fixture
@@ -244,35 +203,6 @@ def real_bundle(monkeypatch, tmp_path):
     return store
 
 
-
-
-
-
-def _bare_conductor() -> Any:
-    """The smallest real conductor: the refusal mapping reads no session state.
-
-    Built directly rather than through the two-stage host because
-    ``_round_refusal_for`` is a pure translation from a coordinator kind to a
-    household code — giving it a prepared stage would test the harness.
-    """
-    from tests.crossover_v2_fixtures import (
-        CAPS, FC_HZ, SESSION, SESSION_VOLUME_DB, FakeSeams, _preset, _roles,
-    )
-
-    return flow.CrossoverV2Session(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=FakeSeams().seams(),
-        driver_spacing_m=0.15,
-    )
-
-
-
-
 # --------------------------------------------------------------------------- #
 # 1. adoption outcomes, through the REAL two-stage host
 # --------------------------------------------------------------------------- #
@@ -306,376 +236,9 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     assert attempts == []
 
 
-def test_a_measured_regression_restores_and_refuses_under_its_own_code(monkeypatch):
-    """The 2026-08-10 shape: tracking passed and the speaker got worse.
-
-    This is the round #2291 exists for. A realization pass must not override a
-    measured regression, the graph has to come off, and the household has to be
-    told the specific thing that happened — not a generic verify failure and
-    not the "still applied" sentence, which would be false about their speaker.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    # 0.4x before, 1.0x after: the speaker measured BETTER before the apply.
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    assert verdict.accepted is False
-    assert verdict.code == REASON_CORRECTION_MEASURED_REGRESSION
-    evaluation = conductor.round_evaluation
-    assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
-    assert evaluation.adoption.reason == ADOPTION_MEASURED_REGRESSION
-    # The restore genuinely ran, which is what makes the code's copy
-    # ("the previous sound has been put back") a true sentence.
-    assert attempts == [1]
-    assert conductor.round_evaluation is not None
-
-
-def test_an_unproven_boost_with_a_valid_anchor_comes_back_off(monkeypatch):
-    """Fail closed: energy into a driver that nobody can show helped.
-
-    **#2537 update (corrected in commit c1ea01838).** The pre-#2537 fail-closed
-    cell fired on an INDETERMINATE benefit alone, and that is exactly the
-    2026-08-15 JTS3 cycle-4 defect #2537 exists to fix: a measured, safe,
-    improving-but-unprovable candidate was reverted BECAUSE it carried a
-    boost, even though its capture was perfectly usable and its realization
-    tracked. #2537 moves the boost-fail-closed rule onto the evidence-TRUST
-    axis, which is deliberately blind to benefit
-    (:func:`~jasper.active_speaker.crossover_v2.verification.evaluate_evidence_trust`'s
-    own docstring: "a benefit that came out indeterminate is deliberately NOT
-    here"). So this cell now needs UNTRUSTED evidence — a capture that could
-    not be graded at all, not merely one with no comparable "before" — and
-    only THEN does a boosting intervention fail closed rather than ask. See
-    ``test_the_same_unproven_round_without_a_boost_asks_instead_of_restoring``
-    for the sibling scenario (trusted evidence, indeterminate benefit) that
-    the pre-#2537 cell wrongly restored and #2537 now correctly keeps.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_applied_graph(monkeypatch, boosts=True)
-    # No integrity record at all — genuinely UNUSABLE evidence, not merely an
-    # unprovable benefit. VERIFY's own capture gate still accepts it (see
-    # tests/test_crossover_v2_verify_grading.py's
-    # test_verify_without_an_integrity_record_is_not_refused_but_says_so);
-    # only the round's evidence-trust axis refuses it.
-    analysis = dataclasses.replace(
-        _post_apply_analysis(conductor), capture_integrity=None,
-    )
-
-    verdict = _consume_verify(conductor, analysis)
-
-    assert verdict.accepted is False
-    assert verdict.code == REASON_CORRECTION_UNPROVEN_BOOST
-    evaluation = conductor.round_evaluation
-    assert evaluation.trust.status is EvidenceTrust.UNTRUSTED
-    assert evaluation.trust.reason == CAPTURE_INTEGRITY_UNAVAILABLE
-    assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
-    assert evaluation.adoption.reason == ADOPTION_UNPROVEN_BOOST
-    assert attempts == [1]
-
-
-def test_the_same_unproven_round_without_a_boost_asks_instead_of_restoring(
-    monkeypatch,
-):
-    """The sibling of the fail-closed boost pin: TRUSTED evidence, same doubt.
-
-    The candidate only cuts (unboosted) and has no comparable "before", so the
-    benefit is INDETERMINATE — but the capture itself is perfectly usable and
-    the realization tracked. An unverified cut can wait for a household to
-    decide; nothing is restored, and the capture's own verdict stands.
-
-    **#2537 update (corrected in commit c1ea01838).** This is the exact JTS3
-    2026-08-15 cycle-4 shape the owner ruled on, and the pre-#2537 table
-    restored it — the fail-closed boost cell fired on INDETERMINATE benefit
-    alone, which reverted a measured, safe round to an unmeasured state. Now
-    it lands on ``KEEP_FOR_ITERATION``: trusted evidence with an outstanding
-    quality target, not a question to ask and not a restore. Proven below on
-    BOTH a boosted and an unboosted candidate — see
-    ``test_an_unproven_boost_with_a_valid_anchor_comes_back_off`` for the
-    genuinely UNTRUSTED-evidence sibling that still fails closed.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    assert conductor.measure_entry_baseline is None
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    assert verdict.accepted is True
-    evaluation = conductor.round_evaluation
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
-    assert evaluation.adoption.reason == ADOPTION_UNPROVEN
-    assert evaluation.trust.status is EvidenceTrust.TRUSTED
-    assert evaluation.quality.status is QualityStatus.MISSED
-    assert attempts == []
-
-    # …and the boost is provably invisible here: the SAME usable capture,
-    # boosted instead of cut-only, lands on the identical outcome and reason.
-    _seed_round_state()
-    boosted_conductor, boosted_attempts = _restoring_stage_2(monkeypatch)
-    _install_applied_graph(monkeypatch, boosts=True)
-
-    boosted_verdict = _consume_verify(
-        boosted_conductor, _post_apply_analysis(boosted_conductor),
-    )
-
-    assert boosted_verdict.accepted is True
-    boosted_evaluation = boosted_conductor.round_evaluation
-    assert boosted_evaluation.adoption.outcome is evaluation.adoption.outcome
-    assert boosted_evaluation.adoption.reason == evaluation.adoption.reason
-    assert boosted_attempts == []
-
-
-def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
-    monkeypatch,
-):
-    """A restore nobody can perform is not a restore.
-
-    Same evidence as the fail-closed boost pin — genuinely UNTRUSTED evidence
-    (no integrity record), not merely an unprovable benefit; see
-    ``test_an_unproven_boost_with_a_valid_anchor_comes_back_off`` for why that
-    distinction is #2537's whole correction — one changed fact: the speaker
-    has no stashed profile to go back to, which is every first-ever apply.
-    The table must escalate rather than issue a restore instruction Undo
-    would then refuse.
-    """
-    _seed_round_state(previous_candidate=False)
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_applied_graph(monkeypatch, boosts=True)
-    analysis = dataclasses.replace(
-        _post_apply_analysis(conductor), capture_integrity=None,
-    )
-
-    verdict = _consume_verify(conductor, analysis)
-
-    assert verdict.accepted is False
-    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
-    evaluation = conductor.round_evaluation
-    assert evaluation.trust.status is EvidenceTrust.UNTRUSTED
-    outcome = evaluation.adoption.outcome
-    assert outcome is AdoptionOutcome.RECOVERY_REQUIRED
-    # Nothing was attempted, and the record says so rather than implying a
-    # restore that silently failed.
-    assert attempts == []
-
-
-def test_the_no_anchor_arm_does_not_send_the_household_to_undo(monkeypatch):
-    """#2291 SF-A: the remedy on the screen has to be one that EXISTS.
-
-    ``correction_rollback_failed`` covers two situations, and until this was
-    branched they shared one sentence ending "Tap Undo to restore the previous
-    sound." For the arm that got here BECAUSE there is no stored previous
-    sound, Undo refuses on the very predicate that routed them — so the most
-    ordinary case there is, a speaker's first-ever correction, was handed a
-    dead end.
-
-    Pinned on the rendered string rather than on the code, because the code was
-    always right and only the sentence lied. Same genuinely-UNTRUSTED evidence
-    shape as the pin above (#2537) — see its docstring.
-    """
-    _seed_round_state(previous_candidate=False)
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_applied_graph(monkeypatch, boosts=True)
-    analysis = dataclasses.replace(
-        _post_apply_analysis(conductor), capture_integrity=None,
-    )
-
-    verdict = _consume_verify(conductor, analysis)
-    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
-    assert attempts == []
-
-    sentence = _household_sentence(conductor, verdict.code)
-    # No pointer at a control that would refuse.
-    assert "Undo" not in sentence
-    # Still honest about where the speaker actually is.
-    assert "still applied" in sentence.lower()
-    # …and it names remedies that exist.
-    assert "measure again" in sentence.lower()
-    assert "Sound page" in sentence
-    # #2859: and it asserts no CAUSE. This arm is reached by four named
-    # refusals, only some of which are "this speaker was never corrected" —
-    # see test_the_no_anchor_arm_states_no_cause below.
-    assert "first measured crossover" not in sentence
-
-
-def test_the_no_anchor_arm_states_no_cause():
-    """#2859 defect 1, pinned at the sentence rather than at a screen.
-
-    ``rollback_anchor_available=False`` reports one capability — no prior
-    candidate fingerprint is recorded — which covers a first-ever apply AND
-    any prior profile that was not a measured-candidate apply. The sentence
-    used to end "this was its first measured crossover", a claim about only
-    one of those; on jts3, 2026-08-22, it told a corrected speaker's
-    household that their speaker had never been corrected.
-    """
-    sentence = correction_rollback_failed_message(False)
-    assert "first" not in sentence.lower()
-    assert "never" not in sentence.lower()
-    # The remedies are the half that IS true of every arm.
-    assert "measure again" in sentence.lower()
-    assert "Sound page" in sentence
-    # …and the other arm is untouched, so this is a narrowing and not a
-    # deletion of the branch.
-    assert "previous tuning" in correction_rollback_failed_message(True)
-    assert correction_rollback_failed_message(None) == (
-        correction_rollback_failed_message(True)
-    )
-
-
-def test_the_attempted_and_failed_arm_keeps_its_way_back_pointer(monkeypatch):
-    """The other arm of the same code, and the reason it stays a branch.
-
-    Here a stored previous sound DOES exist and the automatic restore failed
-    against it, so going back to the previous tuning is a real remedy and the
-    copy should still offer it. Pinned beside its sibling because a fix that
-    removed the pointer everywhere would satisfy that test and strand this
-    household with no action at all.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-    # A prior candidate is recorded, but the apply door does not put it back.
-    monkeypatch.setattr(
-        v2host, "handle_v2_apply",
-        lambda *a, **k: {"status": "blocked"},
-    )
-
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
-    assert attempts == []  # nothing went live: the counted success door never ran
-    sentence = _household_sentence(conductor, verdict.code)
-    assert "previous tuning" in sentence
-    assert "STILL APPLIED" in sentence
-
-
 # --------------------------------------------------------------------------- #
 # 1b. exactly one restore, and the seams it reaches
 # --------------------------------------------------------------------------- #
-
-
-def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
-    monkeypatch,
-):
-    """ONE owner, one restore — and the source proves there is no second.
-
-    Both the round's adoption path and the delta probe's own seam used to ask
-    this host to put the previous sound back, and the restore is not
-    idempotent: a completed one re-stamps the DISPLACED candidate as the new
-    previous one, so a second ask would republish-and-apply the very graph the
-    first one just took off. The historical second asker also read the
-    repeat's refusal as a FAILED rollback and re-labelled its verdict
-    ``correction_rollback_failed`` — whose household copy says the correction
-    is still applied. It was not. That false sentence about their own speaker
-    was the defect, and a once-guarded closure was the mitigation.
-
-    **The second owner is now deleted** (the fifth-principle routing): the
-    probe reports and ``coordinator._run_round_restore`` is the only caller of
-    the rollback seam. So this pins the property the once-guard was standing in
-    for — one restore per session — plus the structural fact that makes it hold
-    without a guard at all.
-    """
-
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    # The round's adoption path, on a measured regression.
-    first = _consume_verify(conductor, _post_apply_analysis(conductor))
-    assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
-    sentence = _household_sentence(conductor, first.code)
-    still_applied = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
-    assert "STILL APPLIED" not in sentence
-    assert sentence != still_applied
-
-    # A second capture in the same session, carrying a probe verdict that used
-    # to fire the seam's own immediate rollback: 2 dB LOUDER than the applied
-    # filters commanded, across the whole band. Nothing restores a second time.
-    _consume_verify(
-        conductor,
-        dataclasses.replace(
-            _post_apply_analysis(conductor),
-            verify_tracking_curve=_tracking_curve_change_from_entry(
-                conductor, change_db=-2.0, louder_spike_db=+4.0,
-            ),
-        ),
-        attempt=2,
-    )
-
-    assert conductor.delta_probe is not None
-    assert conductor.delta_probe.rollback is True, (
-        "the probe still MEASURES a rollback class — what moved is who acts"
-    )
-    # ONE restore, not two.
-    assert attempts == [1]
-
-    # …and there is no second caller left to grow one back. Source-level
-    # because that is the actual invariant: a behavioural pin would pass again
-    # the moment someone re-added a seam behind a different guard.
-    source = Path(flow.__file__).read_text(encoding="utf-8")
-    assert "self._seams.rollback(" not in source, (
-        "the flow must not call the rollback seam directly — restoring is "
-        "coordinator._run_round_restore's, and a second owner is how the "
-        "false STILL-APPLIED sentence came back last time"
-    )
-    assert "the previous sound has been put back" in sentence
-
-
-def test_the_first_restore_outcome_is_what_a_later_asker_is_handed(monkeypatch):
-    """The control: the guard REMEMBERS, it does not merely suppress.
-
-    A guard that returned ``False`` on every repeat would satisfy "one
-    restore" and still produce the false sentence. This pins the remembering
-    half directly on the seam both owners share.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    rollback = _flow_seams(conductor).rollback
-
-    assert rollback("first") is True
-    assert rollback("second") is True
-    assert rollback("third") is True
-    assert attempts == [1]
-
-
-def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch, caplog):
-    """…and in the other direction, which is the one that must stay loud.
-
-    A first attempt that could NOT restore must keep answering "not restored",
-    so the household keeps getting the "still applied" sentence. A guard that
-    cached only successes would let a later asker retry into a different
-    answer about the same speaker — and, under the normal-path mechanism,
-    retry a republish aimed at a record that already said no.
-
-    The return values alone cannot see this — a re-attempted restore on a
-    speaker with no recorded prior candidate refuses identically every time,
-    so ``False`` twice is what a MISSING guard produces too (a mutation
-    removing the memo left an earlier version of this test green). What
-    separates them is whether the restore was attempted a second time, and the
-    seam already says so in the journal: one ``restore_refused`` for the real
-    attempt, then ``restore_repeat`` for every asker handed the remembered
-    answer.
-    """
-    _seed_round_state(previous_candidate=False)  # nothing recorded to go back to
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    rollback = _flow_seams(conductor).rollback
-
-    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
-        assert rollback("first") is False
-        assert rollback("second") is False
-    assert attempts == []
-
-    assert len(
-        event_records(caplog, "correction.crossover_v2_delta_probe_restore_refused")
-    ) == 1
-    fields = event_fields(
-        caplog, "correction.crossover_v2_delta_probe_restore_repeat"
-    )
-    assert fields["restored"] == "false"
 
 
 def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
@@ -720,7 +283,7 @@ def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
         **{
             name: _recorded(name, getattr(bound, name))
             for name in (
-                "rollback", "rollback_available", "applied_boosts",
+                "rollback_available", "applied_boosts",
                 "entry_graph_fingerprint",
             )
         },
@@ -729,7 +292,7 @@ def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
     _consume_verify(conductor, _post_apply_analysis(conductor))
 
     assert set(seen) == {
-        "rollback", "rollback_available", "applied_boosts",
+        "rollback_available", "applied_boosts",
         "entry_graph_fingerprint", "publish_round_receipt",
     }
 
@@ -823,7 +386,6 @@ def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
     assert conductor.round_evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
     assert conductor.round_receipt_identity is not None
     assert attempts == []
-
 
 
 # --------------------------------------------------------------------------- #
@@ -921,7 +483,7 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     # Still a rollback verdict by the probe's own reckoning — the deferral is a
     # decision about what to DO with it, not a demotion of the measurement.
     assert conductor.delta_probe.verdict == VERDICT_MODEL_ERROR
-    assert conductor.delta_probe.rollback is True
+    assert conductor.delta_probe.advises_against_keep is True
     assert conductor.delta_probe.realized_louder_than_commanded is False
 
     assert attempts == [], "no Undo may run for a quieter-only shape miss"
@@ -941,62 +503,6 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     assert receipt["adoption"]["outcome"] in {
         AdoptionOutcome.KEEP.value, AdoptionOutcome.KEEP_FOR_ITERATION.value,
     }
-
-
-def test_a_louder_shape_miss_still_restores_at_the_seam(monkeypatch, real_bundle):
-    """The control, at the same place: the narrowing is one direction wide.
-
-    Same harness, same magnitude, opposite sign. The seam restores, the session
-    ends on its own verdict, and no round receipt is written — the shipped
-    behaviour for every seam rollback, unchanged.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    verdict = _consume_verify(
-        conductor,
-        dataclasses.replace(
-            _post_apply_analysis(conductor),
-            verify_tracking_curve=_tracking_curve_change_from_entry(
-                conductor, change_db=+2.0,
-            ),
-        ),
-    )
-
-    assert conductor.delta_probe is not None
-    assert conductor.delta_probe.verdict == VERDICT_MODEL_ERROR
-    assert conductor.delta_probe.safety_anchored is True
-    assert conductor.delta_probe.realized_louder_than_commanded is True
-    assert attempts == [1]
-    assert verdict.accepted is False
-
-
-def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
-    monkeypatch, real_bundle,
-):
-    """The restore result has to be on it, or a recovery cannot be read back.
-
-    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` writes the
-    receipt LAST for exactly this reason: the receipt is the record of an event,
-    and the event includes whether the previous sound actually came back. A
-    receipt written before the restore would describe an intention.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    _consume_verify(conductor, _post_apply_analysis(conductor))
-    assert attempts == [1]
-
-    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
-
-    assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
-    assert receipt["restore_result"]["attempted"] is True
-    assert receipt["restore_result"]["restored"] is True
-    assert receipt["restore_result"]["reason"] == ADOPTION_MEASURED_REGRESSION
 
 
 # --------------------------------------------------------------------------- #
@@ -1304,8 +810,8 @@ def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
     _install_applied_graph(monkeypatch, boosts=False)
 
     first = _consume_verify(conductor, _post_apply_analysis(conductor))
-    assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
-    assert attempts == [1]
+    assert first.accepted is True
+    assert attempts == []
     graded = conductor.round_evaluation
 
     # Same trigger, again. The guard — not the seam's once-guard — is what has
@@ -1314,7 +820,7 @@ def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
 
     assert second.accepted is True, "the second pass grades nothing, so it refuses nothing"
     assert conductor.round_evaluation is graded, "the round was not re-decided"
-    assert attempts == [1], "no second restore was attempted"
+    assert attempts == [], "no second restore was attempted"
 
 
 # --------------------------------------------------------------------------- #
@@ -1451,43 +957,6 @@ def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_failed_restore_is_regraded_with_the_restore_failed_flag(monkeypatch):
-    """C3. The flag is what makes the receipt's "neither graph" claim true.
-
-    ``_regrade_after_failed_restore`` re-runs the SAME table with
-    ``restore_failed=True``, and that argument is the entire mechanism: it is
-    what turns the round into ``RECOVERY_REQUIRED`` and what makes the receipt
-    say the speaker is on neither the entry graph nor a verified one. The
-    OUTCOME was pinned; the argument was not, so a re-grade that dropped the
-    flag would produce a second ordinary restore decision and keep passing.
-    """
-    seen: list[dict[str, Any]] = []
-    real = coordinator.decide_adoption
-
-    def _spy(**kwargs: Any) -> Any:
-        seen.append(kwargs)
-        return real(**kwargs)
-
-    monkeypatch.setattr(coordinator, "decide_adoption", _spy)
-    _seed_round_state()
-    conductor, _attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)  # flatter before ⇒ regression
-    _install_applied_graph(monkeypatch, boosts=False)
-    # A rollback seam that reports failure is what routes into the re-grade.
-    conductor._seams = dataclasses.replace(
-        _flow_seams(conductor), rollback=lambda _cause: False,
-    )
-
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    assert [call["restore_failed"] for call in seen] == [True]
-    assert (
-        conductor.round_evaluation.adoption.outcome
-        is AdoptionOutcome.RECOVERY_REQUIRED
-    )
-    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
-
-
 def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
     """C7. ``rollback_available`` claims BOTH halves fail closed; one was pinned.
 
@@ -1509,7 +978,7 @@ def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
     place an operator goes looking for a real anchor-read failure.
     """
     ports = coordinator.RoundPorts(
-        rollback=lambda _cause: True, rollback_available=None,
+        rollback_available=None,
     )
 
     with caplog.at_level("DEBUG"):
@@ -1533,7 +1002,7 @@ def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
         raise RuntimeError("the durable state is unreadable")
 
     ports = coordinator.RoundPorts(
-        rollback=lambda _cause: True, rollback_available=_explode,
+        rollback_available=_explode,
     )
 
     with caplog.at_level("DEBUG"):
@@ -1546,42 +1015,6 @@ def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
             caplog, "correction.crossover_v2_rollback_available_failed"
         )
     ] == ["WARNING"]
-
-
-@pytest.mark.parametrize(
-    ("seam_bound", "known", "expected"),
-    [
-        (True, True, True),
-        (True, False, False),
-        (False, True, False),
-        (False, False, False),
-    ],
-    ids=["seam+state", "seam-only", "state-only", "neither"],
-)
-def test_rollback_available_needs_both_the_seam_and_the_state(
-    seam_bound, known, expected,
-):
-    """All four combinations, because each single-half rule is wrong differently.
-
-    Seam-only says yes on a speaker whose pre-apply stash names no prior
-    candidate: the round would issue a restore instruction the republish door
-    then refuses, and the household would be told the old sound was coming
-    back when nothing could bring it. State-only ignores that a caller may
-    have no rollback binding at all. Pinning only the true corner, or only one
-    false one, would leave an ``or`` in place of the ``and`` looking correct.
-
-    Asked of the rule's OWNER (#2291 Phase 5 moved it to the coordinator), and
-    of a port set rather than a conductor. That the production conductor hands
-    the coordinator these two seams is a different claim, pinned end-to-end by
-    :func:`test_a_round_reaches_every_one_of_its_five_seams` and by the restore
-    outcomes above it.
-    """
-    ports = coordinator.RoundPorts(
-        rollback=(lambda _cause: True) if seam_bound else None,
-        rollback_available=lambda: known,
-    )
-
-    assert coordinator.rollback_available(ports, session_id="cap_x") is expected
 
 
 @pytest.mark.parametrize(
@@ -1609,201 +1042,6 @@ def test_an_unreadable_boost_reads_as_boosted(seam, expected, why):
     ports = coordinator.RoundPorts(applied_boosts=seam)
 
     assert coordinator.applied_boosts(ports, session_id="cap_x") is expected, why
-
-
-def test_the_no_anchor_escalation_is_logged_at_error(monkeypatch, caplog):
-    """C8. Loudness is the remedy here, so the LEVEL is the pin.
-
-    ``recovery_required`` with no anchor means the speaker is on an unverified
-    graph and the automatic remedy does not exist. Nobody is coming unless the
-    journal shouts; a demotion to WARNING would be invisible in exactly the
-    situation that needs an operator.
-    """
-    _seed_round_state(previous_candidate=False)
-    conductor, _attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    with caplog.at_level("INFO"):
-        _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    records = event_records(caplog, "correction.crossover_v2_round_recovery_required")
-    assert records, "the no-anchor escalation must reach the journal"
-    assert [r.levelname for r in records] == ["ERROR"]
-
-
-def test_a_failed_restore_is_logged_at_error_and_a_successful_one_is_not(
-    monkeypatch, caplog,
-):
-    """C9. Same reasoning as C8, and its control.
-
-    A restore that did not complete leaves the speaker on the graph the round
-    just judged bad, with its remedy spent — an operator-visible event. A
-    restore that DID complete is ordinary business at INFO. Pinning only the
-    failure level would pass for a blanket ERROR that cried wolf on every
-    successful undo.
-    """
-    _seed_round_state()
-    conductor, _attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-    conductor._seams = dataclasses.replace(
-        _flow_seams(conductor), rollback=lambda _cause: False,
-    )
-
-    with caplog.at_level("INFO"):
-        _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    failed = event_records(caplog, "correction.crossover_v2_round_restore")
-    assert [r.levelname for r in failed] == ["ERROR"]
-
-    caplog.clear()
-    _seed_round_state()
-    ok_conductor, _ = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(ok_conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    with caplog.at_level("INFO"):
-        _consume_verify(ok_conductor, _post_apply_analysis(ok_conductor))
-
-    succeeded = event_records(caplog, "correction.crossover_v2_round_restore")
-    assert [r.levelname for r in succeeded] == ["INFO"]
-
-
-def test_every_restore_the_table_can_ask_for_has_its_own_household_code():
-    """C5. ``round_restore_reason``'s docstring claims the map is exhaustive.
-
-    It ends in ``.get(cause, MEASURED_REGRESSION)`` and calls that "a floor, not
-    a branch anything reaches" — a claim about the TABLE, which nothing checked.
-    So walk every corner ``decide_adoption`` can be asked, collect the reasons
-    it returns with a RESTORE intent, and require a deliberate entry for each:
-    any reason other than ``measured_regression`` that lands on the
-    measured-regression code is reaching the fallback, which would tell a
-    household about a regression when the round found something else.
-
-    **#2537 update (corrected in commit c1ea01838).** ``decide_adoption`` no
-    longer takes ``realization=/benefit=/spec=`` — it takes three axis
-    ``Verdict``s (``trust``/``safety``/``quality``), and two of those axes are
-    new sources of a RESTORE reason that did not exist in the pre-#2537 table:
-    the safety axis's three hazard reasons, and the trust axis's own capture/
-    realization reasons on an UNBOOSTED untrusted round (see
-    ``test_an_unproven_boost_with_a_valid_anchor_comes_back_off`` for why a
-    boosted untrusted round instead reads ``ADOPTION_UNPROVEN_BOOST``). This
-    walk is rebuilt over the CURRENT three axes, with each Verdict carrying a
-    REAL reason a real evaluator would produce — the exhaustiveness claim is
-    about ``round_restore_reason``'s actual reason vocabulary, so a walk using
-    placeholder strings could not check it.
-    """
-    reasons = set()
-    trust_reasons = (
-        CAPTURE_INTEGRITY_UNAVAILABLE, CAPTURE_INTEGRITY_FAILED,
-        REALIZATION_NO_TRACKING, REALIZATION_NO_COMPARATOR,
-    )
-    safety_reasons = (
-        SAFETY_BOOST_OVER_DECLARED_BOUND, SAFETY_UNCOMMANDED_LEVEL_LOUDER,
-        SAFETY_CLIPPED_CAPTURE,
-    )
-    for trust_status, trust_reason in (
-        (EvidenceTrust.TRUSTED, TRUST_MEASURED),
-        *((EvidenceTrust.UNTRUSTED, r) for r in trust_reasons),
-    ):
-        for safety_status, safety_reason in (
-            (SafetyStatus.SAFE, SAFETY_NO_FINDING),
-            *((SafetyStatus.UNSAFE, r) for r in safety_reasons),
-        ):
-            for quality_status, quality_reason in (
-                (QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED),
-                (QualityStatus.MISSED, ADOPTION_UNPROVEN),
-                (QualityStatus.REGRESSED, ADOPTION_MEASURED_REGRESSION),
-            ):
-                # #2602's axis is walked too: it cannot produce a restore
-                # (both its answers keep), and walking it is what PROVES that
-                # rather than assuming it — a headroom value that did reach a
-                # restoring row would surface here as a reason with no
-                # household code.
-                for boosted, headroom_status in itertools.product(
-                    (True, False), IterationHeadroom
-                ):
-                    decision = coordinator.decide_adoption(
-                        trust=Verdict(trust_status, trust_reason, {}),
-                        safety=Verdict(safety_status, safety_reason, {}),
-                        quality=Verdict(quality_status, quality_reason, {}),
-                        headroom=Verdict(headroom_status, "h", {}),
-                        boosted=boosted, rollback_available=True,
-                    )
-                    if decision.outcome is AdoptionOutcome.RESTORE:
-                        reasons.add(decision.reason)
-
-    assert reasons, "the table must be able to ask for a restore at all"
-    for reason in sorted(reasons):
-        code = flow.round_restore_reason(reason)
-        if reason != ADOPTION_MEASURED_REGRESSION:
-            assert code != REASON_CORRECTION_MEASURED_REGRESSION, (
-                f"{reason!r} reaches the fallback rather than its own code"
-            )
-
-
-def test_every_refusal_kind_the_coordinator_can_return_is_mapped(caplog):
-    """C6. The catch-all must not answer for a kind nobody wired.
-
-    ``REFUSAL_KINDS`` is the coordinator's own enumeration; the flow maps each
-    to a household code. A kind added there and forgotten here used to fall
-    through an ``else`` and wear ``correction_rollback_failed``'s sentence —
-    telling a household their correction is still applied on evidence that says
-    nothing of the kind.
-
-    **The journal is the assertion, not the verdict, and admitting why is the
-    point.** This pin's first version checked only that every kind produced
-    *some* refusal with *some* code — which an unmapped kind does too, because
-    the conservative fallback is still a refusal. It was the wrong-property
-    class that :func:`test_an_unbound_anchor_probe_fails_closed_QUIETLY` twenty
-    lines below documents, written twenty lines above it, in the same sitting.
-
-    So the completeness claim is asserted where completeness is actually
-    observable: **no kind may raise the unmapped event.** That guard cannot be
-    vacuous, because its sibling
-    (:func:`test_an_unrecognised_refusal_kind_is_loud_rather_than_silent`)
-    proves the event fires for a kind with no arm.
-    """
-    conductor = _bare_conductor()
-
-    with caplog.at_level("INFO"):
-        for kind in sorted(coordinator.REFUSAL_KINDS):
-            refusal = coordinator.RoundRefusal(
-                kind=kind, cause=ADOPTION_MEASURED_REGRESSION,
-                rollback_anchor_available=True,
-            )
-            verdict = conductor._round_refusal_for(refusal)
-            assert verdict.accepted is False
-            assert verdict.code
-
-    unmapped = event_records(
-        caplog, "correction.crossover_v2_round_refusal_kind_unmapped"
-    )
-    assert unmapped == [], (
-        "a declared refusal kind reached the fallback instead of its own arm: "
-        f"{[r.getMessage() for r in unmapped]}"
-    )
-
-
-def test_an_unrecognised_refusal_kind_is_loud_rather_than_silent(caplog):
-    """The other half of C6: the fallback exists, and it shouts.
-
-    Reached with a kind no released coordinator returns, which is exactly the
-    shape of the future defect — the point is that it cannot arrive quietly.
-    """
-    conductor = _bare_conductor()
-    refusal = coordinator.RoundRefusal(kind="a_kind_from_the_future")
-
-    with caplog.at_level("INFO"):
-        verdict = conductor._round_refusal_for(refusal)
-
-    unmapped = event_records(
-        caplog, "correction.crossover_v2_round_refusal_kind_unmapped"
-    )
-    assert [r.levelname for r in unmapped] == ["ERROR"]
-    # Still refuses, and under the most conservative code available.
-    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
 
 
 # --------------------------------------------------------------------------- #
@@ -2003,45 +1241,6 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert spec["max_db"] == evaluation.spec.evidence["max_db"]
 
 
-def test_the_full_tier_restores_a_measured_regression_at_the_cloud_close(
-    monkeypatch, real_bundle,
-):
-    """The restore arm, reached through the close rather than through VERIFY.
-
-    A Full household whose correction made the speaker measurably worse must
-    get their previous sound back automatically, and the only code path that
-    can do that for them runs after the last cloud position. Every restore pin
-    above proves the Express path does it; none proves this one does, and the
-    two reach ``coordinator.run_round`` from different call sites.
-
-    ``scale=0.4`` is a before-side FLATTER than the after: the deviation grew,
-    which is a measured regression. Asserted on the counter the stubbed DSP leg
-    increments, so this cannot pass on a decision nobody acted on.
-    """
-    _seed_full_round_state()
-    conductor, attempts = _full_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted
-
-    verdict = _walk_post_apply_cloud(conductor)
-
-    evaluation = conductor.round_evaluation
-    assert evaluation is not None, "the cloud close did not grade the round"
-    assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
-    assert evaluation.adoption.reason == ADOPTION_MEASURED_REGRESSION
-    # The graph really went back — once.
-    assert attempts == [1]
-    # And the household is told in the ROUND's words rather than the capture's:
-    # the group's own screens accepted this position, and the refusal that
-    # reaches the screen is the round's.
-    assert verdict.accepted is False
-    assert verdict.code == REASON_CORRECTION_MEASURED_REGRESSION
-    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
-    assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
-
-
 def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     monkeypatch, real_bundle,
 ):
@@ -2128,9 +1327,9 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
 
     verdict = _walk_post_apply_cloud(conductor)
 
-    assert verdict.accepted is False
-    # The graph came off, once.
-    assert attempts == [1]
+    assert verdict.accepted is True
+    # The graph stays applied.
+    assert attempts == []
     # …and the round was graded rather than skipped.
     assert conductor.round_evaluation is not None
     assert (
@@ -2143,8 +1342,7 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     # The receipt exists, and records what the restore DID.
     receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
-    assert receipt["restore_result"]["attempted"] is True
-    assert receipt["restore_result"]["restored"] is True
+    assert receipt["advice"]["delta_probe"]["verdict"] == VERDICT_MODEL_ERROR
     assert conductor.round_receipt_identity is not None
     assert conductor.round_receipt_identity["round_ordinal"] == 1
 
@@ -2445,7 +1643,6 @@ def _direct_round(
     *,
     analysis=_USABLE_ANALYSIS,
     publish=None,
-    rollback=None,
     rollback_available=None,
     boosts=False,
     round_ordinal=1,
@@ -2456,7 +1653,6 @@ def _direct_round(
     position_residuals=(),
 ):
     ports = coordinator.RoundPorts(
-        rollback=rollback,
         rollback_available=rollback_available,
         applied_boosts=(lambda: boosts),
         entry_graph_fingerprint=(lambda: "graph-1"),
@@ -2496,19 +1692,9 @@ def _direct_round(
             "restored, because the capture was unmeasurable",
             {
                 "analysis": None,
-                "rollback": lambda _reason: True,
                 "rollback_available": lambda: True,
             },
             AdoptionOutcome.RESTORE,
-        ),
-        (
-            "the restore itself failed",
-            {
-                "analysis": None,
-                "rollback": lambda _reason: False,
-                "rollback_available": lambda: True,
-            },
-            AdoptionOutcome.RECOVERY_REQUIRED,
         ),
         (
             "no anchor to restore to",
@@ -2516,7 +1702,7 @@ def _direct_round(
             AdoptionOutcome.RECOVERY_REQUIRED,
         ),
     ],
-    ids=["keep_for_iteration", "restore", "restore_failed", "no_anchor"],
+    ids=["keep_for_iteration", "restore", "no_anchor"],
 )
 def test_every_arm_of_the_adoption_act_banks_a_receipt(case, kwargs, outcome):
     """The ethos's fifth principle, as a guard on every exit.
@@ -2985,77 +2171,6 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
     assert prescribe(_session(fresh)) == fresh
 
 
-def test_a_restored_round_banks_no_blend_instruction(monkeypatch):
-    """Panel ruling, 2026-08-18: a restore does not propagate its prescription.
-
-    A prescription is derived from a measurement taken THROUGH a specific
-    incumbent. A restored round threw that graph away, so applying its
-    prescription next would compose a correction onto a base that no longer
-    exists. The next round instead derives from the applied (restored) profile
-    — which is what a ``None`` instruction tells the apply path to do.
-
-    What the round COMMANDED is still history and still banked, in the
-    artifact's ``round_measurements.blend``. This key is not history; it is an
-    instruction, and a discarded round has no standing to issue one.
-    """
-
-    # A USABLE capture that still restores. The unusable-capture path would
-    # short-circuit the blend solve to ``None`` and pass this test without ever
-    # reaching the gate — the mutation that removes the gate survived exactly
-    # that fixture. The adoption verdict is forced instead, so the round
-    # genuinely has a blend record and genuinely restores.
-    restore = AdoptionDecision(
-        outcome=AdoptionOutcome.RESTORE,
-        row="row4_untrusted_evidence",
-        reason="forced_for_this_test",
-    )
-    # Patched at ``verification``, which is where ``evaluate_round`` imports
-    # it from at call time — patching the coordinator's own name would bind
-    # nothing and the round would quietly keep its graph.
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.verification.decide_adoption",
-        lambda **_k: restore,
-    )
-
-    decision = _direct_round(
-        publish=lambda _r: "art",
-        analysis=_REGION_ANALYSIS,
-        rollback=lambda _reason: True,
-        rollback_available=lambda: True,
-    )
-
-    identity = decision.receipt_identity
-    assert identity["adoption"] == "restore"
-    assert decision.evaluation.blend is not None, (
-        "the fixture must reach the blend solve, or the gate is untested"
-    )
-    assert identity["blend"] is None
-
-    position = coordinator.series_position_from_state({"round_receipt": identity})
-    assert position.previous_blend_correction is None, (
-        "a restored round handed the next one an instruction"
-    )
-    assert position.previous_blend_residual_db is None
-
-
-def test_a_failed_restore_keeps_its_measured_blend_record(monkeypatch):
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.verification.decide_adoption",
-        lambda **_k: AdoptionDecision(
-            outcome=AdoptionOutcome.RESTORE,
-            row="row4_untrusted_evidence",
-            reason="forced_for_this_test",
-        ),
-    )
-    decision = _direct_round(
-        analysis=_REGION_ANALYSIS,
-        rollback=lambda _reason: False,
-        rollback_available=lambda: True,
-    )
-    assert decision.evaluation.blend is not None
-    assert decision.evaluation.region_benefit is not None
-
-
 def test_no_instruction_and_an_empty_instruction_are_different_answers():
     """The distinction the apply path turns on.
 
@@ -3115,7 +2230,6 @@ def test_the_two_region_residuals_on_the_receipt_name_their_instruments():
     # The identity carries the instruction; the artifact carries the numbers.
     # Drive the measurements builder directly for the labelled pair.
     from jasper.active_speaker.crossover_v2 import blend_correction as bc
-    from jasper.active_speaker.crossover_v2.verification import Verdict
     from jasper.active_speaker.crossover_v2.contracts import BenefitStatus
 
     blend = bc.BlendCorrection(
@@ -3174,68 +2288,6 @@ def test_a_receipt_from_before_the_floor_shipped_reads_back_as_unknown():
     assert position.previous_trusted_floor_hz is None
 
 
-@pytest.mark.parametrize(
-    "verdict",
-    sorted(DELTA_PROBE_ROLLBACK_VERDICTS),
-    ids=sorted(DELTA_PROBE_ROLLBACK_VERDICTS),
-)
-def test_a_routed_probe_rollback_keeps_its_own_household_sentence(verdict):
-    """The copy the routing was NOT allowed to change.
-
-    Each rollback class has its own sentence, and a household whose speaker was
-    reverted for a shape mismatch must not start reading the generic
-    unverifiable one because the DECISION moved from the probe's seam to the
-    adoption table. Walked end to end: the coordinator's refusal cause, through
-    the flow's own mapper, to the code whose copy the household reads.
-    """
-    probe = SimpleNamespace(
-        verdict=verdict, reason="", rollback=True,
-        # LOUDER than commanded, so ``model_error`` does not take the #2559
-        # deferral — this test is about the classes that DO restore, and the
-        # deferred one has its own test above.
-        realized_louder_than_commanded=True,
-        # …and NOT over the declared boost bound, so the SAFETY axis stays
-        # quiet and the row under test is the probe-class one rather than
-        # ``row3_unsafe``.
-        boost_over_declared_bound=False,
-        max_signed_error_db=2.0,
-        residual_offset_db=None, residual_offset_tolerance_db=None,
-        to_dict=lambda: {"verdict": verdict},
-    )
-
-    decision = _direct_round(
-        publish=lambda _r: "art",
-        rollback=lambda _reason: True,
-        rollback_available=lambda: True,
-        delta_probe=probe,
-    )
-
-    assert decision.evaluation.adoption.outcome is AdoptionOutcome.RESTORE
-    assert decision.refusal is not None
-    assert flow.round_restore_reason(decision.refusal.cause) == (
-        DELTA_PROBE_REASON_BY_VERDICT[verdict]
-    ), "the probe's class must reach the household as its own sentence"
-
-
-def test_an_unknown_probe_class_falls_to_the_floor_not_to_a_guess():
-    """A class this build does not have must not borrow another's sentence.
-
-    The floor is the unverifiable code — true of every unmapped cause by
-    construction — never the measured-regression one, which would claim a
-    finding the round did not make.
-    """
-    from jasper.active_speaker.crossover_v2.verification import (
-        ADOPTION_PROBE_ROLLBACK_CLASS,
-    )
-
-    code = flow.round_restore_reason(
-        f"{ADOPTION_PROBE_ROLLBACK_CLASS}:a_class_from_the_future"
-    )
-
-    assert code == refusal_copy.REASON_CORRECTION_UNVERIFIABLE_RESULT
-    assert code != REASON_CORRECTION_MEASURED_REGRESSION
-
-
 def test_the_position_role_reaches_the_combiners_own_input_struct():
     """§4.2's one line, pinned where it was missing.
 
@@ -3283,3 +2335,49 @@ def test_a_position_that_declares_no_role_carries_an_empty_one():
     )
 
     assert flow.cloud_position_capture(position).role == ""
+
+
+@pytest.mark.parametrize("probe_verdict", [None, *sorted(DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS)])
+@pytest.mark.parametrize("previous_candidate", [True, False])
+def test_round_advice_keeps_the_applied_graph(
+    monkeypatch, real_bundle, probe_verdict, previous_candidate,
+):
+    _seed_round_state(previous_candidate=previous_candidate)
+    conductor, apply_calls = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+    before = _flow_seams(conductor).entry_graph_fingerprint()
+    probe = None
+    if probe_verdict is not None:
+        from jasper.active_speaker.delta_probe import classify_delta_probe
+        from jasper.active_speaker.crossover_v2 import delta_probe_run
+        from tests.test_active_speaker_delta_probe import _GRID_HZ, _band, _commanded_lift
+
+        commanded = _commanded_lift()
+        probe = dataclasses.replace(
+            classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band()),
+            verdict=probe_verdict,
+            safety_anchored=True,
+            realized_louder_than_commanded=True,
+        )
+        monkeypatch.setattr(delta_probe_run, "run_delta_probe", lambda *a, **k: probe)
+
+    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    assert verdict.accepted is True
+    assert apply_calls == []
+    assert _flow_seams(conductor).entry_graph_fingerprint() == before
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
+    assert receipt["applied_graph_fingerprint"] == before
+    assert receipt["adoption"]["outcome"] == (
+        AdoptionOutcome.RESTORE.value if previous_candidate
+        else AdoptionOutcome.RECOVERY_REQUIRED.value
+    )
+    advice = receipt["advice"]
+    assert advice["adoption_row"] == conductor.round_evaluation.adoption.row
+    assert advice["verdicts"] == conductor.round_evaluation.to_dict()["verdicts"]
+    if probe is not None:
+        assert advice["delta_probe"] == probe.to_dict()
+        assert advice["delta_probe"]["advises_against_keep"] is True
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert v2host.load_v2_state()["round_receipt"]["advice"] == advice

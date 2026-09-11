@@ -362,7 +362,7 @@ def _first_rollback_curvature(previous: cmd.GraphSummation) -> float:
     curvature = 0.0
     while curvature <= _CURVATURE_MAX:
         post, pre = _capture(curvature_db_per_octave2=curvature)
-        if _probe(commanded_db, post, pre).rollback:
+        if _probe(commanded_db, post, pre).advises_against_keep:
             return round(curvature, 6)
         curvature += _CURVATURE_STEP
     return float("inf")
@@ -403,10 +403,10 @@ def test_at_the_disputed_room_the_retired_axis_refuses_and_the_new_one_does_not(
 
     retired = _probe(_commanded(RETIRED_PREVIOUS_GRAPH), post, pre)
     assert retired.verdict == VERDICT_MODEL_ERROR
-    assert retired.rollback is True
+    assert retired.advises_against_keep is True
 
     new = _probe(_commanded(PREVIOUS_GRAPH), post, pre)
-    assert new.rollback is False
+    assert new.advises_against_keep is False
 
 
 def test_an_uncommanded_shape_change_still_rolls_back_under_the_new_axis():
@@ -430,7 +430,7 @@ def test_an_uncommanded_shape_change_still_rolls_back_under_the_new_axis():
     )
     probe = _probe(_commanded(PREVIOUS_GRAPH), post, pre)
     assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.rollback is True
+    assert probe.advises_against_keep is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1052,7 +1052,7 @@ def test_the_negative_control_measures_the_untouched_band_and_finds_nothing():
     assert probe.boost_overshoot_db == pytest.approx(0.0, abs=1e-9)
     assert probe.boost_over_declared_bound is False
     assert probe.realized_louder_than_commanded is False
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
 
 
 def test_the_untouched_boost_hard_stop_needs_a_pre_apply_capture(caplog):
@@ -1381,7 +1381,7 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     # What WAS measured: the model's own departure, as a number.
     assert probe.model_departure_over_tolerance is True
     assert probe.max_signed_error_db == pytest.approx(2.5856, abs=5e-4)
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
 
     # Exactly what a 4 dB-hot ``safety_only`` map hands the hard-stop axis
     # (#2855). The constant's own prose used to say the two directional findings
@@ -1434,7 +1434,7 @@ def test_an_alternative_fc_round_that_is_clean_is_not_reported_as_fully_graded()
     assert probe is not None
     assert probe.verdict == VERDICT_SAFETY_ONLY
     assert probe.matched is False
-    assert probe.rollback is False
+    assert probe.advises_against_keep is False
     # No hazard finding, and the reason is that none was measurable — which is
     # a different sentence from "measured, and nothing found", and the map is
     # what tells them apart.
