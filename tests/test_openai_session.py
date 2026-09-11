@@ -267,9 +267,11 @@ async def test_transport_close_failure_redacts_the_connection_secret(caplog):
     with caplog.at_level(logging.DEBUG, logger="jasper.voice.openai_session"):
         await conn._close_cm_with_timeout(_Cm())
 
-    (record,) = event_records(caplog, "live.transport_close_failed")
+    (record,) = event_records(caplog, "provider.close_failed")
     assert record.levelno == logging.WARNING
-    assert "plainvalue123" not in event_fields(caplog, "live.transport_close_failed")["detail"]
+    fields = event_fields(caplog, "provider.close_failed")
+    assert (fields["provider"], fields["phase"]) == ("openai", "transport")
+    assert "plainvalue123" not in fields["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -832,14 +834,13 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
         await conn.stop()
 
 
-async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
-    """Assistant transcript content stays out of persistent logs.
+async def test_turn_release_reports_transcript_sizes_and_never_the_text(caplog):
+    """Both sides' transcripts reach the journal as lengths only.
 
-    OpenAI's deployed Realtime stream emits
-    ``response.output_audio_transcript.delta`` for assistant speech. The
-    adapter logs only metadata, because the flight recorder buffers
-    DEBUG records and dumps them to journald around failures."""
-    caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
+    The text itself is retained for opt-in conversation history and must
+    not be logged: the flight recorder dumps buffered records to journald
+    around failures, so a household utterance would land there."""
+    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -848,13 +849,14 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
         turn = await conn.acquire_turn()
         await _begin_response(conn, sess)
         sess.feed({
-            "type": "response.output_audio_transcript.delta",
-            "delta": "Transport ",
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "user_1",
+            "transcript": "turn on the kitchen lights",
         })
-        sess.feed({
-            "type": "response.output_audio_transcript.delta",
-            "delta": "error.",
-        })
+        for delta in ("Transport ", "error."):
+            sess.feed({
+                "type": "response.output_audio_transcript.delta", "delta": delta,
+            })
         sess.feed({
             "type": "response.done",
             "response": {"usage": {"input_tokens": 1, "output_tokens": 2}},
@@ -862,36 +864,16 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
 
         await _wait_until(lambda: turn.server_turn_complete(), timeout=2.0)
         assert turn.assistant_transcript() == "Transport error."
+        await _wait_until(lambda: turn.user_transcript() != "", timeout=2.0)
         await turn.release()
-        (record,) = event_records(caplog, "openai.assistant_transcript")
-        assert record.levelno == logging.DEBUG
-        assert event_fields(caplog, "openai.assistant_transcript")["chars"] == "16"
-        assert "Transport error." not in record.getMessage()
-    finally:
-        await conn.stop()
 
-
-async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
-    caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        await conn.acquire_turn()
-        await _begin_response(conn, sess)
-        sess.feed({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "transcript": "turn on the kitchen lights",
-        })
-        await _wait_until(
-            lambda: bool(event_records(caplog, "openai.user_transcript")),
-            timeout=2.0,
-        )
-        (record,) = event_records(caplog, "openai.user_transcript")
-        assert record.levelno == logging.DEBUG
-        assert event_fields(caplog, "openai.user_transcript")["chars"] == "26"
+        (record,) = event_records(caplog, "provider.turn_ended")
+        fields = event_fields(caplog, "provider.turn_ended")
+        assert fields["provider"] == "openai"
+        assert (fields["user_chars"], fields["assistant_chars"]) == ("26", "16")
+        assert (fields["input_tokens"], fields["output_tokens"]) == ("1", "2")
         assert "turn on the kitchen lights" not in record.getMessage()
+        assert "Transport error." not in record.getMessage()
     finally:
         await conn.stop()
 

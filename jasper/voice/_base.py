@@ -425,6 +425,27 @@ class BaseLiveTurn:
         self._audio_dropped_bytes = 0
         return dropped
 
+    def _release_fields(self) -> dict[str, Any]:
+        """Extra `provider.turn_ended` fields only this adapter observes."""
+        return {}
+
+    def _log_release(self) -> None:
+        """Report the finished turn — one event name, every provider."""
+        usage = self.usage()
+        log_event(
+            self._conn._logger,
+            "provider.turn_ended",
+            provider=self._conn.PROVIDER_NAME,
+            turn_ms=round((_time.monotonic() - self._started_at_monotonic) * 1000),
+            chunks_received=self._chunks_received,
+            bytes_sent=self._bytes_sent,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            user_chars=len(self._user_transcript.strip()),
+            assistant_chars=len(self._assistant_transcript.strip()),
+            **self._release_fields(),
+        )
+
     def _note_activity(self) -> None:
         """Reset the pre-response idle anchor.
 
@@ -857,7 +878,9 @@ class BaseLiveConnection:
         except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
             log_event(
                 self._logger,
-                "live.transport_close_failed",
+                "provider.close_failed",
+                provider=self.PROVIDER_NAME,
+                phase="transport",
                 detail=failure_detail(e, literals=self._secret_literals()),
                 level=logging.WARNING,
             )

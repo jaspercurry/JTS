@@ -436,7 +436,7 @@ async def test_a_stop_racing_an_in_flight_open_is_not_an_outage(monkeypatch):
 
 @pytest.mark.parametrize("close_sec", [0.0, 0.3])
 async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
-    monkeypatch, close_sec,
+    monkeypatch, caplog, close_sec,
 ):
     """`stop()` returns inside the close bound, whatever the dial does.
 
@@ -446,7 +446,13 @@ async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
     spends one cancel on the release, so the bound has to hold wherever
     that cancel lands: on the lock itself, or — with a transport whose
     unwind is slow — inside the close the release runs first.
+
+    The cancellation that produces `provider.close_failed phase=release`
+    must not also swallow `provider.turn_ended`: `_log_release()` runs
+    synchronously before the awaited `_on_turn_released`, so the turn
+    still leaves a record even when that await is where the cancel lands.
     """
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(openai_live_session, "SESSION_OPEN_BUDGET_SEC", 5.0)
     # The release bound fires inside the slow unwind; the base bound is
     # both the close's own ceiling and the release's wait for the lock.
@@ -467,6 +473,8 @@ async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
     assert conn._state is ConnectionState.CLOSED
     # The socket is still handed to its own unwind on the way out.
     assert socket.exits == 1
+    assert event_fields(caplog, "provider.close_failed")["phase"] == "release"
+    assert event_fields(caplog, "provider.turn_ended")["provider"] == "openai_live"
     release.set()
     with pytest.raises(RuntimeError):
         await acquire
@@ -493,7 +501,8 @@ async def test_quiet_deltas_play_only_while_the_answer_is_running(
         # Quiet never counts as an answer, whether it is played or not.
         assert turn.chunks_received() == 1
         assert turn.last_chunk_at() == audible_at
-    fields = event_fields(caplog, "live.turn_audio")
+    fields = event_fields(caplog, "provider.turn_ended")
+    assert fields["provider"] == "openai_live"
     assert int(fields["chunks_received"]) == 1
     assert int(fields["quiet_played"]) == played
     assert int(fields["quiet_discarded"]) == discarded
