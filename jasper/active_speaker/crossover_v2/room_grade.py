@@ -2,16 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Grade one seat-cube median against flat, band by band, and disclose drift.
-
-The median document is the seat cube's answer: the median deviation from the
-room target across the seats, the population spread at each bin, and the
-ceiling the room correction was fitted to. Reading it is
-:mod:`.room_prescription`'s — the door that computes a prescription's limits
-from the same document — so a median this grade accepts is exactly one that
-door would prescribe against. This module turns that value into three numbers
-per band and, when an incumbent median is handed in beside it, the same three
-numbers of the incumbent and the RMS delta between them.
+"""Grade a seat-cube median and disclose drift against its incumbent.
 
 Nothing here decides anything. ``regressed`` is a DISCLOSURE: a measured
 regression can restore the incumbent through the doctrine's own path
@@ -134,8 +125,11 @@ def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, An
         raw = evidence.get("basis")
         return {**(raw if isinstance(raw, Mapping) else {}),
                 "n_positions": value.n_positions, "pose_keys": evidence.get("pose_keys")}
-    return compare_capture_basis(basis(median), basis(incumbent),
-                                 required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"))
+    return compare_capture_basis(
+        basis(median), basis(incumbent), required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"),
+        # Aux1 changes the loudness response, so it cannot be normalised away.
+        exempt=("level_db", "program_id"),
+    )
 
 
 def _support(median: RoomMedian) -> tuple[float, float]:

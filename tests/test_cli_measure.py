@@ -81,11 +81,6 @@ def test_direct_driver_capture_refuses_lf_summed_band_override():
     assert caught.value.reason == REFUSE_SPEC_INVALID
 
 
-# --------------------------------------------------------------------------- #
-# the flag layer
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "argv",
     [
@@ -258,11 +253,6 @@ def test_a_preview_that_is_not_staged_refuses_before_the_gate_is_reached(
     assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY
 
 
-# --------------------------------------------------------------------------- #
-# one whole run
-# --------------------------------------------------------------------------- #
-
-
 def _declaration() -> BoxDeclaration:
     from jasper.active_speaker.branch_chain import sections_by_role
 
@@ -361,10 +351,15 @@ def speaker(tmp_path, monkeypatch):
 
     real_open_bundle = bundles.open_bundle
 
+    def _capture(**kwargs):
+        capture.read_loudness_volume_db = kwargs["read_loudness_volume_db"]
+        return capture
+
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
+    capture_factory.side_effect = _capture
     monkeypatch.setattr(wired, "WiredStimulusCapture", capture_factory)
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",

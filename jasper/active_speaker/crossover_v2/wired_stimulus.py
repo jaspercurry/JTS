@@ -1,22 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""One wired recording placed in a bundle, and one annotated take record.
-
-The capture kernel itself — the answer type, the minter, the recorder factory
-and the capture budget — is the LEAF's
-(:mod:`jasper.audio_measurement.wired_capture`), so the bass bench and the CLI
-doors reach it without importing this package. What stays here is what needs
-the engine: placing the raw bytes in a bundle's artifact registry, and the
-play-seam capture half that drives the recorder around a program.
-"""
+"""Bundle placement and record annotation over the shared wired capture kernel."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
@@ -27,6 +17,8 @@ from jasper.audio_measurement.playback import (
     WavPlaybackCancelledBeforeSpawn,
 )
 from jasper.log_event import log_event
+from jasper.dsp_apply import _maybe_call
+from jasper.json_fields import finite_float
 from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (
@@ -37,8 +29,7 @@ from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.wired_capture import (
     WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
     WiredCaptureError, WiredMicDevice, WiredSplCeilingExceeded, WiredSplMonitor,
-    make_wired_recorder,
-    mint_wired_answer,
+    make_wired_recorder, mint_wired_answer,
 )
 
 from .program_transaction import StimulusCaptureError, StimulusCaptureStopped
@@ -89,6 +80,7 @@ class WiredStimulusCapture:
     recorder_factory: Callable[[int, float], Any] | None = None
     setup_reference: Callable[[], Mapping[str, Any] | None] | None = None
     spl_monitor: WiredSplMonitor | None = None
+    read_loudness_volume_db: Callable[[], float | None | Awaitable[float | None]] | None = None
     _pending: list[WiredCaptureAnswer] = field(default_factory=list)
 
     async def around(self, play: Callable[[], Awaitable[None]], *, program: Any) -> str:
@@ -230,25 +222,30 @@ class CapturedRecordStore:
     after_bank: Callable[[Mapping[str, Any], str], None] | None = None
 
     async def bank(self, record: Mapping[str, Any]) -> str:
-        answer = self.capture.take_answer()
-        return await self.bank_answer(record, answer)
+        return await self.bank_answer(record, self.capture.take_answer())
 
     async def bank_answer(self, record: Mapping[str, Any], answer: Any) -> str:
         metadata = await asyncio.to_thread(self.enrich, answer, record) if self.enrich else {}
         # Analysis owns pose/attempt identity. Engine facts name what actually played.
-        payload = {**metadata, **record}
-        for name in ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt"):
-            if name in metadata:
-                payload[name] = metadata[name]
+        payload = {**metadata, **record, **{name: metadata[name] for name in
+            ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt") if name in metadata}}
+        error = ""
+        try:
+            loudness = await _maybe_call(getattr(self.capture, "read_loudness_volume_db", None))
+        except Exception as exc:  # noqa: BLE001
+            loudness, error = None, type(exc).__name__
+        payload["loudness_volume_db"] = finite_float(loudness)
+        if payload["loudness_volume_db"] is None:
+            log_event(logger, "active_speaker.capture_loudness_unknown", level=logging.WARNING,
+                      take_id=payload.get("take_id"), error_type=error,
+                      reason="read_failed" if error else "unavailable" if loudness is None else "invalid_value")
         if answer is not None:
-            payload.update({
-                **({"capture_integrity": answer.capture_integrity} if answer.capture_integrity else {}),
-                **({"capture_device": answer.device} if answer.device else {}),
-                **({"capture_setup": answer.setup} if answer.setup else {}),
-                "wav_path": answer.wav_path, "wav_sha256": answer.wav_sha256,
-                "wav_bytes": len(answer.wav),
-                **({"program": answer.program} if getattr(answer, "program", None) else {}),
-            })
+            for key, attr in (("capture_integrity", "capture_integrity"), ("capture_device", "device"),
+                              ("capture_setup", "setup"), ("program", "program")):
+                if value := getattr(answer, attr, None):
+                    payload[key] = value
+            payload.update(wav_path=answer.wav_path, wav_sha256=answer.wav_sha256, wav_bytes=len(answer.wav))
+        payload["program_id"] = (payload.get("program") or {}).get("program_id")
         record_id = await self.inner.bank(payload)
         if self.after_bank:
             await asyncio.to_thread(self.after_bank, payload, record_id)

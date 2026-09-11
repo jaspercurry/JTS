@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room grade: a seat-cube median read into bands, and drift disclosed.
-
-The median document comes from ``tests/room_median_fixture.py`` — it is the
-seat-cube view's artifact, not this one's — and is read through the room
-door's own reader, so what this suite grades is what that door prescribes
-against.
-"""
+"""Room grades and comparison disclosures from the shared median fixture."""
 
 from __future__ import annotations
 
@@ -107,9 +101,6 @@ def test_the_grade_is_the_fixture_arithmetic_below_the_ceiling():
     assert [(row["lo_hz"], row["hi_hz"]) for row in artifact["bands"]] == list(BAND_EDGES_HZ)
     assert [row["n_bins"] for row in artifact["bands"]] == list(BAND_BINS)
     assert [row["spread_db"] for row in artifact["bands"]] == [SPREAD_DB] * 3
-    # The dip is the largest excursion in the lowest band; the two bands above
-    # it hold ripple alone, which is what the rungs above the ceiling being
-    # excluded looks like from here.
     assert [row["max_db"] for row in artifact["bands"]] == [
         abs(DIP_DB), RIPPLE_DB[1], RIPPLE_DB[2],
     ]
@@ -143,8 +134,6 @@ def test_a_band_that_moved_the_wrong_way_is_disclosed_both_ways(
             row["rms_db"] - row["incumbent_rms_db"]
         )
         assert row["regressed"] is (row["delta_rms_db"] > 0.0)
-    # The band above both splits is untouched between the two documents, so it
-    # is the one that must read as neither improved nor regressed.
     assert artifact["bands"][2]["delta_rms_db"] == pytest.approx(0.0)
     assert artifact["bands"][2]["incumbent_spread_db"] == SPREAD_DB
 
@@ -191,11 +180,17 @@ def test_comparison_uses_only_common_frequency_support():
     assert top["delta_rms_db"] == pytest.approx(0.0, abs=1e-12)
 
 
-def test_comparison_aligns_a_whole_graph_level_shift_once():
-    document = room_median_document()
+@pytest.mark.parametrize("level,program,disclosed", [
+    (-24.0, "changed-gains", "mismatched_fields"), (None, None, "unknown_fields"),
+])
+def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclosed):
+    document = _comparison_document(graph="candidate")
     shifted = {
         **document,
         "median_db": [value + 6.0 for value in document["median_db"]],
+        "evidence": {**document["evidence"], "basis": {
+            **document["evidence"]["basis"], "level_db": level, "program_id": program,
+        }},
     }
 
     artifact = grade_room_median(
@@ -203,6 +198,9 @@ def test_comparison_aligns_a_whole_graph_level_shift_once():
         incumbent=read_room_median(document),
     ).to_dict()
 
+    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["incompatible_fields"] == []
+    assert set(artifact["comparison"][disclosed]) == {"level_db", "program_id"}
     assert artifact["comparison"]["level_alignment_db"] == pytest.approx(-6.0)
     assert artifact["comparison"]["level_reference_db"] == pytest.approx(
         float(np.median(document["median_db"]))
@@ -222,6 +220,7 @@ def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
             "side": side,
             "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
             "level_db": -30.0,
+            "loudness_volume_db": -30.0, "program_id": "program",
             "stimulus_dbfs": -12.0,
             "stimulus_wav_sha256": "program",
             "stimulus_peak_dbfs": -12.0,
@@ -272,6 +271,7 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
 
 
 @pytest.mark.parametrize(("changed_field", "change"), [
+    ("loudness_volume_db", lambda document: document["evidence"]["basis"].update(loudness_volume_db=-24)),
     ("pose_keys", lambda document: document["evidence"].update(
         pose_keys=["different", *document["evidence"]["pose_keys"][1:]],
     )),

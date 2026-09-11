@@ -32,6 +32,8 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
         "capture_device": {k: device.get(k) for k in ("card", "usb_id", "model_key", "pcm", "channel_selected")} if device else None,
         "level_db": provenance.get("session_volume_db") if provenance.get("session_volume_db") is not None else record.get("level_db"),
         "stimulus_dbfs": record.get("stimulus_dbfs"),
+        "program_id": record.get("program_id", (record.get("program") or {}).get("program_id")),
+        "loudness_volume_db": record.get("loudness_volume_db"),
         "stimulus_wav_sha256": stimulus.get("wav_sha256"),
         "stimulus_peak_dbfs": stimulus.get("peak_dbfs"),
         "gating_applied": record.get("gating_applied"),
@@ -43,7 +45,7 @@ GRAPH_FIELDS = (
 )
 CAPTURE_FIELDS = (
     "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
-    "stimulus_peak_dbfs", "gating_applied",
+    "stimulus_peak_dbfs", "gating_applied", "program_id", "loudness_volume_db",
 )
 
 
@@ -65,22 +67,23 @@ def compare_capture_basis(
     now: Mapping[str, Any], was: Mapping[str, Any], *,
     interventions: Sequence[str] = GRAPH_FIELDS,
     required: Sequence[str] = CAPTURE_FIELDS,
+    exempt: Sequence[str] = (),
 ) -> dict[str, Any]:
     changed = [
         field for field in interventions
         if field in now and field in was and now.get(field) != was.get(field)
     ]
     incompatible: list[str] = []
+    mismatched: list[str] = []
     unknown: list[str] = []
     for field in required:
         left, right = now.get(field), was.get(field)
         if left is None or right is None:
             unknown.append(field)
         elif left != right:
-            incompatible.append(field)
+            (mismatched if field in exempt else incompatible).append(field)
 
-    # New captures carry this per-take resolution. Old medians have only the
-    # reference/applied pair; those remain usable, with their missing fact named.
+    # Legacy medians carry only the calibration reference/applied pair.
     left_calibration = _capture_calibration_identity(now.get("capture_calibration"))
     right_calibration = _capture_calibration_identity(was.get("capture_calibration"))
     if left_calibration is not None and right_calibration is not None:
@@ -101,6 +104,6 @@ def compare_capture_basis(
         ),
         "intervention_fields": sorted(set(changed)),
         "incompatible_fields": sorted(set(incompatible)),
+        "mismatched_fields": sorted(set(mismatched)),
         "unknown_fields": sorted(set(unknown)),
     }
-
