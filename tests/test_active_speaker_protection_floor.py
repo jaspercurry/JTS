@@ -90,6 +90,7 @@ from jasper.active_speaker.test_signal_plan import (
     strictest_crossover_highpass_hz,
 )
 from jasper.output_topology import OutputTopology
+from tests._log_events import event_fields
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -917,10 +918,10 @@ def test_baseline_emit_refuses_a_below_floor_crossover_by_name(caplog) -> None:
 
     # ...and the refusal is never silent. The slug is the machine-readable half:
     # the sentence above may be reworded, this may not.
-    assert "event=active_speaker.emit_gate" in caplog.text
-    assert f"result={EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR}" in caplog.text
-    assert "tweeter_crossover_highpass_hz=2000.0" in caplog.text
-    assert "tweeter_protection_floor_hz=5000.0" in caplog.text
+    fields = event_fields(caplog, "active_speaker.emit_gate")
+    assert fields["result"] == EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR
+    assert fields["tweeter_crossover_highpass_hz"] == "2000.0"
+    assert fields["tweeter_protection_floor_hz"] == "5000.0"
 
 
 def test_baseline_emit_accepts_a_crossover_exactly_at_the_declared_floor() -> None:
@@ -1025,7 +1026,8 @@ def test_the_gate_refuses_a_declared_floor_with_no_readable_crossover_corner(
         _assert_tweeter_crossover_honours_declared_floor(preset)
 
     assert "no crossover corner" in str(excinfo.value)
-    assert f"result={EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR}" in caplog.text
+    fields = event_fields(caplog, "active_speaker.emit_gate")
+    assert fields["result"] == EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR
 
 
 def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose(
