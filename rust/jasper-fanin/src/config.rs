@@ -26,14 +26,13 @@ use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 /// `period_frames % RING_SLOT_FRAMES == 0` config guard is the drift catch.
 pub use jasper_ring::RING_SLOT_FRAMES;
 
-/// The ring's `n_slots` bounds (Ring A). Mirrors `jasper_ring::MIN_N_SLOTS` /
-/// `MAX_N_SLOTS`; the ring header validates the same range at attach. A present
-/// out-of-range value FAILS LOUD here (`Config::from_env` bails) — Python's
-/// `fanin_coupling.resolve_ring_slots` raises on the same range, so the two
-/// normalizers agree on the drift axis (unset => default 2; out-of-range =>
-/// error on BOTH sides, never a silent clamp).
-pub const RING_SLOTS_MIN: u32 = 2;
-pub const RING_SLOTS_MAX: u32 = 16;
+/// The ring's `n_slots` bounds (Ring A), re-exported from the crate that owns
+/// the ring geometry so the header's own validation at attach cannot disagree.
+/// A present out-of-range value FAILS LOUD here (`Config::from_env` bails) —
+/// Python's `fanin_coupling.resolve_ring_slots` raises on the same range, so
+/// the two normalizers agree on the drift axis (unset => default 2;
+/// out-of-range => error on BOTH sides, never a silent clamp).
+pub use jasper_ring::{MAX_N_SLOTS as RING_SLOTS_MAX, MIN_N_SLOTS as RING_SLOTS_MIN};
 
 /// Compile-time render geometry: the defaults `JASPER_FANIN_PERIOD_FRAMES` and
 /// `JASPER_FANIN_SAMPLE_RATE` resolve to. Named because the mixer's

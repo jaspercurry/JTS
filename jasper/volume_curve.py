@@ -19,32 +19,20 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+
+from .sound import settings as sound_settings
+from .volume_floor import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_CEILING_DB,
+    VOLUME_FLOOR_MIN_DB,  # noqa: F401 - re-exported; volume_persistence.py imports it from here
+    normalize_volume_floor_db,
+)
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_VOLUME_FLOOR_DB = -50.0
-VOLUME_CEILING_DB = 0.0
-
-# UI/setting clamp. A floor above -10 dB makes 1% potentially loud; a floor
-# below -60 dB is effectively silence for this product and wastes slider travel.
-VOLUME_FLOOR_MIN_DB = -60.0
-VOLUME_FLOOR_MAX_DB = -10.0
 
 _SETTINGS_FLOOR_LOCK = threading.Lock()
 _SETTINGS_FLOOR_CACHE: tuple[str, int | None, int | None, float] | None = None
 _SETTINGS_FLOOR_WARNING_LOGGED = False
-
-
-def normalize_volume_floor_db(value: Any) -> float:
-    try:
-        floor = float(value)
-    except (TypeError, ValueError):
-        return DEFAULT_VOLUME_FLOOR_DB
-    if floor != floor or floor in (float("inf"), float("-inf")):
-        return DEFAULT_VOLUME_FLOOR_DB
-    floor = min(VOLUME_FLOOR_MAX_DB, max(VOLUME_FLOOR_MIN_DB, floor))
-    return round(floor, 3)
 
 
 def configured_volume_floor_db() -> float:
@@ -55,8 +43,6 @@ def configured_volume_floor_db() -> float:
     """
     global _SETTINGS_FLOOR_CACHE, _SETTINGS_FLOOR_WARNING_LOGGED
     try:
-        from .sound import settings as sound_settings  # lazy: cycle
-
         settings_path = sound_settings.resolve_settings_path(None)
         signature: tuple[str, int | None, int | None]
         try:

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from ..atomic_io import CONFIG_FILE_MODE, atomic_write_json
-from ..volume_curve import (
+from ..volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_FLOOR_MAX_DB,
     VOLUME_FLOOR_MIN_DB,

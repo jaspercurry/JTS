@@ -315,6 +315,9 @@ def check_fanin_asound_wiring() -> CheckResult:
             reason=drift_reason,
         )
 
+    # REMOVAL CONDITION (see deploy/lib/install/retirements.sh's matching
+    # note): drop this WARN once no Pi still carries
+    # /etc/asound.conf.dmix-mode-backup either.
     stale_state = Path("/var/lib/jasper/audio_topology.env")
     if stale_state.exists():
         return CheckResult(

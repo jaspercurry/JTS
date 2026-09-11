@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Assistant-audio playout: the fan-in TTS IPC client."""
+
 from __future__ import annotations
 
 import asyncio

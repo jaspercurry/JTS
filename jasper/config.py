@@ -14,6 +14,16 @@ from . import volume_persistence as _volume_persistence
 from .accounts import legacy_cache_path, registry_path
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
+from .location_state import (
+    TRANSIT_DISPLAY_NAME_ENV,
+    TRANSIT_LAT_ENV,
+    TRANSIT_LON_ENV,
+    WEATHER_DEFAULT_LOCATION_ENV,
+    WEATHER_DISPLAY_NAME_ENV,
+    WEATHER_LAT_ENV,
+    WEATHER_LON_ENV,
+    WEATHER_UNITS_ENV,
+)
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
@@ -461,13 +471,13 @@ class Config:
         # other devices reach this speaker?" — read first so URL
         # defaults below can derive from it.
         hostname = resolve_hostname()
-        weather_default_location = _env("JASPER_DEFAULT_LOCATION", "").strip()
-        weather_default_lat = _env_optional_float("JASPER_WEATHER_LAT")
-        weather_default_lon = _env_optional_float("JASPER_WEATHER_LON")
-        weather_default_display_name = _env("JASPER_WEATHER_DISPLAY_NAME", "").strip()
+        weather_default_location = _env(WEATHER_DEFAULT_LOCATION_ENV, "").strip()
+        weather_default_lat = _env_optional_float(WEATHER_LAT_ENV)
+        weather_default_lon = _env_optional_float(WEATHER_LON_ENV)
+        weather_default_display_name = _env(WEATHER_DISPLAY_NAME_ENV, "").strip()
         if weather_default_lat is None and weather_default_lon is None:
-            transit_lat_raw = os.environ.get("JASPER_TRANSIT_LAT", "").strip()
-            transit_lon_raw = os.environ.get("JASPER_TRANSIT_LON", "").strip()
+            transit_lat_raw = os.environ.get(TRANSIT_LAT_ENV, "").strip()
+            transit_lon_raw = os.environ.get(TRANSIT_LON_ENV, "").strip()
             if transit_lat_raw and transit_lon_raw:
                 try:
                     weather_default_lat = float(transit_lat_raw)
@@ -478,7 +488,7 @@ class Config:
                 else:
                     if not weather_default_display_name:
                         weather_default_display_name = _env(
-                            "JASPER_TRANSIT_DISPLAY_NAME", "",
+                            TRANSIT_DISPLAY_NAME_ENV, "",
                         ).strip()
         if not weather_default_display_name:
             weather_default_display_name = weather_default_location
@@ -816,7 +826,7 @@ class Config:
             weather_default_lat=weather_default_lat,
             weather_default_lon=weather_default_lon,
             weather_default_display_name=weather_default_display_name,
-            weather_units=_env("JASPER_WEATHER_UNITS", "celsius"),
+            weather_units=_env(WEATHER_UNITS_ENV, "celsius"),
             # (Transit — subway / bus / Citi Bike — is no longer parsed here:
             # each jasper.transit provider reads its own JASPER_SUBWAY_* /
             # JASPER_BUS_* / JASPER_CITIBIKE_* keys in build_client(env).)

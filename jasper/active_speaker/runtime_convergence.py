@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import (
+    PARKED_MUTED_STATUS,
     SafeGraphDecision,
     apply_safe_graph_decision_to_statefile,
     build_parked_muted_graph,
@@ -284,7 +285,7 @@ async def _converge_committed_topology(
     # must make the proved parked path durable through Camilla's websocket. The
     # synchronous reconciler that follows can then derive lanes from the same
     # final state that will survive a restart, rather than the pre-reset path.
-    if decision.status == "parked_muted":
+    if decision.status == PARKED_MUTED_STATUS:
         try:
             materialise_safe_graph_decision(decision, topology=topology)
             applied = bool(

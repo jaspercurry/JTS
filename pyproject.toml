@@ -440,7 +440,7 @@ layers = [
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : enhanced_aec : route_latency : volume_diagnostics",
   "aec_engines : bluealsa_probe : identity.speaker_name : identity.speaker_name_discovery : mics : usb_network : usbgadget : xvf",
   "airplay_mode : airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
-  "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : percentiles : platform : secret_redaction : service_units : shell_env : transition_log : watchdog",
+  "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : percentiles : platform : secret_redaction : service_units : shell_env : transition_log : volume_floor : watchdog",
 ]
 exhaustive = true
 exhaustive_ignores = [

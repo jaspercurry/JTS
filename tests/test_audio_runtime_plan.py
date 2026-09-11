@@ -59,7 +59,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     TRANSPORT_DAC_CONTENT_RING,
     TRANSPORT_OFF_RING,
-    coupling_capture_kwargs_from_env,
+    capture_kwargs_for_coupling,
 )
 
 
@@ -879,7 +879,7 @@ def test_bitperfect_route_is_declared_but_inactive():
 
 def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
     base = {"playback_pipe_path": None}
-    coupling = coupling_capture_kwargs_from_env()
+    coupling = capture_kwargs_for_coupling()
 
     merged = apply_capture_precedence(
         base,
@@ -937,7 +937,7 @@ def test_capture_half_is_one_owner_shared_by_both_sink_owning_callers():
     """
     from jasper.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
 
-    full = coupling_capture_kwargs_from_env()
+    full = capture_kwargs_for_coupling()
     assert set(CAPTURE_HALF_KEYS) == {"capture_device", "capture_format"}
     assert set(capture_half(full)) == set(CAPTURE_HALF_KEYS)
     # No coercion: the resolver's values cross unchanged, so a future type change

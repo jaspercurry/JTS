@@ -1,9 +1,11 @@
 # ADR-0141: outputd parks out-of-band rather than riding its restart limit to a reboot
 
 - **Date:** 2026-08-26
-- **Status:** Accepted (ratified on the 2026-06-22 output-side repair and the
-  content-lane park that followed; recorded here when
-  HANDOFF-hotplug-resilience.md was trimmed to its operational spine)
+- **Status:** Superseded by
+  [ADR-0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md)
+  (accepted 2026-06-22 on the output-side repair and the content-lane park
+  that followed; recorded here when HANDOFF-hotplug-resilience.md (retired,
+  see ADR-0199) was trimmed to its operational spine)
 
 ## Context
 

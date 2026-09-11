@@ -135,7 +135,7 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     # no snapserver/snapclient, which would otherwise fail-close the precheck).
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     # Nothing in the precheck reads a coupling token any more: ADR-0100 left one
-    # transport, so `coupling_capture_kwargs_from_env` answers the ring
+    # transport, so `capture_kwargs_for_coupling` answers the ring
     # unconditionally.
 
 

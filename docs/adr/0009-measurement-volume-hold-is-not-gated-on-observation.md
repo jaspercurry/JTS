@@ -14,8 +14,9 @@ because they are diagnostics.
 The rule that the volume hold is *not* one of those lives in one closure's
 docstring, `jasper/web/correction_crossover_v2.py:5672-5684`. The drift-refusal
 *mechanism* is documented (`docs/HANDOFF-crossover-measurement-v2.md:3819`,
-`docs/HANDOFF-volume.md:689`); the forensics-versus-safety-ledger distinction,
-and the "not gated on `observing`" rule it produces, are not.
+`docs/HANDOFF-volume.md:689`; both retired, see ADR-0199); the
+forensics-versus-safety-ledger distinction, and the "not gated on
+`observing`" rule it produces, are not.
 
 This ADR extracts it before the code moves
 (`docs/REFACTOR-TUNING-2026-08.md` §0 rule 1, §6 R7). The refactor stands up a

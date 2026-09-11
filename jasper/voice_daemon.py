@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""The wake -> LLM loop: ``WakeLoop`` is the sole consumer of the primary mic."""
+
 from __future__ import annotations
 
 import asyncio

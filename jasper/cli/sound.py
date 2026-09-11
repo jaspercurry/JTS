@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     # neither of which pre-sources those files — sees the persisted
     # chunksize / target-level keys the emit consults from the live env. The
     # coupling TOKEN itself does not depend on this hydration:
-    # coupling_capture_kwargs_from_env() resolves the ring devices
+    # capture_kwargs_for_coupling() resolves the ring devices
     # unconditionally (ONE transport, ADR-0100) and reads its wire format
     # FILE-FRESH (read_declared_ring_wire_format, not os.environ), so even
     # an un-hydrated CLI run resolves the same ring kwargs. setdefault
