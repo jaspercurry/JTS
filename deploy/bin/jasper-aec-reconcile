@@ -1610,14 +1610,12 @@ restart_voice() {
     # and it is the only axis this reconciler owns.
     clear_voice_input_absent
     if ! voice_provider_configured; then
-        # The provider axis belongs to the daemon. Config.from_env raises on
-        # run()'s first statement and jasper-voice speaks voice_not_set_up
-        # before exiting 78 — a code jasper-voice.service lists in both
-        # SuccessExitStatus and RestartPreventExitStatus, so that park neither
-        # loops nor spends StartLimitBurst. A `disable --now` here pre-empted
-        # the cue non-negotiable 6 owes; a restart would only re-park the
-        # daemon on every hot-plug. Leave the unit enabled and untouched so
-        # its own start is what speaks.
+        # jasper-voice owns this axis: Config.from_env raises on run()'s first
+        # statement, the daemon speaks voice_not_set_up, and exit 78 is in the
+        # unit's SuccessExitStatus AND RestartPreventExitStatus, so the park
+        # neither loops nor spends StartLimitBurst. A `disable --now` here took
+        # that cue away (non-negotiable 6); a restart would only re-park the
+        # daemon on every hot-plug. Leave the unit enabled and untouched.
         log "event=aec_reconcile.voice_provider_unset action=none owner=jasper-voice.service"
         reset_failed_units jasper-voice.service
         return

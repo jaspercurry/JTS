@@ -4046,15 +4046,20 @@ def test_a_restart_trigger_the_env_test_cannot_see_still_restarts_voice(
 def test_a_provider_that_goes_away_leaves_a_running_daemon_alone(
     tmp_path: Path,
 ) -> None:
-    """voice_provider.env is not in jasper.env, so a provider that went away is
-    invisible to the env change test — and that is the right answer.
+    """A settled box whose provider is blanked under a running daemon.
 
-    The daemon froze its config at start and is still hearing. Stopping it
-    takes the household's assistant away with no cue, and a restart only
-    re-parks it; either way the announcement belongs to the daemon's own next
-    start, which speaks voice_not_set_up before exiting 78.
+    voice_provider.env is not in jasper.env, so the change gate cannot see
+    this — and that is the right answer. The daemon froze its config at start
+    and is still hearing; taking it down would cost the household its
+    assistant with no cue, and a restart would only park it. The announcement
+    belongs to the daemon's own next start, which speaks voice_not_set_up
+    before exiting 78.
     """
-    _armed_chip_aec_box(tmp_path)
+    _stage(tmp_path, "Array", profile="custom", channels=6)
+    first = _run_reconcile(tmp_path, "--reason", "install")
+    assert first.returncode == 0, first.stderr
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path), first.stderr
+    _clear_systemctl_log(tmp_path)
     (tmp_path / "voice_provider.env").write_text("JASPER_VOICE_PROVIDER=\n")
 
     result = _run_reconcile(tmp_path, "--reason", "systemd")
@@ -4063,7 +4068,7 @@ def test_a_provider_that_goes_away_leaves_a_running_daemon_alone(
     commands = _systemctl_log(tmp_path)
     assert VOICE_RESTART_CMD not in commands
     assert "disable --now jasper-voice.service" not in commands
-    assert "stop jasper-voice.service" not in commands
+    assert "event=aec_reconcile.voice_restart_skipped" in result.stderr
 
 
 def test_a_bond_and_an_unbond_both_restart_the_leaders_voice(
