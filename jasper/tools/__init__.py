@@ -215,24 +215,17 @@ class ToolDefinition:
     # Tools whose args carry close-to-verbatim user requests opt out so
     # the start line still shows shape without household utterances.
     log_args: bool = True
-    # Optional model-facing description override. When None (default),
-    # the serializers emit the rich `description`. Set via
-    # @tool(llm_description="...") or direct ToolDefinition construction
-    # to send the model a SHORTER text than the engineer-facing description.
-    # The rich description stays the human source of truth; the
-    # model-facing text — this override when set, else the rich description
-    # — is what BOTH the serializers and the manifest's `description` emit.
+    # Optional model-facing description override — a SHORTER text than the
+    # engineer-facing `description`. None (default) sends the model the
+    # full description. See `default_model_facing_description`.
     llm_description: str | None = None
     # User-edited override loaded from /var/lib/jasper/tool_prompt_overrides.json.
     # This takes precedence over the code default at runtime, but the code
     # default remains available for UI diff/reset and docs.
     user_description_override: str | None = None
-    # Catalog facet for the future tools UI / marketplace: free-form tags
-    # like ("transit", "nyc", "subway") used to sort/filter/search tools.
-    # NOT sent to the model (never in function_declarations/openai_tools —
-    # zero token cost); emitted only in to_manifest_entry so the catalog
-    # can group by it. The transit city is a label here, not a first-class
-    # CityPack — see docs/tool-platform-plan.md.
+    # Catalog facet for the future tools UI / marketplace (never sent to
+    # the model — zero token cost). See `tool()`'s `labels` param and
+    # docs/tool-platform-plan.md.
     labels: tuple[str, ...] = ()
     # Prompt-injection risk category. DECLARATIVE metadata for the planned
     # tool store's policy/permission layer — NOT yet wired to runtime
@@ -652,11 +645,8 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     `@tool(...)` is sugar for a `ToolDefinition` plus a `PythonExecutor`.
     The full cleaned docstring becomes the rich `description`; the
     LLM-facing description is either a shorter `llm_description` override
-    or that full docstring. When-to-call guidance, response shape,
-    voice-answer style, and conditional output rules must live in the text
-    the model sees. Engineer-only notes (dev TODOs, implementation details)
-    belong in `#` comments or the module docstring, not in the tool's
-    function docstring.
+    or that full docstring (see the module docstring for what belongs in
+    each).
 
     This does NOT validate or coerce the tool's return shape. The
     JTS upstream-failure contract (a tool returns

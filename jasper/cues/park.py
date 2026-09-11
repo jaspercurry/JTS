@@ -4,13 +4,9 @@
 
 """Speak one cue from a daemon that is about to park, then let it exit.
 
-A park holds the unit down (`RestartPreventExitStatus`), so a park on a
-wake-blocking fault is a deaf speaker until someone acts — the announcement
-AGENTS.md non-negotiable 6 requires. The daemons that park (jasper-voice's
-boot checks, jasper-aec-bridge's permanent faults) hit those faults before
-they own a cue manager, or never own one at all, so this rebuilds the minimum
-to speak: a `Config`-less manager from the environment over a `TtsPlayout` on
-the fan-in TTS socket. Nothing here reads a microphone or the AEC bridge.
+A park holds the unit down (`RestartPreventExitStatus`), so a wake-blocking
+fault must still announce itself here per AGENTS.md non-negotiable 6.
+Nothing here reads a microphone or the AEC bridge.
 """
 from __future__ import annotations
 
