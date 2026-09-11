@@ -30,6 +30,7 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     _camilla_port: int
     _get_op: Any
     _ha_status_cache: Any
+    _install_profile: Any
     _mute_set_op: Any
     _mute_toggle_op: Any
     _observe_op: Any

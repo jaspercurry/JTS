@@ -35,14 +35,24 @@ from ...fanin.latency_mode import (
     LatencyApplyError,
     apply_requested_mode,
     normalize_mode,
+    options as _usb_latency_options,
+    read_state as _read_usb_latency_state,
 )
 from ...install_profile import system_capabilities_for_profile
-from ...local_sources import local_source_park_units
+from ...local_sources import (
+    local_source_audio_refresh_units,
+    local_source_park_units,
+)
 from ...log_event import log_event
+from ...platform.uds import (
+    local_status_json,
+    mux_socket_command,
+    voice_socket_command,
+)
 from ...service_units import JASPER_VOICE_SERVICE
+from .. import aec_endpoints
 from .. import debug_control
 from .. import restart_broker
-from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
 from . import peering as _peering
@@ -75,7 +85,7 @@ def _diagnostics_unit_in_flight() -> bool:
     per request. A `oneshot` reads `activating` while it runs.
     """
     try:
-        proc = _server._run_unit_systemctl(
+        proc = aec_endpoints._run_unit_systemctl(
             "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
         )
     except (subprocess.SubprocessError, OSError):
@@ -111,7 +121,7 @@ def _start_diagnostics_refresh(
     with _diagnostics_refresh_lock:
         _diagnostics_refresh_started_at = now
     try:
-        proc = _server._run_unit_systemctl(
+        proc = aec_endpoints._run_unit_systemctl(
             "--no-block", "start", "jasper-doctor-json.service",
         )
         error = "" if proc.returncode == 0 else (
@@ -282,6 +292,61 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
+# The one-shot restart-audio action's core/local unit lists (R-055: these
+# used to live in server.py, which never used them itself).
+CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
+LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
+
+_USB_LATENCY_APPLY_GRACE_SEC = 30.0
+_usb_latency_applying: tuple[str, float] | None = None
+
+
+def _mark_usb_latency_applying(mode: str) -> None:
+    global _usb_latency_applying
+    _usb_latency_applying = (mode, time.monotonic() + _USB_LATENCY_APPLY_GRACE_SEC)
+
+
+def _usb_latency_applying_mode() -> str | None:
+    global _usb_latency_applying
+    current = _usb_latency_applying
+    if current is None:
+        return None
+    if current[1] <= time.monotonic():
+        _usb_latency_applying = None
+        return None
+    return current[0]
+
+
+def _safe_usb_latency_state(airplay_health: Any = None) -> dict[str, Any]:
+    global _usb_latency_applying
+    try:
+        applying_mode = _usb_latency_applying_mode()
+        state = _read_usb_latency_state(
+            airplay_health,
+            applying_mode=applying_mode,
+        )
+        if applying_mode is not None and state.get("state") != "applying":
+            if (
+                _usb_latency_applying is not None
+                and _usb_latency_applying[0] == applying_mode
+            ):
+                _usb_latency_applying = None
+        return state
+    except Exception as e:  # noqa: BLE001
+        logger.exception("USB latency state read failed")
+        return {
+            "selected_mode": "low",
+            "applied_mode": None,
+            "effective_mode": None,
+            "state": "error",
+            "detail": "USB latency state could not be read.",
+            "error": str(e),
+            "live_buffer_frames": None,
+            "live_buffer_ms": None,
+            "options": _usb_latency_options(),
+        }
+
+
 class SystemRoutes(ControlHandlerMixin):
     def _transport_park_reader(self) -> Callable[[], dict[str, Any]]:
         """The park-verdict reader for /system/snapshot: the health sampler's
@@ -309,10 +374,13 @@ class SystemRoutes(ControlHandlerMixin):
         try:
             state = self._state_response_cache.get_or_compute(
                 lambda: asyncio.run(
-                    _server._get_state(
+                    state_aggregate._get_state(
                         camilla_host=self._camilla_host,
                         camilla_port=self._camilla_port,
                         voice_socket_path=self._voice_socket_path,
+                        voice_socket_command=voice_socket_command,
+                        mux_socket_command=mux_socket_command,
+                        local_status_json=local_status_json,
                         # shairport's MPRIS PlaybackStatus from the health
                         # sampler that already holds it, so `/state` runs no
                         # `busctl` of its own (ADR-0233 rules 1 and 2).
@@ -370,7 +438,7 @@ class SystemRoutes(ControlHandlerMixin):
         )
         park_reader = self._transport_park_reader()
 
-        install_profile = _server._control_install_profile()
+        install_profile = self._install_profile()
         payload: dict[str, Any] = {
             "build": read_build_info(),
             "transport_park": park_reader(),
@@ -385,7 +453,7 @@ class SystemRoutes(ControlHandlerMixin):
             ),
             "outputd": outputd_status,
             "audio_quality": _safe_audio_quality_state(),
-            "usb_latency": _server._safe_usb_latency_state(airplay_health),
+            "usb_latency": _safe_usb_latency_state(airplay_health),
             "voice_provider": read_active_provider(),
             "speaker_name": state_aggregate._speaker_name_section(),
             "home_assistant": ha_status,
@@ -563,7 +631,7 @@ class SystemRoutes(ControlHandlerMixin):
         # Refresh active renderers without resurrecting sources the
         # household explicitly disabled in /sources/.
         groups = _try_restart_each(
-            _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS, reason="audio_quality",
+            LOCAL_SOURCE_AUDIO_REFRESH_UNITS, reason="audio_quality",
         )
         if groups["failed_units"]:
             self._send_refused(
@@ -620,7 +688,7 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        _server._mark_usb_latency_applying(mode)
+        _mark_usb_latency_applying(mode)
         log_event(
             logger,
             "usb_latency.set",
@@ -662,8 +730,8 @@ class SystemRoutes(ControlHandlerMixin):
             restart_units = units
             action = "restart-voice"
         elif self.path == "/system/restart/audio":
-            restart_units = list(_server.CORE_AUDIO_RESTART_UNITS)
-            try_restart_units = list(_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS)
+            restart_units = list(CORE_AUDIO_RESTART_UNITS)
+            try_restart_units = list(LOCAL_SOURCE_AUDIO_REFRESH_UNITS)
             if parked:
                 # Restart only the units the follower profile keeps
                 # alive — derived from the local-source lifecycle

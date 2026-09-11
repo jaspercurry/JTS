@@ -452,7 +452,6 @@ def test_system_usb_latency_applies_fixed_mode(
 ):
     base, _ = server_with_coordinator
     import jasper.control.handlers.system as system_mod
-    import jasper.control.server as srv_mod
 
     applied: list[str] = []
     marked: list[str] = []
@@ -462,7 +461,7 @@ def test_system_usb_latency_applies_fixed_mode(
         lambda mode: applied.append(mode),
     )
     monkeypatch.setattr(
-        srv_mod,
+        system_mod,
         "_mark_usb_latency_applying",
         lambda mode: marked.append(mode),
     )
@@ -970,7 +969,7 @@ def test_state_voice_wake_legs_flows_from_session_status(
     that pull-through, wake_legs lived in session_status but was absent
     from /state.voice, silently disabling the doctor's runtime check."""
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
         return {
@@ -979,7 +978,7 @@ def test_state_voice_wake_legs_flows_from_session_status(
             "duck_active": False, "music_dbfs": -32.0,
             "wake_legs": ["on", "off", "dtln"],
         }
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+    monkeypatch.setattr(system_mod, "voice_socket_command", fake_status)
 
     status, body = _get(f"{base}/state")
     assert status == 200
@@ -1033,7 +1032,7 @@ def test_state_voice_tool_packs_flows_from_session_status(
     and /state.voice must pull the field through for jasper-doctor's
     check_tool_packs to see runtime truth (a pack that failed to build)."""
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     packs = [
         {"name": "audio", "status": "registered", "tool_count": 5,
@@ -1049,7 +1048,7 @@ def test_state_voice_tool_packs_flows_from_session_status(
             "duck_active": False, "music_dbfs": -32.0,
             "wake_legs": ["on"], "tool_packs": packs,
         }
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+    monkeypatch.setattr(system_mod, "voice_socket_command", fake_status)
 
     status, body = _get(f"{base}/state")
     assert status == 200
@@ -1073,7 +1072,7 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     and to source-level checks that the key is merely present somewhere in
     the module."""
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
         return {
@@ -1082,7 +1081,7 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
             "duck_active": False, "music_dbfs": -32.0,
             "wake_legs": [], "push_to_talk_only": True,
         }
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+    monkeypatch.setattr(system_mod, "voice_socket_command", fake_status)
 
     status, body = _get(f"{base}/state")
     assert status == 200
@@ -1187,7 +1186,7 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
 ):
     """Mux owns the audible source; /state should not fall back to raw
     renderer priority when mux reports an auto winner."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     base, _ = server_with_coordinator
     spotify_state = write_librespot_state(
@@ -1214,7 +1213,7 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
             },
         }
 
-    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
+    monkeypatch.setattr(system_mod, "mux_socket_command", fake_mux_status)
 
     status, body = _get(f"{base}/state")
 
@@ -1227,7 +1226,7 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     monkeypatch, tmp_path,
 ):
     from jasper import volume_diagnostics
-    from jasper.control import server as srv_mod
+    from jasper.control import state_aggregate
 
     spotify_state = write_librespot_state(
         tmp_path / "spotify.env",
@@ -1257,7 +1256,7 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
         context="dispatch_spotify_degraded",
     )
 
-    body = await srv_mod._get_state(
+    body = await state_aggregate._get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path="/nonexistent.sock",
@@ -1281,7 +1280,7 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
     """active_source ranks usbsink above idle but below the named
     renderers — when nothing else is playing and USB is, the field
     surfaces as 'usbsink' so the dashboard renders correctly."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
 
     base, _ = server_with_coordinator
 
@@ -1297,7 +1296,7 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
             }
         return None
 
-    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
+    monkeypatch.setattr(system_mod, "local_status_json", fake_status)
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -1314,7 +1313,7 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
     """Mux selection remains authoritative when fan-in STATUS is unavailable."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.system as system_mod
     base, _ = server_with_coordinator
 
     async def fake_mux_status(*args, **kwargs):
@@ -1325,7 +1324,7 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
             "active_source": "usbsink",
         }
 
-    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
+    monkeypatch.setattr(system_mod, "mux_socket_command", fake_mux_status)
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -1344,12 +1343,12 @@ def test_state_502_when_aggregator_raises(
     """If _get_state itself blows up — not a fail-soft section, but
     something unexpected like a JSON serialization error — the route
     surfaces 502 instead of crashing the server."""
-    import jasper.control.server as srv_mod
+    from jasper.control import state_aggregate
 
     async def boom(**kwargs):  # noqa: ARG001
         raise RuntimeError("aggregator broken")
 
-    monkeypatch.setattr(srv_mod, "_get_state", boom)
+    monkeypatch.setattr(state_aggregate, "_get_state", boom)
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/state")
     assert status == 502
@@ -1358,7 +1357,7 @@ def test_state_502_when_aggregator_raises(
 
 def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
     """Burst polls should collapse to one cross-daemon fan-out."""
-    import jasper.control.server as srv_mod
+    from jasper.control import state_aggregate
 
     started = threading.Event()
     release = threading.Event()
@@ -1371,7 +1370,7 @@ def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
         assert release.wait(timeout=2), "test did not release state aggregate"
         return {"ok": True, "calls": calls}
 
-    monkeypatch.setattr(srv_mod, "_get_state", fake_get_state)
+    monkeypatch.setattr(state_aggregate, "_get_state", fake_get_state)
 
     handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
