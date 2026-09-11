@@ -63,7 +63,7 @@ def _args(*argv: str):
 
 def test_explicit_lf_band_and_spl_ceiling_are_part_of_measure_spec():
     spec = spec_from_args(_args(
-        "--graph-scope", "speaker_tune",
+        "--graph-scope", "candidate", "--candidate-id", "baseline-room",
         "--sweep-band-hz", "20", "20000",
         "--sweep-s", "1.5",
         "--spl-ceiling-db-spl", "80",
@@ -639,7 +639,7 @@ def _specs_file(tmp_path: Path, entries: list[dict[str, Any]]) -> str:
 
 @pytest.mark.parametrize("argv", [
     [],
-    ["--graph-scope", "speaker_tune", "--sweep-band-hz", "20", "20000",
+    ["--graph-scope", "candidate", "--candidate-id", "baseline-room", "--sweep-band-hz", "20", "20000",
      "--sweep-s", "1.5", "--spl-ceiling-db-spl", "80", "--level-dbfs", "-12"],
     ["--polarity", POLARITY_INVERTED, "--inverted-role", "tweeter",
      "--delayed-role", "woofer", "--delay-us", "120", "--position", "-30",
@@ -1051,7 +1051,7 @@ def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
-@pytest.mark.parametrize("scope", ["drivers", "base", "speaker_tune", "candidate"])
+@pytest.mark.parametrize("scope", ["drivers", "candidate"])
 def test_flags_and_batch_defaults_select_the_same_graph_scope(tmp_path, scope):
     args = ["--graph-scope", scope]
     if scope == "candidate":
@@ -1178,14 +1178,14 @@ def _one_pose_walk(**fields: Any) -> Any:
 
 
 @pytest.fixture
-def applied_baseline(monkeypatch):
+def applied_baseline(monkeypatch, tmp_path):
     """An applied Layer-A record matching this speaker, so a SUMMED scope emits.
 
     A walk's summed stop plays a tuning-layer graph rather than the drivers one,
     and that graph is composed from the profile a human already approved for
     these drivers.
     """
-    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker import baseline_profile, candidate_parts, bundles
     from jasper.output_topology import topology_config_fingerprint
     from tests.crossover_v2_fixtures import _fixture_applied_profile
 
@@ -1198,9 +1198,10 @@ def applied_baseline(monkeypatch):
         topology_fingerprint=topology_config_fingerprint(topology),
         playback_device=_declaration().playback_device,
     )
-    monkeypatch.setattr(
-        baseline_profile, "load_applied_baseline_profile_state", lambda *a, **k: applied,
-    )
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda *a, **k: applied)
+    monkeypatch.setattr(candidate_parts, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr(candidate_parts, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
 
 
 @pytest.mark.parametrize("source", ["staged", "path"])
@@ -1355,14 +1356,14 @@ def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsy
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
 
     async def refuse(*args, **kwargs):
-        raise MeasurementGraphRefused("measurement_candidate_room_mismatch", {"candidate": "candidate-1"})
+        raise MeasurementGraphRefused("measurement_candidate_required", {"candidate": "candidate-1"})
 
     monkeypatch.setattr(MeasurementSessionGraph, "install", refuse)
     code = measure.main(["--kind", MEASURE_KIND_BASELINE])
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_REFUSED
     assert payload["status"] == "refused"
-    assert payload["code"] == payload["reason"] == "measurement_candidate_room_mismatch"
+    assert payload["code"] == payload["reason"] == "measurement_candidate_required"
     assert payload["detail"] == {"candidate": "candidate-1"}
-    assert payload["next_action"]["id"] == "apply_matching_room_layer"
+    assert payload["next_action"]["id"] == "select_candidate"
     assert not speaker["played"]

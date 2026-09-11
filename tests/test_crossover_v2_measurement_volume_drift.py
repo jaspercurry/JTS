@@ -681,7 +681,8 @@ def _drive(
     async def run():
         prepared = await playback.compose(spec=MeasureSpec(
             kind="verify" if phase == PHASE_VERIFY else "candidate",
-            graph_scope="speaker_tune" if phase == PHASE_VERIFY else "drivers",
+            graph_scope="candidate" if phase == PHASE_VERIFY else "drivers",
+            candidate_id="baseline" if phase == PHASE_VERIFY else "",
             program_phase=phase,
         ))
         await program_playback.play_program(

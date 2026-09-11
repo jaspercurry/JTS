@@ -39,7 +39,7 @@ def fit_bass_shape(
     sources = []
     first = bass_capture_context(pairs[0][0])
     for before, after in pairs:
-        if before["record"].get("graph_scope") != "room_tune" or after["record"].get("candidate_id") != candidate_id:
+        if not before["record"].get("candidate_id") or after["record"].get("candidate_id") != candidate_id:
             raise ValueError("bass_fit_requires_room_baseline_and_exact_candidate")
         match = compare_bass_takes(before, after, change="candidate")
         context = bass_capture_context(before)

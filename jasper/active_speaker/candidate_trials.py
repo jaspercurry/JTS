@@ -16,15 +16,16 @@ from jasper.json_fields import finite_float
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .measured_crossover_candidate import candidate_trial_scope
+from .crossover_v2.measure_spec import CANDIDATE_SCOPES
 
 
-TUNING_TRIAL_SCOPES = frozenset({"room_candidate", "bass_candidate"})
+TUNING_TRIAL_SCOPES = CANDIDATE_SCOPES - {"candidate_branches"}
 
 
 def tuning_trial_reference(candidate: Any, trial: Mapping[str, Any] | None) -> dict[str, str] | None:
     """Compact durable pointer to the exact captured tuning graph, when present."""
     scope = candidate_trial_scope(candidate)
-    if scope not in TUNING_TRIAL_SCOPES:
+    if not (candidate.room_correction or candidate.bass_extension):
         return None
     record = trial if isinstance(trial, Mapping) else {}
     candidate_id = str(record.get("candidate_id") or "")
@@ -72,13 +73,11 @@ def require_candidate_trial(
 ) -> dict[str, Any] | None:
     """Require a captured full graph for authored candidates; legacy fits need no new proof.
 
-    A trial establishes that these exact settings were captured, not that their
-    acoustic result passed. The graph digest is the installed graph's recorded
-    identity; rebuilding it here would substitute current device configuration.
+    The digest identifies the installed graph, not a fresh rebuild.
     """
     if (
         candidate.analysis.get("measurement_status") != "unmeasured"
-        and candidate_trial_scope(candidate) not in TUNING_TRIAL_SCOPES
+        and not (candidate.room_correction or candidate.bass_extension)
     ):
         return None
     from .commissioning_evidence_store import EVIDENCE_ROOT  # lazy: apply-only evidence reader

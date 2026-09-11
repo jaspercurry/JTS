@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.test_crossover_v2_tuning_scope import banked_program_baseline  # noqa: F401
 
 from jasper.active_speaker import measurement_programs as mp
 
@@ -198,7 +199,7 @@ def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> Non
     }
 
 
-@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "speaker_tune"), ("bass", mp.PURPOSE_BASS, "room_tune")])
+@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "speaker"), ("bass", mp.PURPOSE_BASS, "room")])
 def test_room_and_bass_plans_preserve_their_upstream_layers(program, purpose, scope) -> None:
     cloud = mp.program(program, "cloud")
     quick = mp.program(program, "quick")

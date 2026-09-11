@@ -17,6 +17,7 @@ import textwrap
 import time
 
 import pytest
+from tests.test_crossover_v2_tuning_scope import banked_program_baseline  # noqa: F401
 
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
@@ -1050,7 +1051,7 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
         "regime": REGIME_PER_DRIVER,
         "candidate_id": None,
         "purpose": "speaker",
-        "baseline_scope": "base",
+        "baseline_scope": "preset",
         "prompt": resolve_request(request_for_program(mp.program("baseline", "full")))[0].prompt.text,
     }
     assert body["out"] == str(path)
@@ -1294,7 +1295,7 @@ def test_quick_room_plan_receipt_states_the_capture_and_matching_arm_session(slo
     assert receipt["next"] == "jasper-round open --tier remote"
     assert [s["azimuth_deg"] for s in receipt["stops"]] == [0, -20, 20]
     assert {(s["purpose"], s["baseline_scope"], s["regime"]) for s in receipt["stops"]} == {
-        ("room", "speaker_tune", "summed"),
+        ("room", "speaker", "summed"),
     }
 
 

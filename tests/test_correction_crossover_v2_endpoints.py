@@ -2331,7 +2331,7 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
     assert env["next_action"]["body"] == {"stage": "post_apply"}
 
 
-def _tuning_trial_state(*, reference=None, scope="room_candidate"):
+def _tuning_trial_state(*, reference=None, scope="candidate"):
     fingerprint = "room-candidate-fingerprint"
     return {
         "session_id": "cap_room",
@@ -2349,8 +2349,8 @@ def _tuning_trial_state(*, reference=None, scope="room_candidate"):
 
 
 @pytest.mark.parametrize("scope, receipt_key", [
-    ("room_candidate", "tuning_trial"), ("bass_candidate", "tuning_trial"),
-    ("room_candidate", "room_trial"),
+    ("candidate", "tuning_trial"),
+    ("candidate", "room_trial"),
 ])
 def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatch, scope, receipt_key):
     state = _tuning_trial_state(scope=scope)
@@ -2391,11 +2391,11 @@ def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatc
         )
 
 
-@pytest.mark.parametrize("scope", ["room_candidate", "bass_candidate"])
+@pytest.mark.parametrize("scope", ["candidate"])
 def test_tuning_review_does_not_warn_about_the_unused_speaker_verify_stage(monkeypatch, scope):
     status = {"crossover_v2": {
         "phase": "review",
-        "candidate": {"fingerprint": "room", "trial_scope": scope},
+        "candidate": {"fingerprint": "room", "trial_scope": scope, "program_id": v2host.COMPOSITION_KIND},
     }}
     monkeypatch.setattr(
         v2host, "resolve_conductor_context",
@@ -2413,7 +2413,7 @@ def test_an_invalid_tuning_trial_proof_does_not_close_the_apply(fault):
     if fault == "missing":
         state.pop("tuning_trial")
     elif fault == "wrong":
-        state["tuning_trial"]["graph_scope"] = "candidate"
+        state["tuning_trial"]["graph_scope"] = "candidate_branches"
     else:
         state["tuning_trial"]["candidate_fingerprint"] = "older-candidate"
     v2host.save_v2_state(state)
@@ -6125,7 +6125,7 @@ def test_tuning_apply_persists_the_exact_compiled_trial_without_speaker_prefligh
         room_correction=_room_correction() if program != "bass" else {},
         bass_extension=BASS_EXTENSION if program != "room" else {},
     )
-    scope = "room_candidate" if program == "room" else "bass_candidate"
+    scope = "candidate"
     reviewed = build_baseline_profile_candidate(
         _topology,
         design_draft=load_design_draft(topology=_topology),
@@ -9312,7 +9312,7 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     from jasper.web import correction_setup, correction_handlers
 
     def refuse(*args, **kwargs):
-        raise MeasurementGraphRefused("measurement_candidate_room_mismatch", "candidate-1")
+        raise MeasurementGraphRefused("measurement_candidate_required", "candidate-1")
 
     monkeypatch.setattr(correction_handlers, "_handle_crossover_v2_" + handler_name, refuse)
     handler_cls = correction_setup._make_handler_class(
@@ -9327,6 +9327,6 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     assert 400 <= status < 500
     assert set(body) == {"ok", "code", "next_action", "error"}
     assert body["ok"] is False
-    assert body["code"] == "measurement_candidate_room_mismatch"
+    assert body["code"] == "measurement_candidate_required"
     assert isinstance(body["next_action"], dict)
-    assert body["next_action"]["id"] == "apply_matching_room_layer"
+    assert body["next_action"]["id"] == "select_candidate"

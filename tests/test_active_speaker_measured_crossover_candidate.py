@@ -939,7 +939,7 @@ def test_candidate_room_peqs_are_the_first_declared_sides_filters():
     ) == expected
     assert candidate_room_peqs(candidate) == expected
     assert candidate_room_peqs(_candidate()) == ()
-    assert candidate_trial_scope(candidate) == "room_candidate"
+    assert candidate_trial_scope(candidate) == "candidate"
     assert candidate_trial_scope(_candidate()) == "candidate"
 
 

@@ -3831,20 +3831,6 @@ async def _apply_baseline_profile_locked(
         compile_config=expected_tuning_graph_fingerprint is not None,
     )
     graph_issue = None
-    if isinstance(measured_candidate, MeasuredCrossoverCandidate) and (
-        measured_candidate.room_correction or measured_candidate.bass_extension
-    ):
-        from .measurement_emit import (  # lazy: measurement emission consumes baseline recomposition
-            MeasurementGraphRefused,
-            candidate_upstream_snapshot,
-        )
-        try:
-            candidate_upstream_snapshot(
-                measured_candidate, topology=topology,
-                applied_profile=load_applied_baseline_profile_state(state_target) or {},
-            )
-        except MeasurementGraphRefused as exc:
-            graph_issue = _issue("blocker", exc.reason, str(exc))
     if expected_tuning_graph_fingerprint is not None and str(
         (reviewed_candidate.get("config") or {}).get("sha256") or ""
     )[:16] != expected_tuning_graph_fingerprint:

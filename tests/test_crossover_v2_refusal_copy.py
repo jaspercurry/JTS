@@ -306,13 +306,7 @@ def test_nothing_but_the_flow_declares_the_names_the_flow_owns():
 
 @pytest.mark.parametrize("code", sorted(WALK_REFUSAL_REASONS | {
     "measurement_candidate_required", "measurement_candidate_invalid",
-    "measurement_candidate_no_bass", "measurement_candidate_base_mismatch",
-    "measurement_candidate_tune_mismatch", "measurement_candidate_room_mismatch",
-    "measurement_candidate_bass_scope", "measurement_candidate_room_scope",
-    "measurement_candidate_no_room", "measurement_scope_invalid",
-    "measurement_profile_unavailable", "measurement_graph_unavailable",
-    "measurement_base_mismatch", "measurement_filters_invalid",
-    "measurement_branch_channels", "measurement_corrections_invalid",
+    "measurement_scope_invalid", "measurement_filters_invalid", "measurement_branch_channels",
 }))
 def test_graph_and_walk_refusals_have_household_copy_and_retry_policy(code):
     spec = refusal_copy.REASON_REGISTRY[code]
@@ -321,7 +315,7 @@ def test_graph_and_walk_refusals_have_household_copy_and_retry_policy(code):
     assert spec.retry_budget == 0
 
 
-@pytest.mark.parametrize("code", ["measurement_candidate_room_mismatch", "measurement_unregistered"])
+@pytest.mark.parametrize("code", ["measurement_candidate_required", "measurement_unregistered"])
 def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(code):
     message, action = refusal_copy.refusal_copy_for(code)
     spec = refusal_copy.REASON_REGISTRY.get(code, refusal_copy.REASON_REGISTRY[refusal_copy.REASON_INTERNAL_ERROR])
@@ -329,4 +323,9 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
     assert action == spec.next_action
     if action is not None:
         action["id"] = "changed"
-        assert refusal_copy.refusal_copy_for(code)[1]["id"] == "apply_matching_room_layer"
+        assert refusal_copy.refusal_copy_for(code)[1]["id"] == spec.next_action["id"]
+
+
+@pytest.mark.parametrize("layer", ["base", "tune", "room"])
+def test_upstream_mismatch_reasons_are_retired(layer):
+    assert f"measurement_candidate_{layer}_mismatch" not in refusal_copy.REASON_REGISTRY

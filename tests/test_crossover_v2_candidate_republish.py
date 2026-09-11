@@ -992,8 +992,8 @@ def test_a_tuning_candidate_needs_a_trial_through_its_full_graph(bank, program, 
         room_correction=_room_correction() if program != "bass" else {},
         bass_extension=BASS_EXTENSION if program != "room" else {},
     )
-    scope = "room_candidate" if program == "room" else "bass_candidate"
-    captured_scope = scope if admitted else "candidate"
+    scope = "candidate"
+    captured_scope = scope if admitted else "candidate_branches"
     publish_authored_candidate(child)
     bundle, _path, _wav = _stage_trial(
         bank, {"candidate_id": child.fingerprint, "graph_scope": captured_scope},
@@ -1090,8 +1090,8 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
         ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
         {"woofer": 0, "tweeter": 1}, "null", applied_profile=applied,
     )
-    baseline = yaml.safe_load(compile_tuning_graph(profile, scope="room_tune"))
-    proposed = yaml.safe_load(compile_tuning_graph(profile, scope="bass_candidate", candidate=child))
+    baseline = yaml.safe_load(compile_tuning_graph(profile, candidate=candidate_from_applied_profile(topology, applied, purpose="bass")))
+    proposed = yaml.safe_load(compile_tuning_graph(profile, scope="candidate", candidate=child))
     assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline
     assert applied == original
     assert v2host.load_v2_state() is None
@@ -1138,13 +1138,13 @@ def test_tuning_trial_lookup_skips_an_older_capture_of_a_different_graph(bank):
     publish_authored_candidate(child)
     older, _path, _wav = _stage_trial(bank, {
         "candidate_id": child.fingerprint,
-        "graph_scope": "room_candidate",
+        "graph_scope": "candidate",
         "graph_fingerprint": "0000000000000000",
     })
     _retain_round(bank, older)
     matching, _path, _wav = _stage_trial(bank, {
         "candidate_id": child.fingerprint,
-        "graph_scope": "room_candidate",
+        "graph_scope": "candidate",
         "graph_fingerprint": "0123456789abcdef",
     })
     _retain_round(bank, matching)

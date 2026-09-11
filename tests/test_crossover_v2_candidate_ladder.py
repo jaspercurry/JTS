@@ -94,9 +94,9 @@ def test_explicit_base_graph_remains_in_the_candidate_comparison(tmp_path):
         )
     path, = session_dir.glob("evidence/v1/artifacts/crossover_v2/*/positions/lateral_00_a01.json")
     record = json.loads(path.read_text())
-    record.update(graph_scope="base", graph_fingerprint="a" * 16)
+    record.update(graph_scope="candidate", candidate_id="baseline-fp", graph_fingerprint="a" * 16)
     path.write_text(json.dumps(record))
-    assert _ladder(round_dir)["summary"]["candidates"] == ["base:" + "a" * 16, "cfg-a"]
+    assert _ladder(round_dir)["summary"]["candidates"] == ["baseline-fp", "cfg-a"]
 
 
 def test_the_ladder_compares_only_the_span_both_configs_actually_measured(tmp_path):

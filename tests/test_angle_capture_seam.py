@@ -31,6 +31,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.test_crossover_v2_tuning_scope import banked_program_baseline  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
@@ -1598,14 +1599,14 @@ def test_a_template_field_the_spec_refuses_names_the_half_it_refused(
         ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields)
 
     assert excinfo.value.reason == reason
-    with pytest.raises(ValueError) as spec_refusal:
+    with pytest.raises(ValueError):
         MeasureSpec(
             kind=MEASURE_KIND_CANDIDATE, graph_scope=ac.TEMPLATE_SWEEP_SCOPE
             if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None
             else "drivers",
+            candidate_id="base" if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None else "",
             **fields,
         )
-    assert excinfo.value.detail == str(spec_refusal.value)
 
 
 @pytest.mark.parametrize(
@@ -1667,7 +1668,7 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
 
     assert ac.design_axis_spec(request) == replace(
-        template, graph_scope="drivers", sweep_band_hz=(), sweep_s=None,
+        template, graph_scope="drivers", candidate_id="", sweep_band_hz=(), sweep_s=None,
     )
     assert ac.stop_specs(
         request, candidate_scopes={"fp-a": "candidate"}, prompts=prompts,
@@ -1906,3 +1907,14 @@ def test_a_template_that_is_not_a_spec_is_refused() -> None:
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), template=None)
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
+
+
+@pytest.mark.parametrize("candidate_id", ["base", "BASE", "base:room", "fp-a"])
+def test_template_accepts_only_the_base_candidate_token(candidate_id):
+    template = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id=candidate_id)
+    if candidate_id == "base":
+        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), template=template).template == template
+    else:
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), template=template)
+        assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED

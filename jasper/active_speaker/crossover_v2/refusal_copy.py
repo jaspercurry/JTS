@@ -136,20 +136,9 @@ REASON_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
 
 REASON_MEASUREMENT_CANDIDATE_REQUIRED = "measurement_candidate_required"
 REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
-REASON_MEASUREMENT_CANDIDATE_NO_BASS = "measurement_candidate_no_bass"
-REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH = "measurement_candidate_base_mismatch"
-REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH = "measurement_candidate_tune_mismatch"
-REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH = "measurement_candidate_room_mismatch"
-REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE = "measurement_candidate_bass_scope"
-REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE = "measurement_candidate_room_scope"
-REASON_MEASUREMENT_CANDIDATE_NO_ROOM = "measurement_candidate_no_room"
 REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
-REASON_MEASUREMENT_PROFILE_UNAVAILABLE = "measurement_profile_unavailable"
-REASON_MEASUREMENT_GRAPH_UNAVAILABLE = "measurement_graph_unavailable"
-REASON_MEASUREMENT_BASE_MISMATCH = "measurement_base_mismatch"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
 REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
-REASON_MEASUREMENT_CORRECTIONS_INVALID = "measurement_corrections_invalid"
 REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
@@ -789,75 +778,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": 'select_candidate', "label": 'Select a valid tuning',
                      "href": '/sound/speaker/crossover/'},
     ),
-    REASON_MEASUREMENT_CANDIDATE_NO_BASS: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_NO_BASS, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning has no bass extension to test. Select a tuning with bass extension.',
-        next_action={"id": 'select_bass_candidate', "label": 'Select a bass tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning uses a different speaker setup. Select a tuning made for this setup.',
-        next_action={"id": 'match_candidate_base', "label": 'Match the speaker setup',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning was built on a different speaker tuning. Apply that speaker tuning '
-        'before this measurement.',
-        next_action={"id": 'apply_matching_speaker_tune', "label": 'Apply the matching speaker tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The bass tuning was built on room tuning that is not applied. Apply the room tuning it '
-        'was built on, then measure again.',
-        next_action={"id": 'apply_matching_room_layer', "label": 'Apply the matching room tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE, TEMPLATE_HARD_STOP, 0, "",
-        'This tuning includes bass extension. Select a bass measurement to test all of it.',
-        next_action={"id": 'select_bass_scope', "label": 'Select a bass measurement',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE, TEMPLATE_HARD_STOP, 0, "",
-        'This tuning includes room correction. Select a room measurement to test all of it.',
-        next_action={"id": 'select_room_scope', "label": 'Select a room measurement',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_NO_ROOM: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_NO_ROOM, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning has no room correction to test. Select a tuning with room correction.',
-        next_action={"id": 'select_room_candidate', "label": 'Select a room tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
     REASON_MEASUREMENT_SCOPE_INVALID: ReasonSpec(
         REASON_MEASUREMENT_SCOPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
         'JTS cannot measure the selected tuning layer. Select a supported measurement layer.',
         next_action={"id": 'select_measurement_scope', "label": 'Select a measurement layer',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_PROFILE_UNAVAILABLE: ReasonSpec(
-        REASON_MEASUREMENT_PROFILE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
-        'JTS cannot use the saved speaker setup for this measurement. Check the speaker setup and '
-        'save it again.',
-        next_action={"id": 'speaker_setup', "label": 'Review speaker setup',
-                     "href": '/sound/speaker/'},
-    ),
-    REASON_MEASUREMENT_GRAPH_UNAVAILABLE: ReasonSpec(
-        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
-        'JTS could not prepare the sound path for this measurement. Check the saved speaker setup '
-        'before measuring again.',
-        next_action={"id": 'speaker_setup', "label": 'Review speaker setup',
-                     "href": '/sound/speaker/'},
-    ),
-    REASON_MEASUREMENT_BASE_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_BASE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The saved tuning and the declared speaker setup do not match. Apply a tuning for the '
-        'current setup.',
-        next_action={"id": 'match_applied_base', "label": 'Match the saved speaker setup',
                      "href": '/sound/speaker/crossover/'},
     ),
     REASON_MEASUREMENT_FILTERS_INVALID: ReasonSpec(
@@ -873,13 +797,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'output assignments in speaker setup.',
         next_action={"id": 'speaker_setup', "label": 'Review speaker outputs',
                      "href": '/sound/speaker/'},
-    ),
-    REASON_MEASUREMENT_CORRECTIONS_INVALID: ReasonSpec(
-        REASON_MEASUREMENT_CORRECTIONS_INVALID, TEMPLATE_HARD_STOP, 0, "",
-        'The saved driver tuning has missing or invalid values. Repair the driver tuning before '
-        'measuring again.',
-        next_action={"id": 'repair_driver_tuning', "label": 'Repair the driver tuning',
-                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_REGIME_UNSUPPORTED: ReasonSpec(
         REASON_WALK_REGIME_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",

@@ -284,7 +284,7 @@ class AngleStop:
 #: template's, since :func:`design_axis_spec` and :func:`stop_specs` each replace
 #: it with the scope their capture plays. A template's scope is therefore
 #: derived from its stimulus, never stated.
-TEMPLATE_SWEEP_SCOPE = "base"
+TEMPLATE_SWEEP_SCOPE = "candidate"
 
 
 def _states_summed_sweep(sweep_band_hz: object, sweep_s: object) -> bool:
@@ -323,6 +323,7 @@ def walk_template(**spec_fields: object) -> MeasureSpec:
     try:
         return MeasureSpec(
             graph_scope=TEMPLATE_SWEEP_SCOPE if summed else GRAPH_SCOPE_DRIVERS,
+            candidate_id="base" if summed else "",
             **spec_fields,  # type: ignore[arg-type]
         )
     except (TypeError, ValueError) as exc:
@@ -440,7 +441,7 @@ class AngleCaptureRequest:
                 WALK_TEMPLATE_NOT_ACCEPTED, f"template must be a MeasureSpec, got {self.template!r}",
             )
         stated = [
-            name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
+            name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name) and not (name == "candidate_id" and self.template.candidate_id == "base")
         ]
         if stated:
             raise LateralWalkRefused(
@@ -562,7 +563,7 @@ def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
     return replace(
         request.template,
         kind=MEASURE_KIND_CANDIDATE,
-        graph_scope=GRAPH_SCOPE_DRIVERS,
+        graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
         sweep_band_hz=(),
         sweep_s=None,
     )
@@ -599,20 +600,19 @@ def stop_specs(
             raise ValueError(
                 f"no graph scope resolves for candidate {stop.candidate_id}"
             )
+        from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
         placed.append(replace(
             request.template,
             kind=(
                 MEASURE_KIND_VERIFY
-                if not stop.candidate_id and scope != "base"
+                if not stop.candidate_id and scope != "preset"
                 else MEASURE_KIND_CANDIDATE
             ),
             positions=(stop.angle_deg,),
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
-            candidate_id=stop.candidate_id,
-            graph_scope=(
-                "candidate_branches" if stop.regime == REGIME_BRANCHES else scope
-            ),
+            candidate_id=stop.candidate_id or baseline_candidate_id(stop.purpose),
+            graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
         ))
     return tuple(placed)
 

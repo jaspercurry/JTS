@@ -25,6 +25,7 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
     ProgramAdmissionError,
@@ -655,7 +656,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     graph_yaml = compile_tuning_graph(MeasurementGraphProfile(
         preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
         applied_profile=applied,
-    ), scope="speaker_tune")
+    ), candidate=candidate_from_applied_profile(topology, applied, purpose="room"))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
         session_volume_db=-20.0, fc_hz=2000,
@@ -695,7 +696,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
         assert refusal in admission.refusals
 
 
-@pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate", "candidate_branches"])
+@pytest.mark.parametrize("scope", ["candidate", "candidate_branches"])
 @pytest.mark.parametrize("damage", [
     None, "missing", "wrong_output", "low_corner", "shallow_slope", "gain", "after_limiter",
     "upper_band", "lowpass_slope", "lowpass_missing", "lowpass_wrong_output",
@@ -721,8 +722,7 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         applied_profile=applied,
     )
     text = compile_tuning_graph(
-        measurement, scope="base" if scope == "candidate" else scope,
-        candidate=_trial_candidate(measurement) if scope in {"candidate", "candidate_branches"} else None,
+        measurement, scope=scope, candidate=_trial_candidate(measurement),
     )
     graph = yaml.safe_load(text)
     highpasses = {
@@ -847,7 +847,7 @@ def test_dynamic_bass_admission_proves_graph_and_reserves_its_maximum_lift(tmp_p
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
         applied_profile=applied,
     )
-    text = compile_tuning_graph(measurement, scope="applied")
+    text = compile_tuning_graph(measurement, candidate=candidate_from_applied_profile(topology, applied))
     if change == "processor":
         text = text.replace("makeup_gain: 0.0", "makeup_gain: 3.0")
     program = build_verify_program(
@@ -888,7 +888,7 @@ def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
         applied_profile=applied,
     )
-    graph = compile_tuning_graph(measurement, scope="room_tune")
+    graph = compile_tuning_graph(measurement, candidate=candidate_from_applied_profile(topology, applied, purpose="bass"))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
         session_volume_db=-20, fc_hz=1600,
