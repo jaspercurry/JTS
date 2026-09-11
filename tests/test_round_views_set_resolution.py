@@ -274,3 +274,16 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
 def _run(capsys, argv):
     assert main(argv) == 0
     return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("view", ["forward-model", "bass-compare"])
+def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys, view):
+    root, manifest = two_sets
+    first, second = (group["set_id"] for group in manifest["sets"])
+    argv = ([view, str(root), "--set", first] if view == "forward-model" else
+            [view, str(root), str(root), "--before-set", first, "--after-set", second, "--change", "candidate"])
+    assert main(argv) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["reason"] == "round_take_selection_required"
+    assert answer["detail"]["set_id"] == first
+    assert answer["reason"] in REASON_REGISTRY
