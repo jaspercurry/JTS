@@ -143,10 +143,10 @@ def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
     there is no second route to be steered onto and the resolver takes no
     coupling argument at all (ADR-0100: it consults neither).
     """
-    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+    from jasper.fanin_coupling import capture_kwargs_for_coupling
 
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
 
-    kwargs = coupling_capture_kwargs_from_env()
+    kwargs = capture_kwargs_for_coupling()
     assert kwargs["capture_device"] == "jts_ring_capture"
     assert kwargs["playback_device"] == "jts_ring_playback"

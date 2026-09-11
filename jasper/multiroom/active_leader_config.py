@@ -163,7 +163,7 @@ async def precheck_active_leader(
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_bass_extension_graph,
     )
-    from jasper.fanin_coupling import capture_half, coupling_capture_kwargs_from_env
+    from jasper.fanin_coupling import capture_half, capture_kwargs_for_coupling
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -297,7 +297,7 @@ async def precheck_active_leader(
     # `capture_half` owner: this sink is a `File` at SNAPFIFO, and the emitter
     # declares no playback parameter at all, so an unfiltered splat is a
     # TypeError rather than a silent redirect (T-8b).
-    bake_capture_kwargs = capture_half(coupling_capture_kwargs_from_env())
+    bake_capture_kwargs = capture_half(capture_kwargs_for_coupling())
     emit_active_speaker_program_bake_config(
         profile,
         room_peqs=[],

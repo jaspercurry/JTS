@@ -16,7 +16,7 @@ from typing import Any
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
-from ._common import issue as _issue
+from ._common import bounded_int, issue as _issue
 from .playback_route import active_playback_route_capability
 from .audible_policy import audible_policy_payload
 from .calibration_level import calibration_level_payload, clamp_test_level_dbfs
@@ -29,14 +29,6 @@ from .tone_plan import (
 )
 
 SCHEMA_VERSION = 1
-
-
-def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
-    try:
-        out = int(value)
-    except (TypeError, ValueError):
-        out = default
-    return min(max(out, lo), hi)
 
 
 def _group(topology: OutputTopology, *, speaker_group_id: str) -> SpeakerGroup | None:
@@ -139,7 +131,7 @@ def build_summed_topology_tone_plan(
     )
     level = calibration_level_payload(requested_level_dbfs=requested_level_dbfs)
     level_dbfs = _finite_level(requested_level_dbfs)
-    duration_ms = _clamp_int(
+    duration_ms = bounded_int(
         requested_duration_ms,
         default=DEFAULT_TONE_DURATION_MS,
         lo=MIN_TONE_DURATION_MS,

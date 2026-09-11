@@ -466,7 +466,7 @@ async def _live_draft_profile(
     `deploy/assets/sound-profile/js/main.js`).
     """
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
-    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+    from jasper.fanin_coupling import capture_kwargs_for_coupling
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.live_edit import does_live_edits, plan_live_edit_for
 
@@ -523,7 +523,7 @@ async def _live_draft_profile(
             profile,
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
-            fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
+            fanin_coupling_capture_kwargs=capture_kwargs_for_coupling(),
         )
         yaml = result.yaml
         plan = await plan_live_edit_for(cam, yaml)

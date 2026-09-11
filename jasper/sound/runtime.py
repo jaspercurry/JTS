@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR, same_config_file
-from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+from jasper.fanin_coupling import capture_kwargs_for_coupling
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -232,7 +232,7 @@ def _render_saved_dsp_on_carrier(
             out_path=out_path if write else None,
             profile_id=RECONCILE_PROFILE_ID,
             output_trim_db=trim_db,
-            fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
+            fanin_coupling_capture_kwargs=capture_kwargs_for_coupling(),
         )
     except CarrierCannotHostEq as exc:
         raise CarrierCannotHostEq(
@@ -360,7 +360,7 @@ async def load_profile_config(
     # Stereo carriers apply the shm-ring devices; active baselines keep their
     # own topology-specific paths; grouped pipe sinks keep their own PLAYBACK
     # (capture still follows).
-    coupling_capture_kwargs = coupling_capture_kwargs_from_env()
+    coupling_capture_kwargs = capture_kwargs_for_coupling()
 
     # One shot: apply_dsp_config reuses load_config to ROLL BACK, and an
     # in-place rollback has already put the pre-prepare bytes back on disk, so

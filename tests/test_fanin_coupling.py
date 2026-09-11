@@ -98,7 +98,7 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
 
 def test_ring_kwargs_emit_ring_capture_device_s32le():
     # SF-2: the ring capture kwargs DO flow through
-    # coupling_capture_kwargs_from_env into the product emitters (transport_pipe
+    # capture_kwargs_for_coupling into the product emitters (transport_pipe
     # precedent) — this is deliberate coherence. A household /sound/ save emits a
     # CamillaDSP config whose ALSA capture device is jts_ring_capture + the box's
     # resolved wire format, so the emitted config and the running fan-in daemon
@@ -110,9 +110,7 @@ def test_ring_kwargs_emit_ring_capture_device_s32le():
     # operator's explicit JASPER_FANIN_RING_WIRE_FORMAT rollback pin — see
     # test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology for the
     # per-topology walk that used to carry this test's old name.
-    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-
-    armed_kwargs = coupling_capture_kwargs_from_env()
+    armed_kwargs = capture_kwargs_for_coupling()
     cfg = emit_sound_config(SoundProfile(), profile_id="x", **armed_kwargs)
 
     capture_block = cfg.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
@@ -158,7 +156,7 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
 
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
 
-    assert fanin_coupling.coupling_capture_kwargs_from_env() == {
+    assert fanin_coupling.capture_kwargs_for_coupling() == {
         "capture_device": RING_CAPTURE_DEVICE,
         "capture_format": RING_WIRE_FORMAT_WIDE,
         "playback_device": RING_PLAYBACK_DEVICE,

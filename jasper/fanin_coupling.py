@@ -763,13 +763,3 @@ def content_lane_format_for_coupling() -> str:
     if isinstance(value, str) and value:
         return value
     return DEFAULT_PLAYBACK_FORMAT
-
-
-def coupling_capture_kwargs_from_env() -> dict[str, object]:
-    """The live ``emit_sound_config`` capture kwargs — always the ring's.
-
-    Consults NO env: the ring is the only central transport (ADR-0100), so no
-    unresolved token can make this answer ``{}`` — which would re-emit a graph
-    capturing a lane fan-in does not write, mid-save.
-    """
-    return capture_kwargs_for_coupling()
