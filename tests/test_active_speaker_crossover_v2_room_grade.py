@@ -380,6 +380,48 @@ def test_the_view_grades_the_median_beside_the_round(tmp_path, capsys):
     assert artifact["graph_scopes"] == []
 
 
+@pytest.mark.parametrize("n_positions,with_baseline,unknown", [
+    (1, False, "both"), (1, True, "both"),
+    (N_POSITIONS, True, "candidate"), (N_POSITIONS, True, "incumbent"),
+])
+def test_the_view_keeps_response_grades_when_spread_is_unknown(
+    tmp_path, capsys, n_positions, with_baseline, unknown,
+):
+    round_dir = bank_measure_round(tmp_path)
+    document = room_median_document(n_positions=n_positions)
+    if unknown != "incumbent":
+        document["spread_db"] = None
+    (round_dir / "room_median.json").write_text(json.dumps(document))
+    args = ["room-grade", str(round_dir)]
+    if with_baseline:
+        baseline_dir = bank_measure_round(tmp_path, name="r0-baseline")
+        baseline = room_median_document(n_positions=n_positions, **INCUMBENT)
+        if unknown != "candidate":
+            baseline["spread_db"] = None
+        (baseline_dir / "room_median.json").write_text(json.dumps(baseline))
+        args += ["--baseline", str(baseline_dir)]
+
+    assert round_views.main(args) == EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
+    artifact = json.loads((round_dir / "room_grade.json").read_text())
+    assert answer["spatial_support"] == artifact["spatial_support"] == document["spatial_support"]
+    assert artifact["spatial_support"]["sufficient"] is (n_positions != 1)
+    assert answer["bands"] == artifact["bands"]
+    assert [row["spread_db"] for row in answer["bands"]] == [
+        SPREAD_DB if unknown == "incumbent" else None,
+    ] * 3
+    assert all(isinstance(row["rms_db"], float) and isinstance(row["max_db"], float) for row in answer["bands"])
+    if with_baseline:
+        assert answer["comparison"]["available"] is True
+        assert answer["regressed_bands"] == [60.0]
+        assert [row["incumbent_spread_db"] for row in answer["bands"]] == [
+            SPREAD_DB if unknown == "candidate" else None,
+        ] * 3
+        assert all(row["delta_rms_db"] == pytest.approx(
+            row["rms_db"] - row["incumbent_rms_db"],
+        ) for row in answer["bands"])
+
+
 def _stamp_graph_scopes(round_dir: Path, scopes: Sequence[str]) -> None:
     """Give this round's takes a graph scope, cycling through ``scopes``.
 

@@ -62,6 +62,7 @@ def test_room_median_is_the_contract_a_room_candidate_reads(tmp_path: Path, caps
     assert set(doc) == {
         "freqs_hz", "median_db", "spread_db", "n_positions", "positions",
         "ceiling_hz", "ceiling_source", "window", "coverage_hz", "evidence",
+        "spatial_support",
     }
     freqs = np.asarray(doc["freqs_hz"])
     assert freqs[0] >= room_views.ROOM_FLOOR_HZ and freqs[-1] <= doc["ceiling_hz"]
@@ -73,6 +74,30 @@ def test_room_median_is_the_contract_a_room_candidate_reads(tmp_path: Path, caps
         [i - 3.0 for i in range(7)]
     )
     assert len({p["pose_key"] for p in doc["positions"]}) == 7
+
+
+@pytest.mark.parametrize("n_positions,sufficient,reason", [
+    (1, False, "too_few_positions"), (2, True, ""), (3, True, ""),
+])
+def test_room_views_disclose_spatial_support(tmp_path, capsys, n_positions, sufficient, reason):
+    round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:n_positions])
+    support = {"n_positions": n_positions, "sufficient": sufficient, "reason": reason}
+    median = _run(capsys, ["room-median", str(round_dir)])
+    persistence = _run(capsys, ["room-persistence", str(round_dir)])
+    doc = json.loads((round_dir / "room_median.json").read_text())
+    features = json.loads((round_dir / "room_persistence.json").read_text())
+
+    assert median["spatial_support"] == doc["spatial_support"] == support
+    assert persistence["spatial_support"] == features["spatial_support"] == support
+    assert all(feature["presence_fraction"] == 1.0 for feature in features["features"])
+    at = int(np.argmin(np.abs(np.asarray(doc["freqs_hz"]) - _QUIET_HZ)))
+    assert doc["median_db"][at] == pytest.approx(-30.0 + (n_positions - 1) / 2)
+    if sufficient:
+        assert isinstance(doc["spread_db"][at], float)
+        assert doc["spread_db"][at] == pytest.approx(np.std(np.arange(n_positions)))
+    else:
+        assert doc["spread_db"] is None
+        assert all(value is None for value in median["mean_spread_db"].values())
 
 
 def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, capsys) -> None:

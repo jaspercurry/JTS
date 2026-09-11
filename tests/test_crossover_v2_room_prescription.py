@@ -62,7 +62,7 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
 from jasper.camilla_config_contract import PeqFilter
 from jasper.cli import crossover_prescriber as cli
 
-from tests.crossover_v2_banked_round import bank_seat_round
+from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -179,11 +179,13 @@ def test_no_document_is_the_deterministic_path():
     ) is None
 
 
-def test_a_median_whose_rows_do_not_match_its_grid_is_not_evidence():
-    """Every fault in the median is one reason: a median that cannot be read
-    into limits is evidence this door does not have."""
+@pytest.mark.parametrize("break_document", [
+    lambda raw: raw["positions"][0].update(deviation_db=[0.0, 0.0]),
+    lambda raw: raw.pop("spread_db"),
+], ids=["row_length", "missing_spread"])
+def test_an_unreadable_median_is_not_evidence(break_document):
     broken = _room_median()
-    broken["positions"][0]["deviation_db"] = [0.0, 0.0]
+    break_document(broken)
     with pytest.raises(RoomPrescriptionRefused) as excinfo:
         read_room_median(broken)
     assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
@@ -462,14 +464,34 @@ def test_compose_refuses_half_the_room_evidence(evidence, bank, capsys):
 
 
 
-def test_the_producers_median_reads_through_the_door(tmp_path):
-    """The seat cube's own artifact, not a hand-built one, is what the door reads."""
-    round_dir = bank_seat_round(tmp_path)
+@pytest.mark.parametrize("n_positions,gain,count,legacy,reason", [
+    (1, -9.0, 1, False, FILTER_CUT_TOO_DEEP),
+    (1, -9.0, 1, True, FILTER_CUT_TOO_DEEP),
+    (3, -9.0, 1, False, None),
+    (1, -6.0, 1, False, None),
+    (1, -4.0, 2, False, TAPER_VIOLATED),
+    (3, -4.0, 2, False, None),
+])
+def test_the_producers_spatial_support_bounds_room_cuts(tmp_path, n_positions, gain, count, legacy, reason):
+    round_dir = bank_seat_round(tmp_path, magnitudes_db=[np.full(SEAT_GRID_HZ.shape, -30.0)] * n_positions)
     document = room_median(select_seat_takes(round_inputs(round_dir).session_dir).takes, room_ceiling(None))
-
+    if legacy:
+        document.pop("spatial_support", None)
+        document["spread_db"] = [0.0] * len(document["freqs_hz"])
     median = read_room_median(document)
 
-    assert median.n_positions == document["n_positions"] == 7
+    assert median.n_positions == document["n_positions"] == n_positions
+    assert (median.spread_db is None) is (n_positions == 1)
     assert median.level_reference_db == pytest.approx(-30.0)
     assert np.allclose(median.median_db, 0.0)
     assert median.freqs_hz[0] >= ROOM_FLOOR_HZ and median.freqs_hz[-1] <= median.ceiling_hz
+    proposal = _document(filters=[{"freq": MODE_HZ, "q": 3.0, "gain": gain}] * count)
+    if reason:
+        with pytest.raises(RoomPrescriptionRefused) as excinfo:
+            _read(proposal, document)
+        assert excinfo.value.reason == reason
+        assert excinfo.value.evidence["cut_floor_db"] == pytest.approx(-6.0)
+    else:
+        accepted = _read(proposal, document)
+        assert accepted is not None
+        assert list(accepted.sides["mono"]) == proposal["sides"]["mono"]

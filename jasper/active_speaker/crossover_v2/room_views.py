@@ -22,6 +22,7 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_MEDIAN_WINDOW,
     room_ceiling_hz,
 )
+from jasper.audio_measurement.room_limits import spatial_support
 
 from .evidence_packet import applied_profile_source
 from .room_selection import SeatTake
@@ -152,10 +153,12 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
     """The contract a room candidate reads: median, spread, deviations."""
     freqs, rows = _stacked(takes, ROOM_FLOOR_HZ, ceiling.ceiling_hz)
     median = np.median(rows, axis=0)
+    support = spatial_support(len(takes))
     return {
         "freqs_hz": freqs.tolist(),
         "median_db": median.tolist(),
-        "spread_db": np.std(rows, axis=0).tolist(),
+        "spread_db": np.std(rows, axis=0).tolist() if support["sufficient"] else None,
+        "spatial_support": support,
         "n_positions": len(takes),
         "positions": [
             {
@@ -262,6 +265,7 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
     features.sort(key=lambda f: (-f["presence_fraction"], -abs(f["median_depth_db"])))
     return {
         "n_positions": len(takes),
+        "spatial_support": spatial_support(len(takes)),
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
         "window": _window(takes),

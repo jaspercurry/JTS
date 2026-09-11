@@ -69,16 +69,14 @@ def _median(path: Path) -> RoomMedian:
 def _band_line(band: Mapping[str, Any]) -> str:
     if band["rms_db"] is None:
         return f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: unavailable"
+    spread = "n/a" if band["spread_db"] is None else f"{band['spread_db']:.1f} dB"
     line = (
         f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: rms {band['rms_db']:.1f} dB "
-        f"max {band['max_db']:.1f} dB spread {band['spread_db']:.1f} dB"
+        f"max {band['max_db']:.1f} dB spread {spread}"
     )
     if band["incumbent_rms_db"] is None:
         return line
-    return (
-        f"{line} | incumbent rms {band['incumbent_rms_db']:.1f} "
-        f"(Δ {band['delta_rms_db']:+.1f})"
-    )
+    return f"{line} | incumbent rms {band['incumbent_rms_db']:.1f} (Δ {band['delta_rms_db']:+.1f})"
 
 
 def _cmd_room_grade(args: argparse.Namespace) -> int:
@@ -128,6 +126,7 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     return answer(
         args.command, out=written, ceiling_hz=grade.ceiling_hz,
         ceiling_source=grade.ceiling_source, n_positions=grade.n_positions,
+        spatial_support=artifact["spatial_support"],
         bands=artifact["bands"], regressed_bands=regressed,
         incumbent=artifact["incumbent"], graph_scopes=artifact["graph_scopes"],
         comparison=artifact["comparison"],

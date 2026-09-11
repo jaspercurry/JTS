@@ -113,11 +113,16 @@ def _seat_view(
 
 
 def _band_means(payload: dict[str, Any]) -> dict[str, float | None]:
-    spread = np.asarray(payload["spread_db"])
+    spread = None if payload["spread_db"] is None else np.asarray(payload["spread_db"])
     return {
-        f"{lo:g}-{hi:g}": float(np.mean(spread[mask])) if np.any(mask) else None
+        f"{lo:g}-{hi:g}": float(np.mean(spread[mask])) if spread is not None and np.any(mask) else None
         for lo, hi, mask in band_masks(payload["freqs_hz"], payload["ceiling_hz"])
     }
+
+
+def _support_line(payload: dict[str, Any]) -> str:
+    status = "sufficient" if payload["spatial_support"]["sufficient"] else "insufficient"
+    return f"spatial support {status}"
 
 
 def _median_answer(args: argparse.Namespace, payload: dict[str, Any], written: Path | None) -> int:
@@ -126,10 +131,12 @@ def _median_answer(args: argparse.Namespace, payload: dict[str, Any], written: P
         args.command, out=written, ceiling_hz=payload["ceiling_hz"],
         ceiling_source=payload["ceiling_source"], n_positions=payload["n_positions"],
         window=payload["window"], mean_spread_db=spread,
+        spatial_support=payload["spatial_support"],
         evidence=payload["evidence"], coverage_hz=payload["coverage_hz"],
         line=(
             f"room-median: {payload['n_positions']} position(s), ceiling "
             f"{payload['ceiling_hz']:g} Hz ({payload['ceiling_source']}), {payload['window']}; "
+            f"{_support_line(payload)}; "
             "mean spread "
             + ", ".join(
                 f"{band} Hz {value:.1f} dB" if value is not None else f"{band} Hz n/a"
@@ -152,11 +159,13 @@ def _persistence_answer(
     return answer(
         args.command, out=written, ceiling_hz=payload["ceiling_hz"],
         n_positions=payload["n_positions"], features=len(features),
+        spatial_support=payload["spatial_support"],
         persistent=persistent, persistent_fraction=PERSISTENT_FRACTION, top=top,
         evidence=payload["evidence"], coverage_hz=payload["coverage_hz"],
         line=(
             f"room-persistence: {persistent} of {len(features)} feature(s) at >= "
             f"{PERSISTENT_FRACTION:g} presence over {payload['n_positions']} position(s)"
+            f"; {_support_line(payload)}"
             + (
                 "; top: " + ", ".join(
                     f"{f['kind']} {f['centre_hz']:.0f} Hz {f['median_depth_db']:+.1f} dB "

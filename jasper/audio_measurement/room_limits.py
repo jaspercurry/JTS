@@ -41,6 +41,7 @@ __all__ = [
     "ROOM_MAX_TOTAL_BOOST_DB",
     "ROOM_PEQ_Q_MAX",
     "ROOM_PEQ_Q_MIN",
+    "ROOM_SPREAD_MIN_POSITIONS",
     "ROOM_TAPER_OCTAVES",
     "TOLERABLE_STD_DB",
     "BoostAdmission",
@@ -50,10 +51,14 @@ __all__ = [
     "ceiling_taper",
     "cut_floor_db",
     "depth_fraction",
+    "spatial_support",
 ]
 
 #: The strategy's own cut floor, dB, which the spread scales per frequency.
 ROOM_MAX_CUT_DB: float = -10.0
+
+# A spatial spread needs at least two position samples.
+ROOM_SPREAD_MIN_POSITIONS: int = 2
 
 #: Q range for a room bell — ``design_peq``'s range, roughly one octave
 #: wide down to 1/8 octave.
@@ -89,14 +94,26 @@ ROOM_MAX_TOTAL_BOOST_DB: float = 6.0
 ROOM_MAX_FILTERS_PER_SIDE: int = 8
 
 
+def spatial_support(n_positions: int) -> dict[str, Any]:
+    sufficient = n_positions >= ROOM_SPREAD_MIN_POSITIONS
+    return {
+        "n_positions": n_positions,
+        "sufficient": sufficient,
+        "reason": "" if sufficient else "too_few_positions",
+    }
+
+
 def depth_fraction(std_db: Any) -> np.ndarray:
     """The fraction of a strategy's cut depth this spread supports, in [0, 1].
 
     ``min(1, TOLERABLE_STD_DB / max(sigma, eps))``, elementwise. Exactly
     ``1.0`` at or below the tolerance, so an ordinary room's allowed depth is
-    bit-identical to the strategy's own scalar. Always an ``ndarray``,
+    bit-identical to the strategy's own scalar. Unknown spread (``None``)
+    earns only the symmetric boost envelope. Always an ``ndarray``,
     including 0-d for a scalar input.
     """
+    if std_db is None:
+        return np.asarray(ROOM_MAX_FILTER_BOOST_DB / abs(ROOM_MAX_CUT_DB), dtype=np.float64)
     sigma = np.asarray(std_db, dtype=np.float64)
     return np.asarray(
         np.minimum(1.0, TOLERABLE_STD_DB / np.maximum(sigma, _SIGMA_EPSILON_DB)),
@@ -109,12 +126,12 @@ def allowed_depth_db(
     *,
     base_max_cut_db: float = ROOM_MAX_CUT_DB,
 ) -> np.ndarray:
-    """Per-frequency cut floor, dB, non-positive, on ``std_db``'s own grid.
-
-    The array :func:`jasper.audio_measurement.peq.design_peq` accepts as
-    ``max_cut_db``.
-    """
-    return np.asarray(base_max_cut_db * depth_fraction(std_db), dtype=np.float64)
+    """Cut floor in dB; ``std_db=None`` uses the boost cap or the shallower caller base."""
+    return np.asarray(
+        max(base_max_cut_db, -ROOM_MAX_FILTER_BOOST_DB) if std_db is None
+        else base_max_cut_db * depth_fraction(std_db),
+        dtype=np.float64,
+    )
 
 
 def ceiling_taper(freqs_hz: Any, ceiling_hz: float) -> np.ndarray:
@@ -140,7 +157,7 @@ def cut_floor_db(
     *,
     base_max_cut_db: float = ROOM_MAX_CUT_DB,
 ) -> np.ndarray:
-    """The per-bin cut floor, dB, non-positive: spread cap times the taper."""
+    """Tapered cut floor in dB; ``spread_db=None`` caps its magnitude at the boost envelope."""
     return np.asarray(
         allowed_depth_db(spread_db, base_max_cut_db=base_max_cut_db)
         * ceiling_taper(freqs_hz, ceiling_hz),
