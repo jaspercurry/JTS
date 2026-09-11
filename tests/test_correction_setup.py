@@ -952,8 +952,8 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
     assert hint.model == "minidsp_umik2"
     assert hint.serial_display == "8494"
     assert hint.calibration_id == record.calibration_id
-    # A record that resolves cleanly gates the phone page's one-tap "stored"
-    # confirm (a separate capture-page PR) on this flag.
+    # A record that resolves cleanly gates the phone's one-tap "stored"
+    # confirmation on this flag.
     assert hint.resolvable is True
 
 

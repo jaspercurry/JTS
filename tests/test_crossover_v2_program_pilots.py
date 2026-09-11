@@ -759,7 +759,7 @@ def test_verify_clean_capture_records_a_real_integrity_verdict():
     integrity = res.capture_integrity
     assert integrity is not None
     assert _statuses(integrity) == {
-        # #2094: this fixture hands in raw samples, so there is no capture-page
+        # #2094: this fixture hands in raw samples, so there is no browser
         # report to reconcile and both frame-accounting checks say so by name
         # rather than passing on evidence nobody supplied.
         INTEGRITY_CHECK_RENDER_GAP: INTEGRITY_NOT_EVALUATED,
