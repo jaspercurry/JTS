@@ -243,6 +243,9 @@ def classify_program_failure(
     """
     from jasper.active_speaker.crossover_v2.capture_plan import PlanShapeError
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+    from jasper.active_speaker.crossover_v2.program_transaction import (
+        StimulusCaptureStopped,
+    )
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_MEASUREMENT_VOLUME_DRIFT,
         REASON_PROGRAM_PLAN_SHAPE_INVALID,
@@ -250,6 +253,7 @@ def classify_program_failure(
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
         REASON_PROTECTION_SWEEP_TOO_LOW,
+        REASON_SPL_CEILING_EXCEEDED,
     )
     from jasper.active_speaker.program_admission import (
         ProgramAdmissionError,
@@ -263,7 +267,18 @@ def classify_program_failure(
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
+    from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
+    if (
+        isinstance(exc, StimulusCaptureStopped)
+        and exc.code == WiredSplCeilingExceeded.code
+    ):
+        # A wired SPL-ceiling trip is a ``RuntimeError`` outside the program
+        # family (it stops a TAKE, not an admission), so without this arm it
+        # fell through to ``internal_error`` and told the household nothing
+        # about why the session stopped. Every other ``StimulusCaptureStopped``
+        # code (e.g. ``wired_capture_failed``) keeps falling through below.
+        return REASON_SPL_CEILING_EXCEEDED, ()
     if isinstance(exc, MeasurementFaderDrift):
         # #2925. Its own code because it says the OPPOSITE of
         # ``program_unplayable``: the program was admissible and the SPEAKER's
@@ -1952,11 +1967,12 @@ def _take_staged_angle_walk(
     plans_cloud_group: bool,
     preset: Any,
     topology: Any,
+    device: Any,
 ) -> tuple[
-    tuple[Any, ...], str, dict[int, Any], dict[str, float], tuple[Any, ...]
+    tuple[Any, ...], str, dict[int, Any], dict[str, float], tuple[Any, ...], Any
 ] | None:
     """This session's staged angle walk as
-    ``(poses, consumer, specs, trims, claims)``, or ``None``.
+    ``(poses, consumer, specs, trims, claims, spl_monitor)``, or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place. ``None``
     means NOTHING WAS STAGED — an ordinary session — and nothing else.
@@ -1988,6 +2004,14 @@ def _take_staged_angle_walk(
     A datasheet estimate is deliberately not a fallback: it is physics about
     the driver model, not a measurement of this cabinet.
 
+    ``spl_monitor`` is the watch a walk STATING an SPL ceiling plays under,
+    built by the one owner both doors ask
+    (:func:`~jasper.active_speaker.plan_run.spl_watch`) and ``None`` for a walk
+    that states none. Resolved HERE for the same reason the trims are: this is
+    where a walk the session cannot honour can still be refused, and a ceiling
+    no microphone could watch is exactly such a walk
+    (:data:`~jasper.active_speaker.angle_capture.WALK_SPL_CALIBRATION_REQUIRED`).
+
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
     permissions mistake refuses every session rather than silently destroying
@@ -2010,14 +2034,15 @@ def _take_staged_angle_walk(
         session_lateral_walk,
         stop_specs,
     )
-    from jasper.active_speaker.candidate_bank import (
-        CandidateBankRefusal,
-        find_banked_candidate,
-    )
     from jasper.active_speaker.angle_capture_spool import (
         AngleRequestRefused,
         staged_angle_request_pending,
         take_staged_angle_request,
+    )
+    from jasper.active_speaker.plan_run import (
+        resolve_candidate_scopes,
+        spl_monitor_note,
+        spl_watch,
     )
     from jasper.active_speaker.crossover_v2.capture_plan import (
         build_v2_cloud_index_phase_map,
@@ -2085,18 +2110,23 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
+    # No ceiling stated is still a disclosure, not silence: the SAME note
+    # ``spl_watch`` itself would answer with, from the one owner of that
+    # vocabulary — not a second, ad hoc "nothing to say" spelling.
+    spl_monitor, spl_note = None, spl_monitor_note(None)
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
     try:
-        candidate_scopes = {
-            candidate_id: candidate_trial_scope(find_banked_candidate(candidate_id).candidate)
-            for candidate_id in sorted(set(candidate_ids) - {""})
-        }
+        if measure_spec.spl_ceiling_db_spl is not None:
+            spl_monitor, spl_note = spl_watch(
+                measure_spec.spl_ceiling_db_spl,
+                topology=topology,
+                preset=preset,
+                sensitivity=_household_mic_sensitivity(device),
+                device=device,
+            )
+        candidate_scopes = resolve_candidate_scopes(candidate_ids)
     except LateralWalkRefused as exc:
         raise refused(exc.reason, exc.detail) from exc
-    except CandidateBankRefusal as exc:
-        # The bank's own vocabulary, unwrapped: a second slug for "no such
-        # candidate" would send an operator looking in the wrong place.
-        raise refused(exc.code, exc.detail) from exc
     # Asked of the ONE owner of this session's index space rather than counted
     # here, so the specs cannot be keyed to captures the plan never runs.
     walk_index_phase = build_v2_cloud_index_phase_map(
@@ -2150,6 +2180,8 @@ def _take_staged_angle_walk(
         ),
         candidates=",".join(sorted(set(candidate_ids) - {""})),
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
+        # What bounds this walk's level, empty on a walk stating no ceiling.
+        spl_monitor=spl_note,
     )
     return (
         prompts,
@@ -2157,7 +2189,41 @@ def _take_staged_angle_walk(
         specs_by_index,
         level_trims,
         lateral_claims,
+        spl_monitor,
     )
+
+
+def _household_mic_sensitivity(device: Any) -> Any | None:
+    """This box's remembered measurement mic's absolute reference, or ``None``.
+
+    This door has no mic-serial input, so the household record's own resolved
+    calibration file is the only thing an SPL bound could be scaled by —
+    unless that record is for a DIFFERENT mic than ``device`` (the wired
+    capture's own realized input), the identity check
+    :func:`~jasper.audio_measurement.household_mic._wrong_mic` already owns
+    (reused here rather than forked). ``None`` means nothing here can turn a
+    recording into dB SPL, which is a REFUSAL for a walk that states a
+    ceiling (:func:`_take_staged_angle_walk`).
+    """
+    from jasper.audio_measurement.calibration import (  # lazy: numpy
+        resolve_mic_sensitivity,
+    )
+    from jasper.audio_measurement.household_mic import (
+        _wrong_mic,
+        resolved_household_mic,
+    )
+    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
+
+    found = resolved_household_mic()
+    if found is None:
+        return None
+    # ``device``'s established contract is ``model_key`` alone (the same field
+    # ``spl_watch`` reads); the registry's own label drives ``_wrong_mic``'s
+    # comparison rather than requiring a second field of ``device``.
+    device_label = SUPPORTED_MODELS.get(device.model_key, {}).get("label", "")
+    if _wrong_mic(found[1], {"label": device_label}) is not None:
+        return None
+    return resolve_mic_sensitivity(calibration_file=found[1].raw_path)
 
 
 def _resolve_measurement_level_trims(
@@ -4171,9 +4237,16 @@ def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
     return wired.open_wired_capture(spec, device=wired_device)
 
 
-def _wired_stimulus_capture(wired_device: Any, evidence_store: Any) -> Any:
+def _wired_stimulus_capture(
+    wired_device: Any, evidence_store: Any, *, spl_monitor: Any = None,
+) -> Any:
     """The play seam's capture half: the Pi's own microphone, on the box the
-    stimulus comes out of."""
+    stimulus comes out of.
+
+    ``spl_monitor`` is the watch a staged walk's stated ceiling bought
+    (:func:`_take_staged_angle_walk`); ``None`` on every session that stages
+    none, which is every ordinary one.
+    """
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
         WiredStimulusCapture,
     )  # lazy: ALSA capture boundary
@@ -4182,6 +4255,7 @@ def _wired_stimulus_capture(wired_device: Any, evidence_store: Any) -> Any:
     return WiredStimulusCapture(
         device=wired_device, bundle_dir=Path(evidence_store.bundle_dir),
         setup_reference=lambda: setup_from_hint(default_setup_calibration_for_v2()),
+        spl_monitor=spl_monitor,
     )
 
 
@@ -4730,6 +4804,10 @@ def prepare_v2_session(
     # What each stop of a staged walk was measured UNDER, in stop order, for
     # the pose records the flow banks. Empty on every session that stages none.
     lateral_claims: tuple[Any, ...] = ()
+    # The live SPL watch a staged walk's STATED ceiling bought, held here for
+    # the capture half built in ``_open``. ``None`` on every session that
+    # stages no ceiling, which is every ordinary one.
+    engine_spl_monitor: Any = None
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
         # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
@@ -4762,6 +4840,7 @@ def prepare_v2_session(
             plans_cloud_group=include_cloud_measure,
             preset=context.preset,
             topology=context.topology,
+            device=wired_device,
         )
         lateral_prompts: tuple[Any, ...] | None = None
         lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
@@ -4772,6 +4851,7 @@ def prepare_v2_session(
                 engine_measure_specs,
                 engine_level_trims,
                 lateral_claims,
+                engine_spl_monitor,
             ) = staged_walk
             include_lateral = True
             stage1_index_phase = build_v2_cloud_index_phase_map(
@@ -5239,7 +5319,9 @@ def prepare_v2_session(
         # records across the play and banks the path) and the walk (which
         # drains the minted answer so `consume_capture` grades the very take
         # the engine banked).
-        stimulus_capture = _wired_stimulus_capture(wired_device, evidence_store)
+        stimulus_capture = _wired_stimulus_capture(
+            wired_device, evidence_store, spl_monitor=engine_spl_monitor,
+        )
         from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
         captured_records = CapturedRecordStore(
             _record_store(evidence_store, capture_session_id), stimulus_capture,

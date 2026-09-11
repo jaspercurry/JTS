@@ -71,6 +71,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureFailed,
     CaptureStopped,
 )
+from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_POLL_S
 from jasper.active_speaker.crossover_v2.program_transaction import (
     StimulusCaptureError as StimulusCaptureError,
 )
@@ -88,12 +89,6 @@ if TYPE_CHECKING:
     from jasper.web.correction_crossover_v2 import PositionGate, V2VolumeHooks
 
 logger = logging.getLogger(__name__)
-
-#: How often a held begin retries the position gate. The phone re-posts its
-#: deferred ``begin_capture`` every 1.5 s (capture-page wait screen); the
-#: local loop keeps that cadence so gate logging and driver pacing see the
-#: same rhythm the remote tier was built against.
-WIRED_HOLD_POLL_S = 1.5
 
 #: Settle before auto-retrying a REJECTED capture on a gateless session (the
 #: single-position shapes — a gated session re-gates, so its settle is the
@@ -194,7 +189,7 @@ def build_v2_wired_run_and_consume(
 ) -> Callable[[Any], Awaitable[Any]]:
     """Run held positions through the shared take executor; persist each verdict."""
 
-    poll_s = WIRED_HOLD_POLL_S if poll_interval_s is None else float(poll_interval_s)
+    poll_s = POSITION_HOLD_POLL_S if poll_interval_s is None else float(poll_interval_s)
 
     async def _run_and_consume(pi_session: Any) -> None:
         from jasper.active_speaker.crossover_v2.journey import PHASE_DONE

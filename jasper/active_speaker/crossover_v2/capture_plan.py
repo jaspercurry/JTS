@@ -1440,10 +1440,17 @@ POSITION_BATCH_CONFIG_KEY = "position_batch_config"
 POSITION_HAND_RELEASED_KEY = "position_hand_released"
 
 
-def _candidate_batch_screens(
+def pose_batch_screens(
     indexes: Sequence[int], prompts: Sequence[CloudPositionPrompt],
     candidate_ids: Sequence[str],
 ) -> dict[int, dict[str, str]]:
+    """Capture index -> the batch identity every capture of one POSE declares.
+
+    Consecutive prompts at one ``place`` are one batch: the gate grants the
+    batch's first capture and carries that grant to the rest
+    (:meth:`~.position_gate.PositionGate.gate`), so the microphone moves once
+    per pose however many configs play there.
+    """
     if len(candidate_ids) != len(indexes) or any(not isinstance(cid, str) for cid in candidate_ids):
         raise CrossoverV2FlowError("candidate ids must name every lateral capture")
     if not indexes:
@@ -1478,11 +1485,22 @@ def _entry_policy(
     policy = _entry_advance(shape)
     if shape is None or not shape.positions_gated:
         return policy
+    return {**policy, **position_screen_keys(prompt)}
+
+
+def position_screen_keys(
+    prompt: CloudPositionPrompt | None,
+) -> dict[str, str]:
+    """One pose as the TARGET the gate reads back off an entry.
+
+    The only writer of :data:`POSITION_DEG_KEY` and its two companions, so a
+    gated entry built anywhere (a plan entry, a standalone walk's take) states
+    its target in one vocabulary. ``None`` is the design axis.
+    """
     degrees = position_angle_deg(prompt) if prompt is not None else 0
     vertical = position_elevation_deg(prompt) if prompt is not None else 0
     role = prompt.role if prompt is not None else POSITION_ROLE_ONAX
     return {
-        **policy,
         POSITION_DEG_KEY: str(degrees),
         **({POSITION_VERTICAL_DEG_KEY: str(vertical)} if vertical else {}),
         POSITION_ROLE_KEY: role,
@@ -1666,7 +1684,7 @@ def build_v2_capture_plan(
     ]
     lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
     candidate_screens = (
-        _candidate_batch_screens(lateral_indexes, lateral_table, lateral_candidate_ids)
+        pose_batch_screens(lateral_indexes, lateral_table, lateral_candidate_ids)
         if lateral_candidate_ids is not None else {}
     )
     for offset, capture_index in enumerate(lateral_indexes):

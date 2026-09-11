@@ -123,6 +123,14 @@ REASON_SPEAKER_SHAPE_UNSUPPORTED = "speaker_shape_unsupported"
 # measurement target for every role it declares. The roles reach the journal.
 REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 
+# The wired capture kernel stopped a take because the microphone heard the
+# speaker above this session's SPL ceiling
+# (``audio_measurement.wired_capture.WiredSplCeilingExceeded``, wrapped as
+# ``crossover_v2.program_transaction.StimulusCaptureStopped``). Its own code,
+# not ``internal_error``: the household can act on this by lowering the level,
+# which is not true of a genuine host fault. Terminal.
+REASON_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
+
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
 # The seams raise open-endedly (CamillaUnavailable is a bare Exception,
 # analyze/emit raise ValueError/RuntimeError, the held measurement window
@@ -729,6 +737,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             # add-the-values action, so the fragment lands on the explanation.
             "href": "/sound/speaker/#confirm-safety-limits",
         },
+    ),
+    REASON_SPL_CEILING_EXCEEDED: ReasonSpec(
+        REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
+        "The measurement stopped because the microphone heard the speaker "
+        "louder than the ceiling for this session. Lower the level and "
+        "measure again.",
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(
         REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",

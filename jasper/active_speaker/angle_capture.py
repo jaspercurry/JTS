@@ -115,6 +115,9 @@ __all__ = [
     "WALK_OVER_MOVER_ENVELOPE",
     "WALK_LEVEL_POLICY_INVALID",
     "WALK_POLICY_UNSUPPORTED_YET",
+    "WALK_CEILING_ABOVE_STOP",
+    "WALK_SPL_CALIBRATION_REQUIRED",
+    "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
@@ -124,6 +127,7 @@ __all__ = [
     "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_CANDIDATE_NOT_MEASURABLE",
+    "WALK_NOTHING_PLAYABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "refuse_unplayable_walk_policy",
@@ -578,8 +582,9 @@ def stop_specs(
     ``candidate_scopes`` maps a stop's candidate fingerprint to the scope that
     compiles its complete graph, resolved by the caller that can read the bank.
 
-    Raises ``ValueError`` from :class:`MeasureSpec` when a stop's pose and the
-    template disagree; the caller attributes it.
+    Raises ``ValueError`` when a stop's pose and the template disagree (from
+    :class:`MeasureSpec`) or when no scope was resolved for a stop's candidate;
+    the caller attributes both.
     """
     placed: list[MeasureSpec | None] = []
     for stop, prompt in zip(request.stops, prompts):
@@ -587,9 +592,13 @@ def stop_specs(
             placed.append(None)
             continue
         scope = (
-            candidate_scopes[stop.candidate_id] if stop.candidate_id
+            candidate_scopes.get(stop.candidate_id) if stop.candidate_id
             else baseline_scope(stop.purpose)
         )
+        if scope is None:
+            raise ValueError(
+                f"no graph scope resolves for candidate {stop.candidate_id}"
+            )
         placed.append(replace(
             request.template,
             kind=(
@@ -849,14 +858,31 @@ WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 #: :data:`WALK_OVER_MOVER_ENVELOPE`.
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
-#: The walk states a policy nothing that PLAYS it can honour yet -- an SPL
-#: ceiling (no walk installs a
-#: :class:`~jasper.audio_measurement.wired_capture.WiredSplMonitor`) or a
-#: ``level_mode`` past :data:`LEVEL_HOLD_REFERENCE` (no walk steps the main
-#: volume). Raised by :func:`refuse_unplayable_walk_policy` where a walk is
-#: STAGED, so ``plan`` still prices what is coming. REMOVE each arm as the
-#: executor lane (#4873) lands the behaviour it names.
+#: The walk states a ``level_mode`` past :data:`LEVEL_HOLD_REFERENCE` and no
+#: player steps the main volume between stops yet. Raised by
+#: :func:`refuse_unplayable_walk_policy` where a walk is STAGED, so ``plan``
+#: still prices what is coming. REMOVE when the executor lane (#4873) lands a
+#: session that moves the level.
 WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
+
+#: The walk's template states an SPL ceiling ABOVE this box's commissioning
+#: stop, so honouring the walk would mean playing past the stop. Decided where
+#: the ceiling is resolved (:func:`~.plan_run.take_spl_ceiling`), which is the
+#: only place that reads the box's own number.
+WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
+
+#: The walk states an SPL ceiling and no microphone sensitivity resolves, so
+#: nothing could turn a recording into dB SPL to watch it. Decided beside the
+#: ceiling, where the watch is built (:func:`~.plan_run.spl_watch`). The value
+#: is the reason ``jasper-measure`` publishes for the same refusal.
+WALK_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
+
+#: The walk states an SPL ceiling and the box's own commissioning preset
+#: declares no finite stop to bound it against
+#: (:func:`~.commission_wiring.commissioning_spl_ceiling_db` raises
+#: ``ValueError``). ``jasper-measure`` meets the same ``ValueError`` with its
+#: own ``jasper.cli.measure.REFUSE_BOX_NOT_READY``.
+WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 
 #: The walk's stimulus statement is not one that can be played: a summed sweep
 #: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
@@ -899,6 +925,13 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+
+#: Every stop in the walk is :data:`REGIME_PER_DRIVER`, so the playable subset
+#: :func:`~.plan_run.run_plan` resolves is empty -- nothing here composes that
+#: regime's phase program (the session host's job, not this loop's), and a run
+#: that measured zero takes is a refusal, not an empty success.
+WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
+
 SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 
 WALK_REFUSAL_REASONS = frozenset({
@@ -907,6 +940,9 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
     WALK_POLICY_UNSUPPORTED_YET,
+    WALK_CEILING_ABOVE_STOP,
+    WALK_SPL_CALIBRATION_REQUIRED,
+    WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
@@ -916,6 +952,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_DELAY_NOT_ACCEPTED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_CANDIDATE_NOT_MEASURABLE,
+    WALK_NOTHING_PLAYABLE,
 })
 
 
@@ -938,21 +975,14 @@ def refuse_unplayable_walk_policy(request: AngleCaptureRequest) -> None:
 
     Not in :meth:`AngleCaptureRequest.__post_init__`: the request is legal to
     STATE and to price, so ``plan`` reports its cost; what is missing is the
-    playing half. Called where a walk is banked for a session instead, both
-    writing and reading it, so a hand-written document refuses the same way a
-    staged one does.
+    playing half. Called where a walk is banked for a session and where one is
+    RUN (:func:`~.plan_run.run_plan`), so a hand-written document refuses the
+    same way a staged one does.
 
-    Each arm names what would have to exist, and goes when that lands
-    (#4873): the SPL ceiling wants the walk's capture leg to install a
-    :class:`~jasper.audio_measurement.wired_capture.WiredSplMonitor`, and the
-    level modes past :data:`LEVEL_HOLD_REFERENCE` want a session that moves the
-    main volume between stops.
+    The one arm left names what would have to exist and goes when that lands
+    (#4873): a level mode past :data:`LEVEL_HOLD_REFERENCE` wants a session
+    that moves the main volume between stops.
     """
-    if request.template.spl_ceiling_db_spl is not None:
-        raise LateralWalkRefused(
-            WALK_POLICY_UNSUPPORTED_YET,
-            "spl_ceiling_db_spl: no walk installs an SPL monitor yet",
-        )
     if request.level_mode != LEVEL_HOLD_REFERENCE:
         raise LateralWalkRefused(
             WALK_POLICY_UNSUPPORTED_YET,

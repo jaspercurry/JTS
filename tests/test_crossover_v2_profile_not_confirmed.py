@@ -48,6 +48,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_PROTECTION_NOT_SEPARABLE,
     REASON_PROTECTION_SWEEP_TOO_LOW,
     REASON_REGISTRY,
+    REASON_SPL_CEILING_EXCEEDED,
     TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
@@ -229,6 +230,29 @@ def test_classifier_returns_none_outside_the_program_family():
 
     assert v2host.classify_program_failure(ValueError("device mismatch")) is None
     assert v2host.classify_program_failure(TimeoutError("read timed out")) is None
+
+
+def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
+    """A capture stop is outside the program family (it stops a TAKE, not an
+    admission), but a ceiling trip must not fall back to internal_error — the
+    household can act on this one by lowering the level."""
+    from jasper.active_speaker.crossover_v2.program_transaction import (
+        StimulusCaptureStopped,
+    )
+    from jasper.audio_measurement.playback import PlaybackObservation
+
+    ceiling_trip = StimulusCaptureStopped(
+        "spl_ceiling_exceeded", "measured above ceiling", PlaybackObservation(),
+    )
+    assert v2host.classify_program_failure(ceiling_trip) == (
+        REASON_SPL_CEILING_EXCEEDED, (),
+    )
+
+    # Every other capture-stop code keeps today's behaviour.
+    other_stop = StimulusCaptureStopped(
+        "wired_capture_failed", "mic vanished", PlaybackObservation(),
+    )
+    assert v2host.classify_program_failure(other_stop) is None
 
 
 def test_classifier_preserves_typed_conditioning_slug():

@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-
 def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
     """Add the four ``MeasureSpec`` stimulus flags, under their one spelling."""
     parser.add_argument(
