@@ -743,7 +743,7 @@ class TurnLifecycle:
         Transcript deltas keep arriving through the provider's close
         handshake, so a capture read before `release()` returns loses the
         tail of the assistant's line. The turn's own session id and mute
-        state are passed in: `reset` clears them, and the next turn
+        state are passed in: `_reset` clears them, and the next turn
         opens its session before it awaits this task.
         """
         try:

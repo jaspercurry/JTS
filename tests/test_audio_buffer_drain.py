@@ -203,6 +203,7 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
         assert wl._turns.input_ended
         assert turns[0].send_audio.await_count == 0
         assert turns[1].end_input.await_count == 1
+        assert wl._prepare_assistant_loudness_context.await_count == 2
     finally:
         await _stop_playback(wl)
 

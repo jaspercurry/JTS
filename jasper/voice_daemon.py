@@ -303,8 +303,6 @@ class WakeLoop:
         self._speech_run_max_silero: float = 0.0
 
         self._barge_in_reference_available = contract_from_config(cfg).echo_cancelled
-        self._barge_in_no_ref_warned: bool = False
-        self._barge_in_ptt_warned: bool = False
         # Reconciliation kind for the active provider (resolved once — the
         # provider is fixed for the daemon's life; a switch restarts us).
         # Consumed by barge.detected + /state so a durable barge-in
@@ -1113,7 +1111,6 @@ class WakeLoop:
             )
             return True
         return False
-
 
     async def _handle_playback_frame(self, frame, *, captured_at: float | None = None) -> None:
         """In-session barge-in detection while the assistant is speaking.

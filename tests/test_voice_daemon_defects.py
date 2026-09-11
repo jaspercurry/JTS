@@ -13,9 +13,8 @@ import weakref
 import pytest
 
 from jasper.mic_capture import InputDeviceUnavailable
-from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON
+from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON, idle_watchdog
 from jasper.voice.turn_lifecycle import State
-from jasper.voice.turn_playback import idle_watchdog
 
 from ._log_events import event_fields
 from ._wake_loop import wake_loop_for_tests
