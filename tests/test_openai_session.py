@@ -1330,7 +1330,13 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
             "type": "response.done",
             "response": {
                 "id": "resp_1",
-                "usage": {"input_tokens": 100, "output_tokens": 8},
+                "usage": {
+                    "input_tokens": 100, "output_tokens": 8,
+                    "input_token_details": {
+                        "audio_tokens": 60, "text_tokens": 40, "cached_tokens": 10,
+                    },
+                    "output_token_details": {"audio_tokens": 6, "text_tokens": 2},
+                },
                 "output": [
                     {
                         "type": "function_call",
@@ -1377,7 +1383,13 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
             "type": "response.done",
             "response": {
                 "id": "resp_2",
-                "usage": {"input_tokens": 50, "output_tokens": 200},
+                "usage": {
+                    "input_tokens": 50, "output_tokens": 200,
+                    "input_token_details": {
+                        "audio_tokens": 30, "text_tokens": 20, "cached_tokens": 5,
+                    },
+                    "output_token_details": {"audio_tokens": 190, "text_tokens": 10},
+                },
                 "output": [{"type": "message"}],
             },
         })
@@ -1403,10 +1415,16 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
 
         # Token usage should ACCUMULATE across both responses, not
         # just report the second one. The spend cap charges the
-        # full round-trip.
+        # full round-trip, and prices each modality bucket separately.
         usage = turn.usage()
-        assert usage.input_tokens == 150  # 100 + 50
-        assert usage.output_tokens == 208  # 8 + 200
+        assert (usage.input_tokens, usage.output_tokens) == (150, 208)
+        assert usage.breakdown == {
+            "input_tokens": 150, "output_tokens": 208,
+            "input_token_details": {
+                "audio_tokens": 90, "text_tokens": 60, "cached_tokens": 15,
+            },
+            "output_token_details": {"audio_tokens": 196, "text_tokens": 12},
+        }
     finally:
         await conn.stop()
 

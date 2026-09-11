@@ -1812,6 +1812,7 @@ async def test_gemini_usage_keeps_whole_response_snapshots(usage_on_completion, 
             session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle=marker)))
             await _wait_until(lambda: conn._resumption_handle == marker)
             usage = turn.usage()
+            assert usage.breakdown is None
             assert (usage.input_tokens, usage.output_tokens) == (counts or (0, 0))
             totals[0] += usage.input_tokens
             totals[1] += usage.output_tokens

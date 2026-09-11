@@ -28,7 +28,6 @@ from .session import (
     ConnectionState,
     LiveTurn,
     TurnCapture,
-    TurnUsage,
     log_first_chunk,
 )
 
@@ -154,7 +153,6 @@ class GeminiLiveTurn(BaseLiveTurn):
         super().__init__(conn, started_at)
         self._conn: GeminiLiveConnection = conn
         self._session = getattr(conn, "_session", None)
-        self._usage = {"input_tokens": 0, "output_tokens": 0}
         self._activity_end_sent = False
         self._user_transcript_parts: list[str] = []
         self._assistant_transcript_parts: list[str] = []
@@ -211,13 +209,6 @@ class GeminiLiveTurn(BaseLiveTurn):
         logger.info(
             "live turn: ended in %.0fms, %d chunks received (sent=%dB)",
             elapsed_ms, self._chunks_received, self._bytes_sent,
-        )
-
-    def usage(self) -> TurnUsage:
-        """Latest observed response counts; missing or late usage can be incomplete."""
-        return TurnUsage(
-            input_tokens=self._usage["input_tokens"],
-            output_tokens=self._usage["output_tokens"],
         )
 
     def capture(self) -> TurnCapture | None:
@@ -309,12 +300,10 @@ class GeminiLiveTurn(BaseLiveTurn):
         # https://ai.google.dev/gemini-api/docs/live-api/best-practices#pricing-and-billing
         usage = getattr(response, "usage_metadata", None)
         if usage is not None:
-            in_tok = getattr(usage, "prompt_token_count", None)
-            out_tok = getattr(usage, "response_token_count", None)
-            if in_tok is not None:
-                self._usage["input_tokens"] = int(in_tok)
-            if out_tok is not None:
-                self._usage["output_tokens"] = int(out_tok)
+            self.set_usage(
+                getattr(usage, "prompt_token_count", None),
+                getattr(usage, "response_token_count", None),
+            )
         if turn_just_completed:
             td = self.usage()
             logger.info(

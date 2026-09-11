@@ -137,6 +137,10 @@ class OpenAILiveTurn(BaseLiveTurn):
         return None
 
     def usage(self) -> TurnUsage:
+        # Live bills the frontend session per minute, not per token, so
+        # this replaces the base turn's token counts with the metered
+        # seconds. The backend's own tokens are a separate spend row
+        # (`_on_backend_event`), not part of this turn's usage.
         return TurnUsage(breakdown={"seconds": self._seconds, "finalized": self._finalized})
 
     def capture(self) -> TurnCapture:
