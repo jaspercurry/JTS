@@ -37,6 +37,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginRefused,
 )
 
+from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     FakeSeams,
@@ -45,7 +46,10 @@ from tests.crossover_v2_fixtures import (
     _run_phase,
 )
 
-UNMAPPED_EVENT = "crossover_v2_begin_decision_kind_unmapped"
+# Full event names as `jasper.log_event.log_event` renders them — the
+# `correction.` domain prefix is part of the exact name `event_records`
+# matches on, not a decoration a substring scan could ignore.
+UNMAPPED_EVENT = "correction.crossover_v2_begin_decision_kind_unmapped"
 
 
 def _held_at_verify(fakes: FakeSeams, **kwargs):
@@ -253,9 +257,10 @@ def test_every_begin_decision_kind_is_handled(caplog):
                 except (CaptureBeginRefused, CaptureBeginDeferred):
                     pass
 
-    unmapped = [r.getMessage() for r in caplog.records if UNMAPPED_EVENT in r.getMessage()]
+    unmapped = event_records(caplog, UNMAPPED_EVENT)
     assert unmapped == [], (
-        f"a declared decision kind reached the fallback instead of its own arm: {unmapped}"
+        "a declared decision kind reached the fallback instead of its own arm: "
+        f"{[r.getMessage() for r in unmapped]}"
     )
 
 
@@ -280,7 +285,7 @@ def test_an_unrecognised_begin_decision_kind_refuses_rather_than_admits(caplog):
         with pytest.raises(CaptureBeginRefused) as excinfo:
             c.authorize_begin(1, 2)
 
-    unmapped = [r for r in caplog.records if UNMAPPED_EVENT in r.getMessage()]
+    unmapped = event_records(caplog, UNMAPPED_EVENT)
     assert [r.levelname for r in unmapped] == ["ERROR"]
     assert excinfo.value.code == flow.REASON_LOCATE_FAILED
     # Not admitted: no extra charged, the meter did not advance, nothing armed.
@@ -350,7 +355,7 @@ def test_the_flow_and_the_module_name_one_ledger():
 # falling through hands back a retry screen whose button leads to a pre-play
 # refusal, which is the 2026-08-03 shape the ruling exists to make unreachable.
 
-SETTLE_UNMAPPED_EVENT = "crossover_v2_settle_kind_unmapped"
+SETTLE_UNMAPPED_EVENT = "correction.crossover_v2_settle_kind_unmapped"
 
 
 def _spent(extras=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION):
@@ -583,12 +588,10 @@ def test_every_settle_kind_is_handled(caplog, half, declared):
                     PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
                 )
 
-    unmapped = [
-        r.getMessage() for r in caplog.records
-        if SETTLE_UNMAPPED_EVENT in r.getMessage()
-    ]
+    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
     assert unmapped == [], (
-        f"a declared settle kind reached a fallback instead of its own arm: {unmapped}"
+        "a declared settle kind reached a fallback instead of its own arm: "
+        f"{[r.getMessage() for r in unmapped]}"
     )
 
 
@@ -613,7 +616,7 @@ def test_an_unrecognised_settle_kind_ends_the_phase_rather_than_retrying(caplog)
             PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
         )
 
-    unmapped = [r for r in caplog.records if SETTLE_UNMAPPED_EVENT in r.getMessage()]
+    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
     assert [r.levelname for r in unmapped] == ["ERROR"]
     assert settled.payload["terminal"] is True
     assert settled.payload["terminal_outcome"] == admission.SETTLE_PHASE_CANNOT_PROCEED
@@ -643,7 +646,7 @@ def test_an_unrecognised_group_settle_kind_ends_the_phase_rather_than_advancing(
             PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
         )
 
-    unmapped = [r for r in caplog.records if SETTLE_UNMAPPED_EVENT in r.getMessage()]
+    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
     assert [r.levelname for r in unmapped] == ["ERROR"]
     assert settled.payload["terminal"] is True
     assert settled.payload["terminal_outcome"] == admission.SETTLE_BELOW_POSITION_FLOOR

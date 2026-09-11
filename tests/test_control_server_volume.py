@@ -19,6 +19,7 @@ import pytest
 from jasper.control.server import _make_handler
 from jasper.volume_curve import percent_to_db
 
+from tests._log_events import event_fields, event_records
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -224,7 +225,7 @@ def test_volume_set_event_log_level_tracks_state_change(
         )
     assert status == 200
     assert body["observation_applied"] is True
-    records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]
+    records = event_records(caplog, "volume.set")
     assert len(records) == 1
     assert records[0].levelno == logging.INFO
     caplog.clear()
@@ -242,12 +243,13 @@ def test_volume_set_event_log_level_tracks_state_change(
         )
     assert status == 200
     assert body["observation_applied"] is False
-    records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]
+    records = event_records(caplog, "volume.set")
     assert len(records) == 1
     assert records[0].levelno == logging.DEBUG
-    assert "new_pct=" in records[0].getMessage()
-    assert "source=usbsink" in records[0].getMessage()
-    assert "observation_applied=false" in records[0].getMessage()
+    fields = event_fields(caplog, "volume.set")
+    assert "new_pct" in fields
+    assert fields["source"] == "usbsink"
+    assert fields["observation_applied"] == "false"
     caplog.clear()
 
     # Authoritative set (no `source`, observation_applied stays None) ->
@@ -255,7 +257,7 @@ def test_volume_set_event_log_level_tracks_state_change(
     with caplog.at_level(logging.DEBUG, logger="jasper.control"):
         status, body = _post(f"{base}/volume/set", {"percent": 50})
     assert status == 200
-    records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]
+    records = event_records(caplog, "volume.set")
     assert len(records) == 1
     assert records[0].levelno == logging.INFO
 

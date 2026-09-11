@@ -72,6 +72,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
+from tests._log_events import event_fields, event_records
 from tests.sound_camilla_fixtures import FakeCamilla
 
 
@@ -222,12 +223,12 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
 
     # Observable: ONE line, naming the running config it left in place and the
     # file it declined to write.
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=unchanged" in caplog.text
-    assert "reason=running_config_matches_intent" in caplog.text
-    assert f"current={candidate}" in caplog.text
-    assert f"candidate={config_dir / 'sound_current.yml'}" in caplog.text
-    assert caplog.text.count("event=sound.reconcile_current_dsp") == 1
+    assert len(event_records(caplog, "sound.reconcile_current_dsp")) == 1
+    fields = event_fields(caplog, "sound.reconcile_current_dsp")
+    assert fields["result"] == "unchanged"
+    assert fields["reason"] == "running_config_matches_intent"
+    assert fields["current"] == str(candidate)
+    assert fields["candidate"] == str(config_dir / "sound_current.yml")
 
 
 class _RejectingCamilla(FakeCamilla):

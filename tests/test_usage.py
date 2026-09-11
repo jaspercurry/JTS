@@ -112,18 +112,18 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     with caplog.at_level("WARNING"):
         assert store.open_session() == _UNRECORDED_SESSION
     assert store.write_degraded is True
-    assert sum(
-        "event=usage.write_degraded" in r.getMessage() for r in caplog.records
-    ) == 1, "the ok->degraded transition emits the structured event exactly once"
+    assert len(event_records(caplog, "usage.write_degraded")) == 1, (
+        "the ok->degraded transition emits the structured event exactly once"
+    )
 
     # A further failure bumps the counter but must NOT re-emit (no journal spam).
     caplog.clear()
     with caplog.at_level("WARNING"):
         assert store.open_session() == _UNRECORDED_SESSION
     assert store.write_degraded is True
-    assert not any(
-        "event=usage.write_degraded" in r.getMessage() for r in caplog.records
-    ), "a persistent failure must not re-emit the degraded event"
+    assert not event_records(caplog, "usage.write_degraded"), (
+        "a persistent failure must not re-emit the degraded event"
+    )
 
     # Recovery: writes succeed again -> degraded clears + ONE recovery event.
     store._conn.close()
@@ -132,9 +132,9 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     with caplog.at_level("INFO"):
         store.close_session(store.open_session(), 1, 1)
     assert store.write_degraded is False
-    assert sum(
-        "event=usage.write_recovered" in r.getMessage() for r in caplog.records
-    ) == 1, "the degraded->ok transition emits the recovery event exactly once"
+    assert len(event_records(caplog, "usage.write_recovered")) == 1, (
+        "the degraded->ok transition emits the recovery event exactly once"
+    )
 
 
 def test_record_background_usage_records_model_specific_cost(tmp_path: Path):
@@ -511,17 +511,12 @@ def test_spend_cap_zero_means_disabled_never_blocks(tmp_path: Path, caplog):
     # branch on `disabled` — the value itself stays a harmless 0.0.
     assert cap.remaining_usd() == 0.0
     # Logged exactly once, at construction.
-    disabled_lines = [
-        r for r in caplog.records if "event=spend_cap.disabled" in r.getMessage()
-    ]
-    assert len(disabled_lines) == 1
+    assert len(event_records(caplog, "spend_cap.disabled")) == 1
     caplog.clear()
     with caplog.at_level("WARNING", logger="jasper.usage"):
         for _ in range(5):  # per-wake calls must not re-log
             assert cap.allowed() is True
-    assert not [
-        r for r in caplog.records if "event=spend_cap.disabled" in r.getMessage()
-    ]
+    assert not event_records(caplog, "spend_cap.disabled")
 
 
 def test_spend_cap_negative_treated_as_disabled(tmp_path: Path):

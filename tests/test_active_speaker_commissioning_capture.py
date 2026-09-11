@@ -59,6 +59,7 @@ from jasper.active_speaker.measurement import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, required_driver_roles
 from jasper.output_topology import OutputTopology
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
 
 # Canonical fixtures reused across the active-speaker suite.
@@ -1504,12 +1505,12 @@ def test_record_driver_repeat_aggregate_emits_lifecycle_event(caplog):
         )
 
     assert result["accepted"] == 3
-    assert "event=correction.crossover_repeats_aggregated" in caplog.text
-    assert "session=sess-1" in caplog.text
-    assert "group=mono" in caplog.text
-    assert "role=woofer" in caplog.text
-    assert "accepted=3" in caplog.text
-    assert "rejected=0" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_repeats_aggregated")
+    assert fields["session"] == "sess-1"
+    assert fields["group"] == "mono"
+    assert fields["role"] == "woofer"
+    assert fields["accepted"] == "3"
+    assert fields["rejected"] == "0"
 
 
 def test_repeat_outlier_threshold_constant_is_positive_and_documented():
@@ -1520,13 +1521,6 @@ def test_repeat_outlier_threshold_constant_is_positive_and_documented():
 # "Structured events") -------------------------------------------------------
 
 _LOGGER_NAME = "jasper.active_speaker.commissioning_capture"
-
-
-def _events(caplog, name: str) -> list[str]:
-    return [
-        r.getMessage() for r in caplog.records
-        if r.getMessage().startswith(f"event={name}")
-    ]
 
 
 class _FakeAcousticWithSnrAndGating:
@@ -1570,13 +1564,12 @@ def test_driver_capture_accepted_emits_exactly_one_lifecycle_event(
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         out, _ = _capture_driver(tmp_path, _driver_result("present", present=True))
     assert out["recorded"] is True
-    accepted = _events(caplog, "correction.crossover_capture_accepted")
-    assert len(accepted) == 1
-    assert "group=mono" in accepted[0]
-    assert "role=woofer" in accepted[0]
-    assert "verdict=present" in accepted[0]
-    assert "outcome=heard_correct_driver" in accepted[0]
-    assert _events(caplog, "correction.crossover_capture_rejected") == []
+    accepted = event_fields(caplog, "correction.crossover_capture_accepted")
+    assert accepted["group"] == "mono"
+    assert accepted["role"] == "woofer"
+    assert accepted["verdict"] == "present"
+    assert accepted["outcome"] == "heard_correct_driver"
+    assert not event_records(caplog, "correction.crossover_capture_rejected")
 
 
 def test_driver_capture_accepted_surfaces_snr_and_floor_when_present(
@@ -1596,10 +1589,9 @@ def test_driver_capture_accepted_surfaces_snr_and_floor_when_present(
             analyze=lambda *a, **k: _FakeAcousticWithSnrAndGating(),
         )
     assert out["recorded"] is True
-    accepted = _events(caplog, "correction.crossover_capture_accepted")
-    assert len(accepted) == 1
-    assert "snr_db=27.5" in accepted[0]
-    assert "floor_hz=240.0" in accepted[0]
+    accepted = event_fields(caplog, "correction.crossover_capture_accepted")
+    assert accepted["snr_db"] == "27.5"
+    assert accepted["floor_hz"] == "240.0"
 
 
 def test_driver_capture_accepted_includes_session_when_bundle_known(
@@ -1625,9 +1617,8 @@ def test_driver_capture_accepted_includes_session_when_bundle_known(
             record=spy_record,
         )
     assert out["recorded"] is True
-    accepted = _events(caplog, "correction.crossover_capture_accepted")
-    assert len(accepted) == 1
-    assert "session=sess-abc123" in accepted[0]
+    accepted = event_fields(caplog, "correction.crossover_capture_accepted")
+    assert accepted["session"] == "sess-abc123"
 
 
 def test_driver_capture_unusable_emits_exactly_one_rejected_event(
@@ -1645,12 +1636,11 @@ def test_driver_capture_unusable_emits_exactly_one_rejected_event(
             record=lambda *a, **k: pytest.fail("record must not run"),
         )
     assert out["recorded"] is False
-    rejected = _events(caplog, "correction.crossover_capture_rejected")
-    assert len(rejected) == 1
-    assert "reason=unusable_capture" in rejected[0]
-    assert "group=mono" in rejected[0]
-    assert "role=woofer" in rejected[0]
-    assert _events(caplog, "correction.crossover_capture_accepted") == []
+    rejected = event_fields(caplog, "correction.crossover_capture_rejected")
+    assert rejected["reason"] == "unusable_capture"
+    assert rejected["group"] == "mono"
+    assert rejected["role"] == "woofer"
+    assert not event_records(caplog, "correction.crossover_capture_accepted")
 
 
 def test_reference_axis_unknown_floor_is_observable_on_rejected_event(
@@ -1674,10 +1664,9 @@ def test_reference_axis_unknown_floor_is_observable_on_rejected_event(
         )
 
     assert out["recorded"] is False
-    rejected = _events(caplog, "correction.crossover_capture_rejected")
-    assert len(rejected) == 1
-    assert "capture_geometry=reference_axis" in rejected[0]
-    assert "validity_floor_status=unknown" in rejected[0]
+    rejected = event_fields(caplog, "correction.crossover_capture_rejected")
+    assert rejected["capture_geometry"] == "reference_axis"
+    assert rejected["validity_floor_status"] == "unknown"
 
 
 def test_summed_capture_accepted_emits_exactly_one_lifecycle_event(caplog):
@@ -1694,13 +1683,12 @@ def test_summed_capture_accepted_emits_exactly_one_lifecycle_event(caplog):
             capture_geometry="near_field",
         )
     assert out["recorded"] is True
-    accepted = _events(caplog, "correction.crossover_capture_accepted")
-    assert len(accepted) == 1
-    assert "group=mono" in accepted[0]
-    assert "verdict=blend_ok" in accepted[0]
-    assert "outcome=blend_ok" in accepted[0]
+    accepted = event_fields(caplog, "correction.crossover_capture_accepted")
+    assert accepted["group"] == "mono"
+    assert accepted["verdict"] == "blend_ok"
+    assert accepted["outcome"] == "blend_ok"
     # Summed captures have no per-driver role.
-    assert "role=" not in accepted[0]
+    assert "role" not in accepted
 
 
 def test_summed_capture_unusable_emits_exactly_one_rejected_event(caplog):
@@ -1716,10 +1704,9 @@ def test_summed_capture_unusable_emits_exactly_one_rejected_event(caplog):
             capture_geometry="near_field",
         )
     assert out["recorded"] is False
-    rejected = _events(caplog, "correction.crossover_capture_rejected")
-    assert len(rejected) == 1
-    assert "reason=unusable_capture" in rejected[0]
-    assert _events(caplog, "correction.crossover_capture_accepted") == []
+    rejected = event_fields(caplog, "correction.crossover_capture_rejected")
+    assert rejected["reason"] == "unusable_capture"
+    assert not event_records(caplog, "correction.crossover_capture_accepted")
 
 
 def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(caplog):
@@ -1736,11 +1723,10 @@ def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(cap
             capture_geometry="near_field",
         )
     assert out["recorded"] is False
-    rejected = _events(caplog, "correction.crossover_capture_rejected")
-    assert len(rejected) == 1
-    assert "reason=no_crossover_region" in rejected[0]
+    rejected = event_fields(caplog, "correction.crossover_capture_rejected")
+    assert rejected["reason"] == "no_crossover_region"
     # No verdict at all for this early-out path.
-    assert "verdict=" not in rejected[0]
+    assert "verdict" not in rejected
 
 
 # --- Paired summed evidence + multi-region proposals (lane E, Slice 2) ------
