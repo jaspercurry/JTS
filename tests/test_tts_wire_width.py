@@ -85,6 +85,9 @@ class _Recorder:
         self.payload = bytearray()
         self.closed = False
 
+    def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        self.closed = True
+
     def write(self, data: bytes) -> None:
         self.payload += data
 

@@ -69,7 +69,9 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
             if event["kind"] == "assistant" and item:
                 frames_by_item[item] = frames_by_item.get(item, 0) + event["drained_frames"]
         for item, frames in frames_by_item.items():
-            await turn.truncate_assistant_audio(item, frames * 1000 // 48000)
+            await turn.truncate_assistant_audio(
+                item, frames * 1000 // TtsPlayout.OUTPUT_RATE,
+            )
         log_event(logger, "barge.playback_boundary", items=len(frames_by_item))
     return confirmed
 

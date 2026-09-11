@@ -52,6 +52,7 @@ def _make() -> TtsPlayout:
 
 class _CaptureOutputdStream:
     def __init__(self) -> None:
+        self.closed = False
         self.gains: list[float] = []
         self.writes: list[bytes] = []
         self.segments_started: list[tuple[str, str | None, object | None]] = []
@@ -108,8 +109,11 @@ class _CaptureOutputdStream:
     def write(self, data: bytes) -> None:
         self.writes.append(data)
 
-    def abort(self) -> None:
-        pass
+    def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        self.closed = True
+
+    def close(self) -> None:
+        self.closed = True
 
     def flush_sync(self) -> dict:
         ack = {
@@ -125,9 +129,6 @@ class _CaptureOutputdStream:
         }
         self.flush_acks.append(ack)
         return ack
-
-    def start(self) -> None:
-        pass
 
 
 def _make_outputd(*, drain_tail_sec: float = 0.0) -> TtsPlayout:

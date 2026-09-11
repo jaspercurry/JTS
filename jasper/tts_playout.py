@@ -20,6 +20,7 @@ import numpy as np
 from .assistant_loudness import (
     AssistantSourceMeter,
     DEFAULT_PROFILE_PATH as ASSISTANT_LOUDNESS_PROFILE_PATH,
+    INPUT_RATE as ASSISTANT_INPUT_RATE,
     UPSAMPLE_2X_CONTEXT,
     confidence_for_measurement,
     profile_for_outputd,
@@ -207,7 +208,13 @@ def tts_wire_is_wide() -> bool:
         return assistant_wire_is_wide(wire_format=resolve_ring_wire_format(None))
 
 
-async def _outputd_io(stream, method: str, *args, on_accepted=None, **kwargs):
+async def _outputd_io(
+    stream: _OutputdStreamAdapter,
+    method: str,
+    *args,
+    on_accepted=None,
+    **kwargs,
+):
     """Own a socket operation through cancellation and observe completed writes.
 
     Cancellation closes the socket; bounded I/O slices let the worker observe
@@ -221,8 +228,7 @@ async def _outputd_io(stream, method: str, *args, on_accepted=None, **kwargs):
             await asyncio.wait({worker})
         except asyncio.CancelledError:
             cancelled = True
-            if isinstance(stream, _OutputdStreamAdapter):
-                stream._poison(reason=None)
+            stream._poison(reason=None)
             if current is not None:
                 current.uncancel()
     try:
@@ -282,12 +288,11 @@ def _outputd_profile_tokens(profile) -> list[str] | None:
 
 
 class _OutputdStreamAdapter:
-    """Tiny sync writer used by TtsPlayout.
+    """The one TtsPlayout transport: a blocking writer over the TTS Unix socket.
 
-    TtsPlayout does resample, mono-to-stereo, and drain accounting
-    before calling ``self._stream.write(bytes)`` in a worker thread. This
-    adapter preserves the blocking stream shape while swapping the final
-    sink from PortAudio to the local TTS Unix socket.
+    TtsPlayout does resample, mono-to-stereo, and drain accounting before
+    calling into this adapter from a worker thread, so every method here may
+    block for up to its bounded timeout.
     """
 
     def __init__(self, sock: socket.socket, *, wire_wide: bool = False) -> None:
@@ -568,9 +573,6 @@ class _OutputdStreamAdapter:
             self._send_line(wire.tts_audio(self._audio_verb, len(data)))
             self._sendall_locked(data)
 
-    def abort(self) -> None:
-        self.flush_sync()
-
     def flush_sync(self) -> dict | None:
         with self._bounded_lock():
             try:
@@ -600,12 +602,6 @@ class _OutputdStreamAdapter:
             logger.warning("fan-in TTS IPC flush ack had unexpected shape: %r", ack)
             return None
         return ack
-
-    def start(self) -> None:
-        # No-op: the stream stays open after FLUSH_SYNC. Satisfies the
-        # abort()+start() shape TtsPlayout.flush falls back to
-        # when a stream has no flush_sync.
-        return None
 
     def close(self) -> None:
         if self._closed:
@@ -659,7 +655,11 @@ class TtsPlayout:
     mix boundary.
     """
 
-    INPUT_RATE = 24000
+    # The two ends of this class's resample, published so callers that count
+    # frames on either side read the rate from the code that converts them.
+    # The fan-in wire is fixed at the rate this module writes.
+    INPUT_RATE = ASSISTANT_INPUT_RATE
+    OUTPUT_RATE = _OUTPUTD_SAMPLE_RATE
 
     # Floor — below this, TTS is effectively silent. Used when the
     # user mutes, when Camilla is unreachable at startup, or when a
@@ -882,18 +882,15 @@ class TtsPlayout:
         self._stream = await self._connect_stream_adapter()
         return self
 
-    async def _current_outputd_stream(self):
+    async def _current_outputd_stream(self) -> _OutputdStreamAdapter | None:
         stream = self._stream
-        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+        if stream is not None and stream.closed:
             async with self._outputd_reconnect_lock:
                 # Another waiter may have published the replacement while we
                 # queued for the reconnect lock. Re-read inside ownership so
                 # every caller shares that adapter and no loser socket exists.
                 stream = self._stream
-                if not (
-                    isinstance(stream, _OutputdStreamAdapter)
-                    and stream.closed
-                ):
+                if stream is None or not stream.closed:
                     return stream
                 log_event(
                     logger,
@@ -950,13 +947,12 @@ class TtsPlayout:
                     else:
                         logger.debug("tts gain set: %.1f dB", clamped)
         stream = self._stream
-        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+        if stream is None or stream.closed:
             return
-        if stream is not None and hasattr(stream, "set_gain_db"):
-            try:
-                stream.set_gain_db(self.gain_db)
-            except OSError as e:
-                logger.warning("fan-in TTS IPC gain update failed: %s", e)
+        try:
+            stream.set_gain_db(self.gain_db)
+        except OSError as e:
+            logger.warning("fan-in TTS IPC gain update failed: %s", e)
 
     async def program_duck(self, on: bool) -> bool:
         """Switch fan-in's program duck on/off over this playout's connection.
@@ -981,11 +977,10 @@ class TtsPlayout:
             return False
 
         stream = await self._current_outputd_stream()
-        duck = getattr(stream, "program_duck", None)
-        if duck is None:
+        if stream is None:
             return failed("no_connection")
         try:
-            await asyncio.to_thread(duck, on)
+            await asyncio.to_thread(stream.program_duck, on)
         except OSError as e:
             return failed("send", detail=str(e))
         return True
@@ -1015,9 +1010,6 @@ class TtsPlayout:
             stream = await self._current_outputd_stream()
             if stream is None:
                 return
-            prepare = getattr(stream, "prepare_assistant", None)
-            if prepare is None:
-                return
             try:
                 prepare_kwargs = {
                     "provider": provider,
@@ -1040,14 +1032,13 @@ class TtsPlayout:
                         stamp_boot_ns=context_stamp_boot_ns,
                     )
                 await asyncio.to_thread(
-                    prepare,
+                    stream.prepare_assistant,
                     **prepare_kwargs,
                 )
                 return
             except OSError as e:
                 if (
                     attempt == 0
-                    and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
                     and not isinstance(e, TimeoutError)
                 ):
@@ -1064,7 +1055,7 @@ class TtsPlayout:
                 return
 
     async def pause_content_meter(self) -> None:
-        await self._send_meter_control("pause_content_meter")
+        await self._send_meter_control(_OutputdStreamAdapter.pause_content_meter)
 
     async def pause_content_meter_for_measurement(
         self,
@@ -1072,13 +1063,13 @@ class TtsPlayout:
     ) -> None:
         """Fail-closed meter pause that cannot outlive MEASURE_PAUSE.
 
-        Do not reconnect here: isolation setup must prove the command landed
-        on the canonical adapter it already owns. A poisoned/missing adapter
-        rolls the window back; ordinary later access owns reconnection.
+        Do not reconnect here: a missing or closed adapter (`stream is None
+        or stream.closed`) fails the window closed instead; ordinary later
+        access owns reconnection.
         """
 
         stream = self._stream
-        if not isinstance(stream, _OutputdStreamAdapter) or stream.closed:
+        if stream is None or stream.closed:
             raise OSError("canonical TTS IPC adapter unavailable")
         control_deadline = min(
             deadline_monotonic,
@@ -1090,36 +1081,36 @@ class TtsPlayout:
         stream.pause_content_meter(deadline_monotonic=control_deadline)
 
     async def resume_content_meter(self) -> None:
-        await self._send_meter_control("resume_content_meter")
+        await self._send_meter_control(_OutputdStreamAdapter.resume_content_meter)
 
-    async def _send_meter_control(self, method: str) -> None:
+    async def _send_meter_control(
+        self, method: Callable[[_OutputdStreamAdapter], None]
+    ) -> None:
         for attempt in range(2):
             stream = await self._current_outputd_stream()
             if stream is None:
                 return
-            fn = getattr(stream, method, None)
-            if fn is None:
-                return
             try:
-                await asyncio.to_thread(fn)
+                await asyncio.to_thread(getattr(stream, method.__name__))
                 return
             except OSError as e:
                 if (
                     attempt == 0
-                    and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
                     and not isinstance(e, TimeoutError)
                 ):
                     log_event(
                         logger,
                         "tts_fanin.control_retry",
-                        method=method,
+                        method=method.__name__,
                         reason="closed_socket",
                         exc_type=type(e).__name__,
                         err=str(e),
                     )
                     continue
-                logger.warning("fan-in TTS IPC %s failed: %s", method, e)
+                logger.warning(
+                    "fan-in TTS IPC %s failed: %s", method.__name__, e
+                )
                 return
 
     async def write(self, pcm: bytes) -> None:
@@ -1193,23 +1184,20 @@ class TtsPlayout:
         write_start = time.monotonic()
         for attempt in range(2):
             try:
-                if hasattr(stream, "set_gain_db"):
-                    await _outputd_io(stream, "set_gain_db", self.gain_db)
-                if hasattr(stream, "start_segment"):
-                    profile = self._profile_for_segment(
-                        segment_kind, source_profile=source_profile,
-                    )
-                    await _outputd_io(
-                        stream, "start_segment",
-                        kind=segment_kind,
-                        provider_item_id=provider_item_id,
-                        profile=profile,
-                    )
+                await _outputd_io(stream, "set_gain_db", self.gain_db)
+                profile = self._profile_for_segment(
+                    segment_kind, source_profile=source_profile,
+                )
+                await _outputd_io(
+                    stream, "start_segment",
+                    kind=segment_kind,
+                    provider_item_id=provider_item_id,
+                    profile=profile,
+                )
                 break
             except OSError as e:
                 if (
                     attempt == 0
-                    and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
                     and not isinstance(e, TimeoutError)
                 ):
@@ -1253,7 +1241,7 @@ class TtsPlayout:
             try:
                 await _outputd_io(stream, "write", chunk, on_accepted=commit_chunk)
             except OSError:
-                if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+                if stream.closed:
                     log_event(
                         logger,
                         "tts_fanin.audio_write_failed",
@@ -1316,14 +1304,7 @@ class TtsPlayout:
     async def end_segment(self) -> None:
         self._upsample_tail = None
         stream = self._stream
-        if stream is None:
-            self._schedule_assistant_source_profile_save()
-            return
-        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
-            self._schedule_assistant_source_profile_save()
-            return
-        end = getattr(stream, "end_segment", None)
-        if end is not None:
+        if stream is not None and not stream.closed:
             try:
                 await _outputd_io(stream, "end_segment")
             except OSError as e:
@@ -1387,12 +1368,7 @@ class TtsPlayout:
             return None
         ack: dict | None = None
         try:
-            flush_sync = getattr(stream, "flush_sync", None)
-            if flush_sync is not None:
-                ack = await _outputd_io(stream, "flush_sync")
-            else:
-                await _outputd_io(stream, "abort")
-                await _outputd_io(stream, "start")
+            ack = await _outputd_io(stream, "flush_sync")
         except Exception as e:  # noqa: BLE001
             logger.warning("fan-in TTS IPC flush failed: %s", e)
         if confirmed_tts_flush(ack):
@@ -1415,6 +1391,4 @@ class TtsPlayout:
         if self._stream is not None:
             stream = self._stream
             self._stream = None
-            close = getattr(stream, "close", None)
-            if close is not None:
-                await asyncio.to_thread(close)
+            await asyncio.to_thread(stream.close)

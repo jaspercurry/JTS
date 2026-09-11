@@ -42,7 +42,11 @@ from jasper.tts_playout import TtsPlayout
 
 class _CaptureStream:
     def __init__(self) -> None:
+        self.closed = False
         self.writes: list[bytes] = []
+
+    def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        self.closed = True
 
     def set_gain_db(self, db: float) -> None:
         pass
