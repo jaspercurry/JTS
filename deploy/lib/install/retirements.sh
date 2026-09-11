@@ -77,6 +77,7 @@ JASPER_RETIRED_LEFTOVERS=(
     # with nothing left to read or write them.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/active_speaker_commissioning_run.json ${STATE_DIR}/.active_speaker_commissioning_run.json.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json|the retired v1 commissioning run record and its lock/mutation sidecars"
+    # capture-entry anchor stash: its writer was deleted with the module (issue #4942 wave 0); drop this row once every box has installed a build past it
     "file|${STATE_DIR}/active_speaker_capture_entry.json|the retired capture-entry anchor stash"
 )
 
