@@ -33,7 +33,6 @@ from jasper import audio_runtime_plan, output_hardware
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
-from tests.conftest import bare_root_logger
 from tests.systemd_unit_helpers import values_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
@@ -194,23 +193,20 @@ class _Pass:
 
 @contextlib.contextmanager
 def _captured_events():
-    """The `event=` stream the unit's StandardError carries to the journal.
-
-    ``main()`` calls ``configure_logging()`` for real (this runs it
-    in-process rather than as a subprocess) -- and that unconditionally
-    filter-redacts *every* handler already on root, pytest's own capture
-    handler included, with nothing to undo it. ``bare_root_logger`` is the
-    same isolation ``test_logging_setup.py`` uses for that exact reason:
-    without it, a later test's ``caplog`` starts seeing pre-redacted text.
-    """
+    """The `event=` stream the unit's StandardError carries to the journal."""
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(logging.Formatter("%(message)s"))
     handler.setLevel(logging.DEBUG)
-    with bare_root_logger() as root:
-        root.addHandler(handler)
-        root.setLevel(logging.INFO)
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    try:
         yield stream
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
 
 
 def _run_reconcile(

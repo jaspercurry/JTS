@@ -359,6 +359,24 @@ def _isolate_jasper_logger_level():
         logger.setLevel(level)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_root_logger_filters():
+    """Undo any filter a test's real ``main()`` left on a root handler.
+
+    ``configure_logging()`` (``jasper/logging_setup.py``) unconditionally
+    adds ``REDACTING_FILTER`` to every handler already on root -- pytest's
+    own session-long capture handler included -- and never removes it.
+    Restoring each handler's filter list after every test is what keeps
+    that mutation from outliving the test that caused it.
+    """
+    snapshot = [(h, h.filters[:]) for h in logging.getLogger().handlers]
+    try:
+        yield
+    finally:
+        for handler, filters in snapshot:
+            handler.filters[:] = filters
+
+
 def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
     """Seat a real ``VolumeOwner`` over one (set, get) fader pair.
 
