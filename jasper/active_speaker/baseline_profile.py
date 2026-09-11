@@ -494,8 +494,7 @@ def _measured_level_trims(
     """Per-role attenuation-only trim from the MEASURED overlap-band level deltas.
 
     For each adjacent-driver crossover, both drivers' near-field captures through
-    the production graph give their level AT the shared Fc (a point, not a band
-    average — ``driver_acoustics._overlap_band_levels``); the driver-to-driver
+    the production graph give their level at the shared Fc; the driver-to-driver
     delta is the relative sensitivity at the handoff (the −6 dB Linkwitz-Riley
     shoulder cancels). We chain those deltas into a per-driver
     attenuation (quietest driver = reference, 0 dB), so the acoustic sum is level
@@ -1030,116 +1029,6 @@ def _derive_corrections(
                 "guided level-match to measure it"
             ),
         ))
-
-    # --- MEASURED polarity refinement (Lane E), automatic tier -------------
-    # Delay is intentionally absent: only Lane F's bounded, repeatable null
-    # walk may author a delay value. A scalar carried by one capture is
-    # forensic metadata, never an apply input.
-    if tuning_owner == "automatic":
-        from .crossover_contract import preset_matches_applied_profile
-
-        context_matches = preset_matches_applied_profile(
-            preset,
-            applied_profile_context,
-            candidate_corrections=corrections,
-        )
-        pairs_by_group = measurements.get("latest_summed_pairs_by_group")
-        measured_groups = sorted(
-            str(group_id)
-            for group_id, group_pairs in (
-                pairs_by_group.items()
-                if isinstance(pairs_by_group, Mapping)
-                else ()
-            )
-            if isinstance(group_pairs, Mapping) and group_pairs
-        )
-        if measured_groups and not context_matches:
-            issues.append(_issue(
-                "warning",
-                "summed_alignment_graph_context_changed",
-                (
-                    "summed alignment evidence belongs to different crossover "
-                    "settings; capture the pair again before applying polarity"
-                ),
-            ))
-        elif len(measured_groups) > 1:
-            issues.append(_issue(
-                "warning",
-                "group_specific_alignment_not_applied",
-                (
-                    "measurement-derived group-specific polarity evidence is "
-                    "saved but not emitted yet"
-                ),
-            ))
-        elif len(measured_groups) == 1:
-            from .commissioning_capture import build_crossover_alignment_proposal
-            from .crossover_alignment import POLARITY_INVERT
-
-            alignment = build_crossover_alignment_proposal(
-                preset,
-                measurements,
-                speaker_group_id=measured_groups[0],
-                expected_profile_context_id=expected_profile_context_id,
-                expected_applied_profile=applied_profile_context,
-            )
-            for item in alignment.get("proposals") or ():
-                proposal = item.get("proposal") if isinstance(item, Mapping) else None
-                proposal_issues = (
-                    proposal.get("issues") if isinstance(proposal, Mapping) else None
-                )
-                if isinstance(proposal_issues, list) and any(
-                    isinstance(issue, Mapping)
-                    and issue.get("code") == "summed_decision_evidence_rejected"
-                    for issue in proposal_issues
-                ) and not any(
-                    issue.get("code") == "summed_alignment_evidence_not_applied"
-                    for issue in issues
-                ):
-                    issues.append(_issue(
-                        "warning",
-                        "summed_alignment_evidence_not_applied",
-                        (
-                            "summed alignment evidence failed the current applied-"
-                            "graph, playback, placement, or analyzer contract; "
-                            "capture the normal/reverse pair again"
-                        ),
-                    ))
-                if (
-                    not isinstance(proposal, Mapping)
-                    or proposal.get("authorized") is not True
-                    or proposal.get("polarity_margin_db") is None
-                    or proposal.get("polarity_action") != POLARITY_INVERT
-                ):
-                    continue
-                quality = (
-                    item.get("decision_quality")
-                    if isinstance(item.get("decision_quality"), Mapping)
-                    else {}
-                )
-                if (
-                    quality.get("alignment_snr_ok") is not True
-                    or quality.get("null_depth_capped") is not False
-                ):
-                    if not any(
-                        issue.get("code") == "summed_alignment_quality_not_applied"
-                        for issue in issues
-                    ):
-                        issues.append(_issue(
-                            "warning",
-                            "summed_alignment_quality_not_applied",
-                            (
-                                "measured polarity was not applied because both "
-                                "summed captures need affirmative overlap-band SNR "
-                                "and an uncapped null"
-                            ),
-                        ))
-                    continue
-                role = str(proposal.get("upper_role") or "")
-                if role in corrections:
-                    corrections[role]["inverted"] = not bool(
-                        corrections[role]["inverted"]
-                    )
-                    inverted_provenance[role] = PROVENANCE_MEASURED
 
     corrections_provenance: dict[str, dict[str, str]] = {}
     for role in corrections:
@@ -1877,8 +1766,8 @@ def _compare_level_sittings(
     from its two siblings. "Level-matched" means matched acoustic output
     through the handover region, and both numbers here answer exactly that:
 
-    * ``driver_acoustics._overlap_band_levels``' point-at-Fc read, reached via
-      :func:`_measured_level_trims` — at Fc both branches sit on their matched
+    * The persisted point-at-Fc read via :func:`_measured_level_trims` — both
+      branches sit on their matched
       −6 dB Linkwitz-Riley shoulder, so their delta is the sensitivity delta,
       taken as a single interpolated point;
     * ``program_analysis.solve_branch_trims``' power-band average over the

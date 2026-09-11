@@ -4,9 +4,7 @@
 
 """Immutable domain contracts for the crossover-v2 intervention loop (#2291).
 
-The honest shape as a TYPE rather than a convention, after the 2026-08-10
-defect where a candidate's sections said 1,648.7 Hz while its trim arithmetic
-read 2,000 Hz. Not :mod:`jasper.active_speaker.crossover_contract`, which owns
+:mod:`jasper.active_speaker.crossover_contract` owns
 whether an ALREADY APPLIED graph matches its declaration; this owns what a
 PROPOSED intervention is. Every fingerprinted value uses
 :mod:`jasper.audio_measurement.evidence_identity`'s ``_core()`` payload and
@@ -63,7 +61,9 @@ __all__ = [
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
     "POLARITIES",
+    "POLARITY_INVERT",
     "POLARITY_INVERTED",
+    "POLARITY_KEEP",
     "POLARITY_NORMAL",
     "POSITION_AXES",
     "POSITION_AXIS_HORIZONTAL",
@@ -1314,11 +1314,9 @@ REGIME_NEAR_FIELD = "near_field"
 REGIME_REFERENCE_AXIS = "reference_axis"
 MEASURE_REGIMES = (REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS)
 
-#: The measurement frame's polarity words. Owner:
-#: `program_analysis.polarity_label`, which calls itself "the ONE spelling of
-#: the map". Distinct from the candidate's polarity ACTIONS
-#: (`crossover_alignment.POLARITY_KEEP` / `POLARITY_INVERT`), which say what a
-#: speaker should DO rather than how a capture was taken.
+#: Capture polarity describes the take; candidate polarity names the action.
+POLARITY_KEEP = "keep"
+POLARITY_INVERT = "invert"
 POLARITY_NORMAL = "normal"
 POLARITY_INVERTED = "inverted"
 POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)

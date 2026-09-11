@@ -75,7 +75,6 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     DriverPrescription,
     driver_max_q_for_gain,
     driver_passbands_from_safety_profile,
-    driver_prescription_from_mapping,
     driver_prescription_response_format,
     driver_prescription_route,
     driver_prescription_to_candidate_fields,
@@ -958,12 +957,6 @@ def test_a_subaudible_filter_is_admitted_and_counted_onto_the_receipt(
 
 
 def test_the_subaudible_count_is_a_measurement_and_not_a_default(tmp_path):
-    """Without this, ``subaudible_filters == 1`` above would pass on a stub.
-
-    Same shape as the crossover-knee counter's own control: a document whose
-    filters all clear the floor reads 0, and the durable read-back — which
-    rebuilds no disclosure — reads ``None``.
-    """
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
     document = _document([_cut(gain=-3.0), _boost(gain=3.0)], packet)
 
@@ -983,10 +976,6 @@ def test_the_subaudible_count_is_a_measurement_and_not_a_default(tmp_path):
         [_cut(gain=-3.0), _cut(gain=-0.2), _boost(gain=0.1)], packet
     ))
     assert mixed.subaudible_filters == 2
-
-    assert driver_prescription_from_mapping(
-        prescription.to_dict()
-    ).subaudible_filters is None
 
 
 def test_the_slot_cap_is_what_a_shallow_filter_actually_spends(tmp_path):
@@ -1132,16 +1121,9 @@ def test_a_long_rationale_is_truncated_and_disclosed_never_refused(packet, over_
     assert prescription.rationale == "z" * dp.RATIONALE_MAX_CHARS
     assert prescription.rationale_dropped_chars == over_by
     assert prescription.to_dict()["rationale_dropped_chars"] == over_by
-    # …and a rationale that fits is banked whole, with a measured 0 dropped, so
-    # the number above is a measurement rather than a stub. `None` is reserved
-    # for the durable read-back, which holds only the truncated text and so
-    # genuinely cannot know what was cut.
     short = _gate(packet, _document([_cut()], packet, rationale="the 5 kHz mode"))
     assert short.rationale == "the 5 kHz mode"
     assert short.rationale_dropped_chars == 0
-    assert driver_prescription_from_mapping(
-        prescription.to_dict()
-    ).rationale_dropped_chars is None
 
 
 @pytest.mark.parametrize("filters", [
@@ -1245,22 +1227,13 @@ def test_a_prescription_may_not_reach_past_numbers_into_a_fixed_shape(packet, pa
 # --------------------------------------------------------------------------- #
 
 
-def test_a_named_trim_is_carried_onto_the_prescription_and_survives_the_bank(packet):
-    """The door's whole job: accept the pin, and read it back unchanged.
-
-    The read-back matters because the durable path re-parses the receipt through
-    the same shape checks — a field the reader dropped would leave a banked
-    prescription silently un-pinned.
-    """
+def test_a_named_trim_is_carried_onto_the_prescription(packet):
     document = _document([_cut()], packet, pinned_trim_db={"tweeter": -6.5})
 
     prescription = _gate(packet, document)
 
     assert prescription.pinned_trim_db == (("tweeter", -6.5),)
     assert prescription.to_dict()["pinned_trim_db"] == {"tweeter": -6.5}
-    reread = dp.driver_prescription_from_mapping(prescription.to_dict())
-    assert reread is not None
-    assert reread.pinned_trim_db == prescription.pinned_trim_db
 
 
 def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
@@ -1359,13 +1332,9 @@ def test_the_contract_advertises_the_pin_as_an_optional_top_level_field():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_pre_registered_expectation_is_carried_banked_and_survives_the_reread(
+def test_a_pre_registered_expectation_is_carried_and_banked(
     packet,
 ):
-    """The whole contract: both numbers ride the receipt unchanged, reach the
-    candidate stamp that already says who asked, and come back off a durable
-    read. They move nothing — the same document without them accepts to the
-    identical class, filters and spend."""
     document = _document(
         [_cut()], packet, expected_delta_db=-0.75, declared_tilt_db_per_octave=-0.8,
     )
@@ -1378,10 +1347,6 @@ def test_a_pre_registered_expectation_is_carried_banked_and_survives_the_reread(
     banked = prescription.to_dict()
     assert banked["expected_delta_db"] == -0.75
     assert banked["declared_tilt_db_per_octave"] == -0.8
-    reread = dp.driver_prescription_from_mapping(banked)
-    assert reread is not None
-    assert reread.expected_delta_db == -0.75
-    assert reread.declared_tilt_db_per_octave == -0.8
     stamp = driver_prescription_to_candidate_fields(prescription, fitted=None)
     stamp = stamp[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["prescribed_by"]
     assert stamp["expected_delta_db"] == -0.75
@@ -2582,29 +2547,6 @@ def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
     assert fields[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["filters"][0][
         "gain"
     ] == 2.0
-
-
-def test_a_rehydrated_boost_carries_no_basis_and_still_routes(tmp_path):
-    """The durable read-back applies no bound and reconstructs no verdict.
-
-    That is deliberate — the bounds have one owner and it is the boundary. What
-    it costs is the disclosure, not the route: ``unvouched_filters`` comes back
-    ``None`` (nobody computed it) rather than ``0`` (computed, all vouched), so
-    a receipt read back out of durable state cannot claim evidence it never
-    re-derived.
-    """
-    packet = _speaker(tmp_path, classification=_boostable())
-    accepted = _gate(packet, _document([_boost()], packet))
-    assert accepted.classification_basis  # the gate DID vouch for it
-    assert accepted.unvouched_filters == 0
-
-    read_back = driver_prescription_from_mapping(accepted.to_dict())
-
-    assert read_back.prescription_class == "boost"
-    assert read_back.classification_basis == ()
-    assert read_back.composed_boost_db is None
-    assert read_back.unvouched_filters is None
-    assert driver_prescription_route(read_back) == LINEARIZATION_CANDIDATE_FIELD
 
 
 def test_the_basis_names_the_filter_it_vouched_for_by_role_and_frequency(tmp_path):
@@ -4015,70 +3957,6 @@ def test_an_envelope_written_before_the_class_existed_reads_as_the_blend_one(tmp
     staged = spool.take_staged_prescription(round_ordinal=7)
 
     assert staged.prescription_kind == PRESCRIPTION_KIND
-
-
-# --------------------------------------------------------------------------- #
-# the durable read-back
-# --------------------------------------------------------------------------- #
-
-
-def test_an_accepted_prescription_round_trips_through_the_durable_reader(packet):
-    prescription = _gate(packet, _document([_cut()], packet))
-
-    read_back = driver_prescription_from_mapping(prescription.to_dict())
-
-    assert read_back.filters == prescription.filters
-    assert read_back.passbands_hz == prescription.passbands_hz
-    assert read_back.prescriber_operator == "jasper"
-
-
-def test_a_pre_change_receipt_reads_back_without_a_tolerant_path(packet):
-    """The 2026-08-23 no-legacy-config ruling, checked rather than assumed.
-
-    A receipt banked before this change carries no ``unvouched_filters``. That
-    needs no tolerance and gets none: ``_PRESCRIPTION_FIELDS`` is an ALLOWLIST,
-    so a missing key simply takes its dataclass default — ``None``, the honest
-    "nobody computed this", never a substituted zero.
-
-    The floor this checks is the one shape that actually changed. A stored
-    document this contract genuinely could not parse would refuse loudly with
-    "re-author against the current contract"; nothing in this change creates
-    one, which is why there is no such refusal to pin.
-    """
-    banked = _gate(packet, _document([_cut()], packet)).to_dict()
-    pre_change = {k: v for k, v in banked.items() if k != "unvouched_filters"}
-    assert "unvouched_filters" not in pre_change
-
-    read_back = driver_prescription_from_mapping(pre_change)
-
-    assert read_back is not None
-    assert read_back.unvouched_filters is None
-    assert read_back.filters[0]["freq"] == TWEETER_FEATURE_HZ
-
-
-def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
-    assert driver_prescription_from_mapping(None) is None
-    assert driver_prescription_from_mapping({"kind": "nope"}) is None
-    assert driver_prescription_from_mapping({}) is None
-
-
-def test_a_gate_written_class_cannot_launder_a_boost_into_a_cut(packet):
-    """The class is re-derived from the gains, never trusted from the document.
-
-    It is the receipt's own attribution key, so an edited record that kept
-    ``"cut"`` would file a boost under the wrong heading. The read-back applies
-    no BOUND — the bounds have one owner and it is the boundary — so what stops
-    an over-deep edit reaching CamillaDSP is the emitter's own re-validation,
-    never this reader.
-    """
-    prescription = _gate(packet, _document([_cut()], packet))
-    record = prescription.to_dict()
-    record["filters"][0]["gain"] = 2.0
-
-    read_back = driver_prescription_from_mapping(record)
-
-    assert read_back.prescription_class == "boost"
-    assert read_back.unvouched_filters is None
 
 
 # --------------------------------------------------------------------------- #

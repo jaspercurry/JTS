@@ -14,7 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import numpy as np
 import pytest
 import yaml as yaml_lib
 
@@ -39,6 +38,9 @@ from jasper.active_speaker.baseline_profile import (
     recompose_applied_baseline_yaml,
 )
 from jasper.active_speaker import driver_base_trim as dbt
+from jasper.active_speaker.capture_geometry import (
+    DRIVER_PLACEMENT_POLICY_ID, SUMMED_PLACEMENT_POLICY_ID, normalized_placement_proof,
+)
 from jasper.active_speaker.commissioning_coordinator import (
     build_commissioning_view,
 )
@@ -57,6 +59,7 @@ from jasper.active_speaker.program_admission import readmit_summed_program_from_
 from jasper.audio_measurement.program import write_program_wav
 from tests.test_active_speaker_program_admission import _profile_and_targets, _roles
 from jasper.active_speaker.measurement import (
+    active_driver_targets, active_summed_targets, start_active_comparison_set,
     load_measurement_state,
     record_driver_measurement,
     record_summed_test_artifact,
@@ -3190,81 +3193,14 @@ def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
     )
 
 
-# --- MEASURED level-match trim refines / overrides the datasheet trim ---------
-#
-# End-to-end: a phone near-field capture per driver through the production
-# crossover produces an overlap-band level, and the measured driver-to-driver
-# delta OVERRIDES the interim datasheet sensitivity trim. When no usable capture
-# exists the datasheet trim is kept and the config is marked provisional.
-
-
-def _driver_capture_wav(
-    tmp_path: Path,
-    name: str,
-    *,
-    kind: str,
-    fc: float,
-    gain_db: float,
-    sr: int = 48000,
-):
-    """Synthesize a near-field driver capture through a crossover at ``fc``.
-
-    A low-passed (woofer) or high-passed (tweeter) sweep at a relative level, the
-    way the production graph would excite one driver. Returns ``(path, meta)``.
-    """
-    from scipy.signal import fftconvolve, firwin
-
-    from jasper.active_speaker import driver_acoustics as da
-    from jasper.audio_measurement import sweep as sweep_mod
-
-    sig, meta = sweep_mod.synchronized_swept_sine(
-        f1=da.DEFAULT_F1_HZ,
-        f2=da.DEFAULT_F2_HZ,
-        duration_approx_s=1.0,
-        sample_rate=sr,
-        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
-    )
-    gain = 10 ** (gain_db / 20)
-    if kind == "lowpass":
-        ir = (firwin(1023, fc, fs=sr) * gain).astype(np.float64)
-    else:
-        ir = (firwin(1023, fc, fs=sr, pass_zero=False) * gain).astype(np.float64)
-    captured = fftconvolve(sig.astype(np.float64), ir)
-    path = tmp_path / name
-    sweep_mod.write_sweep_wav(path, captured.astype(np.float32), sr)
-    return path, meta.to_dict()
-
-
 def _acoustic_measurements(
     topology: OutputTopology,
-    preview: dict,
     tmp_path: Path,
     *,
     fc: float,
     tweeter_hotter_db: float,
 ) -> dict:
-    """Record real per-driver acoustic captures + a summed validation.
-
-    The tweeter is measured ``tweeter_hotter_db`` hotter than the woofer at the
-    handoff (the woofer is attenuated so the tweeter capture does not clip).
-    """
-    from jasper.active_speaker.commissioning_capture import (
-        record_driver_acoustic_capture,
-    )
-    from jasper.active_speaker.capture_geometry import (
-        DRIVER_PLACEMENT_POLICY_ID,
-        SUMMED_PLACEMENT_POLICY_ID,
-        normalized_placement_proof,
-    )
-    from jasper.active_speaker.measurement import (
-        active_driver_targets,
-        active_summed_targets,
-        start_active_comparison_set,
-    )
-    from jasper.active_speaker.staging import compile_preset_from_crossover_preview
-
-    preset, issues, _gates = compile_preset_from_crossover_preview(topology, dict(preview))
-    assert preset is not None, issues
+    """Persist driver overlap evidence and a summed validation."""
     state_path = tmp_path / "measurements.json"
     driver_targets = {
         target["role"]: target for target in active_driver_targets(topology)
@@ -3295,41 +3231,44 @@ def _acoustic_measurements(
         "capture_page_build": "20260711.1",
     }
 
-    for role, kind, output_index, gain_db in (
-        ("woofer", "lowpass", 0, -tweeter_hotter_db),
-        ("tweeter", "highpass", 1, 0.0),
+    for role, output_index, gain_db in (
+        ("woofer", 0, -tweeter_hotter_db), ("tweeter", 1, 0.0),
     ):
-        wav, meta = _driver_capture_wav(
-            tmp_path, f"{role}.wav", kind=kind, fc=fc, gain_db=gain_db
-        )
         playback_id = f"playback-{role}"
-        out = record_driver_acoustic_capture(
+        record_driver_measurement(
             topology,
-            preset,
-            speaker_group_id="mono",
-            role=role,
-            captured_wav=wav,
-            sweep_meta=meta,
-            playback_id=playback_id,
-            test_level_dbfs=-40.0,
-            placement_proof=normalized_placement_proof(
-                policy_id=DRIVER_PLACEMENT_POLICY_ID,
-                acknowledgement_binding=f"binding-{role}-abcdefghijkl",
-                capture_session_id=f"capture-{role}",
-                capture_page=page,
-                speaker_group_id="mono",
-                role=role,
-                target_fingerprint=driver_targets[role]["target_fingerprint"],
-                comparison_set=comparison_set,
-            ),
+            {
+                "speaker_group_id": "mono", "role": role,
+                "outcome": "heard_correct_driver", "playback_id": playback_id,
+                "test_level_dbfs": -40.0, "observed_mic_dbfs": -40.0 + gain_db,
+                "acoustic": {
+                    "verdict": "present", "capture_geometry": "near_field",
+                    "mic_clipping": False, "in_band_mean_db": gain_db,
+                    "overlap_levels": [{"fc_hz": fc, "level_db": gain_db, "usable": True}],
+                },
+                "excitation": {
+                    "schema_version": 1,
+                    "scope": "sweep_plus_role_varying_commission_gain",
+                    "sweep_peak_dbfs": -12.0, "commissioning_gain_db": -40.0,
+                    "effective_peak_dbfs": -52.0,
+                },
+                "placement_proof": normalized_placement_proof(
+                    policy_id=DRIVER_PLACEMENT_POLICY_ID,
+                    acknowledgement_binding=f"binding-{role}-abcdefghijkl",
+                    capture_session_id=f"capture-{role}",
+                    capture_page=page,
+                    speaker_group_id="mono",
+                    role=role,
+                    target_fingerprint=driver_targets[role]["target_fingerprint"],
+                    comparison_set=comparison_set,
+                ),
+            },
             safe_session=_safe_session(
                 role=role, output_index=output_index, playback_id=playback_id
             ),
             state_path=state_path,
             now=f"2026-06-19T12:0{1 if role == 'woofer' else 2}:00Z",
         )
-        assert out["recorded"] is True, out
-        assert out["verdict"] == "present", out
 
     record_summed_test_artifact(
         topology,
@@ -3393,7 +3332,7 @@ def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
     )
     measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
         "verdict": "blend_ok",
@@ -3455,7 +3394,7 @@ def test_measured_trim_far_from_the_datasheet_is_refused_with_both_numbers(
     # the forensics found. Well beyond anything datasheet tolerance, pad
     # impedance, and estimator spread can jointly explain.
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=12.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=12.0
     )
 
     payload = build_baseline_profile_candidate(
@@ -3511,7 +3450,7 @@ def test_the_two_level_sittings_are_compared_and_disclosed(
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     # The phone level match measured a 12 dB gap...
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=12.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=12.0
     )
     preset, _issues, _gates = compile_preset_from_crossover_preview(
         topology, dict(preview)
@@ -3584,7 +3523,7 @@ def test_baseline_measured_trim_overrides_ui_sensitivity_estimate(
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
     )
 
     payload = build_baseline_profile_candidate(
@@ -3726,7 +3665,7 @@ def test_baseline_explicit_gain_skips_measured(tmp_path: Path) -> None:
     # Even with usable measured captures, an explicit operator gain wins and the
     # measured chain is skipped (its reference assumption would be inconsistent).
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
     )
 
     payload = build_baseline_profile_candidate(
@@ -3762,7 +3701,7 @@ def test_automatic_tuning_explicitly_overwrites_operator_pin(tmp_path: Path) -> 
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
     )
     measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
         "verdict": "blend_ok",
@@ -3799,7 +3738,7 @@ def test_automatic_tuning_refuses_incomparable_excitation(tmp_path: Path) -> Non
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
     )
     measurements["summary"]["latest_driver_measurements"][
         "mono:tweeter"
@@ -4168,7 +4107,7 @@ def test_manual_apply_preserves_persisted_polarity_and_delay_against_trim_eviden
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
     )
     # A conflicting summed observation is present (mutating the SAME dict
     # measurements["latest_summed_by_group"] aliases), but manual tuning must
@@ -4202,281 +4141,6 @@ def test_manual_apply_preserves_persisted_polarity_and_delay_against_trim_eviden
     assert payload["corrections"]["woofer"]["inverted"] is False
     assert payload["corrections_provenance"]["tweeter"]["inverted"] == PROVENANCE_MANUAL
     assert payload["corrections_provenance"]["tweeter"]["delay_ms"] == PROVENANCE_MANUAL
-
-
-# --- Lane E admitted polarity; Lane F exclusively owns measured delay --------
-
-
-def test_derive_corrections_stereo_alignment_does_not_mutate_shared_preset(
-    monkeypatch,
-):
-    from jasper.active_speaker import crossover_contract
-
-    monkeypatch.setattr(
-        crossover_contract,
-        "preset_matches_applied_profile",
-        lambda *_args, **_kwargs: True,
-    )
-    region = CrossoverRegion(
-        id="woofer_tweeter_2000hz",
-        lower_driver="woofer",
-        upper_driver="tweeter",
-        fc_hz=2000.0,
-        lower_polarity="inverted",
-        upper_polarity="inverted",
-        delay_target_driver="tweeter",
-        delay_ms=0.35,
-    )
-    preset = _duck_preset(crossover_regions=[region])
-    measurements = {
-        "latest_summed_pairs_by_group": {
-            "left": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
-            "right": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
-        },
-    }
-    corrections, issues, _meta = _derive_corrections(
-        preset, {}, measurements, tuning_owner="automatic",
-        expected_profile_context_id="protected-profile",
-    )
-
-    # Every role's persisted (manual) delay/inversion survives untouched.
-    assert corrections["woofer"]["inverted"] is True
-    assert corrections["tweeter"]["inverted"] is True
-    assert corrections["tweeter"]["delay_ms"] == 0.35
-    warning = next(
-        issue for issue in issues
-        if issue["code"] == "group_specific_alignment_not_applied"
-    )
-    assert "measurement-derived" in warning["message"]
-
-
-def test_derive_corrections_manual_tuning_never_looks_at_summed_evidence_at_all():
-    # Same fixture as above but tuning_owner="manual": the guard/warning never
-    # fires because the measured branch is never entered.
-    region = CrossoverRegion(
-        id="woofer_tweeter_2000hz",
-        lower_driver="woofer",
-        upper_driver="tweeter",
-        fc_hz=2000.0,
-        lower_polarity="inverted",
-        upper_polarity="inverted",
-        delay_target_driver="tweeter",
-        delay_ms=0.35,
-    )
-    preset = _duck_preset(crossover_regions=[region])
-    measurements = {
-        "latest_summed_pairs_by_group": {
-            "left": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
-            "right": {"woofer:tweeter": {"in_phase": {}, "reverse": {}}},
-        },
-    }
-
-    corrections, issues, _meta = _derive_corrections(
-        preset, {}, measurements, tuning_owner="manual",
-    )
-
-    assert corrections["woofer"]["inverted"] is True
-    assert corrections["tweeter"]["inverted"] is True
-    assert corrections["tweeter"]["delay_ms"] == 0.35
-    assert "group_specific_alignment_not_applied" not in {
-        issue["code"] for issue in issues
-    }
-
-
-def test_derive_corrections_automatic_uses_admitted_pair_and_never_capture_delay(
-    tmp_path: Path,
-) -> None:
-    import copy
-
-    from tests.test_active_speaker_commissioning_capture import (
-        _alignment_applied_profile,
-        _valid_alignment_pair,
-    )
-
-    preset, measurements = _valid_alignment_pair(tmp_path)
-    measurements = copy.deepcopy(measurements)
-    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    pair["in_phase"].update({
-        "outcome": "polarity_or_delay_problem",
-        "validated": False,
-        "delay_ms": 9.9,
-        "delay_target_role": "tweeter",
-    })
-    pair["in_phase"]["acoustic"].update({
-        "verdict": "polarity_or_delay_problem",
-        "null_depth_db": 24.0,
-    })
-    pair["reverse"].update({
-        "outcome": "polarity_or_delay_problem",
-        "validated": False,
-        "delay_ms": 8.8,
-        "delay_target_role": "woofer",
-    })
-    pair["reverse"]["acoustic"].update({
-        "verdict": "polarity_or_delay_problem",
-        "null_depth_db": 2.0,
-    })
-    for record in pair.values():
-        record["acoustic"].update({
-            "null_depth_capped": False,
-            "snr": {
-                "verdict": "ok",
-                "worst_relevant": {"verdict": "ok"},
-            },
-        })
-    applied_profile = _alignment_applied_profile(
-        preset,
-        topology_id=measurements["active_comparison_set"]["topology_id"],
-    )
-
-    corrections, _issues, meta = _derive_corrections(
-        preset,
-        {},
-        measurements,
-        tuning_owner="automatic",
-        expected_profile_context_id="protected-profile",
-        applied_profile_context=applied_profile,
-    )
-
-    assert corrections["tweeter"]["inverted"] is True
-    assert corrections["tweeter"]["delay_ms"] == 0.0
-    assert meta["corrections_provenance"]["tweeter"] == {
-        "inverted": PROVENANCE_MEASURED,
-    }
-
-    changed_graph = copy.deepcopy(applied_profile)
-    changed_graph["recomposition_snapshot"]["corrections"]["tweeter"][
-        "gain_db"
-    ] = -1.0
-    stale_corrections, stale_issues, stale_meta = _derive_corrections(
-        preset,
-        {},
-        measurements,
-        tuning_owner="automatic",
-        expected_profile_context_id="protected-profile",
-        applied_profile_context=changed_graph,
-    )
-    assert stale_corrections["tweeter"]["inverted"] is False
-    assert "tweeter" not in stale_meta["corrections_provenance"]
-    assert "summed_alignment_graph_context_changed" in {
-        issue["code"] for issue in stale_issues
-    }
-
-
-def test_derive_corrections_never_applies_polarity_without_band_snr(
-    tmp_path: Path,
-) -> None:
-    from tests.test_active_speaker_commissioning_capture import (
-        _alignment_applied_profile,
-        _valid_alignment_pair,
-    )
-
-    preset, measurements = _valid_alignment_pair(tmp_path)
-    applied_profile = _alignment_applied_profile(
-        preset,
-        topology_id=measurements["active_comparison_set"]["topology_id"],
-    )
-    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    pair["in_phase"]["outcome"] = "polarity_or_delay_problem"
-    pair["in_phase"]["validated"] = False
-    pair["in_phase"]["acoustic"].update({
-        "verdict": "polarity_or_delay_problem",
-        "null_depth_db": 24.0,
-    })
-    pair["reverse"]["outcome"] = "polarity_or_delay_problem"
-    pair["reverse"]["validated"] = False
-    pair["reverse"]["acoustic"].update({
-        "verdict": "polarity_or_delay_problem",
-        "null_depth_db": 2.0,
-    })
-
-    corrections, issues, meta = _derive_corrections(
-        preset,
-        {},
-        measurements,
-        tuning_owner="automatic",
-        expected_profile_context_id="protected-profile",
-        applied_profile_context=applied_profile,
-    )
-
-    assert corrections["tweeter"]["inverted"] is False
-    assert "tweeter" not in meta["corrections_provenance"]
-    assert "summed_alignment_quality_not_applied" in {
-        issue["code"] for issue in issues
-    }
-
-
-def test_derive_corrections_surfaces_rejected_alignment_evidence(
-    tmp_path: Path,
-) -> None:
-    from tests.test_active_speaker_commissioning_capture import (
-        _alignment_applied_profile,
-        _valid_alignment_pair,
-    )
-
-    preset, measurements = _valid_alignment_pair(tmp_path)
-    applied_profile = _alignment_applied_profile(
-        preset,
-        topology_id=measurements["active_comparison_set"]["topology_id"],
-    )
-    pair = measurements["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    for record in pair.values():
-        record["excitation"] = None
-
-    corrections, issues, meta = _derive_corrections(
-        preset,
-        {},
-        measurements,
-        tuning_owner="automatic",
-        expected_profile_context_id="protected-profile",
-        applied_profile_context=applied_profile,
-    )
-
-    assert corrections["tweeter"]["inverted"] is False
-    assert "tweeter" not in meta["corrections_provenance"]
-    assert "summed_alignment_evidence_not_applied" in {
-        issue["code"] for issue in issues
-    }
-
-
-def test_derive_corrections_rejects_flat_record_and_stale_profile_context(
-    tmp_path: Path,
-) -> None:
-    from tests.test_active_speaker_commissioning_capture import _valid_alignment_pair
-
-    preset, measurements = _valid_alignment_pair(tmp_path)
-    malicious = {
-        "latest_summed_by_group": {
-            "mono": {
-                "validated": True,
-                "polarity": "invert_tweeter",
-                "delay_ms": 12.0,
-                "delay_target_role": "tweeter",
-            },
-        },
-    }
-    flat_corrections, _issues, flat_meta = _derive_corrections(
-        preset,
-        {},
-        malicious,
-        tuning_owner="automatic",
-        expected_profile_context_id="protected-profile",
-    )
-    stale_corrections, _issues, stale_meta = _derive_corrections(
-        preset,
-        {},
-        measurements,
-        tuning_owner="automatic",
-        expected_profile_context_id="different-current-profile",
-    )
-
-    for corrections, meta in (
-        (flat_corrections, flat_meta),
-        (stale_corrections, stale_meta),
-    ):
-        assert corrections["tweeter"]["inverted"] is False
-        assert corrections["tweeter"]["delay_ms"] == 0.0
-        assert "tweeter" not in meta["corrections_provenance"]
 
 
 # --- corrections_provenance block on the candidate/applied payload ---------
@@ -6442,7 +6106,6 @@ def _applied_measured_profile(tmp_path: Path, *, measured: bool) -> tuple:
     # is refused per role and the profile ships the datasheet estimate.
     measurements = _acoustic_measurements(
         topology,
-        preview,
         tmp_path,
         fc=2000.0,
         tweeter_hotter_db=21.0 if measured else 12.0,
@@ -6587,7 +6250,7 @@ def test_newer_guided_captures_replace_the_banked_trim_and_the_receipt_says_so(
     assert stale is not None
 
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
     )
     measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
         "verdict": "blend_ok",
@@ -6648,7 +6311,7 @@ def test_a_frozen_re_persist_re_banks_the_evidence_time_not_the_persist_time(
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
+        topology, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
     )
     measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
         "verdict": "blend_ok",

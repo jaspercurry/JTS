@@ -310,9 +310,7 @@ def test_consumed_module_level_aliases_match_profiles():
 
     from jasper.active_speaker import driver_acoustics
 
-    assert driver_acoustics.SILENT_PEAK_DBFS == DRIVER.silent_peak_dbfs
     assert driver_acoustics.DEFAULT_NULL_THRESHOLD_DB == DRIVER.null_threshold_db
-    assert driver_acoustics.OVERLAP_MIN_BINS == DRIVER.overlap_min_bins
 
 
 def test_default_quality_model_is_room():

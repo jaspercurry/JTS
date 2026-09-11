@@ -24,12 +24,10 @@ import math
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_alignment import (
-    POLARITY_INVERT,
-    POLARITY_KEEP,
-)
 from jasper.audio_measurement.program_analysis import half_period_us
 from jasper.log_event import log_event
+
+from .contracts import POLARITY_INVERT, POLARITY_KEEP
 
 __all__ = [
     "ALIGNMENT_NO_CROSSOVER_REGION",
