@@ -42,12 +42,10 @@ FRONTEND_INSTRUCTIONS = (
     "Do not invite another question after every answer."
 )
 
-# Quiet output deltas are answer audio only this close to the last audible
-# one: Live streams one real-time timeline, and the quiet between words is
-# what keeps the fan-in TTS lane fed. Past this the answer is over and
-# playout must be allowed to drain, because the host opens its follow-up
-# window from that drain (`continuous_watchdog` in .conversation). Sized to
-# the host's own end-of-phrase silence, END_OF_UTTERANCE_SILENCE_SEC.
+# Seconds of quiet output delta still played after the last audible one, so
+# the fan-in TTS lane stays fed between words. Must end well inside
+# `response_stall_timeout_sec`, or playout never drains and the host's
+# follow-up window never opens (`continuous_watchdog` in .conversation).
 SILENCE_BRIDGE_SEC = 0.8
 
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
