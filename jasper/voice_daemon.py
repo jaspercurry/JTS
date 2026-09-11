@@ -1494,8 +1494,21 @@ class WakeLoop:
             return error.result
         except Exception as e:  # noqa: BLE001
             logger.exception("manual session start failed: %s", e)
-            if self._turns.output_episode is not None:
-                await self._turns.cleanup_after_failed_begin()
+            try:
+                if self._turns.output_episode is not None:
+                    await self._turns.cleanup_after_failed_begin()
+            except Exception as cleanup_error:  # noqa: BLE001
+                # `_release_failed_turn` re-raises a stored BaseException
+                # after every phase runs; without this try/except that
+                # escape skips both refusal-cue branches below and the
+                # button press goes unanswered.
+                log_event(
+                    logger,
+                    "turn.begin_cleanup_failed",
+                    level=logging.ERROR,
+                    exc_type=type(cleanup_error).__name__,
+                    err=str(cleanup_error),
+                )
             # A turn that died because the connection went down between
             # the paused gate above and here (the idle context reset
             # reopens inside `_begin_turn`) must still answer the press
