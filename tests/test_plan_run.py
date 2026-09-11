@@ -52,7 +52,7 @@ _SCOPES = {"fp-a": "candidate", "fp-b": "candidate"}
 def _walk(angles: list[int], candidates: tuple[str, ...]) -> ac.AngleCaptureRequest:
     """One summed config per candidate at each angle, poses in the stated order."""
     return ac.AngleCaptureRequest(
-        candidates=tuple(dict.fromkeys(candidates)), stops=tuple(
+        candidates=candidates, stops=tuple(
             ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate)
             for angle in angles
             for candidate in candidates

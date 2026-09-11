@@ -1762,7 +1762,7 @@ def test_a_template_that_is_not_a_spec_is_refused() -> None:
 
 
 @pytest.mark.parametrize("repeats", [1, 3])
-@pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp")])
+@pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
 def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candidates):
     request = ac.request_for_program(
         mp.program("room", "quick"), candidates=candidates, repeats=repeats,
@@ -1820,7 +1820,6 @@ def test_old_request_version_refuses_by_name(spool_slot, version):
 @pytest.mark.parametrize("fields, reason", [
     ({"operating_levels_db": (-20., -14.)}, ac.WALK_LEVEL_WINDOWS_UNSUPPORTED_YET),
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
-    ({"candidates": ("base", "base")}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
     *[({"spl_ceiling_db_spl": v}, ac.WALK_STIMULUS_NOT_ACCEPTED) for v in (0, -1, True, "80", math.nan, math.inf)],

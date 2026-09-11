@@ -433,7 +433,7 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must be nonempty names")
         object.__setattr__(self, "candidates", tuple(self.candidates))
         cycle = self.candidates or ("base",)
-        if len(set(cycle)) != len(cycle) or set(cycle) != {
+        if set(cycle) != {
             stop.candidate_id or "base" for stop in self.stops
         }:
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must match the stop identities")
@@ -760,7 +760,7 @@ def walk_price(
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
     takes = Counter(stop.candidate_id or "base" for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in request.candidates or ("base",)) * request.repeats
+    captures = sum(takes[candidate] for candidate in set(request.candidates or ("base",))) * request.repeats
     return {
         "mic_moves": len({s.place for s in request.stops}),
         "captures": captures,
