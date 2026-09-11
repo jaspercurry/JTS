@@ -443,11 +443,11 @@ class WakeLoop:
 
     @property
     def _cfg(self) -> Config:
-        return self._assistant_output._cfg
+        return self._assistant_output.cfg
 
     @property
     def _tts(self) -> TtsPlayout:
-        return self._assistant_output._tts
+        return self._assistant_output.tts
 
     @property
     def _cues(self) -> AudioCueManager | None:
@@ -455,11 +455,11 @@ class WakeLoop:
 
     @property
     def _ducker(self) -> FanInDucker:
-        return self._assistant_output._ducker
+        return self._assistant_output.ducker
 
     @property
     def _volume_coordinator(self) -> VolumeCoordinator:
-        return self._assistant_output._volume_coordinator
+        return self._assistant_output.volume_coordinator
 
     def _create_fire_and_forget_task(
         self,
