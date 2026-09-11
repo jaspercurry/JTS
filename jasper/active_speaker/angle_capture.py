@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -762,7 +763,7 @@ def walk_price(
     takes = Counter(stop.candidate_id or "base" for stop in request.stops)
     captures = sum(takes[candidate] for candidate in set(request.candidates or ("base",))) * request.repeats
     return {
-        "mic_moves": len({s.place for s in request.stops}),
+        "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(stage1_base_entries(plan_shape) + captures) / 60
@@ -1051,18 +1052,18 @@ def session_lateral_walk(
             f"(externally_positioned={request.externally_positioned}) but this "
             f"session is externally_positioned={externally_positioned}",
         )
-    entries = base_entries + len(request.stops)
+    entries = base_entries + len(request.stops) * request.repeats
     attempts = stage1_plan_max_attempts(
         entries, include_cloud_measure=plans_cloud_group,
     )
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise LateralWalkRefused(
             WALK_OVER_CAPTURE_CAPACITY,
-            f"{base_entries} session captures + {len(request.stops)} stops = "
+            f"{base_entries} session captures + {len(request.stops) * request.repeats} takes = "
             f"{entries} entries, needing {attempts} capture blob indexes over a "
             f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
         )
-    return tuple(stop.prompt for stop in resolve_request(request))
+    return tuple(stop.prompt for stop in resolve_request(request) for _ in range(request.repeats))
 
 
 def announced_indexes(request: AngleCaptureRequest) -> tuple[int, ...]:

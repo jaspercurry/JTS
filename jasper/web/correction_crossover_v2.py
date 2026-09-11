@@ -2063,7 +2063,7 @@ def _take_staged_angle_walk(
     }
     try:
         placed = stop_specs(
-            request, candidate_scopes=candidate_scopes, prompts=prompts,
+            request, candidate_scopes=candidate_scopes, prompts=prompts[::request.repeats],
         )
     except ValueError as exc:
         # Only the stop's own pose is new on those constructions; the spec's own
@@ -2077,7 +2077,7 @@ def _take_staged_angle_walk(
             specs_by_index[index] = spec
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
-        for stop in request.stops
+        for stop in request.stops for _ in range(request.repeats)
     )
 
     log_event(

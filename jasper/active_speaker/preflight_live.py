@@ -16,6 +16,7 @@ from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
 from .crossover_v2.refusal_copy import CrossoverV2Refused
+from .measured_crossover_candidate import MeasuredCrossoverCandidate
 from .preflight import PreflightFacts, PreflightIssue
 from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
@@ -40,12 +41,12 @@ def read_preflight_facts(
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
         except ValueError:
             pass
-    candidates = {}
+    candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
     for name in dict.fromkeys(stop.candidate_id for stop in plan.stops if stop.candidate_id):
         try:
             candidates[name] = candidate_bank.find_banked_candidate(name).candidate
         except candidate_bank.CandidateBankRefusal as exc:
-            issues.append(PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}"))
+            candidates[name] = PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}")
     return PreflightFacts(
         applied_profile=load_applied_baseline_profile_state() or {},
         topology=context.topology if context is not None else None,

@@ -1356,3 +1356,14 @@ def test_arm_plan_preserves_upstream_layers_without_changing_positions(slot, pro
     assert {p.purpose for p in prompts} == {purpose}
     assert {s.graph_scope for s in specs.values() if s.kind == MEASURE_KIND_VERIFY} == {scope}
     assert {claim.measurement_purpose for claim in claims} == {purpose}
+
+
+def test_session_walk_plays_the_resolved_repeats(slot):
+    request = ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED), ac.AngleStop(20, ac.REGIME_SUMMED)), repeats=2,
+    )
+    spool.stage_angle_request(request)
+    prompts, _consumer, specs, _trims, claims = _take()
+    assert [ac.position_angle_deg(prompt) for prompt in prompts] == [0, 0, 20, 20]
+    assert [spec.positions for index, spec in specs.items() if index != _MEASURE_INDEX] == [(0,), (0,), (20,), (20,)]
+    assert len(claims) == 4

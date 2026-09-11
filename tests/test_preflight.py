@@ -34,6 +34,8 @@ def ready_facts(plan, **changes):
 
 @pytest.mark.parametrize("change,code", [
     ("room", "measurement_candidate_room_mismatch"),
+    ("base", "measurement_candidate_base_mismatch"),
+    ("tune", "measurement_candidate_tune_mismatch"),
     ("ceiling", "walk_ceiling_above_stop"),
     ("calibration", "measure_spl_calibration_required"),
     ("mover", "walk_over_mover_envelope"),
@@ -50,12 +52,16 @@ def ready_facts(plan, **changes):
 def test_preflight_issues(tuning_profile, change, code):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, kind="seat", seat_offset_m=(0, 0, 0)),), spl_ceiling_db_spl=80)
     facts = ready_facts(plan)
-    if change in {"room", "candidate"}:
+    if change in {"room", "candidate", "base", "tune"}:
         candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
+        if change == "base":
+            candidate = replace(candidate, source_preset=replace(candidate.source_preset, name="other"))
+        elif change == "tune":
+            candidate = replace(candidate, role_attenuations_db={"woofer": 0.0, "tweeter": -2.0})
         name = candidate.fingerprint
         plan = replace(plan, candidates=(name,), stops=(replace(plan.stops[0], candidate_id=name),))
         facts = replace(facts, applied_profile=tuning_profile.applied_profile,
-                        topology=tuning_profile.topology, candidates={name: candidate} if change == "room" else {})
+                        topology=tuning_profile.topology, candidates={} if change == "candidate" else {name: candidate})
     elif change == "ceiling":
         plan = replace(plan, spl_ceiling_db_spl=86)
     elif change == "calibration":
@@ -114,3 +120,47 @@ def test_cli_plan_prints_blocking_preflight(monkeypatch, capsys):
     assert body["code"] == "walk_ceiling_above_stop"
     assert body["issues"][0]["blocking"] is True
     assert body["next_action"]
+
+
+@pytest.mark.parametrize("fault", ["box", "wrong_mic", "no_calibration"])
+def test_live_facts_surface_owner_refusals(monkeypatch, fault):
+    from types import SimpleNamespace
+    from jasper.active_speaker import preflight_live
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+    from jasper.audio_measurement import calibration, household_mic
+
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), spl_ceiling_db_spl=80)
+    facts = ready_facts(plan)
+    monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: facts.applied_profile)
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
+    monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
+
+    def context(_status):
+        if fault == "box":
+            raise CrossoverV2Refused("setup incomplete")
+        return SimpleNamespace(topology=facts.topology,
+            preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+
+    monkeypatch.setattr(preflight_live, "resolve_conductor_context", context)
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(
+        model_key="minidsp_umik2", model_label="UMIK-2"))
+    monkeypatch.setattr(household_mic, "resolved_household_mic", lambda: None if fault == "no_calibration" else (
+        object(), SimpleNamespace(model="dayton_imm6" if fault == "wrong_mic" else "minidsp_umik2", raw_path="unused")))
+    monkeypatch.setattr(calibration, "resolve_mic_sensitivity", lambda **kwargs: facts.anchor.sensitivity)
+    report = preflight(plan, preflight_live.read_preflight_facts(plan))
+    code = "measure_box_not_ready" if fault == "box" else "measure_spl_calibration_required"
+    assert any(issue.code == code and issue.blocking and issue.next_action for issue in report.issues)
+
+
+def test_supplied_facts_do_not_read_files(monkeypatch):
+    from jasper.active_speaker import seat_level_reference
+    from jasper.audio_measurement import calibration
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("preflight attempted an external read")
+
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    facts = ready_facts(plan)
+    monkeypatch.setattr(seat_level_reference, "load_seat_level_reference", unexpected_read)
+    monkeypatch.setattr(calibration, "resolve_mic_sensitivity", unexpected_read)
+    assert preflight(plan, facts).issues == ()

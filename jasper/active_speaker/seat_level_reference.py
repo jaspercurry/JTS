@@ -34,13 +34,16 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
 
 from ._common import finite_float
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.calibration import MicSensitivity
 
 SCHEMA_VERSION = 1
 SEAT_LEVEL_REFERENCE_KIND = "jts_active_speaker_seat_level_reference"
@@ -302,7 +305,7 @@ def _ceiling_db_spl() -> float:
 @dataclass(frozen=True)
 class AnchorFacts:
     record: Mapping[str, Any]
-    sensitivity: Any | None
+    sensitivity: MicSensitivity | None
 
 
 def resolve_anchor_level(

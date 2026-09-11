@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from itertools import groupby
 from typing import Any, Mapping
 
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
@@ -51,7 +50,7 @@ class PreflightIssue:
 class PreflightFacts:
     applied_profile: Mapping[str, Any]
     topology: Any
-    candidates: Mapping[str, MeasuredCrossoverCandidate]
+    candidates: Mapping[str, MeasuredCrossoverCandidate | PreflightIssue]
     mic_present: bool
     mic_identified: bool
     anchor: AnchorFacts
@@ -86,7 +85,7 @@ class PreflightReport:
 
     @property
     def mic_moves(self) -> int:
-        return sum(1 for _place, _group in groupby(row.pose for row in self.schedule))
+        return int(self.price.get("mic_moves") or 0)
 
     def to_dict(self) -> dict[str, Any]:
         first = next((issue for issue in self.issues if issue.blocking), None)
@@ -118,18 +117,22 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         valid_shape = False
     captures = len(plan.stops) * plan.repeats if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
-        add("walk_over_capture_capacity", f"{captures} captures exceed {MAX_CAPTURE_PLAN_ATTEMPTS}")
+        add("walk_over_capture_capacity", f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
 
     scopes: dict[str, str] = {}
-    snapshot, faults = applied_baseline_hardware_match(facts.topology, applied_profile=facts.applied_profile)
+    snapshot, faults = (None, []) if facts.topology is None else applied_baseline_hardware_match(
+        facts.topology, applied_profile=facts.applied_profile,
+    )
     if snapshot is None and any(stop.plays_summed for stop in plan.stops):
         add("measurement_profile_unavailable", str(faults))
     for name in dict.fromkeys(stop.candidate_id for stop in plan.stops if stop.candidate_id):
         candidate = facts.candidates.get(name)
+        if isinstance(candidate, PreflightIssue):
+            issues.append(candidate)
+            continue
         if candidate is None:
-            if not any(issue.code in {"not_found", "ambiguous"} and name in issue.detail for issue in issues):
-                add("not_found", name)
+            add("not_found", name)
             continue
         scopes[name] = candidate_trial_scope(candidate)
         if snapshot is not None:
@@ -176,5 +179,4 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         )
     ) if valid_shape else ()
     price = walk_price(plan) if valid_shape else {}
-    report = PreflightReport(plan, tuple(issues), schedule, price, ceiling, scopes)
-    return replace(report, price={**price, "mic_moves": report.mic_moves})
+    return PreflightReport(plan, tuple(issues), schedule, price, ceiling, scopes)
