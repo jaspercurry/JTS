@@ -272,8 +272,8 @@ def _spotify_page(
 
 
 def _mode_picker_html(*, selected: str = "bounce") -> str:
-    """The bounce-vs-manual radio group. Used on the initial credentials
-    page and on the management page's settings panel."""
+    """The bounce-vs-manual radio group on the initial credentials page.
+    Changing mode afterwards means resetting credentials and re-choosing."""
     bounce_checked = ' checked' if selected == 'bounce' else ''
     bounce_class = ' selected' if selected == 'bounce' else ''
     manual_checked = ' checked' if selected == 'manual' else ''
@@ -315,12 +315,11 @@ def _setup_wizard_html(
 <p class="form-hint">Create an app, then copy its Client ID. The Client
    Secret is not needed.</p>
 
-<h2>Step 2: Pick how Spotify should send you back here</h2>
-{_mode_picker_html(selected="bounce")}
-
 <form method="post" action="setup-credentials" id="creds-form">
   {csrf}
-  <input type="hidden" name="mode" id="mode-input" value="bounce">
+
+  <h2>Step 2: Pick how Spotify should send you back here</h2>
+  {_mode_picker_html(selected="bounce")}
 
   <h2>Step 3: Paste the Client ID</h2>
   <div class="field">
