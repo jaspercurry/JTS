@@ -49,7 +49,6 @@ import time
 import urllib.parse
 import urllib.request
 from contextlib import suppress
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -68,12 +67,12 @@ from ._common import (
     access_log_line,
     begin_request,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
     flash_error,
     form_guarded,
-    guard_read_request,
     read_env_file,
     restart_voice_daemon,
-    route_path,
     send_html_response,
     send_see_other,
     write_env_file,
@@ -134,7 +133,7 @@ def _write_creds_file(client_id: str, client_secret: str, *, path: str) -> None:
 
 
 def _delete_creds_file(path: str) -> None:
-    # Not `_common.delete_env_file`: that one warns and continues, and the
+    # Not `env_file.delete_env_file`: that one warns and continues, and the
     # reset handler must not report a cleared secret that is still on disk.
     with suppress(FileNotFoundError):
         os.unlink(path)
@@ -1048,20 +1047,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def do_GET(self) -> None:  # noqa: N802
-            handler_fn = _GET_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 

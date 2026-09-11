@@ -209,8 +209,10 @@
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-danger) 50%, transparent);
 }
 
-/* Join-by-name fields. .field comes from app.css; these tweak the
-   checkbox row and result slot. */
+/* Join-by-name disclosure: shared .disclosure primitive, spaced below the
+   available-networks list above it. .field comes from app.css; these tweak
+   the checkbox row and result slot. */
+.join-by-name { margin-top: 28px; }
 .manual-fields .field { margin-bottom: 12px; }
 .manual-check {
   display: flex;
@@ -225,6 +227,7 @@
 #manual-result { margin: 8px 0; }
 
 /* Saved-networks disclosure: shared .disclosure primitive, spaced below the
-   manual-connect card above it, plus the inline count next to its summary. */
+   join-by-name disclosure above it, plus the inline count next to its
+   summary. */
 .saved-networks { margin-top: 28px; }
 .saved-count { color: var(--muted); font-family: var(--font-sans); font-weight: 400; margin-left: 6px; }

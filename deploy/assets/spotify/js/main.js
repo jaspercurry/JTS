@@ -6,8 +6,8 @@
 //
 // The page is server-rendered (forms POST and redirect); this module adds
 // the following progressive enhancements:
-//   1. highlight the picked OAuth-mode radio card and mirror it into the
-//      hidden form field (the picker is a sibling of the credentials form),
+//   1. highlight the picked OAuth-mode radio card (the radios themselves
+//      are inside the credentials form and need no mirroring),
 //   2. copy the redirect URL to the clipboard, wired by the shared copy.js
 //      module,
 //   3. live-preview a pasted playlist's name before enabling its Add button,
@@ -29,19 +29,16 @@ wireConfirmForms();
 wireCopyButtons();
 
 // ---------------------------------------------------------------------------
-// 1. OAuth-mode picker (bounce / manual) — highlight + mirror into the form.
+// 1. OAuth-mode picker (bounce / manual) — highlight the picked card.
 // ---------------------------------------------------------------------------
-// The radios live in a .mode-picker block that is a SIBLING of the
-// credentials <form> (the form only carries a hidden <input name="mode">),
-// so we copy the chosen value across on change.
-const modeInput = document.getElementById("mode-input");
+// The radios carry name="mode" directly into the credentials <form>; this
+// only drives the `.selected` highlight class the radio's own state can't.
 document.querySelectorAll(".mode-picker input[type=radio]").forEach((radio) => {
   radio.addEventListener("change", () => {
     document
       .querySelectorAll(".mode-picker label")
       .forEach((label) => label.classList.remove("selected"));
     if (radio.parentElement) radio.parentElement.classList.add("selected");
-    if (modeInput) modeInput.value = radio.value;
   });
 });
 

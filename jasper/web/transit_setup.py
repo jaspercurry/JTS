@@ -62,7 +62,6 @@ import html
 import logging
 import os
 import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -76,12 +75,12 @@ from ._common import (
     RESTART_CLAUSE,
     api_key_token_is_valid,
     begin_request,
+    dispatch_get,
+    dispatch_post,
     form_guarded,
     send_html_response,
     send_see_other,
-    guard_read_request,
     restart_voice_daemon,
-    route_path,
     SECRET_ENV_MODE,
 )
 from .chrome import safe_back_href
@@ -605,20 +604,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            handler_fn = _GET_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            handler_fn = _POST_ROUTES.get(route_path(self.path))
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_fn(self)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 
