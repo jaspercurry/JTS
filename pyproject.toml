@@ -515,6 +515,7 @@ exhaustive_ignores = [
   "voice_daemon",
   "volume_coordinator",
   "volume_curve",
+  "volume_floor",
   "volume_observers",
   "volume_owner",
   "volume_persistence",
