@@ -276,10 +276,17 @@ def test_program_config_discloses_a_shallow_tweeter_crossover_never_refuses_it(
     )
     assert fields["slope_db_per_octave"] == "12"
     assert fields["commissioning_floor_db_per_octave"] == "24"
-    assert not event_field_maps(
-        caplog, "active_speaker.program_emit_gate",
-        result="blocked_tweeter_hp_slope_below_floor",
-    )
+    # …and no "blocked_*" result fired for this preset — the shallow slope
+    # only disclosed, it never refused (this function's whole reason to
+    # exist per the docstring above; "blocked_tweeter_hp_below_floor" is the
+    # one this same function could wrongly emit if the corner gate above it
+    # regressed onto the slope path).
+    blocked_results = {
+        fields["result"]
+        for fields in event_field_maps(caplog, "active_speaker.program_emit_gate")
+        if fields["result"].startswith("blocked_")
+    }
+    assert not blocked_results, blocked_results
 
 
 def test_program_config_still_refuses_a_crossover_below_the_declared_corner():
