@@ -44,9 +44,8 @@ CONNECTION_NOISY_TRANSITIONS = frozenset({
 class AudioOutChunk:
     """Provider audio plus playout identity for fan-in flush accounting.
 
-    `pcm` is 24 kHz mono int16 payload; see `LiveTurn.audio_out` for
-    the plain-bytes view. The optional provider item id is the
-    stable handle needed by provider-specific truncation later (for
+    `pcm` is 24 kHz mono int16 payload. The optional provider item id is
+    the stable handle needed by provider-specific truncation later (for
     OpenAI, `response.output_item.added.item.id`). Providers that do not
     expose per-response item ids leave it unset; fan-in still accounts
     for the local segment and returns played duration on flush.
@@ -91,85 +90,27 @@ class TurnCapture:
 
 @runtime_checkable
 class Interruptible(Protocol):
-    """A turn JTS can cut off mid-sentence and reconcile afterwards.
+    """The provider half of a barge-in: stop generating, then trim the
+    provider's history to what the household actually heard.
 
     Capability-based, never provider-name-based: each catalog provider
-    declares a `catalog.InterruptReconcile` kind and implements this
-    Protocol to match. Gemini interrupts generation through manual activity
-    but has no API for trimming history to JTS playback counts.
-    See ADR-0115.
+    declares a `catalog.InterruptReconcile` kind, and a provider that
+    stops on the user's own voice (`LiveTurn.owns_interruption`)
+    implements NEITHER member — the host skips the reconcile at its own
+    boundary instead of calling two no-ops. Gemini interrupts generation
+    through manual activity but has no API for trimming history to JTS
+    playback counts. See ADR-0115.
     """
 
-    # True when the provider stops generating on the user's own voice, so the
-    # host must never issue its own barge-in flush for this turn: the local
-    # detector scores the assistant's echo as well as the user, and flushing
-    # the fan-in lane on that chops the reply mid-word. The host still
-    # forwards mic audio and still honours conversation end.
-    # `_base.BaseLiveTurn` carries the default; an adapter whose provider owns
-    # acoustic interruption overrides it.
-    owns_interruption: bool
-
-    def request_local_interrupt(self) -> None:
-        """Locally signal a user barge-in WITHOUT telling the provider.
-
-        Sets the same interrupt event :meth:`LiveTurn.wait_for_interrupt`
-        resolves on, so the playback path flushes local TTS immediately.
-        This is the provider-agnostic *detection + flush* spine: it
-        deliberately does NOT truncate or cancel the provider's in-flight
-        response — ``cancel_response`` / ``truncate_assistant_audio`` own
-        that."""
-        ...
-
-    def drop_pending_audio(self) -> int:
-        """Drop assistant audio buffered for playback but not yet written,
-        returning the number of chunks dropped.
-
-        A local flush clears the DAC ring (~one write), but burst-delivery
-        providers (OpenAI/Grok) enqueue the whole response's audio up
-        front, so without dropping it the playback loop resumes writing the
-        backlog and the assistant audibly talks over the user.
-        Implementations drain their playout queue while PRESERVING any
-        terminal end-of-audio sentinel, so the consumer still ends the
-        turn. Idempotent; must never raise."""
-        ...
-
-    def audio_chunks_pending(self) -> int:
-        """How many audio chunks the playout queue still holds — the depth
-        ``drop_pending_audio`` would drain.
-
-        The idle watchdog measures playout PROGRESS on this depth ALONE
-        while it is nonzero, and consults the drain deadline only once it
-        reaches zero, ending the turn when neither has moved for
-        ``response_stall_timeout``. See ADR-0254."""
-        ...
-
-    def audio_dropped_bytes(self) -> int:
-        """Assistant audio this turn never queued because the playout
-        queue was already at its byte ceiling — a wedged consumer, not a
-        barge-in (which drops through ``drop_pending_audio``). Non-zero
-        means the reply was truncated at the tail."""
-        ...
-
     async def cancel_response(self, reason: str) -> None:
-        """Explicitly tell the provider to stop generating the in-progress
-        response for this turn — the *local/manual* cancel path.
-
-        Called when JTS itself decides to stop the model: a barge-in the
-        provider's own VAD did not initiate, a push-to-talk release, an
-        operator/manual interrupt. It maps to the provider's "stop now"
-        control where one exists (OpenAI/Grok ``response.cancel``).
-
-        This is the inverse direction of ``LiveTurn.wait_for_interrupt()``
-        / ``LiveTurn.clear_interrupted()``: those observe a
-        provider-*reported* interruption; ``cancel_response`` is JTS
-        telling the provider to stop, not the provider telling JTS it
-        stopped. Local TTS flush is a separate daemon-layer step that does
-        not depend on this call — cancelling provider generation never
-        makes the already-queued DAC audio stop on its own.
+        """Tell the provider to stop generating this turn's in-progress
+        response — JTS deciding to stop the model, the inverse of
+        `LiveTurn.wait_for_interrupt`, which observes the model reporting
+        it stopped. Local TTS flush is a separate daemon-layer step:
+        cancelling generation never stops already-queued DAC audio.
 
         ``reason`` is for the structured-log line only. Must be idempotent
-        and must never raise on an already-complete or absent response.
-        Gemini uses a manual activity-start marker to interrupt generation."""
+        and must never raise on an already-complete or absent response."""
         ...
 
     async def truncate_assistant_audio(
@@ -178,41 +119,27 @@ class Interruptible(Protocol):
         """Trim an owned item to its confirmed local ledger boundary in ms.
 
         Zero is a valid boundary; an absent item is not. Local drain counts
-        are estimates, not acoustic proof. Gemini has no item truncate API.
-        Must tolerate None and never raise on an absent or finished response.
+        are estimates, not acoustic proof. Must tolerate None and never
+        raise on an absent or finished response.
         """
         ...
 
 
 @runtime_checkable
-class LiveTurn(Interruptible, Protocol):
-    """An acquired voice exchange, or a continuous wake conversation.
-
-    The daemon acquires a turn from a `LiveConnection` on wake, streams
-    user audio frames into it, awaits the model's response, and releases
-    the turn when idle. The connection itself stays open across turns
-    (see `LiveConnection`). Adapters declaring `continuous_input` retain
-    this object through follow-ups, and `backend_pending` reports their
-    delegated work.
-    """
-
-    # True when the adapter streams the microphone for the whole
-    # conversation instead of one endpointed utterance per turn. Must
-    # agree with the provider's `catalog.ProviderCatalogEntry` field of
-    # the same name; `_base.BaseLiveTurn` carries the default.
-    continuous_input: bool
+class ProviderTurn(Protocol):
+    """What a provider adapter implements on top of `_base.BaseLiveTurn`;
+    everything else `LiveTurn` names, the base implements once for every
+    adapter. `_base.BaseLiveTurn` does not enforce these five via abstract
+    methods, so conformance is pinned only by the isinstance checks in
+    tests/test_voice_barge_in_contract.py — this Protocol must stay
+    `runtime_checkable` for that pin to have teeth."""
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         ...
 
-    def discard_input(self) -> None:
-        """Synchronously revoke microphone audio accepted for this turn but
-        not yet on the wire. Idempotent; a turn that buffers none no-ops."""
-        ...
-
     async def send_text_context(self, text: str) -> None:
-        """Add a text-only context item to the current turn without
-        asking the provider to generate yet.
+        """Add a text-only context item to the current turn without asking
+        the provider to generate yet.
 
         Used for narrow daemon-initiated confirmation windows where the
         model needs one-shot routing context before live user audio. The
@@ -225,15 +152,6 @@ class LiveTurn(Interruptible, Protocol):
         Idempotent — calling twice is a no-op."""
         ...
 
-    def audio_out(self) -> AsyncIterator[bytes]:
-        """Yield TTS audio chunks (24 kHz mono int16 PCM) until the turn
-        is released or the connection drops."""
-        ...
-
-    def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
-        """Yield TTS chunks with optional provider item identity."""
-        ...
-
     async def release(self) -> None:
         """Release this turn and its pending input/output. Idempotent.
 
@@ -244,50 +162,82 @@ class LiveTurn(Interruptible, Protocol):
         """
         ...
 
+    def capture(self) -> TurnCapture | None:
+        """What this turn offers conversation history, or None when the
+        provider exposes nothing to record. See `TurnCapture`."""
+        ...
+
+
+@runtime_checkable
+class LiveTurn(ProviderTurn, Protocol):
+    """An acquired voice exchange, or a continuous wake conversation, as
+    the host consumes it: `ProviderTurn` plus the surface
+    `_base.BaseLiveTurn` implements identically for every provider.
+
+    The daemon acquires a turn from a `LiveConnection` on wake, streams
+    user audio frames into it, awaits the model's response, and releases
+    the turn when idle. The connection itself stays open across turns
+    (see `LiveConnection`). Adapters declaring `continuous_input` retain
+    this object through follow-ups.
+    """
+
+    # True when the provider stops generating on the user's own voice, so
+    # the host must never issue its own barge-in flush for this turn: the
+    # local detector scores the assistant's echo as well as the user, and
+    # flushing the fan-in lane on that chops the reply mid-word. The host
+    # still forwards mic audio and still honours conversation end. Such a
+    # turn is deliberately not `Interruptible`.
+    owns_interruption: bool
+    # True when the adapter streams the microphone for the whole
+    # conversation instead of one endpointed utterance per turn. Must
+    # agree with the provider's `catalog.ProviderCatalogEntry` field of
+    # the same name.
+    continuous_input: bool
+    # True while this turn waits on work it delegated to a backend model,
+    # which produces no audio of its own: the conversation watchdog then
+    # judges the wait on activity rather than on audio.
+    backend_pending: bool
+
+    def discard_input(self) -> None:
+        """Synchronously revoke microphone audio accepted for this turn but
+        not yet on the wire. Idempotent; a turn that buffers none no-ops."""
+        ...
+
+    def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
+        """Yield TTS audio (24 kHz mono int16 PCM, with optional provider
+        item identity) until the turn is released or the connection drops."""
+        ...
+
     def last_activity_at(self) -> float:
-        """Loop time (asyncio.get_event_loop().time()) of the most recent
-        PROGRESS event for this turn — an audio chunk, a transcript delta
-        in either direction, a tool call, a response acknowledgement,
-        turn_complete — plus the local tool milestones that produce no
-        server message. Server errors, keepalives and session bookkeeping
-        do NOT count: they prove the socket is open, not that the model
-        is working. Returns the turn-start time until the first one
-        arrives. The idle watchdog reads it as "when did this turn last
-        make progress". See issue #4532."""
+        """Loop time (asyncio) of this turn's most recent PROGRESS event.
+        `_base.BaseLiveTurn._note_activity` defines what counts; the idle
+        watchdog reads this as "when did this turn last make progress"."""
         ...
 
     def last_chunk_at(self) -> float:
-        """Loop time of the most recent audio chunk specifically (not
-        tool calls / turn_complete). Used by the daemon's barge-in gate
-        to detect when the model is currently producing TTS."""
+        """Loop time of the most recent audio chunk specifically (not tool
+        calls / turn_complete), so the host can tell a model that is
+        producing TTS from one that is merely working."""
         ...
 
     def end_input_at(self) -> float:
-        """`time.monotonic()` of the moment the user's input was closed
-        and the model was asked to answer, or 0.0 while input is still
-        open. The idle watchdog measures its last-resort pre-response cap
-        from here, so a long utterance cannot eat the model's budget."""
+        """`time.monotonic()` of the moment the user's input was closed and
+        the model was asked to answer, or 0.0 while input is still open.
+        The idle watchdog measures its last-resort pre-response cap from
+        here, so a long utterance cannot eat the model's budget."""
         ...
 
     def bytes_sent(self) -> int:
-        """Total bytes of audio sent to the server during this turn.
-        Used together with chunks_received() to detect the silent-failure
-        mode where Gemini Live accepts the connection but never produces
-        any output (quota exhausted, service degraded, etc)."""
         ...
 
     def chunks_received(self) -> int:
-        """Total audio response chunks received from the server during
-        this turn."""
+        """Read with `bytes_sent` to detect the silent-failure mode where a
+        provider accepts the connection but never produces any output
+        (quota exhausted, service degraded)."""
         ...
 
     def usage(self) -> TurnUsage:
         """This turn's token usage. See `TurnUsage`."""
-        ...
-
-    def capture(self) -> TurnCapture | None:
-        """What this turn offers conversation history, or None when the
-        provider exposes nothing to record. See `TurnCapture`."""
         ...
 
     def turn_lost(self) -> bool:
@@ -296,27 +246,54 @@ class LiveTurn(Interruptible, Protocol):
         ...
 
     def server_turn_complete(self) -> bool:
-        """True once the server has emitted server_content.turn_complete
-        for this turn — the canonical 'model is done speaking' signal.
-        The daemon's idle watchdog uses this to close the turn promptly
-        without racing mid-response chunk gaps that look like idleness."""
+        """True once the provider has signalled 'the model is done
+        speaking' for this turn — the canonical clean close, which lets
+        the idle watchdog end the turn without racing mid-response chunk
+        gaps that look like idleness."""
+        ...
+
+    def request_local_interrupt(self) -> None:
+        """Locally signal a user barge-in WITHOUT telling the provider.
+
+        Resolves `wait_for_interrupt` so the playback path flushes local
+        TTS immediately. This is the provider-agnostic detection + flush
+        spine: it deliberately does NOT truncate or cancel the provider's
+        in-flight response — `Interruptible` owns that."""
         ...
 
     async def wait_for_interrupt(self) -> None:
-        """Resolve when the model signals the user interrupted its speech.
-        Used by the playback path to race write-current-chunk against
-        flush-immediately."""
+        """Resolve when this turn is interrupted — locally, or by the model
+        signalling the user spoke over its speech. Used by the playback
+        path to race write-current-chunk against flush-immediately."""
         ...
 
     def clear_interrupted(self) -> None:
-        """Reset the interrupted flag/event after the playback path has
-        flushed its output in response."""
+        """Reset the interrupt event after the playback path has flushed
+        its output in response."""
         ...
 
-    def _on_connection_lost(self) -> None:
-        """The connection dropped while this turn was active: mark the
-        turn lost and end its audio stream. Called by the supervisor, not
-        by the daemon. Idempotent."""
+    def drop_pending_audio(self) -> int:
+        """Drop assistant audio buffered for playback but not yet written,
+        returning the number of chunks dropped.
+
+        A local flush clears the DAC ring (~one write), but burst-delivery
+        providers (OpenAI/Grok) enqueue the whole response's audio up
+        front, so without dropping it the playback loop resumes writing the
+        backlog and the assistant audibly talks over the user. Idempotent;
+        must never raise."""
+        ...
+
+    def audio_chunks_pending(self) -> int:
+        """Depth of the playout queue — what `drop_pending_audio` would
+        drain, and the progress signal the idle watchdog measures on ALONE
+        while it is nonzero. See ADR-0254."""
+        ...
+
+    def audio_dropped_bytes(self) -> int:
+        """Assistant audio this turn never queued because the playout queue
+        was already at its byte ceiling — a wedged consumer, not a barge-in
+        (which drops through `drop_pending_audio`). Non-zero means the
+        reply was truncated at the tail."""
         ...
 
 

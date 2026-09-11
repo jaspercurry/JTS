@@ -14,7 +14,7 @@ from typing import AsyncGenerator, Awaitable, Callable
 from ..tts_playout import TtsPlayout, confirmed_tts_flush
 from ..log_event import log_event
 from .conversation import WATCHDOG_POLL_SEC
-from .session import AudioOutChunk, LiveTurn
+from .session import AudioOutChunk, Interruptible, LiveTurn
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -30,12 +30,10 @@ class PlaybackReport:
 
 
 async def _turn_audio_chunks(turn: LiveTurn) -> AsyncGenerator[AudioOutChunk, None]:
-    chunks = getattr(turn, "audio_out_chunks", None)
-    source = chunks if callable(chunks) else turn.audio_out
-    audio = source()
+    audio = turn.audio_out_chunks()
     try:
         async for chunk in audio:
-            yield AudioOutChunk(pcm=chunk) if isinstance(chunk, bytes) else chunk
+            yield chunk
     finally:
         close = getattr(audio, "aclose", None)
         if callable(close):
@@ -59,6 +57,11 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
     dropped = turn.drop_pending_audio()
     if dropped:
         log_event(logger, "barge.dropped_pending_audio", chunks=dropped)
+    if not isinstance(turn, Interruptible):
+        # Gate is the `Interruptible` seam, not `owns_interruption` directly
+        # — their exclusivity per catalog provider is pinned by
+        # tests/test_voice_barge_in_contract.py. See ADR-0294.
+        return confirmed
     await turn.cancel_response("barge_in")
     if confirmed and ack is not None:
         # Fan-in counts mix commits; outputd estimates drain. Neither proves

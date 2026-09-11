@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from jasper.voice.session import TurnUsage
+from jasper.voice.session import AudioOutChunk, TurnUsage
 from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON, PlaybackReport
 from tests._cue_spy import SpyCues as _SpyCues
 from tests._live_turn_fake import silent_frame
@@ -996,9 +996,9 @@ class _AcquiredTurn:
     def audio_chunks_pending(self) -> int:
         return 0
 
-    async def audio_out(self):
+    async def audio_out_chunks(self):
         await asyncio.sleep(3600)
-        yield b""
+        yield AudioOutChunk(b"")
 
 
 async def _drive_begin_turn(wl):

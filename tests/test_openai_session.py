@@ -791,8 +791,8 @@ async def test_end_input_sends_commit_and_response_create_in_order():
 
 async def test_audio_delta_event_routes_to_active_turn_audio_queue():
     """Server pushes ``response.output_audio.delta`` events with base64-
-    encoded PCM. Each one should appear in ``turn.audio_out()`` with
-    the bytes decoded."""
+    encoded PCM. Each one should appear in ``turn.audio_out_chunks()``
+    with the bytes decoded."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -813,8 +813,8 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
 
         async def consume() -> list[bytes]:
             chunks = []
-            async for chunk in turn.audio_out():
-                chunks.append(chunk)
+            async for chunk in turn.audio_out_chunks():
+                chunks.append(chunk.pcm)
                 if len(chunks) >= 1:
                     break
             return chunks
@@ -1016,7 +1016,7 @@ async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
       * The sentinel arrives AFTER all real audio chunks, not before.
       * ``audio_chunks_pending()`` reports the sentinel as pending work
         so the watchdog defers while the consumer drains.
-      * The consumer's ``audio_out()`` generator returns cleanly when
+      * The consumer's ``audio_out_chunks()`` generator returns cleanly
         the sentinel is dequeued — no infinite hang."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -1041,8 +1041,8 @@ async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
         assert turn.audio_chunks_pending() == 4
 
         chunks: list[bytes] = []
-        async for chunk in turn.audio_out():
-            chunks.append(chunk)
+        async for chunk in turn.audio_out_chunks():
+            chunks.append(chunk.pcm)
         assert chunks == [b"chunk_a", b"chunk_b", b"chunk_c"]
         assert turn.audio_chunks_pending() == 0
     finally:
@@ -1397,8 +1397,8 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
         # Drain audio + wait for completion flag to flip.
         async def consume():
             chunks = []
-            async for chunk in turn.audio_out():
-                chunks.append(chunk)
+            async for chunk in turn.audio_out_chunks():
+                chunks.append(chunk.pcm)
                 if len(chunks) >= 2:
                     break
             return chunks
@@ -1948,7 +1948,7 @@ async def test_clean_iteration_exit_triggers_reconnect():
 
 async def test_connection_lost_marks_active_turn_lost():
     """If the WebSocket drops mid-turn, the active turn must flip
-    turn_lost() to True so the daemon stops waiting and audio_out()'s
+    turn_lost() to True so the daemon stops waiting and the audio
     consumer wakes via the sentinel-None."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -1958,7 +1958,7 @@ async def test_connection_lost_marks_active_turn_lost():
         turn = await conn.acquire_turn()
 
         async def consume():
-            async for _ in turn.audio_out():
+            async for _ in turn.audio_out_chunks():
                 pass
 
         consumer = asyncio.create_task(consume())

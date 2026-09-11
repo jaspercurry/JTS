@@ -32,7 +32,7 @@ class _FakeTurn:
 
     async def audio_out_chunks(self):
         for c in self._chunks:
-            yield c
+            yield AudioOutChunk(pcm=c)
 
     async def wait_for_interrupt(self) -> None:
         await self._interrupt_event.wait()
@@ -245,8 +245,7 @@ async def test_received_response_is_observed_even_when_interrupt_prevents_its_wr
     assert len(tts.writes) == 0
 
 
-@pytest.mark.parametrize("chunk_api", [False, True])
-async def test_playback_accepts_audio_iterators_without_a_close_method(chunk_api):
+async def test_playback_accepts_audio_iterators_without_a_close_method():
     class Audio:
         def __init__(self):
             self.frames = iter([b"first", b"second"])
@@ -258,11 +257,10 @@ async def test_playback_accepts_audio_iterators_without_a_close_method(chunk_api
             pcm = next(self.frames, None)
             if pcm is None:
                 raise StopAsyncIteration
-            return AudioOutChunk(pcm) if chunk_api else pcm
+            return AudioOutChunk(pcm)
 
     turn, tts = _FakeTurn(), _tts()
-    turn.audio_out_chunks = Audio if chunk_api else None
-    turn.audio_out = Audio
+    turn.audio_out_chunks = Audio
     await _play_responses(turn, tts)
     assert len(tts.writes) == 2
     assert tts.end_segment_calls == tts.drain_calls == 1
@@ -506,6 +504,42 @@ async def test_flush_exception_still_cancels_generation():
     tts = _chunk_barge_tts(turn, flush_error=RuntimeError("fan-in socket gone"))
     assert not await turn_playback._flush_for_interrupt(turn, tts)
     assert turn.seam_calls == [("cancel", "barge_in")]
+
+
+# --- not Interruptible at all (the OpenAI Live shape) -------------------
+
+
+class _NonInterruptibleTurn:
+    """A provider that stops generation on the user's own voice
+    (`owns_interruption`, e.g. OpenAI Live) implements NEITHER
+    `Interruptible` member — no no-op bodies, per ADR-0294. Unlike
+    `_SeamTurn`, this fake never defines `cancel_response` /
+    `truncate_assistant_audio` at all, so `isinstance(turn, Interruptible)`
+    is False and calling either would raise AttributeError."""
+
+    def __init__(self) -> None:
+        self.cleared = 0
+        self.dropped_calls = 0
+
+    def clear_interrupted(self) -> None:
+        self.cleared += 1
+
+    def drop_pending_audio(self) -> int:
+        self.dropped_calls += 1
+        return 0
+
+
+async def test_flush_for_interrupt_skips_the_seam_when_not_interruptible():
+    """`_flush_for_interrupt` gates the reconcile on
+    `isinstance(turn, Interruptible)`. A turn shaped like OpenAI Live has
+    no seam methods at all, so if the gate were ever dropped this would
+    raise AttributeError instead of silently no-opping."""
+    turn = _NonInterruptibleTurn()
+    tts = _tts()
+
+    assert await turn_playback._flush_for_interrupt(turn, tts) is True
+    assert turn.cleared == 1
+    assert turn.dropped_calls == 1
 
 
 # ---------------------------------------------------------------------------

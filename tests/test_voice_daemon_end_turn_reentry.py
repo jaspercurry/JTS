@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from jasper.voice.session import AudioOutChunk
 from jasper.voice.turn_playback import play_responses
 from jasper.voice.turn_lifecycle import State
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
@@ -151,7 +152,7 @@ async def _response_loop(pcm=bytes(8)):
     wl._play_cue = AsyncMock(side_effect=cue)
 
     async def audio():
-        yield pcm
+        yield AudioOutChunk(pcm=pcm)
 
     turn.audio_out_chunks = audio
     turn.wait_for_interrupt = asyncio.Event().wait

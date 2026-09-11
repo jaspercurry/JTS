@@ -29,6 +29,7 @@ async def drain_audio_chunks(turn) -> list[AudioOutChunk]:
 class FakeLiveTurn:
     owns_interruption = False
     continuous_input = False
+    backend_pending = False
 
     def __init__(
         self,
@@ -112,10 +113,6 @@ class FakeLiveTurn:
 
     async def send_text_context(self, text: str) -> None:
         return None
-
-    async def audio_out(self) -> AsyncIterator[bytes]:
-        return
-        yield  # pragma: no cover
 
     async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         return

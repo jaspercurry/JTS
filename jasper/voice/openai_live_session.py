@@ -89,8 +89,9 @@ def _parse_call(call: dict) -> ToolCall:
 
 class OpenAILiveTurn(BaseLiveTurn):
     continuous_input = True
-    # Live's own VAD stops generation when the user talks over it, and its
-    # transport carries no cancel — see `cancel_response` below.
+    # Live's own VAD stops generation when the user talks over it, and the
+    # protocol carries no frontend cancel/truncate command, so this turn is
+    # deliberately not `session.Interruptible`.
     owns_interruption = True
 
     def __init__(self, conn, started_at):
@@ -147,14 +148,6 @@ class OpenAILiveTurn(BaseLiveTurn):
     async def end_input(self) -> None:
         # Live needs silence as well as speech to advance its audio timeline.
         self._end_input_at_monotonic = time.monotonic()
-
-    async def cancel_response(self, reason: str) -> None:
-        # Live owns acoustic interruption. response.create is a backend command,
-        # and the Live protocol has no frontend response.cancel/truncate command.
-        return None
-
-    async def truncate_assistant_audio(self, provider_item_id, audio_played_ms) -> None:
-        return None
 
     def usage(self) -> TurnUsage:
         # Live bills the frontend session per minute, not per token, so
