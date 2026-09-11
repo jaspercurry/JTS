@@ -10,8 +10,6 @@ and refractory latch, the capture rings and the acoustic condition the
 thresholds key on — and turns a scored frame into at most one `WakeFire`
 per user attempt.
 
-A plain collaborator called BY `WakeLoop`, in the shape of
-`voice/push_to_talk.py`: no Protocol, no adapter, no back-reference.
 `WakeLoop` builds one at construction time, reads and writes its public
 attributes directly, and owns everything a fire leads to — the pre-roll
 freeze, the acquire buffer, peer arbitration, cues and the turn.
@@ -265,6 +263,7 @@ class WakeLegs:
         legs: "list[LegRuntime]",
         *,
         music_dbfs: Callable[[], float | None],
+        mic_muted: Callable[[], bool],
     ) -> None:
         # Wake-detection legs, keyed by jasper.wake_legs token. Assembled
         # by jasper.voice.daemon_main, which opens each leg's mic under the
@@ -317,13 +316,11 @@ class WakeLegs:
         self.idle_rms_dbfs: float | None = None
         self.input_last_above_floor_at: float | None = None
         self._music_dbfs = music_dbfs
+        self._mic_muted = mic_muted
 
     def reset_leg(self, source: str) -> None:
-        """Drop every score and buffer this leg accumulated across a gap.
-
-        A no-op for a source that is not a wake leg (a push-to-talk mic),
-        which shares the caller's gap path.
-        """
+        """No-op for a source that is not a wake leg (a push-to-talk
+        mic), which shares the caller's gap path."""
         rt = self.legs.get(source)
         if rt is None:
             return
@@ -376,7 +373,6 @@ class WakeLegs:
         frame,
         *,
         leg: str = "on",
-        mic_muted: bool = False,
         capture_event: bool = False,
     ) -> WakeFire | None:
         """Score one frame on the named leg. Legs:
@@ -510,7 +506,7 @@ class WakeLegs:
                 firing_threshold=firing_threshold,
                 fired_legs=fired_legs,
                 condition=condition_ctx,
-                mic_muted=mic_muted,
+                mic_muted=self._mic_muted(),
             )
         return WakeFire(
             at_monotonic=fire_at_monotonic,

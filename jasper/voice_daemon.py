@@ -290,7 +290,14 @@ class WakeLoop:
         # here; held only so session_status can surface which tool
         # families registered / were gated off / failed to build.
         self._tool_packs: list[dict] = tool_packs or []
-        self._wake_legs = WakeLegs(legs, music_dbfs=self._read_music_dbfs)
+        self._connection = connection
+        self._turn_output_episode: AssistantOutputEpisode | None = None
+        self._content_activity = content_activity
+        self._wake_legs = WakeLegs(
+            legs,
+            music_dbfs=self._read_music_dbfs,
+            mic_muted=lambda: self._mic_muted,
+        )
         self._push_to_talk = PushToTalk(
             manual_mics or [], have_wake_legs=bool(self._wake_legs.legs),
         )
@@ -299,9 +306,6 @@ class WakeLoop:
         # branches to a keepalive loop instead of iterating frames.
         _on = self._wake_legs.legs.get("on")
         self._mic = _on.mic if _on is not None else None
-        self._connection = connection
-        self._turn_output_episode: AssistantOutputEpisode | None = None
-        self._content_activity = content_activity
         self._usage_store = usage_store
         self._spend_cap = spend_cap
         self._conversation_capture = ConversationCapture(
@@ -1036,7 +1040,6 @@ class WakeLoop:
         fire = await self._wake_legs.score_frame(
             frame,
             leg=leg,
-            mic_muted=self._mic_muted,
             capture_event=self._wake_telemetry.store is not None,
         )
         if fire is None:
@@ -1828,7 +1831,7 @@ class WakeLoop:
         """
         # Legs whose consumer loop is alive right now, not merely
         # configured — /aec reports configured intent from aec_mode.env.
-        _wake_legs = [
+        live_wake_legs = [
             leg for leg in self._wake_legs.legs
             if leg == "on"
             or leg not in self._leg_tasks
@@ -1921,7 +1924,7 @@ class WakeLoop:
                 self._wake_legs.input_last_above_floor_at
                 if mic_feeding else None
             ),
-            "wake_legs": _wake_legs,
+            "wake_legs": live_wake_legs,
             "wake_legs_dead": _wake_legs_dead,
             # Per-pack tool-registration outcomes (registered / skipped /
             # failed), same motivation as wake_legs: a tool family that

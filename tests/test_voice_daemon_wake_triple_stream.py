@@ -195,6 +195,33 @@ async def test_aec_on_fire_still_records_fire_aec_on():
     assert kwargs["peak_score_aec_on"] == pytest.approx(0.91)
 
 
+async def test_mic_mute_after_dispatch_but_before_fire_lock_is_recorded():
+    """mic_muted must reflect state at fire time (after winning
+    fire_lock), not the value captured when the frame was dispatched to
+    score_frame — a mute landing during the lock wait must still show up
+    in the recorded row.
+
+    `_wake_late_cancelled` and `_check_input_admission` are stubbed out:
+    both also read `_mic_muted` to abort the turn outright, which would
+    otherwise mask the telemetry this test pins under those unrelated
+    gates.
+    """
+    wl = _make_wake_loop_triple()
+    wl._wake_legs.legs["on"].detector.score_frame.return_value = 0.91
+    wl._wake_late_cancelled = lambda phase: False
+    wl._check_input_admission = lambda input_epoch: None
+    await wl._wake_legs.fire_lock.acquire()
+    task = asyncio.create_task(wl._handle_wake_frame(_frame(), leg="on"))
+    await asyncio.sleep(0)
+    assert not task.done()
+    wl._mic_muted = True
+    wl._wake_legs.fire_lock.release()
+    await task
+
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
+    assert kwargs["mic_muted"] is True
+
+
 async def test_aec_off_fire_still_records_fire_aec_off():
     """Regression on the other non-broken path."""
     detector_off = _make_detector(threshold=0.5)
