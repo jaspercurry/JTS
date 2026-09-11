@@ -13,8 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.audio_measurement.excitation_artifacts import (
+    ADMISSION_DIRECTORY_MODE as BUNDLE_DIR_MODE,
+)
 from jasper.active_speaker.bundles import (
-    BUNDLE_DIR_MODE,
     BUNDLE_FILE_MODE,
     DEFAULT_SESSIONS_MAX_BYTES,
     open_bundle,

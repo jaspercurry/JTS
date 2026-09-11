@@ -45,7 +45,7 @@ from jasper.audio_measurement.null_walk import (
 )
 
 from .bundles import (
-    BUNDLE_DIR_MODE,
+    ensure_directory_mode,
     BUNDLE_FILE_MODE,
     BUNDLE_KIND,
     open_bundle_admission_authority,
@@ -454,7 +454,7 @@ class CommissioningEvidenceStore:
                     "evidence parents must be real directories",
                 )
             try:
-                os.chmod(current, BUNDLE_DIR_MODE)
+                ensure_directory_mode(current)
                 fsync_directory(current)
                 if created:
                     fsync_directory(current.parent)
