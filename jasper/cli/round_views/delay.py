@@ -2,28 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The inter-driver reverse-null delay: compute the landscape, then grade it.
-
-* ``delay-landscape <bundle-dir> --fc-hz N`` — read a banked round's
-  per-driver curves, complex-sum them across the whole delay grid, and name
-  the optimum plus the two or three coordinates worth playing. No audio
-  plays and no device is opened; an existing MEASURE bank answers this today.
-  The grid itself stays in ``delay_landscape.json``, which it writes.
-* ``delay-confirm <bundle-dir> --fc-hz N`` — recompute that same landscape
-  and grade it against the rows ``jasper-null`` banked under
-  ``<bundle>/null_runs/``, so the model's optimum is answered by the room
-  rather than believed. Writes ``delay_confirmation.json``.
-
-The method of record is compute-then-confirm
-(:mod:`jasper.active_speaker.crossover_v2.delay_landscape`). Between the two
-verbs sits the acoustic step: stage the printed coordinates with
-``jasper-angle-capture stage --delayed-role R --delay-us N``, which
-``delay-landscape`` prints ready to run, and play them with ``jasper-null``.
-
-A refusal is an output, not an error, and the sentence saying so is printed
-verbatim from the module that decided it. Applying a proposed delay is NOT
-this tool's job — the prescription door owns that, with its own lobe gate.
-"""
+"""Compute delay proposals and compare banked acoustic confirmations."""
 
 from __future__ import annotations
 
@@ -32,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG, DRIVER_ROLES
+from jasper.active_speaker.crossover_v2.commanded import profile_crossover_fc_hz
+from jasper.active_speaker.crossover_v2.evidence_packet import applied_profile_source
+from jasper.active_speaker.crossover_v2.position_cycle import read_pose_curve_pair
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
 from jasper.active_speaker.crossover_v2.delay_landscape import (
     BankedLandscape,
     DelayLandscapeError,
@@ -62,17 +46,33 @@ REFUSE_NO_ROWS = "delay_confirm_no_measured_rows"
 
 
 def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
-    """The engine's read of the bank, with its exits as this family's.
-
-    A round that could not be READ exits through the LOAD stage;
-    :class:`DelayLandscapeError` is re-raised ahead of that because it
-    subclasses ``ValueError`` — a bank that read and could not carry a
-    landscape refuses by name, and each verb publishes that name.
-    """
-
     try:
+        bundle = Path(args.bundle_dir)
+        if (bundle / "bundle").is_dir() or (bundle / "info.json").is_file():
+            inputs = round_inputs(banked_round_of(bundle) or bundle)
+            bundle = inputs.session_dir
+            if args.fc_hz is None:
+                args.fc_hz = profile_crossover_fc_hz(applied_profile_source(inputs.applied_profile_path)[0])
+        for row, document in reversed(list(measurement_documents(bundle))):
+            if row.phase not in (PHASE_MEASURE, PHASE_LATERAL) or row.vertical_deg != 0:
+                continue
+            if ((args.phase is not None and row.phase != args.phase)
+                or (args.position_deg is not None and row.position_deg != args.position_deg)
+                or (args.take_path is not None and row.path != args.take_path)):
+                continue
+            position = row.position_deg if row.position_deg is not None else DESIGN_AXIS_DEG
+            if read_pose_curve_pair(bundle, phase=row.phase, position_deg=position,
+                                    roles=(args.lower_role, args.upper_role), take_path=row.path):
+                args.phase, args.position_deg, args.take_path = row.phase, position, row.path
+                args.inverted_role = args.inverted_role or document.get("inverted_role") or args.upper_role
+                break
+        args.phase = args.phase or PHASE_MEASURE
+        args.position_deg = DESIGN_AXIS_DEG if args.position_deg is None else args.position_deg
+        args.inverted_role = args.inverted_role or args.upper_role
+        if args.fc_hz is None:
+            raise DelayLandscapeError("The bank has no crossover corner; supply --fc-hz")
         return landscape_from_bank(
-            Path(args.bundle_dir),
+            bundle,
             spec=sweep_spec(
                 crossover_fc_hz=args.fc_hz,
                 upper_role=args.upper_role,
@@ -185,17 +185,16 @@ def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -
 
     child.add_argument(
         "bundle_dir", metavar=_BUNDLE_DIR_METAVAR,
-        help="a commissioning bundle directory (the one holding info.json "
-             "beside evidence/v1/artifacts/crossover_v2/<capture-session-id>/)",
+        help="banked round or its commissioning bundle",
     )
-    child.add_argument("--fc-hz", type=float, required=True,
-                       help="the applied crossover corner")
+    child.add_argument("--fc-hz", type=float,
+                       help="override the banked applied crossover corner")
     child.add_argument("--upper-role", default="tweeter")
     child.add_argument("--lower-role", default="woofer")
     child.add_argument("--take-path", help="exact indexed take path; otherwise the latest matching pose is read")
     child.add_argument(
-        "--inverted-role", default="tweeter", choices=sorted(DRIVER_ROLES),
-        help="which branch the confirmation flips",
+        "--inverted-role", default=None, choices=sorted(DRIVER_ROLES),
+        help="override the banked inverted role; otherwise the upper role",
     )
     child.add_argument(
         "--path-difference-m", type=float, default=0.0,
@@ -208,13 +207,12 @@ def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -
              "default is used when omitted",
     )
     child.add_argument(
-        "--phase", default=PHASE_MEASURE, choices=(PHASE_MEASURE, PHASE_LATERAL),
-        help="which banked phase carries the per-driver curves to sum",
+        "--phase", default=None, choices=(PHASE_MEASURE, PHASE_LATERAL),
+        help="override the selected take phase",
     )
     child.add_argument(
-        "--position-deg", type=int, default=DESIGN_AXIS_DEG,
-        help="the bearing whose take is read; the reverse null is a "
-             "design-axis act",
+        "--position-deg", type=int, default=None,
+        help="override the selected take bearing",
     )
     child.add_argument(
         "--out", default=None,

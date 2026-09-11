@@ -29,7 +29,8 @@ Replay an exact diagnostic capture, then compare a candidate forecast with its t
   jasper-round-views forward-model <basis-round> --capture-id <basis-take>
 
   jasper-round-views forward-model <basis-round> --capture-id <basis-take> \\
-      --candidate-json <candidate.json> --measured-round <candidate-round> \\
+      --candidate-json <candidate.json> --basis-candidate-json <basis-candidate.json> \\
+      --measured-round <candidate-round> \\
       --measured-capture-id <candidate-take>
 """
 

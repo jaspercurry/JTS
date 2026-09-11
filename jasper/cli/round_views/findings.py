@@ -85,7 +85,6 @@ BAND_DISCLOSURE = (
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
-    """One banked document, or ``{}`` for anything this cannot read as one."""
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):

@@ -110,9 +110,6 @@ def _banked(answer) -> dict:
 def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
     tmp_path, capsys,
 ) -> None:
-    """The woofer arrives 200 us late, so delaying the tweeter by 200 us aligns
-    them — read off two curves banked exactly as `pose_curve_record` writes
-    them, through the measurement index, with no audio played."""
 
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
@@ -135,9 +132,6 @@ def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
 
 
 def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> None:
-    """One `next` line per coordinate, in the flags
-    `jasper-angle-capture stage` actually takes — this is the whole point of
-    the verb: propose, then stage, without hand-deriving which branch moves."""
 
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
@@ -167,9 +161,6 @@ def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> No
 
 
 def test_the_zero_coordinate_stages_no_delay_at_all(tmp_path, capsys) -> None:
-    """Neither branch is delayed at 0 us, and `MeasureSpec` refuses a
-    half-stated (role, delay) pair — so a line naming a role with 0 us would be
-    refused at the very door it was printed for."""
 
     bundle = _bank(tmp_path, curves=[_curve("woofer"), _curve("tweeter")])
     _code, payload, err = _propose(bundle, capsys)
@@ -189,9 +180,6 @@ def test_the_zero_coordinate_stages_no_delay_at_all(tmp_path, capsys) -> None:
 def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
     tmp_path, capsys,
 ) -> None:
-    """The refusal IS the output. A bank swept only above Fc cannot carry a
-    null at Fc, and the sentence the operator needs is the one
-    `delay_landscape` wrote — printed through, never re-spelled here."""
 
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", band=(2000.0, 12000.0)),
@@ -229,9 +217,6 @@ def test_a_bundle_with_no_round_refuses_before_it_reads_anything(
 
 
 def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> None:
-    """Both transfers are summed against each other, so they must ride ONE
-    take: curves from two captures would be summed across whatever moved
-    between them."""
 
     bundle = _bank(tmp_path, curves=[_curve("woofer")])
     code, payload, err = _propose(bundle, capsys)
@@ -250,8 +235,6 @@ def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> Non
 def test_the_curve_reader_answers_none_and_never_raises(
     tmp_path, phase, kind, curves,
 ) -> None:
-    """One corrupt or unrelated sidecar must not cost a reader the takes that
-    are fine — the same rule `read_lateral_take` follows."""
 
     payload = [_curve("woofer"), _curve("tweeter")] if curves == "ok" else curves
     bundle = _bank(tmp_path, curves=payload, phase=phase, kind=kind)
@@ -266,8 +249,6 @@ def test_the_curve_reader_answers_none_and_never_raises(
 def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
     tmp_path, capsys,
 ) -> None:
-    """A per-driver walk pose carries the same curve shape a design-axis
-    MEASURE capture does; which phase answers is the caller's to state."""
 
     bundle = _bank(
         tmp_path,
@@ -282,14 +263,6 @@ def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
 def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
     tmp_path, capsys,
 ) -> None:
-    """docs/tuning-methodology.md §4 step 1, stated by the tool.
-
-    Whether the analysis divided the emitted protection out and multiplied the
-    configured crossover in is a fact about the take, not about `--phase`, and
-    a protection-retained optimum is contaminated evidence. So the proposal
-    echoes what the take stamped — and `None` for a take banked before the
-    field existed, which is unknown rather than either one.
-    """
 
     curves = [_curve("woofer", arrival_us=200.0), _curve("tweeter")]
     stated = _bank(
@@ -306,9 +279,6 @@ def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
 
 
 def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
-    """`delay-landscape` must bound its grid with the same `sweep_spec` the
-    landscape reads its bars from, or the printed coordinates would not be the
-    ones the verdict grades."""
 
     spec = sweep_spec(
         crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
@@ -321,9 +291,6 @@ def test_the_spec_the_door_builds_is_the_shared_one(tmp_path) -> None:
 def test_a_retaken_pose_reads_the_retake_not_the_take_it_replaced(
     tmp_path, capsys,
 ) -> None:
-    """A superseded take stays on disk as the honest walk record, and `take_id`
-    is zero-padded so the index's `ORDER BY path` is chronological. Reading the
-    FIRST match would answer off the capture a retake was taken to replace."""
 
     _bank(tmp_path, curves=[_curve("woofer"), _curve("tweeter")], take_id="p0_a01")
     _bank(
@@ -385,9 +352,6 @@ def _confirm(bundle: Path, capsys, *extra):
 
 
 def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None:
-    """The prediction is an artifact, not just stdout: `delay-confirm` is graded
-    against it later, and a number an operator only ever saw scroll past is
-    not evidence."""
 
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
@@ -405,9 +369,6 @@ def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None
 def test_confirm_grades_the_played_rows_against_the_computed_optimum(
     tmp_path, capsys,
 ) -> None:
-    """The loop closes here: the coordinates `delay-landscape` printed were played,
-    `jasper-null` banked a row for each, and the verdict is read off those
-    rows rather than off the model that proposed them."""
 
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
@@ -441,9 +402,6 @@ def test_confirm_grades_the_played_rows_against_the_computed_optimum(
 
 
 def test_confirm_refuses_rows_it_cannot_compare(tmp_path, capsys) -> None:
-    """A refused row has no depth and an in-phase row read the summed corner
-    rather than the reverse null — neither is a confirmation, and grading a
-    landscape off nothing is refused by name, not answered."""
 
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
@@ -482,3 +440,31 @@ def test_delay_landscape_reads_only_the_common_gate_coverage(tmp_path, capsys):
     code, payload, _err = _propose(tmp_path, capsys)
     assert code == 1
     assert payload["reason"] == "shoulder_overlap_excludes_fc"
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_delay_defaults_come_from_the_selected_banked_take(tmp_path, capsys, override):
+    from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
+    from tests.test_active_speaker_audition import _applied_profile
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    bundle = _bank(tmp_path / "round" / "bundle" / "session", curves=[_curve("woofer"), _curve("tweeter")],
+                   phase=PHASE_LATERAL, position_deg=15, take_id="lateral")
+    _bank(bundle, curves=[_curve("woofer"), _curve("tweeter")], phase=PHASE_MEASURE, position_deg=0, take_id="measure")
+    (bundle / "info.json").write_text(json.dumps({"session_id": "session"}))
+    take = next(bundle.glob("evidence/v1/artifacts/**/positions/measure.json"))
+    document = json.loads(take.read_text())
+    document["inverted_role"] = "woofer"
+    take.write_text(json.dumps(document))
+    profile = _applied_profile(_active_topology("mono", "active_2_way"))
+    profile.update(kind=BASELINE_PROFILE_KIND, artifact_schema_version=SCHEMA_VERSION)
+    profile["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = FC_HZ
+    bank = bundle.parent.parent
+    (bank / "applied-profile.json").write_text(json.dumps(profile))
+    flags = ["--fc-hz", "2000", "--position-deg", "15", "--inverted-role", "tweeter", "--phase", "lateral"] if override else []
+    assert main(["delay-landscape", str(bank), *flags]) == 0
+    output = _banked(json.loads(capsys.readouterr().out))
+    assert output["phase"] == ("lateral" if override else "measure")
+    assert output["landscape"]["inverted_role"] == ("tweeter" if override else "woofer")
+    assert output["landscape"]["spec"]["crossover_fc_hz"] == (2000 if override else FC_HZ)
+    assert output["take_path"].endswith("lateral.json" if override else "measure.json")

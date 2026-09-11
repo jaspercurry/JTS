@@ -33,7 +33,6 @@ from .round_inputs import banked_round_of, round_inputs
 from ..profile import DRIVER_ROLES_BY_WAY
 from .evidence_packet import (
     HARMONICS_ARTIFACT,
-    NO_ROUND_ARTIFACTS_REASON,
     RING_SIDECAR_GLOB,
     applied_profile_source,
     round_artifact_dir,
