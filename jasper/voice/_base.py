@@ -108,7 +108,9 @@ class BaseLiveTurn:
     continuous_input = False
     # The modality buckets this provider splits its counts into, keyed
     # as `usage.Pricing.estimate_cost` prices them. Empty reports the
-    # scalars alone, which the store then prices as all-audio.
+    # scalars alone, which the store then prices as all-audio. Declare
+    # a bucket only if the wire fills it; a zeroed bucket prices the
+    # turn at 0.
     usage_detail_buckets: ClassVar[dict[str, tuple[str, ...]]] = {}
 
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
@@ -235,6 +237,9 @@ class BaseLiveTurn:
         For a provider reporting a running total, which summing would
         count twice.
         """
+        assert self._usage_details is None, (
+            "set_usage is scalars-only; a bucketed provider must use add_usage"
+        )
         if input_tokens is not None:
             self._usage_input_tokens = int(input_tokens)
         if output_tokens is not None:

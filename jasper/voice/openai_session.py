@@ -177,9 +177,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     server events here while a turn is active.
     """
 
-    # Reported per response.done, and priced per bucket ($32 audio in,
-    # $4 text in, $0.40 cached, $64 audio out, $24 text out for
-    # gpt-realtime-2).
+    # Reported per response.done; usage.Pricing prices each bucket.
     usage_detail_buckets = {
         "input_token_details": ("audio_tokens", "text_tokens", "cached_tokens"),
         "output_token_details": ("audio_tokens", "text_tokens"),
@@ -347,7 +345,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         log_event(logger, "barge.cancel", reason=reason)
         if not self._server_turn_complete:
             if self._tool_round_pending:
-                await self._on_response_done(None)
+                await self._on_response_done()
             else:
                 await self._conn._cancel_response(self)
 
@@ -427,8 +425,8 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     def _record_usage(self, usage: dict | None) -> None:
         """Add one ``response.done`` usage payload to the turn's counts.
 
-        Called by both the deferred-completion path (intermediate
-        tool-call response.done) and the final ``_on_response_done``.
+        Called by ``_handle_response_done`` for every response.done —
+        intermediate tool-call rounds and the final response alike.
         """
         if not usage:
             return
@@ -439,11 +437,10 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             output_token_details=usage.get("output_token_details"),
         )
 
-    async def _on_response_done(self, usage: dict | None) -> None:
+    async def _on_response_done(self) -> None:
         self._cancel_tools()
         self._note_activity()
         self._server_turn_complete = True
-        self._record_usage(usage)
         self._audio_q.put_nowait(None)
 
     def _on_assistant_text_delta(self, delta: str) -> None:
@@ -1105,12 +1102,12 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         )
         if status != "completed":
             if status == "cancelled" and turn._cancel_requested:
-                await turn._on_response_done(None)
+                await turn._on_response_done()
             else:
                 turn._on_connection_lost()
             return
         if not function_calls or turn._cancel_requested:
-            await turn._on_response_done(None)
+            await turn._on_response_done()
             return
         turn._start_tool_round(lambda: self._run_tool_round(function_calls, turn))
 
