@@ -128,7 +128,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0160](0160-the-model-catalog-is-curated-metadata-not-a-runtime-allow-list.md) | The model catalog is curated metadata, not a runtime allow-list | accepted |
 | [0161](0161-an-unpriced-model-costs-zero-and-says-so.md) | An unpriced model costs zero and says so — a rate is never inferred | accepted |
 | [0162](0162-the-pre-response-idle-anchor-stays-turn-open.md) | The pre-response idle anchor stays turn-open; a new endpointer derives its own bound instead | accepted |
-| [0165](0165-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md) | The active voice provider lives in exactly one file, has no default, and an unconfigured speaker parks | accepted |
+| [0165](0165-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md) | The active voice provider lives in exactly one file, has no default, and an unconfigured speaker parks | superseded by 0293 |
 | [0166](0166-a-resumption-handle-is-dropped-on-the-first-failure.md) | A session-resumption handle is dropped on the first failure of any kind | accepted |
 | [0167](0167-each-transit-network-is-its-own-provider-module.md) | Each transit network is its own provider module | accepted |
 | [0168](0168-voice-model-rates-are-entered-by-hand-never-fetched.md) | Voice-model rates are entered by hand, never fetched | accepted |
@@ -137,6 +137,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0290](0290-followup-windows-belong-to-the-voice-host.md) | Follow-up windows belong to the voice host | amended by 0292 |
 | [0291](0291-research-feature-deleted.md) | The background research feature is deleted — the provider model answers, and searches natively | accepted |
 | [0292](0292-followup-windows-are-provider-owned.md) | Follow-up windows are provider-owned | accepted |
+| [0293](0293-the-no-provider-park-is-owned-by-the-voice-daemon.md) | The no-provider park is owned by the voice daemon — jasper-aec-reconcile no longer disables jasper-voice on that axis | accepted |
 
 ## Wake, mic & AEC
 

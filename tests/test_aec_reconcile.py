@@ -1399,10 +1399,14 @@ def test_reconcile_leaves_an_unusable_provider_to_the_daemon(
     fields = stderr_event(result.stderr, "aec_reconcile.voice_provider_unset")
     assert fields["action"] == "none"
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-voice.service" in commands
-    assert "disable jasper-voice.service" not in commands
-    assert "disable --now jasper-voice.service" not in commands
-    assert VOICE_RESTART_CMD not in commands
+    voice_commands = {
+        line for line in commands.splitlines() if "jasper-voice.service" in line.split()
+    }
+    assert voice_commands == {
+        "stop jasper-voice.service jasper-aec-bridge.service",
+        "enable jasper-voice.service",
+        "reset-failed jasper-voice.service",
+    }
 
 
 def test_reconcile_captures_directly_when_managed_xvf_is_not_6_channel(
@@ -4068,7 +4072,11 @@ def test_a_provider_that_goes_away_leaves_a_running_daemon_alone(
     commands = _systemctl_log(tmp_path)
     assert VOICE_RESTART_CMD not in commands
     assert "disable --now jasper-voice.service" not in commands
-    assert "event=aec_reconcile.voice_restart_skipped" in result.stderr
+    assert "enable jasper-voice.service" not in commands
+    assert (
+        stderr_event(result.stderr, "aec_reconcile.voice_restart_skipped")["reason"]
+        == "no_voice_relevant_change"
+    )
 
 
 def test_a_bond_and_an_unbond_both_restart_the_leaders_voice(
