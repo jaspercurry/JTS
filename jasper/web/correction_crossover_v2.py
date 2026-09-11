@@ -1975,14 +1975,6 @@ def _take_staged_angle_walk(
     A datasheet estimate is deliberately not a fallback: it is physics about
     the driver model, not a measurement of this cabinet.
 
-    ``spl_monitor`` is the watch a walk STATING an SPL ceiling plays under,
-    built by the one owner both doors ask
-    (:func:`~jasper.active_speaker.plan_run.spl_watch`) and ``None`` for a walk
-    that states none. Resolved HERE for the same reason the trims are: this is
-    where a walk the session cannot honour can still be refused, and a ceiling
-    no microphone could watch is exactly such a walk
-    (:data:`~jasper.active_speaker.angle_capture.WALK_SPL_CALIBRATION_REQUIRED`).
-
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
     permissions mistake refuses every session rather than silently destroying
@@ -2012,7 +2004,6 @@ def _take_staged_angle_walk(
     )
     from jasper.active_speaker.plan_run import (
         resolve_candidate_scopes,
-        spl_monitor_note,
         spl_watch,
     )
     from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -2081,20 +2072,15 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
-    # No ceiling stated is still a disclosure, not silence: the SAME note
-    # ``spl_watch`` itself would answer with, from the one owner of that
-    # vocabulary — not a second, ad hoc "nothing to say" spelling.
-    spl_monitor, spl_note = None, spl_monitor_note(None)
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
     try:
-        if measure_spec.spl_ceiling_db_spl is not None:
-            spl_monitor, spl_note = spl_watch(
-                measure_spec.spl_ceiling_db_spl,
-                topology=topology,
-                preset=preset,
-                sensitivity=_household_mic_sensitivity(device),
-                device=device,
-            )
+        spl_monitor, spl_note = spl_watch(
+            measure_spec.spl_ceiling_db_spl,
+            topology=topology,
+            preset=preset,
+            sensitivity=_household_mic_sensitivity(device),
+            device=device,
+        )
         candidate_scopes = resolve_candidate_scopes(candidate_ids)
     except LateralWalkRefused as exc:
         raise refused(exc.reason, exc.detail) from exc
@@ -2151,7 +2137,6 @@ def _take_staged_angle_walk(
         ),
         candidates=",".join(sorted(set(candidate_ids) - {""})),
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
-        # What bounds this walk's level, empty on a walk stating no ceiling.
         spl_monitor=spl_note,
     )
     return (

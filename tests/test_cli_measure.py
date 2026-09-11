@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -26,6 +27,8 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
     ProgramForStimulus, StimulusCaptureStopped,
 )
 from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.calibration import resolve_mic_sensitivity
+from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.active_speaker.round_bank import bank_round
 from jasper.cli import measure
 from jasper.cli.measure import (
@@ -68,6 +71,8 @@ def test_explicit_lf_band_and_spl_ceiling_are_part_of_measure_spec():
     assert spec.sweep_band_hz == (20.0, 20_000.0)
     assert spec.sweep_s == 1.5
     assert spec.spl_ceiling_db_spl == 80.0
+    action, = [a for a in build_parser()._actions if a.dest == "spl_ceiling_db_spl"]
+    assert action.help
 
 
 def test_direct_driver_capture_refuses_lf_summed_band_override():
@@ -90,12 +95,6 @@ def test_direct_driver_capture_refuses_lf_summed_band_override():
     ],
 )
 def test_a_variant_take_refuses_without_a_candidate_id(argv):
-    """C3: every variant axis, and each one alone is enough to require the id.
-
-    Parametrized rather than three tests because the rule is about the SET: a
-    check that named only the polarity would let a delayed or level-matched
-    take bank unfindable, which is the same defect through a different flag.
-    """
     with pytest.raises(MeasureFlagError) as caught:
         spec_from_args(_args(*argv))
 
@@ -111,11 +110,6 @@ def test_a_variant_take_refuses_without_a_candidate_id(argv):
     ],
 )
 def test_the_same_variant_builds_a_spec_once_it_is_named(argv):
-    """The CONTROL for the refusal above: the axes are otherwise buildable.
-
-    Without it the refusal test would pass against a flag layer that refused
-    every variant outright, which is a different door than the one shipped.
-    """
     spec = spec_from_args(_args(*argv, "--candidate-id", "null_a1"))
 
     assert spec.candidate_id == "null_a1"
@@ -150,12 +144,6 @@ def test_a_second_position_is_refused_because_nothing_moves_the_microphone():
 
 
 def test_the_engine_s_own_refusals_reach_the_operator_as_input_errors():
-    """A spec the engine will not build is a flag problem, reported as one.
-
-    The detail is the ENGINE's sentence, not a second copy of the rule: a door
-    that re-worded ``MeasureSpec``'s refusals would be free to describe a
-    different rule than the one that fired.
-    """
     with pytest.raises(MeasureFlagError) as caught:
         spec_from_args(
             _args("--polarity", POLARITY_INVERTED, "--candidate-id", "null_a1")
@@ -189,7 +177,6 @@ def test_the_flag_refusal_exits_as_an_input_error(argv, reason, capsys):
 
 
 def _stub_box_reads(monkeypatch, *, preview_status: str) -> None:
-    """The global reads ``read_box_declaration`` makes before the gate."""
     from jasper import output_topology
     from jasper.active_speaker import crossover_preview, design_draft
 
@@ -269,9 +256,6 @@ def _declaration() -> BoxDeclaration:
         role_targets={"woofer": "target-w", "tweeter": "target-t"},
         declared_sensitivities={},
         playback_device="plughw:CARD=Loopback,DEV=0",
-        # Every driver role, because the emitter refuses a partial protection
-        # map: a measurement graph that protected one branch and not the other
-        # is exactly what the confirmed-protection input exists to prevent.
         protection_sections_by_role=sections_by_role(preset.crossover_regions),
         roles_bands=tuple(_roles()),
         caps_dbfs={"woofer": 0.0, "tweeter": -30.0},
@@ -297,14 +281,7 @@ class _Answer:
 
 
 class _Capture:
-    """The host's capture half, minus the microphone.
-
-    Rolls around the play exactly as the wired one does, so the transaction
-    still decides ``played`` from what it OBSERVED, and hands back a
-    bundle-relative path so the banked record carries a real pointer.
-    ``take_answer`` is take-and-CLEAR like the real one, which is what the
-    record annotation relies on.
-    """
+    """Capture with fake audio and real playback and record ownership."""
 
     def __init__(self) -> None:
         self.arounds = 0
@@ -342,6 +319,7 @@ def speaker(tmp_path, monkeypatch):
     cam = FakeCam(entry, volume_db=HOUSEHOLD_DB)
     played: list[Any] = []
     capture = _Capture()
+    capture_factory = Mock(return_value=capture)
 
     async def _play_program(program, **_seams: Any) -> Any:
         # The seam under the seam: everything above it — the door, the plan's
@@ -359,14 +337,12 @@ def speaker(tmp_path, monkeypatch):
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
-    monkeypatch.setattr(wired, "WiredStimulusCapture", lambda **kw: capture)
+    monkeypatch.setattr(wired, "WiredStimulusCapture", capture_factory)
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
-        lambda **kw: object(),
+        lambda **kw: SimpleNamespace(model_key="minidsp_umik2"),
     )
-    # This speaker's microphone is a stand-in, so it carries no calibration a
-    # run could scale dB SPL by. Stated, not inherited from whatever the
-    # developer's own box has stored.
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
     monkeypatch.setattr(
         "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
         lambda **kw: None,
@@ -399,7 +375,7 @@ def speaker(tmp_path, monkeypatch):
         )
     )
     try:
-        yield {"cam": cam, "played": played, "capture": capture}
+        yield {"cam": cam, "played": played, "capture": capture, "capture_factory": capture_factory}
     finally:
         install_volume_owner(None)
 
@@ -1082,13 +1058,46 @@ def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, av
         assert setup is None
 
 
-@pytest.mark.parametrize("volume", [-30, -12, 1, -101, float("nan")])
-def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys, volume):
-    code = measure.main(["--kind", MEASURE_KIND_BASELINE, f"--volume-db={volume}"])
+@pytest.mark.parametrize("source,volume,reason", [
+    ("household", -30, ""), ("household", -12, ""), ("household", 0, ""),
+    ("serial", -12, ""),
+    ("household_serial", -12, ""), ("curve_only_serial", -12, ""),
+    ("missing", -30, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("missing", 0, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("curve_only", -12, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("wrong_mic", -12, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("household", 1, "measurement_volume_invalid"),
+    ("household", -101, "measurement_volume_invalid"),
+    ("household", float("nan"), "measurement_volume_invalid"),
+])
+def test_batch_volume_override_is_watched_banked_and_restored_or_refused(
+    speaker, monkeypatch, tmp_path, capsys, source, volume, reason,
+):
+    cal = tmp_path / "mic.txt"
+    cal.write_text("20 0\n20000 0\n" if source.startswith("curve_only") else "Sens Factor =-12.07dB, AGain =18dB\n20 0\n20000 0\n")
+    record = SimpleNamespace(raw_path=cal, sign_convention="correction",
+                             model="dayton_imm6" if source == "wrong_mic" else "minidsp_umik2")
+    serial_cal = tmp_path / "serial.txt"
+    serial_cal.write_text("Sens Factor =-10dB, AGain =18dB\n20 0\n20000 0\n")
+    serial_record = SimpleNamespace(raw_path=serial_cal, sign_convention="correction")
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic",
+                        lambda: (None, record) if source not in ("serial", "missing") else None)
+    monkeypatch.setattr("jasper.audio_measurement.calibration.resolve_mic_sensitivity", resolve_mic_sensitivity)
+    monkeypatch.setattr("jasper.audio_measurement.calibration.find_stored_calibration",
+                        lambda **kw: serial_record)
+    argv = ["--kind", MEASURE_KIND_BASELINE, f"--volume-db={volume}"]
+    if source in ("serial", "household_serial", "curve_only_serial"):
+        argv += ["--mic-serial", "test-serial"]
+    code = measure.main(argv)
     result = json.loads(capsys.readouterr().out)
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
-    if volume in (-30, -12):
+    if not reason:
         assert code == EXIT_OK
+        monitor = speaker["capture_factory"].call_args.kwargs["spl_monitor"]
+        assert isinstance(monitor, WiredSplMonitor)
+        assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
+        assert monitor.sensitivity.sens_factor_db == (-10.0 if source in ("serial", "curve_only_serial") else -12.07)
+        assert result["spl_monitor"] == "ceiling_85_db_spl"
         assert speaker["cam"].loudness_db == pytest.approx(HOUSEHOLD_DB)
         assert result["measurement_volume_db"] == volume
         assert result["measurement_loudness_volume_db"] == volume
@@ -1097,8 +1106,10 @@ def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys
         assert record["loudness_volume_db"] == volume
     else:
         assert code == EXIT_REFUSED
-        assert result["reason"] == "measurement_volume_invalid"
+        assert result["status"] == "refused"
+        assert result["reason"] == reason
         assert not speaker["played"]
+        speaker["capture_factory"].assert_not_called()
 
 
 def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
@@ -1273,14 +1284,9 @@ def test_a_multi_pose_walk_is_refused_because_this_door_moves_nothing(
 def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
     monkeypatch, stated, stop, expected,
 ):
-    """The box's commissioning stop bounds every run now, not only one that typed
-    a ceiling — and what cannot be enforced is refused or disclosed, never assumed.
-
-    The slugs are the WALK's, shared with the wizard door: one failure reaching
-    an operator under two names would send them looking in two places.
-    """
     from jasper.active_speaker import plan_run
 
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
     monkeypatch.setattr(
         "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
         lambda **kw: None,
@@ -1301,31 +1307,6 @@ def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
     with pytest.raises(measure.BoxNotMeasurable) as refused:
         measure._spl_monitor(specs, box=box, device=object(), mic_serial=None)
     assert refused.value.reason == expected
-
-
-def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
-    """The other half: a resolvable sensitivity buys a real monitor, watching the
-    ceiling the run resolved."""
-    from jasper.audio_measurement.wired_capture import WiredSplMonitor
-
-    monkeypatch.setattr(
-        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
-        lambda **kw: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.plan_run.SUPPORTED_MODELS",
-        {"umik2": {"capture_channel": 0}},
-    )
-
-    monitor, note = measure._spl_monitor(
-        (MeasureSpec(kind=MEASURE_KIND_BASELINE),),
-        box=_declaration(), device=SimpleNamespace(model_key="umik2"),
-        mic_serial=None,
-    )
-
-    assert isinstance(monitor, WiredSplMonitor)
-    assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
-    assert note == "ceiling_85_db_spl"
 
 
 def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsys):
