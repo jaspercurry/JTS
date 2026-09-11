@@ -101,9 +101,6 @@ def test_the_grade_is_the_fixture_arithmetic_below_the_ceiling():
     assert [(row["lo_hz"], row["hi_hz"]) for row in artifact["bands"]] == list(BAND_EDGES_HZ)
     assert [row["n_bins"] for row in artifact["bands"]] == list(BAND_BINS)
     assert [row["spread_db"] for row in artifact["bands"]] == [SPREAD_DB] * 3
-    # The dip is the largest excursion in the lowest band; the two bands above
-    # it hold ripple alone, which is what the rungs above the ceiling being
-    # excluded looks like from here.
     assert [row["max_db"] for row in artifact["bands"]] == [
         abs(DIP_DB), RIPPLE_DB[1], RIPPLE_DB[2],
     ]
@@ -137,8 +134,6 @@ def test_a_band_that_moved_the_wrong_way_is_disclosed_both_ways(
             row["rms_db"] - row["incumbent_rms_db"]
         )
         assert row["regressed"] is (row["delta_rms_db"] > 0.0)
-    # The band above both splits is untouched between the two documents, so it
-    # is the one that must read as neither improved nor regressed.
     assert artifact["bands"][2]["delta_rms_db"] == pytest.approx(0.0)
     assert artifact["bands"][2]["incumbent_spread_db"] == SPREAD_DB
 
@@ -428,6 +423,11 @@ def test_the_view_keeps_response_grades_when_spread_is_unknown(
 
 
 def _stamp_graph_scopes(round_dir: Path, scopes: Sequence[str]) -> None:
+    """Give this round's takes a graph scope, cycling through ``scopes``.
+
+    The take file is what ``bundle_measurements`` reads, and the spatial
+    writers this fixture goes through stamp no scope of their own.
+    """
     bundle, = (round_dir / "bundle").iterdir()
     artifacts = bundle / EVIDENCE_ROOT / "artifacts"
     for index, row in enumerate(bundle_measurements(bundle)):

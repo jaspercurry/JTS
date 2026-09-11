@@ -81,11 +81,6 @@ def test_direct_driver_capture_refuses_lf_summed_band_override():
     assert caught.value.reason == REFUSE_SPEC_INVALID
 
 
-# --------------------------------------------------------------------------- #
-# the flag layer
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "argv",
     [
@@ -258,11 +253,6 @@ def test_a_preview_that_is_not_staged_refuses_before_the_gate_is_reached(
     assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY
 
 
-# --------------------------------------------------------------------------- #
-# one whole run
-# --------------------------------------------------------------------------- #
-
-
 def _declaration() -> BoxDeclaration:
     from jasper.active_speaker.branch_chain import sections_by_role
 
@@ -302,7 +292,14 @@ class _Answer:
 
 
 class _Capture:
-    """The host's capture half, minus the microphone."""
+    """The host's capture half, minus the microphone.
+
+    Rolls around the play exactly as the wired one does, so the transaction
+    still decides ``played`` from what it OBSERVED, and hands back a
+    bundle-relative path so the banked record carries a real pointer.
+    ``take_answer`` is take-and-CLEAR like the real one, which is what the
+    record annotation relies on.
+    """
 
     def __init__(self) -> None:
         self.arounds = 0

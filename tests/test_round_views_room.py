@@ -124,7 +124,7 @@ def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, caps
     {"provenance": {"stimulus": {"wav_sha256": "other-program"}}},
     {"level_db": -35.0},
     {"stimulus_dbfs": -20.0},
-    {"program": {"program_id": "changed-gains"}}, {"loudness_volume_db": -23.0},
+    {"program": {"program_id": "changed-gains"}}, {"loudness_volume_db": -23.0}, {"program_id": "stamped"}, {"program_id": None},
 ])
 def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, capsys, changed):
     round_dir = bank_seat_round(tmp_path)
@@ -169,8 +169,8 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         median = read_room_median(doc)
         assert median.band_hz == (50.0, 200.0)
         assert median.evidence == doc["evidence"]
-        assert median.evidence["basis"]["program_id"] == record["program"]["program_id"]
-        assert median.evidence["basis"]["loudness_volume_db"] == record["loudness_volume_db"]
+        expected_program = changed["program_id"] if record is second and "program_id" in changed else record["program"]["program_id"]
+        assert [median.evidence["basis"][key] for key in ("program_id", "loudness_volume_db")] == [expected_program, record["loudness_volume_db"]]
         persistence = _run(capsys, [
             "room-persistence", str(round_dir), "--capture-id", record["take_id"],
         ])

@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -80,11 +81,6 @@ def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
     _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
     device = v2wired.resolve_v2_wired_mic(proc_asound=tmp_path)
     assert device.model_key == "minidsp_umik2"
-
-
-# --------------------------------------------------------------------------- #
-# 2. the mint + the host fork
-# --------------------------------------------------------------------------- #
 
 
 def _real_verify_spec():
@@ -1645,21 +1641,24 @@ async def test_a_capture_that_cannot_be_placed_says_so_after_the_play(
     assert played == ["played"], "the stimulus really did play"
 
 
-@pytest.mark.parametrize("source", ["cli", "wizard", "unbound"])
-@pytest.mark.parametrize("level", [-23.0, None])
-@pytest.mark.parametrize("answer", [WiredCaptureAnswer(wav=b"heard"), None])
-async def test_the_capture_half_records_into_this_sessions_bundle(source, level, answer):
+@pytest.mark.parametrize("source,level,expected,reason", [
+    (source, level, expected, reason) for source in ("cli", "wizard") for level, expected, reason in (
+        (-23.0, -23.0, ""), (None, None, "unavailable"),
+        (RuntimeError("provider failed"), None, "read_failed"),
+        (float("nan"), None, "invalid_value"), (float("inf"), None, "invalid_value"),
+        (float("-inf"), None, "invalid_value"),
+    )
+] + [("unbound", None, None, "unavailable")])
+@pytest.mark.parametrize("answer", [WiredCaptureAnswer(wav=b"heard", program={"program_id": "played"}), None])
+async def test_the_capture_half_records_into_this_sessions_bundle(source, level, expected, reason, answer, caplog):
     store = SimpleNamespace(bundle_dir="/var/lib/jasper/bundle")
     banked = []
-
-    async def read_loudness():
-        return level
 
     async def bank(record):
         banked.append(record)
         return "record-id"
 
-    provider = read_loudness if source == "wizard" else (lambda: level) if source == "cli" else None
+    provider = None if source == "unbound" else (AsyncMock if source == "wizard" else Mock)(side_effect=[level, -17.0])
     half = (
         v2host._wired_stimulus_capture(_device(), store, read_loudness_volume_db=provider)
         if source == "wizard" else core_capture.WiredStimulusCapture(
@@ -1673,15 +1672,12 @@ async def test_the_capture_half_records_into_this_sessions_bundle(source, level,
     records = core_capture.CapturedRecordStore(
         SimpleNamespace(bank=bank), half, enrich=lambda *_: {"loudness_volume_db": -99},
     )
-    for level in (level, -17.0):
-        assert await records.bank_answer({"loudness_volume_db": -88}, answer) == "record-id"
-        assert banked[-1]["loudness_volume_db"] == (None if source == "unbound" else level)
-
-
-# --------------------------------------------------------------------------- #
-# layer 6: the ENGINE MEASURE LEG
-# --------------------------------------------------------------------------- #
-#
+    for take_id in ("first", "next"):
+        assert await records.bank_answer({"take_id": take_id, "loudness_volume_db": -88, "program_id": "stale"}, answer) == "record-id"
+    assert [record["loudness_volume_db"] for record in banked] == [expected, None if source == "unbound" else -17.0]
+    assert banked[0]["program_id"] == ("played" if answer else None)
+    events = event_field_maps(caplog, "active_speaker.capture_loudness_unknown", take_id="first")
+    assert [event["reason"] for event in events] == ([reason] if reason else [])
 
 
 class _LegSession:
