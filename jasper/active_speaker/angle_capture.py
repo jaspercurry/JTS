@@ -117,6 +117,7 @@ __all__ = [
     "WALK_POLICY_UNSUPPORTED_YET",
     "WALK_CEILING_ABOVE_STOP",
     "WALK_SPL_CALIBRATION_REQUIRED",
+    "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
@@ -876,6 +877,13 @@ WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
 #: is the reason ``jasper-measure`` publishes for the same refusal.
 WALK_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 
+#: The walk states an SPL ceiling and the box's own commissioning preset
+#: declares no finite stop to bound it against
+#: (:func:`~.commission_wiring.commissioning_spl_ceiling_db` raises
+#: ``ValueError``). ``jasper-measure`` meets the same ``ValueError`` with its
+#: own ``jasper.cli.measure.REFUSE_BOX_NOT_READY``.
+WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
+
 #: The walk's stimulus statement is not one that can be played: a summed sweep
 #: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
 #: template field ``MeasureSpec`` refuses that is neither R-1 half
@@ -934,6 +942,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_POLICY_UNSUPPORTED_YET,
     WALK_CEILING_ABOVE_STOP,
     WALK_SPL_CALIBRATION_REQUIRED,
+    WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,

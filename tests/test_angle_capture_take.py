@@ -1076,7 +1076,7 @@ def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
     ids=["no-ceiling-no-watch", "ceiling-watched", "ceiling-uncalibrated"],
 )
 def test_a_stated_ceiling_buys_a_watch_or_refuses_the_open(
-    slot, monkeypatch, stated, calibrated, watched,
+    slot, monkeypatch, caplog, stated, calibrated, watched,
 ):
     """A walk's SPL ceiling is a bound the session must actually hold.
 
@@ -1084,13 +1084,15 @@ def test_a_stated_ceiling_buys_a_watch_or_refuses_the_open(
     whose microphone cannot be turned into dB SPL refuses such a walk instead of
     playing it at the level the commissioning stop proved. A walk stating no
     ceiling asks for no live watch: the held session level is already bounded by
-    that stop.
+    that stop, and the journal says so in the SAME vocabulary a stated ceiling
+    would (``plan_run.spl_monitor_note``), not a second ad hoc spelling.
     """
+    from jasper.active_speaker.plan_run import SPL_MONITOR_UNAVAILABLE
     from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
     monkeypatch.setattr(
         v2host, "_household_mic_sensitivity",
-        lambda: SimpleNamespace() if calibrated else None,
+        lambda device: SimpleNamespace() if calibrated else None,
     )
     preset = SimpleNamespace(
         safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
@@ -1109,10 +1111,77 @@ def test_a_stated_ceiling_buys_a_watch_or_refuses_the_open(
         assert ac.WALK_SPL_CALIBRATION_REQUIRED in ac.WALK_REFUSAL_REASONS
         return
 
-    monitor = _take_full(preset=preset)[5]
+    with caplog.at_level(logging.INFO):
+        monitor = _take_full(preset=preset)[5]
     assert isinstance(monitor, WiredSplMonitor) is watched
     if watched:
         assert monitor.ceiling_db_spl == stated
+    expected_note = (
+        SPL_MONITOR_UNAVAILABLE if stated is None else f"ceiling_{stated:g}_db_spl"
+    )
+    line, = _events(caplog)
+    assert f"spl_monitor={expected_note}" in line
+
+
+def test_a_stated_ceiling_with_no_box_stop_refuses_not_500(slot, monkeypatch):
+    """The preset declaring no finite commissioning stop is a box-config
+    problem, not the walk's — it must refuse the open, not let a bare
+    ``ValueError`` escape this seam as a 500.
+    """
+    monkeypatch.setattr(
+        v2host, "_household_mic_sensitivity", lambda device: SimpleNamespace(),
+    )
+    preset = SimpleNamespace(
+        safety=SimpleNamespace(max_commissioning_level_db_spl=None),
+    )
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=80.0,
+        ),
+    ))
+
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        _take_full(preset=preset)
+    assert ac.WALK_COMMISSIONING_STOP_UNSET in str(refused.value)
+    assert ac.WALK_COMMISSIONING_STOP_UNSET in ac.WALK_REFUSAL_REASONS
+
+
+def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
+    """A household calibration for a DIFFERENT mic than the wired device must
+    not scale an SPL ceiling — treated as unresolved, same as no household
+    mic at all, so the walk hits the same calibration refusal.
+    """
+    from jasper.audio_measurement import calibration, household_mic
+
+    monkeypatch.setattr(
+        household_mic, "resolved_household_mic",
+        lambda: (
+            SimpleNamespace(model_key="dayton_imm6"),
+            SimpleNamespace(model="dayton_imm6", raw_path="/unused"),
+        ),
+    )
+    # A resolvable, non-``None`` sensitivity: if the identity check did not
+    # run, this is what would scale the ceiling instead of a refusal.
+    monkeypatch.setattr(
+        calibration, "resolve_mic_sensitivity", lambda **_kwargs: SimpleNamespace(),
+    )
+    preset = SimpleNamespace(
+        safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
+    )
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=80.0,
+        ),
+    ))
+
+    # _take_full's device defaults to _MIC (minidsp_umik2); the household
+    # record above is a dayton_imm6, so the identity check must refuse this
+    # exactly as if no household mic had resolved at all.
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        _take_full(preset=preset)
+    assert ac.WALK_SPL_CALIBRATION_REQUIRED in str(refused.value)
 
 
 def _stub_evidence_loaders(monkeypatch):

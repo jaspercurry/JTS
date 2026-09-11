@@ -665,6 +665,7 @@ def test_a_spec_survives_its_own_json_shape_unchanged(argv: list[str]) -> None:
         ["--level-matched"],
         ["--level-dbfs", "-12"],
         ["--candidate-id", "null_a1"],
+        ["--spl-ceiling-db-spl", "70"],
     ],
 )
 def test_specs_and_the_per_take_flags_are_refused_together(tmp_path, flag):

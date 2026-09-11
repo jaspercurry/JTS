@@ -243,6 +243,9 @@ def classify_program_failure(
     """
     from jasper.active_speaker.crossover_v2.capture_plan import PlanShapeError
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+    from jasper.active_speaker.crossover_v2.program_transaction import (
+        StimulusCaptureStopped,
+    )
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_MEASUREMENT_VOLUME_DRIFT,
         REASON_PROGRAM_PLAN_SHAPE_INVALID,
@@ -250,6 +253,7 @@ def classify_program_failure(
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
         REASON_PROTECTION_SWEEP_TOO_LOW,
+        REASON_SPL_CEILING_EXCEEDED,
     )
     from jasper.active_speaker.program_admission import (
         ProgramAdmissionError,
@@ -263,7 +267,18 @@ def classify_program_failure(
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
+    from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
+    if (
+        isinstance(exc, StimulusCaptureStopped)
+        and exc.code == WiredSplCeilingExceeded.code
+    ):
+        # A wired SPL-ceiling trip is a ``RuntimeError`` outside the program
+        # family (it stops a TAKE, not an admission), so without this arm it
+        # fell through to ``internal_error`` and told the household nothing
+        # about why the session stopped. Every other ``StimulusCaptureStopped``
+        # code (e.g. ``wired_capture_failed``) keeps falling through below.
+        return REASON_SPL_CEILING_EXCEEDED, ()
     if isinstance(exc, MeasurementFaderDrift):
         # #2925. Its own code because it says the OPPOSITE of
         # ``program_unplayable``: the program was admissible and the SPEAKER's
@@ -2010,6 +2025,7 @@ def _take_staged_angle_walk(
     ordinary shape and the operator stages again.
     """
     from jasper.active_speaker.angle_capture import (
+        WALK_COMMISSIONING_STOP_UNSET,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
         WALK_STIMULUS_NOT_ACCEPTED,
@@ -2029,7 +2045,7 @@ def _take_staged_angle_walk(
         take_staged_angle_request,
     )
     from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-    from jasper.active_speaker.plan_run import spl_watch
+    from jasper.active_speaker.plan_run import spl_monitor_note, spl_watch
     from jasper.active_speaker.crossover_v2.capture_plan import (
         build_v2_cloud_index_phase_map,
         position_angle_deg,
@@ -2096,15 +2112,25 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
-    spl_monitor, spl_note = None, ""
+    # No ceiling stated is still a disclosure, not silence: the SAME note
+    # ``spl_watch`` itself would answer with, from the one owner of that
+    # vocabulary — not a second, ad hoc "nothing to say" spelling.
+    spl_monitor, spl_note = None, spl_monitor_note(None)
     if measure_spec.spl_ceiling_db_spl is not None:
+        try:
+            commissioning_stop_db_spl = commissioning_spl_ceiling_db(
+                topology, preset=preset,
+            )
+        except ValueError as exc:
+            # The box's own preset, not the walk: a stated ceiling has nothing
+            # to bound against. The CLI door meets this same ``ValueError``
+            # with ``REFUSE_BOX_NOT_READY`` — this refuses rather than 500s.
+            raise refused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
         try:
             spl_monitor, spl_note = spl_watch(
                 measure_spec.spl_ceiling_db_spl,
-                commissioning_stop_db_spl=commissioning_spl_ceiling_db(
-                    topology, preset=preset,
-                ),
-                sensitivity=_household_mic_sensitivity(),
+                commissioning_stop_db_spl=commissioning_stop_db_spl,
+                sensitivity=_household_mic_sensitivity(device),
                 device=device,
             )
         except LateralWalkRefused as exc:
@@ -2187,21 +2213,35 @@ def _take_staged_angle_walk(
     )
 
 
-def _household_mic_sensitivity() -> Any | None:
+def _household_mic_sensitivity(device: Any) -> Any | None:
     """This box's remembered measurement mic's absolute reference, or ``None``.
 
     This door has no mic-serial input, so the household record's own resolved
-    calibration file is the only thing an SPL bound could be scaled by. ``None``
-    means nothing here can turn a recording into dB SPL, which is a REFUSAL for
-    a walk that states a ceiling (:func:`_take_staged_angle_walk`).
+    calibration file is the only thing an SPL bound could be scaled by —
+    unless that record is for a DIFFERENT mic than ``device`` (the wired
+    capture's own realized input), the identity check
+    :func:`~jasper.audio_measurement.household_mic._wrong_mic` already owns
+    (reused here rather than forked). ``None`` means nothing here can turn a
+    recording into dB SPL, which is a REFUSAL for a walk that states a
+    ceiling (:func:`_take_staged_angle_walk`).
     """
     from jasper.audio_measurement.calibration import (  # lazy: numpy
         resolve_mic_sensitivity,
     )
-    from jasper.audio_measurement.household_mic import resolved_household_mic
+    from jasper.audio_measurement.household_mic import (
+        _wrong_mic,
+        resolved_household_mic,
+    )
+    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
     found = resolved_household_mic()
     if found is None:
+        return None
+    # ``device``'s established contract is ``model_key`` alone (the same field
+    # ``spl_watch`` reads); the registry's own label drives ``_wrong_mic``'s
+    # comparison rather than requiring a second field of ``device``.
+    device_label = SUPPORTED_MODELS.get(device.model_key, {}).get("label", "")
+    if _wrong_mic(found[1], {"label": device_label}) is not None:
         return None
     return resolve_mic_sensitivity(calibration_file=found[1].raw_path)
 

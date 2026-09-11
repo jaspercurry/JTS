@@ -155,9 +155,9 @@ def spl_watch(
 
     ONE owner for both doors that play a stated walk -- ``jasper-measure`` and
     the wizard's session open -- so the same walk is bounded the same way
-    whichever took it. Every run is bounded, not only one that typed a ceiling:
-    :func:`take_spl_ceiling` resolves the number, refusing one above the box's
-    own commissioning stop.
+    whichever took it. :func:`take_spl_ceiling` resolves the ceiling every
+    stated request implies, refusing one above the box's own commissioning
+    stop.
 
     ``sensitivity`` is ``None`` on a box that cannot turn a recording into dB
     SPL. That DISCLOSES when the run stated no ceiling of its own, and REFUSES
@@ -463,7 +463,7 @@ async def _run(
             index = attempt = offset + 1
             attempts += 1
             try:
-                if gate is not None and index in entries:
+                if gate is not None:
                     await _grant(gate, index, attempt, entries[index])
                     if not granted:
                         mic_moves += 1

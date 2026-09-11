@@ -352,10 +352,14 @@ def spec_from_args(args: argparse.Namespace) -> Any:
 #: The flags that describe ONE take, refused beside ``--specs`` rather than
 #: merged behind a precedence rule. ``--kind``, ``--axis``, ``--vertical-deg``
 #: and ``--regime`` stay off this list: they are the shared defaults a file
-#: entry may omit.
-_PER_TAKE_FLAGS = ("position", "prompt", "polarity", "inverted_role",
-                   "delayed_role", "delay_us", "level_matched", "level_dbfs",
-                   "sweep_band_hz", "sweep_s", "candidate_id")
+#: entry may omit. Every stimulus dest
+#: (:data:`~jasper.cli._stimulus_args.STIMULUS_ARG_DESTS`) describes one take
+#: too, spread in here rather than hand-copied a second time; ``dict.fromkeys``
+#: keeps this safe if a future dest ever collides with a name spelled directly.
+_PER_TAKE_FLAGS = tuple(dict.fromkeys((
+    "position", "prompt", "polarity", "inverted_role", "delayed_role",
+    "delay_us", "level_matched", "candidate_id", *STIMULUS_ARG_DESTS,
+)))
 
 
 def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -410,13 +414,12 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
 
 #: The flags a ``--request`` walk already states for itself: the template names
 #: what every take measures, and the stops name where. Refused beside it rather
-#: than read and thrown away. Stimulus dest names come from
-#: :data:`~jasper.cli._stimulus_args.STIMULUS_ARG_DESTS`, the one place they are
-#: spelled, rather than a second hand-copied list here; ``dict.fromkeys`` drops
-#: the overlap with :data:`_PER_TAKE_FLAGS`, which already names three of them.
+#: than read and thrown away. :data:`_PER_TAKE_FLAGS` already spreads in every
+#: :data:`~jasper.cli._stimulus_args.STIMULUS_ARG_DESTS` name, so nothing here
+#: repeats that list.
 _WALK_STATED_FLAGS = tuple(dict.fromkeys((
     "kind", "graph_scope", "axis", "vertical_deg", "regime", "specs",
-    *_PER_TAKE_FLAGS, *STIMULUS_ARG_DESTS,
+    *_PER_TAKE_FLAGS,
 )))
 
 
@@ -1013,8 +1016,8 @@ def _interrupted(exc: MeasureInterrupted) -> int:
     """A run that stopped part-way — a refusal carrying what it banked.
 
     The ids are the only handle anybody has on takes already on disk, and
-    ``stopped_at`` names the spec in flight by zero-based ``index`` as well as
-    by its fields, since repeated or unlabelled entries cannot be told apart by
+    ``stopped_at`` names the spec in flight by 1-based ``index`` as well as by
+    its fields, since repeated or unlabelled entries cannot be told apart by
     fields alone.
     """
     log_event(
