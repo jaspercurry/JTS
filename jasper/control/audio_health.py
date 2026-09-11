@@ -42,6 +42,7 @@ from ..service_units import (
     unit_not_running,
 )
 from ..fanin.latency_mode import PRESETS, classify_runtime
+from ..fanin.status import DIRECT_HEALTH_BROKEN
 from ..fanin_coupling import RING_SLOT_FRAMES
 from ..source_intent import read_source_intents
 from .airplay_health import (
@@ -969,7 +970,7 @@ def _signal_path(
                 "try another source."
             ),
         }
-    if active_input.get("health") == "broken":
+    if active_input.get("health") == DIRECT_HEALTH_BROKEN:
         return {
             "code": "input_broken",
             "status": "issue",
