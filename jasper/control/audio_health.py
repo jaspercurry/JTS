@@ -33,7 +33,7 @@ from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
     FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET,
-    read_status_socket_or_none,
+    STATUS_MAX_BYTES, read_status_socket_or_none,
 )
 from ..service_units import (
     FANIN_SERVICE,
@@ -60,7 +60,7 @@ from .transport_eligibility import (
 )
 from ..platform import wire
 from ..platform.status_socket import MUX_CONTROL_SOCKET_PATH
-from ..platform.uds import MAX_STATUS_BYTES, mux_socket_command
+from ..platform.uds import mux_socket_command
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ def _nonnegative_counter(value: Any) -> int | None:
 def _read_local_status(
     socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
-    max_bytes: int = MAX_STATUS_BYTES,
+    max_bytes: int = STATUS_MAX_BYTES,
 ) -> dict[str, Any] | None:
     """Read one local daemon STATUS response, byte/time bounded and fail-soft."""
     return read_status_socket_or_none(
