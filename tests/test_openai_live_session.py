@@ -15,7 +15,7 @@ from openai.types.live.client_event_param import ClientEventParam
 from pydantic import TypeAdapter
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice import openai_live_session
+from jasper.voice import _base, openai_live_session
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
@@ -283,17 +283,33 @@ async def test_stop_releases_the_active_turn_and_closes_the_session_once():
 
 class HangingDial(LiveSocket):
     """A socket whose dial parks until `release` fires — a wake that is
-    still opening its session when something else stops the connection."""
+    still opening its session when something else stops the connection.
 
-    def __init__(self, dialling: asyncio.Event, release: asyncio.Event):
+    `close_sec` slows the transport unwind the teardown runs before the
+    release reaches the turn lock.
+    """
+
+    def __init__(
+        self,
+        dialling: asyncio.Event,
+        release: asyncio.Event,
+        close_sec: float = 0.0,
+    ):
         super().__init__()
         self._dialling = dialling
         self._release = release
+        self._close_sec = close_sec
+        self.exits = 0
 
     async def __aenter__(self):
         self._dialling.set()
         await self._release.wait()
         return await super().__aenter__()
+
+    async def __aexit__(self, *args):
+        self.exits += 1
+        await asyncio.sleep(self._close_sec)
+        return await super().__aexit__(*args)
 
 
 async def test_a_stop_racing_an_in_flight_open_is_not_an_outage(monkeypatch):
@@ -330,17 +346,26 @@ async def test_a_stop_racing_an_in_flight_open_is_not_an_outage(monkeypatch):
     assert socket.closed
 
 
-async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(monkeypatch):
+@pytest.mark.parametrize("close_sec", [0.0, 0.3])
+async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
+    monkeypatch, close_sec,
+):
     """`stop()` returns inside the close bound, whatever the dial does.
 
     The release ends by taking the turn lock the acquire holds for its
     whole open budget — longer than the unit's `TimeoutStopSec`, so an
-    unbounded release means SIGKILL on a restart mid-dial.
+    unbounded release means SIGKILL on a restart mid-dial. `stop()`
+    spends one cancel on the release, so the bound has to hold wherever
+    that cancel lands: on the lock itself, or — with a transport whose
+    unwind is slow — inside the close the release runs first.
     """
     monkeypatch.setattr(openai_live_session, "SESSION_OPEN_BUDGET_SEC", 5.0)
-    monkeypatch.setattr(openai_live_session, "SESSION_CLOSE_TIMEOUT_SEC", 0.2)
+    # The release bound fires inside the slow unwind; the base bound is
+    # both the close's own ceiling and the release's wait for the lock.
+    monkeypatch.setattr(openai_live_session, "SESSION_CLOSE_TIMEOUT_SEC", 0.1)
+    monkeypatch.setattr(_base, "SESSION_CLOSE_TIMEOUT_SEC", 0.5)
     dialling, release = asyncio.Event(), asyncio.Event()
-    socket = HangingDial(dialling, release)
+    socket = HangingDial(dialling, release, close_sec=close_sec)
     conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
     await conn.start(ToolRegistry(), "Be concise.")
 
@@ -350,9 +375,10 @@ async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(monkeypatch):
     await conn.stop()
     elapsed = time.monotonic() - started
 
-    assert elapsed < 1.0
+    assert elapsed < 2.0
     assert conn._state is ConnectionState.CLOSED
-    assert socket.closed
+    # The socket is still handed to its own unwind on the way out.
+    assert socket.exits == 1
     release.set()
     with pytest.raises(RuntimeError):
         await acquire
