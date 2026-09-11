@@ -434,14 +434,13 @@ class AssistantOutput:
         unconditionally — a duck that reported failure may still have
         delivered the attenuation, so the release has to run anyway.
 
-        ``episode`` is for the one caller that cannot let this method take
-        its own admission: the research cancel timeout has to end the turn
-        episode blocking the cue and take the cue's in the same lock hold
-        (`AssistantOutputGate.hand_over_if_current`), or a queued turn
-        wins the gap and the wake goes unanswered. A handed-in episode is
-        this method's to release on EVERY exit, the unconfigured-cues one
-        included — otherwise it leaks the gate and the speaker goes deaf to
-        every later cue."""
+        ``episode`` is for a caller that cannot let this method take its own
+        admission: it ends the episode blocking the cue and takes the cue's
+        in the same lock hold (`AssistantOutputGate.hand_over_if_current`),
+        or a queued turn wins the gap and the sound is skipped (NN-6). A
+        handed-in episode is this method's to release on EVERY exit, the
+        unconfigured-cues one included — otherwise it leaks the gate and the
+        speaker goes deaf to every later cue."""
         cues = self._cues
         if cues is None:
             if episode is not None:
@@ -756,7 +755,7 @@ class AssistantOutput:
             ("output_episode_release", lambda: self._output_gate.end_turn(episode), True),
         ))
         for phase, operation, needs_output in steps:
-            # Research transfers the episode and duck, not the turn's meters.
+            # A handover transfers the episode and duck, not the turn's meters.
             if needs_output and (
                 episode is None or not self._output_gate.is_current(episode)
             ):

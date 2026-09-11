@@ -32,7 +32,6 @@ from jasper.google_creds import build_google_clients
 from jasper.google_routes import build_google_routes_client
 from jasper.home_assistant import build_ha_client
 from jasper.renderer import RendererClient
-from jasper.research import ResearchResult, ResearchScheduler
 from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry, UntrustedContentMonitor
 from jasper.tools.packs import ToolDeps, register_packs
@@ -169,24 +168,6 @@ def _build_test_registry(
         test_state["timer_scheduler"] = timer_scheduler
         test_state["timer_db_path"] = timer_db.name
 
-    class _EvalResearchClient:
-        async def complete(self, _req):
-            return ResearchResult(
-                text="Here is the short research summary.",
-                input_tokens=10,
-                output_tokens=8,
-            )
-
-    research_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    research_db.close()
-    research_scheduler = ResearchScheduler(
-        _EvalResearchClient(),
-        db_path=research_db.name,
-    )
-    if test_state is not None:
-        test_state["research_scheduler"] = research_scheduler
-        test_state["research_db_path"] = research_db.name
-
     # Providers own their env parsing; use the same transit builder as the daemon.
     active = transit.active_transit(os.environ)
     if test_state is not None:
@@ -254,7 +235,6 @@ def _build_test_registry(
         google_routes=google_routes,
         ha=ha,
         timer_scheduler=timer_scheduler,
-        research_scheduler=research_scheduler,
         google_clients=google_clients,
         wake_event_store=wake_event_store,
         untrusted_monitor=untrusted_monitor,
@@ -461,13 +441,6 @@ class VoiceEvalHarness:
             except Exception:  # noqa: BLE001
                 logger.warning("voice-eval: timer scheduler stop raised",
                                exc_info=True)
-        research_sched = self.test_state.get("research_scheduler")
-        if research_sched is not None:
-            try:
-                await research_sched.stop()  # type: ignore[union-attr]
-            except _CLEANUP_ERRORS:
-                logger.warning("voice-eval: research scheduler stop raised",
-                               exc_info=True)
         active_transit = self.test_state.get("active_transit")
         if active_transit is not None:
             try:
@@ -479,12 +452,6 @@ class VoiceEvalHarness:
         if isinstance(db_path, str):
             try:
                 os.unlink(db_path)
-            except OSError:
-                pass
-        research_db_path = self.test_state.get("research_db_path")
-        if isinstance(research_db_path, str):
-            try:
-                os.unlink(research_db_path)
             except OSError:
                 pass
         store = self.test_state.get("wake_event_store")

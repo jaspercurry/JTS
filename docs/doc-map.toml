@@ -125,7 +125,6 @@ code = [
   "jasper/transit/__init__.py",
   "jasper/music_sources.py",
   "jasper/voice/catalog.py",
-  "jasper/research/__init__.py",
   "jasper/audio_hardware/dac.py",
 ]
 docs = [
@@ -312,7 +311,6 @@ code = [
   "jasper/voice_daemon.py",
   "jasper/vad.py",
   "jasper/tools/**",
-  "jasper/research/**",
   "jasper/tool_state.py",
   "jasper/tool_catalog_view.py",
   "jasper/tool_prompt_overrides.py",
@@ -335,9 +333,6 @@ docs = [
   # the /tools/ wizard). The core tool code globbed above must route here so a
   # pack-walk / catalog / wizard change surfaces the living plan for review.
   "docs/tool-platform-plan.md",
-  # Roadmap for the async research tool + the pluggable text-LLM-provider
-  # layer.
-  "docs/research-tool-plan.md",
   "docs/conversation-history-plan.md",
   "tests/voice_eval/README.md",
 ]

@@ -404,10 +404,10 @@ def test_bundled_defaults_are_current_and_model_specific():
     assert gemini.audio_output_per_million_usd == 12.0
     assert pricing_for_model("gpt-realtime-2").text_output_per_million_usd == 24.0
     assert pricing_for_model("gpt-realtime-1.5").text_output_per_million_usd == 16.0
-    research = pricing_for_model("gpt-5.4-mini")
-    assert research.text_input_per_million_usd == 0.75
-    assert research.text_output_per_million_usd == 4.50
-    assert research.cached_input_per_million_usd == 0.075
+    mini = pricing_for_model("gpt-5.4-mini")
+    assert mini.text_input_per_million_usd == 0.75
+    assert mini.text_output_per_million_usd == 4.50
+    assert mini.cached_input_per_million_usd == 0.075
 
 
 def test_unknown_model_is_unpriced_not_invented():
@@ -821,8 +821,7 @@ def test_token_billed_provider_has_no_intervals(tmp_path: Path):
 # resolves to an all-zero Pricing labelled ``unpriced:<id>``, which means
 # the daily spend cap silently never accrues for that model. The bundled
 # table's own contract (jasper/data/model_pricing.json `_comment`) is
-# "Bundled DEFAULT voice and research model rates ... keyed by exact model ID",
-# so every
+# "Bundled voice rates ... keyed by exact model ID", so every
 # model the /voice wizard offers from the catalog must have an entry —
 # otherwise picking a curated model quietly disables spend accounting
 # until the runtime doctor warning is noticed.
@@ -1007,9 +1006,9 @@ def test_aggregate_unreadable_member_counts_zero_not_raise(tmp_path: Path, caplo
 def test_background_usage_without_modality_details_would_be_zero_dollars(
     tmp_path: Path,
 ):
-    """Proves WHY the caller-side synthesis is load-bearing (the background
-    recorder in ``jasper.research.scheduler``): the SAME token counts priced
-    WITHOUT modality details price at gpt-5.4's (absent) audio rate → $0."""
+    """Proves WHY the caller-side synthesis is load-bearing: the SAME token
+    counts priced WITHOUT modality details price at gpt-5.4's (absent) audio
+    rate -> $0."""
     db = str(tmp_path / "usage.db")
     store = UsageStore(db)
     naive = store.record_background_usage(

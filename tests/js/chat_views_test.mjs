@@ -20,7 +20,7 @@ if (!modulePath) throw new Error("usage: node chat_views_test.mjs <views.js>");
 const expectedImports = [
   'import { h } from "/assets/shared/js/dom.js";',
   'import { appHeader } from "/assets/shared/js/chrome.js";',
-  'import { actionButton, badge, livePill, titledCard } from "./components.js";',
+  'import { actionButton, livePill, titledCard } from "./components.js";',
 ];
 const expectedExports = [
   "buildPage",

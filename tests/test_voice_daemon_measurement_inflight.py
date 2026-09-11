@@ -4,7 +4,7 @@
 
 """In-flight audio drain on MEASURE_PAUSE (issue #1898).
 
-#1786 stopped proactive cues, timers, and research announcements from
+#1786 stopped proactive cues and timer announcements from
 *starting* once a room-correction measurement window is open. This is its
 residual half: the pause checked only `State.SESSION`, never
 `_output_gate.is_active`, so a cue or timer announcement that began a
@@ -1503,7 +1503,8 @@ async def test_begin_turn_centralizes_feedback_prefix_without_reordering(
     listening_feedback: bool,
     expected_events: list[str],
 ) -> None:
-    """Wake/manual keep their prefix order; research-style begins add none."""
+    """Wake/manual keep their prefix order; a begin with no listening
+    feedback adds none."""
 
     events: list[str] = []
     gate = _EndCountingGate()

@@ -36,7 +36,7 @@ def _full_registry() -> ToolRegistry:
 def test_manifest_covers_every_tool_in_order():
     reg = _full_registry()
     manifest = reg.to_manifest()
-    assert len(manifest) == len(reg.tools) == 32
+    assert len(manifest) == len(reg.tools) == 30
     assert [e["name"] for e in manifest] == list(reg.tools.keys())
 
 

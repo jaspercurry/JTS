@@ -17,8 +17,8 @@
 instance* of the Feature contract in [extensibility.md](extensibility.md):
 it composes a per-turn capture hook + a store + a web surface, and the host
 owns/injects the shared plumbing. Build it concretely; the reusable Feature
-helpers get *extracted* from what this and [research](research-tool-plan.md)
-duplicate, not designed up front.
+helpers get *extracted* once a second Feature duplicates them, not designed
+up front.
 
 ---
 
@@ -27,10 +27,9 @@ duplicate, not designed up front.
 A page at `http://jts.local/chat` that shows recent interactions as paired
 turns — **the perceived command in, the response back** — newest first, with
 a date filter. "Voice is great, but sometimes reading is better": it's where
-you re-read something the speaker told you (a fact, a reminder, a research
-answer), and, later, where links and longer material that the speaker won't
-read aloud live ("the full list is in your history" — the vision named in
-[research-tool-plan.md](research-tool-plan.md) §7).
+you re-read something the speaker told you (a fact, a reminder), and,
+later, where links and longer material that the speaker won't read aloud
+live ("the full list is in your history").
 
 **v1 is not chat-by-text.** It renders a local history and privacy controls;
 an interactive text assistant is a different surface — see Non-goals.
@@ -112,10 +111,9 @@ or provider payloads.
 
 ---
 
-## 3. Storage — a new dedicated store, cloned from research
+## 3. Storage — a new dedicated store
 
-A new `ConversationStore` at `/var/lib/jasper/conversation_history.db`,
-**copy-shaped from `ResearchJobStore`** (`jasper/research/scheduler.py`):
+A new `ConversationStore` at `/var/lib/jasper/conversation_history.db`:
 fail-soft (`available` property; every method degrades to a logged no-op on
 `sqlite3.Error`), autocommit, one connection.
 
@@ -219,8 +217,8 @@ Mapped to [extensibility.md](extensibility.md):
   turn.
 - **Extraction discipline:** build all of this concretely here. The reusable
   Feature helpers (a storage-substrate helper, a web-mount helper) get
-  extracted only once a **second** Feature (this + research) confirms the
-  shape — do **not** build a generic Feature framework in this work.
+  extracted only once a **second** Feature confirms the shape — do **not**
+  build a generic Feature framework in this work.
 
 ---
 
@@ -233,7 +231,7 @@ on-device Gemini-transcript and end-to-end checks, called out explicitly).
 |---|---|---|
 | **1 — Foundation** | `ConversationStore` (cloned, pytest-covered: CRUD, fail-soft, retention, mic-mute gate) + the optional turn transcript capability (`user_transcript()`/`assistant_transcript()`) + the `_end_turn_inner` capture hook, gated by a default-off wizard flag. OpenAI/Grok stop discarding (surface what they already capture). Registers no UI yet. | none |
 | **2 — Gemini transcripts** | Metadata-only rows are implemented as an interim fallback. Add `input_audio_transcription` + `output_audio_transcription` to the Gemini `LiveConnectConfig` and parse in `_on_response` for full read-back value on the default provider. | on-device cost/latency check |
-| **3 — The `/chat` page** | `jasper-chat-web` service + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check + static ES-module paired-turn renderer, research badge, null-assistant note, and date filter. **Implemented.** | on-device browser pass |
+| **3 — The `/chat` page** | `jasper-chat-web` service + `GET /data.json` + the install/nginx/landing wiring + `/state.chat` + the doctor check + static ES-module paired-turn renderer, null-assistant note, and date filter. **Implemented.** | on-device browser pass |
 | **4 — Retention + privacy controls** | TTL pruner + row cap + clear-all delete + the wizard opt-in polish. The scoped PRIVACY.md paragraph keeps public docs truthful now that capture can be enabled in-product. **Implemented; per-row delete deferred.** | none |
 | **5 — Richness (deferred, triggered)** | Surface `tool_calls_json` and links/rich content on the page (the `data_json` column pays off). A narrow Grok assistant-text fallback **only** if Grok usage matters. Search/filter. | none |
 

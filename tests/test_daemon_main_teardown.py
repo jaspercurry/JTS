@@ -115,9 +115,7 @@ class _FakeWakeLoop:
         self.bind_tool_dispatch = lambda: None
         self.request_conversation_end = lambda: None
         self.play_supervisor_cue = lambda *a, **k: None
-        self.record_research_delivery = lambda *a, **k: None
         self.announce_timer = lambda *a, **k: None
-        self.announce_research_ready = lambda *a, **k: None
         self.measurement_hold = SimpleNamespace(
             adopt_live_window=self._adopt_live_window,
         )
@@ -125,9 +123,6 @@ class _FakeWakeLoop:
     async def _adopt_live_window(self) -> bool:
         self._trace.append(("measurement_adopt", "run"))
         return False
-
-    def set_research_scheduler(self, *_a, **_kw) -> None:
-        return None
 
     async def run(self) -> None:
         return None
@@ -178,7 +173,6 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
 
     patch("VoiceUsageStore", SimpleNamespace(start=_usage_start))
     patch("_wire_billable_activity_meter", lambda **k: None)
-    patch("_warn_if_research_model_unpriced", lambda *a, **k: None)
     patch("install_volume_owner", lambda *a, **k: None)
     patch("set_canonical_target_db_provider", lambda *a, **k: None)
     patch("_wake_ready_detail", lambda *a, **k: "test")
@@ -259,27 +253,6 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
         return sched
 
     patch("TimerScheduler", _timer_scheduler)
-    patch("active_research_provider", lambda _env: _resource(
-        trace, "active_research", "aclose", is_async=True,
-        client=SimpleNamespace(model="research-model"), provider_id="test",
-    ))
-
-    def _research_scheduler(*_a, **_kw):
-        # The SQLite store opens in __init__ and closes on close(); the
-        # task lifecycle is a second, inner resource around start/stop.
-        sched = _resource(trace, "research_store", "close", is_async=False,
-                          set_on_done=lambda _f: None)
-
-        async def _start() -> None:
-            trace.append(("research_scheduler", "enter"))
-
-        async def _stop() -> None:
-            trace.append(("research_scheduler", "exit"))
-        sched.start = _start
-        sched.stop = _stop
-        return sched
-
-    patch("ResearchScheduler", _research_scheduler)
     patch("_build_cues_manager", lambda *a, **k: _SpyCues())
 
     def _wake_event_store(*_a, **_kw):
@@ -447,13 +420,12 @@ async def test_the_cue_bake_is_scheduled_before_the_checks_that_park(
 async def test_schedulers_stop_before_the_playout_they_announce_through(
     teardown_trace,
 ) -> None:
-    """Timer / research announcements speak through the TtsPlayout, so
-    their tasks are cancelled before it closes underneath them."""
+    """Timer announcements speak through the TtsPlayout, so their tasks
+    are cancelled before it closes underneath them."""
     await _run_daemon_once(teardown_trace)
 
     tts_at = teardown_trace.index_of("tts", "exit")
     assert teardown_trace.index_of("timer_scheduler", "exit") < tts_at
-    assert teardown_trace.index_of("research_scheduler", "exit") < tts_at
     assert teardown_trace.index_of("startup_tasks", "exit") < tts_at
 
 
@@ -525,14 +497,14 @@ async def test_an_early_raise_releases_what_was_registered_before_it(
     through construction releases what is already open instead of leaking
     it because the `async with` had not been reached yet."""
     def _boom(*_a, **_kw):
-        raise _ConstructorFailed("research scheduler")
+        raise _ConstructorFailed("timer scheduler")
 
-    monkeypatch.setattr(daemon_main, "ResearchScheduler", _boom)
+    monkeypatch.setattr(daemon_main, "TimerScheduler", _boom)
 
     with pytest.raises(_ConstructorFailed):
         await _run_daemon_once(teardown_trace)
 
     assert teardown_trace.exited() == [
-        "active_research", "volume_observer", "volume_coordinator",
+        "volume_observer", "volume_coordinator",
         "ha", "transit", "weather", "usage",
     ]

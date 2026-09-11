@@ -45,7 +45,6 @@ from jasper.tools.packs import (
     outcomes_to_state,
     register_packs,
 )
-from jasper.tools.research import make_research_tools
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.time import make_time_tools
 from jasper.tools.timer import make_timer_tools
@@ -89,12 +88,6 @@ def _reference_registry(deps: ToolDeps) -> ToolRegistry:
         _register_tool_or_callable(reg, fn)
     if deps.timer_scheduler is not None:
         for fn in make_timer_tools(deps.timer_scheduler):
-            _register_tool_or_callable(reg, fn)
-    if deps.research_scheduler is not None:
-        for fn in make_research_tools(
-            deps.research_scheduler,
-            spend_cap=deps.spend_cap,
-        ):
             _register_tool_or_callable(reg, fn)
     if deps.google_clients is not None and deps.google_clients.list_account_names():
         for fn in make_calendar_tools(deps.google_clients, deps.google_setup_url):
@@ -409,7 +402,6 @@ def test_real_build_registry_wrapper_produces_full_set():
         None,                     # volume_coordinator
         spotify_router=object(),  # truthy -> skip _build_router(cfg)
         timer_scheduler=object(),
-        research_scheduler=object(),
         google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
         google_routes=object(),
         ha=object(),
@@ -425,7 +417,6 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
 
     - timer's factory does NOT self-gate on None, so the pack gate must
       drop it (else tools register against a None scheduler).
-    - research follows the same scheduler-gated pattern.
     - calendar/gmail need ≥1 linked account (stricter than the factory's
       own `clients is None`), else the model sees dead tools.
 
@@ -445,7 +436,6 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
 
     gated = {
         "set_timer", "list_timers", "cancel_timer", "update_timer",
-        "research",
         "calendar_today_summary", "calendar_upcoming",
         "gmail_unread_summary", "gmail_read_thread",
         "home_assistant", "flag_recent_issue", "get_travel_routes",
@@ -837,6 +827,4 @@ def test_content_bearing_tools_pin_log_redaction():
         "home_assistant",
         "home_assistant_confirm",
         "get_travel_routes",
-        "research",
-        "read_research_result",
     }

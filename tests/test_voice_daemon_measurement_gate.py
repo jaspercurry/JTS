@@ -18,10 +18,6 @@ the pause landed, still cannot reach the capture.
 
 These tests pin that refusal at both moments, the structured code that
 names it, and normal playback once the window closes.
-
-`announce_research_ready` keeps its own early check (a queued job is
-held, not dropped); that coverage lives in
-tests/test_research_announcer.py.
 """
 from __future__ import annotations
 

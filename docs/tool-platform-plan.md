@@ -15,8 +15,8 @@ invariant, the five extension contracts, the decision tree) lives in
 
 ## 1. The vision
 
-Today JTS ships a fixed set of 32 built-in tools (weather, transit,
-smart-home, music, calendar, email, timers, research, ...). The vision is to turn
+Today JTS ships a fixed set of 30 built-in tools (weather, transit,
+smart-home, music, calendar, email, timers, ...). The vision is to turn
 that into an **extensible foundation other people can build on** — so
 that adding a new capability to the speaker is a clean, local act, and
 eventually a *store / marketplace* where households discover and add

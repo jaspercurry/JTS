@@ -10,7 +10,7 @@
 
 import { h } from "/assets/shared/js/dom.js";
 import { appHeader } from "/assets/shared/js/chrome.js";
-import { actionButton, badge, livePill, titledCard } from "./components.js";
+import { actionButton, livePill, titledCard } from "./components.js";
 
 const NO_USER_TRANSCRIPT = "No user transcript captured for this turn.";
 const NO_ASSISTANT_TRANSCRIPT = "No transcript for this turn.";
@@ -176,7 +176,7 @@ export function update(refs, payload, state) {
 
   refs.captureToggle.checked = captureEnabled;
   refs.captureStatus.textContent = captureEnabled
-    ? "New voice turns and research read-outs are being saved locally."
+    ? "New voice turns are being saved locally."
     : "New voice turns are not being saved.";
   refs.clearButton.disabled = snap.available === false || turnCount < 1;
   refs.clearStatus.textContent = turnCount > 0
@@ -221,8 +221,7 @@ function historyContent(snap, turns) {
 function turnCard(turn) {
   const metadata = parseDataJson(turn && turn.data_json);
   const provider = h("div.chat-provider", null,
-    h("span.chat-provider__name", null, providerLabel(turn.provider)),
-    isResearchMetadata(metadata) ? badge("Research", "warn") : null);
+    h("span.chat-provider__name", null, providerLabel(turn.provider)));
   return h("article.chat-turn-card", null,
     h("div.chat-turn-card__meta", null,
       h("time", { dateTime: textOrEmpty(turn.ts_utc) }, formatTimestamp(turn.ts_utc)),
@@ -241,10 +240,6 @@ function transcriptBlock(label, text, missingText) {
     h("p.chat-transcript__label", null, label),
     h("p.chat-transcript__text", null, missing ? missingText : String(text)),
   );
-}
-
-function isResearchMetadata(parsed) {
-  return !!(parsed && parsed.kind === "research");
 }
 
 function metadataNote(parsed) {

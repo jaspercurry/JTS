@@ -7,8 +7,7 @@
 ConversationCapture's own gating, lazy-open, reopen and retention
 behavior is covered by tests/test_conversation_capture.py. These pin
 the WakeLoop-level wiring that can't be exercised without a full
-WakeLoop: `_end_turn_inner`'s single write path via `turn.capture()`,
-and `record_research_delivery`'s research-window bookkeeping.
+WakeLoop: `_end_turn_inner`'s single write path via `turn.capture()`.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from jasper.conversation_history import (
     ConversationStore,
     DB_PATH_ENV,
 )
-from jasper.research import DONE, ResearchJob
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
@@ -130,36 +128,3 @@ async def test_capture_includes_transcript_from_the_close_handshake(
 
     (row,) = store.recent(10)
     assert row.assistant_text == "Four minutes, from Union Square."
-
-
-async def test_research_readback_records_query_report_and_data_json(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    wl, store = _wake_loop(tmp_path, monkeypatch)
-    job = ResearchJob(
-        id="research123",
-        query="research induction cooktops",
-        status=DONE,
-        result="Induction is fast and efficient.",
-        error=None,
-        created_at=1.0,
-        finished_at=2.0,
-        announced=False,
-        read=False,
-    )
-
-    wl.record_research_delivery(
-        job,
-        "Induction is fast and efficient.",
-        "yes",
-    )
-
-    rows = store.recent(10)
-    assert len(rows) == 1
-    assert rows[0].user_text == "research induction cooktops"
-    assert rows[0].assistant_text == "Induction is fast and efficient."
-    assert json.loads(rows[0].data_json or "{}") == {
-        "kind": "research",
-        "job_id": "research123",
-    }
