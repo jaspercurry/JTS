@@ -21,7 +21,7 @@ from jasper.log_event import log_event
 from .audio_buffer import AudioBuffer
 from .mic_capture import InputDeviceUnavailable
 from .tts_playout import TtsPlayout
-from .wake_events import WakeEventStore, make_event_id
+from .wake_events import WakeEventStore
 from .cues import AudioCueManager
 from .cues.registry import NO_ROOM_MIC_CUE_SLUG
 from .vad import SpeechVAD
@@ -42,6 +42,7 @@ from .voice.conversation import (
     END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC, continuous_watchdog,
 )
 from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
+from .voice._tasks import cancel_tracked_tasks, track_task
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
@@ -50,6 +51,7 @@ from .voice.wake_detect import (
     LegRuntime,
     WakeLegs,
 )
+from .voice.turn_timeline import TurnTimeline
 from .voice.push_to_talk import (
     HARD_RECORDING_CAP_SEC,
     PTT_KEEPALIVE_INTERVAL_SEC,
@@ -90,46 +92,6 @@ VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 # restart it on plug-in) instead of crash-looping toward
 # StartLimitAction=reboot.
 VOICE_MIC_UNAVAILABLE_EXIT = 66
-
-
-def track_task(
-    task: asyncio.Task,
-    task_set: set[asyncio.Task],
-    *,
-    label: str,
-) -> asyncio.Task:
-    task_set.add(task)
-
-    def _discard(done: asyncio.Task) -> None:
-        task_set.discard(done)
-        try:
-            exc = done.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is not None:
-            logger.warning(
-                "fire-and-forget task %s failed: %s",
-                label,
-                exc,
-                exc_info=(type(exc), exc, exc.__traceback__),
-            )
-
-    task.add_done_callback(_discard)
-    return task
-
-
-async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
-    tasks = list(task_set)
-    if not tasks:
-        return
-    for task in tasks:
-        task.cancel()
-    for task in tasks:
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-    task_set.difference_update(tasks)
 
 
 # `_end_turn` reasons the household or the daemon itself chose: whoever
@@ -216,19 +178,6 @@ SPEECH_RUN_PEAK_MIN = 0.60
 # per-frame bar is the (stricter) barge-in threshold, not the loose
 # wake-tail 0.15 — bleed false-positives are the failure mode here.
 BARGE_IN_SUSTAINED_SPEECH_SEC = SUSTAINED_SPEECH_TO_ARM_SEC
-
-# Published latency stages; absent stages remain absent.
-_TURN_TIMELINE_STAGES = (
-    "cue_attempt",
-    "cue_accepted",
-    "first_audio_to_provider",
-    "speech_end",
-    "end_input",
-    "first_response",
-    # Hand-off to fan-in: the first assistant PCM write the playout socket
-    # accepted. The ring/CamillaDSP/outputd tail past it is not timeable here.
-    "first_write",
-)
 
 
 class _InputAdmissionClosed(RuntimeError):
@@ -392,13 +341,6 @@ class WakeLoop:
         # `_begin_turn(anchor_at=...)`), because a wake that opens no turn
         # leaves it set.
         self._wake_event_at_monotonic: float = 0.0
-        # Per-turn latency timeline: stage -> time.monotonic(). Reset at
-        # turn start; rendered as integer-ms deltas from `_turn_anchor`.
-        self._turn_timeline: dict[str, float] = {}
-        self._turn_event_id: str | None = None
-        self._turn_anchor: float = 0.0
-        self._turn_anchor_kind: str = "manual"
-        self._last_turn_ms: dict[str, object] = {}
 
         # End-of-utterance detection state (per-turn). `audio_stream_end`
         # MUST be sent the moment the user stops speaking, not at turn
@@ -474,6 +416,11 @@ class WakeLoop:
             store=wake_event_store,
             wake_model=cfg.wake_model,
             voice_provider=cfg.voice_provider,
+        )
+        self._turn_timeline = TurnTimeline(
+            self._wake_telemetry,
+            # Late-bound: the label is a live read of the turn in flight.
+            endpointer=lambda: self._endpointer_label(),
         )
         self._acquiring: bool = False
         self._acquire_input_epoch = 0.0
@@ -974,8 +921,8 @@ class WakeLoop:
     def _play_listening_chirp(self, *, going_on: bool) -> Coroutine[object, object, None]:
         return self._assistant_output.listening_chirp(
             going_on=going_on,
-            on_attempt=self._turn_observer("cue_attempt") if going_on else None,
-            on_first_write=self._turn_observer("cue_accepted") if going_on else None,
+            on_attempt=self._turn_timeline.observer("cue_attempt") if going_on else None,
+            on_first_write=self._turn_timeline.observer("cue_accepted") if going_on else None,
         )
 
     async def _prepare_assistant_loudness_context(self) -> None:
@@ -1074,21 +1021,6 @@ class WakeLoop:
 
     def bind_tool_dispatch(self) -> Callable[[str, str], Awaitable[None]]:
         return self._wake_telemetry.bind_tool_dispatch()
-
-    def _turn_observer(
-        self, stage: str, *, event_stage: str | None = None,
-    ) -> Callable[[], Awaitable[None]]:
-        timeline, anchor = self._turn_timeline, self._turn_anchor
-        event_id = self._turn_event_id
-
-        async def observe() -> None:
-            if timeline is not self._turn_timeline or not anchor or anchor != self._turn_anchor:
-                return
-            self._stamp_turn_stage(stage)
-            if event_stage is not None and event_id is not None:
-                await self._wake_telemetry.stage(event_stage, event_id=event_id)
-
-        return observe
 
     async def _arbitrate_acquire_drain(
         self,
@@ -1395,7 +1327,7 @@ class WakeLoop:
         push-to-talk), so the failure handling cannot drift between
         them.
         """
-        self._stamp_turn_stage("first_audio_to_provider")
+        self._turn_timeline.stamp("first_audio_to_provider")
         try:
             await self._turn.send_audio(frame.tobytes())
         except Exception as e:  # noqa: BLE001
@@ -1410,7 +1342,7 @@ class WakeLoop:
         or the push-to-talk cap without a stack trace.
         """
         self._input_ended = True
-        self._stamp_turn_stage("end_input")
+        self._turn_timeline.stamp("end_input")
         try:
             await self._turn.end_input()
         except Exception as e:  # noqa: BLE001
@@ -1509,7 +1441,7 @@ class WakeLoop:
         elif self._user_speech_seen:
             if self._silence_started_at == 0.0:
                 self._silence_started_at = now
-                self._stamp_turn_stage("speech_end", first=False)
+                self._turn_timeline.stamp("speech_end", first=False)
             elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
                 await self._end_session_input("end-of-utterance")
                 return
@@ -1757,66 +1689,6 @@ class WakeLoop:
         await self._end_session_input("push-to-talk release")
         return "OK"
 
-    def _anchor_turn_timeline(self, anchor_at: float = 0.0) -> None:
-        """Wake turns use fire time; manual turns start their own clock."""
-        self._turn_timeline = {}
-        self._turn_event_id = (
-            self._wake_telemetry.current_event_id if anchor_at else None
-        ) or make_event_id()
-        self._turn_anchor = anchor_at or time.monotonic()
-        self._turn_anchor_kind = "wake" if anchor_at else "manual"
-
-    def _stamp_turn_stage(self, stage: str, *, first: bool = True) -> None:
-        """Record one latency stage of the in-flight turn.
-
-        A `time.monotonic()` assignment and nothing else — every caller is
-        on a hot path (wake frame, session frame, response playout).
-        `first=False` keeps the LAST occurrence, which is what the
-        end-of-utterance silence clock wants after a mid-sentence pause.
-        """
-        if self._turn_anchor == 0.0:
-            return
-        if first and stage in self._turn_timeline:
-            return
-        self._turn_timeline[stage] = time.monotonic()
-
-    def _turn_timeline_ms(self) -> dict[str, int]:
-        """Integer-ms deltas from this turn's anchor, stages that did not
-        happen omitted. Empty when no turn has been anchored."""
-        if self._turn_anchor == 0.0:
-            return {}
-        deltas = {
-            f"{stage}_ms": int((at - self._turn_anchor) * 1000)
-            for stage in _TURN_TIMELINE_STAGES
-            if (at := self._turn_timeline.get(stage)) is not None
-        }
-        deltas["total_ms"] = int((time.monotonic() - self._turn_anchor) * 1000)
-        return deltas
-
-    def _emit_turn_timeline(self, outcome: str) -> None:
-        """Publish complete turns to status; close every timeline before teardown."""
-        timeline = self._turn_timeline_ms()
-        try:
-            if timeline:
-                log_event(
-                    logger,
-                    "turn.timeline",
-                    event_id=self._turn_event_id,
-                    anchor=self._turn_anchor_kind,
-                    endpointer=self._endpointer_label(),
-                    outcome=outcome,
-                    **timeline,
-                )
-                if outcome == "complete":
-                    self._last_turn_ms = {
-                        "event_id": self._turn_event_id,
-                        "anchor": self._turn_anchor_kind,
-                        "outcome": outcome,
-                        **timeline,
-                    }
-        finally:
-            self._turn_anchor = 0.0
-
     def session_status(self) -> dict:
         """Diagnostic snapshot — exposed via the control socket so
         jasper-control clients can render correct state without polling
@@ -1901,8 +1773,10 @@ class WakeLoop:
             # The last COMPLETE turn's `event=turn.timeline` deltas
             # (`anchor` says what ms 0 is). Same not-cleared-at-turn-end
             # shape as `endpointer`; `{}` until this daemon served a turn.
-            "last_turn_ms": dict(self._last_turn_ms),
-            "turn_event_id": self._turn_event_id if self._turn_anchor else None,
+            "last_turn_ms": dict(self._turn_timeline.last_turn_ms),
+            "turn_event_id": (
+                self._turn_timeline.event_id if self._turn_timeline.anchor else None
+            ),
             "wake_event_store": (
                 self._wake_telemetry.store.status() if self._wake_telemetry.store else None
             ),
@@ -1987,7 +1861,7 @@ class WakeLoop:
     ) -> None:
         acquiring_at_begin = self._acquiring
         completed = False
-        self._anchor_turn_timeline(anchor_at)
+        self._turn_timeline.anchor_at(anchor_at)
         try:
             if acquiring_at_begin:
                 self._check_input_admission(self._acquire_input_epoch)
@@ -2129,7 +2003,7 @@ class WakeLoop:
         # which preceded the wake firing, reaches the model. The frame that
         # fired the wake is the most-recently-appended entry and is included.
         if pre_roll_frames:
-            self._stamp_turn_stage("first_audio_to_provider")
+            self._turn_timeline.stamp("first_audio_to_provider")
         for frame in pre_roll_frames:
             self._check_input_admission(input_epoch)
             await self._turn.send_audio(frame.tobytes())
@@ -2141,8 +2015,8 @@ class WakeLoop:
                 report=self._playback_report,
                 continuous=self._turn.continuous_input,
                 admission_refusal=self._assistant_output.admission_refusal,
-                on_response_started=self._turn_observer("first_response", event_stage="response_started"),
-                on_first_write=self._turn_observer("first_write"),
+                on_response_started=self._turn_timeline.observer("first_response", event_stage="response_started"),
+                on_first_write=self._turn_timeline.observer("first_write"),
             )
         )
         continuous = self._turn.continuous_input
@@ -2276,7 +2150,7 @@ class WakeLoop:
         # plus the cleanup awaits below.
         await run_phase(
             "turn_timeline",
-            lambda: self._emit_turn_timeline("aborted"),
+            lambda: self._turn_timeline.emit("aborted"),
         )
         await run_phase(
             "peering_end", lambda: self._peering.session_ended("acquire_error"),
@@ -2403,7 +2277,7 @@ class WakeLoop:
         capped = reason == PRE_RESPONSE_CAPPED_REASON
         if capped:
             self._turns_pre_response_capped += 1
-        self._emit_turn_timeline(
+        self._turn_timeline.emit(
             "failed" if failed else PRE_RESPONSE_CAPPED_REASON if capped else "complete",
         )
         if not failed:

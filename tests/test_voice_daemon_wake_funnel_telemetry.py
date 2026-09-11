@@ -42,8 +42,8 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
             wake_loop.bind_tool_dispatch,
         )
 
-        wake_loop._anchor_turn_timeline(1.0)
-        await wake_loop._turn_observer("first_response", event_stage="response_started")()
+        wake_loop._turn_timeline.anchor_at(1.0)
+        await wake_loop._turn_timeline.observer("first_response", event_stage="response_started")()
         assert await dispatch_tool(registry, "get_weather", {}) == {
             "temperature": 72,
         }
@@ -152,26 +152,26 @@ async def test_actual_fire_ids_and_delayed_observers_stay_with_their_turn(tmp_pa
         with closing(sqlite3.connect(store._db_path, isolation_level=None)) as lock:
             lock.execute("BEGIN IMMEDIATE")
             first = await wl._wake_telemetry.on_fire(**fire)
-            wl._anchor_turn_timeline(time.monotonic())
-            response = wl._turn_observer("first_response", event_stage="response_started")
-            write = wl._turn_observer("first_write")
+            wl._turn_timeline.anchor_at(time.monotonic())
+            response = wl._turn_timeline.observer("first_response", event_stage="response_started")
+            write = wl._turn_timeline.observer("first_write")
             chirp = wl._play_listening_chirp(going_on=True)
             await wl._wake_telemetry.outcome("completed")
             second = await wl._wake_telemetry.on_fire(**fire)
-            wl._anchor_turn_timeline(time.monotonic())
+            wl._turn_timeline.anchor_at(time.monotonic())
             assert first != second
             assert wl.session_status()["turn_event_id"] == second
             await response()
             await write()
             await chirp
-            assert wl._turn_timeline_ms().keys() == {"total_ms"}
+            assert wl._turn_timeline.deltas_ms().keys() == {"total_ms"}
             assert wl.session_status()["wake_event_store"]["pending_work"] > 0
             lock.execute("ROLLBACK")
         assert (await store.get_event(first))["outcome"] == "completed"
         assert (await store.get_event(second))["ts_response_started"] is None
-        await wl._turn_observer("first_response", event_stage="response_started")()
+        await wl._turn_timeline.observer("first_response", event_stage="response_started")()
         assert (await store.get_event(second))["ts_response_started"] is not None
-        wl._emit_turn_timeline("complete")
+        wl._turn_timeline.emit("complete")
         assert wl.session_status()["last_turn_ms"]["event_id"] == second
     finally:
         await store.aclose()

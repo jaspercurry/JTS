@@ -153,7 +153,7 @@ async def test_state_publishes_wake_storage_and_turn_identity(monkeypatch, tmp_p
     store = WakeEventStore(tmp_path / "wake-events")
     store.open()
     wl = wake_loop_for_tests(wake_event_store=store)
-    wl._anchor_turn_timeline()
+    wl._turn_timeline.anchor_at()
     status = wl.session_status()
     async def no_status(*_args, **_kwargs):
         return None

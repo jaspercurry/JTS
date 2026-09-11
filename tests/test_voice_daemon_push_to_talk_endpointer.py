@@ -613,7 +613,7 @@ async def test_a_capped_pre_response_turn_ends_as_itself(caplog):
     journal line and the timeline say which ending it was, so the cap's
     removal condition can be read off `/state` rather than guessed."""
     wl = _teardown_loop()
-    wl._turn_anchor = time.monotonic()
+    wl._turn_timeline.anchor = time.monotonic()
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         await _torn_down_mid_hold(
             wl=wl, manual=False, chunks=0, input_ended=True, user_speech=True,
