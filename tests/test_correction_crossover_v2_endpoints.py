@@ -6229,6 +6229,86 @@ def test_room_apply_refuses_a_trial_for_a_different_compiled_graph(
     assert v2host.load_v2_state()["applied"] is False
 
 
+def test_room_apply_names_the_compile_blocker_instead_of_asking_for_a_trial(
+    monkeypatch, tmp_path,
+):
+    """A blocked compose has no graph digest to require a capture OF.
+
+    Handing the trial gate that blank digest refuses every intact take, so a
+    banked trial reads back as ``candidate_trial_required``; the refusal must
+    carry the compose's own blocker instead.
+    """
+    from jasper.active_speaker import candidate_trials
+    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = _run6_measured_candidate(preset)
+    candidate = replace(
+        base,
+        analysis={**base.analysis, "measurement_status": "unmeasured"},
+        room_correction=_room_correction(),
+    )
+    Path(os.environ["JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"]).write_text(
+        "{}", encoding="utf-8",
+    )
+    reviewed = build_baseline_profile_candidate(
+        topology,
+        design_draft=load_design_draft(topology=topology),
+        crossover_preview=load_crossover_preview(),
+        measurements=load_measurement_state(topology),
+        write=False,
+        compile_config=True,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    assert not (reviewed["config"] or {}).get("sha256")
+    assert (reviewed["source"] or {}).get(
+        "measured_candidate_fingerprint"
+    ) == candidate.fingerprint
+    blocker = next(
+        issue["code"] for issue in reviewed["issues"]
+        if issue["severity"] == "blocker"
+    )
+
+    asked: list[str | None] = []
+
+    def require_trial(_candidate, *, expected_graph_fingerprint=None):
+        asked.append(expected_graph_fingerprint)
+        raise candidate_trials.CandidateBankRefusal(
+            "candidate_trial_required", "no intact trial",
+        )
+
+    monkeypatch.setattr(candidate_trials, "require_candidate_trial", require_trial)
+    monkeypatch.setattr(
+        v2host, "_assert_stage_2_can_open",
+        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_uncompiled_room_graph",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    cam = _FakeApplyCam()
+
+    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+        v2host.handle_v2_apply(
+            {"expected_candidate_fingerprint": candidate.fingerprint,
+             "candidate": candidate.to_dict()},
+            _bg_run_async, lambda: cam, status={},
+        )
+
+    assert refusal.value.code == blocker
+    assert asked == []
+    assert cam.path is None
+    assert v2host.load_v2_state()["applied"] is False
+
+
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
     """#2292 scope 2: accepting an alternative Fc fsyncs FIVE writes at the
     accept/apply seam -- the Sound declaration (apply_measured_crossover_geometry),

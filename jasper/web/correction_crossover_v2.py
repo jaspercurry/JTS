@@ -5675,6 +5675,17 @@ def handle_v2_apply(
     )
     if tuning_apply:
         compiled_graph = str((reviewed_baseline.get("config") or {}).get("sha256") or "")
+        if not compiled_graph:
+            # A blocked compose carries no graph digest, and a blank digest
+            # asks the trial gate for a capture no take can match -- which
+            # reads at the household as "capture this candidate first" even
+            # when an intact trial is banked. Name what blocked the compile.
+            blocker = _blocking_apply_issue(reviewed_baseline) or {}
+            raise CrossoverV2Refused(
+                str(blocker.get("message") or "")
+                or "the active profile for this tuning could not be compiled",
+                code=str(blocker.get("id") or "") or "baseline_graph_not_compiled",
+            )
         try:
             trial = require_candidate_trial(
                 candidate, expected_graph_fingerprint=compiled_graph[:16],
