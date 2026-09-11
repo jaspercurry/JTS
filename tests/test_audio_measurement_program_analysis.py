@@ -5570,15 +5570,8 @@ def test_channel_map_cross_test_never_eats_the_target_floor():
         "a quiet-but-correct capture must not be refused by the CROSS half; "
         "the honest, retriable finding is snr_floor"
     )
-    # The household-visible half of the claim — that such a capture lands on
-    # `snr_floor` rather than `channel_map_mismatch` — is the composition of
-    # this `ok` with a rung already pinned where it belongs, in
-    # `tests/test_crossover_v2_capture_dispatch.py`
-    # (`test_check_rungs_report_their_own_finding`'s `pilot_snr_ok=False` row,
-    # plus `test_check_never_refuses_on_an_unestablished_fact`). Re-asserting
-    # the ladder here would import the flow package into an audio-measurement
-    # test to restate a fact that file already owns. Verified end-to-end by
-    # hand against the real `check_screens` in the fix round for this rung.
+    # capture_dispatch.assess owns the combined admission result; see
+    # tests/test_crossover_v2_capture_dispatch.py::test_check_gates.
 
 
 def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
@@ -5786,13 +5779,12 @@ def test_degraded_miswire_still_names_the_wiring_not_the_room():
     ``pilot_woofer_lo``) — take the fallback with no ambient window at all.
     Their surviving role misses its own declared band, so the fallback fails
     and the session verdict stays an explicit ``False``, which
-    `capture_dispatch.check_screens` maps to ``channel_map_mismatch`` — a
+    `capture_dispatch.assess` maps to ``channel_map_mismatch`` — a
     wiring remedy for a wiring fault.
 
     This is the half of #2052 that a blanket "unknown whenever the window is
     gone" would have cost: measured on this branch, both shapes would have
-    dropped to ``None`` and fallen from `check_screens`' rung 3 to its rung 5,
-    with copy blaming the room instead. Refusal held either way; the
+    dropped to ``None`` and left `capture_dispatch.assess` blaming the room. Refusal held either way; the
     household's remedy did not.
     """
     woofer = _deep_plant(200, 150.0, 1200.0, 1.0)

@@ -360,12 +360,12 @@ def test_locate_failed_and_budget_exhaustion():
     assert verdict["template"] == "fix_and_retry"
     # The planned capture spent nothing; three extras are on offer, and the
     # count the phone renders says so.
-    assert verdict["attempts"]["used"] == 0
+    assert verdict["attempts"]["by_household"] == 0
     assert verdict["attempts"]["left"] == 3
     for extra in (1, 2, 3):
         verdict = _run_phase(c, 1, 1 + extra)
         assert verdict["code"] == "locate_failed"
-        assert verdict["attempts"]["used"] == extra
+        assert verdict["attempts"]["by_household"] == extra
         assert verdict["attempts"]["left"] == 3 - extra
         # The household asked for every one of them — nothing was system-forced.
         assert verdict["attempts"]["by_household"] == extra
@@ -605,6 +605,18 @@ def test_delay_exceeds_search_window_verdict():
     verdict = _run_phase(c, 2, 2)
     assert verdict["code"] == "delay_exceeds_search_window"
     assert verdict["template"] == "fix_and_retry"
+
+
+@pytest.mark.parametrize(("gate_ms", "code"), [(5.0, "verify_inconclusive"), (8.0, "verify_level_shift")])
+def test_verify_gate_comparability_precedes_pilot_transfer(gate_ms, code):
+    c = _conductor(FakeSeams())
+    program = c.program_for_phase(PHASE_VERIFY)
+    c._measure_gate_window_ms = 8.0
+    assert c._verify_verdict(_verify_analysis(program, gate_ms=8.0, pilot_hi_dbfs=-20.0)).accepted
+    verdict = c._verify_verdict(_verify_analysis(program, gate_ms=gate_ms, pilot_hi_dbfs=-19.0))
+    assert not verdict.accepted and verdict.code == code
+    assert c.verify_outcome == "inconclusive"
+    assert ("pilot_transfer_step_db" in verdict.evidence) is (gate_ms == 8.0)
 
 
 def test_verify_out_of_tolerance_and_inconclusive():
@@ -1586,7 +1598,7 @@ def test_geometry_asks_preserve_the_household_budget(monkeypatch):
     attempt += 1
     assert verdict["accepted"] is False
     assert verdict["code"] == REASON_LOCATE_FAILED
-    assert verdict["attempts"]["used"] == 0
+    assert verdict["attempts"]["by_household"] == 0
     assert verdict["attempts"]["left"] == flow.MAX_EXTRA_ATTEMPTS_PER_POSITION
     assert verdict["attempts"]["by_speaker"] == 2
 
@@ -1626,7 +1638,7 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(
         verdict = _run_phase(c, index, attempt)
         attempt += 1
         assert verdict["accepted"] is False
-        assert verdict["attempts"]["used"] == extra
+        assert verdict["attempts"]["by_household"] == extra
 
     # The last extra. FINITE — the flow stops asking — and honest: the position
     # is marked unresolved carrying the observed condition, and the group

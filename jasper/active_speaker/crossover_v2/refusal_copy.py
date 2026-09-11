@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import Any, Literal, Mapping
 
 from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -26,9 +26,6 @@ from jasper.log_event import log_event
 
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
-
-if TYPE_CHECKING:
-    from .capture_dispatch import TakeVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -1383,6 +1380,26 @@ NON_RETRIABLE_CODES = frozenset(
 )
 
 
+TakeNext = Literal["accept", "retake_same", "retake_louder", "retake_quieter", "fix_and_retake", "stop"]
+TakeCharge = Literal["speaker", "operator", "none"]
+
+@dataclass(frozen=True)
+class TakeVerdict:
+    ok: bool
+    fault: str | None = None
+    evidence: dict[str, float | bool | str] = field(default_factory=dict)
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    next: TakeNext = "accept"
+    # Absolute stimulus dBFS. Per-role targets are carried in evidence.
+    next_gain_db: float | None = None
+    charge: TakeCharge = "none"
+
+    @property
+    def gain_targets(self) -> dict[str, float]:
+        return {key.removeprefix("next_gain_db."): float(value)
+                for key, value in self.evidence.items() if key.startswith("next_gain_db.")}
+
+
 @dataclass(frozen=True)
 class PhaseVerdict:
     """A consume verdict: the capture dict + the internal reason (if any)."""
@@ -1404,9 +1421,9 @@ class PhaseVerdict:
     evidence: dict[str, float | bool | str] = field(default_factory=dict)
 
     capabilities: dict[str, bool] = field(default_factory=dict)
-    next: str | None = None
+    next: TakeNext | None = None
     next_gain_db: float | None = None
-    charge: str = "operator"
+    charge: TakeCharge = "operator"
 
     @classmethod
     def from_take(cls, take: TakeVerdict) -> PhaseVerdict:
@@ -1439,7 +1456,7 @@ class PhaseVerdict:
                     reflection_measured=self.reflection_measured,
                 ),
                 banner=spec.banner,
-                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES,
+                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES and not self.payload.get("terminal"),
                 pilot_heard=self.pilot_heard,
             )
             if self.code == REASON_VERIFY_INCONCLUSIVE:
@@ -1449,11 +1466,6 @@ class PhaseVerdict:
                    next=self.next or ("accept" if self.accepted else "fix_and_retake"),
                    next_gain_db=self.next_gain_db,
                    charge="none" if self.accepted else self.charge)
-        if self.next is not None and not self.accepted:
-            out["auto_retry"] = self.charge == "speaker" and (
-                self.next == "retake_same" or self.next in {"retake_louder", "retake_quieter"}
-                and self.next_gain_db is not None
-            )
         if self.payload.get("terminal"):
-            out.update(next="stop", auto_retry=False)
+            out["next"] = "stop"
         return out

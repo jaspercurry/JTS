@@ -246,11 +246,10 @@ wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 
 # Substituting one of these names here binds only for readers inside this module.
 
+from jasper.active_speaker.crossover_v2 import refusal_copy as _reasons
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     NON_RETRIABLE_CODES,
     REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_DELAY_IMPLAUSIBLE,
-    REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
     REASON_MEASURE_GAIN_ADJUSTED,
@@ -354,7 +353,6 @@ def _declared_first_bounce_s(distance_m: float | None) -> float | None:
 
 GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
 # Per gain-adjusted clip retry, drop the offending program's level by this much.
-CLIP_RETRY_BACKOFF_DB = _dispatch.CLIP_RETRY_BACKOFF_DB
 PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
 LOCATE_MIN_CONFIDENCE = _dispatch.LOCATE_MIN_CONFIDENCE
 VERIFY_TOLERANCE_DB = _contracts.VERIFY_TOLERANCE_DB
@@ -1898,7 +1896,7 @@ class CrossoverV2Session:
         ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
         if decision.spends_extra:
             try:
-                ledger.spend(decision.initiator)
+                ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
             except _admission.AttemptOverspendError as exc:
                 # The flow's own error type is what every caller already handles;
                 # the ledger is pure and has no business knowing it.
@@ -2509,8 +2507,8 @@ class CrossoverV2Session:
                 })
             return verdict
         if not _measure_sufficient(take, analysis):
-            code = (REASON_DELAY_IMPLAUSIBLE if take.evidence.get("delay_physically_plausible") is False
-                    else REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
+            code = (_reasons.REASON_DELAY_IMPLAUSIBLE if take.evidence.get("delay_physically_plausible") is False
+                    else _reasons.REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
             return replace(verdict, accepted=False, code=code, next="fix_and_retake", charge="operator",
                            payload={"kept_measurement": True})
         # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
@@ -4131,28 +4129,17 @@ class CrossoverV2Session:
             analysis.summed_response,
             declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
         )
-        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, pilot_transfer_prior=self._verify_pilot_baseline)
+        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, pilot_transfer_prior=self._verify_pilot_baseline,
+                                measure_gate_window_ms=self._measure_gate_window_ms)
         verdict = PhaseVerdict.from_take(take)
         if "pilot_transfer_step_db" in take.evidence:
             self._verify_pilot_transfer_step_db = float(take.evidence["pilot_transfer_step_db"])
         if not verdict.accepted:
-            if verdict.code == REASON_VERIFY_LEVEL_SHIFT:
+            if verdict.code in {REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_INCONCLUSIVE}:
                 self._set_verify_outcome("inconclusive", verdict.code, gate_record)
             if analysis.capture_integrity is not None and analysis.capture_integrity.failed:
                 verdict = replace(verdict, payload={"capture_integrity": analysis.capture_integrity.to_dict()})
             return verdict
-        # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
-        # overlay differences that aren't driver alignment ⇒ inconclusive.
-        verify_gate = _gate_window_ms(analysis.summed_response)
-        if (
-            self._measure_gate_window_ms is not None
-            and verify_gate is not None
-            and verify_gate + 1e-6 < self._measure_gate_window_ms
-        ):
-            self._set_verify_outcome(
-                "inconclusive", REASON_VERIFY_INCONCLUSIVE, gate_record,
-            )
-            return replace(verdict, accepted=False, code=REASON_VERIFY_INCONCLUSIVE, next="fix_and_retake", charge="operator")
         transfer = _pilot_transfer_by_role(analysis)
         if transfer and self._verify_pilot_baseline is None:
             self._verify_pilot_baseline = dict(transfer)

@@ -441,7 +441,9 @@ def test_a_way1_probe_that_contradicts_its_claim_is_graded_not_excused():
     produced — so this is the same round with a different speaker in it.
     """
     conductor, _analysis, _verdict = _way1_round_through_verify()
-    freqs, measured_db, predicted_db = conductor._verify_tracking_curve
+    curve = conductor._verify_tracking_curve
+    assert curve is not None
+    freqs, measured_db, predicted_db = curve
     conductor._verify_tracking_curve = (
         freqs, measured_db - 2.0 * _boost_db(freqs), predicted_db,
     )

@@ -1291,22 +1291,7 @@ def test_only_the_lateral_walk_can_stand_on_nothing():
 
 
 def test_every_screen_kind_has_a_household_sentence():
-    """The completeness check the mapping exists to make possible.
-
-    The kind sets are declared so the flow's mapping can be verified rather
-    than trusted — the same discipline ``coordinator.REFUSAL_KINDS`` keeps. A
-    kind added without an arm ships wearing another kind's copy, and this is
-    what stops that from being discovered by a household.
-
-    Since #2291 Phase 5a-vii there are TWO owners: ``spatial.SCREEN_KINDS``
-    (the walked phases) and ``capture_dispatch.ANCHOR_SCREEN_KINDS`` (CHECK,
-    MEASURE, VERIFY).  The registry is checked against their union, which
-    :data:`~jasper.active_speaker.crossover_v2.capture_dispatch.CAPTURE_SCREEN_KINDS`
-    is.  Equality, not containment, so the guard bites in BOTH directions: a
-    kind that ships without a sentence fails, and so does a registry arm for a
-    kind no ladder can return — a stale arm is how a mapping outlives the rung
-    it was written for.
-    """
+    """Every spatial screen maps to a registered household reason."""
     assert set(refusal_copy.SCREEN_KIND_REASONS) == set(spatial.SCREEN_KINDS)
     assert set(refusal_copy.SCREEN_KIND_REASONS.values()) <= flow.REASON_REGISTRY.keys()
 

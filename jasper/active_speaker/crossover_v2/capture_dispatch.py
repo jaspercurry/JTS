@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal, Mapping
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement import gate_disclosure
 from jasper.audio_measurement.program import KIND_SWEEP, STIMULUS_KINDS
@@ -18,39 +18,24 @@ from jasper.audio_measurement.program_analysis import (
     channel_map_isolation_db,
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
-from jasper.audio_measurement.program_analysis.model import MeasurementPriors, ProgramAnalysis
+from jasper.audio_measurement.program_analysis.model import (
+    DRIVER_SNR_ALIGNMENT_KEY, MeasurementPriors, ProgramAnalysis,
+)
+from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
 
 from . import refusal_copy as reasons
+from .refusal_copy import TakeCharge, TakeNext, TakeVerdict as TakeVerdict
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.program import ExcitationProgram
-
-TakeNext = Literal["accept", "retake_same", "retake_louder", "retake_quieter", "fix_and_retake", "stop"]
-TakeCharge = Literal["speaker", "operator", "none"]
 
 # Clip retries lower stimulus gain, never the admitted hardware ceiling.
 CLIP_RETRY_BACKOFF_DB = 3.0
 # dB, recorder transfer stability; see ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
-
-@dataclass(frozen=True)
-class TakeVerdict:
-    ok: bool
-    fault: str | None = None
-    evidence: dict[str, float | bool | str] = field(default_factory=dict)
-    capabilities: dict[str, bool] = field(default_factory=dict)
-    next: TakeNext = "accept"
-    # Absolute stimulus dBFS. Per-role targets are carried in evidence.
-    next_gain_db: float | None = None
-    charge: TakeCharge = "none"
-
-    @property
-    def gain_targets(self) -> dict[str, float]:
-        return {key.removeprefix("next_gain_db."): float(value)
-                for key, value in self.evidence.items() if key.startswith("next_gain_db.")}
 
 
 def assess(
@@ -60,6 +45,7 @@ def assess(
     gain_db: Mapping[str, float] | None = None,
     gain_ceiling_db: Mapping[str, float] | None = None,
     pilot_transfer_prior: Mapping[str, float] | None = None,
+    measure_gate_window_ms: float | None = None,
 ) -> TakeVerdict:
     """Assess one recording without a session, player or mutable retry state."""
     if phase not in {"check", "measure", "verify"}:
@@ -98,13 +84,14 @@ def assess(
     responses = (*analysis.driver_responses, *((analysis.summed_response,) if analysis.summed_response else ()))
     capabilities = {
         "magnitude": bool(responses),
+        "mic_level": analysis.mic_meter_status not in {None, "unmeasured"},
         "delay_estimate": alignment is not None and alignment.status == ALIGNMENT_OK,
         "level_solve": analysis.gain_plan is not None and analysis.gain_plan.snr_floor_ok,
     }
     for response in responses:
-        for decision in ("magnitude", "alignment"):
-            # Magnitude occupies the top-level SNR block; alignment is nested.
-            block = (response.snr or {}) if decision == "magnitude" else (response.snr or {}).get("alignment", {})
+        for decision, snr_verdict in (("magnitude", driver_snr_verdict(response)),
+                                      (DRIVER_SNR_ALIGNMENT_KEY, driver_alignment_snr_verdict(response))):
+            block = (response.snr or {}) if decision == "magnitude" else (response.snr or {}).get(DRIVER_SNR_ALIGNMENT_KEY, {})
             worst = block.get("worst_relevant") or {}
             band: Mapping[str, Any] = next((row for row in block.get("bands", ())
                          if row.get("band_id") == worst.get("band_id")), {})
@@ -115,8 +102,8 @@ def assess(
                 value = finite_float(band.get(key))
                 if value is not None:
                     evidence[f"{prefix}.{key}"] = value
-            evidence[f"{prefix}.verdict"] = str(worst.get("verdict", "unknown"))
-            if worst.get("verdict") == "insufficient":
+            evidence[f"{prefix}.verdict"] = snr_verdict or "unknown"
+            if snr_verdict == "insufficient":
                 capabilities["delay_estimate" if decision == "alignment" else "magnitude"] = False
     if alignment is not None:
         evidence.update(alignment_status=alignment.status, delay_us=float(alignment.delay_us))
@@ -151,11 +138,13 @@ def assess(
     if analysis.delta_implausible:
         return (refuse(reasons.REASON_ANCHOR_AMBIGUOUS) if analysis.pilot_snr_ok is True
                 else quiet(reasons.REASON_SNR_FLOOR))
-    if analysis.pilot_snr_ok is False:
-        return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
     # Retire when locate can resolve the timeline without a corroborating witness.
     if anchor is not None and anchor.corroborated is False:
         return quiet(reasons.REASON_ANCHOR_TOO_QUIET)
+    if phase == "check" and analysis.channel_map_ok is False:
+        return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
+    if analysis.pilot_snr_ok is False:
+        return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
     if analysis.mic_meter_status in {"low", "too_quiet"}:
         return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
     if not _sweep_locate_confidence_ok(analysis):
@@ -164,7 +153,7 @@ def assess(
     integrity = analysis.capture_integrity
     if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
         return quiet(reasons.REASON_LOCATE_FAILED)
-    if _any_sweep_clipped(analysis) or analysis.mic_meter_status in {"too_loud", "clipping"}:
+    if _any_sweep_clipped(analysis) or analysis.mic_meter_status == "clipping":
         targets = {role: gain - CLIP_RETRY_BACKOFF_DB for role, gain in gains.items()}
         return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
     if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
@@ -174,14 +163,18 @@ def assess(
     if not _sweep_schedule_ok(analysis, sample_rate):
         evidence["guard"] = "sweep_schedule"
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
-    if phase == "check" and analysis.channel_map_ok is False:
-        return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
     if analysis.linearity_ok is False:
         code = (reasons.REASON_NOISY_ROOM_LINEARITY if phase == "check" and analysis.gain_plan
                 and not analysis.gain_plan.snr_floor_ok else reasons.REASON_AGC_BEHAVIORAL_FAIL)
         return refuse(code)
     if phase == "check" and not capabilities["level_solve"]:
         return quiet(reasons.REASON_SNR_FLOOR)
+    verify_gate = _gate_window_ms(analysis.summed_response)
+    # A shorter VERIFY gate manufactures overlay differences (§5.2).
+    if (phase == "verify" and measure_gate_window_ms is not None and verify_gate is not None
+            and verify_gate + 1e-6 < measure_gate_window_ms):
+        evidence.update(measure_gate_window_ms=measure_gate_window_ms, verify_gate_window_ms=verify_gate)
+        return refuse(reasons.REASON_VERIFY_INCONCLUSIVE, ok=True)
     if phase == "verify" and pilot_transfer_prior:
         transfer = _pilot_transfer_by_role(analysis)
         step = max((abs(value - pilot_transfer_prior[role]) for role, value in transfer.items()

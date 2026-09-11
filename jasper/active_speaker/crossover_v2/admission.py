@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Collection, Container
 
+from .refusal_copy import TakeCharge
+
 __all__ = [
     "ATTEMPT_INITIATOR_HOUSEHOLD",
     "ATTEMPT_INITIATOR_SPEAKER",
@@ -95,7 +97,7 @@ class SlotAttempts:
     admitted: int = 0
     by_household: int = 0
     by_speaker: int = 0
-    charge: str = "operator"
+    charge: TakeCharge = "operator"
 
     @property
     def extras_used(self) -> int:
@@ -105,14 +107,14 @@ class SlotAttempts:
     def extras_left(self) -> int:
         return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household)
 
-    def can_retry(self, charge: str) -> bool:
+    def can_retry(self, charge: TakeCharge) -> bool:
         return (self.by_speaker < MAX_AUTOMATIC_RETAKES_PER_POSITION
                 if charge == "speaker" else self.extras_left > 0)
 
-    def spend(self, initiator: str) -> None:
-        if not self.can_retry(initiator):
+    def spend(self, charge: TakeCharge) -> None:
+        if not self.can_retry(charge):
             raise AttemptOverspendError("slot has no attempts left for this initiator")
-        if initiator == ATTEMPT_INITIATOR_SPEAKER:
+        if charge == "speaker":
             self.by_speaker += 1
         else:
             self.by_household += 1
@@ -125,7 +127,6 @@ class SlotAttempts:
         the count truthful about who spent what.
         """
         return {
-            "used": self.by_household,
             "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
             "left": self.extras_left,
             "by_speaker": self.by_speaker,

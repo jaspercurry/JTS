@@ -848,18 +848,19 @@ def test_the_band_limited_locate_puts_the_whole_timeline_back():
         assert code not in refusal_copy.NON_RETRIABLE_CODES
 
 
-def test_a_quiet_room_does_not_clear_an_excessive_mic_level():
+def test_a_loud_mic_meter_does_not_invent_clipping():
     prog = _incident_program()
     analysis = analyze_program_capture(prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR)
     assert analysis.channel_map_ok is True
     assert analysis.anchor.corroborated is True
     assert analysis.mic_meter_status == "too_loud"
     verdict = cd.assess(analysis, phase="check", program=prog)
-    assert not verdict.ok and verdict.next == "retake_quieter"
+    assert verdict.ok and verdict.fault is None
+    assert verdict.evidence["mic_meter_status"] == "too_loud"
 
 
 @pytest.mark.parametrize("miswired", [False, True])
-def test_channel_map_evidence_survives_an_unreadable_pilot(miswired):
+def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
     program = build_check_program(
         [
             RoleBand("woofer", 0, FrequencyBand(60.0, 1000.0)),
@@ -896,7 +897,7 @@ def test_channel_map_evidence_survives_an_unreadable_pilot(miswired):
         return
     assert analysis.channel_map_ok is False
     assert analysis.pilot_snr_ok is False
-    assert _check_screen(analysis) == "snr_floor"
+    assert _check_screen(analysis) == "channel_map_mismatch"
     # Named: the TARGET arm on the tweeter (its own band never rose over the
     # room), with the woofer -- still correctly wired -- passing beside it.
     by_role = {p.role: p for p in analysis.pilots}

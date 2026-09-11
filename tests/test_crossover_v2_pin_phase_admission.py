@@ -2,63 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Issue #2291 Phase 0 — preserved-behavior pin for one phase-admission rule.
+"""Pin each phase's linearity refusal and each owner's admission site.
 
-#2291 lists "phase admission" among the strong bones the strangler migration
-must not change, and its acceptance criteria say existing "phase-admission …
-behavior remains pinned unless a separately located defect requires a
-deliberate change." This file pins the one admission rule that is written at
-six sites and was asserted at two.
-
-**The rule.** A capture whose analyzer reports ``linearity_ok is False`` is
-refused as ``agc_behavioral_fail`` — the phone's own recording chain moved its
-gain mid-sweep, so the curve does not describe the speaker. FIVE phases carry
-it as the same two-line branch::
-
-    if <screens>.linearity_ok is False:
-        return <refusal>          # agc_behavioral_fail, however it is spelled
-
-Since #2291 Phase 5a-iv those five live in **two modules** and take **two
-spellings**: MEASURE and VERIFY still read it off the analysis in
-``crossover_v2_flow``; CLOUD_MEASURE, LATERAL and ENTRY_BASELINE read it off a
-stated ``CaptureScreens`` in ``crossover_v2.spatial``, and return a refusal
-KIND the flow maps to the code. Same rule, same household sentence — see
-:data:`LINEARITY_SITE_SPELLINGS`, which is what keeps the tripwire below
-watching all of them.
-
-CHECK carries a sixth, DIFFERENT version — it first asks whether the room's
-ambient floor explains the non-linearity and blames ``noisy_room_linearity``
-instead when it does — so CHECK is deliberately out of this file's class.
-
-**Why it needs a pin.** Of the plain sites, only the LATERAL one was
-asserted when this file was written
-(``test_a_pose_runs_measures_own_capture_integrity_screens`` in
-``tests/test_crossover_v2_lateral_evidence.py``). MEASURE, CLOUD_MEASURE, and
-VERIFY had no test that fires this branch and reads its code back — every row
-below is what closed that. The
-nearest existing tests set ``linearity=False`` only *alongside*
-``pilot_snr_ok=False``, to prove the pilot branch wins the ordering race
-(``test_measure_low_pilot_snr_wins_over_the_linearity_branch``) — they assert
-the OTHER branch's code, so they pass whether or not the linearity branch
-exists. Tests in ``tests/test_crossover_envelope_v2.py`` that mention
-``agc_behavioral_fail`` inject a pre-decided ``failure={"code": ...}`` and
-exercise the copy layer, not the predicate.
-
-That is the half-guarded shape: two of six sites pinned reads, from a
-distance, like the rule is covered. A migration that reimplemented these
-verdicts could drop or mis-code the branch at the others and take a green
-suite with it.
-
-**And the shape recurred here, in the tripwire itself.** Phase 5a-iv moved
-three of the five plain sites into another module; the tripwire counted one
-file, so it saw 3 against a declared 6 and failed — correctly, but only because
-its declared total is a literal. Had it counted a *set* rather than a total it
-would have gone quietly blind. That is why the counter is now a per-module
-table with its own shape control below.
-
-The harness is the conductor suite's own, imported rather than rebuilt — the
-same convention ``tests/test_crossover_v2_lateral_evidence.py`` states: two
-copies of a conductor factory is two definitions of a session.
+CHECK, MEASURE and VERIFY share capture_dispatch.assess. CHECK keeps its
+room-vs-microphone variant at that same site. Spatial owns three other sites.
 """
 
 from __future__ import annotations
@@ -70,6 +17,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
@@ -103,8 +51,12 @@ PLAIN_LINEARITY_PHASES = (
     PHASE_ENTRY_BASELINE,
 )
 
-# The five plain sites plus CHECK's split version.
-LINEARITY_SITE_COUNT = len(PLAIN_LINEARITY_PHASES) + 1
+# CHECK's room-vs-microphone variant shares the assessor with MEASURE and VERIFY.
+LINEARITY_SITES = {
+    "capture_dispatch": ((PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY),),
+    "spatial": ((PHASE_LATERAL,), (PHASE_CLOUD_MEASURE,), (PHASE_ENTRY_BASELINE,)),
+    "crossover_v2_flow": (),
+}
 
 
 def _refuse_at_measure() -> dict:
@@ -255,26 +207,10 @@ def _linearity_admission_sites() -> dict[str, int]:
 
 
 def test_every_linearity_admission_site_is_covered_by_a_row_above():
-    """The adjacency tripwire: a SIXTH site must be classified, not ignored.
-
-    The gap this file closes was not one missing test — it was the same rule
-    written at five places and asserted at two, which reads as covered from
-    any one of them. Counting the sites in the source keeps that from
-    recurring: a new verdict function that copies the branch fails here until
-    its author either adds a row to ``PLAIN_LINEARITY_PHASES`` (with a driver)
-    or records it as another deliberate variant like CHECK's.
-    """
-
     by_module = _linearity_admission_sites()
-    sites = sum(by_module.values())
-
-    assert sites == LINEARITY_SITE_COUNT, (
-        f"{sites} linearity admission sites ({by_module}) but "
-        f"{LINEARITY_SITE_COUNT} are classified: "
-        f"{len(PLAIN_LINEARITY_PHASES)} plain ({', '.join(PLAIN_LINEARITY_PHASES)}) "
-        "plus CHECK's room-vs-microphone variant. Classify the new one and give "
-        "it a row in PLAIN_LINEARITY_PHASES, or document why it is a variant."
-    )
+    assert by_module == {owner: len(sites) for owner, sites in LINEARITY_SITES.items()}
+    classified = [phase for sites in LINEARITY_SITES.values() for site in sites for phase in site]
+    assert sorted(classified) == sorted((*PLAIN_LINEARITY_PHASES, PHASE_CHECK))
 
 
 def test_the_tripwire_looks_in_every_module_that_carries_the_rule():

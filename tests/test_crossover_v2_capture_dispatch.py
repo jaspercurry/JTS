@@ -44,7 +44,7 @@ def _analysis(**changes):
     ({"discontinuity_samples": -1066.7}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
     ({"locations": (_loc("sweep_w", residual_samples=1200.0),)}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
     ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake", "operator"),
-    ({"mic_meter_status": "too_loud"}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
+    ({"mic_meter_status": "clipping"}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
     ({"mic_meter_status": "too_quiet"}, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE, "fix_and_retake", "speaker"),
 ])
 def test_integrity_verdict(phase, changes, code, next, charge):
@@ -56,6 +56,25 @@ def test_integrity_verdict(phase, changes, code, next, charge):
     assert not any(verdict.capabilities.values())
     if next == "retake_quieter":
         assert verdict.next_gain_db == -33.0
+
+
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("status", [None, "unmeasured", "too_loud"])
+def test_absent_clipping_and_unknown_meter_evidence_do_not_refuse(phase, status):
+    verdict = cd.assess(_analysis(mic_meter_status=status), phase=phase)
+    assert verdict.ok and verdict.fault is None
+    assert verdict.evidence["mic_meter_status"] == (status or "unmeasured")
+    assert verdict.capabilities["mic_level"] is (status == "too_loud")
+
+
+@pytest.mark.parametrize("phase", ["check", "verify"])
+def test_clip_auto_retry_comes_from_the_registry_without_a_gain_target(phase):
+    take = cd.assess(_analysis(locations=(_loc("sweep_w", clipped=True),)), phase=phase)
+    result = refusal_copy.PhaseVerdict.from_take(take).to_capture_dict()
+    assert result["code"] == refusal_copy.REASON_CLIPPED
+    assert result["template"] == refusal_copy.TEMPLATE_SILENT_AUTO_RETRY
+    assert result["next"] == "retake_quieter" and result["next_gain_db"] is None
+    assert result["auto_retry"] is True
 
 
 @pytest.mark.parametrize("frame_loss", [False, True])
@@ -107,7 +126,7 @@ def test_quiet_pilot_explains_a_false_glitch(phase):
 
 
 @pytest.mark.parametrize(("changes", "code"), [
-    ({"channel_map_ok": False}, refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
+    ({"channel_map_ok": False, "pilot_snr_ok": False}, refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
     ({"gain_plan": None}, refusal_copy.REASON_SNR_FLOOR),
     ({"delta_implausible": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS),
     ({"linearity_ok": False, "gain_plan": GainPlan(GAINS, -30.0, False)}, refusal_copy.REASON_NOISY_ROOM_LINEARITY),
