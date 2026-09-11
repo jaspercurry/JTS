@@ -56,4 +56,4 @@ def record_boost_finding(graph_fingerprint: str, *, candidate_fingerprint: str, 
         "candidate_fingerprint": candidate_fingerprint,
         "round_id": round_id,
     }
-    atomic_write_text(boost_finding_path(graph_fingerprint), json.dumps(record) + "\n", mode=0o640)
+    atomic_write_text(boost_finding_path(graph_fingerprint), json.dumps(record) + "\n", mode=0o640, durable=True)
