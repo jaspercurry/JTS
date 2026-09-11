@@ -62,7 +62,6 @@ WORKDIR="${JTS_DIAG_WORKDIR:-/home/pi/jts}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 UNIT="jts-diagnostic-${TS}-$$"
-REMOTE_COMMAND="$(quote_args "$@")"
 
 props=(
     "--property=Description=JTS bounded diagnostic"
@@ -93,7 +92,7 @@ remote_systemd_run=(
 )
 
 remote_prefix="$(quote_args "${remote_systemd_run[@]}")"
-remote_tail="$(quote_args -- /usr/bin/bash -lc "$REMOTE_COMMAND")"
+remote_tail="$(quote_args -- "$@")"
 
 exec ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" \
     "${remote_prefix} ${prop_text} ${remote_tail}"
