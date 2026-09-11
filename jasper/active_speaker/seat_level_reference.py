@@ -346,6 +346,8 @@ def resolve_anchor_level(
             "the calibration store, or re-run jasper-seat-level with the mic "
             "you will measure with",
         )
+    if facts is not None and banked_serial and sensitivity.serial != banked_serial:
+        raise LevelUnresolved(ANCHOR_UNUSABLE, "The anchor and current calibration name different microphones")
     banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
     if (
         banked_sens_factor_db is not None

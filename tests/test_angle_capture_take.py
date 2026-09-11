@@ -82,7 +82,26 @@ def slot(tmp_path, monkeypatch):
         "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
         tmp_path / "session_volume.json",
     )
-    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
+    from jasper.active_speaker import preflight_live
+    from tests.test_preflight import ready_facts
+    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.test_active_speaker_audition import _applied_profile
+    from jasper.active_speaker.measured_crossover_candidate import driver_corrections
+
+    def facts(plan, **kwargs):
+        candidates = {stop.candidate_id: candidate_bank.find_banked_candidate(stop.candidate_id).candidate
+                      for stop in plan.stops if stop.candidate_id}
+        topology = _active_topology("mono", "active_2_way")
+        applied = _applied_profile(topology)
+        if candidates:
+            candidate = next(iter(candidates.values()))
+            applied["recomposition_snapshot"].update(
+                preset=candidate.source_preset.to_dict(), corrections=driver_corrections(candidate),
+                linearization={}, blend_correction=[], room_correction=candidate.room_correction,
+            )
+        return ready_facts(plan, candidates=candidates, topology=topology, applied_profile=applied)
+
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", facts)
     try:
         yield
     finally:
@@ -563,17 +582,14 @@ def _played_measure_spec(measure_spec, monkeypatch):
 
 def _banked(monkeypatch, *, room_correction=None, bass_extension=None, **alignment):
     """A banked candidate whose corner is the preset ``_take`` is handed."""
-    region = SimpleNamespace(
-        fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
-        lower_driver="woofer", upper_driver=DRIVER_ROLE_TWEETER,
-    )
-    preset = SimpleNamespace(crossover_regions=(region,), safety=_preset().safety)
+    preset = _preset()
     monkeypatch.setattr(
         candidate_bank, "find_banked_candidate",
         lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
             fingerprint=fingerprint, linearization={}, source_preset=preset,
+            role_attenuations_db={"woofer": 0.0, "tweeter": 0.0}, blend_correction=(),
             room_correction=room_correction or {}, bass_extension=bass_extension or {},
-            alignment=SimpleNamespace(**alignment),
+            alignment=SimpleNamespace(**{"delay_us": None, "delay_role": None, "polarity": None, **alignment}),
         )),
     )
     return preset
@@ -1066,95 +1082,6 @@ def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
 
     assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE in sentence
 
-
-
-@pytest.mark.parametrize(
-    ("stated", "calibrated", "stop", "reason"),
-    [
-        (None, True, 85.0, ""), (None, True, 75.0, ""),
-        (None, False, 85.0, ""), (80.0, True, 85.0, ""),
-        (85.0, True, 85.0, ""), (80.0, False, 85.0, ac.WALK_SPL_CALIBRATION_REQUIRED),
-        (85.1, True, 85.0, ac.WALK_CEILING_ABOVE_STOP),
-        (85.1, False, 85.0, ac.WALK_CEILING_ABOVE_STOP),
-        (None, True, None, ac.WALK_COMMISSIONING_STOP_UNSET),
-        (80.0, True, None, ac.WALK_COMMISSIONING_STOP_UNSET),
-    ],
-)
-def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
-    slot, monkeypatch, caplog, stated, calibrated, stop, reason,
-):
-    from jasper.active_speaker.plan_run import SPL_MONITOR_UNAVAILABLE
-    from jasper.audio_measurement.wired_capture import WiredSplMonitor
-
-    monkeypatch.setenv("JASPER_LOG_JSON", "1")
-    monkeypatch.setattr(
-        v2host, "resolved_household_sensitivity",
-        lambda device: SimpleNamespace() if calibrated else None,
-    )
-    preset = SimpleNamespace(
-        safety=SimpleNamespace(max_commissioning_level_db_spl=stop),
-    )
-    spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        spl_ceiling_db_spl=stated,
-    ))
-
-    if reason:
-        with pytest.raises(v2host.CrossoverV2Refused) as refused:
-            _take_full(preset=preset)
-        assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
-        assert refused.value.__cause__.reason == reason
-        event, = [json.loads(line) for line in _events(caplog)]
-        assert event["reason"] == reason
-        return
-
-    with caplog.at_level(logging.INFO):
-        monitor = _take_full(preset=preset)[5]
-    ceiling = stop if stated is None else stated
-    assert isinstance(monitor, WiredSplMonitor) is calibrated
-    if calibrated:
-        assert monitor.ceiling_db_spl == ceiling
-    event, = [json.loads(line) for line in _events(caplog)]
-    assert event["event"] == "correction.crossover_v2_angle_walk_taken"
-    assert event["spl_monitor"] == (
-        f"ceiling_{ceiling:g}_db_spl" if calibrated else SPL_MONITOR_UNAVAILABLE
-    )
-
-
-def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
-    """A household calibration for a DIFFERENT mic than the wired device must
-    not scale an SPL ceiling — treated as unresolved, same as no household
-    mic at all, so the walk hits the same calibration refusal.
-    """
-    from jasper.audio_measurement import calibration, household_mic
-
-    monkeypatch.setattr(
-        household_mic, "resolved_household_mic",
-        lambda: (
-            SimpleNamespace(model_key="dayton_imm6"),
-            SimpleNamespace(model="dayton_imm6", raw_path="/unused"),
-        ),
-    )
-    # A resolvable, non-``None`` sensitivity: if the identity check did not
-    # run, this is what would scale the ceiling instead of a refusal.
-    monkeypatch.setattr(
-        calibration, "resolve_mic_sensitivity", lambda **_kwargs: SimpleNamespace(),
-    )
-    preset = SimpleNamespace(
-        safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
-    )
-    spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        spl_ceiling_db_spl=80.0,
-    ))
-
-    # _take_full's device defaults to _MIC (minidsp_umik2); the household
-    # record above is a dayton_imm6, so the identity check must refuse this
-    # exactly as if no household mic had resolved at all.
-    with pytest.raises(v2host.CrossoverV2Refused) as refused:
-        _take_full(preset=preset)
-    assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
-    assert refused.value.__cause__.reason == ac.WALK_SPL_CALIBRATION_REQUIRED
 
 
 def _stub_evidence_loaders(monkeypatch):

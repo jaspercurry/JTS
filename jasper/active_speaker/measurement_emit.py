@@ -138,7 +138,7 @@ def candidate_layer_issues(
     preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     if _without_alignment(preset) != _without_alignment(candidate.source_preset):
         issues.append("measurement_candidate_base_mismatch")
-    if (
+    if (candidate.room_correction or candidate.bass_extension) and (
         driver_corrections(candidate) != snapshot.get("corrections")
         or linearization_filters_by_role(candidate.linearization) != snapshot.get("linearization", {})
         or [dict(f) for f in candidate.blend_correction] != snapshot.get("blend_correction", [])

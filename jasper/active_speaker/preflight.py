@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
-from .angle_capture import AngleCaptureRequest, LevelPolicy, LateralWalkRefused, walk_price
+from .angle_capture import AngleCaptureRequest, LevelPolicy, LateralWalkRefused, REGIME_BRANCHES, walk_price
 from .baseline_profile import applied_baseline_hardware_match
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.refusal_copy import REASON_REGISTRY
@@ -25,8 +25,9 @@ from .seat_level_reference import AnchorFacts, LevelUnresolved, resolve_anchor_l
 # Rechecked at participation; a dry run reserves none of these resources.
 LIVE_ADMISSION = (
     "wired_capture.require_wired_mic",
-    "angle_capture_spool.require_angle_request_slot_idle",
-    "tuning_session.TuningSession",
+    "session_volume_plan.live_measurement_session",
+    "crossover_v2.session.TuningSession.open",
+    "crossover_v2.session.TuningSession._proven_level",
     "measurement_emit.candidate_upstream_snapshot",
 )
 
@@ -66,7 +67,7 @@ class ScheduledCapture:
     level_window_db: float | None
     candidate_id: str
     repeat: int
-    graph_scope: str
+    graph_scope: str | None
     regime: str
 
 
@@ -95,7 +96,8 @@ class PreflightReport:
             "mic_moves": self.mic_moves, "price": dict(self.price),
             "baseline_graph_scope": self.plan.baseline_graph_scope,
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
-            "level": asdict(self.plan.level),
+            "level": {"resolved": self.plan.level.anchor_db_spl is not None,
+                      **{key: value for key, value in asdict(self.plan.level).items() if key != "mode"}},
             "live_admission": list(LIVE_ADMISSION),
             **({"status": "refused", "reason": first.code, "code": first.code,
                 "detail": first.detail, "next_action": dict(first.next_action)} if first else {}),
@@ -115,11 +117,14 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         add(getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
         valid_shape = False
     captures = len(plan.stops) * plan.repeats if valid_shape else 0
-    if captures > MAX_CAPTURE_PLAN_ATTEMPTS:
+    if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add("walk_over_capture_capacity", f"{captures} captures exceed {MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
 
     scopes: dict[str, str] = {}
+    snapshot, faults = applied_baseline_hardware_match(facts.topology, applied_profile=facts.applied_profile)
+    if snapshot is None and any(stop.plays_summed for stop in plan.stops):
+        add("measurement_profile_unavailable", str(faults))
     for name in dict.fromkeys(stop.candidate_id for stop in plan.stops if stop.candidate_id):
         candidate = facts.candidates.get(name)
         if candidate is None:
@@ -127,15 +132,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                 add("not_found", name)
             continue
         scopes[name] = candidate_trial_scope(candidate)
-        if scopes[name] in {"room_candidate", "bass_candidate"}:
-            snapshot, faults = applied_baseline_hardware_match(
-                facts.topology, applied_profile=facts.applied_profile,
-            )
-            if snapshot is None:
-                add("measurement_profile_unavailable", str(faults))
-            else:
+        if snapshot is not None:
+            try:
                 for code in candidate_layer_issues(candidate, snapshot, applied_profile=facts.applied_profile):
                     add(code, name)
+            except (ValueError, TypeError, KeyError) as exc:
+                add("measurement_profile_unavailable", str(exc))
 
     if not facts.mic_present:
         add("wired_mic_missing", "No measurement microphone is present")
@@ -164,7 +166,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
 
     schedule = tuple(
         ScheduledCapture(index + 1, pose.place, level, pose.candidate_id or "base", repeat,
-                         scopes.get(pose.candidate_id, baseline_scope(pose.purpose)), pose.regime)
+                         ("candidate_branches" if pose.regime == REGIME_BRANCHES else scopes.get(pose.candidate_id))
+                         if pose.candidate_id else baseline_scope(pose.purpose), pose.regime)
         for index, (pose, level, repeat) in enumerate(
             (pose, level, repeat)
             for pose in plan.stops

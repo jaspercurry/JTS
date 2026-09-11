@@ -12,7 +12,7 @@ from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wi
 
 from .angle_capture import AngleCaptureRequest
 from .baseline_profile import load_applied_baseline_profile_state
-from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
 from .crossover_v2.refusal_copy import CrossoverV2Refused
@@ -43,8 +43,8 @@ def read_preflight_facts(
     candidates = {}
     for name in dict.fromkeys(stop.candidate_id for stop in plan.stops if stop.candidate_id):
         try:
-            candidates[name] = find_banked_candidate(name).candidate
-        except CandidateBankRefusal as exc:
+            candidates[name] = candidate_bank.find_banked_candidate(name).candidate
+        except candidate_bank.CandidateBankRefusal as exc:
             issues.append(PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}"))
     return PreflightFacts(
         applied_profile=load_applied_baseline_profile_state() or {},
