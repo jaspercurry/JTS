@@ -68,6 +68,7 @@ REASON_RING_CHUNK_ABOVE_CAPACITY = "ring_chunk_above_capacity"
 
 REASON_CAMILLA_PARK_RECORD_UNREADABLE = "camilla_park_record_unreadable"
 REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE = "camilla_park_record_unintelligible"
+REASON_CAMILLA_PARK_RECORD_STALE = "camilla_park_record_stale"
 REASON_CAMILLA_GRAPH_PARKED = "camilla_graph_parked"
 
 REASON_CAMILLA_STATEFILE_TOPOLOGY_MISMATCH = "camilla_statefile_topology_mismatch"
@@ -590,6 +591,11 @@ def check_camilla_recover_park() -> CheckResult:
     ``ExecStartPost=`` already retired is named on the healthy row: the record
     lives in ``/run``, so a graph that parked and came back would otherwise
     leave this boot looking untroubled (R15, #4416).
+
+    A record that survives while jasper-camilla is ACTIVE reads as ``warn``
+    (stale), never ``fail``: the removal hook did not fire, but the graph
+    itself is producing sound (mirrors outputd's
+    ``check_outputd_failure_reconcile_park``).
     """
     label = "camilla recovery park"
 
@@ -626,6 +632,17 @@ def check_camilla_recover_park() -> CheckResult:
             "carries no reason (a truncated write) — a park cannot be ruled "
             "out from it. Check journalctl -u jasper-camilla-recover.",
             reason=REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE,
+        )
+
+    if evidence.unit_active("jasper-camilla.service"):
+        return CheckResult(
+            label,
+            "warn",
+            f"recovery park record at {state.get('path')} is stale — "
+            "jasper-camilla is running, so the unit's ExecStartPost removal "
+            "did not fire. Delete it; a later unrelated failure would "
+            "otherwise read as this park.",
+            reason=REASON_CAMILLA_PARK_RECORD_STALE,
         )
 
     parts = [

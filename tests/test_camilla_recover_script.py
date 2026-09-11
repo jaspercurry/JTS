@@ -264,6 +264,7 @@ def test_a_retired_park_still_says_the_graph_parked_this_boot(
 def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     """One reader, from the writer's own record to the operator surface."""
     from jasper.cli.doctor import _registry, audio_runtime_camilla
+    from jasper.cli.doctor._evidence import evidence
     from jasper.control import camilla_recover_state
 
     names = [c.func.__name__ for c in _registry.registered_checks()]
@@ -277,6 +278,9 @@ def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     assert snapshot["reason"] == "camilla_start_failed"
     assert isinstance(snapshot["parked_at"], int)
 
+    # A genuine park: jasper-camilla is NOT active, so the doctor's stale
+    # cross-check (#4930) must not soften this to a warn.
+    evidence.seed("units", {"jasper-camilla.service": {"active_state": "inactive"}})
     result = audio_runtime_camilla.check_camilla_recover_park()
     assert result.status == "fail"
     assert result.reason == audio_runtime_camilla.REASON_CAMILLA_GRAPH_PARKED
