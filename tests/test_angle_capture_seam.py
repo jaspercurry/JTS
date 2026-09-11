@@ -953,16 +953,13 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
     (" base, fp-a,fp-b ", ("", "fp-a", "fp-b")),
     ("fp-a,fp-b", ("fp-a", "fp-b")),
 ])
-def test_cli_resolves_only_banked_members_and_preserves_summed_base(monkeypatch, raw, cycle):
-    resolved = []
-    monkeypatch.setattr(cli, "find_banked_candidate", lambda fingerprint: resolved.append(fingerprint))
+def test_cli_preserves_the_stated_candidate_cycle(raw, cycle):
     argv = ["plan", "--program", "tournament", "--size", "full"]
     if raw is not None:
         argv += ["--candidates", raw]
     request = cli._build_request(cli.build_parser().parse_args(argv))
     program = mp.program("tournament", "full")
 
-    assert resolved == [fingerprint for fingerprint in cycle if fingerprint]
     assert [stop.candidate_id for stop in request.stops] == list(cycle or ("",)) * program.capture_count
     assert {stop.regime for stop in request.stops} == {
         ac.REGIME_SUMMED if cycle else ac.REGIME_PER_DRIVER,
@@ -1709,12 +1706,10 @@ def test_cli_stimulus_flags_reach_the_staged_request(spool_slot) -> None:
     assert spool.take_staged_angle_request() == request
 
 
-def test_cli_stimulus_flags_reach_the_printed_price(capsys) -> None:
-    """``plan`` gates on nothing a bare box lacks (unlike ``stage``, which refuses
-    with no banked seat-level anchor), so this drives the real verb and reads its
-    actual stdout document -- the one JSON document ADR-0237 promises -- rather
-    than re-deriving ``price`` by calling ``walk_price`` beside it.
-    """
+def test_cli_stimulus_flags_reach_the_printed_price(capsys, monkeypatch) -> None:
+    from tests.test_preflight import ready_facts
+
+    monkeypatch.setattr(cli, "read_preflight_facts", ready_facts)
     argv = [
         "plan", "--program", "tournament", "--size", "express", "--candidates", "base",
         "--sweep-s", "2.0",

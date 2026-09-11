@@ -154,26 +154,20 @@ def spl_watch(
     preset: Any,
     sensitivity: Any | None,
     device: Any,
+    resolved_ceiling_db_spl: float | None = None,
 ) -> tuple[WiredSplMonitor | None, str]:
-    """The monitor one session's takes record under, and its SPL disclosure.
+    """Build the monitor from a preflight bound, or resolve it for a local caller.
 
-    ONE owner for both doors that play a stated walk -- ``jasper-measure`` and
-    the wizard's session open -- so the same walk is bounded the same way
-    whichever took it, and each door keeps ONE :class:`LateralWalkRefused` arm
-    to translate rather than a second vocabulary per failure. The box's own
-    commissioning stop is read here, and :func:`take_spl_ceiling` resolves the
-    ceiling every stated request implies against it, refusing one above it.
-
-    ``sensitivity`` is ``None`` on a box that cannot turn a recording into dB
-    SPL. That DISCLOSES when the run stated no ceiling of its own, and REFUSES
-    when it stated one: a bound nothing can enforce is something an operator
-    must be able to act on rather than a number quietly ignored.
+    Without calibration, an unstated ceiling is disclosed as unmonitored;
+    a stated ceiling must be enforceable. Preflight callers carry their proof.
     """
-    try:
-        stop = commissioning_spl_ceiling_db(topology, preset=preset)
-    except ValueError as exc:
-        raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
-    ceiling = take_spl_ceiling(stated_db_spl, commissioning_stop_db_spl=stop)
+    ceiling = resolved_ceiling_db_spl
+    if ceiling is None:
+        try:
+            stop = commissioning_spl_ceiling_db(topology, preset=preset)
+        except ValueError as exc:
+            raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
+        ceiling = take_spl_ceiling(stated_db_spl, commissioning_stop_db_spl=stop)
     if sensitivity is None:
         if stated_db_spl is None:
             return None, SPL_MONITOR_UNAVAILABLE

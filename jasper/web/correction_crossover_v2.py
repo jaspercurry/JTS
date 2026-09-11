@@ -65,6 +65,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from jasper.active_speaker import preflight, preflight_live
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
     TypeVar, cast,
@@ -145,7 +147,6 @@ from jasper.active_speaker.crossover_v2.verification import (
 from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.audio_measurement.household_mic import (
     household_mic_path,
-    resolved_household_sensitivity,
     resolve_setup_calibration as resolve_household_setup_calibration,
 )
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
@@ -1942,51 +1943,7 @@ def _take_staged_angle_walk(
 ) -> tuple[
     tuple[Any, ...], str, dict[int, Any], dict[str, float], tuple[Any, ...], Any
 ] | None:
-    """This session's staged angle walk as
-    ``(poses, consumer, specs, trims, claims, spl_monitor)``, or ``None``.
-
-    :func:`_take_staged_prescription`'s twin: ONE take, at ONE place. ``None``
-    means NOTHING WAS STAGED — an ordinary session — and nothing else.
-
-    A staged walk this session cannot honour REFUSES THE OPEN
-    (:class:`CrossoverV2Refused`) with the producing module's own slug, rather
-    than opening in the ordinary 3-capture shape and silently answering a
-    different question. This runs before any state is opened, so the loud
-    direction is also the cheap one; the document is single-use either way, so
-    the operator restages after fixing what was named.
-
-    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, KEYED
-    here and built by the walk's own owners
-    (:func:`~jasper.active_speaker.angle_capture.design_axis_spec`,
-    :func:`~jasper.active_speaker.angle_capture.stop_specs`), so the objects the
-    engine leg plays are the walk's template placed and never a second reading
-    of it. The design-axis MEASURE index always carries the template; a STOP is
-    in the map only when it plays a summed graph.
-    ``claims`` is what each stop's graph CARRIED, for the pose records the flow
-    banks.
-
-    ``trims`` is the per-role attenuation a ``--level-matched`` walk carries,
-    resolved HERE and empty for a walk that asked for none. Adoption is the one
-    place that can both ask the evidence question and still refuse, so it is
-    asked exactly once. A box with no measured evidence
-    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`)
-    refuses with
-    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`.
-    A datasheet estimate is deliberately not a fallback: it is physics about
-    the driver model, not a measurement of this cabinet.
-
-    ``consumed`` on the journal line is READ BACK from the spool, never
-    asserted: its two unreadable arms deliberately do not consume, so a
-    permissions mistake refuses every session rather than silently destroying
-    the evidence of itself.
-
-    ``lateral_group_present`` and ``plans_cloud_group`` are the session's own
-    facts, passed in because the composing seam may not read session flags.
-
-    A walk does not survive its session: the consumer is not persisted and the
-    document is single-use, so a session that lapses mid-walk re-opens in its
-    ordinary shape and the operator stages again.
-    """
+    """Admit the staged walk before opening any measurement resource."""
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
@@ -2002,10 +1959,7 @@ def _take_staged_angle_walk(
         staged_angle_request_pending,
         take_staged_angle_request,
     )
-    from jasper.active_speaker.plan_run import (
-        resolve_candidate_scopes,
-        spl_watch,
-    )
+    from jasper.active_speaker.plan_run import spl_watch
     from jasper.active_speaker.crossover_v2.capture_plan import (
         build_v2_cloud_index_phase_map,
         position_angle_deg,
@@ -2032,13 +1986,21 @@ def _take_staged_angle_walk(
         # — the journal line and the refusal are one statement, and no arm can
         # log without refusing or refuse without logging.
         return CrossoverV2Refused(
-            f"the staged angle walk was refused ({reason}): {detail}"
+            f"the staged angle walk was refused ({reason}): {detail}", code=reason,
         )
 
     try:
         request = take_staged_angle_request()
         if request is None:
             return None
+        facts = preflight_live.read_preflight_facts(
+            request, context=SimpleNamespace(preset=preset, topology=topology), device=device,
+        )
+        report = preflight.preflight(request, facts)
+        for issue in report.issues:
+            if issue.blocking:
+                raise refused(issue.code, issue.detail)
+        request = report.plan
         if lateral_group_present:
             raise LateralWalkRefused(
                 WALK_LATERAL_GROUP_ALREADY_PLANNED,
@@ -2078,10 +2040,11 @@ def _take_staged_angle_walk(
             measure_spec.spl_ceiling_db_spl,
             topology=topology,
             preset=preset,
-            sensitivity=resolved_household_sensitivity(device),
+            sensitivity=facts.anchor.sensitivity,
+            resolved_ceiling_db_spl=report.spl_ceiling_db_spl,
             device=device,
         )
-        candidate_scopes = resolve_candidate_scopes(candidate_ids)
+        candidate_scopes = report.candidate_scopes
     except LateralWalkRefused as exc:
         raise refused(exc.reason, exc.detail) from exc
     # Asked of the ONE owner of this session's index space rather than counted

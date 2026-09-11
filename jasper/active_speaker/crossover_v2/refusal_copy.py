@@ -545,6 +545,38 @@ def _retriable_reason(
 # The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    "wired_mic_missing": ReasonSpec(
+        "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
+        next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},
+    ),
+    "measurement_mic_unidentified": ReasonSpec(
+        "measurement_mic_unidentified", TEMPLATE_HARD_STOP, 0, "", "Select a known measurement microphone.",
+        next_action={"id": "identify_mic", "label": "Select a known measurement microphone", "href": "/sound/speaker/crossover/"},
+    ),
+    "measure_box_not_ready": ReasonSpec(
+        "measure_box_not_ready", TEMPLATE_HARD_STOP, 0, "", "Finish the protected speaker setup.",
+        next_action={"id": "speaker_setup", "label": "Finish the protected speaker setup", "href": "/sound/speaker/crossover/"},
+    ),
+    "seat_anchor_unusable": ReasonSpec(
+        "seat_anchor_unusable", TEMPLATE_HARD_STOP, 0, "", "Measure the seat level with the current microphone.",
+        next_action={"id": "measure_seat_level", "label": "Measure the seat level with the current microphone", "href": "/sound/speaker/crossover/"},
+    ),
+    "level_over_ceiling": ReasonSpec(
+        "level_over_ceiling", TEMPLATE_HARD_STOP, 0, "", "Measure a seat level below the commissioning stop.",
+        next_action={"id": "lower_seat_level", "label": "Measure a seat level below the commissioning stop", "href": "/sound/speaker/crossover/"},
+    ),
+    "not_found": ReasonSpec(
+        "not_found", TEMPLATE_HARD_STOP, 0, "", "Select a candidate from the bank.",
+        next_action={"id": "select_candidate", "label": "Select a candidate from the bank", "href": "/sound/speaker/crossover/"},
+    ),
+    "ambiguous": ReasonSpec(
+        "ambiguous", TEMPLATE_HARD_STOP, 0, "", "Select a candidate with one banked identity.",
+        next_action={"id": "select_candidate", "label": "Select a candidate with one banked identity", "href": "/sound/speaker/crossover/"},
+    ),
+    "fingerprint_required": ReasonSpec(
+        "fingerprint_required", TEMPLATE_HARD_STOP, 0, "", "Supply a candidate fingerprint.",
+        next_action={"id": "select_candidate", "label": "Supply a candidate fingerprint", "href": "/sound/speaker/crossover/"},
+    ),
     REASON_AGC_BEHAVIORAL_FAIL: _retriable_reason(
         REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1,
         # The captured two-pilot level delta did not match the programmed one
