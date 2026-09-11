@@ -91,7 +91,7 @@ class Capability(str, Enum):
         inference. What draws the line is structural, and checkable:
         ``WakeLoop._handle_wake_frame`` calls
         ``detector.score_frame(frame)`` synchronously on the asyncio
-        loop (jasper/voice_daemon.py — no ``to_thread``), once per
+        loop (jasper/voice/wake_detect.py — no ``to_thread``), once per
         frame per leg, forever. On a board where that inference eats
         most of a core, the Tier-1 heartbeat starves and
         ``WatchdogSec=30s`` in jasper-voice.service kills the daemon.

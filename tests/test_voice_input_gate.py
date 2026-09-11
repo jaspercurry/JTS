@@ -266,7 +266,7 @@ def test_published_verdict_reaches_the_leg_planner(monkeypatch) -> None:
     Renaming the key on either side breaks this even though both sides would
     still be internally consistent — which is the drift this pins.
     """
-    from jasper.voice_daemon import configured_wake_legs
+    from jasper.voice.wake_detect import configured_wake_legs
 
     cfg = _config_with(
         monkeypatch,

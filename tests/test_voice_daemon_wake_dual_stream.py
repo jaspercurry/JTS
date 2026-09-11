@@ -29,7 +29,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.voice_daemon import WakeLoop, LegRuntime
+from jasper.voice.wake_detect import LegRuntime
+from jasper.voice_daemon import WakeLoop
 from jasper.wake_legs import by_token
 from tests._log_events import event_fields
 from tests._wake_loop import wake_loop_for_tests

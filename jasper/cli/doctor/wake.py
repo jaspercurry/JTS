@@ -177,7 +177,7 @@ def _push_to_talk_only_speaker() -> bool:
     the one shape where jasper-voice arms ZERO wake legs deliberately.
 
     Reads the same two published facts ``configured_wake_legs``
-    (jasper/voice_daemon.py) reads — the AEC reconciler's
+    (jasper/voice/wake_detect.py) reads — the AEC reconciler's
     ``JASPER_LOCAL_MIC_PRESENT`` tri-state and the accessory owner's
     published source file — but fresh on every call rather than from the
     daemon's process-start ``Config`` snapshot, which is why this still

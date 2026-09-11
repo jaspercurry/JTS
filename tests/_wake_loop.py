@@ -18,12 +18,8 @@ from unittest.mock import patch
 
 from jasper.conversation_history import ConversationStore
 from jasper.voice.catalog import InterruptReconcile
-from jasper.voice_daemon import (
-    CAPTURE_RING_FRAMES,
-    LegRuntime,
-    WakeEventStore,
-    WakeLoop,
-)
+from jasper.voice.wake_detect import CAPTURE_RING_FRAMES, LegRuntime
+from jasper.voice_daemon import WakeEventStore, WakeLoop
 from jasper.wake_legs import by_token
 
 # Sentinel for `wake_loop_for_tests` constructor-time knobs, so a test can

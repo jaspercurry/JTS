@@ -95,18 +95,16 @@ from ..wake_events import WakeEventStore
 from ..watchdog import Heartbeat
 from ..weather import WeatherClient
 from ..voice_daemon import (
-    CAPTURE_RING_FRAMES,
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     WakeLoop,
-    LegRuntime,
     cancel_tracked_tasks,
-    configured_wake_legs,
     track_task,
 )
 from .content_activity import ContentActivityTracker
 from .push_to_talk import ManualMicRuntime
+from .wake_detect import CAPTURE_RING_FRAMES, LegRuntime, configured_wake_legs
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
