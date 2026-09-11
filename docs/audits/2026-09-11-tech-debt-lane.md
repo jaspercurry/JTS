@@ -3,12 +3,12 @@
 | field | value |
 |---|---|
 | audited SHA (re-verification) | `c364bce19` |
-| landing SHA | `<FINAL_SHA>` |
+| landing SHA | `b9436321d12bd0a65acfba44e151c95cd61cfa56` |
 | date | 2026-09-11 |
 | scope | 165 open issues (3 prior audits) re-verified at HEAD, then executed across 5 waves |
-| tracking issue | `<TRACKER_ISSUE>` |
+| tracking issue | `#4939` |
 | plan page | https://claude.ai/code/artifact/90c96223-06f0-4216-a696-cf55952b9384 |
-| evidence | `<EVIDENCE_RELEASE>` |
+| evidence | `https://github.com/jaspercurry/JTS/releases/tag/tech-debt-lane-evidence-2026-09-11` |
 
 ## 1. Headline
 
@@ -36,7 +36,7 @@ tier diffs also through `/adversarial-review`.
 - **23 issues closed**: 21 in Wave 0 with a posted evidence line each, plus
   #4927 (via #4931) and #4930 (via its own fix). One additional issue,
   #4803, was closed **by accident** (a commit-message trap, not real
-  completion) and needs reopening — see §10.
+  completion) and was reopened the same day — see §10.
 - **~36 register-finding rows landed** across the twelve #4801-#4812
   umbrellas (§4's umbrella tables), on top of the ~30 already-done rows the
   investigation itself found pre-lane.
@@ -49,10 +49,10 @@ tier diffs also through `/adversarial-review`.
   ADR-0293 (the no-provider park is owned by the voice daemon, #4905,
   supersedes ADR-0165 on that axis).
 
-The live ledger for everything below is tracking issue `<TRACKER_ISSUE>`
+The live ledger for everything below is tracking issue `#4939`
 (token — the conductor fills this in on posting); the five-wave plan with
 the full owner decision sheet is on the plan page above; evidence
-(investigator reports, PR diffs, review transcripts) is at `<EVIDENCE_RELEASE>`
+(investigator reports, PR diffs, review transcripts) is at `https://github.com/jaspercurry/JTS/releases/tag/tech-debt-lane-evidence-2026-09-11`
 (token — release asset, per ADR-0284, or the tracking issue if smaller).
 This file is frozen at `c364bce19`; nothing below is updated after landing
 — read the tracking issue for current state.
@@ -294,7 +294,7 @@ simply not reached this round).
 |---|---|---|---|---|
 | #4801 | boundaries-cycles umbrella, 15 findings | L | 13/15 open; R-095 stale (code deleted), R-089 fixed pre-lane | wave0 evidence comment only; 0 rows landed |
 | #4802 | config-knobs umbrella, 8 findings | S/M | R-215 fixed pre-lane; R-204 needs owner; 7 open | 3 rows landed (PR #4902: R-214, R-217, R-218) |
-| #4803 | dead-code umbrella, 16 findings | S | 6 fixed + 4 partial pre-lane; rest open | 5 rows landed (PR #4900/#4902); **issue auto-closed by a commit-message trap — real rows remain open, needs reopening** |
+| #4803 | dead-code umbrella, 16 findings | S | 6 fixed + 4 partial pre-lane; rest open | 5 rows landed (PR #4900/#4902); **issue auto-closed by a commit-message trap, reopened 2026-09-11 — real rows remain open, reopening** |
 | #4804 | deploy-integrity umbrella, 14 findings | S/M | 6 fixed pre-lane; R-243 needs owner (L) | 1 row landed (PR #4902: R-255) |
 | #4805 | duplicate-primitives umbrella, 30 findings | L | 4 fixed/stale pre-lane, 12 not reconfirmed, rest open | 0 rows landed |
 | #4806 | god-files umbrella, 17 findings | L | 2 fixed pre-lane (one a full rewrite); ~8,000 LOC still open | 0 rows landed |
@@ -1272,9 +1272,8 @@ session actually needed, listed here only so it isn't lost).
   paper trail (§2c1's `test_ring_active_endpoint.py` PR and §5's #4916
   both had a finisher pick up after a rebase).
 - **Commit messages with "Closes #N" auto-close on merge even when the PR
-  body says `Refs`.** Bit this lane three times: #4803 (still open, not
-  yet reopened — flagged in §4.1 and §1), #4749 and #4717 (both caught and
-  reopened). GitHub reads the commit trailer, not the PR body's own
+  body says `Refs`.** Bit this lane three times: #4803, #4749 and #4717 (all three
+  caught and reopened the same day). GitHub reads the commit trailer, not the PR body's own
   `Refs`/`Closes` section — grep every commit message in a PR for `Closes
   #` before pushing, not just the PR body's stated intent.
 - **Install-table ordering rule**, discovered by #4916's adversarial
@@ -1323,7 +1322,7 @@ session actually needed, listed here only so it isn't lost).
 
 1. `git fetch origin && git merge-base --is-ancestor origin/main HEAD` (or
    rebase if behind) — this lane's own worktree convention, per AGENTS.md.
-2. Read `<TRACKER_ISSUE>` first — it is the live ledger; this file is
+2. Read `#4939` first — it is the live ledger; this file is
    frozen at `c364bce19` and will not reflect anything closed after
    landing.
 3. Read the plan page (https://claude.ai/code/artifact/90c96223-06f0-4216-a696-cf55952b9384)
@@ -1333,10 +1332,10 @@ session actually needed, listed here only so it isn't lost).
    `c364bce19` pin by the time it was frozen — #4935 (closes #4930, §5's
    "Late addition") among them, none touching `docs/audits/`. Start any
    new work from current `origin/main`, not from `c364bce19`.
-5. Reopen #4803 if it is still closed (§4.1, §10) — the umbrella issue's
-   real rows (R-192, R-190 ROOM/DRIVER, R-201 ObsMode, R-175's remainder,
-   R-198's re-verify, R-200's other two aliases, R-197's remaining
-   sub-item) never landed; only the auto-close did.
+5. Confirm #4803 is open (reopened 2026-09-11 after a commit keyword
+   closed it) — the umbrella issue's real rows (R-192, R-190 ROOM/DRIVER,
+   R-201 ObsMode, R-175's remainder, R-198's re-verify, R-200's other two
+   aliases, R-197's remaining sub-item) never landed.
 6. Post closing comments on #4786 and #4791 (§4.1) — both were found
    resolved (false premise; already fixed pre-lane) but neither issue was
    actually closed, since builders have no `gh` access.
