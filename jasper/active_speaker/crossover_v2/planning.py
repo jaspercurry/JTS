@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis import (
@@ -27,21 +27,15 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.log_event import log_event
 
-from ..branch_chain import CrossoverSection, branch_headroom_db, sections_by_role
-from ..linearization_fit import linearization_filters_by_role
+from ..branch_chain import CrossoverSection, sections_by_role
 from .candidates import CloudFitEvidence, LinearizationState
 from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP
-from .driver_prescription import (
-    LINEARIZATION_CANDIDATE_FIELD,
-    DriverPrescription,
-    driver_prescription_to_candidate_fields,
-)
 from .intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     driver_response_by_role,
     request_from_analysis,
 )
-from .plan_assembly import LinearizationPlan, compose_linearized_prediction
+from .plan_assembly import LinearizationPlan
 from .journey import PHASE_CLOUD_MEASURE, PHASE_MEASURE
 
 #: Reached for in exactly one place, :func:`build_candidate`'s journal guard.
@@ -407,7 +401,6 @@ def build_candidate(
     exclusion_evidence: Callable[[CloudFitEvidence], Mapping[str, Any]],
     journal: Callable[[Any], None],
     blend_correction: Sequence[Mapping[str, Any]] = (),
-    driver_prescription: DriverPrescription | None = None,
 ) -> tuple[Any, LinearizationState]:
     """Build one candidate, and return what its linearization produced.
 
@@ -417,11 +410,6 @@ def build_candidate(
 
     ``plan``, ``exclusion_evidence`` and ``journal`` are ports. ``journal`` is
     REQUIRED (#2361) and stays safe when it raises — see the guard below.
-    ``driver_prescription`` is the round's staged per-driver instruction and
-    merges HERE because the merge needs the fit and the fit is only final
-    inside this function: ``MeasuredCrossoverCandidate.fingerprint`` is
-    ``field(init=False)``, so a value stamped on afterwards is refused as
-    ``candidate_tampered``.
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverAlignment,
@@ -445,8 +433,6 @@ def build_candidate(
         {role: 0.0 for role in roles} if cand is None else dict(cand.trim_db)
     )
     linearization: Mapping[str, Any] = {}
-    # Held so the per-driver merge below can recompose the prediction from the
-    # frame the fit composed one in. ``None`` on every arm that produced no fit.
     fit_plan: LinearizationPlan | None = None
     ineligible = ineligible_reason(analysis, roles=roles)
     state = LinearizationState(outcome=ineligible or "")
@@ -501,97 +487,6 @@ def build_candidate(
             state = LinearizationState.from_plan(fit)
             fit_plan = fit
 
-    # TWO locals, because two consumers have two different right answers:
-    #   * ``linearization`` — the FIT's map — is what ``exclusion_evidence``
-    #     below tests, since that record names what the cloud envelope fed the
-    #     FIT and must not ride corrections from anywhere else.
-    #   * ``candidate_linearization`` — the SHIPPING map — is what the candidate
-    #     carries and what the prediction below recomposes from.
-    # ``linearization_outcome`` keeps naming the FIT's verdict; a prescribed
-    # branch is told apart by its own ``prescribed_by`` stamp. A prescription
-    # therefore rides a ``fit_failed`` round rather than being dropped with the
-    # fit — the document passed its evidence gates at staging and at the take.
-    candidate_linearization: Mapping[str, Any] = linearization
-    if driver_prescription is not None:
-        # THE TRIM PIN, folded above every arm that assigns
-        # ``role_attenuations_db`` and above the headroom charge and prediction
-        # recompose below, so a pin does not depend on which lane the round
-        # took. Restricted to roles the candidate already carries: a pin
-        # REPLACES a trim and never invents one. Its bound is the door's
-        # (non-positive, floored at ``MAX_ATTENUATION_DB``) and
-        # ``MeasuredCrossoverCandidate`` re-proves it, so the pin folds INSIDE
-        # the clamp.
-        pinned = dict(driver_prescription.pinned_trim_db)
-        # What each pin DISPLACED, captured before the substitution below. The
-        # only place both numbers are in hand, and so the single writer of the
-        # disclosure the receipt reads; the program-analysis ``trim_db`` is only
-        # the fitted lane's PRE-commit number and would misstate the change.
-        displaced_trim_db = {
-            role: float(role_attenuations_db[role])
-            for role in pinned
-            if role in role_attenuations_db
-        }
-        if pinned:
-            role_attenuations_db = {
-                role: pinned.get(role, db)
-                for role, db in role_attenuations_db.items()
-            }
-        if displaced_trim_db:
-            # A pin REPLACES what ``decide_trim`` committed, so this build no
-            # longer ships that pair and must not name it: the proposal falls
-            # back to ``TrimStrategy.COMMITTED_PAIR_UNRECORDED``.
-            state = replace(state, trim_strategy=None, anchor_drift_db=None)
-        candidate_linearization = driver_prescription_to_candidate_fields(
-            driver_prescription, fitted=linearization
-        )[LINEARIZATION_CANDIDATE_FIELD]
-        # #2759: the DISCLOSURE has to describe that same graph. A prescribed
-        # entry arrives from the merge with no ``headroom_cost_db``, so it is
-        # charged here — through the same ``branch_headroom_db`` over the same
-        # three terms ``camilla_yaml.linearization_headroom_db`` charges the
-        # speaker with, so the household is told one number, not two that agree
-        # by inspection. Prescribed roles only: a fitted role already carries
-        # the planner's stamp for the identical chain.
-        sections = _sections_for_candidate(candidate_sections, source_preset)
-        charged = dict(candidate_linearization)
-        for role in driver_prescription.roles:
-            entry = dict(charged[role])
-            entry["headroom_cost_db"] = branch_headroom_db(
-                entry["filters"],
-                sections=sections.get(role, ()),
-                trim_db=float(role_attenuations_db.get(role, 0.0)),
-            )
-            # Pinned roles only; the rest displaced nothing.
-            if role in displaced_trim_db:
-                entry["displaced_trim_db"] = displaced_trim_db[role]
-            charged[role] = entry
-        candidate_linearization = charged
-        # SF1: the prediction must model the EMITTED graph, recomposed through
-        # the fit module's own composition from the same raw branches and the
-        # trim the fit committed.
-        #
-        # Skipped when the fit produced no frame (ineligible, or the SF2
-        # degrade), and that arm is a known gap, not an unfitted round: the
-        # graph carries the document's cuts while the prediction stays raw —
-        # 2.9699 dB of divergence against VERIFY's 1.5 dB tolerance, so a round
-        # on this arm would false-fail VERIFY. Tracked as #2757; the live
-        # session path is the FITTED one.
-        frame = None if fit_plan is None else fit_plan.summation_frame
-        if frame is not None and state.linearized_predicted_sum is not None:
-            state = replace(
-                state,
-                linearized_predicted_sum=compose_linearized_prediction(
-                    frame,
-                    filters_by_role=linearization_filters_by_role(
-                        candidate_linearization
-                    ),
-                    role_attenuations_db=role_attenuations_db,
-                ),
-            )
-
-    # The trim DECISION the applied profile remembers, read whole off the
-    # decision that made it — ``committed_side`` is that dataclass's own
-    # derivation, not a second one here. ``state`` is only the gate: a pin
-    # clears its strategy, and this block drops with it.
     trim_decision: Mapping[str, Any] = {}
     decision = None if fit_plan is None else fit_plan.trim
     if state.trim_strategy is not None and decision is not None:
@@ -607,7 +502,7 @@ def build_candidate(
         source_preset=source_preset,
         role_attenuations_db=role_attenuations_db,
         alignment=alignment,
-        linearization=candidate_linearization,
+        linearization=linearization,
         # Empty whenever no cloud evidence reached the fit, the failed fit
         # included: a record of what the envelope consumed must not ride a
         # candidate whose corrections came from the trims-only fallback.
