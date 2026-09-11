@@ -987,6 +987,7 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
 def _silent_camilla_recover_park(monkeypatch, tmp_path):
     from jasper.control import camilla_recover_state
 
+    _seed_units(active="inactive")
     monkeypatch.setattr(
         camilla_recover_state,
         "snapshot",
@@ -1006,3 +1007,48 @@ def test_camilla_recover_park_detail_carries_the_writers_own_timestamp(
     """A malformed parked_utc must still show up verbatim, never drop the line."""
     result = _silent_camilla_recover_park(monkeypatch, tmp_path)()
     assert "2026-01-15T12:00:00Z" in result.detail
+
+
+def _camilla_recover_park_check(monkeypatch, tmp_path, *, record: str | None, active: str):
+    """Drive the real reader + the real unit-active cross-check: a record
+    file on disk (or none) plus jasper-camilla's seeded ActiveState."""
+    target = tmp_path / "camilla-recover.state"
+    if record is not None:
+        target.write_text(record)
+    monkeypatch.setenv("JASPER_CAMILLA_RECOVER_PARK_STATE", str(target))
+    _seed_units(active=active)
+    return audio_runtime_camilla.check_camilla_recover_park()
+
+
+_CAMILLA_PARK_RECORD = (
+    "parked_utc=2026-01-15T12:00:00Z\n"
+    "reason=camilla_start_failed\n"
+    "detail=would not start\n"
+    "action=fix it\n"
+    "re_arm=restart it\n"
+)
+
+
+@pytest.mark.parametrize(
+    "record, active, status, reason",
+    [
+        (None, "inactive", "ok", ""),
+        (_CAMILLA_PARK_RECORD, "inactive",
+         "fail", audio_runtime_camilla.REASON_CAMILLA_GRAPH_PARKED),
+        (_CAMILLA_PARK_RECORD, "active",
+         "warn", audio_runtime_camilla.REASON_CAMILLA_PARK_RECORD_STALE),
+    ],
+    ids=["no-record", "parked-unit-inactive", "stale-unit-active"],
+)
+def test_camilla_recover_park_verdicts(
+    tmp_path, monkeypatch, record, active, status, reason,
+):
+    """The three cells record-present crossed with unit-active: no record is
+    healthy; a record while camilla is NOT active is a real park (fail); a
+    record that survives while camilla IS active is stale (warn), mirroring
+    outputd's ``check_outputd_failure_reconcile_park`` (#4930)."""
+    result = _camilla_recover_park_check(
+        monkeypatch, tmp_path, record=record, active=active,
+    )
+
+    assert (result.status, result.reason) == (status, reason)
