@@ -57,11 +57,11 @@
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]}
     ],
-    "room_quick": [
+    "room_quick": {"mover": "arm", "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0},
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0}
-    ],
+    ]},
     "close_spot": [
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
     ]

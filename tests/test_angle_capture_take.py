@@ -602,9 +602,10 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
 ):
     preset = _banked(monkeypatch)
     regime = ac.REGIME_PER_DRIVER if candidate_ids is None else ac.REGIME_SUMMED
-    spool.stage_angle_request(ac.AngleCaptureRequest(stops=tuple(
-        ac.AngleStop(20, regime, 5, cid) for cid in (candidate_ids or ("",))
-    )))
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        candidates=tuple(cid or "base" for cid in candidate_ids or ()),
+        stops=tuple(ac.AngleStop(20, regime, 5, cid) for cid in candidate_ids or ("",)),
+    ))
     prompts, consumer, specs, _trims, claims = _take(preset=preset)
     index_phases = flow.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(), include_cloud_measure=False,
@@ -812,7 +813,7 @@ def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(
         delay_us=delay_us, bass_extension=bass_extension,
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
+        candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
     ))
     prompts, _consumer, specs, trims, claims = _take(preset=preset)
 
@@ -1095,9 +1096,7 @@ def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=stated,
-        ),
+        spl_ceiling_db_spl=stated,
     ))
 
     if reason:
@@ -1120,6 +1119,42 @@ def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
     assert event["spl_monitor"] == (
         f"ceiling_{ceiling:g}_db_spl" if calibrated else SPL_MONITOR_UNAVAILABLE
     )
+
+
+def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
+    """A household calibration for a DIFFERENT mic than the wired device must
+    not scale an SPL ceiling — treated as unresolved, same as no household
+    mic at all, so the walk hits the same calibration refusal.
+    """
+    from jasper.audio_measurement import calibration, household_mic
+
+    monkeypatch.setattr(
+        household_mic, "resolved_household_mic",
+        lambda: (
+            SimpleNamespace(model_key="dayton_imm6"),
+            SimpleNamespace(model="dayton_imm6", raw_path="/unused"),
+        ),
+    )
+    # A resolvable, non-``None`` sensitivity: if the identity check did not
+    # run, this is what would scale the ceiling instead of a refusal.
+    monkeypatch.setattr(
+        calibration, "resolve_mic_sensitivity", lambda **_kwargs: SimpleNamespace(),
+    )
+    preset = SimpleNamespace(
+        safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
+    )
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+        spl_ceiling_db_spl=80.0,
+    ))
+
+    # _take_full's device defaults to _MIC (minidsp_umik2); the household
+    # record above is a dayton_imm6, so the identity check must refuse this
+    # exactly as if no household mic had resolved at all.
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        _take_full(preset=preset)
+    assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
+    assert refused.value.__cause__.reason == ac.WALK_SPL_CALIBRATION_REQUIRED
 
 
 def _stub_evidence_loaders(monkeypatch):

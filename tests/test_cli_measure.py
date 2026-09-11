@@ -1332,22 +1332,49 @@ def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
         "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
         lambda **kw: None,
     )
-    specs = (MeasureSpec(kind=MEASURE_KIND_BASELINE, spl_ceiling_db_spl=stated),)
     box = _declaration() if stop is not None else replace(
-        _declaration(),
-        preset=SimpleNamespace(
-            safety=SimpleNamespace(max_commissioning_level_db_spl=None),
-        ),
+        _declaration(), preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=None)),
     )
-
     if not expected:
         assert measure._spl_monitor(
-            specs, box=box, device=object(), mic_serial=None, volume_db=volume_db,
+            stated, box=box, device=object(), mic_serial=None, volume_db=volume_db,
         ) == (None, plan_run.SPL_MONITOR_UNAVAILABLE)
         return
     with pytest.raises(measure.BoxNotMeasurable) as refused:
-        measure._spl_monitor(specs, box=box, device=object(), mic_serial=None, volume_db=volume_db)
+        measure._spl_monitor(stated, box=box, device=object(), mic_serial=None, volume_db=volume_db)
     assert refused.value.reason == expected
+
+
+@pytest.mark.parametrize("ceilings", [(None, 80.0), (80.0, 90.0)])
+def test_a_spec_batch_still_refuses_mixed_ceilings(tmp_path, ceilings):
+    path = _specs_file(tmp_path, [{"spl_ceiling_db_spl": ceiling} for ceiling in ceilings])
+    with pytest.raises(MeasureFlagError) as refused:
+        specs_from_args(build_parser().parse_args(["--kind", MEASURE_KIND_BASELINE, "--specs", path]))
+    assert refused.value.reason == measure.REFUSE_SPL_CEILINGS_MIXED
+
+
+def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
+    """The other half: a resolvable sensitivity buys a real monitor, watching the
+    ceiling the run resolved."""
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+
+    monkeypatch.setattr(
+        measure, "resolved_household_sensitivity", lambda device: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.plan_run.SUPPORTED_MODELS",
+        {"umik2": {"capture_channel": 0}},
+    )
+
+    monitor, note = measure._spl_monitor(
+        None,
+        box=_declaration(), device=SimpleNamespace(model_key="umik2"),
+        mic_serial=None, volume_db=None,
+    )
+
+    assert isinstance(monitor, WiredSplMonitor)
+    assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
+    assert note == "ceiling_85_db_spl"
 
 
 def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsys):

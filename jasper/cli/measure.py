@@ -526,6 +526,8 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
             )
         _require_candidate_id(spec, where=f"spec {index}")
         specs.append(spec)
+    if len({spec.spl_ceiling_db_spl for spec in specs}) > 1:
+        raise MeasureFlagError(REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling")
     return tuple(specs)
 
 
@@ -610,7 +612,7 @@ def _bind_compose(
 
 
 def _spl_monitor(
-    specs: tuple[Any, ...],
+    stated: float | None,
     *,
     box: BoxDeclaration,
     device: Any,
@@ -628,18 +630,13 @@ def _spl_monitor(
     from jasper.active_speaker.plan_run import spl_watch  # lazy: measurement stack import cost
     from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
 
-    stated = {spec.spl_ceiling_db_spl for spec in specs}
-    if len(stated) > 1:
-        raise BoxNotMeasurable(
-            REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling",
-        )
     sensitivity = (
         resolve_mic_sensitivity(mic_serial=mic_serial) if mic_serial
         else resolved_household_sensitivity(device)
     )
     try:
         monitor, note = spl_watch(
-            next(iter(stated)),
+            stated,
             topology=box.topology,
             preset=box.preset,
             sensitivity=sensitivity,
@@ -741,7 +738,8 @@ async def _measure(
         # The kernel owns the sentence; this door owns only its exit code.
         raise BoxNotMeasurable(REFUSE_NO_MIC, str(exc)) from exc
     spl_monitor, spl_note = _spl_monitor(
-        specs, box=box, device=device, mic_serial=mic_serial, volume_db=volume_db,
+        request.spl_ceiling_db_spl if request is not None else specs[0].spl_ceiling_db_spl,
+        box=box, device=device, mic_serial=mic_serial, volume_db=volume_db,
     )
     if volume_db is not None:
         box = replace(box, session_volume_db=volume_db)

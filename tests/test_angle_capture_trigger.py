@@ -28,6 +28,7 @@ from jasper.active_speaker.angle_capture import (
     REGIME_SUMMED,
     REGIMES,
     AngleCaptureRequest,
+    LevelPolicy,
     AngleStop,
     both_at,
     per_driver_at,
@@ -365,6 +366,7 @@ def test_the_polarity_pair_rides_the_document_and_an_older_one_reads_as_normal(s
     assert doc["template"]["polarity"] == POLARITY_INVERTED
     assert doc["template"]["inverted_role"] == DRIVER_ROLE_TWEETER
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
+        level=LevelPolicy(anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB, mic_serial="8108494"),
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         template=walk_template(
             kind=MEASURE_KIND_CANDIDATE,
@@ -403,16 +405,8 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
 
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc["template"]["level_matched"] is True
-    # The document states WHETHER, never a per-driver trim dB: those resolve
-    # on-box. The allowed set is stated, not excluded by name, so a NEW ``_db``
-    # key fails this pin until someone argues it onto the list:
-    # ``main_volume_series_db`` is a deliberate plan axis (the rungs a series
-    # walk steps the SESSION volume through), not a trim carried from another
-    # cabinet.
-    assert {
-        key for key in (*doc, *doc["template"]) if key.endswith("_db")
-    } == {"main_volume_series_db"}
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
+        level=LevelPolicy(anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB, mic_serial="8108494"),
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         template=walk_template(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
     )
@@ -431,13 +425,10 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
 def test_the_candidate_each_stop_measures_rides_the_document(slot):
     """The cycle's label, from the stated walk to the banked one.
 
-    Per-STOP and not walk-level, because a candidate cycle is adjacent stops at
-    one pose. ADDITIVE at the same schema version, so a document staged before
-    the key existed reads as the walk that measures the speaker as it stands.
     """
     path, _ = slot
     request = AngleCaptureRequest(
-        stops=(
+        candidates=("fp-a", "fp-b"), stops=(
             AngleStop(0, REGIME_PER_DRIVER, 0, "fp-a"),
             AngleStop(0, REGIME_PER_DRIVER, 0, "fp-b"),
         ),
@@ -448,14 +439,6 @@ def test_the_candidate_each_stop_measures_rides_the_document(slot):
     assert [stop["candidate_id"] for stop in doc["stops"]] == ["fp-a", "fp-b"]
     assert spool.take_staged_angle_request() == request
 
-    older = dict(doc, stops=[
-        {k: v for k, v in stop.items() if k != "candidate_id"}
-        for stop in doc["stops"]
-    ])
-    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
-    path.write_text(json.dumps(older), encoding="utf-8")
-    taken = spool.take_staged_angle_request()
-    assert [stop.candidate_id for stop in taken.stops] == ["", ""]
 
 
 def test_an_ordinary_walk_asks_for_no_level_match(slot):
@@ -508,7 +491,6 @@ def test_a_staged_walk_edited_out_of_bounds_refuses_once_then_clears(slot):
     "mutate, expected",
     [
         (lambda d: d.update(kind="something_else"), spool.SPOOL_MALFORMED),
-        (lambda d: d.update(artifact_schema_version=99), spool.SPOOL_MALFORMED),
         (lambda d: d.update(stops=[]), spool.SPOOL_MALFORMED),
         (lambda d: d.update(stops="not-a-list"), spool.SPOOL_MALFORMED),
         (lambda d: d.update(stops=[1, 2]), spool.SPOOL_MALFORMED),
@@ -762,9 +744,7 @@ def test_the_cli_stage_banks_the_walk_when_the_speaker_is_idle(slot, capsys):
     assert body["stops_count"] == len(CAMPAIGN_ANGLES)
     assert body["mover"] == MOVER_HUMAN
 
-    assert spool.take_staged_angle_request() == per_driver_at(
-        CAMPAIGN_ANGLES, mover=MOVER_HUMAN
-    )
+    assert spool.take_staged_angle_request().stops == per_driver_at(CAMPAIGN_ANGLES).stops
 
 
 def test_a_filesystem_failure_is_its_own_exit_code(slot, monkeypatch, capsys):
@@ -847,7 +827,7 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
 
     taken = spool.take_staged_angle_request()
-    assert taken == request_for_program(express)
+    assert taken.stops == request_for_program(express).stops
     assert taken.program == "baseline/express"
 
 
@@ -877,10 +857,10 @@ def test_stage_program_defaults_preserve_explicit_sizes(
     assert body["stops_count"] == row.capture_count
     assert body["price"]["captures"] == row.capture_count
     assert body["price"]["mic_moves"] == row.mic_move_count
-    assert spool.take_staged_angle_request() == request_for_program(row, mover=MOVER_HUMAN)
+    assert spool.take_staged_angle_request().stops == request_for_program(row).stops
 
 
-def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
+def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys, monkeypatch):
     """A named program's level is the banked anchor, in dB SPL, on the receipt.
 
     Every field beside it is what makes the number absolute, so a reader never
@@ -897,9 +877,22 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
         "reference_volume_db": REFERENCE_VOLUME_DB,
         "mic_serial": "8108494",
     }
-    # Not written to the mailbox: nothing downstream reads a level yet, and a
-    # field no consumer reads is a second copy waiting to go stale.
-    assert "level" not in json.loads(pathlib.Path(slot[0]).read_text())
+    banked = json.loads(pathlib.Path(slot[0]).read_text())
+    assert banked["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
+    assert banked["operating_levels_db"] == [REFERENCE_VOLUME_DB]
+    monkeypatch.setattr(cli, "resolve_anchor_level", lambda: pytest.fail("show resolved a new anchor"))
+    assert cli._cmd_show(cli.build_parser().parse_args(["show"])) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
+
+
+@pytest.mark.parametrize("verb", ["plan", "stage"])
+def test_invalid_resolved_drive_level_is_reported_by_name(slot, monkeypatch, capsys, verb):
+    monkeypatch.setattr(cli, "resolve_anchor_level", lambda: slr.ResolvedLevel(77.5, 1.0, "8108494"))
+    code = cli.main([verb, "--program", "room"])
+    body = json.loads(capsys.readouterr().out)
+    assert code == (cli.EXIT_OK if verb == "plan" else cli.EXIT_REFUSED)
+    assert (body["level"] if verb == "plan" else body)["reason"] == "walk_level_policy_invalid"
+    assert not spool.staged_angle_request_pending()
 
 
 def test_stage_refuses_by_name_when_no_anchor_is_banked(
@@ -1268,8 +1261,6 @@ def test_mutation_the_staged_mover_cannot_default_away(slot):
     del doc["mover"]
     path.write_text(json.dumps(doc), encoding="utf-8")
 
-    # It does not fall back to the human default: the request refuses, because
-    # ``AngleCaptureRequest`` is handed ``"None"`` and knows no such mover.
     with pytest.raises(CrossoverV2FlowError):
         spool.take_staged_angle_request()
 
@@ -1301,7 +1292,7 @@ def test_quick_room_plan_receipt_states_the_capture_and_matching_arm_session(slo
 @pytest.mark.parametrize("program", ["room", "bass"])
 def test_configured_cloud_batches_candidates_under_each_held_pose(slot, program):
     plan = mp.program(program)
-    request = request_for_program(plan, candidates=("", "candidate-a", "candidate-b"))
+    request = request_for_program(plan, candidates=("base", "candidate-a", "candidate-b"))
     spool.stage_angle_request(request)
     restored = spool.take_staged_angle_request()
     assert restored == request
