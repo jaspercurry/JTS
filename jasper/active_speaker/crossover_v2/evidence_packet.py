@@ -2389,6 +2389,8 @@ def build_crossover_evidence_packet(
         "round": {
             "available": bool(receipt),
             "schema_version": receipt.get("schema_version"),
+            "advice": _mapping(receipt.get("advice")),
+            "protection": _mapping(receipt.get("protection")),
             "adoption": _mapping(receipt.get("adoption")),
             "verification": _mapping(receipt.get("verification")),
             "round_axes": _mapping(receipt.get("round_axes")),
@@ -2426,8 +2428,6 @@ def build_crossover_evidence_packet(
         # cycled more than one at a pose. Beside the poses rather than inside
         # them: a pose is where the mic stood, a candidate is what played.
         "candidates": candidates,
-        # The round's measured "before", beside the after rather than inside the
-        # receipt: the receipt carries identities, this carries the curve.
         "entry_baseline": entry_baseline,
         "capture_snr": capture_snr,
         "honesty_mask": {

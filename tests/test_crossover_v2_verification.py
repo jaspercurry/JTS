@@ -2,23 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#2291 Phase 3b's four verdicts, and the adoption table those became.
-
-Four axes since #2602 and seven rows since #2656; #2537 built the first three
-and five of them.
-
-Every row of the adoption table is a named test here, and so is every override
-rule stated beside it: safety outranks trust, trust outranks quality, a failed
-restore outranks everything, a measured regression never keeps, a boost is
-invisible on a trusted round, and a restore that cannot be performed escalates
-instead of quietly keeping the graph.
-
-The directionality pin is the one to read first
-(``test_the_level_shift_hard_stop_is_directional``): the same magnitude of
-uncommanded level shift is a hard stop in one direction and a learning signal
-in the other, and getting that backwards is what reverted a measured, safe,
-improving candidate on 2026-08-15.
-"""
 
 from __future__ import annotations
 
@@ -873,7 +856,7 @@ class _Probe:
         self.boost_overshoot_db = boost_overshoot_db
         # Which way the graded bins missed — the discriminator every
         # directional rule in this subsystem turns on, and the one
-        # ``seam_rollback_deferral`` reads.
+        # ``advice_deferral`` reads.
         self.realized_louder_than_commanded = realized_louder_than_commanded
         # Whether the realized-energy check ran (series-2 D1). Defaults to the
         # round that HAD a pre-apply capture, because that is the ordinary
@@ -1019,7 +1002,7 @@ def test_the_model_departure_target_quotes_its_OWN_frequency():
 def test_an_absent_probe_is_reported_as_safe_but_ungraded():
     """An absent measurement is not evidence of a hazard.
 
-    ``DELTA_PROBE_ROLLBACK_VERDICTS`` already holds this line for the probe's
+    ``DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`` already holds this line for the probe's
     own rollback set, in as many words: rolling back on an absent measurement
     "would revert every session whose household closed the phone before the
     post-apply sweep". This axis must not contradict it.

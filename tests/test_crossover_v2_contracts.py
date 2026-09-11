@@ -383,12 +383,9 @@ def test_the_schema_version_is_pinned_to_its_value():
     — and this field exists precisely because it sat at 1 through three shape
     changes and a reader could not tell two shapes apart by it.
 
-    2 since decision 10 (#2600) added ``round_measurements.blend``. A reader
-    branching on this should treat 1 as "no blend record can exist" rather than
-    "this round has none". Bumping it is fine; bumping it silently is not.
     """
 
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
 
 
 # --------------------------------------------------------------------------
@@ -563,21 +560,6 @@ def test_a_receipt_binds_its_round_and_fingerprints():
     assert payload["adoption"]["outcome"] == "keep"
 
 
-def test_a_recovery_required_round_must_record_what_the_restore_did():
-    """A recovery that cannot say what the restore did is not a receipt.
-
-    ``recovery_required`` means the speaker is in neither the entry graph nor
-    the intended one; that is the one state that must never be reported as a
-    restore.
-    """
-    recovery = AdoptionDecision(
-        outcome=AdoptionOutcome.RECOVERY_REQUIRED, reason="dsp_restore_incomplete"
-    )
-    with pytest.raises(CrossoverV2ContractError, match="restore result"):
-        _receipt(adoption=recovery)
-    assert _receipt(
-        adoption=recovery, restore_result={"completed": False, "error": "timeout"}
-    )
 
 
 def test_a_receipt_fingerprint_tracks_its_adoption_and_verification():

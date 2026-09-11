@@ -30,7 +30,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_ENTRY_BASELINE,
     CAPABILITY_FINDINGS,
     CAPABILITY_PREDICTED_SUM,
-    CAPABILITY_ROLLBACK,
     GROUP_PHASES,
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -367,7 +366,7 @@ def test_the_two_stages_declare_the_capabilities_that_differ():
     assert STAGE_MEASURE_CAPABILITIES.provides == {CAPABILITY_FINDINGS}
     assert STAGE_MEASURE_CAPABILITIES.requires == frozenset()
     assert STAGE_VERIFY_CAPABILITIES.stage == "verify"
-    assert STAGE_VERIFY_CAPABILITIES.provides == {CAPABILITY_ROLLBACK}
+    assert STAGE_VERIFY_CAPABILITIES.provides == set()
     assert STAGE_VERIFY_CAPABILITIES.requires == {
         CAPABILITY_COMMANDED_DELTA,
         CAPABILITY_PREDICTED_SUM,
@@ -492,7 +491,6 @@ def test_the_host_re_exports_the_journeys_own_declarations():
 
     assert v2host.STAGE_MEASURE_CAPABILITIES is STAGE_MEASURE_CAPABILITIES
     assert v2host.STAGE_VERIFY_CAPABILITIES is STAGE_VERIFY_CAPABILITIES
-    assert v2host.CAPABILITY_ROLLBACK is CAPABILITY_ROLLBACK
     assert v2host.CAPABILITY_ENTRY_BASELINE is CAPABILITY_ENTRY_BASELINE
 
 
