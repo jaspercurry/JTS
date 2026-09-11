@@ -170,7 +170,7 @@ def test_authority_is_new_exclusive_canonical_and_private(tmp_path: Path) -> Non
     authority = _authority(tmp_path)
     marker_path = authority.directory / ADMISSION_AUTHORITY_MARKER
 
-    assert authority.directory.stat().st_mode & 0o7777 == 0o2750
+    assert authority.directory.stat().st_mode & 0o7777 == 0o750
     assert marker_path.stat().st_mode & 0o777 == 0o640
     assert marker_path.read_bytes() == canonical_marker_bytes(authority)
     assert (
@@ -257,6 +257,69 @@ def test_authority_directory_creation_failure_is_typed(
     assert caught.value.code is AdmissionArtifactErrorCode.ARTIFACT_PERSIST_FAILED
 
 
+def test_authority_creation_never_requests_a_setgid_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jasper.audio_measurement import excitation_artifacts
+
+    real_mkdir = excitation_artifacts.os.mkdir
+    real_chmod = excitation_artifacts.os.chmod
+    requested_modes: list[int] = []
+
+    def record_mkdir(path: Path, mode: int) -> None:
+        requested_modes.append(mode)
+        real_mkdir(path, mode)
+
+    def record_chmod(path: Path, mode: int) -> None:
+        requested_modes.append(mode)
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(excitation_artifacts.os, "mkdir", record_mkdir)
+    monkeypatch.setattr(excitation_artifacts.os, "chmod", record_chmod)
+
+    _authority(tmp_path)
+
+    assert requested_modes
+    assert not any(mode & stat.S_ISGID for mode in requested_modes)
+
+
+def test_authority_directory_mode_under_strict_umask_has_no_setgid(
+    tmp_path: Path,
+) -> None:
+    previous = os.umask(0o077)
+    try:
+        authority = _authority(tmp_path)
+    finally:
+        os.umask(previous)
+
+    assert authority.directory.stat().st_mode & 0o7777 == 0o750
+
+
+def test_authority_directory_chmod_is_skipped_when_mkdir_already_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jasper.audio_measurement import excitation_artifacts
+
+    real_chmod = excitation_artifacts.os.chmod
+    chmod_calls: list[int] = []
+
+    def record_chmod(path: Path, mode: int) -> None:
+        chmod_calls.append(mode)
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(excitation_artifacts.os, "chmod", record_chmod)
+    previous = os.umask(0)
+    try:
+        _authority(tmp_path)
+    finally:
+        os.umask(previous)
+
+    # mkdir alone already lands on ADMISSION_DIRECTORY_MODE, so there is
+    # nothing to correct -- skipping the chmod here is what lets an inherited
+    # setgid bit from a real setgid parent survive untouched.
+    assert chmod_calls == []
+
+
 def test_authority_and_role_directories_have_stable_modes_under_strict_umask(
     tmp_path: Path,
 ) -> None:
@@ -272,9 +335,13 @@ def test_authority_and_role_directories_have_stable_modes_under_strict_umask(
     artifact_path = authority.directory / generation.artifact.relative_path
     for relative in ("", "admission", "admission/v1", GENERATION_PATH_PREFIX):
         directory = authority.directory / relative
-        assert directory.stat().st_mode & 0o7777 == 0o2750
-        assert directory.stat().st_gid == shared_gid
-    assert artifact_path.stat().st_gid == shared_gid
+        assert directory.stat().st_mode & 0o7777 == 0o750
+    # A strict umask always forces create_admission_authority's chmod, and
+    # that chmod never requests SGID -- group inheritance from the setgid
+    # tmp_path reaches only the authority directory itself, never the role
+    # paths nested under it.
+    assert authority.directory.stat().st_gid == shared_gid
+    assert artifact_path.stat().st_gid == artifact_path.parent.stat().st_gid
     assert artifact_path.stat().st_mode & 0o777 == 0o640
     assert read_generation_admission(authority, generation.artifact) == generation
 

@@ -974,12 +974,17 @@ def test_new_artifact_inherits_the_authority_directory_group(
     artifact = store.publish_raw_artifact("nested/group-owned.bin", b"owned")
     path = store.bundle_dir / artifact.relative_path
     assert store.reopen_artifact(artifact) == b"owned"
-    assert path.stat().st_gid == shared_gid
+    assert path.stat().st_gid == path.parent.stat().st_gid
     assert path.stat().st_mode & 0o7777 == 0o640
+    # BUNDLE_DIR_MODE carries no SGID (a hardened unit refuses one). Whether
+    # mkdir already lands on it under the setgid `sessions` parent is a
+    # kernel/filesystem detail this test does not pin -- only that the
+    # permission bits end up correct and the group still inherits.
+    assert store.bundle_dir.stat().st_mode & 0o777 == 0o750
+    assert store.bundle_dir.stat().st_gid == shared_gid
     parent = path.parent
     while parent != sessions:
-        assert parent.stat().st_gid == shared_gid
-        assert parent.stat().st_mode & 0o7777 == 0o2750
+        assert parent.stat().st_mode & 0o7777 == 0o750
         parent = parent.parent
 
 
