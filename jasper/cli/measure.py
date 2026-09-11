@@ -1073,12 +1073,11 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     except MeasureRestoreFailed as exc:
         return _restore_failed(exc)
     except MeasurementGraphRefused as exc:
-        from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: numpy import cost
+        from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for  # lazy: numpy import cost
 
-        spec = REASON_REGISTRY.get(exc.code)
         return _refused(
             exc.reason, exc.detail, code=EXIT_REFUSED, refusal_code=exc.code,
-            next_action=spec.next_action if spec else None,
+            next_action=refusal_copy_for(exc.code)[1],
         )
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(exc.reason, exc.detail, code=EXIT_REFUSED)

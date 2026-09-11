@@ -579,7 +579,7 @@ def _run_post_route(handler: Any, route: RouteFn, path: str) -> None:
             path=path,
         )
         handler._send_json(
-            refusal_envelope(ValueError(
+            refusal_envelope(code=None, message=(
                 "sound measurement is controlled on the pair "
                 "leader while this speaker is a follower"
             )),

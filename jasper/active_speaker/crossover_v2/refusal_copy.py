@@ -1219,6 +1219,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
 }
 
+
+def refusal_copy_for(code: str | None) -> tuple[str, dict[str, Any] | None]:
+    """Household copy and an action; unknown codes use internal-error copy."""
+    spec = REASON_REGISTRY.get(code, REASON_REGISTRY[REASON_INTERNAL_ERROR])
+    return reason_message(spec.code, spec), dict(spec.next_action) if spec.next_action else None
+
+
 # The transient codes whose first retry is automatic (a banner, no decision
 # screen) per §5.10 template 1.
 TRANSIENT_AUTO_RETRY_CODES = frozenset(

@@ -205,29 +205,9 @@ class CrossoverV2LocalSeamError(RuntimeError):
 def classify_program_failure(
     exc: BaseException,
 ) -> tuple[str, tuple[str, ...]] | None:
-    """Map a program-seam exception to its §5.10 reason code + refusal slugs.
+    """Map measurement failures to a reason code and refusal slugs.
 
-    Returns ``None`` for anything outside the program family, so a caller can
-    tell "not mine" from "mine, and here is the honest code".
-
-    Issue #1820 defect 4: the session runner's catch-all arm used to fold the
-    WHOLE family — ``ProgramPlaybackError``, ``ProgramAdmissionError``,
-    ``CrossoverV2FlowError`` — into a single
-    :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_PROGRAM_UNPLAYABLE`,
-    so a deterministic "JTS cannot use the saved safety limits" and
-    a genuine level-ceiling failure rendered the same sentence and offered the
-    same (for the former, actively harmful) action. Refusal identity survives
-    the boundary now: ``PROFILE_NOT_CONFIRMED`` gets its own code and screen,
-    and every other refusal keeps ``program_unplayable`` but carries its own
-    slugs out for forensics (persisted under ``state["failure"]["refusals"]``
-    and logged) instead of being erased.
-
-    This is the ONE classifier. ``build_v2_run_and_consume``'s cleanup arm and
-    ``jasper.web.correction_capture._capture_failure_message`` both call it, so the
-    wizard's capture status line and the failure screen can
-    never disagree about which refusal happened — the drift that let a raw
-    ``"program re-admission refused: program_profile_not_confirmed"`` reach the
-    wizard's DOM while the phone was told something else entirely.
+    Return None for exceptions outside the measurement family.
     """
     from jasper.active_speaker.crossover_v2.capture_plan import PlanShapeError
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
@@ -316,7 +296,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     :func:`classify_program_failure` exists to close, defeated by the rewrap
     happening BEFORE any classification: once it is a ``ValueError`` the
     classifier no longer claims it, and
-    ``correction_capture._capture_failure_message`` never sees it either.
+    the HTTP envelope must retain its household message.
 
     So classify FIRST and carry the code out. The message comes from the same
     :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY` entry the

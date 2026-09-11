@@ -23,13 +23,13 @@ import ast
 import importlib
 import importlib.util
 import json
-import socket
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
 import pytest
 
+from jasper.active_speaker.wizard_client import WizardClient
 from jasper.cli import _refusal, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
@@ -110,14 +110,18 @@ def test_the_exempt_modules_are_real_and_in_the_menu(module_name: str) -> None:
     assert module_name in _menu.TUNING_TOOL_MODULES
 
 
+@pytest.mark.parametrize("fields", [
+    {}, {"code": "measurement_candidate_room_mismatch"},
+    {"next_action": {"id": "apply_matching_room_layer"}},
+    {"code": "measurement_candidate_room_mismatch",
+     "next_action": {"id": "apply_matching_room_layer"}},
+])
 @pytest.mark.parametrize(("code", "status"), sorted(_refusal.STATUS_BY_CODE.items()))
-def test_the_record_status_and_the_exit_code_always_agree(
-    code: int, status: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert _refusal.failed(code, "a_slug", "a detail") == code
-    out = capsys.readouterr()
-    assert f'"status": "{status}"' in out.out
-    assert out.err.startswith(f"{status} (a_slug): ")
+def test_the_record_status_and_the_exit_code_always_agree(code, status, fields, capsys):
+    assert _refusal.failed(code, "a_slug", {}, **fields) == code
+    assert json.loads(capsys.readouterr().out) == {
+        "status": status, "reason": "a_slug", "detail": {}, **fields,
+    }
 
 
 def test_the_failing_codes_are_exactly_one_two_three() -> None:
@@ -127,12 +131,9 @@ def test_the_failing_codes_are_exactly_one_two_three() -> None:
     assert sorted(_refusal.STATUS_BY_CODE) == [1, 2, 3]
 
 
-#: A loopback port bound for the life of this module and never listened on:
-#: connecting to it is REFUSED, and no other process can take it meanwhile. A
-#: door there is one whose answer is LOST, which is the tool's other failure.
-_HELD = socket.socket()
-_HELD.bind(("127.0.0.1", 0))
-UNANSWERED_URL = f"http://127.0.0.1:{_HELD.getsockname()[1]}"
+def _basic_profile_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    monkeypatch.setattr(WizardClient, "open", lambda *a, **kw: (0, "unavailable"))
+    return ["review", "--hostname", "jts.local"]
 
 
 def _audition_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -160,14 +161,11 @@ def _mic_calibration_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> li
 
 #: One invocation per tool that PASSES argparse and reaches the tool, and that
 #: the tool must decline: a round, bundle or spec that is not there, a program
-#: nobody ships, a coordinate off the walk's grid, a door on a port nothing
-#: listens on. Argparse's own usage errors are deliberately absent -- the
+#: nobody ships, a coordinate off the walk's grid, an unavailable door. Argparse's own usage errors are deliberately absent -- the
 #: parser exits before the tool can publish anything. None of these touches
 #: hardware or the network, and none reaches a measurement door.
 _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
-    "jasper.cli.basic_profile": lambda tmp, mp: [
-        "review", "--hostname", "jts.local", "--base-url", UNANSWERED_URL,
-    ],
+    "jasper.cli.basic_profile": _basic_profile_argv,
     "jasper.cli.mic_calibration": _mic_calibration_argv,
     "jasper.cli.seat_level": lambda tmp, mp: [
         "--mic-serial", "no-such-serial", "--stimulus-wav", str(tmp / "absent.wav"),
@@ -201,12 +199,7 @@ def test_every_tuning_cli_publishes_the_shared_refusal_document(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A refusal is an OUTPUT: one ``failed()`` document, on stdout, always.
-
-    Driven through each tool's own ``main`` rather than asserted of
-    ``_refusal`` alone, which is the only way to catch a tool that owns the
-    shared codes and still prints its refusal somewhere else -- or nowhere.
-    """
+    """Every CLI emits status, reason and detail, with optional code and next_action."""
 
     module = importlib.import_module(module_name)
 
@@ -215,7 +208,8 @@ def test_every_tuning_cli_publishes_the_shared_refusal_document(
     printed = capsys.readouterr()
     assert code in _refusal.STATUS_BY_CODE
     document = json.loads(printed.out)
-    assert set(document) == {"status", "reason", "detail"}
+    required = {"status", "reason", "detail"}
+    assert required <= document.keys() <= required | {"code", "next_action"}
     assert document["status"] == _refusal.STATUS_BY_CODE[code]
     assert printed.err.startswith(
         f"{document['status']} ({document['reason']}): "

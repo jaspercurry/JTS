@@ -948,16 +948,28 @@ def test_close_awaitable_releases_an_unsubmitted_coroutine():
 
 
 @pytest.mark.parametrize("code", [None, "unknown_refusal", "walk_ceiling_above_stop"])
-def test_refusal_envelope_preserves_named_codes_even_without_registry_rows(code):
-    from jasper.web._common import refusal_envelope
+@pytest.mark.parametrize("explicit", [False, True])
+def test_refusal_envelope_preserves_codes_and_classifies_at_most_once(code, explicit, monkeypatch):
+    from jasper.web import correction_crossover_v2 as host
 
+    classified = []
+    classify = host.classify_program_failure
+
+    def once(exc):
+        classified.append(exc)
+        return classify(exc)
+
+    monkeypatch.setattr(host, "classify_program_failure", once)
     exc = ValueError("request")
     if code is not None:
         exc.code = code
-    body = refusal_envelope(exc)
+    body = (_common.refusal_envelope(code=code, message="request") if explicit
+            else _common.refusal_envelope(exc))
+    assert len(classified) == (0 if explicit or code else 1)
     assert body["ok"] is False
     assert body["code"] == code
     assert set(body) == {"ok", "code", "next_action", "error"}
+    assert isinstance(body["error"], str)
     if code == "walk_ceiling_above_stop":
         assert body["next_action"]["id"] == "lower_walk_ceiling"
     else:

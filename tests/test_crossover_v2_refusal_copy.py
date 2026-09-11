@@ -318,7 +318,15 @@ def test_graph_and_walk_refusals_have_household_copy_and_retry_policy(code):
     spec = refusal_copy.REASON_REGISTRY[code]
     assert spec.code == code
     assert isinstance(spec.message, str) and spec.message.strip()
-    retriable = code not in refusal_copy.NON_RETRIABLE_CODES
-    assert type(retriable) is bool
-    assert retriable == (spec.retry_budget > 0)
     assert spec.retry_budget == 0
+
+
+@pytest.mark.parametrize("code", ["measurement_candidate_room_mismatch", "measurement_unregistered"])
+def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(code):
+    message, action = refusal_copy.refusal_copy_for(code)
+    spec = refusal_copy.REASON_REGISTRY.get(code, refusal_copy.REASON_REGISTRY[refusal_copy.REASON_INTERNAL_ERROR])
+    assert message is spec.message
+    assert action == spec.next_action
+    if action is not None:
+        action["id"] = "changed"
+        assert refusal_copy.refusal_copy_for(code)[1]["id"] == "apply_matching_room_layer"

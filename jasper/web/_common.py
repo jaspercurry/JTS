@@ -144,29 +144,30 @@ _CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
 _CTX_ATTR = "_jts_request_ctx"
 
 
-def refusal_envelope(exc: BaseException) -> dict[str, Any]:
-    """Carry the refusal identity and its registered household action."""
+def refusal_envelope(
+    exc: BaseException | None = None, *, code: str | None = None, message: str | None = None,
+) -> dict[str, Any]:
+    """Carry an exception or an explicit code and message through one envelope."""
     from jasper.active_speaker.crossover_v2.refusal_copy import (  # lazy: numpy import cost
-        CrossoverV2Refused, REASON_REGISTRY,
+        CrossoverV2Refused, REASON_INTERNAL_ERROR, refusal_copy_for,
     )
-    from jasper.web.correction_capture import _capture_failure_message  # lazy: measurement service import cost
-    from jasper.web.correction_crossover_v2 import classify_program_failure  # lazy: measurement service import cost
+    from jasper.web.correction_crossover_v2 import (  # lazy: measurement service import cost
+        CrossoverV2LocalSeamError, classify_program_failure,
+    )
 
-    code = getattr(exc, "code", None) or getattr(exc, "reason", None)
-    if not code:
-        classified = classify_program_failure(exc)
-        code = classified[0] if classified else None
-    spec = REASON_REGISTRY.get(code)
-    error = (
-        str(exc) if isinstance(exc, CrossoverV2Refused)
-        else (spec.message or spec.banner) if spec
-        else str(exc) if code else _capture_failure_message(exc)
-    )
+    if exc is not None:
+        code = getattr(exc, "code", None) or getattr(exc, "reason", None)
+        if isinstance(exc, CrossoverV2LocalSeamError):
+            code = REASON_INTERNAL_ERROR
+        elif not code:
+            classified = classify_program_failure(exc)
+            code = classified[0] if classified else None
+        if isinstance(exc, CrossoverV2Refused) or not code:
+            message = str(exc)
+    copy, action = refusal_copy_for(code)
     return {
-        "ok": False,
-        "code": code,
-        "next_action": dict(spec.next_action) if spec and spec.next_action else None,
-        "error": error,
+        "ok": False, "code": code, "next_action": action,
+        "error": message if message is not None else copy,
     }
 
 
