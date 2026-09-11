@@ -31,6 +31,7 @@ from jasper.control.server import _make_handler
 
 from tests._cue_spy import SpyCues
 from tests._librespot_state import write_librespot_state
+from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
@@ -588,10 +589,7 @@ def test_system_action_reboot_audits_and_asks_the_broker(
     assert body["action"] == verb
     assert body["status"] == "accepted"
     assert broker_calls == [(verb, [])]
-    assert any(
-        f"event=system.action action={verb}" in rec.getMessage()
-        for rec in caplog.records
-    ), f"{verb} must emit an event=system.action audit line"
+    assert event_fields(caplog, "system.action")["action"] == verb
 
 
 @pytest.mark.parametrize("verb", ["reboot", "poweroff"])
@@ -1447,7 +1445,7 @@ def test_state_camilla_probe_times_out_fail_soft(
     assert audio["clipped_samples"] is None
     # Fail-soft: the camilla stall didn't take down the whole snapshot.
     assert "source_selection" in body
-    assert "event=state.camilla_probe_failed" in caplog.text
+    assert event_records(caplog, "state.camilla_probe_failed")
 
 
 async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
@@ -1487,9 +1485,8 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
                 voice_socket_path="/nonexistent.sock",
             )
 
-    assert any(
-        "event=state.aggregate_timeout" in r.getMessage()
-        for r in caplog.records
+    assert event_records(
+        caplog, "state.aggregate_timeout"
     ), "aggregate timeout must emit a greppable event= line"
 
 
