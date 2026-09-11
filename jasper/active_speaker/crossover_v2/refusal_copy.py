@@ -154,7 +154,8 @@ REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
-REASON_WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
+REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
+REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
@@ -890,8 +891,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_WALK_MOVER_MISMATCH: ReasonSpec(
         REASON_WALK_MOVER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The measurement plan and the session disagree about how the microphone moves. Make their '
-        'movement settings match.',
+        'Match the microphone movement settings in the plan and session.',
         next_action={"id": 'match_walk_mover', "label": 'Match the movement settings',
                      "href": '/sound/speaker/crossover/'},
     ),
@@ -904,17 +904,17 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_WALK_LEVEL_POLICY_INVALID: ReasonSpec(
         REASON_WALK_LEVEL_POLICY_INVALID, TEMPLATE_HARD_STOP, 0, "",
-        'The measurement levels do not match the selected level mode. Correct the level settings '
-        'before starting.',
+        'Correct the measurement level settings before starting.',
         next_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
                      "href": '/sound/speaker/crossover/'},
     ),
-    REASON_WALK_POLICY_UNSUPPORTED_YET: ReasonSpec(
-        REASON_WALK_POLICY_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
-        'JTS cannot change the volume between these positions yet. Use one fixed reference level '
-        'for this measurement.',
-        next_action={"id": 'use_reference_level', "label": 'Use a fixed reference level',
-                     "href": '/sound/speaker/crossover/'},
+    REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET: ReasonSpec(
+        REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
+        'Use one fixed reference level for this measurement.',
+    ),
+    REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
+        REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
+        'Restage the measurement plan with the current request format.',
     ),
     REASON_WALK_CEILING_ABOVE_STOP: ReasonSpec(
         REASON_WALK_CEILING_ABOVE_STOP, TEMPLATE_HARD_STOP, 0, "",

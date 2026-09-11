@@ -390,8 +390,8 @@ async def run_plan(
     except LateralWalkRefused as exc:
         return _refused(fingerprint, exc, spl_monitor=spl_monitor)
 
-    stops = [resolved[offset] for offset, _spec in playable]
-    places = [request.stops[offset].place for offset, _spec in playable]
+    stops = [resolved[offset // request.repeats] for offset, _spec in playable]
+    places = [request.stops[offset // request.repeats].place for offset, _spec in playable]
     batches = [
         [offset for offset, _place in group]
         for _key, group in groupby(enumerate(places), key=lambda row: row[1])

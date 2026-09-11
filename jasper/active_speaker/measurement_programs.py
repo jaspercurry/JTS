@@ -232,9 +232,7 @@ def _pose(value: Any, layout: str, index: int) -> ProgramPose:
 def _config_text(path: str | Path | None) -> str:
     if path is not None:
         return Path(path).read_text(encoding="utf-8")
-    return resources.files(__package__).joinpath("measurement_plans.json").read_text(
-        encoding="utf-8"
-    )
+    return resources.files(__package__).joinpath("measurement_plans.json").read_text(encoding="utf-8")
 
 
 def _load_programs(
@@ -253,6 +251,7 @@ def _load_programs(
     layouts: dict[str, tuple[ProgramPose, ...]] = {}
     for name, values in layouts_raw.items():
         name = _text(name, "layout name")
+        values = values.get("poses") if isinstance(values, dict) else values
         if not isinstance(values, list) or not values:
             raise ValueError(f"layout {name!r} must contain at least one pose")
         layouts[name] = tuple(_pose(value, name, index) for index, value in enumerate(values))

@@ -42,6 +42,7 @@ What a taken walk then does, and what it deliberately does not publish, is
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import logging
 import shlex
 import sys
@@ -53,15 +54,13 @@ from ._stimulus_args import add_stimulus_args, spec_kwargs_from_args
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
-    LEVEL_HOLD_REFERENCE,
-    LEVEL_MODES,
-    LEVEL_SERIES,
     MOVER_HUMAN,
     MOVER_ARM,
     MOVERS,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     AngleCaptureRequest,
+    LevelPolicy,
     AngleStop,
     announced_indexes,
     request_for_program,
@@ -92,7 +91,6 @@ from jasper.active_speaker.measurement_programs import (
 )
 from jasper.active_speaker.seat_level_reference import (
     LevelUnresolved,
-    ResolvedLevel,
     resolve_anchor_level,
 )
 from jasper.audio_measurement.measurement_geometry import (
@@ -224,23 +222,24 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
     ``MeasureSpec`` every capture is built from, and this module's own volume
     policy beside it.
     """
+    stimulus = spec_kwargs_from_args(args)
+    ceiling = stimulus.pop("spl_ceiling_db_spl")
     return {
         "mover": args.mover,
-        "template": walk_template(kind=MEASURE_KIND_CANDIDATE, **spec_kwargs_from_args(args)),
-        "level_mode": args.level_mode,
-        "main_volume_series_db": tuple(args.level_series),
+        "template": walk_template(kind=MEASURE_KIND_CANDIDATE, **stimulus),
+        "spl_ceiling_db_spl": ceiling,
     }
 
 
 def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
-    """Resolve banked artifacts; an empty id selects the plan’s baseline layer."""
+    """Resolve banked artifacts; base selects the program’s baseline layer."""
     fingerprints = tuple(
-        "" if field.strip() == "base" else field.strip()
+        field.strip()
         for field in (args.candidates or "").split(",")
         if field.strip()
     )
     for fingerprint in fingerprints:
-        if fingerprint:
+        if fingerprint != "base":
             find_banked_candidate(fingerprint)
     return fingerprints
 
@@ -301,20 +300,18 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     )
 
 
-def _resolved_level() -> ResolvedLevel | LevelUnresolved:
-    """This walk's absolute level, or the refusal that stops it being knowable.
-
-    Resolved ONCE per verb and carried as the object it is: ``plan`` prints the
-    refusal, ``stage`` hands the SAME exception to :func:`_refuse`, so neither
-    verb rebuilds one from the receipt it just flattened.
-    """
+def _resolved_level(request: AngleCaptureRequest) -> tuple[AngleCaptureRequest, LevelUnresolved | None]:
     try:
-        return resolve_anchor_level()
+        anchor = resolve_anchor_level()
     except LevelUnresolved as exc:
-        return exc
+        return request, exc
+    return replace(request, level=LevelPolicy(
+        anchor_db_spl=anchor.anchor_db_spl,
+        reference_volume_db=anchor.reference_volume_db, mic_serial=anchor.mic_serial,
+    )), None
 
 
-def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
+def _level_block(level: LevelPolicy | LevelUnresolved) -> dict[str, Any]:
     """What this walk drives at, or the input that stops it being knowable.
 
     Never a relative fallback: a receipt that printed ``+0 dB`` with no anchor
@@ -323,15 +320,15 @@ def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
     if isinstance(level, LevelUnresolved):
         return {"resolved": False, "reason": level.reason, "detail": level.detail}
     return {
-        "resolved": True,
-        "anchor_db_spl": round(level.anchor_db_spl, 2),
-        "reference_volume_db": round(level.reference_volume_db, 2),
+        "resolved": level.anchor_db_spl is not None and level.reference_volume_db is not None,
+        "anchor_db_spl": level.anchor_db_spl,
+        "reference_volume_db": level.reference_volume_db,
         "mic_serial": level.mic_serial,
     }
 
 
 def _walk_payload(
-    request: AngleCaptureRequest, level: ResolvedLevel | LevelUnresolved
+    request: AngleCaptureRequest, level_error: LevelUnresolved | None = None
 ) -> dict[str, Any]:
     """The resolved walk, as one JSON-able document.
 
@@ -346,9 +343,11 @@ def _walk_payload(
     stops = resolve_request(request)
     return {
         "program": request.program,
-        "candidates": sorted({stop.candidate_id for stop in request.stops} - {""}),
+        "candidates": list(request.candidates),
+        "baseline_graph_scope": request.baseline_graph_scope,
+        "spl_ceiling_db_spl": request.spl_ceiling_db_spl,
         "price": walk_price(request),
-        "level": _level_block(level),
+        "level": _level_block(level_error or request.level),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
@@ -467,6 +466,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
             else "none (this walk announces nothing on its own)"
         )
     )
+    say(f"  base graph: {payload['baseline_graph_scope']}")
     candidates = payload["candidates"]
     if candidates:
         # Only when stated: an ordinary walk measures the speaker as it stands
@@ -492,7 +492,7 @@ def _print_walk(payload: dict[str, Any]) -> None:
             f"{level['reference_volume_db']:.1f} dB; "
             f"mic {level['mic_serial']})"
             if level["resolved"]
-            else f"unresolved -- {level['reason']}: {level['detail']}"
+            else f"unresolved -- {level.get('reason', 'anchor_not_stated')}: {level.get('detail', '')}"
         )
     )
     say(
@@ -527,6 +527,8 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
         "size": size,
         "mover": payload["mover"],
         "candidates": payload["candidates"],
+        "baseline_graph_scope": payload["baseline_graph_scope"],
+        "spl_ceiling_db_spl": payload["spl_ceiling_db_spl"],
         "stops_count": len(payload["stops"]),
         "stops": [
             {
@@ -572,7 +574,8 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         return _refuse(exc)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
-    payload = _walk_payload(request, _resolved_level())
+    request, level_error = _resolved_level(request)
+    payload = _walk_payload(request, level_error)
     _print_walk(payload)
     # The same invocation with the other verb, quoted back exactly: ``plan`` is
     # the dry run of ``stage``, so nothing here re-spells the request.
@@ -591,20 +594,13 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         return _refuse(exc, reason=exc.code)
     except CrossoverV2FlowError as exc:
         return _refuse(exc)
-    # The methodology levels the seat before anything measures, so a level this
-    # door cannot resolve names the step the operator skipped rather than
-    # staging a walk whose captures nobody could read absolutely. It is not
-    # written to the spool -- nothing downstream reads a level yet.
-    level = _resolved_level()
-    if isinstance(level, LevelUnresolved):
-        return _refuse(level)
-    payload = _walk_payload(request, level)
+    request, level_error = _resolved_level(request)
+    if level_error is not None:
+        return _refuse(level_error)
+    payload = _walk_payload(request)
     try:
         path = stage_angle_request(request)
     except CrossoverV2FlowError as exc:
-        # Both slugs, one door: the slot's own refusals (``AngleRequestRefused``
-        # subclasses this) and the walk-policy refusal it raises for a request
-        # no player honours yet.
         return _refuse(exc)
     except OSError as exc:
         return failed(
@@ -627,7 +623,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         return _refuse(exc)
     if request is None:
         return answered({"staged": False})
-    payload = _walk_payload(request, _resolved_level())
+    payload = _walk_payload(request)
     _print_walk(payload)
     receipt = _receipt(payload, staged=True, out=str(angle_request_spool_path()))
     return answered({**receipt, "next": _open_round(receipt["size"], receipt["mover"])})
@@ -851,29 +847,6 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
     # The stimulus half is ``MeasureSpec``'s own, so it is spelled where
     # ``jasper-measure`` spells it; stated once here for every stop in the walk.
     add_stimulus_args(parser)
-    parser.add_argument(
-        "--level-mode",
-        default=LEVEL_HOLD_REFERENCE,
-        choices=sorted(LEVEL_MODES),
-        help=(
-            "how main volume behaves across this walk's stops: hold_reference "
-            "leaves the anchor level untouched throughout (the default), "
-            "acquire_at_anchor measures it once at the anchor pose and holds "
-            "that across every stop, series steps through --level-series in "
-            "turn"
-        ),
-    )
-    parser.add_argument(
-        "--level-series",
-        type=float,
-        action="append",
-        default=[],
-        metavar="DB",
-        help=(
-            f"--level-mode {LEVEL_SERIES} only: one main-volume rung in dB, "
-            "repeatable"
-        ),
-    )
 
 
 def _add_serve_args(parser: argparse.ArgumentParser) -> None:

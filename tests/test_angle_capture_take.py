@@ -605,9 +605,10 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
 ):
     preset = _banked(monkeypatch)
     regime = ac.REGIME_PER_DRIVER if candidate_ids is None else ac.REGIME_SUMMED
-    spool.stage_angle_request(ac.AngleCaptureRequest(stops=tuple(
-        ac.AngleStop(20, regime, 5, cid) for cid in (candidate_ids or ("",))
-    )))
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        candidates=tuple(cid or "base" for cid in candidate_ids or ()),
+        stops=tuple(ac.AngleStop(20, regime, 5, cid) for cid in candidate_ids or ("",)),
+    ))
     prompts, consumer, specs, _trims, claims = _take(preset=preset)
     index_phases = flow.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(), include_cloud_measure=False,
@@ -815,7 +816,7 @@ def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(
         delay_us=delay_us, bass_extension=bass_extension,
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
+        candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
     ))
     prompts, _consumer, specs, trims, claims = _take(preset=preset)
 
@@ -1099,9 +1100,7 @@ def test_a_stated_ceiling_buys_a_watch_or_refuses_the_open(
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=stated,
-        ),
+        spl_ceiling_db_spl=stated,
     ))
 
     if watched is None:
@@ -1136,9 +1135,7 @@ def test_a_stated_ceiling_with_no_box_stop_refuses_not_500(slot, monkeypatch):
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=80.0,
-        ),
+        spl_ceiling_db_spl=80.0,
     ))
 
     with pytest.raises(v2host.CrossoverV2Refused) as refused:
@@ -1171,9 +1168,7 @@ def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=80.0,
-        ),
+        spl_ceiling_db_spl=80.0,
     ))
 
     # _take_full's device defaults to _MIC (minidsp_umik2); the household

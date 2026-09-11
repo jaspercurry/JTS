@@ -1271,36 +1271,30 @@ def test_a_multi_pose_walk_is_refused_because_this_door_moves_nothing(
     ],
 )
 def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
-    monkeypatch, stated, stop, expected,
+    speaker, staged, applied_baseline, monkeypatch, capsys, stated, stop, expected,
 ):
-    """The box's commissioning stop bounds every run now, not only one that typed
-    a ceiling — and what cannot be enforced is refused or disclosed, never assumed.
-
-    The slugs are the WALK's, shared with the wizard door: one failure reaching
-    an operator under two names would send them looking in two places.
-    """
-    from jasper.active_speaker import plan_run
-
-    monkeypatch.setattr(
-        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
-        lambda **kw: None,
-    )
-    specs = (MeasureSpec(kind=MEASURE_KIND_BASELINE, spl_ceiling_db_spl=stated),)
     box = _declaration() if stop is not None else replace(
-        _declaration(),
-        preset=SimpleNamespace(
-            safety=SimpleNamespace(max_commissioning_level_db_spl=None),
-        ),
+        _declaration(), preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=None)),
     )
+    monkeypatch.setattr(measure, "read_box_declaration", lambda: box)
+    staged.stage_angle_request(_one_pose_walk(spl_ceiling_db_spl=stated))
+    code = measure.main(["--request", "staged"])
+    body = json.loads(capsys.readouterr().out)
+    if expected:
+        assert code == EXIT_REFUSED
+        assert body["reason"] == expected
+        assert speaker["played"] == []
+    else:
+        assert code == EXIT_OK
+        assert body["spl_monitor"] == "unavailable_no_calibration"
 
-    if not expected:
-        assert measure._spl_monitor(
-            specs, box=box, device=object(), mic_serial=None,
-        ) == (None, plan_run.SPL_MONITOR_UNAVAILABLE)
-        return
-    with pytest.raises(measure.BoxNotMeasurable) as refused:
-        measure._spl_monitor(specs, box=box, device=object(), mic_serial=None)
-    assert refused.value.reason == expected
+
+@pytest.mark.parametrize("ceilings", [(None, 80.0), (80.0, 90.0)])
+def test_a_spec_batch_still_refuses_mixed_ceilings(tmp_path, ceilings):
+    path = _specs_file(tmp_path, [{"spl_ceiling_db_spl": ceiling} for ceiling in ceilings])
+    with pytest.raises(MeasureFlagError) as refused:
+        specs_from_args(build_parser().parse_args(["--kind", MEASURE_KIND_BASELINE, "--specs", path]))
+    assert refused.value.reason == measure.REFUSE_SPL_CEILINGS_MIXED
 
 
 def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
@@ -1318,7 +1312,7 @@ def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
     )
 
     monitor, note = measure._spl_monitor(
-        (MeasureSpec(kind=MEASURE_KIND_BASELINE),),
+        None,
         box=_declaration(), device=SimpleNamespace(model_key="umik2"),
         mic_serial=None,
     )

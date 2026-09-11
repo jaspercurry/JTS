@@ -15,8 +15,7 @@ Five things are pinned here:
    names where the run stopped;
 4. the LEVEL BOUND -- a run states a ceiling at or under this box's own
    commissioning stop, or it is refused;
-5. the REFUSALS a run makes before anything plays -- a level policy nothing
-   steps yet, and a stop pose the spec will not carry.
+5. the REFUSALS a run makes before anything plays.
 
 The specs a walk plays, the poses a request resolves to and the angle bounds are
 ``tests/test_angle_capture_seam.py``'s; nothing here re-asserts them.
@@ -26,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -53,7 +52,7 @@ _SCOPES = {"fp-a": "candidate", "fp-b": "candidate"}
 def _walk(angles: list[int], candidates: tuple[str, ...]) -> ac.AngleCaptureRequest:
     """One summed config per candidate at each angle, poses in the stated order."""
     return ac.AngleCaptureRequest(
-        stops=tuple(
+        candidates=tuple(dict.fromkeys(candidates)), stops=tuple(
             ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate)
             for angle in angles
             for candidate in candidates
@@ -127,13 +126,14 @@ async def _run_gated(request, *, seams=None, gate=None, aborts=_ABORTS):
     [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))],
     ids=["one-pose-one-config", "two-poses-two-configs", "three-poses"],
 )
+@pytest.mark.parametrize("repeats", [1, 3])
 def test_a_walk_costs_one_placement_per_pose_and_one_take_per_stop(
-    angles: list[int], candidates: tuple[str, ...],
+    angles: list[int], candidates: tuple[str, ...], repeats: int,
 ) -> None:
     """The capability the executor exists for: the microphone moves once per POSE
     however many configs play there, every stop is measured, and the speaker is
     put back exactly once at the end."""
-    request = _walk(angles, candidates)
+    request = replace(_walk(angles, candidates), repeats=repeats)
     gate = AnsweredGate()
 
     result, fakes = asyncio.run(_run_gated(request, gate=gate))
@@ -141,20 +141,21 @@ def test_a_walk_costs_one_placement_per_pose_and_one_take_per_stop(
     assert result.status == plan_run.RUN_MEASURED
     assert len(result.wall_s) == len(angles)
     assert result.mic_moves == len(angles)
-    assert result.takes_measured == len(angles) * len(candidates)
+    assert result.takes_measured == len(angles) * len(candidates) * repeats
     assert result.takes_skipped == 0
-    assert len(fakes.banked) == len(angles) * len(candidates)
+    assert len(fakes.banked) == len(angles) * len(candidates) * repeats
     # Each take measured through ITS candidate's graph, proven per take (one
     # install at open, one per take), and put back once.
-    assert fakes.graph.scopes == [("candidate", cid) for _a in angles for cid in candidates]
-    assert fakes.graph.installs == 1 + len(angles) * len(candidates)
+    assert fakes.graph.scopes == [("candidate", cid) for _a in angles for cid in candidates for _ in range(repeats)]
+    assert fakes.graph.installs == 1 + len(angles) * len(candidates) * repeats
+    assert [t.pose_index for t in result.takes] == [i for i in range(len(angles)) for _ in range(len(candidates) * repeats)]
     assert fakes.graph.restores == 1
 
 
 def test_a_per_driver_stop_is_skipped_and_counted() -> None:
     """A per-driver stop plays the phase's own composed program rather than a
     spec, so this loop measures nothing for it and says so."""
-    request = ac.AngleCaptureRequest(stops=(
+    request = ac.AngleCaptureRequest(candidates=("base", "fp-a"), stops=(
         ac.AngleStop(0, ac.REGIME_PER_DRIVER),
         ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a"),
     ))
@@ -205,7 +206,7 @@ def test_a_stop_this_loop_skips_does_not_cost_a_second_placement_grant() -> None
     the microphone never left the pose — so the grant the first summed stop
     opened carries the second, as it does for any two configs at one place."""
     gate = AnsweredGate()
-    request = ac.AngleCaptureRequest(stops=(
+    request = ac.AngleCaptureRequest(candidates=("fp-a", "base", "fp-b"), stops=(
         ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a"),
         ac.AngleStop(0, ac.REGIME_PER_DRIVER),
         ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-b"),
@@ -282,43 +283,17 @@ def test_an_interrupted_run_keeps_what_it_banked_and_names_where_it_stopped(
 
 
 @pytest.mark.parametrize(
-    "walk",
-    [
-        {"level_mode": ac.LEVEL_ACQUIRE_AT_ANCHOR},
-        {"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": (-20.0, -14.0)},
-    ],
-    ids=["acquire-at-anchor", "series"],
-)
-def test_a_level_policy_nothing_steps_yet_is_refused_before_a_stimulus(
-    walk: dict,
-) -> None:
-    """One session holds ONE level, so a walk asking for another between stops is
-    refused up front rather than measured at a level it did not mean."""
-    request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a"),), **walk,
-    )
-
-    result, fakes = asyncio.run(_run_gated(request))
-
-    assert result.status == plan_run.RUN_REFUSED
-    assert result.reason == ac.WALK_POLICY_UNSUPPORTED_YET
-    assert (result.takes_measured, result.wall_s) == (0, ())
-    assert fakes.play.calls == []
-    assert fakes.banked == []
-
-
-@pytest.mark.parametrize(
     "request_kwargs",
     [
         {
-            "stops": (ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a"),),
+            "candidates": ("fp-a",), "stops": (ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a"),),
             "template": ac.walk_template(
                 kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL,
             ),
         },
         # ``fp-z`` is in no scope map: the stop names a candidate the caller
         # resolved nothing for.
-        {"stops": (ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-z"),)},
+        {"candidates": ("fp-z",), "stops": (ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-z"),)},
     ],
     ids=["pose-the-spec-refuses", "candidate-with-no-scope"],
 )

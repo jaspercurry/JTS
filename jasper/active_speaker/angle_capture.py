@@ -23,6 +23,7 @@ under ``crossover_v2/`` (whose modules forbid importing the flow).
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import asdict, dataclass, fields, replace
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -224,8 +225,7 @@ class AngleStop:
     orthogonal bearing, signed whole degrees, 0 for a stop nobody raised;
     which mover may ask for non-zero is :data:`MOVER_MAX_ELEVATION_DEG`.
     ``candidate_id`` is the banked candidate fingerprint this stop measures
-    (``""`` for the speaker as it stands); sits on the stop, not the walk,
-    since a candidate cycle is adjacent stops at one pose. ``kind``,
+    (``""`` for the program's baseline layer). ``kind``,
     ``distance_m`` and ``seat_offset_m`` are the pose's category and where it
     is stated from (:class:`~.measurement_programs.ProgramPose`).
     """
@@ -419,8 +419,10 @@ class AngleCaptureRequest:
         object.__setattr__(self, "operating_levels_db", tuple(levels) or (
             () if reference is None else (reference,)
         ))
-        if self.spl_ceiling_db_spl is not None and finite_float(self.spl_ceiling_db_spl) is None:
-            raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, "SPL ceiling must be finite")
+        if self.spl_ceiling_db_spl is not None and (
+            finite_float(self.spl_ceiling_db_spl) is None or self.spl_ceiling_db_spl <= 0
+        ):
+            raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, "SPL ceiling must be finite and positive")
         for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -430,6 +432,11 @@ class AngleCaptureRequest:
         ):
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must be nonempty names")
         object.__setattr__(self, "candidates", tuple(self.candidates))
+        cycle = self.candidates or ("base",)
+        if len(set(cycle)) != len(cycle) or set(cycle) != {
+            stop.candidate_id or "base" for stop in self.stops
+        }:
+            raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must match the stop identities")
 
     @property
     def baseline_graph_scope(self) -> str | None:
@@ -439,6 +446,13 @@ class AngleCaptureRequest:
     def to_dict(self) -> dict[str, Any]:
         return {
             **asdict(self), "template": self.template.to_dict(),
+            "stops": [
+                {f.name: getattr(stop, f.name) for f in fields(stop)
+                 if f.name in ("angle_deg", "regime", "elevation_deg", "candidate_id", "purpose")
+                 or getattr(stop, f.name) != f.default}
+                for stop in self.stops
+            ],
+            "candidates": list(self.candidates), "operating_levels_db": list(self.operating_levels_db),
             "artifact_schema_version": REQUEST_SCHEMA_VERSION, "kind": REQUEST_KIND,
         }
 
@@ -451,7 +465,7 @@ class AngleCaptureRequest:
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
         if unknown:
             raise ValueError(f"unknown request fields: {sorted(unknown)}")
-        values = {f.name: doc[f.name] for f in fields(cls) if f.name in doc}
+        values = {f.name: doc[f.name] for f in fields(cls)}
         if not isinstance(doc.get("stops"), list) or not doc["stops"]:
             raise ValueError("stops must be a nonempty list")
         values["stops"] = tuple(AngleStop(**entry) for entry in doc["stops"])
@@ -466,9 +480,9 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(
                 WALK_TEMPLATE_NOT_ACCEPTED, f"template must be a MeasureSpec, got {self.template!r}",
             )
-        stated = [
-            name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
-        ]
+        stated = [name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)]
+        if self.template.spl_ceiling_db_spl not in (None, self.spl_ceiling_db_spl):
+            stated.append("spl_ceiling_db_spl")
         if stated:
             raise LateralWalkRefused(
                 WALK_TEMPLATE_NOT_ACCEPTED,
@@ -602,7 +616,7 @@ def stop_specs(
     candidate_scopes: Mapping[str, str],
     prompts: Sequence[CloudPositionPrompt],
 ) -> tuple[MeasureSpec | None, ...]:
-    """One spec per stop in walk order; ``None`` where the stop plays no spec.
+    """Repeat each stop's spec in walk order; ``None`` for each per-driver take.
 
     A per-driver stop plays the phase's own composed program object, so it names
     no spec. A summed stop is the template placed: the pose it was moved to, the
@@ -745,9 +759,8 @@ def walk_price(
     SESSION (base entries plus these captures), rounded UP to whole minutes.
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
-    candidates = max(1, len(request.candidates))
-    poses = len(request.stops) // candidates
-    captures = poses * candidates * request.repeats
+    takes = Counter(stop.candidate_id or "base" for stop in request.stops)
+    captures = sum(takes[candidate] for candidate in request.candidates or ("base",)) * request.repeats
     return {
         "mic_moves": len({s.place for s in request.stops}),
         "captures": captures,
@@ -887,7 +900,7 @@ WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
 WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 
-#: The walk's template states an SPL ceiling ABOVE this box's commissioning
+#: The walk states an SPL ceiling ABOVE this box's commissioning
 #: stop, so honouring the walk would mean playing past the stop. Decided where
 #: the ceiling is resolved (:func:`~.plan_run.take_spl_ceiling`), which is the
 #: only place that reads the box's own number.
