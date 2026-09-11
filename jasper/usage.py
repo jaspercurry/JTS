@@ -1011,9 +1011,6 @@ class BillableActivityMeter:
 
     def mark_ended(self, *, seconds: float | None = None) -> None:
         try:
-            if seconds is None:
-                self._store.record_billable_activity_close()
-            else:
-                self._store.record_billable_activity_close(seconds=seconds)
+            self._store.record_billable_activity_close(seconds=seconds)
         except Exception as e:  # noqa: BLE001
             logger.warning("activity meter: close failed: %s", e)

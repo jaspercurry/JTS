@@ -21,7 +21,6 @@ conversation, including pauses and assistant speech; its session closes when
 JTS ends that conversation. Endpointed adapters close the conversation as soon
 as playback drains.
 
-
 Voice tools may also send tool results back to that same voice provider so it
 can answer the question. For example, Gmail and Calendar tools are read-only
 against Google, but matched message or event content can be included in the
