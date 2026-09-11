@@ -292,7 +292,7 @@ class OpenAILiveTurn(BaseLiveTurn):
 
     async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
         await self._conn._send({"type": "response.item.create", "item": {
-            "type": "function_call_output", "call_id": call.id, "output": json.dumps(payload),
+            "type": "function_call_output", "call_id": call.id, "output": self._tool_result_json(payload),
         }})
         self._note_activity()
         return True

@@ -113,7 +113,13 @@ async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
         calls.append(seconds)
         return {"seconds": seconds}
 
+    @tool()
+    def broken_tool() -> dict:
+        """Returns something that can't be JSON-encoded."""
+        return {"bad": object()}
+
     registry.register(timer)
+    registry.register(broken_tool)
     conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
     usage = []
     conn.set_background_usage_recorder(lambda **row: usage.append(row))
@@ -153,6 +159,28 @@ async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
             for e in socket.sent if e["type"] == "response.item.create"
         }
         assert outputs["r2_bad_call"] == {"error": "unknown tool "}
+        assert not turn.turn_lost()
+
+        # A tool result that can't be JSON-encoded must not raise out of
+        # the round (which would otherwise kill the reader) — the wire
+        # carries a synthetic error output for that call_id instead, and
+        # the round still finishes.
+        before = len(socket.sent)
+        await turn.on_event(backend("d1", "response.created", response={"id": "r3"}))
+        await turn.on_event(backend("d1", "response.output_item.done", item={
+            "type": "function_call", "call_id": "r3_call", "name": "broken_tool", "arguments": "{}",
+        }))
+        await turn.on_event(backend("d1", "response.completed", response={"id": "r3", "output": [], "usage": {}}))
+        await wait_until(lambda: any(
+            e["type"] == "response.item.create" and e["item"]["call_id"] == "r3_call"
+            for e in socket.sent[before:]
+        ))
+        r3_output = next(
+            json.loads(e["item"]["output"]) for e in socket.sent[before:]
+            if e["type"] == "response.item.create" and e["item"]["call_id"] == "r3_call"
+        )
+        assert r3_output == {"error": "tool result not serializable: TypeError"}
+        await wait_until(lambda: any(e["type"] == "response.create" for e in socket.sent[before:]))
         assert not turn.turn_lost()
     finally:
         await turn.release()

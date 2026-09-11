@@ -1453,7 +1453,12 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     Driven through ``_handle_response_done`` rather than the wire: the
     receive loop resets the anchor on any progress event, so feeding
     this as a frame would move the anchor whatever the tool round did
-    and the milestone would stop being pinned."""
+    and the milestone would stop being pinned.
+
+    The round below carries TWO calls, the second gated on an event the
+    test controls: a slow second call in a round must not starve the
+    watchdog either, so the anchor must move again once the FIRST
+    call's result is sent — not just once at round start."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
 
@@ -1461,7 +1466,17 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     def get_weather(location: str = "") -> dict:
         """."""
         return {"location": "Brooklyn", "temperature": 62}
+
+    volume_may_return = asyncio.Event()
+
+    @tool()
+    async def get_volume() -> dict:
+        """."""
+        await volume_may_return.wait()
+        return {"percent": 50}
+
     registry.register(get_weather)
+    registry.register(get_volume)
 
     await conn.start(registry, "")
     try:
@@ -1484,6 +1499,12 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
                     "name": "get_weather",
                     "arguments": "{}",
                 },
+                {
+                    "type": "function_call",
+                    "call_id": "call_2",
+                    "name": "get_volume",
+                    "arguments": "{}",
+                },
             ],
         }, turn)
 
@@ -1492,6 +1513,21 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
             "tool round must advance last_activity_at so the pre-response "
             "idle watchdog doesn't fire while waiting for response 2"
         )
+
+        # call_2 (get_volume) is still blocked on volume_may_return, so
+        # this can only be observing call_1's send.
+        await _wait_until(
+            lambda: any(e.get("item", {}).get("call_id") == "call_1" for e in sess.sent),
+            timeout=2.0,
+        )
+        anchor_after_first_send = turn.last_activity_at()
+        assert anchor_after_first_send > anchor_after, (
+            "each call's result must advance the anchor again, not just "
+            "once at round start, or a slow second call in the same "
+            "round starves the watchdog"
+        )
+
+        volume_may_return.set()
         # The round still runs to completion off that same milestone.
         await _wait_until(
             lambda: any(e.get("type") == "response.create" for e in sess.sent),
@@ -1500,6 +1536,7 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
 
         await turn.release()
     finally:
+        volume_may_return.set()
         await conn.stop()
 
 
