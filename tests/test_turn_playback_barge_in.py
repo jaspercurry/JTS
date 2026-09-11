@@ -506,6 +506,42 @@ async def test_flush_exception_still_cancels_generation():
     assert turn.seam_calls == [("cancel", "barge_in")]
 
 
+# --- not Interruptible at all (the OpenAI Live shape) -------------------
+
+
+class _NonInterruptibleTurn:
+    """A provider that stops generation on the user's own voice
+    (`owns_interruption`, e.g. OpenAI Live) implements NEITHER
+    `Interruptible` member — no no-op bodies, per ADR-0294. Unlike
+    `_SeamTurn`, this fake never defines `cancel_response` /
+    `truncate_assistant_audio` at all, so `isinstance(turn, Interruptible)`
+    is False and calling either would raise AttributeError."""
+
+    def __init__(self) -> None:
+        self.cleared = 0
+        self.dropped_calls = 0
+
+    def clear_interrupted(self) -> None:
+        self.cleared += 1
+
+    def drop_pending_audio(self) -> int:
+        self.dropped_calls += 1
+        return 0
+
+
+async def test_flush_for_interrupt_skips_the_seam_when_not_interruptible():
+    """`_flush_for_interrupt` gates the reconcile on
+    `isinstance(turn, Interruptible)`. A turn shaped like OpenAI Live has
+    no seam methods at all, so if the gate were ever dropped this would
+    raise AttributeError instead of silently no-opping."""
+    turn = _NonInterruptibleTurn()
+    tts = _tts()
+
+    assert await turn_playback._flush_for_interrupt(turn, tts) is True
+    assert turn.cleared == 1
+    assert turn.dropped_calls == 1
+
+
 # ---------------------------------------------------------------------------
 # idle_watchdog: the post-turn_complete deferral is progress-based.
 # ---------------------------------------------------------------------------

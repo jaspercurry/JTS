@@ -138,6 +138,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0291](0291-research-feature-deleted.md) | The background research feature is deleted — the provider model answers, and searches natively | accepted |
 | [0292](0292-followup-windows-are-provider-owned.md) | Follow-up windows are provider-owned | accepted |
 | [0293](0293-the-no-provider-park-is-owned-by-the-voice-daemon.md) | The no-provider park is owned by the voice daemon — jasper-aec-reconcile no longer disables jasper-voice on that axis | accepted |
+| [0294](0294-interruptible-seam-is-exclusive-to-host-reconciled-adapters.md) | The `Interruptible` seam is exclusive to host-reconciled adapters | accepted |
 
 ## Wake, mic & AEC
 
@@ -170,7 +171,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
 | [0240](0240-mic-absence-reason-is-a-code-vocabulary.md) | The voice-input-absent marker's `reason=` is a closed code vocabulary; `detail=` carries the prose | accepted |
-| [0244](0244-the-server-vad-path-is-deleted-not-kept-as-a-knob.md) | The server-VAD path is deleted, not kept as a knob | accepted |
+| [0244](0244-the-server-vad-path-is-deleted-not-kept-as-a-knob.md) | The server-VAD path is deleted, not kept as a knob | amended by 0294 |
 | [0246](0246-arbitration-is-the-whole-of-peering.md) | Arbitration is the whole of peering | accepted |
 | [0267](0267-the-aec-bridge-restart-ladder-matches-controls.md) | The AEC bridge's restart ladder matches control's | accepted |
 

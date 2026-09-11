@@ -21,7 +21,7 @@ from jasper.voice.openai_session import (
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
-from jasper.voice.session import Interruptible, LiveTurn
+from jasper.voice.session import Interruptible, LiveTurn, ProviderTurn
 from jasper.voice.openai_live_session import OpenAILiveTurn
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests.test_gemini_connection import _FakeConnect
@@ -84,6 +84,9 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
         )
         turn = _make_turn(cls)
         assert isinstance(turn, LiveTurn), provider_id
+        # `ProviderTurn` groups only the adapter-supplied half; pin it on its
+        # own name so it keeps teeth independent of the rest of `LiveTurn`.
+        assert isinstance(turn, ProviderTurn), provider_id
         entry = next(p for p in PROVIDERS if p.id == provider_id)
         assert turn.continuous_input is entry.continuous_input
         # Only a provider that stops generating on the user's own voice is

@@ -58,8 +58,9 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
     if dropped:
         log_event(logger, "barge.dropped_pending_audio", chunks=dropped)
     if not isinstance(turn, Interruptible):
-        # The provider stopped itself (`owns_interruption`); there is no
-        # generation left to cancel and no history to trim.
+        # Gate is the `Interruptible` seam, not `owns_interruption` directly
+        # — their exclusivity per catalog provider is pinned by
+        # tests/test_voice_barge_in_contract.py. See ADR-0294.
         return confirmed
     await turn.cancel_response("barge_in")
     if confirmed and ack is not None:
