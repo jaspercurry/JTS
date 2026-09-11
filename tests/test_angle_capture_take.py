@@ -1328,12 +1328,6 @@ def test_the_take_reads_the_sessions_own_cloud_shape(slot):
 
 
 def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
-    """This module's own member of the two-file ``SPOOL_REFUSAL_REASONS``
-    collision with :mod:`.crossover_v2.prescription_spool` — renamed to
-    :data:`~jasper.active_speaker.angle_capture_spool.ANGLE_SPOOL_REFUSAL_REASONS`
-    so importing both modules unqualified cannot shadow one vocabulary with
-    the other. The bare name must not still be an attribute of this module.
-    """
     assert not hasattr(spool, "SPOOL_REFUSAL_REASONS")
     assert spool.ANGLE_SPOOL_REFUSAL_REASONS == frozenset({
         spool.SPOOL_MALFORMED,

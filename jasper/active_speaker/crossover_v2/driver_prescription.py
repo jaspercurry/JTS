@@ -130,14 +130,6 @@ DRIVER_PRESCRIPTION_KIND = "jts_crossover_driver_prescription"
 #: schema's own constants rather than trusting this comment.
 DRIVER_PRESCRIPTION_MAX_BYTES = 32 * 1024
 
-#: How much of the free-text rationale is BANKED, in characters. It TRUNCATES
-#: and discloses rather than refusing: no branch here or downstream reads the
-#: text, so a refusal would cost a round to re-author prose no gate consults.
-#: The loss is counted onto :attr:`DriverPrescription.rationale_dropped_chars`,
-#: which keeps :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s measured largest
-#: document true.
-
-
 #: The candidate field a per-driver prescription lands in: the role-keyed
 #: ``MeasuredCrossoverCandidate.linearization`` the Layer-1a fit already
 #: writes, re-validated by ``camilla_yaml._validated_linearization`` before any

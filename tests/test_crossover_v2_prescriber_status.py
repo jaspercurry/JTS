@@ -30,12 +30,6 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
-from jasper.active_speaker.crossover_v2.alignment_prescription import (
-    ALIGNMENT_NO_CROSSOVER_REGION,
-)
-from jasper.active_speaker.crossover_v2.topology_prescription import (
-    TOPOLOGY_NO_CROSSOVER_REGION,
-)
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
 )
@@ -116,7 +110,7 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("banked", [False, True])
-def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
+def test_status_and_inventory_find_notes_and_current_evidence(
     tmp_path, capsys, monkeypatch, banked
 ):
     monkeypatch.chdir(tmp_path)
@@ -133,22 +127,15 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
         info_path.write_text(json.dumps(info))
         sessions.append((destination, bundle))
     note = sessions[0][0] / "agent_notes.md"
-    note.write_text("Question and next human action; evidence: r1/packet.json")
+    note.write_text("Question and next human action; evidence: r1/round_receipt.json")
     current, bundle = sessions[1]
     artifacts = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
     state = tmp_path / "flow state.json"
     state.write_text(json.dumps({"session_id": artifacts.name, "phase": "done"}))
     inputs = [str(current), "--state", str(state)]
-    packet = cli._load_packet(cli.build_parser().parse_args(["status", *inputs]))
-    packet_path = cli.default_out(round_inputs_mod.round_inputs(current), current, "packet.json")
-    packet_path.write_text(json.dumps(packet))
     recipe = [cli.PROG, "status", *inputs]
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     status = json.loads(capsys.readouterr().out)
-    assert status["frozen_packet"]["path"] == str(packet_path)
-    assert status["frozen_packet"]["matches_current_evidence"] is True
-    _, without_state = _status([str(current)], capsys)
-    assert without_state["frozen_packet"]["matches_current_evidence"] is False
     assert status["latest_agent_note"] == {
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
@@ -158,15 +145,14 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
     assert round_views.main(["inventory", str(current)]) == 0
     inventory = json.loads(capsys.readouterr().out)
     assert inventory["latest_agent_note"] == status["latest_agent_note"]
-    assert inventory["frozen_packet"]["path"] == str(packet_path)
+    assert "frozen_packet" not in inventory
+    assert "frozen_packet" not in status
 
     (artifacts / "feature_classification.json").write_text(json.dumps(_classification()))
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     enriched = json.loads(capsys.readouterr().out)
     assert enriched["banked"]["classification"]["available"] is True
-    assert enriched["frozen_packet"]["matches_current_evidence"] is False
     assert enriched["packet_fingerprint"] != status["packet_fingerprint"]
-    assert json.loads(packet_path.read_text())["packet_fingerprint"] == status["packet_fingerprint"]
 
 
 # --------------------------------------------------------------------------- #
@@ -218,18 +204,6 @@ def test_a_fully_evidenced_speaker_reports_retained_states(tmp_path, capsys):
 def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
     tmp_path, capsys, monkeypatch
 ):
-    """Where the two declared inputs live is the shared resolver's answer.
-
-    This CLI used to carry its own copy of the on-Pi paths, which is the
-    duplication ``jasper-round-views`` could not consume: pointed at a live
-    session directory with no overrides, the packet must be built from exactly
-    what ``round_inputs`` resolved.
-
-    The FLOW STATE is deliberately not among them: the host rewrites it as a
-    round runs, so a defaulted state would move a rebuilt packet's fingerprint
-    away from the one ``packet`` emitted and ``propose``/``stage`` judge
-    against.
-    """
     session, _ = _speaker_dirs(tmp_path)
     seen: dict[str, Any] = {}
     build = cli.build_crossover_evidence_packet
@@ -243,6 +217,7 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
 
     assert seen == {
         "session_dir": session,
+        "round_context": round_inputs_mod.round_inputs(session),
         "state_path": None,
         "driver_draft_path": round_inputs_mod.DRIVERS_DEFAULT_PATH,
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
@@ -893,12 +868,6 @@ def _rebank_round_as_no_crossover(session: Path) -> None:
 def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     tmp_path, capsys
 ):
-    """Not "not yet" — "not ever", and the three shut doors say so by name.
-
-    A 1-way main's blend, alignment and topology doors all describe a handoff
-    between two branches; telling an operator no region "is banked" would send
-    them back to a measurement for a band that cannot exist.
-    """
     from jasper.audio_measurement.program_analysis import (
         ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
     )
@@ -912,26 +881,8 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     packet = cli.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
-    for door in ("alignment", "topology"):
-        assert packet["request_time_prescriptions"][door]["available"] is False
-    assert (
-        packet["request_time_prescriptions"]["alignment"]["reason"]
-        == ALIGNMENT_NO_CROSSOVER_REGION
-    )
-    assert (
-        packet["request_time_prescriptions"]["topology"]["reason"]
-        == TOPOLOGY_NO_CROSSOVER_REGION
-    )
     not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
     assert not_evaluated["crossover_region.band_hz"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
-    assert (
-        not_evaluated["request_time_prescriptions.alignment"]
-        == ALIGNMENT_NO_CROSSOVER_REGION
-    )
-    assert (
-        not_evaluated["request_time_prescriptions.topology"]
-        == TOPOLOGY_NO_CROSSOVER_REGION
-    )
 
     assert payload["declared"]["roles"] == ["full_range"]
     # The SHAPE, not a measurement that has not happened yet.
@@ -1005,7 +956,6 @@ _STATUS_DOCUMENT_KEYS = {
     "packet_error",
     "selected_round",
     "recent_rounds",
-    "frozen_packet",
     "latest_agent_note",
     "context_error",
     "declared",

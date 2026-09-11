@@ -153,7 +153,7 @@ def _retain_round(bank, bundle: Path) -> Path:
 def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
     parent = _candidate()
     _publish(bank, parent)
-    child = compose_candidate(find_banked_candidate(parent.fingerprint), {})
+    child = compose_candidate(find_banked_candidate(parent.fingerprint))
     publish_authored_candidate(child)
     with pytest.raises(v2host.CrossoverV2Refused) as refusal:
         republish.handle_v2_republish({"fingerprint": child.fingerprint})
@@ -862,7 +862,7 @@ def test_a_tuning_candidate_needs_a_trial_through_its_full_graph(bank, program, 
     parent = _candidate()
     _publish(bank, parent)
     child = replace(
-        compose_candidate(find_banked_candidate(parent.fingerprint), {}),
+        compose_candidate(find_banked_candidate(parent.fingerprint)),
         room_correction=_room_correction() if program != "bass" else {},
         bass_extension=BASS_EXTENSION if program != "room" else {},
     )
@@ -895,7 +895,7 @@ def test_tuning_trial_lookup_skips_an_older_capture_of_a_different_graph(bank):
     parent = _candidate()
     _publish(bank, parent)
     child = replace(
-        compose_candidate(find_banked_candidate(parent.fingerprint), {}),
+        compose_candidate(find_banked_candidate(parent.fingerprint)),
         room_correction=_room_correction(),
     )
     publish_authored_candidate(child)

@@ -19,6 +19,7 @@ from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
 from jasper.active_speaker.crossover_v2.topology_prescription import candidate_topology
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config, prove_candidate_config
+from jasper.active_speaker.branch_chain import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
@@ -26,8 +27,7 @@ import yaml
 
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
-from jasper.active_speaker.bundles import latest_bundle
-from jasper.active_speaker.crossover_v2.prescription_contract import contract_digests, prescription_contracts
+from jasper.active_speaker.crossover_v2.prescription_contract import contract_digests, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
 )
@@ -36,7 +36,7 @@ from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.cli import crossover_prescriber
 from jasper.web import correction_crossover_v2 as v2host
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.test_active_speaker_measured_crossover_candidate import _candidate, _preset, _room_correction
+from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import _draft, _document as driver_document
 from tests.test_crossover_v2_room_prescription import _room_median, _document as room_document, MEDIAN_SHA256, NULL_HZ
@@ -134,7 +134,7 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
         args += ["--base", base.fingerprint]
     assert crossover_prescriber.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
-    direct = compose_candidate(base, {}, sections={"bass": validate_dynamic_bass_descriptor(BASS_EXTENSION)}, rationale=raw["rationale"], evidence={
+    direct = compose_candidate(base, sections={"bass": validate_dynamic_bass_descriptor(BASS_EXTENSION)}, rationale=raw["rationale"], evidence={
         "packet_fingerprint": None,
         "contracts": contract_digests(prescription_contracts(candidate=base.candidate.to_dict())),
         "prescriptions": {"bass": BASS_EXTENSION},
@@ -160,95 +160,6 @@ def test_cli_refusal_banks_nothing(base, bank, tmp_path, capsys, verb):
     answer = json.loads(capsys.readouterr().out)
     assert (answer["ok"], answer["section"], answer["code"]) == (False, "bass", "bass_extension_invalid")
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-@pytest.mark.parametrize("layout", ["live", "bank", "campaign"])
-def test_compose_reuses_losing_parts_without_claiming_measurement(bank, capsys, layout):
-    peak = {"biquad_type": "Peaking", "freq": 500.0, "q": 1.0, "gain": -2.0}
-    base = replace(
-        _candidate(alignment=MeasuredCrossoverAlignment(120.0, "tweeter", "keep")),
-        blend_correction=[peak],
-    )
-    parents = {
-        "base": base,
-        "a": replace(_candidate(
-            trims={"woofer": -1.0, "tweeter": -6.0},
-            linearization={"woofer": {"filters": [peak], "residual_rms_db": 0.2}},
-            linearization_outcome="fitted",
-        ), analysis={"measurement_status": "measured", "outcome": "restored", "verified": True}),
-        "b": _candidate(
-            trims={"woofer": -8.0, "tweeter": -2.0},
-            linearization={"tweeter": {
-                "filters": [{**peak, "freq": 6000.0, "gain": -1.5}],
-                "verify_residual_rms_db": 0.1,
-            }},
-        ),
-    }
-    for name, candidate in parents.items():
-        root = bank if layout == "live" else bank / (name if layout == "campaign" else "") / "bundle"
-        _publish(root, candidate, bundle=name)
-    active_info = bank / "active" / "info.json"
-    active_info.parent.mkdir()
-    active_info.write_text('{"state":"open"}')
-    base_row = find_banked_candidate(base.fingerprint, root=bank)
-    composed = compose_candidate(
-        base_row, {role: find_banked_candidate(parents[name].fingerprint, root=bank)
-                   for role, name in (("woofer", "a"), ("tweeter", "b"))},
-        expected_effect="reduce the two peaks", observation_refs=["round-a/packet.json"],
-        rationale="test the useful parts together; causality remains unresolved",
-    )
-    child = publish_authored_candidate(composed, root=bank)
-    answer = {"adopted": False, "measurement_status": "unmeasured"}
-    assert answer["adopted"] is False
-    assert answer["measurement_status"] == "unmeasured"
-    assert child.fingerprint not in {parent.fingerprint for parent in parents.values()}
-    assert child.candidate.role_attenuations_db == {"woofer": -1.0, "tweeter": -2.0}
-    assert child.candidate.alignment == base.alignment
-    assert child.candidate.blend_correction == base.blend_correction
-    assert child.candidate.linearization_outcome == ""
-    assert child.candidate.trim_decision == child.candidate.exclusion_evidence == {}
-    for role, parent in (("woofer", parents["a"]), ("tweeter", parents["b"])):
-        part = child.candidate.linearization[role]
-        assert set(part) == {"filters", "headroom_cost_db"}
-        assert part["filters"] == parent.linearization[role]["filters"]
-        assert child.candidate.analysis["role_sources"][role]["fingerprint"] == parent.fingerprint
-    assert child.candidate.analysis["measurement_status"] == "unmeasured"
-    assert "verified" not in child.candidate.analysis
-    assert child.candidate.analysis["expected_effect"] == "reduce the two peaks"
-    assert child.candidate.analysis["observation_refs"] == ["round-a/packet.json"]
-    info = json.loads((child.path.parents[5] / "info.json").read_text())
-    assert info["captures"] == info["summed_captures"] == []
-    assert info["verification"] is None
-    assert info["kind"] == "jts_authored_candidate_bundle"
-    assert "state" not in info
-    assert child.path.is_relative_to(bank.parent / "campaigns")
-    assert json.loads(active_info.read_text()) == {"state": "open"}
-    assert latest_bundle(bank)["bundle_dir"] == str(active_info.parent)
-    assert publish_authored_candidate(composed, root=bank) == child
-    assert sum(one.fingerprint == child.fingerprint for one in banked_candidates(root=bank)) == 1
-
-
-@pytest.mark.parametrize("change", ["alignment", "blend", "preset", "role"])
-def test_compose_requires_explicit_structural_sources_and_matching_roles(bank, change):
-    base, other = _candidate(), replace(
-        _candidate(alignment=MeasuredCrossoverAlignment(250.0, "tweeter", "invert")),
-        blend_correction=[{"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": -1.0}],
-    )
-    if change == "preset":
-        other = _candidate(preset=_preset("stereo"))
-    for name, candidate in (("base", base), ("other", other)):
-        _publish(bank, candidate, bundle=name)
-    base_row = find_banked_candidate(base.fingerprint, root=bank)
-    other_row = find_banked_candidate(other.fingerprint, root=bank)
-    if change in {"preset", "role"}:
-        role = "midrange" if change == "role" else "woofer"
-        with pytest.raises(CandidateBankRefusal) as refusal:
-            compose_candidate(base_row, {role: other_row})
-        assert refusal.value.code == f"composition_{'role_unknown' if change == 'role' else 'preset_mismatch'}"
-    else:
-        child = compose_candidate(base_row, {}, **{change: other_row})
-        field = "blend_correction" if change == "blend" else "alignment"
-        assert getattr(child, field) == getattr(other, field)
-
-
 @pytest.fixture
 def saved_tune():
 
@@ -329,9 +240,10 @@ def test_composition_inherits_downstream_layers_until_explicitly_cleared(bank, c
     base = replace(_candidate(room_correction=_room_correction()), bass_extension=BASS_EXTENSION)
     row = publish_authored_candidate(replace(base, analysis={"measurement_status": "unmeasured"}), root=bank)
     child = compose_candidate(
-        row, {"woofer": row} if change == "speaker" else {},
-        room_correction=base.room_correction if change == "room" else None,
-        **({"bass_extension": {}} if change == "bass_off" else {}),
+        row, sections=({"driver": {"role_attenuations_db": base.role_attenuations_db,
+                                  "linearization": base.linearization}} if change == "speaker" else
+                       {"room": base.room_correction} if change == "room" else
+                       {"bass": None} if change == "bass_off" else {}),
     )
     assert bool(child.bass_extension) is (change != "bass_off")
     assert child.room_correction == base.room_correction
@@ -406,9 +318,14 @@ def test_whole_graph_proof_refusal_banks_nothing(base, bank, tmp_path, monkeypat
     assert len(banked_candidates(root=bank)) == 1
 
 
-def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, tmp_path, capsys, round_bank):
+@pytest.mark.parametrize("diameter", [None, 200.0])
+def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, tmp_path, capsys, round_bank, diameter):
 
     round_dir, _ = round_bank
+    draft_path = round_dir / "design-draft.json"
+    draft = json.loads(draft_path.read_text())
+    draft["manual_settings"] = {"drivers": [{"role": "woofer", "radiating_diameter_mm": diameter}]}
+    draft_path.write_text(json.dumps(draft))
     args = crossover_prescriber.build_parser().parse_args(["status", str(round_dir)])
     packet = crossover_prescriber._load_packet(args)
     raw = document(base.fingerprint, {
@@ -423,6 +340,8 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     preview = json.loads(capsys.readouterr().out)
     assert set(preview["sections"]) == set(raw["sections"])
     assert "displaced_filters" in preview["sections"]["driver"]
+    ceiling = preview["sections"]["topology"]["beaming_ceiling_hz"]
+    assert ceiling == (None if diameter is None else pytest.approx(beaming_onset_hz(diameter)))
     assert len(banked_candidates(root=bank)) == 1
     assert crossover_prescriber.main(["compose", str(path), "--base", base.fingerprint, "--round", str(round_dir), "--root", str(bank)]) == 0
     answer = json.loads(capsys.readouterr().out)
@@ -430,6 +349,8 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
     assert child.analysis["evidence"]["packet_fingerprint"] == packet["packet_fingerprint"]
     assert child.bass_extension == base.candidate.bass_extension
+    assert child.analysis["evidence"]["prescriptions"] == preview["sections"]
+    assert child.analysis["room_source"]["prescription_sha256"] == prescription_sha256(contract_json(preview["sections"]["room"]).encode())
     assert len(banked_candidates(root=bank)) == 2
 
 
@@ -456,3 +377,27 @@ def test_saved_base_preview_and_invalid_composition_never_bank_a_base(bank, save
     assert crossover_prescriber.main(["compose", str(path), "--base", base_name, "--root", str(bank)]) == 1
     assert json.loads(capsys.readouterr().out)["section"] == "bass"
     assert len(banked_candidates(root=bank)) == count
+
+
+@pytest.mark.parametrize("explicit_envelope", [False, True])
+def test_room_digest_names_judged_envelope_and_inheritance_drops_stale_match(base, bank, evidence, explicit_envelope):
+    section = room_document()
+    section.pop("rationale", None)
+    if not explicit_envelope:
+        for key in ("kind", "artifact_schema_version"):
+            section.pop(key)
+    raw = document(base.fingerprint, {"room": section})
+    child = judge_prescription_document(raw, base=base, evidence=evidence)
+    judged = child.analysis["evidence"]["prescriptions"]["room"]
+    source = child.analysis["room_source"]
+    assert source["prescription_sha256"] == prescription_sha256(contract_json(judged).encode())
+    assert judged["rationale"] == raw["rationale"]
+    assert "base_match" not in source
+    changed = judge_prescription_document({**raw, "rationale": "A different reason."}, base=base, evidence=evidence)
+    assert changed.analysis["room_source"]["prescription_sha256"] != source["prescription_sha256"]
+    legacy = replace(child, analysis={**child.analysis, "room_source": {**source, "base_match": "match"}})
+    row = publish_authored_candidate(legacy, root=bank)
+    inherited = judge_prescription_document(document(row.fingerprint, {"driver": None}), base=row)
+    assert inherited.analysis["resolution"]["room"] == "base"
+    assert inherited.room_correction == child.room_correction
+    assert inherited.analysis["room_source"] == source

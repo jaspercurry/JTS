@@ -421,6 +421,7 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
         return run or _run
 
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda purpose: "baseline-test")
     monkeypatch.setattr(v2host, "_mint_wired_session", _fake_mint)
     monkeypatch.setattr(v2host, "_build_wired_run", _fake_runner)
 
@@ -690,98 +691,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_fourteen_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has FOURTEEN keys.
-
-    Named exhaustively rather than checked for presence, because a new key is a
-    deliberate widening of the contract and not an incidental one.
-
-    **Deliberate widening (#2291 Phase 3a): ``commanded_delta``.** It is the
-    fifth key this pin's earlier four-key form anticipated by name — the delta
-    probe's commanded axis, produced by the stage-1 fit and consumed by the
-    stage-2 probe, which is a different process against a conductor that never
-    ran a fit.
-
-    **Deliberate widening (#2291 Phase 3c): ``entry_baseline``.** The sixth: the
-    measured "before" the round's benefit verdict differences against, captured
-    at the mark immediately before apply.
-
-    **Deliberate widening (#2392): ``proposal_fingerprint``.** The seventh, and
-    the same shape as the fifth: the identity of the ``InterventionProposal``
-    stage 1 committed, which the round receipt names. Stage 2 grades the round
-    and plans nothing, so the fingerprint has no other channel — and it is the
-    fingerprint rather than the proposal because a proposal reassembled from
-    the decimated priors around it would digest to a different value.
-
-    **Deliberate widening (#2522): ``verify_measured``.** The eighth, and the
-    MEASURED side of the comparison whose other two sides — predicted and
-    commanded — this bridge already carried. Without it a disputed delta-probe
-    verdict could only be re-examined by measuring the speaker again, because
-    the evidence that produced it lived in one process's memory and died with
-    it. Unlike its seven neighbours this one is written by the stage that
-    VERIFIES rather than the stage that fits, so a stage-1 persist writes
-    ``None`` here and the key is still present.
-
-    **Deliberate widening (#2614): ``declared_transfer``.** The ninth, and the
-    delta probe's STATE axis beside the CHANGE axis the fifth carries: what the
-    applied graph itself declares against the uncorrected crossover, which is
-    the mask the two directional safety rules read. Same producer, same
-    consumer, same reason as the fifth — without it a stage-2 probe stops
-    watching every band a repeat round left alone.
-
-    **Deliberate widening (#2662): ``alignment_prescription``.** The tenth. The
-    round's delay may have come from an explicit, bounded, provenance-carrying
-    prescription rather than from the aligner's own search, and the stage that
-    GRADES the round has to be able to say what that number was derived from —
-    an adoption record naming a candidate without naming its measured basis is
-    the unauditable half of the thing. Same producer, same consumer, same
-    channel as the fifth; ``None`` on every ordinary round, which is what makes
-    an empty provenance block on a receipt mean exactly one thing.
-
-    **Deliberate widening (#2662): ``alignment_objective``.** The eleventh, and
-    the OUTCOME half of the tenth. A prescription alone records what a round
-    ASKED for; there is a reachable rail on which the machinery commits the
-    estimator's own seed while the round still carries the prescribed
-    candidate's name, and a receipt that could not tell those apart would let a
-    candidate that never ran be graded "measured better". Its own key rather
-    than a field inside the prescription because the two are written at
-    different moments by different owners, and a round that prescribed nothing
-    still has an objective.
-
-    **Deliberate widening (A9): ``blend_prescription``.** The twelfth, and the
-    tenth's blend-region twin — the round's SHAPE correction may likewise have
-    come from an explicit, bounded, provenance-carrying prescription rather
-    than from decision 10's solver. It crosses on this bridge for the tenth's
-    reason exactly: an operator stages a prescription against stage 1, and the
-    stage that GRADES the round runs in another process, so without this key
-    the attribution dies with the session that took it and no series can ever
-    be read back as prescribed-versus-solved. ``None`` on every ordinary round.
-
-    **Deliberate widening (A9): ``blend_prescription_sha256``.** The thirteenth,
-    and the OUTCOME/REQUEST split the eleventh already draws, arrived at the
-    same way: the record above says WHAT was prescribed, this says WHICH
-    DOCUMENT asked, and only the second can find the evidence packet and the
-    conversation behind the numbers. Its own key is not stylistic here — the
-    record must round-trip through ``blend_prescription_from_mapping`` for stage
-    2 to rehydrate it, and that reader refuses an unknown field rather than
-    ignoring it, so a digest nested inside made the whole record unreadable.
-    ``""`` on every ordinary round.
-
-    **Deliberate widening (topology pin): ``topology_prescription``.** The
-    fourteenth, and the one that carries the most weight per byte: stage 2
-    RE-OPENS its grading session at the topology this names. Without it a
-    pinned round's VERIFY would be graded against the incumbent corner's design
-    target and its overlap band — the applied graph judged for not being the
-    crossover it deliberately replaced. Like the eleventh it must survive a
-    round trip through a reader that refuses unknown fields, which is why it is
-    exactly ``to_dict()`` and why it gets its own key rather than nesting.
-    ``None`` on every ordinary round.
-
-    The top-level payload is unchanged by all ten widenings — each new key is
-    nested inside ``verify_priors``, so
-    ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
-    pins the same set.
-    """
+def test_persisted_verify_priors_carries_only_measurement_context(monkeypatch):
     _conductor, state = _stage_1(monkeypatch)
 
     assert set(state["verify_priors"]) == {
@@ -794,11 +704,7 @@ def test_persisted_verify_priors_carries_exactly_the_fourteen_bridge_keys(monkey
         "entry_baseline",
         "proposal_fingerprint",
         "verify_measured",
-        "alignment_prescription",
         "alignment_objective",
-        "blend_prescription",
-        "blend_prescription_sha256",
-        "topology_prescription",
     }
 
 
@@ -869,9 +775,6 @@ _BRIDGE_KEY_ROUND_TRIPS = [
     ),
     pytest.param("declared_transfer", None, None,
                  lambda c: c.measure_declared_transfer, id="declared-transfer-absent"),
-    pytest.param("alignment_prescription", None, None,
-                 lambda c: c.alignment_prescription_record,
-                 id="alignment-prescription-absent"),
 ]
 
 
@@ -918,194 +821,6 @@ def test_a_bridge_key_crosses_with_its_values_and_never_invents_them(
     freqs, values = read(stage_2)
     assert list(freqs) == persisted["freqs_hz"]
     assert list(values) == persisted["delta_db"]
-
-
-# --------------------------------------------------------------------------- #
-# 2b. the delay prescription — CROSSES, from the request body to the receipt
-# --------------------------------------------------------------------------- #
-
-
-_PRESCRIPTION_BODY = {
-    "kind": "jts_crossover_alignment_prescription",
-    "artifact_schema_version": 1,
-    "delay_us": -450.0,
-    "basis_delay_us": -405.7,
-    "basis_artifacts": [
-        "captures/xover-series2-2026-08-17/diagnosis/landscape_delay_polarity_r1b.json",
-    ],
-    "basis_note": "direct arrival gap -405.7 +/- 3.3 us, n=33",
-}
-
-
-def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkeypatch):
-    """#2662, both halves, through the REAL boundaries.
-
-    The write half starts at the request body rather than at a field poked onto
-    a conductor: the gate that validates a prescription and the thread that
-    carries it to the session are the two things that could silently not be
-    wired, and a test that installed the record by hand would pass with either
-    one missing.
-
-    The read half is the reason the durable key exists at all — the stage that
-    GRADES a round builds a fresh session and holds nothing stage 1 measured,
-    so an adopted candidate could otherwise reach its adoption record with no basis
-    named. VALUES, not key presence, for ``commanded_delta``'s reason.
-    """
-    prepared = v2host.prepare_v2_session(
-        {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
-        status=_status(), run_async=asyncio.run, camilla_factory=None,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-    assert conductor.alignment_prescription_record["delay_us"] == -450.0
-
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    banked = (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
-    assert banked == {
-        "kind": "jts_crossover_alignment_prescription",
-        "artifact_schema_version": 1,
-        "delay_us": -450.0,
-        "basis_delay_us": -405.7,
-        # Derived on the way out, never carried in: the receipt states the
-        # residual so a reader does not have to subtract two conventions.
-        "residual_us": pytest.approx(-44.3),
-        "basis_artifacts": list(_PRESCRIPTION_BODY["basis_artifacts"]),
-        "basis_note": _PRESCRIPTION_BODY["basis_note"],
-        # …and WHAT the residual cleared: this fixture's rig crosses at
-        # 2500 Hz, whose half-period lobe is 200 µs. Without the pair, a
-        # reader finding a residual on a receipt cannot tell which lobe it was
-        # measured against, and the corner is nowhere else in the block.
-        "checked_at_fc_hz": pytest.approx(2500.0),
-        "lobe_us": pytest.approx(200.0),
-        # The optional basin pin, absent on this delay-only candidate — banked as an
-        # explicit ``None`` rather than an absent key so a reader of the receipt
-        # can tell "this round left the basin to the fit" from "this receipt
-        # predates the field".
-        "polarity": None,
-    }
-
-    # ...and the read half, on a fresh stage-2 conductor.
-    state = _seed_applied_stage_1_state()
-    state["verify_priors"]["alignment_prescription"] = {
-        k: v for k, v in banked.items() if k != "residual_us"
-    }
-    state["verify_priors"]["alignment_objective"] = "explicit_prescription_committed"
-    v2host.save_v2_state(state)
-    stage_2, _ = _stage_2(monkeypatch)
-    assert stage_2.alignment_prescription_record["basis_delay_us"] == -405.7
-    # The OUTCOME crosses beside the request. Without it the grading stage can
-    # bank a candidate's provenance for a round that committed the estimator's seed.
-    assert stage_2.measure_alignment_objective == "explicit_prescription_committed"
-
-
-@pytest.mark.parametrize(
-    ("polarity", "sign"),
-    [
-        pytest.param("invert", -1, id="pinned-basin-reaches-the-fit"),
-        # Today's shipped callers, which must keep reaching the automatic path:
-        # ``None`` is what leaves every delay-only candidate byte-identical.
-        pytest.param(None, None, id="unpinned-leaves-the-basin-to-the-fit"),
-    ],
-)
-def test_a_prescribed_basin_reaches_the_fit_only_when_it_was_pinned(
-    monkeypatch, polarity, sign,
-):
-    """The basin half of the same crossing, through the REAL gate.
-
-    The pin is useless unless it arrives at the fit, and the hop that could
-    silently not be wired is the conductor's own ``_measure_priors`` — a field
-    parsed, banked, and then never handed down would leave every surface saying
-    "invert" while the round re-rolled the basin anyway. So this asserts the
-    PRIOR, which is one hop from the selection that reads it.
-    """
-    body = dict(_PRESCRIPTION_BODY)
-    if polarity is not None:
-        body["polarity"] = polarity
-    prepared = v2host.prepare_v2_session(
-        {"alignment_prescription": body},
-        status=_status(), run_async=asyncio.run, camilla_factory=None,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-
-    assert conductor.alignment_prescription_record["polarity"] == polarity
-    priors = conductor._measure_priors()
-    assert priors.explicit_alignment_polarity_sign == sign
-    assert priors.explicit_alignment_delay_us == -450.0
-
-
-@pytest.mark.parametrize("value", ("inverted", "review", "flip", -1))
-def test_an_unknown_basin_refuses_the_session_before_it_opens(value):
-    """Fail-closed at the tap, by name — never a silently-dropped pin.
-
-    Same shape as the out-of-lobe refusal beside it: the operator learns at the
-    tap rather than after a ten-minute measurement, and the reason slug is in
-    the message so a scripted sweep can branch on it.
-    """
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.prepare_v2_session(
-            {"alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": value}},
-            status=_status(), run_async=asyncio.run, camilla_factory=None,
-        )
-
-    assert "prescription_polarity_invalid" in str(excinfo.value)
-
-
-def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeypatch):
-    """Fail-closed at the tap, not after a ten-minute capture.
-
-    The ``0 µs`` control candidate is the honest fixture here: against the measured
-    basis it leaves 405.7 µs of residual, outside the half-period lobe at this
-    rig's corner, and it is refused with its reason named rather than clamped
-    onto the boundary and measured under the candidate's name.
-    """
-    del monkeypatch
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.prepare_v2_session(
-            {"alignment_prescription": {**_PRESCRIPTION_BODY, "delay_us": 0.0}},
-            status=_status(), run_async=asyncio.run, camilla_factory=None,
-        )
-    assert "prescription_out_of_lobe" in str(excinfo.value)
-
-
-def test_the_tap_asks_the_preset_for_its_own_declared_window(monkeypatch):
-    """The gate must call the hardware's declaration, not just accept one.
-
-    The declared window is the only bound in the prescription gate that does
-    not rest on a number the request supplied, so "the tap forgot to pass it"
-    is the failure that silently removes it. Derived here from the SAME public
-    helper the tap uses, against the fixture's own preset, so this cannot pass
-    by agreeing with a hard-coded number.
-
-    ``basis_delay_us`` is set equal to ``delay_us``, which puts the residual at
-    zero and takes the measurement's lobe out of the question entirely: only
-    the window can refuse what follows.
-    """
-    del monkeypatch
-    from jasper.active_speaker.crossover_v2_flow import (
-        alignment_delay_search_bounds_us,
-    )
-
-    context = v2host.resolve_conductor_context(_status())
-    bounds = alignment_delay_search_bounds_us(context.preset)
-    assert bounds is not None, "this fixture's preset must declare a window"
-    hi_us = max(abs(float(b)) for b in bounds)
-
-    def _post(magnitude_us):
-        body = {
-            **_PRESCRIPTION_BODY,
-            "delay_us": -magnitude_us,
-            "basis_delay_us": -magnitude_us,
-        }
-        return v2host.prepare_v2_session(
-            {"alignment_prescription": body},
-            status=_status(), run_async=asyncio.run, camilla_factory=None,
-        )
-
-    # One microsecond past the declaration is refused, by the window's name.
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        _post(hi_us + 1.0)
-    assert "prescription_outside_declared_window" in str(excinfo.value)
-    # …and exactly AT it is accepted, so the guard is a bound and not a ban.
-    assert _post(hi_us) is not None
 
 
 def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(

@@ -115,10 +115,6 @@ PACKET_FINGERPRINT_FIELD = "packet_fingerprint"
 #: all reach here.
 PRESCRIPTION_MAX_BYTES = 64 * 1024
 
-#: Ceiling on the free-text rationale, in characters. It TRUNCATES and
-#: discloses rather than refusing (ADR-0207): nothing reads the prose, so a
-#: document whose only fault was saying too much should not lose its round.
-
 
 # --------------------------------------------------------------------------- #
 # bounds

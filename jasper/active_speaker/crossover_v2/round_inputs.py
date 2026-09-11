@@ -250,15 +250,16 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
-def contract_sources(session_dir: Path) -> dict[str, Any]:
+def contract_sources(round_: Path | RoundInputs) -> dict[str, Any]:
     """Read candidate and room evidence; callers supply their receipt and context."""
+    inputs = round_ if isinstance(round_, RoundInputs) else round_inputs(round_)
+    session_dir = inputs.session_dir
     artifact_dir, reason = round_artifact_dir(session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
-    inputs = round_inputs(session_dir)
     paths = {
         "candidate": artifact_dir / "candidate.json",
-        **{key: default_out(inputs, session_dir, f"{key}.json")
+        **{key: default_out(inputs, banked_round_of(session_dir) or session_dir, f"{key}.json")
            for key in ("room_median", "room_persistence", "room_ceiling")},
     }
     return {name: _read_json_mapping(path) or {} for name, path in paths.items()}

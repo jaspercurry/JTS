@@ -95,7 +95,6 @@ def _round_session_dir(capture_id: str) -> str:
 
 
 
-
 def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> int:
     error = error_of(payload)
     fields = error if isinstance(error, dict) else {}

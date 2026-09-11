@@ -117,7 +117,7 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         topology_pin = topology.read_topology_prescription(
             raw, declared_floor_hz=band[0], lower_driver_ceiling_hz=band[1],
             minimum_slope_db_per_octave=bounds["minimum_slope_db_per_octave"],
-            beaming_ceiling_hz=None, way_count=base.candidate.source_preset.way_count,
+            beaming_ceiling_hz=bounds["beaming_ceiling_hz"], way_count=base.candidate.source_preset.way_count,
         )
         assert topology_pin is not None
         return topology_pin, topology_pin.to_dict()
@@ -128,7 +128,7 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
             sides=SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
         )
         assert room_pin is not None
-        return room.room_prescription_to_candidate_fields(room_pin)["room_correction"], room_pin.to_dict()
+        return room.room_prescription_to_candidate_fields(room_pin)["room_correction"], {**room_pin.to_dict(), "measured_basis": room_pin.measured_basis}
     if name == "bass":
         return validate_dynamic_bass_descriptor(raw), dict(raw)
     raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "unknown section kind")
@@ -172,8 +172,8 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
             raise PrescriptionDocumentRefused("bass_extension_invalid" if name == "bass" else "prescription_malformed", name, str(exc)) from exc
     try:
         return compose_candidate(
-            base, {}, sections=selected, rationale=document["rationale"],
-            room_prescription_sha256=(blend.prescription_sha256(contract_json(document["sections"]["room"]).encode())
+            base, sections=selected, rationale=document["rationale"],
+            room_prescription_sha256=(blend.prescription_sha256(contract_json(judged["room"]).encode())
                                       if selected.get("room") else ""),
             room_measured_basis=judged.get("room", {}).get("measured_basis"),
             evidence={"packet_fingerprint": evidence.packet.get("packet_fingerprint"),

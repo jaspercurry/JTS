@@ -801,107 +801,24 @@ ever deletes an already-pulled file.
 
 ## Crossover prescriber harness
 
-`jasper-crossover-prescriber`
-([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
-is the read side and write side of "hand a round's evidence to a reader, take a
-correction back", plus one verb that says where a speaker stands. It has no
-model client, no API key and no network: **who calls the model is not the tool's
-business**, which is what makes it work identically for a human, a laptop agent
-over SSH, or a paste into a browser.
+The [prescriber CLI](../jasper/cli/crossover_prescriber.py) reads local round evidence.
+It makes no model calls and needs no network.
 
 ```sh
-# where this speaker stands, before touching anything. Reads only.
-jasper-crossover-prescriber status <bundle-dir> --state <flow-state.json> \
-    --drivers <design-draft.json> --applied-profile <applied-profile.json>
-
-# the read side: one round's banked evidence as one versioned JSON document
-jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
-    --applied-profile <applied-profile.json> --out round.json
-
-# the write side: judge what came back against the SAME file `packet` wrote
-jasper-crossover-prescriber propose --packet round.json \
-    --prescription answer.json
-
-# the door: same gate, and the accepted answer is left for the next round
-jasper-crossover-prescriber stage --packet round.json \
-    --state <flow-state.json> --prescription answer.json
+jasper-crossover-prescriber contract --round <round-dir>
+jasper-crossover-prescriber judge prescription.json --round <round-dir>
+jasper-crossover-prescriber compose prescription.json --base <fp|saved> --round <round-dir>
+jasper-crossover-prescriber status <round-dir>
 ```
 
-- **Emit the packet once, then judge against that file.** `--packet` reads an
-  already-emitted packet AS the evidence instead of rebuilding one: a rebuild on
-  a laptop resolves `--drivers`/`--applied-profile` against *that* machine and
-  fingerprints differently, so a prescription written against the first is
-  refused against the second. The rebuild inputs are refused beside it.
-- `propose` is the **dry run of** `stage` — same gate, same document; only
-  `stage` banks. `status` writes nothing, and reporting a staged prescription
-  does **not** consume it.
-- **Arguments.** `<bundle-dir>` is a commissioning bundle (the directory holding
-  `info.json` beside `evidence/v1/artifacts/crossover_v2/<relay-session-id>/`).
-  `--state` is the flow state, banked separately; without it the packet cannot
-  carry per-claim verify verdicts and says so. `--applied-profile` is what the
-  speaker is PLAYING; without it a per-driver prescription's displacement is
-  reported `unknown` rather than guessed, and the flow state does **not** stand
-  in for it. A per-driver document also needs `--drivers` for the declared bands
-  (absent → `driver_passband_unavailable`); `feature_classification.json` is
-  auto-discovered in the round's own artifact directory, and its absence leaves
-  every filter on `prescription.unvouched_filters` rather than refusing.
-- **Exit codes are the contract**, and **`1` and `2` are this tool's own way
-  round** — the shared read-only rule the
-  [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns has them
-  the other way. Every verb prints its answer, or its `reason` and the gate's
-  evidence, as one JSON document on stdout.
-
-`stage` writes one single-use document to
-`/var/lib/jasper/active_speaker_crossover_v2_prescription.json` stamped with the
-round the flow state says is next; the next round re-validates and consumes it,
-staging twice is last-wins, and the overwrite is logged on **stderr** so stdout
-stays the machine channel. What each door refuses, and what it discloses
-instead, is the runbook's "The doors, and what they refuse". Owners:
-[`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
-[`blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py),
-[`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)
-(each owning its class's response format *and* its gate, so the instructions and
-the bar cannot describe different shapes), and
-[`prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py).
-
-### The other two prescriptions do NOT come through this door (#2773)
-
-Four things can be prescribed for a round, arriving by **two entry surfaces with
-two severities**:
-
-| prescription | entry surface | judged | a refusal costs |
-|---|---|---|---|
-| blend (`jts_crossover_blend_prescription`) — the SUMMED blend region | `jasper-crossover-prescriber stage` | at `stage` | the staging — the round runs unprescribed |
-| driver (`jts_crossover_driver_prescription`) — ONE driver's own band | `jasper-crossover-prescriber stage` | at `stage` | the staging — the round runs unprescribed |
-| alignment (`alignment_prescription`) — delay, optionally polarity | request-body key on `POST /crossover/v2/session` | at session open | **the whole session**, at the tap |
-| topology (`topology_prescription`) — corner and order | request-body key on `POST /crossover/v2/session` (laptop: `run-crossover-round.py --topology-prescription`) | at session open | **the whole session**, at the tap |
-
-The severity split is deliberate. A staged prescription is *an instruction the
-next round may follow*, and a round that cannot follow it still measures
-something real; a request-time prescription is *what the round IS*, so running a
-silently different candidate is worse than running none. The first pair fails
-soft; the second refuses the session before any evidence store, relay
-registration or capture happens. None of the four is ever inherited from a
-lapsed session's durable state, and a document names its own `kind` — there is
-no `--class` flag and no inference from shape.
-
-Alignment is bounded as a **bounded excursion** from a declared, measured basis
-(at most half a period at the corner). Topology is bounded by **admissibility**
-instead — an excursion bound from the incumbent would refuse a tournament by
-construction — so it checks both drivers' hard excitation edges plus the
-protected role's **published**
-`recommended_highpass_slope_db_per_octave`, absent on an ordinary datasheet and
-on any profile saved before that field existed. **Nothing downstream enforces a
-slope above 12 dB/octave**, so a published condition unchecked here is unchecked
-anywhere. A topology pin also **closes the Fc search** (`fc_selection` is ABSENT
-from every round's record — absent rather than null, because null would read as
-a comparison that ran) and carries an **authority caveat**
-(`operator_pinned_no_measured_ranking`), since no shipped path ranks one
-topology or corner against another. **Measuring a pinned candidate and adopting
-it are two acts**: applying still needs the saved crossover declaration to name
-that corner and order first. Owners:
-[`alignment_prescription.py`](../jasper/active_speaker/crossover_v2/alignment_prescription.py),
-[`topology_prescription.py`](../jasper/active_speaker/crossover_v2/topology_prescription.py).
+The [document owner](../jasper/active_speaker/crossover_v2/prescription_document.py)
+accepts driver, blend, alignment, topology, room and bass sections in one envelope.
+Omitted sections inherit from `base`; `{}` or `null` clears a layer. Topology cannot be cleared.
+Each section's judge keeps its own bounds; one invalid section refuses the whole document.
+`judge` previews the resolved layers and writes nothing. `compose` proves the whole graph,
+then banks one unmeasured candidate. Both report the fingerprint and each layer's source.
+Document answers use `ok`, `code`, `section`, `next_action` and `error`; refusal banks nothing.
+The bank record carries judged sections and evidence digests. `status` reads retained evidence.
 
 ---
 

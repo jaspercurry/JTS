@@ -606,11 +606,6 @@ def test_a_document_at_the_cap_is_read_normally(slot):
 def test_consume_falls_back_to_unlink_when_the_rename_fails(slot, monkeypatch, caplog):
     """Single-use rests on the slot emptying, and this spool has no ordinal.
 
-    ``prescription_spool`` can afford a purely best-effort rename because its
-    ordinal check refuses a leftover anyway. A walk carries no ordinal, so a
-    slot the rename left full is the same walk running again next session —
-    which is why the unlink backstop is here and pinned rather than inherited
-    as a comment.
     """
     path, _ = slot
     spool.stage_angle_request(per_driver_at([7]))

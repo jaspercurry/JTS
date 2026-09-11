@@ -1819,21 +1819,9 @@ _cloud_summary = _durable._cloud_summary
 _delta_probe_summary = _durable._delta_probe_summary
 verify_measured_curve_from_state = _durable.verify_measured_curve_from_state
 entry_baseline_prior_from_state = _durable.entry_baseline_prior_from_state
-alignment_prescription_prior_from_state = (
-    _durable.alignment_prescription_prior_from_state
-)
-topology_prescription_prior_from_state = (
-    _durable.topology_prescription_prior_from_state
-)
-blend_prescription_prior_from_state = _durable.blend_prescription_prior_from_state
-blend_prescription_sha256_from_state = _durable.blend_prescription_sha256_from_state
 pilot_transfer_prior_from_state = _durable.pilot_transfer_prior_from_state
 commanded_delta_prior_from_state = _durable.commanded_delta_prior_from_state
 declared_transfer_prior_from_state = _durable.declared_transfer_prior_from_state
-
-
-
-
 
 
 def _take_staged_angle_walk(
@@ -1850,7 +1838,6 @@ def _take_staged_angle_walk(
 ] | None:
     """This session's staged angle walk as
     ``(poses, consumer, specs, trims, claims, spl_monitor)``, or ``None``.
-
 
     A staged walk this session cannot honour REFUSES THE OPEN
     (:class:`CrossoverV2Refused`) with the producing module's own slug, rather
@@ -4383,9 +4370,6 @@ def prepare_v2_session(
         series_position_from_state,
     )
     from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        apply_topology_pin,
-    )
     from jasper.active_speaker.crossover_v2_flow import (
         CrossoverV2Session,
         attempt_history_from_state,
@@ -4438,20 +4422,6 @@ def prepare_v2_session(
         context = resolve_conductor_context(status)
     else:
         from jasper.active_speaker.branch_chain import confirmed_protection_sections
-        from jasper.active_speaker.branch_chain import beaming_onset_hz
-        from jasper.active_speaker.crossover_v2.alignment_prescription import (
-            ALIGNMENT_PRESCRIPTION_KEY,
-            AlignmentPrescriptionRefused,
-            read_alignment_prescription,
-        )
-        from jasper.active_speaker.crossover_v2.topology_prescription import (
-            TOPOLOGY_PRESCRIPTION_KEY,
-            TopologyPrescriptionRefused,
-            read_topology_prescription,
-        )
-        from jasper.active_speaker.excitation_safety_plan import (
-            resolve_driver_protection_slope_db_per_octave,
-        )
         from jasper.active_speaker.crossover_v2.capture_plan import (
             STAGE1_INCLUDES_CLOUD_MEASURE,
             STAGE1_INCLUDES_ENTRY_BASELINE,
@@ -4465,7 +4435,6 @@ def prepare_v2_session(
         )
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
-            alignment_delay_search_bounds_us,
         )
 
         requested_tier = (raw.get("tier") if raw else None) or None
@@ -4506,109 +4475,6 @@ def prepare_v2_session(
             raise CrossoverV2Refused(
                 "The confirmed driver protection cannot be used for this measurement."
             ) from exc
-        # #2662, and it happens HERE for three reasons. It is the untrusted-input
-        # boundary, so a malformed or out-of-lobe prescription is refused before any
-        # evidence store, capture registration, or capture — an operator walking a
-        # delay sweep learns at the tap, not after a ten-minute measurement. It is
-        # the first point holding the crossover corner the bound is a half-period
-        # of. And it sits AFTER the two speaker-level gates above rather than before
-        # them: whether this speaker can be measured at all is a prior question to
-        # whether this request's prescription is good, and answering them in the
-        # other order would hand a household a prescription error for a speaker
-        # whose protection cannot be used either way.
-        #
-        # Never inherited from the lapsed session's durable state the way ``tier``
-        # above deliberately is: a prescription is one round's explicit instruction,
-        # and a "measure again" that silently re-ran a candidate would put that
-        # candidate's name on a round nobody asked for.
-        #
-        # The TOPOLOGY pin is read FIRST, and the order is load-bearing rather than
-        # alphabetical: it decides the corner this round runs at, and the delay
-        # gate below is a half-period AT that corner. Read the other way round, a
-        # 4000 Hz round's delay would be bounded by the incumbent 1648.7 Hz lobe
-        # (303 us) instead of its own (125 us) — a gate that passes candidates
-        # the round it is gating cannot support.
-        #
-        # Every bound it applies is a DECLARATION, asked of the module that owns
-        # it: the two role bands a corner is admissible within (each looked up by
-        # role) and the upper driver's declared protective high-pass slope. The
-        # ka/beaming onset rides along as DISCLOSURE only (#1675 makes it
-        # guidance, and no admissibility bound anywhere reads it).
-        #
-        # The declarations are gathered ONLY for a request that carries a pin, and
-        # that branch is deliberate rather than an optimisation. Several of this
-        # context's fields are read nowhere else on this path; deriving them
-        # unconditionally would make an ORDINARY round's session-open depend on
-        # declarations it is not using, so a context shaped for a decision this
-        # round does not take could fail a round that never asked for one.
-        raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
-        topology_prescription = None
-        if raw_topology is not None:
-            # The declarations below are a TWO-role reading: a 1-way main passes
-            # ``None`` and the reader refuses on the way count instead. Which
-            # band is the floor and which the ceiling is a question about ROLES,
-            # so both are fetched by name rather than by tuple position. The WAY
-            # COUNT is what keeps a 3-way out — it declares both roles too.
-            two_way = (
-                len(context.roles_bands) == 2
-                and "tweeter" in context.role_targets
-            )
-            tweeter_band = context.declared_band("tweeter") if two_way else None
-            woofer_band = context.declared_band("woofer") if two_way else None
-            woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
-            try:
-                topology_prescription = read_topology_prescription(
-                    raw_topology,
-                    declared_floor_hz=(
-                        None if tweeter_band is None else tweeter_band.lower_hz
-                    ),
-                    lower_driver_ceiling_hz=(
-                        None if woofer_band is None else woofer_band.upper_hz
-                    ),
-                    minimum_slope_db_per_octave=(
-                        resolve_driver_protection_slope_db_per_octave(
-                            context.safety_profile, context.role_targets["tweeter"],
-                        ) if two_way else None
-                    ),
-                    beaming_ceiling_hz=(
-                        None if woofer_diameter_mm is None
-                        else beaming_onset_hz(float(woofer_diameter_mm))
-                    ),
-                    # ``None`` is "not stated": the gate stays silent, never guesses.
-                    way_count=getattr(context.preset, "way_count", None),
-                )
-            except TopologyPrescriptionRefused as exc:
-                raise CrossoverV2Refused(
-                    "the topology prescription was refused "
-                    f"({exc.reason}): {exc.detail}"
-                ) from exc
-        # What this round actually runs at — one decision, made by the module that
-        # owns the pin and taken identically by the grading stage.
-        session_preset, session_fc_hz = apply_topology_pin(
-            topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
-        )
-        try:
-            alignment_prescription = read_alignment_prescription(
-                (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
-                # THIS round's corner, never ``context.fc_hz`` — see the pin
-                # above. ``None`` on a speaker with no crossover region, which
-                # the reader refuses on by way count rather than here.
-                fc_hz=session_fc_hz,
-                # THIS round's preset — the pinned one when a pin ran.
-                way_count=getattr(session_preset, "way_count", None),
-                # The preset's own declared window, from its single owner. It is
-                # the one bound here that does not rest on a number the request
-                # supplied — and it already existed as the Fix-3 plausibility
-                # screen, ten minutes downstream, wearing household copy that asks
-                # the user to move the microphone. Asking it HERE is what stops a
-                # prescribed candidate being blamed on a mic.
-                declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
-            )
-        except AlignmentPrescriptionRefused as exc:
-            raise CrossoverV2Refused(
-                f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
-            ) from exc
-
     # #2662 W2b: the microphone that answers this session's asks. After the
     # speaker-level gates (they are prior questions) and before any state is
     # opened, so a refused start (unplugged mic) costs no side effects (gate
@@ -4737,29 +4603,6 @@ def prepare_v2_session(
         # declared to the capability journal below so the verdict's reason is not
         # the first place anyone learns it was missing.
         entry_baseline = entry_baseline_prior_from_state(state)
-        # #2662, rehydrated on entry_baseline's route and for its reason: stage 2
-        # never opened a session with a prescription (it takes no MEASURE capture),
-        # so this durable record is the only way the round it grades can name what
-        # its delay was derived from.
-        alignment_prescription = alignment_prescription_prior_from_state(state)
-        # The topology pin, on the line above's route and carrying more than a
-        # receipt field: this stage GRADES the applied graph, and a pinned round
-        # applied a crossover the saved declaration does not name. Re-opening at
-        # the incumbent corner would hand VERIFY the wrong design target (R18's
-        # absolute claim) and the wrong overlap band, so the round would be graded
-        # for not being the crossover it deliberately replaced. Resolved before the
-        # session below for the same one-decision reason stage 1 resolves it.
-        topology_prescription = topology_prescription_prior_from_state(state)
-        verify_preset, verify_fc_hz = apply_topology_pin(
-            topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
-        )
-        # A9, on the line above's route and for its reason, sharpened by one fact
-        # that arm did not have to face: ``verify_priors`` is REBUILT from the
-        # conductor on every persist, so this is not merely how stage 2 learns what
-        # the round was prescribed — it is the only thing that stops stage 2's own
-        # persist erasing it before the receipt is written.
-        blend_prescription = blend_prescription_prior_from_state(state)
-        blend_prescription_sha256 = blend_prescription_sha256_from_state(state)
         alignment_objective = str(
             (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
              else "") or ""
@@ -4858,10 +4701,7 @@ def prepare_v2_session(
     def _open() -> Any:
         if verify_only:
             spec = build_v2_verify_session_spec(
-                # The corner this round was measured and applied at — stage 1's
-                # ``session_fc_hz`` rehydrated. Same one-corner-per-round rule
-                # as the stage-1 spec below; ``None`` on a speaker with none.
-                verify_fc_hz,
+                context.fc_hz,
                 measurement_band_hz=measurement_band_hz(context.roles_bands),
                 acknowledgement_binding=acknowledgement_binding,
                 plan_shape=plan_shape,
@@ -4881,7 +4721,7 @@ def prepare_v2_session(
                 # DIFFERENT program at every corner under 2000 Hz — which is most
                 # of a two-way's legal pin band, jts3's 1600-2500 included, not the
                 # sub-300 Hz curiosity an earlier version of this comment claimed.
-                session_fc_hz,
+                context.fc_hz,
                 acknowledgement_binding=acknowledgement_binding,
                 plan_shape=plan_shape,
                 include_cloud_measure=include_cloud_measure,
@@ -4993,14 +4833,14 @@ def prepare_v2_session(
                 # The topology the round being graded was MEASURED and APPLIED at
                 # — the pin when the durable state carried one, else the context's
                 # own. Resolved once, above.
-                source_preset=verify_preset,
+                source_preset=context.preset,
                 # Stage 1's twin, and the ONLY statement of the fact this session
                 # gets: this ctor is handed no ``tier`` at all, so before #2879 a
                 # geometry-locked stage-2 group prompted for the 75 cm rung even on
                 # the arm. The gate above and this now read one shape.
                 positions_gated=bool(plan_shape and plan_shape.positions_gated),
                 roles_bands=context.roles_bands,
-                fc_hz=verify_fc_hz,
+                fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
                 session_volume_db=context.session_volume_db,
@@ -5021,24 +4861,12 @@ def prepare_v2_session(
                 measure_declared_transfer=declared_transfer,
                 measure_proposal_fingerprint=proposal_fingerprint,
                 measure_entry_baseline=entry_baseline,
-                alignment_prescription=alignment_prescription,
-                topology_prescription=topology_prescription,
-                blend_prescription=blend_prescription,
-                blend_prescription_sha256=blend_prescription_sha256,
                 measure_alignment_objective=alignment_objective,
                 measure_gate_window_ms=(
                     float(gate_ms) if isinstance(gate_ms, (int, float)) else None
                 ),
                 verify_pilot_transfer_prior=pilot_transfer_prior,
                 attempt_history=attempt_history_from_state(state),
-                # #2602: where the next round sits in the flattening series, read
-                # off the receipt the previous round banked and carried forward
-                # across sessions — the series outlives the session that started
-                # it. This stage reads it in ``_grade_round_once``, the stage that
-                # grades a round. It is wired on BOTH stages since #2698:
-                # #2687 gave stage 1 its own reader (``_blend_prescription``, at
-                # candidate-build time), which falsified the argument this line
-                # once carried for being the series' only wiring site.
                 series_position=series_position_from_state(state),
                 attempt_floor=attempt_store.floor,
                 last_attempt_decision=(
@@ -5053,12 +4881,9 @@ def prepare_v2_session(
             conductor = CrossoverV2Session.hydrate(
                 prior_snapshot,
                 session_id=capture_session_id,
-                # The PINNED topology when this request carried one, else the
-                # context's own — resolved once, above, so the preset and the
-                # corner can never name two different crossovers.
-                source_preset=session_preset,
+                source_preset=context.preset,
                 roles_bands=context.roles_bands,
-                fc_hz=session_fc_hz,
+                fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
                 session_volume_db=context.session_volume_db,
@@ -5083,20 +4908,6 @@ def prepare_v2_session(
                 tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
-                alignment_prescription=alignment_prescription,
-                # The pin itself, held so the session knows it IS pinned: it closes
-                # the Fc search and suppresses the selector, and it banks the
-                # provenance on the round's receipt. The topology it names has
-                # already taken effect in the two arguments above.
-                topology_prescription=topology_prescription,
-                # #2698. The same series fact the grading stage reads, from the
-                # same reader and off the same durable state this snapshot is
-                # built from — because stage 1 reads it too, and reads it FIRST.
-                # ``_blend_prescription`` runs at candidate-build time, here in
-                # MEASURE, and an absent position there is not a no-op: it falls
-                # back to the incumbent, so a measuring session with no position
-                # silently discards every blend instruction the previous round
-                # banked and the series can never converge.
                 series_position=series_position,
             )
         # Stage 2 keeps the durable candidate/applied facts and rebinds the

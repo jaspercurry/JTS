@@ -122,47 +122,20 @@ def baseline_candidate_id(purpose: str | None) -> str:
 
 def compose_candidate(
     base: BankedCandidate,
-    roles: Mapping[str, BankedCandidate],
     *,
-    alignment: BankedCandidate | None = None,
-    blend: BankedCandidate | None = None,
-    expected_effect: str = "", observation_refs: Sequence[str] = (), rationale: str = "",
-    room_correction: Mapping[str, Any] | None = None,
+    rationale: str = "",
     room_prescription_sha256: str = "",
     room_measured_basis: Mapping[str, Any] | None = None,
-    bass_extension: Mapping[str, Any] | None = None,
     sections: Mapping[str, Any] | None = None,
     evidence: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Replace selected parts without inheriting their measurement claims."""
     selected = dict(sections or {})
-    if room_correction is not None:
-        selected["room"] = room_correction
-    if bass_extension is not None:
-        if not isinstance(bass_extension, Mapping):
-            raise CandidateBankRefusal("composition_bass_invalid", "bass extension must be an object")
-        selected["bass"] = bass_extension
     if "topology" in selected and not selected["topology"]:
         raise CandidateBankRefusal("composition_topology_required", "the hardware topology cannot be cleared")
     preset = base.candidate.source_preset
-    sources = {role: roles.get(role, base) for role in base.candidate.role_attenuations_db}
-    if set(roles) - set(sources):
-        raise CandidateBankRefusal("composition_role_unknown", "role is not in the base preset")
-    alignment, blend = alignment or base, blend or base
-    for source in (*sources.values(), alignment, blend):
-        if source.candidate.source_preset != preset:
-            raise CandidateBankRefusal(
-                "composition_preset_mismatch", "all sources must use the same base preset"
-            )
-    trims = {}
-    linearization: dict[str, Any] = {}
-    for role, source in sources.items():
-        trims[role] = source.candidate.role_attenuations_db[role]
-        if role not in source.candidate.linearization:
-            continue
-        entry = source.candidate.linearization[role]
-        filters = entry.get("filters", []) if isinstance(entry, Mapping) else None
-        linearization[role] = {"filters": filters}
+    trims = dict(base.candidate.role_attenuations_db)
+    linearization = dict(base.candidate.linearization)
     preset, _ = apply_topology_pin(selected.get("topology"), preset=preset, fc_hz=None)
     if "driver" in selected:
         driver = selected["driver"] or {}
@@ -177,7 +150,7 @@ def compose_candidate(
         role: _linearization_entry(entry["filters"], role=role, sections=sections_by_driver, trim_db=trims[role])
         for role, entry in linearization.items()
     }
-    resolved_alignment = alignment.candidate.alignment
+    resolved_alignment = base.candidate.alignment
     if "alignment" in selected:
         pin = selected["alignment"]
         role_order = required_driver_roles(preset.way_count)
@@ -197,30 +170,23 @@ def compose_candidate(
         "resolution": resolution,
         "evidence": dict(evidence or {}),
         "base": _source(base),
-        **({"role_sources": {role: _source(source) for role, source in sources.items()}} if "driver" not in selected else {}),
-        **({"alignment_source": _source(alignment)} if "alignment" not in selected else {}),
-        **({"blend_source": _source(blend)} if "blend" not in selected else {}),
-        "expected_effect": expected_effect, "observation_refs": list(observation_refs), "rationale": rationale,
+        "rationale": rationale,
     }
     if room and "room" not in selected:
-        analysis["room_source"] = base.candidate.analysis.get("room_source", {"base": _source(base)})
+        analysis["room_source"] = dict(base.candidate.analysis.get("room_source", {}))
+        analysis["room_source"].pop("base_match", None)
     elif room:
         measured_basis = dict(room_measured_basis or {})
-        measured_candidate = measured_basis.get("speaker_candidate_id") or measured_basis.get("candidate_id")
         analysis["room_source"] = {
             "prescription_sha256": room_prescription_sha256,
             ROOM_MEDIAN_FIELD: room["basis"][ROOM_MEDIAN_FIELD],
             "measured_basis": measured_basis,
-            "base_match": (
-                "unknown" if not measured_candidate else
-                "match" if measured_candidate == base.fingerprint else "different"
-            ),
         }
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND, analysis=analysis, source_preset=preset, role_attenuations_db=trims,
         alignment=resolved_alignment,
         linearization=linearization,
-        blend_correction=selected.get("blend", blend.candidate.blend_correction) or (),
+        blend_correction=selected.get("blend", base.candidate.blend_correction) or (),
         room_correction=room, bass_extension=bass,
     )
     prove_candidate_config(candidate, compile_candidate_config(

@@ -239,7 +239,6 @@ def refused_by_name(
 
 def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
     """Paths and sizes only; optional agent prose never becomes measurement data."""
-    packet = default_out(inputs, round_dir, "packet.json")
     bundles = recent_round_sessions(inputs.session_dir)
     latest_note = next((
         path
@@ -256,7 +255,7 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
             "present": path is not None and path.is_file(),
             "bytes": path.stat().st_size if path and path.is_file() else None,
         }
-        for key, path in (("frozen_packet", packet), ("latest_agent_note", latest_note))
+        for key, path in (("latest_agent_note", latest_note),)
     }
 
 

@@ -121,9 +121,9 @@ for roles the document prescribes. It is not a requirement to recalculate every
 candidate's trim. `Peaking`, `Highshelf`, and `Lowshelf` follow the emitter's
 supported ordering; read `jasper-crossover-prescriber contract --round <dir> --section speaker` for bounds.
 
-To combine useful changes, put the selected role filters in the document's
-`driver` section. A new composition is unmeasured. Measure the complete graph
-with the same batch tools. Parent observations do not prove the child.
+Author the `driver` section against the current round's evidence; its judge
+checks each filter again. Filters are not copied from other candidates.
+A new composition is unmeasured; measure its complete graph.
 
 `jasper-round apply --expected-fingerprint <fp>` selects a banked same-design
 candidate when needed, then uses the normal apply path. An authored candidate

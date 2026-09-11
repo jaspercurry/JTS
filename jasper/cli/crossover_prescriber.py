@@ -22,7 +22,7 @@ from jasper.active_speaker.crossover_declaration import preset_crossover_geometr
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, prescription_sha256, read_prescription_bytes
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
-    packet_feature_classifications, packet_region_band_hz, validate_packet,
+    packet_feature_classifications, packet_region_band_hz,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
 )
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    banked_round_of, recent_round_sessions, round_artifact_dir, round_inputs, contract_sources,
+    banked_round_of, recent_round_sessions, round_artifact_dir, round_inputs, contract_sources, RoundInputs,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
@@ -44,11 +44,10 @@ AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a can
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
-def _contract_sources(round_dir: str | None) -> dict[str, Any]:
-    if not round_dir:
+def _contract_sources(inputs: RoundInputs | None) -> dict[str, Any]:
+    if inputs is None:
         return {}
-    inputs = round_inputs(Path(round_dir))
-    sources = contract_sources(inputs.session_dir)
+    sources = contract_sources(inputs)
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     for name, path in (("draft", inputs.design_draft_path),
                        ("receipt", artifact_dir / "round_receipt.json" if artifact_dir else None)):
@@ -63,14 +62,14 @@ def _contract_sources(round_dir: str | None) -> dict[str, Any]:
 
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
-    sources = _contract_sources(args.round)
+    inputs = round_inputs(Path(args.round)) if args.round else None
+    sources = _contract_sources(inputs)
     sections = document["sections"]
     packet: dict[str, Any] = {}
     sha = ""
-    if args.round:
-        inputs = round_inputs(Path(args.round))
+    if inputs is not None:
         if sections.get("driver") or sections.get("blend"):
-            packet = _load_packet(args)
+            packet = _load_packet(args, inputs=inputs)
         if sections.get("room"):
             path = default_out(inputs, Path(args.round), ARTIFACT_BY_VIEW["room-median"].artifact)
             try:
@@ -126,29 +125,12 @@ def _cmd_document(args: argparse.Namespace) -> int:
     return answered(answer)
 
 
-def _read_packet_file(path: Path) -> dict[str, Any]:
-    """One already-emitted packet, read as the evidence rather than rebuilt.
-
-    A rebuild on another machine resolves the flags against what THAT machine
-    has and so fingerprints differently. ``OSError`` is deliberately not
-    caught: the caller maps it to the unreadable-evidence exit.
-    """
-    try:
-        packet = json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
-        raise CrossoverEvidencePacketError(
-            f"{path} is not a readable evidence packet: {exc}"
-        ) from exc
-    return validate_packet(packet)
-
-
-
-def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
+def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None) -> dict[str, Any]:
     if args.session_dir is None:
         raise CrossoverEvidencePacketError("name a round directory")
-    inputs = round_inputs(Path(args.session_dir))
+    inputs = inputs or round_inputs(Path(args.session_dir))
     return build_crossover_evidence_packet(
-        inputs.session_dir,
+        inputs.session_dir, round_context=inputs,
         # No default for the flow state: the web host rewrites it as a round
         # runs, so a defaulted state would move the packet's fingerprint.
         state_path=Path(args.state) if args.state else None,
@@ -179,7 +161,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 
 def _cmd_contract(args: argparse.Namespace) -> int:
     try:
-        sources = _contract_sources(args.round)
+        sources = _contract_sources(round_inputs(Path(args.round)) if args.round else None)
         contracts = prescription_contracts(**sources)
         document = contracts if args.section == "all" else contracts[args.section]
         payload = contract_json(document)
@@ -566,21 +548,12 @@ def status_document(
     """Read retained evidence and candidate status."""
     sections = _status_sections(packet, packet_error)
     context: dict[str, Any] = {
-        "frozen_packet": None, "latest_agent_note": None, "context_error": None,
+        "latest_agent_note": None, "context_error": None,
     }
     recent = []
     try:
         if session_dir:
             context.update(context_artifacts(round_inputs(Path(session_dir)), Path(session_dir)))
-            frozen = context["frozen_packet"]
-            if frozen["present"]:
-                frozen_packet = _read_packet_file(Path(frozen["path"]))
-                fingerprint = frozen_packet.get("packet_fingerprint")
-                frozen["contracts"] = frozen_packet.get("contracts")
-                frozen["packet_fingerprint"] = fingerprint
-                frozen["matches_current_evidence"] = (
-                    fingerprint == packet.get("packet_fingerprint") if packet else None
-                )
         else:
             for bundle in recent_round_sessions():
                 path = str(banked_round_of(bundle) or bundle)

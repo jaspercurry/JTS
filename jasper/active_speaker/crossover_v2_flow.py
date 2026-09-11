@@ -33,21 +33,9 @@ import numpy as np
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # ``round_evidence`` is imported lazily at its runtime use site
     # (``_consume_entry_baseline``): eagerly it drags ``flat_spec`` in.
-    from jasper.active_speaker.crossover_v2.alignment_prescription import (
-        AlignmentPrescription,
-    )
-    from jasper.active_speaker.crossover_v2.blend_prescription import (
-        BlendPrescription,
-    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         RoundPorts,
         SeriesPosition,
-    )
-    from jasper.active_speaker.crossover_v2.driver_prescription import (
-        DriverPrescription,
-    )
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        TopologyPrescription,
     )
     from jasper.active_speaker.crossover_v2.round_evidence import (
         EntryBaseline,
@@ -770,11 +758,6 @@ class CrossoverV2Session:
         speaker_id: str = "",
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
-        alignment_prescription: "AlignmentPrescription | None" = None,
-        topology_prescription: "TopologyPrescription | None" = None,
-        blend_prescription: "BlendPrescription | None" = None,
-        blend_prescription_sha256: str = "",
-        driver_prescription: "DriverPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
         lateral_claims: Sequence["_spatial.TakeClaim"] = (),
@@ -803,18 +786,6 @@ class CrossoverV2Session:
         # Why this session evaluates no driver PAIR, or ``None`` when it does.
         self._pair_reason = None if len(roles) > 1 else MEASURE_PAIR_SINGLE_DRIVER
         self._fc_hz = None if fc_hz is None else float(fc_hz)
-        # #2662. Already validated by the request boundary; never re-judged here.
-        self._alignment_prescription = alignment_prescription
-        # The topology twin, already applied: the boundary opened this session AT the
-        # pinned corner, so ``_fc_hz`` and ``_preset`` above are the pin.
-        self._topology_prescription = topology_prescription
-        # A9. The blend twin. Named for what it IS: ``_blend_prescription`` is already
-        # the METHOD that ranks sources, and a field of that name would shadow it.
-        self._prescribed_blend = blend_prescription
-        self._prescribed_blend_sha256 = str(blend_prescription_sha256 or "")
-        # A9/PR-B. Per-ROLE rather than per-region: its door is the candidate's
-        # ``linearization`` map, merged where the fit is final.
-        self._prescribed_driver = driver_prescription
         # PR-4: computed once so every group-close event uses the SAME bands.
         self._cloud_signal_band_hz = _programs.measurement_band_hz(roles)
         # Band AND provenance as one value (#1763): the payload cannot publish a band
@@ -1161,15 +1132,7 @@ class CrossoverV2Session:
             # Derived here: its producer is shared with the plausibility gate.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
-            explicit_alignment_delay_us=(
-                None if self._alignment_prescription is None
-                else self._alignment_prescription.delay_us
-            ),
-            # Translated by the record's own ``polarity_sign``, never here.
-            explicit_alignment_polarity_sign=(
-                None if self._alignment_prescription is None
-                else self._alignment_prescription.polarity_sign
-            ),
+            explicit_alignment_delay_us=None, explicit_alignment_polarity_sign=None,
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:
@@ -1250,25 +1213,7 @@ class CrossoverV2Session:
             return None
         return blend_filters_from_mapping(list(raw))
 
-    def _blend_prescription(self) -> tuple[Mapping[str, Any], ...]:
-        """The blend correction the next candidate should carry (decision 10).
-
-        Three sources, in order: a BLEND prescription staged for THIS round (A9), which
-        supersedes for exactly one round and cannot persist past it; the series'
-        instruction (``SeriesPosition.previous_blend_correction``); then what the
-        speaker is already playing, read through the same SSOT and strict reader
-        ``_applied_blend_correction`` uses.
-        """
-        from .crossover_v2.blend_prescription import (
-            BLEND_CANDIDATE_FIELD,
-            blend_prescription_to_candidate_fields,
-        )
-
-        if self._prescribed_blend is not None:
-            # Through the route rather than off the object's ``filters``, so the promise
-            # that a boost cannot populate this field holds on every path.
-            fields = blend_prescription_to_candidate_fields(self._prescribed_blend)
-            return tuple(fields[BLEND_CANDIDATE_FIELD])
+    def _candidate_blend_correction(self) -> tuple[Mapping[str, Any], ...]:
         instruction = (
             None if self._series_position is None
             else self._series_position.previous_blend_correction
@@ -1480,40 +1425,6 @@ class CrossoverV2Session:
     def measure_alignment_objective(self) -> str:
         """Which commitment produced this round's delay, or ``""`` (#2662)."""
         return self._measure_alignment_objective
-
-    @property
-    def alignment_prescription_record(self) -> dict[str, Any] | None:
-        """This session's delay prescription as the receipt banks it (#2662)."""
-        if self._alignment_prescription is None:
-            return None
-        return self._alignment_prescription.to_dict()
-
-    @property
-    def topology_prescription_record(self) -> dict[str, Any] | None:
-        """This session's crossover pin as the receipt banks it.
-
-        ``None`` means the automatic path. Exactly ``to_dict()``:
-        ``topology_prescription_from_mapping`` refuses an unknown field on rehydration.
-        """
-        if self._topology_prescription is None:
-            return None
-        return self._topology_prescription.to_dict()
-
-    @property
-    def blend_prescription_record(self) -> dict[str, Any] | None:
-        """This session's blend prescription as the receipt banks it (A9).
-
-        ``None`` means the automatic path. Exactly ``to_dict()``:
-        ``blend_prescription_from_mapping`` refuses an unknown field on rehydration.
-        """
-        if self._prescribed_blend is None:
-            return None
-        return self._prescribed_blend.to_dict()
-
-    @property
-    def blend_prescription_sha256(self) -> str:
-        """The digest of the document this round's prescription came from (A9)."""
-        return self._prescribed_blend_sha256
 
     @property
     def last_intervention_proposal(self) -> Any:
@@ -3176,8 +3087,6 @@ class CrossoverV2Session:
         # nothing; what it returns is the accountability record the publish banks.
         accountability_finding = self._assert_accountable(
             predicted_sum, analysis.predicted_sum, linearization=linearization,
-            # Read off the CANDIDATE rather than ``self._prescribed_driver``: the
-            # bar below is about the graph this apply would emit.
             prescribed=_prescribed_roles(candidate),
         )
         return _SpeculativeClose(
@@ -3850,15 +3759,9 @@ class CrossoverV2Session:
                 graded_spec=graded_verify,
                 applied_blend_correction=self._applied_blend_correction(),
                 previous_blend_residual_db=position.previous_blend_residual_db,
-                # #2662. Rehydrated from stage 1's durable ``verify_priors``: this
-                # stage holds no candidate to derive one from.
-                alignment_prescription=self._alignment_prescription,
                 # …and whether the machinery COMMITTED it: provenance without its
                 # outcome is a receipt that can credit a round it never ran.
                 alignment_objective=self._measure_alignment_objective,
-                # The crossover pin, on the identical route. It needs no outcome
-                # field: the boundary opened both stages at the pinned topology.
-                topology_prescription=self._topology_prescription,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it applied.
                 # The candidate below is a real fallback: a stage-2 re-arm predating
                 # #2392, and a commit whose proposal assembly was refused.
@@ -4440,12 +4343,7 @@ class CrossoverV2Session:
             plan=self._plan_linearization,
             exclusion_evidence=self._exclusion_evidence_json,
             journal=self._journal_linearization,
-            # Decision 10: what the previous round prescribed, or what the
-            # speaker is already playing. See ``_blend_prescription``.
-            blend_correction=self._blend_prescription(),
-            # Handed over RAW: the blend field has three sources to rank, this has
-            # none, and merge-by-role IS the precedence, decided where the fit is final.
-            driver_prescription=self._prescribed_driver,
+            blend_correction=self._candidate_blend_correction(),
         )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
