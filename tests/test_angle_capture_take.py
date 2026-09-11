@@ -1138,14 +1138,16 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
 def test_a_coordinate_the_spec_refuses_is_named_as_a_DELAY_refusal(slot):
     """Its own slug, so an operator reading ``reason=`` learns which half of
     R-1 was refused rather than being told 'polarity' about a delay."""
-    spool.stage_angle_request(_inverted_walk(
+    # A stated ladder rides the same spec and must not claim the refusal.
+    spool.stage_angle_request(replace(_inverted_walk(
         inverted_role=DRIVER_ROLE_TWEETER,
         delayed_role="tweater",          # not a driver branch
         delay_us=250.0,
-    ))
+    ), level_ladder_dbfs=(-20.0,)))
     sentence = _refused()
 
     assert ac.WALK_DELAY_NOT_ACCEPTED in sentence
+    assert ac.WALK_STIMULUS_NOT_ACCEPTED not in sentence
     assert ac.WALK_POLARITY_NOT_ACCEPTED not in sentence
     # The detail is the spec's own refusal, compared against what the spec
     # actually raises rather than a copy of its wording.

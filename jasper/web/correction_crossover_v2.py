@@ -2084,7 +2084,6 @@ def _take_staged_angle_walk(
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
         raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
-    stimulus = request.measure_spec_stimulus(summed=False)
     try:
         # Its own arm rather than a fourth clause on the block above: only THIS
         # construction may be read as a polarity refusal, and a ``ValueError``
@@ -2096,20 +2095,19 @@ def _take_staged_angle_walk(
             delayed_role=request.delayed_role,
             delay_us=request.delay_us,
             level_matched=request.level_matched,
-            **stimulus,
+            **request.measure_spec_stimulus(summed=False),
         )
     except ValueError as exc:
         # Attributed by which half the request STATED, never by re-judging
         # validity here — that rule has one owner and a second copy drifts. A
         # request stating a delay reads as a delay refusal; the detail is the
         # spec's own sentence either way, so it always names the real field.
-        # Ordered as ``MeasureSpec.__post_init__`` checks them, so the arm named
-        # is the arm that raised.
+        # The design-axis spec carries only the ladder and ceiling of the
+        # stimulus, neither of which the spec refuses, so a raise here is the
+        # delay's or the polarity's.
         stated_delay = bool(request.delayed_role or request.delay_us)
         raise refused(
-            WALK_STIMULUS_NOT_ACCEPTED if stimulus
-            else WALK_DELAY_NOT_ACCEPTED if stated_delay
-            else WALK_POLARITY_NOT_ACCEPTED,
+            WALK_DELAY_NOT_ACCEPTED if stated_delay else WALK_POLARITY_NOT_ACCEPTED,
             str(exc),
         ) from exc
     level_trims, trim_source = _resolve_measurement_level_trims(
@@ -2155,11 +2153,12 @@ def _take_staged_angle_walk(
         for index, phase in walk_index_phase.items()
         if phase == PHASE_MEASURE
     }
+    summed_stimulus = request.measure_spec_stimulus(summed=True)
     for index, prompt, stop in zip(
         sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
         prompts, request.stops,
     ):
-        if stop.regime in (REGIME_SUMMED, REGIME_BRANCHES):
+        if stop.plays_summed:
             scope = candidate_scopes[stop.candidate_id] if stop.candidate_id else baseline_scope(stop.purpose)
             try:
                 specs_by_index[index] = MeasureSpec(
@@ -2167,7 +2166,7 @@ def _take_staged_angle_walk(
                     positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
                     pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
                     graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else scope,
-                    **request.measure_spec_stimulus(summed=True),
+                    **summed_stimulus,
                 )
             except ValueError as exc:
                 # Only the stimulus is new on this construction; the spec's own

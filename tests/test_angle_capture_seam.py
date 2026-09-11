@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import json
+from dataclasses import replace
 import math
 from pathlib import Path
 
@@ -1415,12 +1416,12 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
 
 
 @pytest.mark.parametrize(
-    ("program_id", "size", "candidates", "sweep_s", "level_ladder_dbfs"),
+    ("program_id", "size", "candidates", "sweep_s", "level_ladder_dbfs", "stimulus_s"),
     [
-        ("tournament", "express", (), None, ()),
-        ("tournament", "express", ("fp-a", "fp-b"), 2.0, ()),
-        ("room", "quick", ("", "room-fp"), 1.5, (-20.0, -14.0, -8.0)),
-        ("room", "cloud", (), None, ()),
+        ("tournament", "express", (), None, (), None),
+        ("tournament", "express", ("fp-a", "fp-b"), 2.0, (), 4.0),
+        ("room", "quick", ("", "room-fp"), 1.5, (-20.0, -14.0, -8.0), 27.0),
+        ("room", "cloud", (), None, (), None),
     ],
     ids=[
         "tournament-express-no-cand-no-sweep",
@@ -1432,6 +1433,7 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
 def test_walk_price_reports_stimulus_seconds_for_named_programs(
     program_id: str, size: str, candidates: tuple[str, ...],
     sweep_s: float | None, level_ladder_dbfs: tuple[float, ...],
+    stimulus_s: float | None,
 ) -> None:
     """``stimulus_s`` is derived from the program's own counts, the same rule
     :func:`test_a_program_becomes_its_own_walk_in_table_order` pins for everything
@@ -1449,19 +1451,15 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
 
     assert price["mic_moves"] == program.mic_move_count
     assert price["captures"] == program.capture_count * len(cycle)
-    if sweep_s is None:
-        assert price["stimulus_s"] is None
-    else:
-        assert price["stimulus_s"] == pytest.approx(
-            price["captures"] * sweep_s * max(1, len(level_ladder_dbfs))
-        )
+    assert price["stimulus_s"] == (None if stimulus_s is None else pytest.approx(stimulus_s))
 
 
-def test_a_volume_series_prices_each_rung_as_another_pass_of_the_walk() -> None:
+def test_a_volume_series_prices_each_rung_as_another_capture_at_every_stop() -> None:
     """A rung is another capture where the microphone already stands, so the rungs
     multiply the captures and the session's wall clock and leave ``mic_moves``
-    alone. Priced against the SAME stops walked once per rung rather than against
-    the formula, which would only restate the code.
+    alone. Priced against the SAME stops each captured once more per rung rather
+    than against the formula, which would only restate the code; the order the
+    rungs play in is the executor's to pin.
     """
     stops = (
         ac.AngleStop(0, ac.REGIME_SUMMED),
@@ -1484,11 +1482,8 @@ def test_every_stageable_stimulus_field_reads_back_whole(spool_slot) -> None:
     """Request-level, so every stop in the batch is matched by construction: the
     whole set round-trips through the spool document together.
     """
-    request = ac.AngleCaptureRequest(
-        stops=(
-            ac.AngleStop(0, ac.REGIME_SUMMED),
-            ac.AngleStop(7, ac.REGIME_SUMMED),
-        ),
+    request = replace(
+        ac.summed_at([0, 7]),
         sweep_band_hz=(200.0, 3000.0),
         sweep_s=2.5,
         level_ladder_dbfs=(-20.0, -14.0),
@@ -1511,7 +1506,7 @@ def test_a_walk_staged_before_the_stimulus_fields_existed_reads_back_as_stated(
     doc = json.loads(path.read_text())
     for key in (
         "sweep_band_hz", "sweep_s", "level_ladder_dbfs", "level_mode",
-        "main_volume_series_db", "ceiling_db_spl",
+        "main_volume_series_db", "spl_ceiling_db_spl",
     ):
         doc.pop(key)
     path.write_text(json.dumps(doc))
@@ -1522,7 +1517,7 @@ def test_a_walk_staged_before_the_stimulus_fields_existed_reads_back_as_stated(
     assert restored.level_ladder_dbfs == ()
     assert restored.level_mode == ac.LEVEL_HOLD_REFERENCE
     assert restored.main_volume_series_db == ()
-    assert restored.ceiling_db_spl is None
+    assert restored.spl_ceiling_db_spl is None
 
 
 @pytest.mark.parametrize(
@@ -1585,7 +1580,7 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
 @pytest.mark.parametrize(
     "fields",
     [
-        {"ceiling_db_spl": 100.0},
+        {"spl_ceiling_db_spl": 100.0},
         {"level_mode": ac.LEVEL_ACQUIRE_AT_ANCHOR},
         {"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": (-20.0, -14.0)},
     ],
@@ -1628,14 +1623,18 @@ def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
         ("delay_us", "loud"),
         ("sweep_s", "two and a half"),
         ("sweep_s", math.nan),
-        ("ceiling_db_spl", "loud"),
+        ("spl_ceiling_db_spl", "loud"),
         ("sweep_band_hz", "200,3000"),
         ("level_ladder_dbfs", "-20"),
         ("level_ladder_dbfs", ["-20", "quiet"]),
         ("main_volume_series_db", {"rung": -20}),
+        ("sweep_s", True),
+        ("delay_us", ""),
+        ("spl_ceiling_db_spl", []),
     ],
     ids=["delay-word", "sweep-s-word", "sweep-s-nan", "ceiling-word",
-         "band-string", "ladder-bare-string", "ladder-bad-rung", "series-mapping"],
+         "band-string", "ladder-bare-string", "ladder-bad-rung", "series-mapping",
+         "sweep-s-bool", "delay-empty", "ceiling-list"],
 )
 def test_a_banked_number_that_is_not_one_refuses_as_a_malformed_document(
     spool_slot, field: str, banked: object,
@@ -1731,7 +1730,7 @@ def test_the_walk_level_policy_flags_reach_the_request() -> None:
     ]))
     assert request.level_mode == ac.LEVEL_SERIES
     assert request.main_volume_series_db == (-20.0, -14.0)
-    assert request.ceiling_db_spl == 100.0
+    assert request.spl_ceiling_db_spl == 100.0
 
 
 def test_cli_stimulus_flags_reach_the_printed_price(capsys) -> None:

@@ -202,7 +202,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "level_ladder_dbfs": list(request.level_ladder_dbfs),
         "level_mode": request.level_mode,
         "main_volume_series_db": list(request.main_volume_series_db),
-        "ceiling_db_spl": request.ceiling_db_spl,
+        "spl_ceiling_db_spl": request.spl_ceiling_db_spl,
         "program": request.program,
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
@@ -370,9 +370,12 @@ def _consume(pending: Path) -> None:
 
 
 def _coerced_number(field: str, raw: Any) -> float:
-    """One banked number, or the spool's own refusal naming the field."""
+    """One banked number, or the spool's own refusal naming the field. A numeral
+    string reads as its number; a bool, container, or empty value does not."""
     try:
-        value = float(raw or 0.0)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+            raise TypeError(field)
+        value = float(raw)
     except (TypeError, ValueError):
         _refuse(
             SPOOL_MALFORMED,
@@ -411,24 +414,6 @@ def _coerced_optional_numbers(field: str, raw: Any) -> tuple[float, ...] | None:
     return None if raw is None else _coerced_numbers(field, raw)
 
 
-#: Every banked field read back as a NUMBER, and the shape it is read into.
-#: One table so a seventh number joins by adding a row, and so no field can be
-#: handed to :class:`~.angle_capture.AngleCaptureRequest` uncoerced -- a string
-#: ``sweep_s`` would otherwise reach ``math.isfinite`` as a ``TypeError`` past
-#: every caller catching ``CrossoverV2FlowError``.
-_NUMBER_FIELDS = {
-    "delay_us": _coerced_number,
-    "sweep_band_hz": _coerced_optional_numbers,
-    "sweep_s": _coerced_optional_number,
-    "level_ladder_dbfs": _coerced_numbers,
-    "main_volume_series_db": _coerced_numbers,
-    "ceiling_db_spl": _coerced_optional_number,
-}
-
-
-def _coerced_numbers_of(doc: Mapping[str, Any]) -> dict[str, Any]:
-    """:data:`_NUMBER_FIELDS`, read off one document as constructor keywords."""
-    return {field: read(field, doc.get(field)) for field, read in _NUMBER_FIELDS.items()}
 
 
 def _validate(raw: bytes) -> AngleCaptureRequest:
@@ -503,7 +488,16 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         level_matched=bool(doc.get("level_matched")),
         level_mode=str(doc.get("level_mode") or LEVEL_HOLD_REFERENCE),
         program=str(doc.get("program") or ""),
-        **_coerced_numbers_of(doc),
+        delay_us=_coerced_number("delay_us", doc.get("delay_us", 0.0)),
+        sweep_band_hz=_coerced_optional_numbers("sweep_band_hz", doc.get("sweep_band_hz")),
+        sweep_s=_coerced_optional_number("sweep_s", doc.get("sweep_s")),
+        level_ladder_dbfs=_coerced_numbers("level_ladder_dbfs", doc.get("level_ladder_dbfs")),
+        main_volume_series_db=_coerced_numbers(
+            "main_volume_series_db", doc.get("main_volume_series_db")
+        ),
+        spl_ceiling_db_spl=_coerced_optional_number(
+            "spl_ceiling_db_spl", doc.get("spl_ceiling_db_spl")
+        ),
     )
     refuse_unplayable_walk_policy(request)
     return request

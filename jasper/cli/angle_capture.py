@@ -233,7 +233,7 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
         "level_ladder_dbfs": tuple(args.level_dbfs),
         "level_mode": args.level_mode,
         "main_volume_series_db": tuple(args.level_series),
-        "ceiling_db_spl": args.spl_ceiling_db_spl,
+        "spl_ceiling_db_spl": args.spl_ceiling_db_spl,
     }
 
 
