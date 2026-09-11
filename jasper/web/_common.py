@@ -144,6 +144,25 @@ _CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
 _CTX_ATTR = "_jts_request_ctx"
 
 
+def refusal_envelope(exc: BaseException) -> dict[str, Any]:
+    """Carry the refusal identity and its registered household action."""
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: numpy import cost
+    from jasper.web.correction_capture import _capture_failure_message  # lazy: measurement service import cost
+    from jasper.web.correction_crossover_v2 import classify_program_failure  # lazy: measurement service import cost
+
+    code = getattr(exc, "code", None) or getattr(exc, "reason", None)
+    if not code:
+        classified = classify_program_failure(exc)
+        code = classified[0] if classified else None
+    spec = REASON_REGISTRY.get(code)
+    return {
+        "ok": False,
+        "code": code,
+        "next_action": dict(spec.next_action) if spec and spec.next_action else None,
+        "error": spec.message if spec else str(exc) if code else _capture_failure_message(exc),
+    }
+
+
 def value_for_env(
     state: dict[str, str],
     env_var: str,

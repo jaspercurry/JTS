@@ -70,6 +70,10 @@ class MeasurementGraphRefused(ValueError):
         self.detail = detail
         super().__init__(f"{reason}: {detail}")
 
+    @property
+    def code(self) -> str:
+        return self.reason
+
 
 def _without_alignment(preset: ActiveSpeakerPreset) -> ActiveSpeakerPreset:
     return replace(preset, crossover_regions=tuple(

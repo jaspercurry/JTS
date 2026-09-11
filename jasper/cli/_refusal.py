@@ -76,7 +76,10 @@ def answered(document: Mapping[str, Any], line: str = "") -> int:
     return EXIT_OK
 
 
-def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused") -> int:
+def refused(
+    reason: str, detail: Any, *, exit_code: int, status: str = "refused",
+    code: str | None = None, next_action: Mapping[str, Any] | None = None,
+) -> int:
     """Print the outcome on both streams and hand back ``exit_code``.
 
     ``detail`` is a sentence or the fields the failure carried -- everything the
@@ -88,16 +91,25 @@ def refused(reason: str, detail: Any, *, exit_code: int, status: str = "refused"
         detail if isinstance(detail, str)
         else json.dumps(detail, sort_keys=True, default=str)
     )
-    print(render_report({"status": status, "reason": reason, "detail": detail}))
+    record = {"status": status, "reason": reason, "detail": detail}
+    if code is not None:
+        record["code"] = code
+    if next_action is not None:
+        record["next_action"] = dict(next_action)
+    print(render_report(record))
     print(f"{status} ({reason}): {sentence}", file=sys.stderr)
     return exit_code
 
 
-def failed(exit_code: int, reason: str, detail: Any) -> int:
+def failed(
+    exit_code: int, reason: str, detail: Any, *,
+    code: str | None = None, next_action: Mapping[str, Any] | None = None,
+) -> int:
     """One failing stage, published under the word its code owns."""
 
     return refused(
-        reason, detail, exit_code=exit_code, status=STATUS_BY_CODE[exit_code]
+        reason, detail, exit_code=exit_code, status=STATUS_BY_CODE[exit_code],
+        code=code, next_action=next_action,
     )
 
 

@@ -184,21 +184,9 @@ _volume_plan: Any = None
 
 
 def refusal_next_action(exc: BaseException) -> dict[str, Any] | None:
-    """The action a refusal's own reason declares, for a 400 response body.
+    from jasper.web._common import refusal_envelope  # lazy: web boundary
 
-    ``None`` when the refusal carries no code or its code declares no action —
-    the ordinary case for the many refusals whose only honest answer is prose.
-    Copy and destination come from the SAME registry entry the envelope's
-    hard-stop screen reads, so the pre-flight 400 and the post-persist screen
-    can never offer different buttons for the same refusal.
-    """
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
-
-    code = str(getattr(exc, "code", "") or "")
-    spec = REASON_REGISTRY.get(code) if code else None
-    if spec is None or not spec.next_action:
-        return None
-    return dict(spec.next_action)
+    return refusal_envelope(exc)["next_action"]
 
 
 class CrossoverV2LocalSeamError(RuntimeError):
@@ -264,11 +252,14 @@ def classify_program_failure(
         ProgramPlaybackRefused,
     )
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused  # lazy: graph import cost
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
     from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
+    if isinstance(exc, MeasurementGraphRefused):
+        return exc.code, ()
     if (
         isinstance(exc, StimulusCaptureStopped)
         and exc.code == WiredSplCeilingExceeded.code

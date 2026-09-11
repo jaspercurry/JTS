@@ -123,6 +123,15 @@ def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> int:
+    error = error_of(payload)
+    fields = error if isinstance(error, dict) else {}
+    return failed(
+        exit_code, str(fields.get("code") or reason), {**detail, "error": error},
+        code=fields.get("code"), next_action=fields.get("next_action"),
+    )
+
+
 def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
     """One stage open. The tier is stated, never inherited (#2639).
 
@@ -148,11 +157,11 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
         args.tier or "", stage=args.stage, prescriptions=prescriptions
     )
     if http != 200:
-        return failed(
+        return _wizard_failure(
             EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
             REASON_ANSWER_LOST if http == 0 else REASON_OPEN_REFUSED,
             {"stage": args.stage, "tier": args.tier or "", "path": path,
-             "http": http, "error": error_of(payload)},
+             "http": http}, payload,
         )
     block = client.v2_block()
     url = speaker_url(CROSSOVER_PAGE_PATH)
@@ -204,10 +213,10 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
             REPUBLISH_PATH, {"fingerprint": args.expected_fingerprint.strip()},
         )
         if http != 200 or not isinstance(payload, dict) or payload.get("status") != "republished":
-            return failed(
+            return _wizard_failure(
                 EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                 REASON_ANSWER_LOST if http == 0 else "candidate_not_republished",
-                {"http": http, "error": error_of(payload)},
+                {"http": http}, payload,
             )
         result = apply_by_fingerprint(client, args.expected_fingerprint)
     fingerprint = str(result["candidate_fingerprint"])
@@ -220,7 +229,7 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
             outcome=result["outcome"],
         )
     lost = result["reason"] == REASON_ANSWER_LOST
-    return failed(
+    return _wizard_failure(
         EXIT_UNREADABLE if lost else EXIT_REFUSED, str(result["reason"]),
         {
             "refused_by": result["refused_by"],
@@ -229,12 +238,10 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
             "candidate_fingerprint": fingerprint,
             "http": result["http"],
             "outcome": result["outcome"],
-            "error": (
-                error_of(result["payload"]) if result["payload"] is not None
-                else "refused before any request left this speaker"
-            ),
             **({"advice": LOST_ANSWER_ADVICE} if lost else {}),
         },
+        result["payload"] if result["payload"] is not None
+        else "refused before any request left this speaker",
     )
 
 
