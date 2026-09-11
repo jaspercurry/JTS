@@ -303,7 +303,7 @@ def test_a_diagnostic_reads_each_record_and_hashes_each_audio_file_once(
         document = json.loads(record.read_text())
         document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
                         wav_sha256=round_captures.sha256_file(wav))
-        record = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/banked/positions/old.json"
+        record = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/old.json"
         record.parent.mkdir(parents=True)
         record.write_text(json.dumps(document))
     reads, hashes = Counter(), Counter()
@@ -522,7 +522,7 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     document = json.loads(source_record.read_text())
     document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
                     wav_sha256=round_captures.sha256_file(source_record.with_suffix(".wav")))
-    canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/banked/positions/source.json"
+    canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/source.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_text(json.dumps(document))
     source_record.unlink()

@@ -17,7 +17,7 @@ def write_manifest(round_dir: Path, *, program: str = "speaker", groups=None) ->
     inputs = round_inputs(round_dir)
     directory, _ = round_artifact_dir(inputs.session_dir)
     if directory is None:
-        directory = inputs.session_dir / "evidence/v1/artifacts/crossover_v2/banked"
+        directory = inputs.session_dir / "evidence/v1/artifacts/crossover_v2/wired-test"
         directory.mkdir(parents=True, exist_ok=True)
     if groups is None:
         records = [(row.path, record) for row, record in measurement_documents(inputs.session_dir)]

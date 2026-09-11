@@ -2431,7 +2431,7 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
         captures / "bundle" / "b0", round_dir / "bundle" / "sess1", dirs_exist_ok=True,
     )
 
-    shutil.rmtree(round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/banked")
+    shutil.rmtree(round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/wired-test")
     write_manifest(round_dir)
     rc = main(
         ["sweep", "--scope", "verdict", str(round_dir), "--rungs-ms", "5", "20"],
