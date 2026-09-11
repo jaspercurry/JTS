@@ -6,53 +6,28 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import math
 import threading
-from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import Any, Mapping
 
 from jasper.active_speaker import web_commissioning
 from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
-from jasper.active_speaker.crossover_level_run import (
-    PHONE_TRANSPORT_GRACE_S,
-    state_path as _level_run_state_path,
-)
-from jasper.active_speaker.volume_latch import (
-    EMERGENCY_MEASUREMENT_VOLUME_DB,
-    READBACK_TOLERANCE_DB,
-    set_and_confirm_volume,
-)
-from jasper.atomic_io import atomic_write_text
+from jasper.active_speaker.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
-# The emergency floor + readback tolerance are owned by the shared volume_latch
-# leaf so this per-step lease and the session-scoped SessionVolumePlan cannot
-# drift. Re-exported at the historical names for this module's importers.
+# The emergency floor is owned by the shared volume_latch leaf so this
+# per-step lease and the session-scoped SessionVolumePlan cannot drift.
+# Re-exported at the historical name for this module's importers.
 EMERGENCY_SWEEP_VOLUME_DB = EMERGENCY_MEASUREMENT_VOLUME_DB
 _VOLUME_SAFETY_STATE_KIND = "jts_crossover_volume_safety"
 _VOLUME_SAFETY_SCHEMA_VERSION = 1
 _DEFAULT_VOLUME_SAFETY_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_crossover_volume_safety.json"
 )
-_VOLUME_READBACK_TOLERANCE_DB = READBACK_TOLERANCE_DB
-CamillaFactory = Callable[[], Any]
-
-
-if TYPE_CHECKING:
-    from jasper.audio_measurement.ramp import MeasurementRamp
-
-
-class UnresolvedVolumeRecoveryResult(str, Enum):
-    """Outcome of reconciling a durable uncertain listening volume."""
-
-    EXACT_RESTORED = "exact_restored"
-    EMERGENCY_ATTENUATED = "emergency_attenuated"
-    FAILED = "failed"
 
 
 def _malformed_volume_safety(reason: str) -> dict[str, Any]:
@@ -110,40 +85,23 @@ def _load_volume_safety_state(path: Path | None) -> dict[str, Any] | None:
     }
 
 
-def _write_volume_safety_state(path: Path | None, payload: Mapping[str, Any]) -> None:
-    if path is None:
-        return
-    atomic_write_text(
-        path,
-        json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-    )
-
-
 class CrossoverLevelLease:
-    """Geometry-keyed gain lease and durable restore intent for Layer A.
+    """Geometry-keyed durable volume-safety latch and repeat-progress cache.
 
-    A thin domain owner: single-flight lifetime, observability, the
-    target/original pair, and the per-geometry :class:`LevelLockStore`. The
-    process-global production lease injects a durable state path; ordinary
-    test instances stay in-memory unless they opt into one. The target is
-    asserted only inside a sweep window and restored in that window's
-    ``finally``. It deliberately owns no CamillaDSP client.
+    A thin domain owner: single-flight lifetime and observability for the
+    active-crossover status/reset surface. The process-global production
+    lease injects a durable state path; ordinary test instances stay
+    in-memory unless they opt into one. It deliberately owns no CamillaDSP
+    client.
     """
 
     def __init__(
         self,
         *,
         volume_safety_state_path: str | Path | None = None,
-        level_run_state_path: str | Path | None = None,
     ) -> None:
-        from jasper.active_speaker.crossover_level_run import CrossoverLevelRunStore
-        from jasper.audio_measurement.level_match import LevelLockStore
-
         self.session_id = "active-crossover"
-        self.level_lock_store = LevelLockStore()
         self._level_result_lock = threading.RLock()
-        self._restore_lock = asyncio.Lock()
         self.context_id: str | None = None
         self.noise_floor_db = None
         self.mic_calibration = None
@@ -159,7 +117,6 @@ class CrossoverLevelLease:
         self._volume_safety_state = _load_volume_safety_state(
             self._volume_safety_state_path
         )
-        self._level_run_store = CrossoverLevelRunStore(path=level_run_state_path)
 
     @property
     def unresolved_volume_safety(self) -> dict[str, Any] | None:
@@ -177,230 +134,12 @@ class CrossoverLevelLease:
                 "restore it or apply emergency attenuation before another action"
             )
 
-    def _persist_volume_safety(self, state: Mapping[str, Any]) -> None:
-        _write_volume_safety_state(
-            self._volume_safety_state_path,
-            {
-                "schema_version": _VOLUME_SAFETY_SCHEMA_VERSION,
-                "kind": _VOLUME_SAFETY_STATE_KIND,
-                **dict(state),
-            },
-        )
-
-    def _begin_volume_transition(
-        self,
-        *,
-        source: str,
-        speaker_group_id: str,
-        role: str,
-        original_main_volume_db: float,
-    ) -> None:
-        self.assert_volume_safety_resolved()
-        original = float(original_main_volume_db)
-        if not math.isfinite(original) or original > 0:
-            raise ValueError("crossover restore volume must be finite and <= 0 dB")
-        state = {
-            "status": "active",
-            "reason": None,
-            "source": str(source),
-            "speaker_group_id": str(speaker_group_id),
-            "role": str(role),
-            "original_main_volume_db": original,
-            "emergency_volume_db": EMERGENCY_SWEEP_VOLUME_DB,
-        }
-        # Write before the first volume mutation. A process crash or lost setter
-        # response therefore hydrates as unresolved instead of forgetting risk.
-        self._persist_volume_safety(state)
-        self._volume_safety_state = state
-
-    def _mark_volume_unresolved(self, reason: str) -> None:
-        state = dict(self._volume_safety_state or _malformed_volume_safety(reason))
-        state.update({"status": "unresolved", "reason": str(reason)})
-        self._volume_safety_state = state
-        try:
-            self._persist_volume_safety(state)
-        except OSError:
-            # A prior active intent remains on disk when this is a real
-            # transition, so restart still hydrates fail-closed.
-            log_event(
-                logger,
-                "correction.crossover_level_volume_safety_persist_failed",
-                level=logging.CRITICAL,
-                reason=reason,
-            )
-
-    def _clear_volume_safety(self) -> None:
-        self._persist_volume_safety({"status": "resolved"})
-        self._volume_safety_state = None
-
-    @staticmethod
-    async def _set_and_confirm_volume(
-        target_db: float,
-        set_main_volume_db: Any,
-        get_main_volume_db: Any,
-    ) -> bool:
-        # Delegates to the shared volume_latch leaf so this lease and
-        # SessionVolumePlan share one confirm-readback implementation.
-        return await set_and_confirm_volume(
-            target_db,
-            set_main_volume_db,
-            get_main_volume_db,
-            tolerance_db=_VOLUME_READBACK_TOLERANCE_DB,
-        )
-
-    async def _recover_volume_safety(
-        self,
-        set_main_volume_db: Any,
-        get_main_volume_db: Any,
-        *,
-        allow_active: bool,
-    ) -> UnresolvedVolumeRecoveryResult:
-        """Resolve the one durable volume intent through confirmed readback."""
-
-        async with self._restore_lock:
-            state = self._volume_safety_state
-            if state is None:
-                return UnresolvedVolumeRecoveryResult.EXACT_RESTORED
-            if state.get("status") == "active" and not allow_active:
-                return UnresolvedVolumeRecoveryResult.FAILED
-            exact = state.get("original_main_volume_db")
-            candidates: list[tuple[str, float]] = []
-            if (
-                not isinstance(exact, bool)
-                and isinstance(exact, (int, float))
-                and math.isfinite(float(exact))
-                and float(exact) <= 0
-            ):
-                candidates.append(("exact", float(exact)))
-            candidates.append(("emergency", EMERGENCY_SWEEP_VOLUME_DB))
-            for recovery, target in candidates:
-                if not await self._set_and_confirm_volume(
-                    target,
-                    set_main_volume_db,
-                    get_main_volume_db,
-                ):
-                    continue
-                try:
-                    self._clear_volume_safety()
-                except OSError:
-                    self._mark_volume_unresolved("volume_safety_clear_failed")
-                    return UnresolvedVolumeRecoveryResult.FAILED
-                log_event(
-                    logger,
-                    "correction.crossover_level_volume_safety_recovered",
-                    level=(logging.INFO if recovery == "exact" else logging.ERROR),
-                    recovery=recovery,
-                    source=state.get("source"),
-                    to_db=f"{target:.1f}",
-                )
-                return (
-                    UnresolvedVolumeRecoveryResult.EXACT_RESTORED
-                    if recovery == "exact"
-                    else UnresolvedVolumeRecoveryResult.EMERGENCY_ATTENUATED
-                )
-            self._mark_volume_unresolved("volume_restore_unconfirmed")
-            log_event(
-                logger,
-                "correction.crossover_level_volume_safety_recovery_failed",
-                level=logging.CRITICAL,
-                source=state.get("source"),
-            )
-            return UnresolvedVolumeRecoveryResult.FAILED
-
-    async def recover_unresolved_volume_safety(
-        self,
-        set_main_volume_db: Any,
-        get_main_volume_db: Any,
-    ) -> UnresolvedVolumeRecoveryResult:
-        """Recover a latched prior failure, never a live measurement."""
-
-        return await self._recover_volume_safety(
-            set_main_volume_db,
-            get_main_volume_db,
-            allow_active=False,
-        )
-
-    async def _drain_volume_recovery(
-        self,
-        set_main_volume_db: Any,
-        get_main_volume_db: Any,
-    ) -> UnresolvedVolumeRecoveryResult:
-        """Finish recovery even when cancellation repeats during cleanup."""
-
-        cleanup = asyncio.create_task(
-            self._recover_volume_safety(
-                set_main_volume_db,
-                get_main_volume_db,
-                allow_active=True,
-            )
-        )
-        cancelled = False
-        while True:
-            try:
-                result = await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled = True
-                if cleanup.done():
-                    result = cleanup.result()
-                    break
-                continue
-            break
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
-    @staticmethod
-    def _ramp_config_for_geometry(geometry: str) -> MeasurementRamp:
-        """Freeze the same complete ramp config planning and execution consume."""
-
-        from jasper.active_speaker.capture_geometry import (
-            parse_driver_level_geometry,
-        )
-        from jasper.audio_measurement.ramp import (
-            LISTENING_POSITION_CAP_BUMP_DB,
-            LISTENING_POSITION_CAP_CEIL_DB,
-            MeasurementRamp,
-        )
-
-        capture_geometry, _speaker_group_id, _role = parse_driver_level_geometry(
-            str(geometry)
-        )
-        # A fixed-axis capture sits at the same roughly one-metre geometry as
-        # Room measurement, so it uses that domain's reviewed cap. Near-field
-        # retains the quieter shared default. Both still pass through the 0 dB
-        # hard ceiling and live clip abort.
-        if capture_geometry == "reference_axis":
-            return MeasurementRamp(
-                allow_bounded_low_level=True,
-                cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
-                cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
-            )
-        return MeasurementRamp(allow_bounded_low_level=True)
-
-    def phone_hard_timeout_ms(self, geometry: str) -> int:
-        """The phone's hard capture deadline for this geometry, in ms.
-
-        Derived from ``_ramp_config_for_geometry`` so the phone's deadline
-        can never undercut the server's real ``MeasurementRamp.safety_timeout``
-        — a flat client-side constant sized against today's defaults would
-        silently drift out of sync the moment the ramp config (its
-        geometry-specific caps) changes. ``PHONE_TRANSPORT_GRACE_S``
-        is the same margin ``crossover_level_run.build_level_run_request``
-        uses for its (currently unwired) exact-run ``phone_hard_timeout_ms``.
-        """
-
-        safety_timeout_s = self._ramp_config_for_geometry(geometry).safety_timeout
-        return math.ceil((safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0)
-
     def invalidate_comparison_context(self) -> None:
         """Drop a prior lock/setup before a newly acquired level run begins."""
 
         self.assert_volume_safety_resolved()
-        from jasper.audio_measurement.level_match import LevelLockStore
 
         with self._level_result_lock:
-            self._level_run_store.invalidate_succeeded_result()
-            self.level_lock_store = LevelLockStore()
             self.context_id = None
             self.noise_floor_db = None
             self.mic_calibration = None
@@ -665,7 +404,10 @@ class CrossoverLevelLease:
             or self.context_id == current_context_id
         )
         return {
-            "locks": self.level_lock_store.snapshot(),
+            # No production path locks a per-geometry level anymore (the
+            # pre-v2 leveler owned that); kept as an empty dict so the
+            # status wire shape stays stable for existing consumers.
+            "locks": {},
             "context_id": self.context_id,
             "valid": context_valid,
             "unresolved_volume_safety": self.unresolved_volume_safety,
@@ -675,7 +417,6 @@ class CrossoverLevelLease:
 
 _LEVEL_LEASE = CrossoverLevelLease(
     volume_safety_state_path=_DEFAULT_VOLUME_SAFETY_STATE_PATH,
-    level_run_state_path=_level_run_state_path(),
 )
 
 
@@ -849,51 +590,5 @@ def status_payload() -> dict[str, Any]:
         payload["active"],
         driver_count,
         summed_count,
-    )
-    return payload
-
-
-async def start_summed_test(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-) -> dict[str, Any]:
-    """Run the safe combined-driver audible test."""
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    payload = await web_commissioning.start_summed_test(
-        raw,
-        camilla_factory=camilla_factory,
-        blocking_phase=blocking_phase,
-    )
-    log_event(
-        logger,
-        "correction.crossover_summed_test",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
-    )
-    return payload
-
-
-async def play_summed_capture_sweep(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: CamillaFactory,
-    blocking_phase: str | None = None,
-) -> dict[str, Any]:
-    """Play a mic-capture sweep through an already-tested summed path."""
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    payload = await web_commissioning.play_summed_capture_sweep(
-        raw,
-        camilla_factory=camilla_factory,
-        blocking_phase=blocking_phase,
-    )
-    log_event(
-        logger,
-        "correction.crossover_summed_capture_sweep",
-        status=payload.get("status"),
-        group_id=raw.get("speaker_group_id"),
     )
     return payload

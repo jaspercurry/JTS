@@ -278,9 +278,6 @@ def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
     through a symlink or hardlink under a group-writable dir) onto this
     allowlist, so the guarantee is pinned here, by running it.
     """
-    level_lock = _mk(
-        tmp_path / ".active_speaker_crossover_level_run.json.lock", 0o640,
-    )
     repeat_lock = _mk(
         tmp_path / ".active_speaker_repeat_admission.json.lock", 0o640,
     )
@@ -301,7 +298,6 @@ def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
 
     _run_heal(tmp_path)
 
-    assert _mode(level_lock) == 0o660
     assert _mode(repeat_lock) == 0o660
     assert _mode(commissioning_lock) == 0o660
     assert _mode(live_exec_lock) == 0o660
@@ -319,7 +315,7 @@ def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
     inode, so a symlink aborts the install without touching its target.
     """
     target = _mk(tmp_path / "root-owned-secret", 0o600)
-    (tmp_path / ".active_speaker_crossover_level_run.json.lock").symlink_to(target)
+    (tmp_path / ".active_speaker_repeat_admission.json.lock").symlink_to(target)
     script = (
         "set -euo pipefail\n"
         + _STUBS
@@ -343,7 +339,7 @@ def test_heal_refuses_a_hardlinked_run_lock_without_mutating_target(tmp_path):
     than one link, regardless of the fs.protected_hardlinks sysctl.
     """
     target = _mk(tmp_path / "root-owned-secret", 0o600)
-    os.link(target, tmp_path / ".active_speaker_crossover_level_run.json.lock")
+    os.link(target, tmp_path / ".active_speaker_repeat_admission.json.lock")
     script = (
         "set -euo pipefail\n"
         + _STUBS

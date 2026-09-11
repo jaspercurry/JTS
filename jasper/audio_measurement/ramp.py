@@ -11,9 +11,8 @@ The analog amplifier's gain is unknown; JTS controls only the digital
 
 and one trusted, settled reading fixes ``G`` (the line's slope is a known
 ``1``). :class:`LevelSample` is the phone-reported wire sample and
-:class:`MeasurementRamp` is the validated tuning config a ramp engine
-consumes; both are shared between :mod:`jasper.active_speaker.seat_level_ramp`
-(the live engine) and :mod:`jasper.active_speaker.crossover_level_run`.
+:class:`MeasurementRamp` is the validated tuning config the live ramp engine,
+:mod:`jasper.active_speaker.seat_level_ramp`, consumes.
 """
 
 from __future__ import annotations

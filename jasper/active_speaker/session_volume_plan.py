@@ -24,12 +24,13 @@ lease does not:
 * abandon as a defined event set — explicit close, a session-death hook the
   flow calls, and the wall-clock ceiling — each draining the same
   restore-once path;
-* self-owned stale-active handling via the timestamp. ``CrossoverLevelLease``'s
-  ``recover_unresolved_volume_safety`` refuses ``active`` states (it relies on a
-  process restart hydrating them as unresolved); this plan must NOT rely on a
-  restart to flip states, so a hydrated ``active`` state past the ceiling
-  force-drains restore here, and falls back to the emergency floor + latched
-  ``unresolved`` (the volume_recovery path) when readback cannot confirm;
+* self-owned stale-active handling via the timestamp. ``CrossoverLevelLease``
+  only ever turns a hydrated ``active`` state into ``unresolved`` on the NEXT
+  process start (nothing drains it within the same process); this plan must
+  NOT rely on a restart to flip states, so a hydrated ``active`` state past
+  the ceiling force-drains restore here, and falls back to the emergency
+  floor + latched ``unresolved`` (the volume_recovery path) when readback
+  cannot confirm;
 * a PER-STIMULUS re-proof of the volume it opened
   (:meth:`SessionVolumePlan.hold_measurement_volume`, #2925). "Held for the
   whole session" is the intent; whether the fader actually stayed there is a

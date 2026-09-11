@@ -130,7 +130,6 @@ heal_shared_state_modes() {
         # ".<record>.lock" name; only the LOCKS widen to write, the records
         # stay group-READ (published that way by their own atomic writers).
         "l:0660:${STATE_DIR}/active_speaker_commissioning_run.json"
-        "l:0660:${STATE_DIR}/active_speaker_crossover_level_run.json"
         "l:0660:${STATE_DIR}/active_speaker_repeat_admission.json"
         "f:0660:${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock"
         "f:0640:${STATE_DIR}/active_speaker_commissioning_run.json"

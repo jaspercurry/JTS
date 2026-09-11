@@ -32,7 +32,6 @@ lightweight setup pages keeps the idle management UI cheap on a 1 GB Pi.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import functools
 import logging
 import os
@@ -62,7 +61,6 @@ from ._common import (
 from . import correction_capture, correction_handlers, correction_runtime, sync_flow
 from .correction_runtime import (
     BadRequest,
-    CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
     MAX_SYNC_WAV_BODY_BYTES,
     logger,
 )
@@ -418,14 +416,9 @@ def _dispatch_crossover(handler: _Handler) -> None:
 
     try:
         if path == "/crossover/recover-volume":
-            from jasper.camilla import CamillaUnavailable
-
-            # When the v2 session owns the unresolved (or
-            # crash-hydrated active) session volume, route to its
-            # plan's recover_unresolved — the legacy lease holds no
-            # unresolved state for a v2 session, so routing there
-            # instead would 409 crossover_volume_recovery_not_required
-            # and leave the volume_recovery screen's own button dead.
+            # The v2 session plan is the only source of an unresolved (or
+            # crash-hydrated active) session volume in production; the
+            # legacy per-step lease has no path left that ever latches one.
             from . import correction_crossover_v2 as v2host
 
             if v2host.v2_volume_recovery_active():
@@ -462,91 +455,13 @@ def _dispatch_crossover(handler: _Handler) -> None:
                 )
                 return
 
-            if lease.unresolved_volume_safety is None:
-                handler._send_json(
-                    {
-                        "status": "refused",
-                        "reason": "crossover_volume_recovery_not_required",
-                        "next_step": "Refresh the crossover page.",
-                    },
-                    status=HTTPStatus.CONFLICT,
-                )
-                return
-            cam = correction_runtime.camilla_controller()
-            from jasper.volume_owner import volume_owner
-
-            recovery_owner = volume_owner()
-            if recovery_owner is None:
-                log_event(
-                    logger,
-                    "correction.crossover_level_volume_recovery_owner_absent",
-                    level=logging.CRITICAL,
-                )
-                handler._send_json(
-                    {
-                        "status": "refused",
-                        "reason": "crossover_volume_recovery_unavailable",
-                        "next_step": "Restart the speaker, then retry.",
-                    },
-                    status=HTTPStatus.SERVICE_UNAVAILABLE,
-                )
-                return
-
-            # Routed: the recovery DECLARES the household level rather
-            # than writing the fader itself. The lease keeps its
-            # exact-then-emergency ladder and still proves each rung
-            # through its own readback below, which is what makes a
-            # declaration that was merely RECORDED under a higher-ranked
-            # claim read as "not yet safe" instead of clearing the
-            # durable intent early.
-            async def _set_recovery_volume(db: float) -> bool:
-                return await recovery_owner.declare_household_level_db(db)
-
-            async def _get_recovery_volume() -> float:
-                try:
-                    value = await cam.get_volume_db(best_effort=False)
-                except CamillaUnavailable as exc:
-                    raise RuntimeError(
-                        "CamillaDSP is unavailable during volume recovery"
-                    ) from exc
-                if value is None:
-                    raise RuntimeError(
-                        "CamillaDSP did not report the recovered volume"
-                    )
-                return float(value)
-
-            try:
-                recovery = correction_runtime.run_async(
-                    lease.recover_unresolved_volume_safety(
-                        _set_recovery_volume,
-                        _get_recovery_volume,
-                    ),
-                    timeout=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-                )
-            except concurrent.futures.TimeoutError:
-                log_event(
-                    logger,
-                    "correction.crossover_level_volume_safety_recovery_timeout",
-                    level=logging.ERROR,
-                    timeout_s=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-                )
-                recovery = (
-                    crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
-                )
-            succeeded = recovery is not (
-                crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
-            )
             handler._send_json(
                 {
-                    "status": "recovered" if succeeded else "refused",
-                    "recovery": recovery.value,
-                    "next_step": (
-                        "Refresh and continue crossover commissioning."
-                        if succeeded
-                        else "Stop playback and retry recovery when CamillaDSP is available."
-                    ),
+                    "status": "refused",
+                    "reason": "crossover_volume_recovery_not_required",
+                    "next_step": "Refresh the crossover page.",
                 },
-                status=(HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT),
+                status=HTTPStatus.CONFLICT,
             )
             return
 
