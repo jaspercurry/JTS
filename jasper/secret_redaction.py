@@ -99,15 +99,25 @@ _KEY_VALUE_RE = re.compile(
 # A keyword introducing a value, in the two shapes that are not `NAME=`.
 # After a colon the value runs to end of line: a colon-introduced
 # passphrase is words, not one token (an unquoted colon only — a JSON
-# `"password": "…"` stays quote-scoped in the rule above). After a space
-# it is one run, floored at 8 — the WPA minimum, below which prose such as
-# "password reset link sent" gets eaten — unless it opens with a quote,
-# which shell escaping puts *inside* the token (`'don'\''t'`). `wpa-psk`
-# is a key-mgmt value, not a secret. An unmatched group renders empty, so
-# one template serves both shapes.
+# `"password": "…"` stays quote-scoped in the rule above). That branch
+# stays unguarded even when the value opens `<redacted>` — it is what
+# sweeps up the rest of a multi-word colon value `_KEY_VALUE_RE` only
+# partly redacted (e.g. `password: two words`); guarding it would leave
+# the remainder exposed. After a space it is one run, floored at 8 —
+# the WPA minimum, below which prose such as "password reset link sent"
+# gets eaten — unless it opens with a quote, which shell escaping puts
+# *inside* the token (`'don'\''t'`). `wpa-psk` is a key-mgmt value, not
+# a secret. This branch IS guarded against a value already reading
+# `<redacted>` as a whole token (end, whitespace, or a quote next) —
+# mirroring `_AUTHORIZATION_RE`: re-matching the placeholder
+# `_redacted_argv` leaves on an nmcli PSK would swallow a trailing quote off
+# the end of it. A secret merely glued onto the placeholder still redacts,
+# since only a token-ending `<redacted>` is skipped. An unmatched group
+# renders empty, so one template serves both shapes.
 _SECRET_WORD_RE = re.compile(
     rf"(?im)(?<![A-Za-z0-9])(password|passphrase|(?<!wpa-)psk){_NOT_NM_PROPERTY}"
-    rf"(?:([ \t]*:[ \t]*)\S.*$|([ \t]+)(?:(?:{_QUOTED})\S*|\S{{8,}}))",
+    rf"(?:([ \t]*:[ \t]*)\S.*$"
+    rf"|([ \t]+)(?!<redacted>(?![^\s'\"]))(?:(?:{_QUOTED})\S*|\S{{8,}}))",
 )
 
 # `key` and `code` alone: every other query-parameter name is already a
