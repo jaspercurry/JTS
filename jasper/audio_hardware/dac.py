@@ -25,6 +25,16 @@ HIFIBERRY_DAC8X_STUDIO_ID = "hifiberry_dac8x_studio"
 INNOMAKER_HIFI_AMP_PRO_ID = "innomaker_hifi_amp_pro"
 DUAL_APPLE_USB_C_DAC_4CH_ID = "dual_apple_usb_c_dac_4ch"
 
+# Apple's assigned vendor:product id for the USB-C -> 3.5mm dongle (both the
+# single and dual profiles are this same silicon). udev cannot import a
+# Python constant, so deploy/udev/99-jasper-apple-dongle.rules (padded
+# "05ac"/"110a" ATTR match) and deploy/udev/99-jasper-audio-hardware-
+# reconcile.rules (unpadded "5ac/110a" PRODUCT-env match on remove, see that
+# file's own comment) and systemd-units.sh's
+# pin_attached_apple_dongle_power_control carry their own copies; pinned
+# together by test_dac_profiles.py::test_apple_dongle_usb_id_matches_udev_rules.
+APPLE_DONGLE_USB_ID = "05ac:110a"
+
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 
 DacKind = Literal["single", "composite"]
@@ -410,7 +420,7 @@ APPLE_USB_C_DONGLE = DacProfile(
     clock_domain_contract="single_device",
     outputd_sink="single_alsa",
     supported_card_matches=("usb-c to 3.5mm",),
-    usb_ids=("05ac:110a",),
+    usb_ids=(APPLE_DONGLE_USB_ID,),
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
     # A single Apple dongle can carry a mono active 2-way graph over the same
     # width-aware single-ALSA active lane used by wider coherent DACs.
@@ -756,7 +766,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     clock_domain_contract="measured_sync_required",
     outputd_sink="composite",
     supported_card_matches=("usb-c to 3.5mm",),
-    usb_ids=("05ac:110a",),
+    usb_ids=(APPLE_DONGLE_USB_ID,),
     child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
     requires_same_usb_bus=True,
     supports_active_outputd_lane=True,
