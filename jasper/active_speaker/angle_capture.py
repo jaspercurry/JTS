@@ -343,6 +343,7 @@ class AngleCaptureRequest:
             )
         self._refuse_bad_level_policy()
         self._refuse_bad_sweep_band()
+        self._refuse_unplayed_sweep()
 
     def _refuse_bad_level_policy(self) -> None:
         """The walk-level volume policy: a mode this module names, and rungs only
@@ -385,6 +386,17 @@ class AngleCaptureRequest:
                 f"{band!r}",
             )
 
+    def _refuse_unplayed_sweep(self) -> None:
+        """A summed sweep's band and duration ride SUMMED stops only (the rule
+        ``MeasureSpec`` holds); a walk with none has nothing to play them."""
+        if (self.sweep_band_hz is not None or self.sweep_s is not None) and not any(
+            stop.regime in (REGIME_SUMMED, REGIME_BRANCHES) for stop in self.stops
+        ):
+            raise LateralWalkRefused(
+                WALK_STIMULUS_NOT_ACCEPTED,
+                "sweep_band_hz/sweep_s ride summed stops; this walk names none",
+            )
+
     def _refuse_beyond_reach(
         self, axis: str, bound: int, asked: tuple[int, ...]
     ) -> None:
@@ -400,20 +412,21 @@ class AngleCaptureRequest:
                 + " deg",
             )
 
-    @property
-    def measure_spec_stimulus(self) -> dict[str, object]:
+    def measure_spec_stimulus(self, *, summed: bool) -> dict[str, object]:
         """This walk's stimulus as ``MeasureSpec`` keywords, STATED fields only.
 
         The one owner of the pairing, because the two spellings differ
         (``ceiling_db_spl`` is the spec's ``spl_ceiling_db_spl``) and an absent
-        band is ``None`` here and ``()`` there. Omitting what was not stated is
+        band is ``None`` here and ``()`` there. The band and duration go only
+        to a ``summed`` spec, the one scope that plays a summed sweep; the
+        ladder and ceiling go to every spec. Omitting what was not stated is
         load-bearing: an ordinary walk must build the spec it always did,
         keyword for keyword, or its captures stop being byte-identical.
         """
         stated: dict[str, object] = {}
-        if self.sweep_band_hz is not None:
+        if summed and self.sweep_band_hz is not None:
             stated["sweep_band_hz"] = self.sweep_band_hz
-        if self.sweep_s is not None:
+        if summed and self.sweep_s is not None:
             stated["sweep_s"] = self.sweep_s
         if self.level_ladder_dbfs:
             stated["level_ladder_dbfs"] = self.level_ladder_dbfs

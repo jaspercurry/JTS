@@ -1464,8 +1464,8 @@ def test_a_volume_series_prices_each_rung_as_another_pass_of_the_walk() -> None:
     the formula, which would only restate the code.
     """
     stops = (
-        ac.AngleStop(0, ac.REGIME_PER_DRIVER),
-        ac.AngleStop(7, ac.REGIME_PER_DRIVER),
+        ac.AngleStop(0, ac.REGIME_SUMMED),
+        ac.AngleStop(7, ac.REGIME_SUMMED),
     )
     rungs = (-20.0, -14.0, -8.0)
 
@@ -1486,8 +1486,8 @@ def test_every_stageable_stimulus_field_reads_back_whole(spool_slot) -> None:
     """
     request = ac.AngleCaptureRequest(
         stops=(
-            ac.AngleStop(0, ac.REGIME_PER_DRIVER),
-            ac.AngleStop(7, ac.REGIME_PER_DRIVER),
+            ac.AngleStop(0, ac.REGIME_SUMMED),
+            ac.AngleStop(7, ac.REGIME_SUMMED),
         ),
         sweep_band_hz=(200.0, 3000.0),
         sweep_s=2.5,
@@ -1554,14 +1554,31 @@ def test_a_bad_level_policy_refuses_at_statement_time(fields: dict) -> None:
 def test_a_band_that_is_not_two_ascending_bounds_refuses_at_statement_time(
     band: tuple,
 ) -> None:
-    """The SHAPE only. Nyquist and the summed-scope rule stay ``MeasureSpec``'s, so a
-    well-shaped band this module cannot judge passes here and is judged when the
-    host builds the walk's specs.
+    """The SHAPE only. Nyquist stays ``MeasureSpec``'s, so a well-shaped band this
+    module cannot judge passes here and is judged when the host builds the walk's
+    specs.
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), sweep_band_hz=band,
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), sweep_band_hz=band,
         )
+    assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"sweep_band_hz": (200.0, 3000.0)}, {"sweep_s": 2.5}],
+    ids=["band", "duration"],
+)
+def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
+    fields: dict,
+) -> None:
+    """Per-driver stops play the program's own excitation, so a band or duration
+    stated for a summed sweep would have nothing to ride; ``walk_price`` must not
+    price a stimulus no stop plays.
+    """
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **fields)
     assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
 
 
@@ -1648,7 +1665,7 @@ def test_a_banked_number_written_as_a_numeral_reads_back_as_one(spool_slot) -> N
     than a string that MULTIPLIES into ``"2.52.52.5"`` when a price scales it.
     """
     spool.stage_angle_request(
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),))
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),))
     )
     path = spool.angle_request_spool_path()
     doc = json.loads(path.read_text())
@@ -1686,7 +1703,7 @@ def test_cli_stimulus_flags_reach_the_staged_request(spool_slot) -> None:
     WIRING.
     """
     argv = [
-        "stage", "--angles", "0",
+        "stage", "--angles", "0", "--regime", "summed",
         "--sweep-band-hz", "200", "3000",
         "--sweep-s", "2.5",
         "--level-dbfs", "-20", "--level-dbfs", "-14",
@@ -1724,7 +1741,7 @@ def test_cli_stimulus_flags_reach_the_printed_price(capsys) -> None:
     than re-deriving ``price`` by calling ``walk_price`` beside it.
     """
     argv = [
-        "plan", "--program", "tournament", "--size", "express",
+        "plan", "--program", "tournament", "--size", "express", "--candidates", "base",
         "--sweep-s", "2.0",
         "--level-dbfs", "-20", "--level-dbfs", "-14", "--level-dbfs", "-8",
     ]

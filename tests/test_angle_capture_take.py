@@ -907,26 +907,20 @@ def test_a_staged_stimulus_reaches_every_spec_the_walk_plays(slot, monkeypatch):
     assert {spec.level_ladder_dbfs for spec in bare.values()} == {()}
 
 
-def test_a_stimulus_the_specs_refuse_refuses_the_open_in_the_specs_own_words(
-    slot, caplog
-):
-    """The stimulus is judged by the SPEC, at adoption, like R-1's two pairs: a
-    summed sweep band cannot ride the per-driver design-axis MEASURE capture, so
-    the walk refuses the open rather than measuring the band nobody can play.
+def test_a_summed_sweep_rides_the_summed_stops_only(slot):
+    """The band and duration are a SUMMED sweep's, so they reach each stop's
+    summed spec and never the per-driver design-axis MEASURE spec, which plays
+    the program's own excitation; ``MeasureSpec`` refuses them on that scope.
     """
+    band, seconds = (200.0, 3000.0), 2.5
     spool.stage_angle_request(
-        replace(ac.summed_at([0]), sweep_band_hz=(200.0, 3000.0))
+        replace(ac.summed_at([0, 7]), sweep_band_hz=band, sweep_s=seconds)
     )
-    with caplog.at_level(logging.WARNING):
-        sentence = _refused()
+    _prompts, _consumer, specs, _trims, _claims = _take()
 
-    assert ac.WALK_STIMULUS_NOT_ACCEPTED in sentence
-    with pytest.raises(ValueError) as spec_refusal:
-        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, sweep_band_hz=(200.0, 3000.0))
-    assert str(spec_refusal.value) in sentence
-
-    line, = _events(caplog)
-    assert f"reason={ac.WALK_STIMULUS_NOT_ACCEPTED}" in line
+    by_scope = {spec.graph_scope: spec for spec in specs.values()}
+    assert (by_scope["base"].sweep_band_hz, by_scope["base"].sweep_s) == (band, seconds)
+    assert (by_scope["drivers"].sweep_band_hz, by_scope["drivers"].sweep_s) == ((), None)
 
 
 def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):

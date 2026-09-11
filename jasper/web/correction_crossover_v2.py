@@ -1972,10 +1972,10 @@ def _take_staged_angle_walk(
     here rather than checked: the same objects the engine leg plays, so no
     second construction can disagree with the validated one. The design-axis
     MEASURE index always carries the walk-level spec; a STOP is in the map only
-    when it names a candidate, which only the engine leg can install. EVERY spec
-    carries the walk's stimulus statement
-    (:attr:`~jasper.active_speaker.angle_capture.AngleCaptureRequest.measure_spec_stimulus`),
-    so a stated field either plays or refuses the open — never both silently
+    when it names a candidate, which only the engine leg can install. Each spec
+    carries the part of the walk's stimulus statement its scope can play
+    (:meth:`~jasper.active_speaker.angle_capture.AngleCaptureRequest.measure_spec_stimulus`),
+    so a stated field either plays or refuses the open — never silently
     dropped and reported as staged.
     ``claims`` is what each stop's graph CARRIED, for the pose records the flow
     banks.
@@ -2084,7 +2084,7 @@ def _take_staged_angle_walk(
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
         raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
-    stimulus = request.measure_spec_stimulus
+    stimulus = request.measure_spec_stimulus(summed=False)
     try:
         # Its own arm rather than a fourth clause on the block above: only THIS
         # construction may be read as a polarity refusal, and a ``ValueError``
@@ -2161,13 +2161,18 @@ def _take_staged_angle_walk(
     ):
         if stop.regime in (REGIME_SUMMED, REGIME_BRANCHES):
             scope = candidate_scopes[stop.candidate_id] if stop.candidate_id else baseline_scope(stop.purpose)
-            specs_by_index[index] = MeasureSpec(
-                kind=MEASURE_KIND_VERIFY if not stop.candidate_id and scope != "base" else MEASURE_KIND_CANDIDATE,
-                positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
-                pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
-                graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else scope,
-                **stimulus,
-            )
+            try:
+                specs_by_index[index] = MeasureSpec(
+                    kind=MEASURE_KIND_VERIFY if not stop.candidate_id and scope != "base" else MEASURE_KIND_CANDIDATE,
+                    positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
+                    pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
+                    graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else scope,
+                    **request.measure_spec_stimulus(summed=True),
+                )
+            except ValueError as exc:
+                # Only the stimulus is new on this construction; the spec's own
+                # sentence names the field.
+                raise refused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
         for stop in request.stops
