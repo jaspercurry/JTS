@@ -35,11 +35,8 @@ logger = logging.getLogger("jasper.voice_daemon")
 # and the model's first-chunk latency share one `JASPER_IDLE_TIMEOUT_SEC`
 # envelope measured from turn open. Its own docstring puts that latency
 # at "3-5 s, sometimes longer" for Live API providers; 6 s covers the
-# documented range with margin. Whatever the hold cap ends up being, it
-# must fire this far below `idle_timeout_sec` or the watchdog reaps the
-# turn before the model can speak — and the teardown cancels
-# `play_responses` BEFORE calling `end_input`, so the user gets no
-# answer at all rather than a short one.
+# documented range with margin. See `input_cap_sec` for how the hold cap
+# must relate to this allowance.
 PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC = 6.0
 
 # Floor for the derived push-to-talk hold cap, so an operator who sets a
@@ -92,13 +89,9 @@ class ManualMicRuntime:
 
 
 async def keepalive_ticks() -> "AsyncIterator[None]":
-    """Yield a liveness tick every PTT_KEEPALIVE_INTERVAL_SEC.
-
-    Stands in for the primary mic's frame stream on a speaker that has
-    no always-listening mic. `Heartbeat` only pats systemd when the
-    progress sentinel is younger than its stale threshold, so the
-    interval must stay comfortably under that or `WatchdogSec=30s`
-    would reap a healthy daemon.
+    """Yield a liveness tick every PTT_KEEPALIVE_INTERVAL_SEC — stands in
+    for the primary mic's frame stream on a speaker with no
+    always-listening mic.
 
     Ticks UNCONDITIONALLY, exactly like a mic's `frames()`. Shutdown
     is the consumer's job: `run()`'s loop checks `_stop_event` on
@@ -121,14 +114,13 @@ class PushToTalk:
             runtime.source_id: runtime for runtime in mics
         }
         self.active_source: str | None = None
-        # Push-to-talk-only is a DERIVED runtime state, not a declared or
-        # config-inferred one: this daemon resolved zero wake legs and holds
-        # at least one manual mic source, so every turn it can ever open is a
-        # button turn. Derived from what was actually opened rather than
-        # inferred from config — `cfg.mic_device` defaults to the literal
-        # "Array", so "empty mic_device" never fires on a real box — and it
-        # composes with the mic-unplugged case without knowing anything about
-        # install tiers.
+        # Push-to-talk-only is a DERIVED runtime state: this daemon resolved
+        # zero wake legs and holds at least one manual mic source, so every
+        # turn it can ever open is a button turn. Derived from what was
+        # actually opened rather than inferred from config — `cfg.mic_device`
+        # defaults to the literal "Array", so "empty mic_device" never fires
+        # on a real box — and it composes with the mic-unplugged case without
+        # knowing anything about install tiers.
         self.only: bool = not have_wake_legs and bool(self.sources)
         self._cap_warned: bool = False
 

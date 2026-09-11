@@ -16,17 +16,14 @@ This module is the ONE place that resolves "which provider is active"
 for *display/aggregation* consumers — chiefly ``jasper-control``'s
 ``/state`` and ``/system`` dashboard. It deliberately re-reads the file
 on each call so a wizard save is reflected immediately, **without
-restarting the long-lived jasper-control daemon**. That mirrors the
-home-assistant status block in :mod:`jasper.control.server`, which
-re-reads its env file fresh for exactly the same reason.
+restarting the long-lived jasper-control daemon**.
 
 Why not ``os.environ``: long-lived daemons load
 ``voice_provider.env`` as a systemd ``EnvironmentFile=`` at *process
 start*, so ``os.environ['JASPER_VOICE_PROVIDER']`` is frozen for the
 process lifetime. Only ``jasper-voice`` is restarted on a provider
 switch, so any other process reading ``os.environ`` shows the previous
-provider until it happens to restart. That was the stale-``/system/``
-bug this module exists to prevent.
+provider until it happens to restart.
 
 ``jasper.config.Config.from_env`` remains the resolver for the
 *running* daemon (``jasper-voice``), whose environment is always fresh
@@ -227,7 +224,7 @@ def read_active_model_from_env_files(
     jasper-doctor invoked as ``sudo -E jasper-doctor``, say — can name a
     model ``jasper-voice`` does not actually run. Same drift class
     :func:`read_active_provider_state` closes for the provider selector
-    itself (issue #3133, following #2212/#3129).
+    itself (issue #3133).
 
     Falls back to the catalog default when neither file pins one,
     matching what ``jasper-voice`` resolves from a clean environment.
@@ -273,10 +270,9 @@ def resolve_barge_in_enabled(provider: str, env: Mapping[str, str]) -> bool:
 # barge-in is OFF (the common case). Gate the parse on the file's mtime+size:
 # the steady state is a single os.stat, and a wizard/operator toggle (which
 # rewrites the file) bumps the mtime and forces a re-parse — so live toggle
-# still works without a daemon restart. Keyed by path; in production it holds a
-# single entry (one SSOT file), and the mtime+size key makes a stale read
-# impossible. (Across a pytest session it accumulates one entry per distinct tmp
-# path — harmless: every key is mtime-stamped, so no stale value is ever served.)
+# still works without a daemon restart. Keyed by path; in production it holds
+# a single entry (one SSOT file), and the mtime+size key makes a stale read
+# impossible.
 _ENV_FILE_STATE_CACHE: dict[str, tuple[tuple[int, int], object]] = {}
 
 
