@@ -1512,8 +1512,8 @@ def _takes_var_keywords(func) -> bool:
 )
 def test_the_shared_playout_fakes_track_the_real_surface(fake, real):
     """A fake that has drifted from the object it stands in for passes while
-    the defect it should catch is present — #4899 shipped red CI because six
-    copies of `_poison` predated the real one's `poison_reason` keyword.
+    the defect it should catch is present — a real adapter method gained a
+    keyword its hand-rolled fakes lacked, so cancellation raised TypeError inside the tests.
 
     So: no PUBLIC method the real class does not have (no invented surface —
     a `_`-prefixed name is either the real one's, checked below, or the fake's
