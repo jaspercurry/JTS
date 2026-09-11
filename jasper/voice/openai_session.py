@@ -172,7 +172,7 @@ def _upsample_16k_to_24k(
 class OpenAIRealtimeTurn(BaseLiveTurn):
     """A single turn against an open ``OpenAIRealtimeConnection``.
 
-    Adds the resampler state and its transcript/barge-in wire state to
+    Adds the resampler state and its barge-in wire state to
     ``BaseLiveTurn``. The connection's receive loop routes incoming
     server events here while a turn is active.
     """
@@ -197,12 +197,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._response_id: str | None = None
         self._response_item_ids: set[str] = set()
         self._input_item_id: str | None = None
-        # Text transcript of the user audio / assistant audio streamed by
-        # Realtime. Production still uses audio for interaction; the strings
-        # are retained on the turn only so WakeLoop can write opt-in
-        # conversation history without logging transcript content.
-        self._assistant_transcript_parts: list[str] = []
-        self._user_transcript_parts: list[str] = []
         # Polyphase resampler state, persists across send_audio calls.
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
@@ -291,17 +285,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 logger.warning("debug record close failed: %s", e)
             self._debug_wav = None
         await self._conn._on_turn_released(self)
-        assistant_text = self.assistant_transcript().strip()
-        if assistant_text:
-            # Keep transcript content out of logging entirely: the
-            # flight recorder buffers DEBUG records and dumps them to
-            # journald around failures, so even DEBUG lines must carry
-            # metadata rather than household utterances.
+        if assistant_text := self.assistant_transcript().strip():
+            # Metadata only; the base turn's transcript fields say why.
             log_event(
-                logger,
-                "openai.assistant_transcript",
-                chars=len(assistant_text),
-                level=logging.DEBUG,
+                logger, "openai.assistant_transcript",
+                chars=len(assistant_text), level=logging.DEBUG,
             )
         if self._chunks_received > 0:
             avg = self._chunk_bytes_total // self._chunks_received
@@ -324,12 +312,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         if user is None and assistant is None:
             return None
         return TurnCapture(user_text=user, assistant_text=assistant)
-
-    def assistant_transcript(self) -> str:
-        return "".join(self._assistant_transcript_parts)
-
-    def user_transcript(self) -> str:
-        return " ".join(self._user_transcript_parts)
 
     # ---- Interruptible (OpenAI reference pack) ----
     # `response.cancel` then `conversation.item.truncate`, in that order,
@@ -444,31 +426,18 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._audio_q.put_nowait(None)
 
     def _on_assistant_text_delta(self, delta: str) -> None:
-        if not delta:
-            return
-        self._assistant_transcript_parts.append(delta)
+        self.add_transcript(assistant=delta)
         self._note_activity()
 
     def _on_assistant_text_done(self, text: str) -> None:
-        if not text:
-            return
+        # Realtime sends both deltas and a final text field. Trust the
+        # deltas unless the final text extends them.
         current = self.assistant_transcript()
-        if current:
-            # Some providers send both deltas and a final text field.
-            # Trust the deltas unless the final text clearly contains
-            # more content, in which case replace the aggregate.
-            if len(text) > len(current) and text.startswith(current):
-                self._assistant_transcript_parts = [text]
-            return
-        self._assistant_transcript_parts = [text]
+        if text and (not current or text.startswith(current)):
+            self.set_transcript(assistant=text)
 
     def _on_user_text_done(self, text: str) -> None:
-        text = text.strip()
-        if text:
-            current = self.user_transcript()
-            merged = _merge_transcript_completion(current, text)
-            if merged != current:
-                self._user_transcript_parts = [merged]
+        self.set_transcript(user=_merge_transcript_completion(self.user_transcript(), text))
 
 
 # ---------- Long-lived connection ------------------------------------------

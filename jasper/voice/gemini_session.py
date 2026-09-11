@@ -154,8 +154,6 @@ class GeminiLiveTurn(BaseLiveTurn):
         self._conn: GeminiLiveConnection = conn
         self._session = getattr(conn, "_session", None)
         self._activity_end_sent = False
-        self._user_transcript_parts: list[str] = []
-        self._assistant_transcript_parts: list[str] = []
         self._tool_call_names: list[str] = []
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -212,8 +210,8 @@ class GeminiLiveTurn(BaseLiveTurn):
         )
 
     def capture(self) -> TurnCapture | None:
-        user = "".join(self._user_transcript_parts).strip() or None
-        assistant = "".join(self._assistant_transcript_parts).strip() or None
+        user = self.user_transcript().strip() or None
+        assistant = self.assistant_transcript().strip() or None
         data: dict[str, object] = {
             "kind": "voice_turn",
             "transcripts_available": user is not None or assistant is not None,
@@ -280,7 +278,7 @@ class GeminiLiveTurn(BaseLiveTurn):
             if not self._cancel_requested:
                 text = getattr(getattr(sc, "output_transcription", None), "text", None)
                 if isinstance(text, str) and text:
-                    self._assistant_transcript_parts.append(text)
+                    self.add_transcript(assistant=text)
             if getattr(sc, "turn_complete", False) and not self._server_turn_complete:
                 self._cancel_tools()
                 self._note_activity()
@@ -475,7 +473,7 @@ class GeminiLiveConnection(BaseLiveConnection):
         if turn is not None and self._owns_turn(turn) and not turn._cancel_requested:
             text = getattr(transcription, "text", None)
             if isinstance(text, str) and text:
-                turn._user_transcript_parts.append(text)
+                turn.add_transcript(user=text)
         # Input transcription is unordered relative to response completion:
         # https://ai.google.dev/api/live#bidigeneratecontentservercontent
         if getattr(transcription, "finished", False):

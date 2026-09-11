@@ -144,6 +144,13 @@ class BaseLiveTurn:
             bucket: dict.fromkeys(keys, 0)
             for bucket, keys in self.usage_detail_buckets.items()
         } or None
+        # Text of the user's and the model's audio as the provider
+        # transcribes it. Retained only so WakeLoop can write opt-in
+        # conversation history; never logged — the flight recorder dumps
+        # DEBUG records around failures, so household utterances must
+        # not reach one.
+        self._user_transcript = ""
+        self._assistant_transcript = ""
 
     def _start_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
         if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
@@ -258,6 +265,27 @@ class BaseLiveTurn:
                 **{bucket: dict(counts) for bucket, counts in details.items()},
             },
         )
+
+    def add_transcript(self, *, user: str = "", assistant: str = "") -> None:
+        """Append one wire delta to the turn's running transcript."""
+        self._user_transcript += user
+        self._assistant_transcript += assistant
+
+    def set_transcript(
+        self, *, user: str | None = None, assistant: str | None = None,
+    ) -> None:
+        """Replace one side with a provider's own resolved text, which
+        appending after that provider's own deltas would duplicate."""
+        if user is not None:
+            self._user_transcript = user
+        if assistant is not None:
+            self._assistant_transcript = assistant
+
+    def user_transcript(self) -> str:
+        return self._user_transcript
+
+    def assistant_transcript(self) -> str:
+        return self._assistant_transcript
 
     async def wait_for_interrupt(self) -> None:
         await self._interrupt_event.wait()
