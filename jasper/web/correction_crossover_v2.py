@@ -4893,7 +4893,6 @@ def prepare_v2_session(
                 applied=bool(prior_raw.get("applied")),
                 gain_plan_db=prior_raw.get("gain_plan_db"),
                 measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
-                measure_gain_retry_used=bool(prior_raw.get("measure_gain_retry_used")),
                 attempt_history=attempt_history_from_state(prior_raw),
                 last_attempt_decision=(
                     dict(prior_decision)
@@ -5111,7 +5110,6 @@ def prepare_v2_session(
                 applied=True,
                 gain_plan_db=state.get("gain_plan_db"),
                 measure_gain_ceiling_db=state.get("measure_gain_ceiling_db"),
-                measure_gain_retry_used=bool(state.get("measure_gain_retry_used")),
                 index_phase_map=opening.plan.index_phase_map,
                 measure_predicted_sum=predicted_sum,
                 measure_predicted_spec_report=predicted_spec,

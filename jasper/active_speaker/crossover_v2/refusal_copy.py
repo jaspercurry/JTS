@@ -7,18 +7,15 @@
 The one module here that owns household-facing copy rather than a decision:
 the codes, the templates, the :data:`REASON_REGISTRY` binding a code to its
 sentence and retry budget, the selectors that pick between two sentences for
-one code, and :class:`PhaseVerdict`. :data:`SCREEN_KIND_REASONS` covers
-:data:`~.capture_dispatch.CAPTURE_SCREEN_KINDS` exactly and names only
-:data:`REASON_REGISTRY` codes (pinned in ``tests/test_crossover_v2_spatial.py``),
-so a new rung cannot ship without a household sentence. Every sibling answers with a *kind* and
-never renders a sentence. Where this vocabulary belongs is still open (#2390).
+one code, and :class:`PhaseVerdict`. Spatial screens still use
+:data:`SCREEN_KIND_REASONS`; the per-take assessor returns registry codes directly.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.active_speaker.delta_probe import (
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -27,9 +24,11 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.log_event import log_event
 
-from . import capture_dispatch as _dispatch
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
+
+if TYPE_CHECKING:
+    from .capture_dispatch import TakeVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -1256,13 +1255,6 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-    _dispatch.SCREEN_ANCHOR_AMBIGUOUS: REASON_ANCHOR_AMBIGUOUS,
-    _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
-    _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
-    _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,
-    _dispatch.SCREEN_ALIGNMENT_UNRESOLVED: REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
-    _dispatch.SCREEN_DELAY_IMPLAUSIBLE: REASON_DELAY_IMPLAUSIBLE,
-    _dispatch.SCREEN_ANCHOR_UNCONFIRMED: REASON_ANCHOR_TOO_QUIET,
 }
 
 
@@ -1411,6 +1403,17 @@ class PhaseVerdict:
 
     evidence: dict[str, float | bool | str] = field(default_factory=dict)
 
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    next: str | None = None
+    next_gain_db: float | None = None
+    charge: str = "operator"
+
+    @classmethod
+    def from_take(cls, take: TakeVerdict, **kwargs: Any) -> PhaseVerdict:
+        return cls(take.ok and take.fault is None and take.next == "accept", take.fault,
+                   evidence=take.evidence, capabilities=take.capabilities, next=take.next,
+                   next_gain_db=take.next_gain_db, charge=take.charge, **kwargs)
+
     def to_capture_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.
 
@@ -1442,5 +1445,14 @@ class PhaseVerdict:
             if self.code == REASON_VERIFY_INCONCLUSIVE:
                 out["reflection_measured"] = self.reflection_measured
         out.update(self.payload)
-        out["evidence"] = dict(self.evidence)
+        out.update(evidence=dict(self.evidence), capabilities=dict(self.capabilities),
+                   next=self.next or ("accept" if self.accepted else "fix_and_retake"),
+                   next_gain_db=self.next_gain_db,
+                   charge="none" if self.accepted else self.charge)
+        if self.next is not None and not self.accepted:
+            out["auto_retry"] = self.charge == "speaker" and self.next in {
+                "retake_same", "retake_louder", "retake_quieter",
+            }
+        if self.payload.get("terminal"):
+            out.update(next="stop", auto_retry=False)
         return out
