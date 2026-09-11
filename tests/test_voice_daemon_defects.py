@@ -245,7 +245,11 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
     also names itself in the journal, so the refusal is not cue-only."""
 
     async def _drive(
-        *, paused: bool, conn_paused: bool = False, cue: str | None = None,
+        *,
+        paused: bool,
+        conn_paused: bool = False,
+        cue: str | None = None,
+        detail: str | None = None,
     ) -> tuple[list[str], int]:
         wl = wake_loop_for_tests()
         played: list[str] = []
@@ -271,6 +275,9 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
 
             def is_paused(self) -> bool:
                 return self._paused
+
+            def last_failure_detail(self) -> str | None:
+                return detail
 
             def wake_cue(self) -> str:
                 return cue or "cant_connect"
@@ -321,6 +328,13 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
         paused=True, conn_paused=True, cue="provider_out_of_credit",
     ) == (["provider_out_of_credit"], 1)
 
+    # A provider that holds no socket between turns reads as takeable the
+    # instant its failed acquire ends, so the recorded outage — not the
+    # state — is what makes the remedy cue the honest one.
+    assert await _drive(
+        paused=False, detail="insufficient_quota", cue="provider_out_of_credit",
+    ) == (["provider_out_of_credit"], 0)
+
 
 async def test_turn_open_failure_releases_output_gate_before_cue():
     played: list[tuple[str, str | None]] = []
@@ -333,6 +347,8 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
     class _Conn:
         def is_paused(self) -> bool:
             return False
+        def last_failure_detail(self) -> str | None:
+            return None
     class _Cues:
         async def play(self, slug: str) -> bool:
             played.append((slug, wl._output_gate.active_kind))
