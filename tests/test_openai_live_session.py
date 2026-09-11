@@ -16,8 +16,10 @@ from pydantic import TypeAdapter
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import openai_live_session
+from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
+from jasper.voice.session import ConnectionState
 from tests._async_wait import wait_signalled, wait_until
 from tests._log_events import event_fields
 
@@ -185,30 +187,98 @@ async def test_silence_does_not_count_as_an_answer_and_mute_discards_buffered_in
         await conn.stop()
 
 
-async def test_failed_start_redacts_key_and_allows_another_wake():
-    socket = LiveSocket()
+async def test_a_terminal_connect_failure_reports_the_outage_and_its_remedy():
+    """A wake that cannot open a session tells the household why.
+
+    Live holds no socket between conversations, so the acquire is where
+    its outage is observed: the redacted cause reaches `/state` through
+    `last_failure_detail()`, the remedy cue is announced once, and the
+    connection stays takeable so the next wake still dials.
+    """
     key = "private-test-credential"
+    attempts = 0
+
+    class _Terminal(Exception):
+        status_code = 403
+
+    def connect():
+        nonlocal attempts
+        attempts += 1
+        raise _Terminal(f"insufficient_quota for {key}")
+
+    cues: list[str] = []
+
+    async def cue_cb(slug: str) -> None:
+        cues.append(slug)
+
+    conn = OpenAILiveConnection(api_key=key, connect=connect)
+    conn.set_failure_escalation_cb(cue_cb)
+    await conn.start(ToolRegistry(), "Be concise.")
+    with pytest.raises(RuntimeError) as raised:
+        await conn.acquire_turn()
+
+    assert key not in str(raised.value)
+    detail = conn.last_failure_detail()
+    assert isinstance(detail, str) and key not in detail
+    assert conn.wake_cue() == OUT_OF_CREDIT_CUE_SLUG
+    await wait_until(lambda: cues == [OUT_OF_CREDIT_CUE_SLUG])
+    # Retrying a rejected account cannot help, so the wake pays for one dial.
+    assert attempts == 1
+    # Live has no supervisor to clear a pause, so a paused connection would
+    # refuse every later wake without dialling (voice_daemon.py:1656).
+    assert not conn.is_paused()
+    await conn.stop()
+
+
+async def test_one_transient_failure_then_success_still_gets_the_turn(monkeypatch):
+    """The wake's own acquire is the only retry Live has."""
+    monkeypatch.setattr(openai_live_session, "reconnect_delay", lambda *a, **k: 0.0)
+    socket = LiveSocket()
     attempts = 0
 
     def connect():
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise RuntimeError(f"rejected {key}")
+            raise RuntimeError("live session 409: prior session still closing")
         return socket
 
-    conn = OpenAILiveConnection(api_key=key, connect=connect)
-    await conn.start(ToolRegistry(), "Be concise.")
+    conn = OpenAILiveConnection(api_key="test", connect=connect)
+    turn = None
     try:
-        await conn.acquire_turn()
-    except RuntimeError as exc:
-        assert key not in str(exc)
-    else:
-        raise AssertionError("connection must fail")
-    assert not conn.is_paused()
+        await conn.start(ToolRegistry(), "Be concise.")
+        turn = await conn.acquire_turn()
+        assert attempts == 2
+        assert not turn.turn_lost()
+        # The open that took clears the outage the failed one recorded.
+        assert conn.last_failure_detail() is None
+        assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+    finally:
+        if turn is not None:
+            await turn.release()
+        await conn.stop()
+
+
+async def test_stop_releases_the_active_turn_and_closes_the_session_once():
+    exits = 0
+
+    class CountingSocket(LiveSocket):
+        async def __aexit__(self, *args):
+            nonlocal exits
+            exits += 1
+            await super().__aexit__(*args)
+
+    socket = CountingSocket()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be concise.")
     turn = await conn.acquire_turn()
-    await turn.release()
     await conn.stop()
+
+    assert turn._released
+    assert conn._active_turn is None
+    assert [e["type"] for e in socket.sent].count("session.close") == 1
+    assert exits == 1
+    assert conn._state is ConnectionState.CLOSED
 
 
 @pytest.mark.parametrize("gap_sec, played, discarded", [
