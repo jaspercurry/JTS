@@ -46,9 +46,9 @@ and bank evidence ([ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.m
 Adoption is explicit. Runtime readback checks the applied graph; a new acoustic
 capture is a separate experiment.
 
-[The bass-extension plan](HANDOFF-bass-extension-plan.md) is the resumed plan
-and authorization source under
-[ADR-0257](adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md).
+[The Bass runbook](tuning-operator-runbook.md#bass) is the operator entry point.
+[ADR-0304](adr/0304-the-bass-level-axis-is-fixed-level-windows.md) records the
+level-axis decision and JTS3 research bounds.
 
 ## Plans, research, and history
 

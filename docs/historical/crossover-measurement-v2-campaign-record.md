@@ -640,8 +640,8 @@ is dormant with it**, since it fires only for a walk whose consumer
 adjudicates.
 
 > **Superseded 2026-08-21.** The sweep was deleted, not left dormant, and the
-> stage-1 arming with it — see the spine's "Stage 1" section and
-> `docs/tuning-master-plan.md` ticket 2.3. The pose machinery below is still
+> stage-1 arming with it — see the spine's "Stage 1" section. The pose
+> machinery below is still
 > what an operator's staged angle walk runs.
 
 Everything from here to the end of this subsection describes the walk **as it
@@ -2398,8 +2398,8 @@ final `capture_result` before the page's ~250 ms poll reads it.
 ### Recommending an Fc
 
 > **DELETED 2026-08-22 — read this section as archaeology only.** The sweep
-> that recommended an Fc, its candidate set and its compute budget are gone
-> (`docs/tuning-master-plan.md` plan ruling R1, ticket 2.3), and the
+> that recommended an Fc, its candidate set and its compute budget are gone,
+> and the
 > `fc_selector` module that scored and adjudicated them went with ticket 2.4,
 > along with the review screen's **Use N Hz and apply** button and the
 > `SELECTION_*` verdicts the grade read. A round crosses at the corner the
@@ -3011,7 +3011,7 @@ section named only the first and called the second benign:
    profile never ran.
 
 (A third door, the alternative-Fc sweep, closed with the corner hunt on
-2026-08-21 — `docs/tuning-master-plan.md` ticket 2.3. The guard below is
+2026-08-21. The guard below is
 unchanged: it was never counting doors, it compares corners.)
 
 `commanded.profile_crossover_fc_hz` reads the applied graph's own corner off its
@@ -3276,8 +3276,7 @@ fingerprint, the VERIFY outcome and its reason code, the tracking claim, the
 independent absolute claim, and the predicted-spec comparison's
 material-improvement margin; it neither creates a second state machine nor
 alters the audition transaction. It reads **no corner-selector record**: the Fc
-selector and the `fc_selection` it wrote are retired
-([tuning-master-plan.md](../tuning-master-plan.md) ticket 2.4), so comparison
+selector and the `fc_selection` it wrote are retired, so comparison
 completeness and per-candidate scores are no longer inputs, and a round banked
 while a selector existed grades on its own VERIFY evidence like any other.
 
@@ -5327,4 +5326,3 @@ section, written and verified against `fc_selector.py` and the conductor's
 the phone-deadline figures re-derived from the shipped capture page and the
 memory/wall numbers quoted from the #1894 on-Pi profile rather than re-measured
 here. Sections outside those paths carry their 2026-07-30 verification.
-

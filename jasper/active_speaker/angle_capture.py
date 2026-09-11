@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -809,7 +810,7 @@ def walk_price(
     takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
     captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
     return {
-        "mic_moves": len({s.place for s in request.stops}),
+        "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(stage1_base_entries(plan_shape) + captures) / 60

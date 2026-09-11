@@ -119,6 +119,19 @@ def _bank_an_anchor(tmp_path, monkeypatch):
     monkeypatch.setattr(slr, "_ceiling_db_spl", lambda: CEILING_DB_SPL)
 
 
+@pytest.fixture(autouse=True)
+def preflight_inputs(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from jasper.active_speaker import preflight_live
+    from jasper.audio_measurement.calibration import MicSensitivity
+    _bank_an_anchor(tmp_path, monkeypatch)
+    monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
+    monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: SimpleNamespace(
+        topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=90))))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: MicSensitivity(-12.07, 18, "8108494"))
+
+
 @pytest.fixture
 def slot(tmp_path, monkeypatch):
     """A writable pending slot, and an idle speaker.
@@ -889,18 +902,21 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys, 
     banked = json.loads(pathlib.Path(slot[0]).read_text())
     assert banked["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
     assert banked["operating_levels_db"] == [REFERENCE_VOLUME_DB]
-    monkeypatch.setattr(cli, "resolve_anchor_level", lambda: pytest.fail("show resolved a new anchor"))
+    monkeypatch.setattr(cli, "read_preflight_facts", lambda _: pytest.fail("show read new facts"))
     assert cli._cmd_show(cli.build_parser().parse_args(["show"])) == cli.EXIT_OK
     assert json.loads(capsys.readouterr().out)["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
 
 
 @pytest.mark.parametrize("verb", ["plan", "stage"])
 def test_invalid_resolved_drive_level_is_reported_by_name(slot, monkeypatch, capsys, verb):
-    monkeypatch.setattr(cli, "resolve_anchor_level", lambda: slr.ResolvedLevel(77.5, 1.0, "8108494"))
+    from jasper.active_speaker import preflight_live
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: {
+        "measured_db_spl": 77.5, "reference_volume_db": 1.0,
+    })
     code = cli.main([verb, "--program", "room"])
     body = json.loads(capsys.readouterr().out)
-    assert code == (cli.EXIT_OK if verb == "plan" else cli.EXIT_REFUSED)
-    assert (body["level"] if verb == "plan" else body)["reason"] == "walk_level_policy_invalid"
+    assert code == cli.EXIT_REFUSED
+    assert body["reason"] == "walk_level_policy_invalid"
     assert not spool.staged_angle_request_pending()
 
 
@@ -922,14 +938,11 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
     assert body["reason"] == slr.ANCHOR_UNUSABLE
     assert not spool.staged_angle_request_pending()
 
-    # ``plan`` is the dry run that SHOWS what is missing rather than refusing.
     plan = cli.build_parser().parse_args(
         ["plan", "--program", "baseline", "--size", "express"]
     )
-    assert cli._cmd_plan(plan) == cli.EXIT_OK
-    unresolved = json.loads(capsys.readouterr().out)["level"]
-    assert unresolved["resolved"] is False
-    assert unresolved["reason"] == slr.ANCHOR_UNUSABLE
+    assert cli._cmd_plan(plan) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == slr.ANCHOR_UNUSABLE
 
 
 def test_a_spot_stages_one_raised_pose(slot, capsys):
@@ -1143,6 +1156,10 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     _real = calibration.resolve_mic_sensitivity
     calibration.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
     slr._ceiling_db_spl = lambda: 90.0
+    from dataclasses import replace
+    from tests.test_preflight import ready_facts
+    cli.read_preflight_facts = lambda plan: replace(ready_facts(plan), anchor=slr.AnchorFacts(
+        slr.load_seat_level_reference(), _real(calibration_file=cal)))
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
     )
