@@ -433,9 +433,7 @@ def test_the_active_ring_path_is_spelled_identically_everywhere():
     conf = RING_CONF.read_text(encoding="utf-8")
     assert f'path "{DEFAULT_OUTPUTD_ACTIVE_RING_PATH}"' in conf
     assert ring_assets.RING_ACTIVE_CONTENT_FILE == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-    # ...and it is NOT the stereo ring's file.
-    from jasper.fanin_coupling import DEFAULT_OUTPUTD_RING_PATH
-
+    # ...and it is NOT the stereo ring's file (already imported above).
     assert DEFAULT_OUTPUTD_ACTIVE_RING_PATH != DEFAULT_OUTPUTD_RING_PATH
 
 
@@ -570,8 +568,6 @@ def test_topology_supports_shm_ring_stays_false_for_roleful():
 
 
 def test_the_resolved_wire_carries_the_active_width_as_its_own_field():
-    from jasper.fanin_coupling import resolve_ring_wire
-
     roleful = resolve_ring_wire(_active_topology("stereo", "active_3_way"))
     assert roleful.ring_active_channels == 6
     # Ring A and Ring B are UNMOVED — the whole point of the fifth field.
@@ -1086,14 +1082,28 @@ def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
     assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 
 
-def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "mute_gains_db,expected_ok,detail_contains",
+    [
+        pytest.param(None, True, "all-muted", id="terminally-muted"),
+        pytest.param(
+            {1: -20.0},
+            False,
+            "jasper-fanin-coupling-reconcile shm_ring",
+            id="one-live-output",
+        ),
+    ],
+)
+def test_arm_two_admits_only_the_terminally_muted_anchor(
+    monkeypatch, tmp_path, mute_gains_db, expected_ok, detail_contains
 ):
-    """Arm 2, and the reason it cannot be ``ring_endpoint_anchor_converged``.
+    """Arm 2, both polarities — and why it cannot be ``ring_endpoint_anchor_converged``.
 
     The anchor is staged at the ALSA endpoint a roleful box plays BEFORE it is
     armed. Endpoint and wire are what an arm CHANGES, so an identity question
-    that included them would refuse every box this arm exists to admit.
+    that included them would refuse every box this arm exists to admit — the
+    anchor's whole safety claim is instead the MUTE, and one live output
+    withdraws it.
     """
     from jasper.fanin import ring_readiness
     from tests.test_composite_ring_arm_enabling import _composite_active_2way
@@ -1103,6 +1113,7 @@ def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
         lambda *a, **k: None,
     )
+    extra = {"mute_gains_db": mute_gains_db} if mute_gains_db else {}
     _stage_box(
         tmp_path,
         monkeypatch,
@@ -1110,6 +1121,7 @@ def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
             capture_device="hw:Loopback,1,7",
             playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
             fmt="S32_LE",
+            **extra,
         ),
     )
     monkeypatch.setattr(
@@ -1118,38 +1130,8 @@ def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
     )
 
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
-    assert ok is True
-    assert "all-muted" in detail
-
-
-def test_arm_two_refuses_an_anchor_that_is_not_terminally_muted(monkeypatch, tmp_path):
-    """The anchor's whole safety claim is the mute. One live output withdraws it."""
-    from jasper.fanin import ring_readiness
-    from tests.test_composite_ring_arm_enabling import _composite_active_2way
-    from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        lambda *a, **k: None,
-    )
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        graph_yaml=_graph_yaml(
-            capture_device="hw:Loopback,1,7",
-            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-            fmt="S32_LE",
-            mute_gains_db={1: -20.0},
-        ),
-    )
-    monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
-        _composite_active_2way,
-    )
-
-    ok, detail = ring_readiness.ring_roleful_unattended_ready()
-    assert ok is False
-    assert "jasper-fanin-coupling-reconcile shm_ring" in detail
+    assert ok is expected_ok
+    assert detail_contains in detail
 
 
 def test_the_roleful_gate_refuses_a_corrupt_applied_record_with_a_remedy(
@@ -2808,7 +2790,6 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # test has no active-ring width and the gate would be answering about a
     # different speaker.
     import jasper.ring_assets as ring_assets_module
-    from jasper.camilla_config_contract import parse_camilla_devices_config
 
     monkeypatch.setattr(
         "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: topology
@@ -3079,6 +3060,12 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
     )
 
 
+def _assert_baseline_untouched(h) -> None:
+    """The applied-baseline artifact and the boot statefile are unmoved."""
+    assert h.artifact.read_text(encoding="utf-8") == "stale: true\n"
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
 def test_the_retired_aloop_endpoint_is_refused_by_the_parser_itself(capsys):
     """#2285 P2's ONE negative guard for the retired ``--endpoint aloop``.
 
@@ -3191,8 +3178,7 @@ def test_baseline_reemit_refusal_writes_nothing_at_all(monkeypatch, tmp_path):
         "--statefile", str(h.statefile),
     ])
     assert code == 1
-    assert h.artifact.read_text(encoding="utf-8") == "stale: true\n"
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_baseline_untouched(h)
 
 
 def test_baseline_reemit_out_is_preview_only(monkeypatch, tmp_path):
@@ -3213,8 +3199,7 @@ def test_baseline_reemit_out_is_preview_only(monkeypatch, tmp_path):
     ])
     assert code == 0
     assert preview.read_text(encoding="utf-8") == "graph: 1\n"
-    assert h.artifact.read_text(encoding="utf-8") == "stale: true\n"
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_baseline_untouched(h)
 
 
 def test_baseline_reemit_publishes_atomically(monkeypatch, tmp_path):
@@ -3343,8 +3328,6 @@ def _anchor_reemit_harness(
     own tests, and what THIS command owns is which class it accepts and what it
     does about it.
     """
-    from types import SimpleNamespace
-
     from jasper.active_speaker.runtime_contract import (
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
         GRAPH_DRIVER_DOMAIN_BASELINE,
@@ -3490,6 +3473,13 @@ def _anchor_reemit_harness(
     )
 
 
+def _assert_anchor_untouched(h) -> None:
+    """All THREE live surfaces — graph, staged metadata, statefile — are unmoved."""
+    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
+    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
+    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+
+
 def test_reemit_staged_startup_anchor_reports_facts_and_prints_nothing(
     monkeypatch, tmp_path, capsys
 ):
@@ -3631,10 +3621,7 @@ def test_baseline_reemit_refuses_a_box_on_neither_accepted_graph(
     assert "parked_all_muted" in text, text
     assert "approved_active_runtime" in text, text
     assert "all_muted_active_startup" in text, text
-    # Nothing moved — all THREE live surfaces, like the sibling refusal tests.
-    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
-    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_anchor_untouched(h)
 
 
 def test_baseline_reemit_out_is_preview_only_for_the_anchor(
@@ -3658,9 +3645,7 @@ def test_baseline_reemit_out_is_preview_only_for_the_anchor(
     ])
     assert code == 0
     assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in preview.read_text("utf-8")
-    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
-    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_anchor_untouched(h)
 
 
 def test_baseline_reemit_help_names_both_accepted_graph_classes():
@@ -3711,9 +3696,7 @@ def test_baseline_reemit_anchor_refusal_writes_nothing_at_all(
         "--statefile", str(h.statefile),
     ])
     assert code == 1
-    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
-    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_anchor_untouched(h)
 
 
 @pytest.mark.parametrize(
@@ -3764,10 +3747,7 @@ def test_baseline_reemit_refuses_a_preserved_non_anchor_graph(
     assert code == 1
     # The refusal NAMES what it found, so an operator is not left guessing.
     assert expected_class in text, text
-    # Nothing moved, on any of the three live surfaces.
-    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
-    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_anchor_untouched(h)
 
 
 def test_baseline_reemit_refuses_while_a_commission_load_is_active(
@@ -3799,9 +3779,7 @@ def test_baseline_reemit_refuses_while_a_commission_load_is_active(
 
     assert code == 1
     assert "commission-rollback" in text, text
-    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
-    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(encoding="utf-8")
+    _assert_anchor_untouched(h)
 
 
 def test_baseline_reemit_force_overrides_the_commission_load_refusal(
@@ -4050,11 +4028,7 @@ def test_baseline_reemit_refuses_a_held_anchor_and_publishes_nothing(
     # Bounded: the proof run plus a 200 ms wait, not an open-ended block.
     assert waited < 20.0, waited
     # The outgoing pair AND the statefile survive untouched.
-    assert h.live_config.read_text(encoding="utf-8") == "stale: true\n"
-    assert h.live_meta.read_text(encoding="utf-8") == '{"status": "stale"}'
-    assert "config_path: /somewhere/else.yml" in h.statefile.read_text(
-        encoding="utf-8"
-    )
+    _assert_anchor_untouched(h)
 
 
 def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
