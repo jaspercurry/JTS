@@ -60,7 +60,7 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
     written = _write(payload, args.out, resolved_out(banked.round_dir, ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set))
     return answer(
-        args.command, out=written, overall_within_target=report.overall_within_target,
+        args.command, out=written, scope=args.scope, overall_within_target=report.overall_within_target,
         bands=[
             {
                 "band_hz": [band.f_lo_hz, band.f_hi_hz],
@@ -98,7 +98,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
         resolved_out(round_dir, ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set),
     )
     return answer(
-        args.command, out=written, poses=len(report["poses"]),
+        args.command, out=written, scope=args.scope, poses=len(report["poses"]),
         rungs_ms=report["frame"]["rungs_ms"],
         bands=[
             {"band_hz": band["band_hz"], "verdict": band["window_verdict"]}
@@ -125,7 +125,7 @@ def _cmd_windows(args: argparse.Namespace) -> int:
         return refused_by_name(exc.reason, exc.detail)
     written = _write(report, args.out, resolved_out(Path(args.round_dir), "window_view.json", args.set))
     image = render_image(args, report)
-    return answer(args.command, out=written, image=image, capture_id=take_id,
+    return answer(args.command, out=written, scope=args.scope, image=image, capture_id=take_id,
                   line=f"sweep take: {take_id} -> {written}")
 
 

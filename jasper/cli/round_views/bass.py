@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Replay retained bass captures on the laptop."""
+"""Bass views."""
 
 from __future__ import annotations
 
@@ -9,14 +9,15 @@ import argparse
 import json
 from pathlib import Path
 
+from jasper.active_speaker.measurement_bass import bass_view
+from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take
+from jasper.active_speaker.bass_fit import fit_bass_shape
+from jasper.active_speaker.candidate_bank import load_candidate_artifact
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
-from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer, default_out, resolve_set
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer, default_out, resolve_set, round_inputs
 
 def _cmd_bass(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.measurement_bass import bass_view  # lazy: laptop FFT analysis
-
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, args.round_dir)
     selected = resolve_set(inputs, args.set)
     payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, bass_view, inputs.session_dir,
@@ -27,13 +28,13 @@ def _cmd_bass(args: argparse.Namespace) -> int:
                   line=f"bass: {len(payload['takes'])} take(s) -> {written}")
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser("bass", help="replay bass fundamental, quiet-window SNR and H2/H3 (laptop)")
+    parser = sub.add_parser("bass", help="bass response, quiet-window SNR and H2/H3")
     parser.add_argument("round_dir", type=Path)
     parser.add_argument("--set")
-    parser.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry")
-    parser.add_argument("--out", help="artifact destination")
+    parser.add_argument("--calibration-root", type=Path, help="microphone calibration registry")
+    parser.add_argument("--out")
     parser.set_defaults(func=_cmd_bass)
-    compare = sub.add_parser("bass-compare", help="compare two exact takes on common qualified bass bins")
+    compare = sub.add_parser("bass-compare", help="compare selected bass sets")
     compare.add_argument("before", type=Path)
     compare.add_argument("after", type=Path)
     compare.add_argument("--before-set")
@@ -41,14 +42,13 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     compare.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
     compare.add_argument("--out")
     compare.set_defaults(func=_cmd_compare)
-    fit = sub.add_parser("bass-fit", help="fit one measured native bass shape to an explicit target (laptop)")
-    fit.add_argument("request", type=Path, help="JSON: candidate path, target curve, and exact before/after take pairs")
+    fit = sub.add_parser("bass-fit", help="fit a measured bass shape to a target")
+    fit.add_argument("request", type=Path, help="JSON: candidate, target and take pairs")
     fit.add_argument("--out")
-    fit.add_argument("--descriptor-out", type=Path, help="write the fitted descriptor for compose --bass-extension-json")
+    fit.add_argument("--descriptor-out", type=Path, help="fitted descriptor for compose")
     fit.set_defaults(func=_cmd_fit)
 
 def _cmd_compare(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take  # lazy: laptop array analysis
 
     before, after = round_inputs(args.before), round_inputs(args.after)
     before_id = resolve_set(before, args.before_set).take_id()
@@ -64,9 +64,6 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                   bands=payload["bands"], line=f"bass-compare -> {written}")
 
 def _cmd_fit(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bass_fit import fit_bass_shape  # lazy: laptop array analysis
-    from jasper.active_speaker.bass_comparison import selected_take  # lazy: laptop array analysis
-    from jasper.active_speaker.candidate_bank import load_candidate_artifact  # lazy: candidate graph dependencies
 
     def fit():
         request = json.loads(args.request.read_text())

@@ -87,7 +87,7 @@ class ViewArtifact(NamedTuple):
 #: ``repeat-floor`` is absent because it publishes to ``--install`` or
 #: ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
-    "inventory": ViewArtifact("inventory.json"),
+    "inventory": ViewArtifact("inventory.json", TAKES_SET),
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
@@ -103,7 +103,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "directivity": ViewArtifact("directivity.json"),
     "cloud-binding": ViewArtifact("cloud_binding.json"),
     "forward-model": ViewArtifact("forward_model.json", TAKES_SET),
-    "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json"),
+    "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
     "frequency": ViewArtifact("frequency_view.json"),
@@ -116,7 +116,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "delay-confirm": ViewArtifact("delay_confirmation.json"),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
     "boundary-prior": ViewArtifact("boundary_prior.json"),
-    "room-ceiling": ViewArtifact("room_ceiling.json"),
+    "room-ceiling": ViewArtifact("room_ceiling.json", TAKES_SET),
     "room-median": ViewArtifact("room_median.json", TAKES_SET),
     "room-persistence": ViewArtifact("room_persistence.json", TAKES_SET),
     # The packet owns these two names, so the rows take those constants rather

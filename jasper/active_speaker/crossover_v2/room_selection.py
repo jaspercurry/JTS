@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load seat curves and retain legacy selection for non-CLI callers."""
+"""Selected seat curves."""
 
 from __future__ import annotations
 

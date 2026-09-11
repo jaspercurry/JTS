@@ -1985,12 +1985,6 @@ def _longest_numeric_list(node: Any) -> int:
 def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
     tmp_path, capsys, view
 ):
-    """ADR-0237: exit 0 is ONE answer document naming the artifact it wrote.
-
-    The scalars a caller reads to decide what to run next, and no curve or
-    grid — those stay in the file at ``out``, so asking a view costs a bounded
-    number of tokens rather than a measurement's worth of them.
-    """
     from jasper.cli import round_views as cli
 
     round_dir = _make_round_dir(
@@ -2420,9 +2414,6 @@ def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
 
 
 def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
-    """The door the driving LLM actually reaches: one round in, the graded spec
-    with room-or-speaker answered at each band's own worst bin out.
-    """
     import shutil
 
     from jasper.cli.round_views import main
@@ -2432,9 +2423,6 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
         position_curves={"cloud_verify_02": ("onax", _flat_curve())},
         combined_db=_curve_dipping_at(FEATURE_HZ),
     )
-    # The captures live INSIDE the session bundle, where a real banked round
-    # carries them, so one directory answers both readers: the evidence packet
-    # for the verdict and the raw WAVs for the ladder.
     captures = bank_capture_round(
         tmp_path / "captures",
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
@@ -2567,10 +2555,6 @@ def test_cli_gate_sweep_an_unusable_request_is_the_unreadable_exit(
     gate_sweep_round, capsys, argv
 ):
     from jasper.cli import round_views as cli
-    from jasper.cli._report import render_report
-    from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
-
-    expected = sweep_round(gate_sweep_round, rungs_ms=[5, 20])
     rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), *argv])
 
     assert rc == cli.EXIT_UNREADABLE

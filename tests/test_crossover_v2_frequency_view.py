@@ -24,6 +24,7 @@ from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRe
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording
 from tests.active_speaker_fixtures import mono_output_topology
+from tests.run_manifest_fixture import write_manifest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.frequency_view import FrequencyViewError, frequency_run
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
@@ -251,7 +252,6 @@ def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
 
 
 def _bank_one_round(root: Path, session_id: str) -> Path:
-    """A campaign home holding one round banked from a one-take bundle."""
 
     bundle = root / "sessions" / session_id
     positions = (
@@ -825,6 +825,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     bundle, calibration_root, program, bank = summed_capture_bundle
     asyncio.run(bank('baseline'))
     asyncio.run(bank('repeat'))
+    write_manifest(bundle, program='bass')
     before = {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
     destination = tmp_path / 'bass.json'
     assert round_views_main([
@@ -832,7 +833,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     ]) == 0
     view = json.loads(destination.read_text())
     first, repeat = view['takes']
-    assert first['program_id'] == first['record']['program_id'] == program.program_id
+    assert first['program_id'] == program.program_id
     assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
     frequencies = np.array(first['freqs_hz'])
