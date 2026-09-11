@@ -352,7 +352,6 @@ def _declared_first_bounce_s(distance_m: float | None) -> float | None:
 # --- tuning constants -----------------------------------------------------
 
 GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
-# Per gain-adjusted clip retry, drop the offending program's level by this much.
 PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
 LOCATE_MIN_CONFIDENCE = _dispatch.LOCATE_MIN_CONFIDENCE
 VERIFY_TOLERANCE_DB = _contracts.VERIFY_TOLERANCE_DB
@@ -4122,9 +4121,6 @@ class CrossoverV2Session:
         self._verify_graded_band_hz = None
         self._verify_frame = None
         self._verify_claims = None
-        # THIS attempt's gate, as a LOCAL: computed before the early returns because
-        # the gate-comparability refusal needs it, but it becomes session state only
-        # through ``_set_verify_outcome``. ``verify_gate`` below is a WINDOW in ms.
         gate_record = _gate_record(
             analysis.summed_response,
             declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),

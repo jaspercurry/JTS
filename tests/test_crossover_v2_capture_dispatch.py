@@ -135,11 +135,6 @@ def test_check_gates(changes, code):
     assert cd.assess(_analysis(**changes), phase="check").fault == code
 
 
-def test_check_anchor_is_read_before_the_channel_map():
-    result = cd.assess(_analysis(anchor=AnchorEvidence(corroborated=False), channel_map_ok=False), phase="check")
-    assert result.fault == refusal_copy.REASON_ANCHOR_TOO_QUIET and not result.ok
-
-
 @pytest.mark.parametrize("has_drivers", [False, True])
 def test_measure_purpose_decides_whether_delay_is_required(has_drivers):
     analysis = _analysis(alignment=_alignment(status="unresolved"))

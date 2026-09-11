@@ -37,7 +37,6 @@ CLIP_RETRY_BACKOFF_DB = 3.0
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 
-
 def assess(
     analysis: ProgramAnalysis, *, phase: str,
     priors: MeasurementPriors | None = None,
@@ -138,13 +137,13 @@ def assess(
     if analysis.delta_implausible:
         return (refuse(reasons.REASON_ANCHOR_AMBIGUOUS) if analysis.pilot_snr_ok is True
                 else quiet(reasons.REASON_SNR_FLOOR))
-    # Retire when locate can resolve the timeline without a corroborating witness.
-    if anchor is not None and anchor.corroborated is False:
-        return quiet(reasons.REASON_ANCHOR_TOO_QUIET)
     if phase == "check" and analysis.channel_map_ok is False:
         return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
     if analysis.pilot_snr_ok is False:
         return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
+    # Retire when locate can resolve the timeline without a corroborating witness.
+    if anchor is not None and anchor.corroborated is False:
+        return quiet(reasons.REASON_ANCHOR_TOO_QUIET)
     if analysis.mic_meter_status in {"low", "too_quiet"}:
         return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
     if not _sweep_locate_confidence_ok(analysis):

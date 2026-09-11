@@ -214,23 +214,7 @@ def test_every_linearity_admission_site_is_covered_by_a_row_above():
 
 
 def test_the_tripwire_looks_in_every_module_that_carries_the_rule():
-    """The control the count above needs, and the one it did not have.
-
-    A total is not evidence that every module was searched: 6 could be six sites
-    in one file and none in the other, which is what the guard would report the
-    day someone moves the last ladder out and forgets this list.
-
-    **That day arrived** — #2291 Phase 5a-vii moved CHECK's, MEASURE's and
-    VERIFY's ladders into :mod:`.capture_dispatch`, and this test is how the
-    move was noticed rather than announced.  The flow now carries ZERO sites,
-    which is asserted rather than dropped from the search: the whole point of
-    the list is that a rule reappearing in the conductor must fail here, and a
-    module removed from it can never fail again.
-
-    So: all three searched, the two CARRIERS non-empty, and the conductor
-    empty — because "we looked there" is the property that failed in Phase
-    5a-iv, not "the sum is right".
-    """
+    """The guard also searches the flow, where no admission site belongs."""
     by_module = _linearity_admission_sites()
 
     assert set(by_module) == {"crossover_v2_flow", "spatial", "capture_dispatch"}
@@ -243,15 +227,10 @@ def test_the_tripwire_looks_in_every_module_that_carries_the_rule():
 
 
 def test_checks_own_linearity_rule_is_deliberately_not_the_plain_one():
-    """Why CHECK is excluded above, stated rather than assumed.
+    """CHECK's room-vs-microphone split shares the assessor's one site.
 
-    ``_check_verdict`` asks whether the room's ambient floor already explains
-    the non-linearity and answers ``noisy_room_linearity`` when it does. That
-    split is what makes CHECK a variant rather than a fifth plain site, and it
-    is separately pinned by
-    ``test_check_linearity_fail_blames_the_room_when_ambient_is_elevated``.
-    Pinned here as a bare vocabulary fact so the exclusion in
-    ``PLAIN_LINEARITY_PHASES`` cannot quietly become wrong.
+    Its behavior is pinned by the conductor's
+    test_check_linearity_fail_blames_the_room_when_ambient_is_elevated.
     """
 
     assert refusal_copy.REASON_NOISY_ROOM_LINEARITY != REASON_AGC_BEHAVIORAL_FAIL
