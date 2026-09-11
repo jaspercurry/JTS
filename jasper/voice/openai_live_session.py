@@ -21,7 +21,6 @@ from ..log_event import log_event
 from ..tools import dispatch_tool
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn
 from ._supervisor import failure_detail, is_transient
-from .conversation import END_CONVERSATION_TOOL
 from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
@@ -276,14 +275,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             except (ValueError, TypeError):
                 result = {"error": "invalid_arguments"}
             else:
-                dispatch = dispatch_tool(self._conn._registry, call["name"], args)
-                # A dismissal is never obsolete: a new delegation cancels this
-                # round mid-await, and the user's "never mind" would go with it.
-                result = await (
-                    asyncio.shield(dispatch)
-                    if call["name"] == END_CONVERSATION_TOOL
-                    else dispatch
-                )
+                result = await dispatch_tool(self._conn._registry, call["name"], args)
             if self._released or delegation != self._delegation_id:
                 return
             await self._conn._send({"type": "response.item.create", "item": {

@@ -216,6 +216,52 @@ async def test_timeout_returns_error_and_respects_per_tool_budget():
     assert events == [("called", "slow"), ("completed", "slow")]
 
 
+@pytest.mark.parametrize("survives", [True, False])
+async def test_survives_cancellation_decides_whether_a_cancelled_caller_abandons_a_tool(
+    survives, monkeypatch,
+):
+    """A caller cancelled mid-dispatch — here before the executor is even
+    reached — drops the tool's effect, unless the tool declares that
+    cancellation never abandons it. The caller is cancelled either way."""
+    import jasper.tools as tools_module
+
+    # The observer notify is this test's coordination point; leave it parked
+    # long enough to drive the race rather than racing its own budget.
+    monkeypatch.setattr(
+        tools_module, "_DISPATCH_OBSERVER_TIMEOUT_SEC", DEFAULT_SIGNAL_TIMEOUT_S,
+    )
+    ran, stages = [], []
+    dispatching, resume = asyncio.Event(), asyncio.Event()
+
+    @tool(survives_cancellation=survives)
+    async def dismiss() -> dict:
+        """records that it reached the executor."""
+        ran.append("dismiss")
+        return {"status": "conversation_ended"}
+
+    async def observe(stage: str, _name: str) -> None:
+        stages.append(stage)
+        if stage == "called":
+            dispatching.set()
+            await resume.wait()
+
+    reg = _registry(dismiss)
+    reg.set_dispatch_observer(lambda: observe)
+
+    call = asyncio.create_task(dispatch_tool(reg, "dismiss", {}))
+    await wait_signalled(dispatching, "the dispatch reaching its observer", producer=call)
+    call.cancel()
+    resume.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    if survives:
+        await wait_until(lambda: stages == ["called", "completed"])
+        assert ran == ["dismiss"]
+    else:
+        assert (ran, stages) == ([], ["called"])
+
+
 @pytest.mark.parametrize("retirement", ["cancel", "timeout"])
 async def test_retired_executor_consumes_late_failure_without_repeating_observer(retirement):
     entered = asyncio.Event()

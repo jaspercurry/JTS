@@ -21,7 +21,9 @@ END_CONVERSATION_TOOL = "end_conversation"
 
 
 def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[], None]) -> None:
-    @tool(llm_description=(
+    # A dismissal survives cancellation from any source — a new delegation
+    # on Live, a barge-in on the other adapters — deliberately.
+    @tool(survives_cancellation=True, llm_description=(
         "End this voice conversation and return to wake-word listening. Use for a "
         "standalone cancel, never mind, okay thanks, or goodbye. Do not use for "
         "cancel my timer, stop music, or thanks followed by another request; "
