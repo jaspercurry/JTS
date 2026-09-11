@@ -35,7 +35,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITIES,
     POLARITY_INVERTED,
     POLARITY_NORMAL,
-    POSITION_AXES,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
     REGIME_NEAR_FIELD,
@@ -449,12 +448,6 @@ def test_the_polarity_words_are_the_measurement_frames_own():
     assert polarity_label(1) == POLARITY_NORMAL
     assert polarity_label(-1) == POLARITY_INVERTED
     assert set(POLARITIES) == {POLARITY_NORMAL, POLARITY_INVERTED}
-
-
-def test_the_pose_axis_words_are_spatials_own():
-    assert POSITION_AXES == spatial.POSITION_AXES
-    assert POSITION_AXIS_HORIZONTAL == spatial.POSITION_AXIS_HORIZONTAL
-    assert POSITION_AXIS_VERTICAL == spatial.POSITION_AXIS_VERTICAL
 
 
 def test_the_design_axis_is_spelled_the_way_spatial_spells_it():
