@@ -203,6 +203,26 @@ class FakeCoordinator:
         return None
 
 
+class FakeHaStatus:
+    """Stands in for ``HomeAssistantStatusCache``: same one-method surface
+    (``snapshot()``), a fixed "not configured" answer shaped like its real
+    unconfigured response. A test that needs a different snapshot sets
+    ``JASPER_TEST_HA_STATUS_JSON`` rather than hand-rolling another double."""
+
+    def snapshot(self):
+        raw = os.environ.get("JASPER_TEST_HA_STATUS_JSON", "")
+        if raw:
+            return json.loads(raw)
+        return {
+            "configured": False,
+            "connected": False,
+            "url": "",
+            "instance_name": None,
+            "version": None,
+            "error": None,
+        }
+
+
 @pytest.fixture
 def server_with_coordinator(monkeypatch):
     """Start a ThreadingHTTPServer and patch _with_coordinator to use
@@ -234,20 +254,6 @@ def server_with_coordinator(monkeypatch):
         fake_subprocess_exec,
     )
     monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
-
-    class FakeHaStatus:
-        def snapshot(self):
-            raw = os.environ.get("JASPER_TEST_HA_STATUS_JSON", "")
-            if raw:
-                return json.loads(raw)
-            return {
-                "configured": False,
-                "connected": False,
-                "url": "",
-                "instance_name": None,
-                "version": None,
-                "error": None,
-            }
 
     handler = _make_handler(
         "127.0.0.1",
