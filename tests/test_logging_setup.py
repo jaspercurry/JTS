@@ -172,6 +172,48 @@ def test_the_pre_redaction_message_is_not_kept_on_the_record():
     assert secret not in repr(vars(record))
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        pytest.param(
+            'event=wifi.nmcli_timeout argv="nmcli device wifi connect HomeNet '
+            'password <redacted>"',
+            'event=wifi.nmcli_timeout argv="nmcli device wifi connect HomeNet '
+            'password <redacted>"',
+            id="quoted_placeholder_stays_byte_identical",
+        ),
+        pytest.param(
+            "nmcli timed out after 30.0s: nmcli device wifi connect HomeNet "
+            "password <redacted>",
+            "nmcli timed out after 30.0s: nmcli device wifi connect HomeNet "
+            "password <redacted>",
+            id="unquoted_placeholder_stays_byte_identical",
+        ),
+        pytest.param(
+            'event=wifi.nmcli_timeout argv="nmcli device wifi connect HomeNet '
+            'password hunter2"',
+            'event=wifi.nmcli_timeout argv="nmcli device wifi connect HomeNet '
+            'password <redacted>',
+            id="a_real_password_beside_the_guard_still_redacts",
+        ),
+    ],
+)
+def test_the_secret_word_rule_spares_its_own_placeholder(message, expected):
+    """`_SECRET_WORD_RE` must not re-match its own `<redacted>` placeholder,
+    mirroring the guard `_AUTHORIZATION_RE` already carries.
+    `wifi_setup._redacted_argv` puts that placeholder into a quoted
+    `log_event` value before this filter ever sees it; re-matching it let
+    the greedy value class swallow the value's closing quote. The last
+    case pins that the guard is narrow — a real secret beside it still
+    redacts (over-redacting into the field's own closing quote there is
+    pre-existing, unrelated behaviour, untouched by this guard)."""
+    record = logging.LogRecord(
+        "jasper.x", logging.WARNING, __file__, 1, message, (), None,
+    )
+    assert logging_setup.REDACTING_FILTER.filter(record) is True
+    assert record.getMessage() == expected
+
+
 # ------------------------------------------------------------------- ratchet
 
 # The parked tuning zone (#4193 lane brief): these keep their own
