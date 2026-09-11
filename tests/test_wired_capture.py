@@ -151,7 +151,7 @@ RATE = 48_000
 CHANNELS = 2
 
 
-class FakeClock:
+class FakeClockNs:
     """Monotonic-ns clock the test advances explicitly per read."""
 
     def __init__(self, step_ns):
@@ -170,7 +170,7 @@ def _record(script, *, max_capture_s=10.0, clock_ns=None, tail_s=0.0):
         channels=CHANNELS,
         max_capture_s=max_capture_s,
         pcm_factory=lambda: FakePcm(script),
-        clock_ns=clock_ns or FakeClock(1_000_000),  # 1 ms per read
+        clock_ns=clock_ns or FakeClockNs(1_000_000),  # 1 ms per read
     )
     recorder.start(ready_timeout_s=5.0)
     return recorder.finish(tail_s=tail_s)
