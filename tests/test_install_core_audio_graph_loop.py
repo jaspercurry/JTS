@@ -58,7 +58,7 @@ EXPECTED_DSTS = (
     "jasper-audio-hardware-reconcile",
     "jasper-output-hardware-hotplug",
     "jasper-outputd-failure-reconcile",
-    "jasper-outputd-unpark",
+    "jasper-unpark",
     "jasper-camilla-guard-common.sh",
     "jasper-camilla-pipe-guard",
     "jasper-camilla-recover",

@@ -9,14 +9,19 @@
 ``/run`` record. This module owns the open/absent/unreadable/parse
 preamble both share, including its posture: a record that cannot be read
 is reported distinctly from one that is not there, because a permissions
-regression must never read as a healthy speaker. Each reader keeps only
-what is specific to its own record's fields.
+regression must never read as a healthy speaker. It also owns the ``.last``
+retirement convention ``deploy/bin/jasper-unpark`` writes for both. Each
+reader keeps only what is specific to its own record's fields.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from ..env_file import parse_env_mapping
+
+#: What ``deploy/bin/jasper-unpark`` appends to a park record's path when it
+#: retires it.
+LAST_SUFFIX = ".last"
 
 
 def read(path: str) -> tuple[dict[str, Any] | None, dict[str, str]]:
@@ -49,3 +54,26 @@ def read(path: str) -> tuple[dict[str, Any] | None, dict[str, str]]:
     except Exception:  # noqa: BLE001 - a malformed record must not raise here
         fields = {}
     return None, fields
+
+
+def read_last(path: str) -> dict[str, str] | None:
+    """Fields of the record most recently retired at ``path``, or ``None``.
+
+    ``deploy/bin/jasper-unpark`` copies a park record plus ``unparked_at``
+    to the ``.last`` sibling read here before removing the live record, so a
+    reader can still answer "was this parked, and for how long" once the park
+    itself is gone (R15, #4416). Absent, unreadable and malformed all answer
+    ``None``: an unreadable retirement record is not evidence of a park.
+    """
+    terminal, fields = read(f"{path}{LAST_SUFFIX}")
+    if terminal is not None or not fields:
+        return None
+    return fields
+
+
+def epoch_seconds(raw: str | None) -> int | None:
+    """A record's epoch-second field as an int, ``None`` when unparseable."""
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None

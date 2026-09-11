@@ -855,7 +855,7 @@ def test_outputd_failure_reconcile_park_ok_surfaces_last_park_age(
     tmp_path, monkeypatch,
 ):
     """The healthy row names the most recently retired park (R15, #4416) when
-    jasper-outputd-unpark left a `.last` sibling; a fresh box with no `.last`
+    jasper-unpark left a `.last` sibling; a fresh box with no `.last`
     at all still reads as plain "carries no park record", nothing tolerated
     as a KeyError."""
     target = tmp_path / "failure-reconcile.park"

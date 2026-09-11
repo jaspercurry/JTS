@@ -52,16 +52,27 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
         ``re_arm``/``parked_utc`` carried verbatim, plus ``parked_at`` (epoch
         seconds, parsed from ``parked_utc``; ``None`` on a malformed stamp).
 
+    Every verdict carries ``last_park``: the park jasper-camilla.service's
+    ``ExecStartPost=`` retired, or ``None`` where none was. The record lives
+    in ``/run``, so this answers for THIS boot — a graph that parked and came
+    back is otherwise invisible once the record is gone (R15, #4416).
+
     Never raises.
     """
     target = path if path is not None else _state_path()
+    last_park = _last_park(target)
     terminal, fields = park_record.read(target)
     if terminal is not None:
-        return terminal
+        return {**terminal, "last_park": last_park}
 
     reason = fields.get("reason")
     if not reason:
-        return {"status": "unintelligible", "parked": False, "path": target}
+        return {
+            "status": "unintelligible",
+            "parked": False,
+            "path": target,
+            "last_park": last_park,
+        }
 
     parked_utc = fields.get("parked_utc")
     return {
@@ -74,4 +85,19 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
         "re_arm": fields.get("re_arm"),
         "parked_utc": parked_utc,
         "parked_at": parse_utc_iso(parked_utc) if parked_utc else None,
+        "last_park": last_park,
+    }
+
+
+def _last_park(path: str) -> dict[str, Any] | None:
+    """This record's own fields from the most recently retired park."""
+    fields = park_record.read_last(path)
+    if fields is None:
+        return None
+    parked_utc = fields.get("parked_utc")
+    return {
+        "reason": fields.get("reason"),
+        "parked_utc": parked_utc,
+        "parked_at": parse_utc_iso(parked_utc) if parked_utc else None,
+        "unparked_at": park_record.epoch_seconds(fields.get("unparked_at")),
     }

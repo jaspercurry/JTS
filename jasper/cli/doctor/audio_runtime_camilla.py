@@ -30,6 +30,7 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_UNREADABLE,
     REASON_CAMILLA_STATEFILE_UNREADABLE,
     _group_writable_dir,
+    _parked_ago,
     _service_state_failure,
 )
 
@@ -585,7 +586,10 @@ def check_camilla_recover_park() -> CheckResult:
     recovery pass cannot bring it back (ADR-0175), and that park is TERMINAL for
     the boot by design. Severity is ``fail``: the speaker emits NOTHING and no
     automatic path recovers it. The record's own ``action=``/``re_arm=`` text is
-    surfaced verbatim rather than restated here.
+    surfaced verbatim rather than restated here. A park the unit's
+    ``ExecStartPost=`` already retired is named on the healthy row: the record
+    lives in ``/run``, so a graph that parked and came back would otherwise
+    leave this boot looking untroubled (R15, #4416).
     """
     label = "camilla recovery park"
 
@@ -593,11 +597,16 @@ def check_camilla_recover_park() -> CheckResult:
 
     state = camilla_recover_state.snapshot()
     status = state.get("status")
+    last_park = state.get("last_park")
 
     if status == "absent":
-        return CheckResult(
-            label, "ok", "no core-graph recovery park this boot"
-        )
+        detail = "no core-graph recovery park this boot"
+        if isinstance(last_park, dict):
+            detail += (
+                f" (parked {_parked_ago(last_park.get('parked_at'))}, since "
+                f"recovered: {last_park.get('reason') or '?'})"
+            )
+        return CheckResult(label, "ok", detail)
 
     if status == "unreadable":
         return CheckResult(

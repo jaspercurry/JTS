@@ -55,8 +55,11 @@ ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
     --statefile /var/lib/camilladsp/outputd-statefile.yml
 # Retire jasper-camilla-recover's park: this unit starting again IS what ends
-# it (ADR-0175). Path duplicated from jasper/control/camilla_recover_state.py.
-ExecStartPost=-/bin/rm -f /run/jasper-camilla-recover.state
+# it (ADR-0175). jasper-unpark copies the record's fields plus unparked_at to a
+# .last sibling before removing it, so a graph that parked and came back this
+# boot still says so (R15, #4416). Path duplicated from
+# jasper/control/camilla_recover_state.py.
+ExecStartPost=-/usr/local/sbin/jasper-unpark /run/jasper-camilla-recover.state camilla.recover.unparked
 # Restart=always, not on-failure: CamillaDSP has exited status=0 and left the
 # speaker silently dead overnight.
 Restart=always

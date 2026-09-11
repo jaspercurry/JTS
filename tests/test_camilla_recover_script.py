@@ -18,6 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-camilla-recover"
+UNPARK = ROOT / "deploy" / "bin" / "jasper-unpark"
+UNPARK_EVENT = "camilla.recover.unparked"
 
 
 def _write_exe(path: Path, body: str) -> None:
@@ -215,12 +217,48 @@ def test_camilla_starting_again_retires_the_park(tmp_path: Path):
         for line in unit.splitlines()
         if line.startswith("ExecStartPost=")
     ]
-    assert f"-/bin/rm -f {camilla_recover_state.DEFAULT_STATE_PATH}" in post
+    assert (
+        f"-/usr/local/sbin/{UNPARK.name} "
+        f"{camilla_recover_state.DEFAULT_STATE_PATH} {UNPARK_EVENT}" in post
+    )
 
     # Writer, unit, and reader must all name the one file.
     _env, _calls, record = _park(tmp_path)
     assert record.name == Path(camilla_recover_state.DEFAULT_STATE_PATH).name
     assert camilla_recover_state.snapshot(str(record))["parked"] is True
+
+
+def test_a_retired_park_still_says_the_graph_parked_this_boot(
+    tmp_path: Path, monkeypatch,
+):
+    """/run keeps no history of its own: without the retirement copy, a graph
+    that parked and recovered reads exactly like one that never parked."""
+    from jasper.cli.doctor import audio_runtime_camilla
+    from jasper.control import camilla_recover_state
+
+    _env, _calls, record = _park(tmp_path)
+
+    result = subprocess.run(
+        [str(UNPARK), str(record), UNPARK_EVENT],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert f"event={UNPARK_EVENT} state={record}.last preserved=1" in result.stderr
+    assert not record.exists()
+
+    monkeypatch.setenv("JASPER_CAMILLA_RECOVER_PARK_STATE", str(record))
+    snapshot = camilla_recover_state.snapshot()
+    last_park = snapshot["last_park"]
+
+    assert snapshot["status"] == "absent"
+    assert snapshot["parked"] is False
+    assert last_park["reason"] == "camilla_start_failed"
+    assert isinstance(last_park["parked_at"], int)
+    assert isinstance(last_park["unparked_at"], int)
+    # A retired park is history, not a live one: the row stays healthy.
+    assert audio_runtime_camilla.check_camilla_recover_park().status == "ok"
 
 
 def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
