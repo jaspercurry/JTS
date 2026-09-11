@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
 import numpy as np
 
+from jasper.active_speaker.calibration_level import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
 from .branches import analyze_branches
 
@@ -136,7 +137,7 @@ def analyze_program_capture(
     geometry = geometry or MeasurementGeometry()
     priors = priors or MeasurementPriors()
 
-    global_offset, _first, stimuli, anchor_ambiguous = _global_offset(
+    global_offset, _first, stimuli, anchor = _global_offset(
         program, capture, sample_rate
     )
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
@@ -159,10 +160,28 @@ def analyze_program_capture(
         )
     else:
         raise ValueError(f"unknown phase: {program.phase!r}")
-    # Attached HERE, one assignment site, so a phase that grows its own
-    # analyzer later cannot ship without it.
+    pilots = tuple(
+        replace(pilot, mic_meter_status=classify_mic_meter(
+            observed_dbfs=pilot.peak_hi_dbfs,
+        )["status"])
+        for pilot in analysis.pilots
+    )
+    statuses = {pilot.mic_meter_status for pilot in pilots}
+    # A loud pilot takes precedence over a quiet one; per-role grades stay
+    # on the observations so the journal does not misattribute the aggregate.
+    mic_meter_status = next(
+        (status for status in ("too_loud", "too_quiet", "low", "usable", "unmeasured")
+         if status in statuses), None,
+    )
+    discontinuity = analysis.drift.discontinuity_samples if analysis.drift else None
     return replace(
-        analysis, frame_ledger=frame_ledger, anchor_ambiguous=anchor_ambiguous
+        analysis, frame_ledger=frame_ledger, anchor_ambiguous=anchor.ambiguous,
+        anchor_presence=anchor.presence, anchor_confidence=anchor.confidence,
+        anchor_corroborated=anchor.corroborated,
+        discontinuity_samples=(
+            float(discontinuity) if isinstance(discontinuity, (int, float)) else None
+        ),
+        pilots=pilots, mic_meter_status=mic_meter_status,
     )
 
 
