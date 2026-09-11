@@ -269,7 +269,7 @@ def evaluate_realization(
     Absent evidence is not a failure: a missing mapping, or a
     missing/non-numeric/non-finite comparator, is
     :attr:`~.contracts.RealizationStatus.UNAVAILABLE` rather than
-    :attr:`~.contracts.RealizationStatus.FAILED`, because ``failed`` restores.
+    :attr:`~.contracts.RealizationStatus.FAILED`, because ``failed`` advises restore.
     ``bool`` is rejected as a comparator because ``True`` is an ``int`` and
     would silently grade as 1.0 dB.
 
@@ -739,7 +739,7 @@ def evaluate_evidence_trust(
 
 
 # --------------------------------------------------------------------------
-# 6. safety — the only axis that pulls a measured graph off
+# 6. measured safety findings
 # --------------------------------------------------------------------------
 
 #: A boost measured MORE lift across the apply than the graph declared
@@ -777,8 +777,7 @@ def evaluate_applied_safety(
 ) -> Verdict[SafetyStatus]:
     """Is the applied state safe to leave on a household's speaker?
 
-    The adoption table's hard stop, and the only axis that pulls a MEASURED
-    graph off for something other than the absence of evidence. Three findings,
+    Three findings,
     each read from a shipped instrument and none re-derived here:
 
     * a boost realized above the probe's tolerance
@@ -913,14 +912,6 @@ def evaluate_applied_safety(
 # --------------------------------------------------------------------------
 
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
-#: The delta probe measured the emitted filters not doing what the fit's model
-#: of them says, in one of the classes the project reverts — realized-vs-
-#: commanded, where :data:`ADOPTION_MEASURED_REGRESSION` is before/after.
-#:
-#: The cause carries the CLASS as ``<prefix>:<verdict>``, because the three
-#: rollback classes have three different household sentences
-#: (:data:`~.refusal_copy.DELTA_PROBE_REASON_BY_VERDICT`) that
-#: :func:`~.refusal_copy.round_restore_reason` reads back off it.
 ADOPTION_PROBE_ROLLBACK_CLASS = "delta_probe_rollback_class"
 ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
 ADOPTION_REALIZATION_FAILED = "realization_failed"
@@ -983,7 +974,7 @@ def evaluate_round_quality(
     The STATUS is :data:`_QUALITY_TABLE`, keyed on ``(realization, benefit)``.
     A probe verdict in
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
-    that the probe's own seam did not defer overrides it to
+    that was not deferred overrides it to
     :attr:`~.contracts.QualityStatus.REGRESSED`.
 
     The TARGETS are disclosure and move no status. Spec is an outcome, not a
@@ -1055,11 +1046,11 @@ def _model_departure_target(probe: Any | None) -> list[str]:
 
 
 def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
-    """The probe verdict that takes this graph off, or ``""``.
+    """The probe verdict that advises against keeping this graph, or ``""``.
 
     Two owners consulted, neither re-derived here:
     :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
-    for which classes restore, and
+    for which classes advise against keeping, and
     :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
     ones that are spared.
     """

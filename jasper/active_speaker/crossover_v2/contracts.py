@@ -874,8 +874,6 @@ class EvidenceTrust(str, Enum):
 class SafetyStatus(str, Enum):
     """Is the applied state safe to leave on a household's speaker? (#2537)
 
-    The adoption table's hard-stop axis, and the ONLY one that can pull a
-    measured graph off for something other than the absence of evidence.
     Direction is the discriminator: quieter than declared is a quality signal,
     louder than declared is a hazard.
     """

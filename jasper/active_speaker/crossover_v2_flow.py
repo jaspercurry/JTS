@@ -1600,6 +1600,28 @@ class CrossoverV2Session:
         return self._last_failure_pilot_heard if self._last_failure_code else None
 
 
+    def _pilot_heard_for(
+        self, code: str | None, *, slot: str | None = None,
+    ) -> bool | None:
+        """The pilot evidence recorded WITH ``code``, else ``None`` (#2085)."""
+        if slot is not None:
+            paired = self._last_pilot_evidence.get(slot)
+        elif self._last_failure_code is None:
+            paired = None
+        else:
+            paired = (
+                self._last_failure_code, self._last_failure_pilot_heard, None,
+            )
+        return _admission.pilot_heard_for(code, paired)
+
+    def _reflection_measured_for(
+        self, code: str | None, *, slot: str,
+    ) -> bool | None:
+        """The gate discriminator recorded with ``code`` at ``slot``."""
+        return _admission.reflection_measured_for(
+            code, self._last_pilot_evidence.get(slot)
+        )
+
     @property
     def armed_capture(self) -> tuple[int, int] | None:
         """The last authorized ``(index, attempt)``: the host addresses the terminal
@@ -2977,11 +2999,7 @@ class CrossoverV2Session:
             self._speculative_close = None
             payload["awaiting_confirm"] = True
         if phase == PHASE_CLOUD_VERIFY:
-            # The delta probe's spatial arm, deliberately OUTSIDE the disclosure wrap:
-            # this is a product gate, and a gate that cannot fail a capture is none.
             self._run_delta_probe()
-            # **The probe reports; the ROUND decides.** The verdict reaches
-            # ``evaluate_round_quality`` and restores go through the one restore owner.
             return self._grade_round_once(PhaseVerdict(True, payload=payload))
         return PhaseVerdict(True, payload=payload)
 
@@ -3762,7 +3780,7 @@ class CrossoverV2Session:
             self._round_ports(), session_id=self.session_id,
         )
 
-    # --- #2291: the round, graded and acted on -------------------------------
+    # --- round advice ---
 
     def _round_ports(self) -> "RoundPorts":
         """Bind the round's readers and receipt publisher."""

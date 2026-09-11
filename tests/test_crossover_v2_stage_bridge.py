@@ -57,6 +57,8 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 
 from __future__ import annotations
 
+from tests._log_events import event_field_maps
+
 import asyncio
 import importlib
 import json
@@ -1748,30 +1750,15 @@ def test_stage_2_logs_its_capabilities_and_names_a_missing_prior(monkeypatch, ca
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
         _conductor, _state = _stage_2(monkeypatch)
 
-    lines = [record.getMessage() for record in caplog.records]
-    declared = [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capabilities" in line
-    ]
+    declared = event_field_maps(caplog, "correction.crossover_v2_stage_capabilities")
     assert len(declared) == 1
-    assert "stage=verify" in declared[0]
-    # Anchored on the NEXT field, so a widened list cannot satisfy these by
-    # prefix: ``provides=rollback`` is a substring of ``provides=findings,
-    # rollback``, and a mutation that bound rollback on both stages slipped
-    # through an unanchored form of this assertion.
-    assert 'provides="" requires=' in declared[0]
-    assert (
-        "requires=commanded_delta,entry_baseline,predicted_sum missing="
-        in declared[0]
-    )
-    assert declared[0].endswith("missing=commanded_delta")
-
-    unavailable = [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capability_unavailable" in line
-    ]
+    assert declared[0]["stage"] == "verify"
+    assert declared[0]["provides"] == ""
+    assert declared[0]["requires"] == "commanded_delta,entry_baseline,predicted_sum"
+    assert declared[0]["missing"] == "commanded_delta"
+    unavailable = event_field_maps(caplog, "correction.crossover_v2_stage_capability_unavailable")
     assert len(unavailable) == 1
-    assert "missing=commanded_delta" in unavailable[0]
+    assert unavailable[0]["missing"] == "commanded_delta"
 
 
 def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
@@ -1788,22 +1775,12 @@ def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
         _conductor, _state = _stage_2(monkeypatch)
 
-    lines = [record.getMessage() for record in caplog.records]
-    declared = [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capabilities" in line
-    ]
+    declared = event_field_maps(caplog, "correction.crossover_v2_stage_capabilities")
     assert len(declared) == 1
-    assert 'provides="" requires=' in declared[0]
-    assert (
-        "requires=commanded_delta,entry_baseline,predicted_sum missing="
-        in declared[0]
-    )
-    assert 'missing=""' in declared[0]
-    assert not [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capability_unavailable" in line
-    ]
+    assert declared[0]["provides"] == ""
+    assert declared[0]["requires"] == "commanded_delta,entry_baseline,predicted_sum"
+    assert declared[0]["missing"] == ""
+    assert not event_field_maps(caplog, "correction.crossover_v2_stage_capability_unavailable")
 
 
 def test_stage_1_declares_itself_too(monkeypatch, caplog):

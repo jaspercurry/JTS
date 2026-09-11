@@ -2427,8 +2427,6 @@ def build_crossover_evidence_packet(
         # cycled more than one at a pose. Beside the poses rather than inside
         # them: a pose is where the mic stood, a candidate is what played.
         "candidates": candidates,
-        # The round's measured "before", beside the after rather than inside the
-        # receipt: the receipt carries identities, this carries the curve.
         "entry_baseline": entry_baseline,
         "capture_snr": capture_snr,
         "honesty_mask": {

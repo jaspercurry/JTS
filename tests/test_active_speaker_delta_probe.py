@@ -99,18 +99,6 @@ def test_every_verdict_a_classification_can_return_is_enumerated():
 
 
 def test_rollback_verdicts_are_exactly_the_non_matched_measurable_ones():
-    """``unavailable`` is deliberately NOT a rollback: an absent measurement is
-    not evidence of a bad correction, and rolling back on it would revert every
-    session whose household closed the phone before the post-apply sweep.
-
-    ``level_mismatch`` is not one either (#1811): it is a finding about this
-    comparison's LEVEL AXIS, not about the correction's shape, and its most
-    likely production cause is a known incompleteness in our own offset
-    accounting (an applied crossover config is emitted without room-PEQ /
-    preference EQ). Reverting a household's correction because our bookkeeping
-    was short would be a false accusation against a correction that may be
-    perfect.
-    """
     assert DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS == {
         VERDICT_MODEL_ERROR,
         VERDICT_LEVEL_DEPENDENT_SHORTFALL,

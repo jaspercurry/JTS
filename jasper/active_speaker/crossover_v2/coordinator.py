@@ -40,16 +40,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-#: The exception family four of the five seam calls are guarded against: losing
-#: the round's verdict is worse than reporting it with the seam marked
-#: unavailable. :func:`entry_graph_fingerprint` deliberately omits
-#: ``AttributeError`` from its own guard — it fills provenance, never a gate.
 _SEAM_ERRORS = (
     OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError,
 )
 
 
-# --- ports: the five host capabilities a round needs ---
+# --- ports ---
 
 
 @dataclass(frozen=True)
@@ -60,8 +56,7 @@ class RoundPorts:
     below; ``None`` never means "skip the question".
     """
 
-    #: Is a prior candidate recorded to go back to? (the state half of "can we
-    #: restore")
+    #: Whether a previous candidate is available for the operator.
     rollback_available: Callable[[], bool] | None = None
     #: Does the APPLIED intervention put energy in? (the applied-profile SSOT)
     applied_boosts: Callable[[], bool] | None = None
@@ -177,8 +172,7 @@ class RoundEvidence:
     candidate_fingerprint: str
     #: The round's :class:`~jasper.active_speaker.delta_probe.DeltaProbeMap`,
     #: or ``None`` when the session ran none. Feeds
-    #: :func:`~.verification.evaluate_applied_safety`, the adoption table's
-    #: only hard stop, so it is stated rather than defaulted.
+    #: :func:`~.verification.evaluate_applied_safety`.
     delta_probe: Any | None
     #: 1-based round position, independent of whether another round is chosen.
     round_ordinal: int

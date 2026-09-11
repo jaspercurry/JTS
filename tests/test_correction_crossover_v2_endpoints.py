@@ -670,7 +670,6 @@ def _stage_seams_over(store, capture_session_id, refs, recorder):
         publish_check=lambda *_a, **_kw: None,
         publish_candidate=lambda *_a, **_kw: None,
         run_async=asyncio.run,
-        camilla_factory=None,
         provenance=recorder,
     )
 

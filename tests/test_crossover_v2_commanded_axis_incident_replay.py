@@ -9,9 +9,7 @@ candidate ``45407c6426dd`` over the round-3 profile. The first on-axis VERIFY
 capture measured the tune BETTER and in limit — blend −1.80 dB at 1003 Hz
 against a 2.0 dB limit (it had been −3.75 at 1453 Hz for three rounds), level
 error 0.39 against 1.5, tracking 0.07 — and then
-``event=correction.crossover_v2_delta_probe verdict=model_error
-reason=realized_shape_differs_from_commanded rollback=true`` fired and the
-correction came off, with ``residual_offset_db = +3.2198`` on the record.
+The probe reported ``model_error`` with ``residual_offset_db = +3.2198``.
 
 The offline analysis (2026-08-16, issue #2611) attributed that number exactly:
 the probe's expected level move was the program-headroom step and ONLY that

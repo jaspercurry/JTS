@@ -3965,16 +3965,9 @@ def bind_v2_stage_seams(
     publish_check: Any,
     publish_candidate: Any,
     run_async: Any,
-    camilla_factory: Any,
     provenance: CaptureProvenanceRecorder | None = None,
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
-
-    The single source of truth for the two stage shapes. Both preparers call
-    it; neither assembles a ``V2FlowSeams`` of its own, so "which stage binds
-    rollback" is answered in exactly one place — the capability declarations in
-    :mod:`~jasper.active_speaker.crossover_v2.journey` — instead of being
-    re-derived at two call sites that were free to disagree.
 
     The unconditional seams are unconditional on purpose. ``apply_failed`` is
     never consulted by stage 2 (its conductor is constructed ``applied=True``,
@@ -5046,13 +5039,12 @@ def prepare_v2_session(
         # a second, underscore-prefixed name for the same object.
         seams = bind_v2_stage_seams(
             opening,
-                evidence_store=evidence_store,
+            evidence_store=evidence_store,
             capture_session_id=capture_session_id,
             refs=refs,
             publish_check=publish_check,
             publish_candidate=publish_candidate,
             run_async=run_async,
-            camilla_factory=camilla_factory,
             provenance=capture_provenance,
         )
         if verify_only:

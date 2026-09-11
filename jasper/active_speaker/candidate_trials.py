@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from jasper.audio_measurement.bundles import BundleError
 from jasper.json_fields import finite_float
 
+from ._common import blocker_issue
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .measured_crossover_candidate import candidate_trial_scope
@@ -136,9 +137,8 @@ def candidate_boost_issue(candidate: Any) -> dict[str, str] | None:
             continue
         safety = (receipt.get("round_axes") or {}).get("safety") or {}
         if (safety.get("evidence") or {}).get("boost_over_declared_bound") is True:
-            return {
-                "severity": "blocker",
-                "code": "boost_over_declared_bound",
-                "message": "The measured candidate exceeded its declared boost.",
-            }
+            return blocker_issue(
+                "boost_over_declared_bound",
+                "The measured candidate exceeded its declared boost.",
+            )
     return None

@@ -2,23 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#2291 Phase 3b's four verdicts, and the adoption table those became.
-
-Four axes since #2602 and seven rows since #2656; #2537 built the first three
-and five of them.
-
-Every row of the adoption table is a named test here, and so is every override
-rule stated beside it: safety outranks trust, trust outranks quality, a failed
-restore outranks everything, a measured regression never keeps, a boost is
-invisible on a trusted round, and a restore that cannot be performed escalates
-instead of quietly keeping the graph.
-
-The directionality pin is the one to read first
-(``test_the_level_shift_hard_stop_is_directional``): the same magnitude of
-uncommanded level shift is a hard stop in one direction and a learning signal
-in the other, and getting that backwards is what reverted a measured, safe,
-improving candidate on 2026-08-15.
-"""
 
 from __future__ import annotations
 

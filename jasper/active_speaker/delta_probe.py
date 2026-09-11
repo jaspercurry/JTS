@@ -77,11 +77,10 @@ DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS: frozenset[str] = frozenset({
     VERDICT_SPATIALLY_COSTLY,
 })
 
-#: Why the seam defers a rollback verdict to the adoption table (#2559).
 #: See ADR-0209.
 SEAM_DEFERRED_QUIETER_THAN_COMMANDED = "realized_quieter_than_commanded"
 
-#: Rollback classes that defer when the deviation points entirely quieter
+#: Advice classes that defer when the deviation points entirely quieter
 #: (ADR-0209). SPATIALLY_COSTLY is absent: no model between its two
 #: measurements (doctrine §3).
 DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS: frozenset[str] = frozenset({
@@ -95,8 +94,7 @@ REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
 
 
 def seam_rollback_deferral(probe: Any | None) -> str:
-    """Why this map's seam-bound rollback DEFERS to the adoption table (ADR-0209),
-    or ``""`` for an absent probe or non-rollback verdict."""
+    """Defer a quieter-only finding to the adoption table (ADR-0209)."""
     if probe is None:
         return ""
     if (
@@ -356,7 +354,7 @@ class DeltaProbeMap:
     #: PRE-APPLY capture (series-2 D1)? ``False`` means neither ran.
     safety_anchored: bool = False
     #: Did a BOOST realize more lift than declared, structurally? (#2537)
-    #: The adoption table's one hard stop from this probe — see
+    #: The apply gate refuses this measured finding — see
     #: :func:`boost_overshoot`. Measured over the SAFETY bins (#2614).
     boost_over_declared_bound: bool = False
     #: Worst signed ANCHORED excess, dB, over boosted safety bins; positive

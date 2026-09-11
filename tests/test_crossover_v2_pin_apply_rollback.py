@@ -6,6 +6,17 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker import compile_preset_from_crossover_preview
+from jasper.active_speaker.baseline_profile import apply_baseline_profile
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.crossover_preview import build_crossover_preview
+from tests.test_active_speaker_baseline_profile import (
+    _draft, _dual_apple_topology, _measurements, _v2_candidate, _valid_config,
+)
+import json
+from dataclasses import replace
+
+
 
 import pytest
 
@@ -31,13 +42,6 @@ CURRENT = "fp-current-measured"
 
 
 def _seed_previous_candidate(*, paired: bool = True) -> None:
-    """A durable state that records a prior measured candidate.
-
-    ``paired`` stamps the pointer's pairing at the published candidate — the
-    armed shape every graded round meets. ``False`` is a pointer inherited
-    from an OLDER apply (#2559's staleness class) or already consumed by the
-    automatic revert (the [revert…next-apply] window).
-    """
     v2host.save_v2_state({
         "session_id": "cap_x",
         "applied": True,
@@ -58,16 +62,6 @@ def _seed_previous_candidate(*, paired: bool = True) -> None:
 def test_rollback_available_pairs_and_preflights(
     monkeypatch, paired, preflight_code, expected,
 ):
-    """``rollback_available`` means "the automatic restore will not refuse".
-
-    The adversarial review's core finding: a bare "a fingerprint exists"
-    re-opened the promise-then-refuse drift #2291 closed. The state half now
-    answers the three static questions the action re-asks — pointer recorded,
-    paired to the apply under grade, republish door would admit it — so a
-    round that cannot restore routes to ``recovery_required`` upfront. The
-    live displacement check stays at the moment of action, the same
-    static/live split the old probe kept.
-    """
     _seed_previous_candidate(paired=paired)
     monkeypatch.setattr(
         republish_door, "republish_preflight", lambda fingerprint: preflight_code,
@@ -83,15 +77,6 @@ def test_rollback_available_pairs_and_preflights(
 async def test_apply_refuses_the_candidates_measured_boost_excess(
     monkeypatch, tmp_path, over_bound, same_candidate, expected,
 ):
-    from jasper.active_speaker import compile_preset_from_crossover_preview
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
-    from jasper.active_speaker.candidate_bank import publish_authored_candidate
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from tests.test_active_speaker_baseline_profile import (
-        _draft, _dual_apple_topology, _measurements, _v2_candidate, _valid_config,
-    )
-    import json
-    from dataclasses import replace
 
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))

@@ -1078,7 +1078,6 @@ def build_conductor_state(
         if failure_code == getattr(conductor, "last_failure_code", None)
         else None
     )
-
     # Let the journey learn about a restore it could not see (#2616): durable
     # state is the authority on whether a restore HAPPENED, the journey owns
     # the flag, so this tells the journey and writes what it says. Scoped to
@@ -1291,10 +1290,6 @@ def build_conductor_state(
                     {"pilot_heard": bool(failure_pilot_heard)}
                     if failure_pilot_heard is not None else {}
                 ),
-                # On exactly the key above's terms: absent is "the question
-                # does not apply to this code" and the copy owner reads it as
-                # the Undo arm, so a bare ``False`` would tell a household with
-                # a good anchor that they have none.
             }
             if failure_code else None
         ),

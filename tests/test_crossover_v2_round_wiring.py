@@ -2,51 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#2291 Phase 3c: the round, wired into the host that actually runs it.
-
-The grading itself — the four verdicts and the adoption table — is
-:mod:`jasper.active_speaker.crossover_v2.round_evidence`'s and
-:mod:`jasper.active_speaker.crossover_v2.verification`'s, and their own tests
-pin it as arithmetic. **This module pins the WIRING**: that a real stage-2
-conductor, built by the real verify-only prepare with the real host seams
-behind it, reaches those answers and then does the right thing to the
-household's speaker.
-
-Every pin here is driven through the production host rather than by calling a
-pure function, because every defect this phase can still ship is a wiring
-defect. ``decide_adoption`` returning ``restore`` is worth nothing if the seam
-it depends on was bound on the other stage.
-
-What is pinned, in the order a round meets it:
-
-1. **adoption outcomes**, reached through the two-stage host — keep, measured
-   regression, and the fail-closed unproven boost;
-2. **the round grades the capture the session ENDED on** — a rejected VERIFY
-   keeps its own code, burns nothing, and writes no receipt, and the retry that
-   lands clean is graded normally;
-3. **the receipt** — where it lands, that it is fingerprinted, that it reads
-   back identical;
-4. **a receipt-write failure costs no verdict**;
-5. **the model-error store banks the TRACKING number**, not the ledger's grade;
-6. **durability, both directions** — the anchor writes fsync, an ordinary
-   conductor persist does not;
-7. **every round banks its receipt.**
-
-**The rollback seam's own door-level pins live next door**, in
-``tests/test_crossover_v2_pin_apply_rollback.py`` — this suite drives the
-round OUTCOMES through it.
-
-This module drives the REAL preparers through
-:mod:`tests.crossover_v2_round_harness` over
-``tests/test_crossover_v2_stage_bridge.py``'s seams.  That harness used to
-leak fakes into any module that first imported them inside its patched window
-(issue #2312), so this file carried a warning not to share a pytest process
-with ``tests/test_correction_crossover_v2_endpoints.py``.  #2312 is fixed — the
-harness now unwinds every binding by identity, see its own comment — and the
-suites co-run green in either order.
-"""
 
 from __future__ import annotations
+
+from jasper.active_speaker.delta_probe import classify_delta_probe
+from jasper.active_speaker.crossover_v2 import delta_probe_run
+from tests.test_active_speaker_delta_probe import _GRID_HZ, _band, _commanded_lift
+
 
 
 import dataclasses
@@ -241,21 +203,7 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
 # --------------------------------------------------------------------------- #
 
 
-def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
-    """The conductor→coordinator port mapping, pinned as reach rather than identity.
-
-    #2291 Phase 5 moved the round's sequencing behind
-    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round`, which is
-    handed a narrowed :class:`RoundPorts` instead of the conductor's seams. That
-    narrowing is a place two names can be crossed, and most crossings would
-    still pass the outcome tests above: a swapped pair usually raises inside a
-    guard and fails closed, which several rows here expect anyway.
-
-    So this asserts the weaker fact that no single-outcome test implies — that
-    ONE round reaches all five — on a restoring round, the only shape in which
-    every seam is live. Comparing the port objects instead would pin the
-    assignment and not the call, and the call is what a round is.
-    """
+def test_a_round_reaches_its_readers_and_publisher(monkeypatch):
     seen: list[str] = []
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
@@ -1284,23 +1232,9 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     assert full.round_evaluation is not None, "Full grades at the cloud close"
 
 
-def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
+def test_a_probe_finding_at_the_cloud_close_banks_advice(
     monkeypatch, real_bundle,
 ):
-    """A probe ROLLBACK at the cloud close banks a receipt — the founding ask.
-
-    **This test's subject is the reverse of what it used to be, and the
-    reversal is the ruling.** The close used to run the probe, restore from its
-    own seam, and return a refusal BEFORE grading — so a rollback round wrote
-    no receipt at all. The ethos names that as the bug it was written against:
-    *the bug is that no round receipt was written on the failed verify, leaving
-    that round's realization only in journal events.*
-
-    Four things have to hold together. The graph still comes off (the class did
-    not become a keep), exactly one Undo runs, the round is GRADED, and the
-    receipt is on disk naming the probe class that took it off. The old shape
-    satisfied only the first two.
-    """
 
     _seed_full_round_state()
     conductor, attempts = _full_stage_2(monkeypatch)
@@ -1704,19 +1638,7 @@ def _direct_round(
     ],
     ids=["keep_for_iteration", "restore", "no_anchor"],
 )
-def test_every_arm_of_the_adoption_act_banks_a_receipt(case, kwargs, outcome):
-    """The ethos's fifth principle, as a guard on every exit.
-
-    *Every round, kept or restored or refused, banks its measurement into the
-    series state so the next bite is commanded from it.* Parametrized over the
-    three arms of ``_act_on_adoption`` rather than over the outcomes, because
-    the arms are the code paths — an outcome added later routes through one of
-    them and inherits this pin.
-
-    What forced it into writing: the 2026-08-16 shortfall rollback wrote no
-    round receipt on its failed verify, leaving that round's realization in
-    journal events only.
-    """
+def test_every_adoption_outcome_banks_advice(case, kwargs, outcome):
     banked = []
     decision = _direct_round(publish=lambda receipt: banked.append(receipt) or "art",
                              **kwargs)
@@ -2349,9 +2271,6 @@ def test_round_advice_keeps_the_applied_graph(
     before = _flow_seams(conductor).entry_graph_fingerprint()
     probe = None
     if probe_verdict is not None:
-        from jasper.active_speaker.delta_probe import classify_delta_probe
-        from jasper.active_speaker.crossover_v2 import delta_probe_run
-        from tests.test_active_speaker_delta_probe import _GRID_HZ, _band, _commanded_lift
 
         commanded = _commanded_lift()
         probe = dataclasses.replace(
