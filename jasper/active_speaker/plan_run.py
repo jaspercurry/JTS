@@ -46,7 +46,6 @@ from .angle_capture import (
     WALK_STIMULUS_NOT_ACCEPTED,
     AngleCaptureRequest,
     LateralWalkRefused,
-    refuse_unplayable_walk_policy,
     resolve_request,
     stop_specs,
 )
@@ -364,7 +363,6 @@ async def run_plan(
     """
     fingerprint = request_fingerprint(request)
     try:
-        refuse_unplayable_walk_policy(request)
         resolved = resolve_request(request)
         prompts = tuple(stop.prompt for stop in resolved)
         try:
