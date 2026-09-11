@@ -275,6 +275,52 @@ async def test_silence_does_not_count_as_an_answer_and_mute_discards_buffered_in
         await conn.stop()
 
 
+async def test_speech_buffered_during_the_dial_catches_up_and_live_input_stays_paced(
+    monkeypatch, caplog,
+):
+    """The dial costs seconds the room does not wait through.
+
+    Speech the wake buffered meanwhile is already that old, so it leaves
+    back to back instead of paying a quantum each; the quiet the sender
+    synthesizes once it has drained still leaves at 1x, or Live's
+    silence-driven endpointing runs fast.
+    """
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(openai_live_session, "time", FrozenClock())
+    frame = b"\xff\x7f" * 1280  # 80 ms at 16 kHz: one pacing quantum
+    backlog = 16  # the sender's whole input queue, 1.28 s of speech
+    socket = LiveSocket()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+
+    def speech_appends():
+        return sum(
+            1 for e in socket.sent
+            if e["type"] == "session.input_audio.append" and any(base64.b64decode(e["audio"]))
+        )
+
+    try:
+        started = time.monotonic()
+        for _ in range(backlog):
+            await turn.send_audio(frame)
+        await wait_until(lambda: speech_appends() == backlog, timeout=3.0)
+        caught_up = time.monotonic() - started
+        drained_at = len(socket.sent)
+        await asyncio.sleep(0.25)
+        after_catch_up = len(socket.sent) - drained_at
+    finally:
+        await turn.release()
+        await conn.stop()
+
+    # A quantum each would cost the 15 stale frames 1.2 s; only the
+    # newest is the live edge and owes one.
+    assert caught_up < 0.4
+    # 0.25 s of synthesized quiet at 1x is ~3 appends, never a free run.
+    assert 1 <= after_catch_up <= 6
+    assert int(event_fields(caplog, "provider.turn_ended")["input_catchup_ms"]) == 1200
+
+
 async def test_a_terminal_connect_failure_reports_the_outage_and_its_remedy():
     """A wake that cannot open a session tells the household why.
 
