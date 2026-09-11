@@ -104,6 +104,14 @@ _MUX_UNIT = "jasper-mux.service"
 # in its wait-card ExecStartPre.
 _DEFAULT_UNIT_ACTION_TIMEOUT_SEC = 15.0
 _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC = 5.0
+# The two verbs that only move symlinks, and the only two `--no-reload`
+# accepts.  Nothing here writes a unit file or drop-in first, and on systemd
+# 257 both readers of an enablement — `systemctl is-enabled` below, and the
+# cached `UnitFileState` property jasper/accessories/reconcile.py shows — read
+# a `--no-reload` enable or disable back immediately.  So the implicit
+# daemon-reload buys nothing, and it cost 3.6-14.9 s per call under the memory
+# pressure of #3639.  Removal condition: a caller here writes a unit file.
+_UNIT_ENABLEMENT_VERBS = frozenset({"enable", "disable"})
 _UNIT_STATE_QUERY_TIMEOUT_SEC = 2.0
 _UNIT_AVAILABLE_QUERY_TIMEOUT_SEC = 2.0
 _UNIT_ACTION_CLIENT_MARGIN_SEC = 1.0
@@ -197,7 +205,7 @@ _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
 def _unit_action_timeout_sec(unit: str, verb: str) -> float:
     if verb == "start" and unit in _OWNER_UNIT_ACTION_TIMEOUT_SEC:
         return _OWNER_UNIT_ACTION_TIMEOUT_SEC[unit]
-    if verb in {"enable", "disable"}:
+    if verb in _UNIT_ENABLEMENT_VERBS:
         return _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC
     if verb == "reset-failed":
         return _RESET_FAILED_ACTION_TIMEOUT_SEC
@@ -884,9 +892,10 @@ def _run_systemctl(unit: str, enabled: bool) -> tuple[int, str]:
 
 def _run_unit_action(unit: str, verb: str) -> tuple[int, str]:
     timeout = _unit_action_timeout_sec(unit, verb)
+    flags = ["--no-reload"] if verb in _UNIT_ENABLEMENT_VERBS else []
     try:
         process = subprocess.run(
-            ["systemctl", verb, unit],
+            ["systemctl", verb, *flags, unit],
             check=False,
             timeout=timeout,
             stdout=subprocess.PIPE,
