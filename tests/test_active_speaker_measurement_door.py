@@ -55,7 +55,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
     entry = tmp_path / ENTRY_CONFIG
     entry.write_text("devices: {}\n", encoding="utf-8")
-    cam = FakeCam(entry)
+    cam = FakeCam(entry, volume_db=HOUSEHOLD_DB)
     install_volume_owner(
         VolumeOwner(
             set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
@@ -399,7 +399,7 @@ async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
     monkeypatch.setattr(coordinator, "measurement_window", _window)
     entry = tmp_path / ENTRY_CONFIG
     entry.write_text("devices: {}\n", encoding="utf-8")
-    cam = FakeCam(entry)
+    cam = FakeCam(entry, volume_db=HOUSEHOLD_DB)
     install_volume_owner(
         VolumeOwner(
             set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
