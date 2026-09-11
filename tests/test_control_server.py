@@ -7,10 +7,12 @@
 Covers what ``jasper.control.server`` itself owns — the route table and
 its install-profile policy, the host/origin/body guards, control-token
 and household-credential gating, leader forwarding for a paired
-follower, the active-speaker setup blocks it consults, and the
-ThreadingHTTPServer's own lifecycle. Route bodies are tested beside the
-``jasper.control.handlers`` mixin that owns them, in the sibling
-``test_control_server_<concern>.py`` modules. ``jasper.control.state_aggregate``'s
+follower, and the ThreadingHTTPServer's own lifecycle. Route bodies are
+tested beside the ``jasper.control.handlers`` mixin that owns them, in the
+sibling ``test_control_server_<concern>.py`` modules — including each
+concern's own active-speaker-setup block (volume's in
+``test_control_server_volume.py``, grouping's in
+``test_control_server_grouping.py``). ``jasper.control.state_aggregate``'s
 own pure functions are tested in ``test_control_state_aggregate.py``.
 """
 
@@ -57,34 +59,6 @@ _IMPORTED_FIXTURES = (
     server_with_coordinator,
     server_with_voice_socket,
 )
-
-
-def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
-    monkeypatch,
-) -> None:
-    import jasper.control.server as srv_mod
-
-    blocked = {
-        "active": False,
-        "configured": False,
-        "volume_allowed": False,
-        "grouping_allowed": False,
-        "reason": "output_topology_unconfigured",
-        "detail": "choose and save a speaker layout before using audio",
-    }
-    monkeypatch.setattr(
-        srv_mod,
-        "read_active_speaker_setup_status",
-        lambda **_kwargs: blocked,
-    )
-
-    assert srv_mod._active_speaker_volume_block() is blocked
-    grouping, setup = srv_mod._active_speaker_grouping_evaluation()
-    assert grouping == {
-        "allowed": False,
-        "detail": "choose and save a speaker layout before using audio",
-    }
-    assert setup is blocked
 
 
 # --- management request guardrails ---
@@ -363,7 +337,7 @@ def test_streambox_serves_a_session_start_over_http(
 def test_cross_site_get_rejects_diagnostics_before_subprocess(
     server_with_coordinator, monkeypatch,
 ):
-    import jasper.control.server as srv_mod
+    from jasper.control import aec_endpoints
 
     calls = []
 
@@ -371,7 +345,7 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
         calls.append((args, kwargs))
         raise AssertionError("diagnostics should not run")
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", fake_run)
 
     base, _ = server_with_coordinator
     status, body = _get(
@@ -449,27 +423,45 @@ def test_split_control_helpers_keep_state_at_owner_modules():
     mirrored_names = {
         "BASE_CONFIG_PATH",
         "SOURCE_AVAILABILITY_TTL_SEC",
+        "SOURCE_SELECT_IDS",
+        "CORE_AUDIO_RESTART_UNITS",
+        "LOCAL_SOURCE_AUDIO_REFRESH_UNITS",
         "_source_availability_cache",
         "_source_availability_lock",
         "_AEC_MODE_FILE",
         "_WAKE_MODEL_FILE",
         "_JASPER_ENV_FILE",
         "_TOGGLE_TO_TOKEN",
+        "_USB_MIC_APPLY_UNIT",
         "_aec_bridge_active_impl",
         "_aec_fresh_jasper_env_impl",
         "_aec_full_status",
+        "_aec_commission_running",
+        "_aec_commission_start_lock",
+        "_active_speaker_grouping_block",
+        "_active_speaker_grouping_evaluation",
+        "_active_speaker_volume_block",
         "_augment_source_payload",
+        "_dispatch_transport",
         "_fresh_jasper_env",
+        "_mark_usb_latency_applying",
         "_read_audio_quality_state",
         "_read_active_audio_converter",
+        "_run_unit_systemctl",
         "_safe_audio_quality_state",
+        "_safe_usb_latency_state",
         "_same_config_path",
+        "_schedule_usb_gadget_recompose",
         "_server_aec_bridge_active_wrapper",
         "_server_fresh_jasper_env_wrapper",
         "_sound_apply_target",
         "_sound_runtime_status",
+        "_start_aec_commission",
         "_sync_aec_module",
         "_sync_source_availability_module",
+        "_usb_latency_applying",
+        "_usb_mic_leg_apply_lock",
+        "_usb_mic_leg_apply_pending",
     }
     assert mirrored_names.isdisjoint(vars(srv_mod))
 

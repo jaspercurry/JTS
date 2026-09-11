@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ...active_speaker.setup_status import read_active_speaker_setup_status
 from ...atomic_io import locked_update_env_file
 from ...env_load import GROUPING_ENV_FILE
 from ...log_event import log_event
@@ -32,7 +33,6 @@ from ...multiroom.state import grouping_response, read_grouping_state
 from .. import grouping_supervisor
 from .. import household_credential
 from .. import restart_broker
-from .. import server as _server
 from ._base import ControlHandlerMixin, logger
 
 _GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
@@ -419,6 +419,27 @@ def _write_grouping(
     )
 
 
+def _active_speaker_grouping_evaluation() -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Return the public grouping-readiness verdict and any blocking setup.
+
+    Both GET /grouping's preflight projection and POST /grouping/set's final
+    mutation guard call this one policy seam, so the advisory read can never
+    drift from the target-side fail-closed decision.
+    """
+    setup = read_active_speaker_setup_status()
+    if setup.get("grouping_allowed") is not True:
+        detail = str(
+            setup.get("detail")
+            or "active speaker setup is not ready for grouping"
+        )
+        return {"allowed": False, "detail": detail}, setup
+    return {"allowed": True, "detail": "ready"}, None
+
+
+def _active_speaker_grouping_block() -> dict[str, Any] | None:
+    return _active_speaker_grouping_evaluation()[1]
+
+
 class GroupingRoutes(ControlHandlerMixin):
     def _get_grouping(self) -> None:
         # Multiroom grouping block + the small member-local readiness
@@ -448,7 +469,7 @@ class GroupingRoutes(ControlHandlerMixin):
             logger.exception("grouping state read failed")
             grouping = None
         try:
-            readiness, _blocked = _server._active_speaker_grouping_evaluation()
+            readiness, _blocked = _active_speaker_grouping_evaluation()
         except (
             AttributeError,
             KeyError,
@@ -556,7 +577,7 @@ class GroupingRoutes(ControlHandlerMixin):
                 self._send_json({"error": err}, status=400)
                 return
             blocked = (
-                _server._active_speaker_grouping_block()
+                _active_speaker_grouping_block()
                 if body.get("enabled")
                 else None
             )

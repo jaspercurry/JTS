@@ -178,7 +178,6 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
 ):
     base, _ = server_with_coordinator
     import jasper.control.handlers.aec as aec_mod
-    import jasper.control.server as srv_mod
 
     statuses = iter([
         {"usb_mic": {"enabled": False, "toggle_enabled": True}},
@@ -189,7 +188,7 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: next(statuses))
     monkeypatch.setattr(aec_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_schedule_usb_gadget_recompose",
         lambda: recomposes.append(True) or True,
     )
@@ -212,7 +211,6 @@ def test_usb_mic_schedule_failure_returns_structured_502(
 ):
     base, _ = server_with_coordinator
     import jasper.control.handlers.aec as aec_mod
-    import jasper.control.server as srv_mod
 
     usb_mic = {
         "enabled": True,
@@ -227,7 +225,7 @@ def test_usb_mic_schedule_failure_returns_structured_502(
     )
     monkeypatch.setattr(aec_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_schedule_usb_gadget_recompose",
         lambda: False,
     )
@@ -254,7 +252,6 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
 ):
     base, _ = server_with_coordinator
     import jasper.control.handlers.aec as aec_mod
-    import jasper.control.server as srv_mod
 
     monkeypatch.setattr(
         aec_endpoints,
@@ -273,7 +270,7 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
         lambda _enabled: pytest.fail("unavailable switch must not persist intent"),
     )
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_schedule_usb_gadget_recompose",
         lambda: pytest.fail("unavailable switch must not recompose USB"),
     )
@@ -318,7 +315,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         ),
     )
     monkeypatch.setattr(
-        srv_mod._aec_endpoints,
+        aec_endpoints,
         "_fresh_jasper_env",
         lambda: {"JASPER_AUDIO_INPUT_PROFILE": "fresh"},
     )
@@ -336,7 +333,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage)
     monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: final_status)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "_schedule_usb_gadget_recompose",
         lambda: pytest.fail("source selection must not recompose the gadget"),
     )
@@ -387,7 +384,7 @@ def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
     import jasper.control.server as srv_mod
 
     choices = [{"value": "primary", "label": "Same as JTS voice"}]
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(
         aec_mod,
@@ -428,7 +425,7 @@ def test_usb_mic_leg_same_value_is_noop(
             },
         },
     }
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(
         aec_mod,
         "usb_mic_leg_choices",
@@ -476,9 +473,9 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
             },
         },
     }
-    monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
-    monkeypatch.setattr(srv_mod.time, "monotonic", lambda: clock["now"])
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_usb_mic_leg_apply_pending", None)
+    monkeypatch.setattr(aec_endpoints.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
@@ -514,7 +511,7 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
         ("jasper-aec-bridge.service", "restart"),
     ]
 
-    clock["now"] += srv_mod._USB_MIC_LEG_APPLY_COALESCE_SECONDS + 0.1
+    clock["now"] += aec_endpoints._USB_MIC_LEG_APPLY_COALESCE_SECONDS + 0.1
     status, body = _post(
         f"{base}/aec/usb-mic-leg",
         {"leg": "chip_aec_210"},
@@ -551,8 +548,8 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
             },
         },
     }
-    monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_usb_mic_leg_apply_pending", None)
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
@@ -602,7 +599,7 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
         {"value": "primary", "label": "Same as JTS voice"},
         {"value": "chip_aec_210", "label": "Rear hardware beam"},
     ]
-    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
     monkeypatch.setattr(aec_mod, "usb_mic_leg_choices", lambda _env: choices)
     monkeypatch.setattr(aec_mod, "read_usb_mic_leg", lambda: state["leg"])
     monkeypatch.setattr(
@@ -629,23 +626,21 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
 
 
 def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
-    import jasper.control.server as srv_mod
-
     commands = []
     events = []
 
     monkeypatch.setattr(
-        srv_mod.subprocess,
+        aec_endpoints.subprocess,
         "run",
         lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
     )
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "log_event",
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    assert srv_mod._schedule_usb_gadget_recompose() is True
+    assert aec_endpoints._schedule_usb_gadget_recompose() is True
 
     assert commands == [
         ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
@@ -665,8 +660,6 @@ def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
 
 
 def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
-    import jasper.control.server as srv_mod
-
     events = []
 
     def run(command, **_kwargs):
@@ -674,14 +667,14 @@ def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
             return _SystemctlResult(1, "access denied\n")
         return _SystemctlResult()
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "log_event",
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    assert srv_mod._schedule_usb_gadget_recompose() is False
+    assert aec_endpoints._schedule_usb_gadget_recompose() is False
 
     assert events == [(
         "usb_mic.recompose_failed",
@@ -690,7 +683,7 @@ def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
             "phase": "enqueue",
             "returncode": 1,
             "detail": "access denied",
-            "level": srv_mod.logging.ERROR,
+            "level": aec_endpoints.logging.ERROR,
         },
     )]
 
@@ -702,8 +695,6 @@ def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch)
     the recompose before the restart is attempted, and it must not be
     reported through the same event as an actual scheduling failure.
     """
-    import jasper.control.server as srv_mod
-
     commands = []
     events = []
 
@@ -715,14 +706,14 @@ def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch)
             )
         return _SystemctlResult()
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "log_event",
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    assert srv_mod._schedule_usb_gadget_recompose() is True
+    assert aec_endpoints._schedule_usb_gadget_recompose() is True
 
     assert commands == [
         ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
@@ -738,7 +729,7 @@ def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch)
                 "unit": "jasper-usbmic-apply.service",
                 "returncode": 1,
                 "detail": "Unit jasper-usbmic-apply.service not loaded.",
-                "level": srv_mod.logging.WARNING,
+                "level": aec_endpoints.logging.WARNING,
             },
         ),
         (
@@ -756,25 +747,23 @@ def test_usb_mic_recompose_survives_reset_failed_raising(monkeypatch):
     """An exception from the best-effort reset-failed step (e.g. a
     subprocess timeout) must not skip the restart either.
     """
-    import jasper.control.server as srv_mod
-
     commands = []
     events = []
 
     def run(command, **_kwargs):
         commands.append(command)
         if "reset-failed" in command:
-            raise srv_mod.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
+            raise aec_endpoints.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
         return _SystemctlResult()
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "log_event",
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    assert srv_mod._schedule_usb_gadget_recompose() is True
+    assert aec_endpoints._schedule_usb_gadget_recompose() is True
     assert commands == [
         ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
         [
@@ -792,25 +781,23 @@ def test_usb_mic_recompose_fails_when_restart_raises(monkeypatch):
     """The restart step stays fatal even when systemctl itself errors, and
     no recompose_scheduled event follows the failure.
     """
-    import jasper.control.server as srv_mod
-
     commands = []
     events = []
 
     def run(command, **_kwargs):
         commands.append(command)
         if "restart" in command:
-            raise srv_mod.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
+            raise aec_endpoints.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
         return _SystemctlResult()
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
     monkeypatch.setattr(
-        srv_mod,
+        aec_endpoints,
         "log_event",
         lambda _logger, event, **fields: events.append((event, fields)),
     )
 
-    assert srv_mod._schedule_usb_gadget_recompose() is False
+    assert aec_endpoints._schedule_usb_gadget_recompose() is False
     assert commands == [
         ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
         [
@@ -827,12 +814,11 @@ def test_aec_commission_starts_oneshot_when_idle(
     """POST /aec/commission on an idle box resets then no-block-starts the
     root measurement oneshot and answers 202 with the full /aec status body."""
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     commands: list[list[str]] = []
-    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: False)
     monkeypatch.setattr(
-        srv_mod.subprocess,
+        aec_endpoints.subprocess,
         "run",
         lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
     )
@@ -860,11 +846,10 @@ def test_aec_commission_409_while_a_run_is_active(
     monkeypatch, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
-    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: True)
+    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: True)
     monkeypatch.setattr(
-        srv_mod.subprocess,
+        aec_endpoints.subprocess,
         "run",
         lambda *_a, **_k: pytest.fail("an active run must not be started again"),
     )
@@ -879,10 +864,9 @@ def test_aec_commission_502_when_the_unit_will_not_start(
     monkeypatch, server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
-    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: False)
-    monkeypatch.setattr(srv_mod, "_start_aec_commission", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_start_aec_commission", lambda: False)
 
     status, body = _post(f"{base}/aec/commission", None)
 
@@ -906,7 +890,6 @@ def test_aec_commission_concurrent_second_click_starts_nothing(
     import threading
 
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     state = {"running": False, "starts": 0, "checks": 0}
     first_start_entered = threading.Event()
@@ -931,8 +914,8 @@ def test_aec_commission_concurrent_second_click_starts_nothing(
         state["running"] = True
         return True
 
-    monkeypatch.setattr(srv_mod, "_aec_commission_running", fake_running)
-    monkeypatch.setattr(srv_mod, "_start_aec_commission", fake_start)
+    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", fake_running)
+    monkeypatch.setattr(aec_endpoints, "_start_aec_commission", fake_start)
     monkeypatch.setattr(
         aec_endpoints,
         "_aec_full_status",

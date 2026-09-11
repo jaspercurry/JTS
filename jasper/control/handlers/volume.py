@@ -12,16 +12,19 @@ import threading
 import time
 from typing import Any
 
+from ...active_speaker.setup_status import read_active_speaker_setup_status
 from ...local_sources import status as source_status
 from ...log_event import log_event
 from ...music_sources import MUSIC_SOURCE_SPECS
 from ...platform import wire
+from ...platform.uds import mux_socket_command
 from ...volume_curve import db_to_percent
 from .. import measurement_hold
-from .. import server as _server
+from .. import volume_ops
 from ._base import ControlHandlerMixin, logger
 
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
+SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
 
@@ -66,6 +69,20 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _active_speaker_volume_block() -> dict[str, Any] | None:
+    setup = read_active_speaker_setup_status()
+    if setup.get("volume_allowed") is not True:
+        return setup
+    return None
+
+
+async def _dispatch_transport(action: str) -> dict:
+    return await volume_ops._dispatch_transport(
+        action,
+        spotify_router_factory=volume_ops._build_spotify_router_or_none,
+    )
+
+
 class VolumeRoutes(ControlHandlerMixin):
     def _get_volume(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
@@ -87,8 +104,8 @@ class VolumeRoutes(ControlHandlerMixin):
     ) -> dict[str, Any] | None:
         try:
             command = (
-                _server._mux_socket_command(cmd) if timeout is None
-                else _server._mux_socket_command(cmd, timeout=timeout)
+                mux_socket_command(cmd) if timeout is None
+                else mux_socket_command(cmd, timeout=timeout)
             )
             return asyncio.run(command)
         except (OSError, asyncio.TimeoutError) as e:
@@ -159,7 +176,7 @@ class VolumeRoutes(ControlHandlerMixin):
     def _post_volume_adjust(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
             return
-        blocked = _server._active_speaker_volume_block()
+        blocked = _active_speaker_volume_block()
         if blocked is not None:
             self._send_json(
                 {
@@ -208,7 +225,7 @@ class VolumeRoutes(ControlHandlerMixin):
     def _post_volume_set(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
             return
-        blocked = _server._active_speaker_volume_block()
+        blocked = _active_speaker_volume_block()
         if blocked is not None:
             self._send_json(
                 {
@@ -337,7 +354,7 @@ class VolumeRoutes(ControlHandlerMixin):
     def _post_volume_mute(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
             return
-        blocked = _server._active_speaker_volume_block()
+        blocked = _active_speaker_volume_block()
         if blocked is not None:
             self._send_json(
                 {
@@ -413,7 +430,7 @@ class VolumeRoutes(ControlHandlerMixin):
             return
         action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
         try:
-            result = asyncio.run(_server._dispatch_transport(action))
+            result = asyncio.run(_dispatch_transport(action))
         except Exception as e:  # noqa: BLE001
             logger.exception("transport %s failed", action)
             self._send_json({"error": str(e)}, status=502)
@@ -440,10 +457,10 @@ class VolumeRoutes(ControlHandlerMixin):
         source = str(body.get("source") or "").strip().lower()
         if source == "auto":
             cmd = wire.MUX_AUTO
-        elif source in _server.SOURCE_SELECT_IDS:
+        elif source in SOURCE_SELECT_IDS:
             cmd = wire.mux_select(source)
         else:
-            choices = ", ".join(sorted(_server.SOURCE_SELECT_IDS))
+            choices = ", ".join(sorted(SOURCE_SELECT_IDS))
             self._send_json(
                 {
                     "error": (f"source must be {choices}, or auto"),

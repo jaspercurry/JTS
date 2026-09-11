@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import os
 import subprocess
 import threading
 import time
 from typing import Any, Iterator
+
+from jasper.log_event import log_event
 
 from ..chip_aec import record as commission_record
 from .. import enhanced_aec
@@ -53,6 +56,8 @@ from ..chip_aec.policy import (
 from ..wake_models import WAKE_MODEL_ENV_OWNER, WAKE_MODEL_FILE
 from . import restart_broker
 
+logger = logging.getLogger(__name__)
+
 _AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _AEC_MODE_ENV_OWNER = "JTS /aec mode control"
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
@@ -61,8 +66,143 @@ _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 _AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
+_USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 _UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
+_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
+_usb_mic_leg_apply_lock = threading.Lock()
+_usb_mic_leg_apply_pending: tuple[str, float] | None = None
+# Serializes POST /aec/commission's check-then-start across
+# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
+# probe before either start lands.
+_aec_commission_start_lock = threading.Lock()
+
+
+def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["systemctl", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+
+
+def _reset_oneshot_unit(unit: str, *, event: str) -> None:
+    """Fail-soft and best-effort: a reset-failed failure must never block
+    the start/restart it precedes.  Both callers' units are bare oneshots
+    with no RemainAfterExit, so systemd normally GCs them between runs, and
+    reset-failed against an already-unloaded unit routinely exits nonzero
+    (#3237)."""
+    try:
+        result = _run_unit_systemctl("reset-failed", unit)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            event,
+            unit=unit,
+            error=str(exc),
+            level=logging.WARNING,
+        )
+        return
+    if result.returncode != 0:
+        log_event(
+            logger,
+            event,
+            unit=unit,
+            returncode=result.returncode,
+            detail=(result.stderr or result.stdout).strip().replace(
+                "\n", " | ",
+            ),
+            level=logging.WARNING,
+        )
+
+
+def _run_oneshot_start(
+    unit: str,
+    verb: str,
+    *,
+    event_prefix: str,
+    extra_fields: dict[str, Any] | None = None,
+) -> bool:
+    """Reset then no-block start/restart one maintenance oneshot, observably.
+
+    ``event_prefix`` is ``<owner>.<action>``: the failure/scheduled events are
+    ``<event_prefix>_failed`` / ``<event_prefix>_scheduled`` and the
+    best-effort reset logs ``<owner>.reset_failed_skipped``. ``extra_fields``
+    ride on the scheduled event only. The reset clears systemd's
+    failure/start-rate state so each explicit user action gets a fresh,
+    bounded retry budget.
+    """
+    owner = event_prefix.rsplit(".", 1)[0]
+    _reset_oneshot_unit(unit, event=f"{owner}.reset_failed_skipped")
+    try:
+        result = _run_unit_systemctl(verb, "--no-block", unit)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            f"{event_prefix}_failed",
+            unit=unit,
+            phase="enqueue",
+            error=str(exc),
+            level=logging.ERROR,
+        )
+        return False
+    if result.returncode != 0:
+        log_event(
+            logger,
+            f"{event_prefix}_failed",
+            unit=unit,
+            phase="enqueue",
+            returncode=result.returncode,
+            detail=(result.stderr or result.stdout).strip().replace(
+                "\n", " | ",
+            ),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        f"{event_prefix}_scheduled",
+        unit=unit,
+        **(extra_fields or {}),
+    )
+    return True
+
+
+def _schedule_usb_gadget_recompose() -> bool:
+    """Hand delayed, debounced apply to systemd before returning to the client.
+
+    Restarting an already-running oneshot cancels its 350 ms grace sleep and
+    begins it again, so rapid switch changes naturally debounce.  Unlike an
+    in-process Timer, the durable intent's apply job survives jasper-control
+    exiting after this request.
+    """
+
+    return _run_oneshot_start(
+        _USB_MIC_APPLY_UNIT,
+        "restart",
+        event_prefix="usb_mic.recompose",
+        extra_fields={"grace_ms": 350, "max_attempts": 4},
+    )
+
+
+def _aec_commission_running() -> bool:
+    return _unit_active(_AEC_COMMISSION_SERVICE)
+
+
+def _start_aec_commission() -> bool:
+    """Hand the audible re-commissioning run to systemd before returning.
+
+    ``--no-block``: the run takes minutes and the browser only needs the job
+    accepted — the /aec poll's ``commission.running`` probe tracks the rest.
+    """
+    return _run_oneshot_start(
+        _AEC_COMMISSION_SERVICE,
+        "start",
+        event_prefix="aec_commission.start",
+    )
+
 
 # Default leg policy, from the shared audio_profile_state.WAKE_LEG_DEFAULTS
 # table (also consumed by jasper.cli.audio_input_profile and mirrored in

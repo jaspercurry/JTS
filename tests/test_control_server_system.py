@@ -83,7 +83,7 @@ def _record_systemctl(
 ) -> list[list[str]]:
     """Record every `systemctl` call, answering the diagnostics oneshot's
     ActiveState probe with ``active_state``."""
-    import jasper.control.server as srv_mod
+    from jasper.control import aec_endpoints
 
     started: list[list[str]] = []
 
@@ -93,7 +93,7 @@ def _record_systemctl(
             return SimpleNamespace(returncode=0, stdout=active_state, stderr="")
         return proc()
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", fake_run)
     return started
 
 
@@ -113,7 +113,7 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
     """
     from jasper.cli import doctor as doctor_mod
     from jasper.cli.doctor import _harness as doctor_harness
-    import jasper.control.server as srv_mod
+    from jasper.control import aec_endpoints
 
     cached = {
         "fails": 2,
@@ -134,8 +134,8 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
             return _FakeProc()
         return _spy
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", _record("subprocess.run"))
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _record("subprocess.Popen"))
+    monkeypatch.setattr(aec_endpoints.subprocess, "run", _record("subprocess.run"))
+    monkeypatch.setattr(aec_endpoints.subprocess, "Popen", _record("subprocess.Popen"))
     for name in ("main", "render_json"):
         monkeypatch.setattr(doctor_mod, name, _record(f"doctor.{name}"))
     # `run_async` resolves this in `_harness`'s own globals, so a
@@ -452,7 +452,6 @@ def test_system_usb_latency_applies_fixed_mode(
 ):
     base, _ = server_with_coordinator
     import jasper.control.handlers.system as system_mod
-    import jasper.control.server as srv_mod
 
     applied: list[str] = []
     marked: list[str] = []
@@ -462,7 +461,7 @@ def test_system_usb_latency_applies_fixed_mode(
         lambda mode: applied.append(mode),
     )
     monkeypatch.setattr(
-        srv_mod,
+        system_mod,
         "_mark_usb_latency_applying",
         lambda mode: marked.append(mode),
     )

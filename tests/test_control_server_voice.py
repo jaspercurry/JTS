@@ -224,12 +224,12 @@ def test_get_mic_reports_voice_starting_when_socket_missing(
     While systemd says jasper-voice is activating, /mic reports a temporary
     starting state instead of the permanent-offline 503 shape."""
     import jasper.control.handlers.peering as peering_mod
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.voice as voice_mod
 
     async def missing_socket(_socket_path, _cmd, **_kwargs):
         raise FileNotFoundError(_socket_path)
 
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", missing_socket)
+    monkeypatch.setattr(voice_mod, "voice_socket_command", missing_socket)
     monkeypatch.setattr(
         peering_mod,
         "_voice_starting_mic_payload",
@@ -256,12 +256,12 @@ def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
     monkeypatch, server_with_coordinator,
 ):
     import jasper.control.handlers.peering as peering_mod
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.voice as voice_mod
 
     async def missing_socket(_socket_path, _cmd, **_kwargs):
         raise FileNotFoundError(_socket_path)
 
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", missing_socket)
+    monkeypatch.setattr(voice_mod, "voice_socket_command", missing_socket)
     monkeypatch.setattr(peering_mod, "_voice_starting_mic_payload", lambda: None)
 
     base, _fake = server_with_coordinator
