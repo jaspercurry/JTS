@@ -11,7 +11,6 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import re
 import select
 import socket
 import threading
@@ -21,6 +20,7 @@ from http.server import BaseHTTPRequestHandler
 import pytest
 
 from jasper.platform import systemd as _systemd
+from tests._log_events import event_fields, event_records
 
 
 def test_adopt_returns_empty_when_no_env() -> None:
@@ -409,10 +409,6 @@ def test_no_hold_holds_nothing_and_matches_the_real_seam() -> None:
     assert set(inspect.signature(_systemd.no_hold).parameters) == hold_params
 
 
-def _deferred_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if "idle-exit deferred" in r.getMessage()]
-
-
 def test_two_holds_under_one_label_survive_until_the_last_release(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -442,7 +438,9 @@ def test_two_holds_under_one_label_survive_until_the_last_release(
         # ...and the deferred line still names it rather than "none".
         with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
             tracker._log_deferred_exit(log, 600.0, 1)
-        assert "capture:crossover_v2:session" in _deferred_records(caplog)[-1].getMessage()
+        assert event_fields(caplog, "systemd.idle_exit_deferred")["holds"] == (
+            "capture:crossover_v2:session"
+        )
 
     assert tracker._holds == {}
 
@@ -469,10 +467,12 @@ def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
         with tracker.hold("crossover-v2-auto-apply"):
             # Young stretch: routine, INFO.
             tracker._log_deferred_exit(log, 601.0, 1)
-            records = _deferred_records(caplog)
+            records = event_records(caplog, "systemd.idle_exit_deferred")
             assert len(records) == 1
             assert records[0].levelno == logging.INFO
-            assert "crossover-v2-auto-apply" in records[0].getMessage()
+            assert event_fields(caplog, "systemd.idle_exit_deferred")["holds"] == (
+                "crossover-v2-auto-apply"
+            )
 
             # Age the stretch past the bound; same call, escalated level.
             caplog.clear()
@@ -480,20 +480,19 @@ def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
                 tracker._busy_since = time.monotonic() - 31
             tracker._deferred_logged_at = None
             tracker._log_deferred_exit(log, 601.0, 1)
-            records = _deferred_records(caplog)
+            records = event_records(caplog, "systemd.idle_exit_deferred")
             assert len(records) == 1
             assert records[0].levelno == logging.WARNING
-            message = records[0].getMessage()
-            assert "LEAKED" in message
-            assert "crossover-v2-auto-apply" in message, "names the leaking hold"
-            # Regex, not "31s": the epoch is backdated against the real clock,
-            # so a stall between that write and this call rounds the age up.
-            assert re.search(r"busy for \d+s", message), "reports the stretch age"
+            fields = event_fields(caplog, "systemd.idle_exit_deferred")
+            assert fields["holds"] == "crossover-v2-auto-apply", "names the leaking hold"
+            # Not "31": the epoch is backdated against the real clock, so a
+            # stall between that write and this call rounds the age up.
+            assert float(fields["busy_for_s"]) >= 31, "reports the stretch age"
 
             # Still rate-limited at WARNING — visible, never a flood.
             caplog.clear()
             tracker._log_deferred_exit(log, 616.0, 1)
-            assert _deferred_records(caplog) == []
+            assert event_records(caplog, "systemd.idle_exit_deferred") == []
 
         # The stretch ends with the last hold, so a later one starts fresh.
         assert tracker._busy_since is None
@@ -501,7 +500,8 @@ def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
         with tracker.hold("capture:room_sweep"):
             tracker._deferred_logged_at = None
             tracker._log_deferred_exit(log, 601.0, 1)
-            assert _deferred_records(caplog)[0].levelno == logging.INFO, (
+            records = event_records(caplog, "systemd.idle_exit_deferred")
+            assert records[0].levelno == logging.INFO, (
                 "a new busy stretch is not born already leaked"
             )
 
@@ -560,12 +560,11 @@ def test_deferred_idle_exit_is_logged_and_rate_limited(
             tracker._run()
 
     assert len(polls) == 3
-    deferred = [
-        r.getMessage() for r in caplog.records
-        if "idle-exit deferred" in r.getMessage()
-    ]
+    deferred = event_records(caplog, "systemd.idle_exit_deferred")
     assert len(deferred) == 1, "three polls, one line — the rate limit holds"
-    assert "measurement-session" in deferred[0], "the leaking hold is named"
+    assert event_fields(caplog, "systemd.idle_exit_deferred")["holds"] == (
+        "measurement-session"
+    ), "the leaking hold is named"
 
     # Prove the rate limit is what suppressed the other two: with a zero-length
     # window every poll reports.
@@ -576,10 +575,7 @@ def test_deferred_idle_exit_is_logged_and_rate_limited(
     with tracker.hold("measurement-session"):
         with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
             tracker._run()
-    deferred = [
-        r.getMessage() for r in caplog.records
-        if "idle-exit deferred" in r.getMessage()
-    ]
+    deferred = event_records(caplog, "systemd.idle_exit_deferred")
     assert len(deferred) == 3
 
 

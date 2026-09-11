@@ -32,11 +32,8 @@ from .doctor_test_support import (
 
 
 _LEAKED_HOLD_LINE = (
-    "systemd idle-exit deferred: 1 active requests/holds after 7530s "
-    "idle, busy for 7530s (threshold 600s, holds: relay:level_ramp:room) "
-    "— busy past 7200s, so this is a LEAKED hold, not a long session: "
-    "the process can no longer idle-exit and its on-idle-exit hook "
-    "cannot run"
+    "event=systemd.idle_exit_deferred active=1 idle_s=7530 busy_for_s=7530 "
+    "threshold_s=600 holds=relay:level_ramp:room"
 )
 
 
@@ -65,12 +62,12 @@ def test_latest_deferred_hold_keeps_the_newest_line():
     """journalctl returns oldest-first; an older (possibly since-resolved)
     line must not shadow the most recent evidence."""
     older = (
-        "systemd idle-exit deferred: 1 active requests/holds after 7300s "
-        "idle, busy for 7300s (threshold 600s, holds: relay:crossover_v2:session)"
+        "event=systemd.idle_exit_deferred active=1 idle_s=7300 busy_for_s=7300 "
+        "threshold_s=600 holds=relay:crossover_v2:session"
     )
     newer = (
-        "systemd idle-exit deferred: 1 active requests/holds after 7830s "
-        "idle, busy for 7830s (threshold 600s, holds: relay:level_ramp:crossover)"
+        "event=systemd.idle_exit_deferred active=1 idle_s=7830 busy_for_s=7830 "
+        "threshold_s=600 holds=relay:level_ramp:crossover"
     )
 
     assert correction._latest_deferred_hold(f"{older}\n{newer}\n") == (
