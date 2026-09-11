@@ -1222,7 +1222,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
 
 def refusal_copy_for(code: str | None) -> tuple[str, dict[str, Any] | None]:
     """Household copy and an action; unknown codes use internal-error copy."""
-    spec = REASON_REGISTRY.get(code, REASON_REGISTRY[REASON_INTERNAL_ERROR])
+    fallback = REASON_REGISTRY[REASON_INTERNAL_ERROR]
+    spec = fallback if code is None else REASON_REGISTRY.get(code, fallback)
     return reason_message(spec.code, spec), dict(spec.next_action) if spec.next_action else None
 
 
