@@ -142,6 +142,8 @@ def assess(
         return refuse(code, next="retake_louder" if adjusted else "fix_and_retake",
                       charge="speaker" if gains else "operator", targets=adjusted)
 
+    if evidence["frame_loss"]:
+        return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
     if not _stimulus_locate_ok(analysis):
         return quiet(reasons.REASON_LOCATE_FAILED)
     if evidence["anchor_ambiguous"]:
@@ -165,9 +167,9 @@ def assess(
     if _any_sweep_clipped(analysis) or analysis.mic_meter_status in {"too_loud", "clipping"}:
         targets = {role: gain - CLIP_RETRY_BACKOFF_DB for role, gain in gains.items()}
         return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
-    if evidence["frame_loss"] or analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
+    if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
         charge: TakeCharge = ("operator" if drift and drift.glitch_inputs == ("repeat_level_disagree",)
-                              and not evidence["frame_loss"] and not analysis.discontinuity_samples else "speaker")
+                              and not analysis.discontinuity_samples else "speaker")
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge)
     if not _sweep_schedule_ok(analysis, sample_rate):
         evidence["guard"] = "sweep_schedule"

@@ -61,7 +61,7 @@ def test_integrity_verdict(phase, changes, code, next, charge):
 @pytest.mark.parametrize("frame_loss", [False, True])
 def test_a_mic_bump_costs_the_operator_but_frame_loss_costs_the_speaker(frame_loss):
     result = cd.assess(_analysis(
-        glitch_detected=True,
+        glitch_detected=True, pilot_snr_ok=not frame_loss,
         drift=DriftEstimate(30.0, 0.2, True, glitch_inputs=("repeat_level_disagree",)),
         frame_ledger=FrameLedger(received_frames=128, declared_frames=256 if frame_loss else 128),
     ), phase="measure")
