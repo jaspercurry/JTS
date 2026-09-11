@@ -72,5 +72,5 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
         deadline = followup_seconds + max(
             last_speech, turn.last_chunk_at(), turn.last_activity_at(), tts.expected_drain_at(),
         )
-        if deadline and now >= deadline:
+        if now >= deadline:
             return "followup_timeout"

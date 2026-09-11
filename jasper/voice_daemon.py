@@ -570,7 +570,6 @@ class WakeLoop:
         self._pending_release: asyncio.Task | None = None
         self._playback_report = PlaybackReport()
         self._bg_tasks: set[asyncio.Task] = set()
-        self._response_transition = False
         self._turn_transition_lock = asyncio.Lock()
         self._conversation_end_requested = False
         self._continuous_speech_started = self._continuous_last_speech = 0.0
@@ -807,7 +806,7 @@ class WakeLoop:
         self._create_fire_and_forget_task(self._end_turn("conversation_ended"), name="conversation-end")
 
     async def _finish_response(self, reason: str) -> None:
-        if self._ending or self._response_transition or self._turn is None:
+        if self._ending or self._turn is None:
             return
         if reason == "spend_cap_reached":
             await self._end_turn(reason)
@@ -1876,8 +1875,6 @@ class WakeLoop:
             return
         if captured_at is not None:
             self._note_input_age(captured_at)
-        if self._response_transition:
-            return
         if self._conversation_end_requested:
             await self._end_turn("conversation_ended")
             return

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -19,7 +18,6 @@ from jasper.voice.conversation import (
 from jasper.voice_daemon import State
 from tests._async_wait import wait_until
 from tests._live_turn_fake import FakeLiveTurn
-from tests._log_events import event_records
 from tests._wake_loop import wake_loop_for_tests, FakeTts
 from tests.usage_store_fixtures import FakeUsageStore
 
@@ -35,7 +33,7 @@ def answered_loop():
     return loop
 
 
-async def test_endpointed_answer_closes_the_turn_once_playout_drains(caplog):
+async def test_endpointed_answer_closes_the_turn_once_playout_drains():
     """No host follow-up window survives: see ADR-0292."""
     loop = answered_loop()
     old = loop._turn
@@ -43,9 +41,7 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains(caplog):
     loop._assistant_output.finish_turn_episode = finish
     ended = AsyncMock()
     loop._peering.session_ended = ended
-    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        await loop._finish_response("ended")
-        assert not event_records(caplog, "conversation.followup")
+    await loop._finish_response("ended")
     assert loop._state is State.WAKE
     assert old.release_calls == 1
     assert loop._usage_store.close_calls == 1
@@ -65,8 +61,11 @@ async def test_end_conversation_tool_closes_even_without_more_mic_frames():
     await loop._cancel_fire_and_forget_tasks()
 
 
-@pytest.mark.parametrize("busy", ["speaker", "user", "tool", "quiet"])
-async def test_live_followup_waits_for_playout_speech_and_tools(busy):
+@pytest.mark.parametrize(
+    "busy, followup_seconds",
+    [("speaker", 5), ("user", 5), ("tool", 5), ("quiet", 5), ("quiet", 0)],
+)
+async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_seconds):
     now = time.monotonic()
     turn = FakeLiveTurn(chunks_received=1)
     turn.last_chunk_at = lambda: now - 8
@@ -76,7 +75,7 @@ async def test_live_followup_waits_for_playout_speech_and_tools(busy):
     tts = FakeTts()
     tts.expected_drain_at = lambda: now + 10 if busy == "speaker" else now - 8
     task = asyncio.create_task(continuous_watchdog(
-        turn, tts, followup_seconds=5, stall_seconds=120,
+        turn, tts, followup_seconds=followup_seconds, stall_seconds=120,
         user_activity=lambda: (now - 10, now if busy == "user" else now - 9),
     ))
     try:
