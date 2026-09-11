@@ -674,6 +674,89 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
     assert stream.segments_started == [("assistant", None, profile)]
 
 
+async def test_outputd_transport_pins_assistant_profile_for_one_turn(monkeypatch):
+    """A mid-turn profile save (segment 1's end_segment) rewrites the
+    on-disk profile once it measures segment 1's audio. Segment 2 of the
+    SAME turn must still get segment 1's profile — not the rewrite — and
+    only `prepare_assistant_context` (the next turn) may pick it up."""
+    monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
+    profiles = [
+        AssistantLoudnessProfile(
+            provider="openai", model="gpt-realtime-2", voice="verse",
+            source_lufs=-18.0, source_peak_dbfs=-2.0, confidence=0.75,
+            updated_at="2026-06-01T00:00:00Z", method="seed_tts",
+        ),
+        AssistantLoudnessProfile(
+            provider="openai", model="gpt-realtime-2", voice="verse",
+            source_lufs=-14.0, source_peak_dbfs=-1.0, confidence=0.9,
+            updated_at="2026-06-01T00:05:00Z", method="passive_live",
+        ),
+    ]
+    loads = 0
+
+    def fake_profile(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return profiles[min(loads - 1, len(profiles) - 1)]
+
+    def fake_update_profile(provider, model, voice, measurement, **kwargs):
+        pass
+
+    monkeypatch.setattr(tts_mod, "profile_for_outputd", fake_profile)
+    monkeypatch.setattr(tts_mod, "update_profile_from_measurement", fake_update_profile)
+
+    p = TtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="verse",
+        profile_path="/tmp/profiles.json",
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+    measurement = LoudnessMeasurement(
+        source_lufs=-14.0, source_peak_dbfs=-1.0,
+        voiced_duration_sec=1.0, total_duration_sec=1.2,
+    )
+
+    class _FixedMeter:
+        def finish(self) -> LoudnessMeasurement:
+            return measurement
+
+    mono = np.array([1, 2], dtype=np.int16)
+
+    # Segment 1 of turn 1: loads and pins profiles[0]; its end_segment save
+    # measures (a stand-in for) different loudness and rewrites the store.
+    await p.write_segment(mono.tobytes(), segment_kind="assistant")
+    p._assistant_meter = _FixedMeter()  # type: ignore[assignment]
+    await p.end_segment()
+    for task in list(p._profile_save_tasks):
+        await task
+
+    # Segment 2 of the SAME turn must still get profiles[0].
+    await p.write_segment(mono.tobytes(), segment_kind="assistant")
+    p._assistant_meter = _FixedMeter()  # type: ignore[assignment]
+    await p.end_segment()
+    for task in list(p._profile_save_tasks):
+        await task
+
+    assert loads == 1
+    assert [s[2] for s in stream.segments_started] == [profiles[0], profiles[0]]
+
+    # A new turn re-primes provider/model/voice and must force a fresh read,
+    # picking up the rewrite from turn 1.
+    await p.prepare_assistant_context(
+        provider="openai", model="gpt-realtime-2", voice="verse",
+        tts_envelope_lufs=-16.0,
+    )
+    await p.write_segment(mono.tobytes(), segment_kind="assistant")
+
+    assert loads == 2
+    assert stream.segments_started[-1][2] == profiles[1]
+
+
 async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
 

@@ -1006,6 +1006,11 @@ class TtsPlayout:
         self._provider = provider
         self._model = model
         self._voice = voice
+        # New turn: force a fresh profile read even if identity is unchanged
+        # from the last turn, since a mid-turn save under that same identity
+        # (see _save_assistant_source_profile) may have rewritten it since.
+        self._profile_cache_key = None
+        self._profile_cache = None
         for attempt in range(2):
             stream = await self._current_outputd_stream()
             if stream is None:
@@ -1367,9 +1372,12 @@ class TtsPlayout:
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("assistant loudness profile save failed: %s", e)
-        else:
-            self._profile_cache_key = None
-            self._profile_cache = None
+        # Deliberately does not touch _profile_cache{,_key}: this measurement
+        # is from a segment already spoken in the running turn, and the gain
+        # for the rest of the turn must stay pinned to what
+        # `prepare_assistant_context` loaded at turn start (else the reply
+        # audibly slides mid-turn as each segment's save rewrites the source
+        # this call rereads).
 
     async def flush(self) -> dict | None:
         self._upsample_tail = None
