@@ -21,6 +21,7 @@ import threading
 import pytest
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
+from tests._log_events import event_fields
 from jasper.tools import (
     DEFAULT_TOOL_TIMEOUT_SEC,
     Tool,
@@ -336,7 +337,9 @@ async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):
         out = await dispatch_tool(reg, "read_private_message", {})
 
     assert out["body"] == "Your appointment is Tuesday at 9."
-    assert "payload=<redacted len=" in caplog.text
+    assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
+        "<redacted len="
+    )
     assert "dentist appointment" not in caplog.text
     assert "Your appointment is Tuesday" not in caplog.text
 
@@ -356,7 +359,9 @@ async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
         )
 
     assert out == {"ok": True}
-    assert "args=<redacted keys=query len=" in caplog.text
+    assert event_fields(caplog, "tool.dispatch_start")["args"].startswith(
+        "<redacted keys=query len="
+    )
     assert "turn on the bedroom lights" not in caplog.text
 
 
@@ -369,7 +374,9 @@ async def test_unknown_tool_args_are_value_redacted(caplog):
         )
 
     assert out == {"error": "unknown tool missing_tool"}
-    assert "args=<redacted keys=query len=" in caplog.text
+    assert event_fields(caplog, "tool.dispatch_unknown")["args"].startswith(
+        "<redacted keys=query len="
+    )
     assert "unlock the front door" not in caplog.text
 
 

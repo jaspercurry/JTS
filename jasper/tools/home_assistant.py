@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from . import tool
 
 from ..home_assistant import DEFAULT_READ_TIMEOUT_SEC, HAClient
+from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +286,7 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
             # it. A clean voice-only session (untainted) skips this and runs
             # the action directly — the cost lands only in the risk window.
             store.arm(query, label)
-            logger.info("event=ha.confirm_gate action=%s", label)
+            log_event(logger, "ha.confirm_gate", action=label)
             # Phrasing: a plain yes/no question, nothing more. The daemon has
             # no follow-up-listening yet (after this turn the user must
             # re-wake to answer), so a
@@ -310,7 +311,7 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
             # Consequential, but the session was clean (untainted) so we ran it
             # without asking. DEBUG-level for forensics ("why no confirm?")
             # without journal spam on the common path.
-            logger.debug("event=ha.consequential_direct action=%s", label)
+            log_event(logger, "ha.consequential_direct", action=label, level=logging.DEBUG)
         result = await ha.process(query)
         return result.as_tool_result()
 
@@ -346,7 +347,7 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
                 "success": False,
                 "spoken_response": "There's nothing waiting to be confirmed.",
             }
-        logger.info("event=ha.confirm_execute action=%s", pending.label)
+        log_event(logger, "ha.confirm_execute", action=pending.label)
         result = await ha.process(pending.query)
         return result.as_tool_result()
 

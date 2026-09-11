@@ -40,7 +40,7 @@ from jasper.tools import (
     dispatch_tool,
 )
 from jasper.tools.home_assistant import classify_consequential, make_home_assistant_tools
-from tests._log_events import event_records
+from tests._log_events import event_fields, event_records
 
 
 # ---- Stub HAClient ----------------------------------------------------------
@@ -170,8 +170,12 @@ async def test_dispatch_logs_redact_household_phrase(caplog):
 
     assert result["success"] is True
     assert fake.calls == ["turn on the bedroom lights"]
-    assert "args=<redacted keys=query len=" in caplog.text
-    assert "payload=<redacted len=" in caplog.text
+    assert event_fields(caplog, "tool.dispatch_start")["args"].startswith(
+        "<redacted keys=query len="
+    )
+    assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
+        "<redacted len="
+    )
     assert "turn on the bedroom lights" not in caplog.text
     assert "Turned on the bedroom lights" not in caplog.text
 
@@ -447,11 +451,8 @@ async def test_gate_and_execute_emit_structured_logs_without_utterance(caplog):
     assert len(event_records(caplog, "ha.confirm_execute")) == 1
     # Structured logs carry the safe category label ("open the garage"),
     # never the raw utterance — a distinctive word from the spoken request
-    # is absent. (The label is logged as an unquoted `action=open the
-    # garage` — space-separated, not logfmt-quoted — so the field value
-    # itself can't be pinned exactly via the parser without truncating at
-    # the first space; checked as a caplog.text substring instead.)
-    assert "open the garage" in caplog.text
+    # is absent.
+    assert event_fields(caplog, "ha.confirm_gate")["action"] == "open the garage"
     assert "Reginald" not in caplog.text
 
 
