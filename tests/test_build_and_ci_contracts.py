@@ -532,8 +532,12 @@ def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
         for override in data["tool"]["mypy"]["overrides"]
         if "dbus_next" in override["module"]
     } == {"skip"}
-    assert "Type check (mypy; lenient baseline)" in workflow
-    assert "run: .venv/bin/mypy" in workflow
+    # mypy runs once, inside scripts/test-merge, for both the local dev
+    # lane and CI's `run: scripts/test-merge` step — no separate CI-only
+    # mypy step, so it can't drift out of sync with the local gate.
+    assert "run: scripts/test-merge" in workflow
+    test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
+    assert "resolve_lane_tool test-merge mypy MYPY" in test_merge
     assert (ROOT / "jasper" / "py.typed").is_file()
     assert "py.typed" in data["tool"]["setuptools"]["package-data"]["jasper"]
 

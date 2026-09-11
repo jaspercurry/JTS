@@ -175,12 +175,13 @@ Two operational notes:
   Full CI runs this lane on Python 3.13 only — the deployed interpreter
   (PiOS Trixie ships python3.13); the internal `pytest` aggregate fails
   unless every versioned matrix leg passes.
-- **Python static checks** (`ruff check .` and `mypy`) — run once in the
-  Python 3.13 matrix leg before the test suite. mypy starts permissive
-  and baselined so existing type debt does not block day-one adoption,
-  but new unbaselined errors fail the job. `scripts/test-merge` now runs
-  the same `mypy` gate locally too; `ruff check .` stays covered locally
-  by `scripts/test-fast` and `pre-commit`.
+- **Python static checks** (`ruff check .` and `mypy`) — `ruff check .`
+  runs once in the Python 3.13 matrix leg before the test suite (also
+  covered locally by `scripts/test-fast` and `pre-commit`). `mypy` runs
+  once, inside `scripts/test-merge`, so the same lenient, baselined gate
+  applies identically in CI and locally — no separate CI-only mypy step.
+  mypy starts permissive and baselined so existing type debt does not
+  block day-one adoption, but new unbaselined errors fail the job.
 - **Rust gate** — `scripts/check-rust.sh` owns the pinned-toolchain
   formatting and Clippy pass for all nine CI crates. It works natively on
   Linux and cross-checks the ALSA-backed crates from macOS without linking;
