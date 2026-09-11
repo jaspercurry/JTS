@@ -14,7 +14,8 @@ import pytest
 
 from jasper.mic_capture import InputDeviceUnavailable
 from jasper.voice.turn_playback import PRE_RESPONSE_CAPPED_REASON
-from jasper.voice_daemon import State, idle_watchdog
+from jasper.voice.turn_lifecycle import State
+from jasper.voice_daemon import idle_watchdog
 
 from ._log_events import event_fields
 from ._wake_loop import wake_loop_for_tests
@@ -84,7 +85,7 @@ async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
     wl = wake_loop_for_tests()
     wl._fire_and_forget = set()
     wl._heartbeat = None
-    wl._state = State.WAKE
+    wl._turns.state = State.WAKE
     wl._wake_legs.legs = {"on": object(), "off": object()}
     wl._stop_event = asyncio.Event()
     wl._stop_event.set()
@@ -251,7 +252,6 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
         cue: str | None = None,
         detail: str | None = None,
     ) -> tuple[list[str], int]:
-        wl = wake_loop_for_tests()
         played: list[str] = []
         nudges = 0
 
@@ -287,13 +287,13 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
                 nudges += 1
                 return True
 
+        wl = wake_loop_for_tests(connection=_Conn(paused))
         wl._wake_late_cancelled = lambda *_a, **_k: False
         wl._peering.arbitrate = _win
         wl._prepare_assistant_loudness_context = _noop
         wl._play_listening_chirp = _noop
         wl._begin_turn_inner = _begin_boom
         wl._play_cue = _rec
-        wl._connection = _Conn(paused)
 
         try:
             await wl._arbitrate_acquire_drain(
@@ -353,13 +353,12 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
         async def play(self, slug: str) -> bool:
             played.append((slug, wl._output_gate.active_kind))
             return True
-    wl = wake_loop_for_tests(cues=_Cues())
+    wl = wake_loop_for_tests(cues=_Cues(), connection=_Conn())
     wl._wake_late_cancelled = lambda *_a, **_k: False
     wl._peering.arbitrate = _win
     wl._prepare_assistant_loudness_context = _noop
     wl._play_listening_chirp = _noop
     wl._begin_turn_inner = _begin_boom
-    wl._connection = _Conn()
 
     try:
         await wl._arbitrate_acquire_drain(
@@ -392,8 +391,8 @@ def test_session_status_surfaces_usage_tracking_degraded():
         def close_session(self, *_a, **_k):
             return 0.0
 
-    wl._usage_store = _DegradedStore()
-    assert wl.session_status()["usage_tracking_degraded"] is True
+    degraded = wake_loop_for_tests(usage_store=_DegradedStore())
+    assert degraded.session_status()["usage_tracking_degraded"] is True
 
 
 def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
@@ -454,16 +453,16 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
     from unittest.mock import AsyncMock
 
     from jasper import voice_daemon
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
     from tests._async_wait import wait_signalled
     from tests._live_turn_fake import FakeLiveTurn
     from tests.usage_store_fixtures import FakeUsageStore
 
-    wl = wake_loop_for_tests()
     turn = FakeLiveTurn()
+    usage = FakeUsageStore()
+    wl = wake_loop_for_tests(usage_store=usage)
     wl._connection.acquire_turn = AsyncMock(return_value=turn)
     wl._content_activity.refresh_now = AsyncMock()
-    wl._usage_store = usage = FakeUsageStore()
     usage.open_session = lambda **_kwargs: 7
     wl._assistant_output.listening_chirp = AsyncMock()
     wl._play_cue = AsyncMock(return_value=True)
@@ -517,7 +516,7 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
                 task.cancel()
                 await asyncio.sleep(0)
             assert not task.done()
-            assert wl._state is State.SESSION
+            assert wl._turns.state is State.SESSION
             assert wl._output_gate.active_kind == "turn"
         finish_release.set()
         if cancel:
@@ -529,10 +528,10 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
             wl._play_cue.assert_awaited_once_with("internal_error")
         assert turn.release_calls == 1
         assert usage.close_calls == 1
-        assert wl._state is State.WAKE
+        assert wl._turns.state is State.WAKE
         assert not wl._output_gate.is_active
-        assert wl._turn is None
-        assert not wl._bg_tasks
+        assert wl._turns.turn is None
+        assert not wl._turns.bg_tasks
         assert not wl._acquiring
         assert wl._push_to_talk.active_source is None
         assert wl._assistant_output.listening_chirp.await_count == 1
@@ -618,9 +617,9 @@ async def test_a_background_task_names_the_end_reason_it_chose(result, expected)
 
     task = asyncio.create_task(_finished())
     await task
-    wl._bg_tasks = {task}
+    wl._turns.bg_tasks = {task}
 
-    assert wl._turn_background_end_reason() == expected
+    assert wl._turns.background_end_reason() == expected
 
 
 async def test_the_pre_response_cap_waits_for_end_of_input():

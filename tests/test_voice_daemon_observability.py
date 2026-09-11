@@ -92,16 +92,16 @@ def _arm_turn(wl, *, wake: bool) -> None:
     """
     import time
 
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
     from tests._live_turn_fake import FakeLiveTurn
 
-    wl._state = State.SESSION
-    wl._turn = FakeLiveTurn()
-    wl._session_id = 1
-    wl._bg_tasks = set()
-    wl._input_ended = False
+    wl._turns.state = State.SESSION
+    wl._turns.turn = FakeLiveTurn()
+    wl._turns.session_id = 1
+    wl._turns.bg_tasks = set()
+    wl._turns.input_ended = False
     wl._silence_started_at = 0.0
-    wl._turn_started_at_loop = asyncio.get_event_loop().time()
+    wl._turns.started_at_loop = asyncio.get_event_loop().time()
     wl._turn_timeline.anchor_at(time.monotonic() if wake else 0.0)
 
 
@@ -109,9 +109,9 @@ def _timeline_loop(*, wake: bool):
     """A WakeLoop parked mid-turn, configured for `wake`'s endpointer."""
 
     wl = wake_loop_for_tests()
-    wl._user_speech_seen = True
-    wl._manual_endpoint_this_turn = not wake
-    wl._barge_in_active = False
+    wl._turns.user_speech_seen = True
+    wl._turns.manual_endpoint_this_turn = not wake
+    wl._turns.barge_in_active = False
     _arm_turn(wl, wake=wake)
     return wl
 
@@ -143,12 +143,12 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     await wl._turn_timeline.observer("first_response", event_stage="response_started")()
     await asyncio.sleep(0.002)
     await wl._turn_timeline.observer("first_write")()
-    await wl._end_turn("test")
+    await wl._turns.end("test")
 
     fields = event_fields(caplog, "turn.timeline")
     assert fields["anchor"] == "wake"
     assert fields["outcome"] == "complete"
-    assert fields["endpointer"] == wl._endpointer_label()
+    assert fields["endpointer"] == wl._turns.endpointer_label()
     stages = [
         "cue_accepted_ms", "first_audio_to_provider_ms", "speech_end_ms",
         "end_input_ms", "first_response_ms", "first_write_ms", "total_ms",
@@ -172,7 +172,7 @@ async def test_manual_turn_anchors_on_itself_and_omits_absent_stages(caplog):
 
     await wl._send_session_audio(silent_frame())
     await wl._end_session_input("test")
-    await wl._end_turn("test")
+    await wl._turns.end("test")
 
     fields = event_fields(caplog, "turn.timeline")
     assert fields["anchor"] == "manual"
@@ -198,7 +198,7 @@ async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
 
     wl._turn_timeline.anchor_at()
     await wl._end_session_input("test")
-    await wl._end_turn("test")
+    await wl._turns.end("test")
 
     fields = event_fields(caplog, "turn.timeline")
     assert fields["anchor"] == "manual"
@@ -228,7 +228,7 @@ async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
     # The next turn anchors fresh rather than inheriting the dead anchor.
     _arm_turn(wl, wake=False)
     await wl._end_session_input("test")
-    await wl._end_turn("test")
+    await wl._turns.end("test")
 
     (served,) = event_field_maps(caplog, "turn.timeline", outcome="complete")
     assert int(served["total_ms"]) < 1000
@@ -248,10 +248,10 @@ async def test_push_to_talk_release_stamps_end_of_input(caplog):
     wl = _timeline_loop(wake=False)
 
     assert await wl.manual_session_end() == "OK"
-    await wl._end_turn("test")
+    await wl._turns.end("test")
 
-    assert wl._input_ended is True
-    assert wl._turn is None
+    assert wl._turns.input_ended is True
+    assert wl._turns.turn is None
     assert "end_input_ms" in event_fields(caplog, "turn.timeline")
 
 
@@ -264,7 +264,7 @@ async def test_session_status_publishes_the_last_turn_timeline():
     await wl._end_session_input("test")
     await wl._turn_timeline.observer("first_response", event_stage="response_started")()
     await wl._turn_timeline.observer("first_write")()
-    await wl._end_turn("test")
+    await wl._turns.end("test")
 
     last = wl.session_status()["last_turn_ms"]
     assert last["anchor"] == "wake"
@@ -287,7 +287,7 @@ async def test_acquire_drain_stamps_first_audio_before_it_sends():
             "first_audio_to_provider" in wl._turn_timeline.stages,
         )
 
-    wl._turn.send_audio = _send_audio
+    wl._turns.turn.send_audio = _send_audio
     wl._acquire_buffer.extend([silent_frame(), silent_frame()])
 
     drained, _ = await wl._drain_acquire_audio()

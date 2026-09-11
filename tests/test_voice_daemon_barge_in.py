@@ -84,15 +84,15 @@ class _FixedVad:
 
 def _playback_loop(*, score: float, active: bool, ref_ok: bool = True):
     """A WakeLoop parked mid-playback (``_input_ended`` set)."""
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl = wake_loop_for_tests()
-    wl._state = State.SESSION
-    wl._turn = _SpyTurn()
+    wl._turns.state = State.SESSION
+    wl._turns.turn = _SpyTurn()
     wl._vad = _FixedVad(score)
-    wl._bg_tasks = set()
-    wl._input_ended = True
-    wl._barge_in_active = active
+    wl._turns.bg_tasks = set()
+    wl._turns.input_ended = True
+    wl._turns.barge_in_active = active
     wl._barge_in_reference_available = ref_ok
     wl._barge_in_run_started_at = 0.0
     wl._barge_in_run_peak = 0.0
@@ -108,7 +108,7 @@ def test_flag_off_frame_after_input_ended_is_dropped_exactly():
     ``_input_ended`` is dropped exactly as before — the VAD is never
     scored, no interrupt is raised, and nothing is forwarded."""
     wl = _playback_loop(score=0.99, active=False)
-    turn = wl._turn
+    turn = wl._turns.turn
     vad = wl._vad
 
     asyncio.run(wl._handle_session_frame(silent_frame()))
@@ -128,7 +128,7 @@ def test_flag_on_single_frame_does_not_trip():
     """One supra-threshold frame starts a run but does not (yet) flush —
     the sustained-arming window must elapse first."""
     wl = _playback_loop(score=0.9, active=True)
-    turn = wl._turn
+    turn = wl._turns.turn
 
     asyncio.run(wl._handle_session_frame(silent_frame()))
 
@@ -143,7 +143,7 @@ def test_flag_on_sustained_run_trips_interrupt():
     from jasper.voice_daemon import BARGE_IN_SUSTAINED_SPEECH_SEC
 
     wl = _playback_loop(score=0.9, active=True)
-    turn = wl._turn
+    turn = wl._turns.turn
 
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arms the run
@@ -191,7 +191,7 @@ def test_flag_on_subthreshold_breaks_run():
     """A sub-threshold frame resets the run so a stale anchor can't trip
     later, and re-arms the one-shot for a fresh run."""
     wl = _playback_loop(score=0.9, active=True)
-    turn = wl._turn
+    turn = wl._turns.turn
 
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arm
@@ -209,7 +209,7 @@ def test_flag_on_subthreshold_breaks_run():
 def test_flag_on_threshold_respected():
     """A frame just under the configured threshold never arms the run."""
     wl = _playback_loop(score=0.49, active=True)  # cfg threshold 0.5
-    turn = wl._turn
+    turn = wl._turns.turn
 
     asyncio.run(wl._handle_session_frame(silent_frame()))
 
@@ -222,19 +222,19 @@ def test_flag_on_threshold_respected():
 
 def _continuous_loop(*, owns_interruption: bool, score: float = 0.9, ref_ok: bool = True):
     """A WakeLoop mid-turn on a continuous-input provider that is speaking."""
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl = wake_loop_for_tests()
-    wl._state = State.SESSION
-    wl._turn = _SpyTurn(
+    wl._turns.state = State.SESSION
+    wl._turns.turn = _SpyTurn(
         continuous_input=True,
         owns_interruption=owns_interruption,
         # Assistant audio still queued => the daemon reads the turn as speaking.
         chunks_pending=1,
     )
     wl._vad = _FixedVad(score)
-    wl._bg_tasks = set()
-    wl._barge_in_active = True
+    wl._turns.bg_tasks = set()
+    wl._turns.barge_in_active = True
     wl._barge_in_reference_available = ref_ok
     return wl
 
@@ -258,7 +258,7 @@ def test_continuous_barge_in_flushes_only_when_the_host_owns_interruption(
     flush AND becomes observable — the continuous path used to interrupt with
     no event and no counter at all."""
     wl = _continuous_loop(owns_interruption=owns_interruption)
-    turn = wl._turn
+    turn = wl._turns.turn
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         asyncio.run(_drive_sustained_speech(wl))
@@ -304,7 +304,7 @@ def test_unreferenced_speech_reaches_a_turn_that_owns_interruption(
 
     asyncio.run(wl._handle_session_frame(frame))
 
-    (sent,) = wl._turn.sent
+    (sent,) = wl._turns.turn.sent
     assert sent == (frame.tobytes() if owns_interruption else bytes(frame.nbytes))
 
 
@@ -312,17 +312,17 @@ def test_owning_interruption_does_not_outlive_conversation_end(monkeypatch):
     """The exemption covers the host's own barge-in flush and nothing else:
     a requested conversation end still ends the turn."""
     wl = _continuous_loop(owns_interruption=True)
-    wl._conversation_end_requested = True
+    wl._turns.conversation_end_requested = True
     ended: list[str] = []
 
     async def _spy(reason: str = "ended") -> None:
         ended.append(reason)
 
-    monkeypatch.setattr(wl, "_end_turn", _spy)
+    monkeypatch.setattr(wl._turns, "end", _spy)
     asyncio.run(wl._handle_session_frame(silent_frame()))
 
     assert ended == ["conversation_ended"]
-    assert wl._turn.send_audio_calls == 0
+    assert wl._turns.turn.send_audio_calls == 0
 
 
 # --- Self-interrupt-loop guard -----------------------------------------
@@ -349,7 +349,7 @@ def test_resolve_disables_barge_in_without_aec_reference(monkeypatch, tmp_path, 
         wl._resolve_barge_in_for_turn()
         second = event_records(caplog, "barge.disabled_no_reference")
 
-    assert wl._barge_in_active is False
+    assert wl._turns.barge_in_active is False
     assert len(first) == 1
     assert len(second) == 1
 
@@ -368,7 +368,7 @@ def test_resolve_enables_barge_in_with_reference(monkeypatch, tmp_path):
 
     wl._resolve_barge_in_for_turn()
 
-    assert wl._barge_in_active is True
+    assert wl._turns.barge_in_active is True
 
 
 def test_resolve_defaults_off(monkeypatch, tmp_path):
@@ -385,7 +385,7 @@ def test_resolve_defaults_off(monkeypatch, tmp_path):
 
     wl._resolve_barge_in_for_turn()
 
-    assert wl._barge_in_active is False
+    assert wl._turns.barge_in_active is False
 
 
 @pytest.mark.parametrize("chip", [False, True])
@@ -414,7 +414,7 @@ def test_barge_in_requires_processing_on_the_selected_stream(
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
     wl = wake_loop_for_tests(cfg=Config.from_env())
     wl._resolve_barge_in_for_turn()
-    assert wl._barge_in_active is eligible
+    assert wl._turns.barge_in_active is eligible
 
 
 def test_disabled_branch_never_calls_playback_handler(monkeypatch):
@@ -430,6 +430,6 @@ def test_disabled_branch_never_calls_playback_handler(monkeypatch):
     asyncio.run(wl._handle_session_frame(silent_frame()))
     assert called["n"] == 0
 
-    wl._barge_in_active = True
+    wl._turns.barge_in_active = True
     asyncio.run(wl._handle_session_frame(silent_frame()))
     assert called["n"] == 1

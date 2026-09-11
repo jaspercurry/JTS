@@ -1247,8 +1247,7 @@ async def test_buffered_start_recovers_history_without_rebilling_crash_interval(
 async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
     db = str(tmp_path / "usage.db")
     store = await VoiceUsageStore.start(db)
-    wl = wake_loop_for_tests()
-    wl._usage_store = store
+    wl = wake_loop_for_tests(usage_store=store)
     wl._spend_cap = SpendCap(store, 1)
     wl._content_activity.refresh_now = AsyncMock()
     wl._connection.acquire_turn = AsyncMock(side_effect=RuntimeError())
@@ -1260,8 +1259,8 @@ async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
             with pytest.raises(RuntimeError):
                 await wl._begin_turn_inner(pre_roll=False)
             wl._connection.acquire_turn.assert_awaited_once()
-            assert wl._session_id != _UNRECORDED_SESSION
-            store.close_session(wl._session_id, 0, 0)
+            assert wl._turns.session_id != _UNRECORDED_SESSION
+            store.close_session(wl._turns.session_id, 0, 0)
             await tick
             assert time.monotonic() - began < 0.1
             lock.rollback()

@@ -37,6 +37,9 @@ def wake_loop_for_tests(
     cfg=None,
     cues=None,
     ducker=None,
+    connection=None,
+    content_activity=None,
+    usage_store=None,
     volume_coordinator=None,
     output_gate=None,
     vad=_UNSET,
@@ -152,11 +155,13 @@ def wake_loop_for_tests(
         self = WakeLoop(
             cfg=cfg,
             tts=FakeTts() if tts is None else tts,
-            connection=_TestConnection(),
+            connection=_TestConnection() if connection is None else connection,
             ducker=_TestDucker() if ducker is None else ducker,
             cues=cues,
-            content_activity=_TestContentActivity(),
-            usage_store=_TestUsageStore(),
+            content_activity=(
+                _TestContentActivity() if content_activity is None else content_activity
+            ),
+            usage_store=_TestUsageStore() if usage_store is None else usage_store,
             spend_cap=_TestSpendCap(),
             stop_event=asyncio.Event(),
             volume_coordinator=(

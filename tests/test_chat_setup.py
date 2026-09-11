@@ -391,7 +391,7 @@ def test_capture_disable_stops_future_capture_without_clearing_rows(
         wl._conversation_capture.record(
             "future command",
             "future answer",
-            session_id=wl._session_id,
+            session_id=wl._turns.session_id,
             mic_muted=wl._mic_muted,
         )
         assert len(store.recent(10)) == 2

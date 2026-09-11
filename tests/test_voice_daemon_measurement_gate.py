@@ -37,7 +37,7 @@ from jasper.cues.manager import AudioCueManager
 from jasper.mic_mute_persistence import read_mic_muted, write_mic_muted
 from jasper.timers import Timer
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.voice_daemon import _InputAdmissionClosed
+from jasper.voice.turn_lifecycle import InputAdmissionClosed
 from tests._async_wait import wait_signalled
 from tests._cue_spy import SpyCues
 from tests._log_events import event_fields
@@ -363,7 +363,7 @@ async def test_wake_mid_acquire_is_dropped_when_a_measurement_opens(caplog):
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         assert (await wl.measurement_hold.pause_response())["result"] == "ok"
-        with pytest.raises(_InputAdmissionClosed) as refused:
+        with pytest.raises(InputAdmissionClosed) as refused:
             await asyncio.wait_for(acquire, timeout=1.0)
 
     assert refused.value.result == "MEASURING"
@@ -371,7 +371,7 @@ async def test_wake_mid_acquire_is_dropped_when_a_measurement_opens(caplog):
         "reason": "measurement_active",
         "phase": "output_episode",
     }
-    assert wl._turn_output_episode is None
+    assert wl._turns.output_episode is None
     assert not wl._output_gate.is_active
     await wl.measurement_hold.resume()
 
@@ -388,7 +388,7 @@ async def test_a_released_window_does_not_revive_the_dropped_wake():
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     assert await wl.measurement_hold.resume() == "ok"
 
-    with pytest.raises(_InputAdmissionClosed):
+    with pytest.raises(InputAdmissionClosed):
         await asyncio.wait_for(acquire, timeout=1.0)
     assert not wl._output_gate.is_active
     assert not wl._output_gate.admission_paused
@@ -400,12 +400,12 @@ async def test_turn_episode_is_taken_when_no_measurement_opens():
     wl = wake_loop_for_tests()
 
     await wl._begin_turn_output_episode()
-    first = wl._turn_output_episode
+    first = wl._turns.output_episode
     assert first is not None
     assert wl._output_gate.is_active
 
     await wl._begin_turn_output_episode()
-    assert wl._turn_output_episode is first
+    assert wl._turns.output_episode is first
 
 
 @pytest.mark.parametrize(

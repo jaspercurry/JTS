@@ -60,7 +60,12 @@ def _make_wake_loop_triple(
     # `await store.begin_event(...)` call resolves without real DB I/O.
     store = MagicMock()
     store.begin_event = AsyncMock()
-    wl = wake_loop_for_tests(wake_event_store=store)
+    connection = MagicMock()
+    content_activity = MagicMock()
+    wl = wake_loop_for_tests(
+        wake_event_store=store, connection=connection,
+        content_activity=content_activity,
+    )
     wl._wake_legs.legs["on"].detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     # capture_ring=None is fine — _tail_frame_rms_dbfs tolerates None.
@@ -95,13 +100,11 @@ def _make_wake_loop_triple(
     wl._wake_event_at_monotonic = 0.0
     wl._spend_cap = MagicMock()
     wl._spend_cap.allowed = MagicMock(return_value=spend_allowed)
-    wl._connection = MagicMock()
-    wl._connection.is_paused = MagicMock(return_value=conn_paused)
+    connection.is_paused = MagicMock(return_value=conn_paused)
     wl._mic_muted = False
     # _tail_frame_rms_dbfs / _ring_noise_floor_dbfs tolerate a missing ring.
     wl._wake_legs.capture_ring_on = None
-    wl._content_activity = MagicMock()
-    wl._content_activity.music_dbfs = None
+    content_activity.music_dbfs = None
 
     wl._peering.arbitrate = AsyncMock(return_value="LOSE")
     wl._wake_telemetry.stage = AsyncMock()

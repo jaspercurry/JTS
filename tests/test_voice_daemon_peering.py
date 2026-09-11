@@ -91,7 +91,7 @@ def _make_wake_loop(peering_enabled: bool):
     # fully-shaped WakeLoop. We only test methods that touch cfg + a
     # couple of attrs.
     wl = wake_loop_for_tests(cfg=cfg)
-    wl._turn = None
+    wl._turns.turn = None
     return wl
 
 
@@ -102,14 +102,14 @@ async def test_arbitrate_acquire_drain_aborts_when_mic_muted():
     """If the user mutes the mic between wake-frame dispatch and this
     task starting (e.g. tapped the remote), don't open a session — the
     user just deliberately stopped listening."""
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
     wl = _make_wake_loop(peering_enabled=False)
     wl._mic_muted = True
     wl._measurement_active = asyncio.Event()
     wl._acquiring = True  # set by caller (_handle_wake_frame)
     wl._acquire_buffer = MagicMock()
     wl._wake_legs.refractory_until = 0.0
-    wl._state = State.WAKE
+    wl._turns.state = State.WAKE
 
     # Patch out anything the WIN path would touch — they shouldn't be reached.
     wl._begin_turn = AsyncMock(side_effect=AssertionError("should not begin turn"))
@@ -127,7 +127,7 @@ async def test_arbitrate_acquire_drain_aborts_when_mic_muted():
 async def test_arbitrate_acquire_drain_aborts_when_measurement_active():
     """Same shape as mute — MeasurementHold.pause_response is a deliberate
     'stop listening' signal from an open measurement window."""
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
     wl = _make_wake_loop(peering_enabled=False)
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
@@ -135,7 +135,7 @@ async def test_arbitrate_acquire_drain_aborts_when_measurement_active():
     wl._acquiring = True
     wl._acquire_buffer = MagicMock()
     wl._wake_legs.refractory_until = 0.0
-    wl._state = State.WAKE
+    wl._turns.state = State.WAKE
 
     wl._begin_turn = AsyncMock(side_effect=AssertionError("should not begin turn"))
     wl._play_listening_chirp = AsyncMock(side_effect=AssertionError("should not chirp"))

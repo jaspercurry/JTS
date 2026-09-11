@@ -1088,7 +1088,7 @@ def _wire_wake_loop(
 ) -> None:
     """Hand the loop to the registry and the connection, releases included."""
     _release(stack, "wake_loop", wake_loop.close_conversation_store)
-    register_conversation_tools(registry, wake_loop.request_conversation_end)
+    register_conversation_tools(registry, wake_loop._turns.request_conversation_end)
     registry.set_dispatch_observer(
         wake_loop.bind_tool_dispatch,
     )

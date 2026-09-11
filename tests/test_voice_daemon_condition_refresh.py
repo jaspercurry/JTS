@@ -50,11 +50,10 @@ def _wakeloop_for_condition(music_dbfs=-30.0):
     ring makes the noise floor None."""
     from collections import deque
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(content_activity=MagicMock())
     wl._wake_legs.condition_refreshed_at = 0.0
     wl._wake_legs.condition = "quiet"
     wl._wake_legs.capture_ring_on = deque(maxlen=8)
-    wl._content_activity = MagicMock()
     wl._content_activity.music_dbfs = music_dbfs
     return wl
 

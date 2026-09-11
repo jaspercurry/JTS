@@ -145,7 +145,7 @@ async def test_zero_leg_run_ends_an_in_flight_turn_on_stop(monkeypatch):
     """
     import asyncio
 
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl, ticked, _bumps = _zero_leg_loop_with_fast_keepalive(monkeypatch)
     ended = asyncio.Event()
@@ -155,8 +155,8 @@ async def test_zero_leg_run_ends_an_in_flight_turn_on_stop(monkeypatch):
         reasons.append(reason)
         ended.set()
 
-    wl._end_turn = _end_turn
-    wl._state = State.SESSION  # a button turn is in flight
+    wl._turns.end = _end_turn
+    wl._turns.state = State.SESSION  # a button turn is in flight
 
     task = asyncio.create_task(wl.run())
     await asyncio.wait_for(ticked.wait(), timeout=2.0)
@@ -185,7 +185,7 @@ async def test_zero_leg_run_does_not_end_a_turn_that_is_not_running(
     async def _end_turn(reason: str = "ended"):
         calls.append(reason)
 
-    wl._end_turn = _end_turn
+    wl._turns.end = _end_turn
 
     task = asyncio.create_task(wl.run())
     await asyncio.wait_for(ticked.wait(), timeout=2.0)

@@ -28,11 +28,11 @@ from tests._wake_loop import wake_loop_for_tests
 
 
 def _wake_loop_for_mute(tmp_path):
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl = wake_loop_for_tests()
     wl._mic_muted = False
-    wl._state = State.WAKE
+    wl._turns.state = State.WAKE
     wl._pre_roll = deque([b"pre1", b"pre2"], maxlen=8)
     wl._acquire_buffer.append(b"acq")
     on_ring = deque([b"on1", b"on2"], maxlen=8)
@@ -267,8 +267,8 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
     assert turn_task is not None
     await asyncio.wait_for(turn_task, timeout=1.0)
 
-    await wl._output_gate.end_turn(wl._turn_output_episode)
-    wl._turn_output_episode = None
+    await wl._output_gate.end_turn(wl._turns.output_episode)
+    wl._turns.output_episode = None
 
 
 async def test_mute_click_prepares_loudness_context_before_write() -> None:

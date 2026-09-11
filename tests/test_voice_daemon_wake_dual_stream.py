@@ -54,7 +54,8 @@ def _make_wake_loop(
 ) -> WakeLoop:
     """Construct a WakeLoop via the test seam, then override the attrs
     `_handle_wake_frame` touches with mocks that detect accidental use."""
-    wl = wake_loop_for_tests()
+    connection = MagicMock()
+    wl = wake_loop_for_tests(connection=connection)
     wl._wake_legs.legs["on"].detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     wl._wake_legs.legs = {
@@ -77,8 +78,7 @@ def _make_wake_loop(
     wl._wake_event_at_monotonic = 0.0
     wl._spend_cap = MagicMock()
     wl._spend_cap.allowed = MagicMock(return_value=spend_allowed)
-    wl._connection = MagicMock()
-    wl._connection.is_paused = MagicMock(return_value=conn_paused)
+    connection.is_paused = MagicMock(return_value=conn_paused)
     # Spy on the arbitrate flow — we don't exercise it here; we just
     # care that wake-fire dispatches it. A no-op coroutine satisfies
     # the `asyncio.create_task(_arbitrate_acquire_drain(...))` call.
