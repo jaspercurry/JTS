@@ -301,6 +301,7 @@ class TurnLifecycle:
                 self.turn, self._output.tts, followup_seconds=self._output.cfg.followup_timeout_sec,
                 stall_seconds=self._output.cfg.response_stall_timeout_sec,
                 user_activity=lambda: (self.continuous_speech_started, self.continuous_last_speech),
+                request_end=self.request_conversation_end,
                 spend_allowed=self._spend_cap.allowed,
             ) if continuous else idle_watchdog(
                 self.turn,

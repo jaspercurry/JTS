@@ -42,6 +42,7 @@ class FakeLiveTurn:
     ) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
+        self.user_run_text = ""
         self.send_audio_calls = 0
         self._user_text = user_text
         self._assistant_text = assistant_text
@@ -120,6 +121,12 @@ class FakeLiveTurn:
 
     def request_local_interrupt(self) -> None:
         return None
+
+    def mark_user_speech_run(self) -> None:
+        self.user_run_text = ""
+
+    def user_speech_run_transcript(self) -> str:
+        return self.user_run_text
 
     def drop_pending_audio(self) -> int:
         return 0

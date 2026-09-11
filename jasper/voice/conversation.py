@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Callable
 
+from ..log_event import log_event
 from ..tools import ToolRegistry, tool
+
+logger = logging.getLogger("jasper.voice_daemon")
 
 
 END_OF_UTTERANCE_SILENCE_SEC = 0.8
@@ -18,6 +22,31 @@ END_OF_UTTERANCE_SILENCE_SEC = 0.8
 WATCHDOG_POLL_SEC = 0.25
 NO_SPEECH_ABORT_SEC = 5.0
 END_CONVERSATION_TOOL = "end_conversation"
+
+
+def _normalise_utterance(text: str) -> str:
+    """Lowercase, drop apostrophes, collapse every other non-alphanumeric
+    run to one space: ASR writes both "that's" and "thats"."""
+    flattened = text.lower().replace("'", "").replace("\u2019", "")
+    return " ".join("".join(
+        c if c.isalnum() else " " for c in flattened
+    ).split())
+
+
+#: Utterances that end the conversation on the host, without waiting for the
+#: model to delegate one (`END_CONVERSATION_TOOL` is the model's own path to
+#: the same ending). Matched whole, never as a prefix.
+DISMISSAL_UTTERANCES = frozenset(map(_normalise_utterance, (
+    "stop", "cancel", "never mind", "nevermind", "okay thanks",
+    "okay thank you", "thanks", "thank you", "goodbye", "bye",
+    "that's all", "that's it",
+)))
+
+
+def is_dismissal(text: str) -> bool:
+    """Whole-utterance test: "okay thanks" dismisses, "okay thanks for the
+    weather report" does not."""
+    return _normalise_utterance(text) in DISMISSAL_UTTERANCES
 
 
 def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[], None]) -> None:
@@ -36,7 +65,10 @@ def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[]
     registry.register(end_conversation)
 
 
-async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, user_activity, spend_allowed=lambda: True):
+async def continuous_watchdog(
+    turn, tts, *, followup_seconds, stall_seconds, user_activity, request_end,
+    spend_allowed=lambda: True,
+):
     started_at = time.monotonic()
     next_spend_check = started_at
     pending_count, progressed_at = 0, started_at
@@ -56,6 +88,10 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
             continue
         if now - last_speech < END_OF_UTTERANCE_SILENCE_SEC:
             continue
+        if is_dismissal(turn.user_speech_run_transcript()):
+            log_event(logger, "turn.dismissed")
+            request_end()
+            return "dismissed"
         if turn.backend_pending:
             if now - turn.last_activity_at() >= stall_seconds:
                 return "response_stalled"
