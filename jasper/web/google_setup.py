@@ -134,7 +134,7 @@ def _write_creds_file(client_id: str, client_secret: str, *, path: str) -> None:
 
 
 def _delete_creds_file(path: str) -> None:
-    # Not `_common.delete_env_file`: that one warns and continues, and the
+    # Not `env_file.delete_env_file`: that one warns and continues, and the
     # reset handler must not report a cleared secret that is still on disk.
     with suppress(FileNotFoundError):
         os.unlink(path)
