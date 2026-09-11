@@ -39,6 +39,9 @@ class LiveSocket:
 
     async def send(self, event):
         CLIENT_EVENT.validate_python(event)
+        if event["type"] == "session.start":
+            tools = event["session"]["delegation"]["responses"]["tools"]
+            assert tools.count({"type": "web_search"}) == 1
         self.sent.append(event)
         if event["type"] == "session.start":
             await self.events.put({"type": "session.started"})

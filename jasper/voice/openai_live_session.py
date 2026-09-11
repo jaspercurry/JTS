@@ -335,7 +335,7 @@ class OpenAILiveConnection(BaseLiveConnection):
                         "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
                         "delegation": {"type": "responses", "responses": {
                             "model": self._backend_model, "instructions": self._system_instruction_provider(),
-                            "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")],
+                            "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],
                             "tool_choice": "auto", "parallel_tool_calls": False,
                         }},
                     }})
