@@ -46,6 +46,7 @@ from jasper.audio_measurement.room_limits import (
     admit_boost,
     boost_cap_db,
     cut_floor_db,
+    spatial_support,
 )
 from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
@@ -197,7 +198,7 @@ class RoomMedian:
 
     freqs_hz: np.ndarray
     median_db: np.ndarray
-    spread_db: np.ndarray
+    spread_db: np.ndarray | None
     deviations_db: np.ndarray
     n_positions: int
     ceiling_hz: float
@@ -250,8 +251,9 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
         _unavailable("freqs_hz must be a strictly increasing positive grid")
     bins = int(freqs.size)
     median_db = _median_array(raw.get("median_db"), "median_db", length=bins)
-    spread_db = _median_array(raw.get("spread_db"), "spread_db", length=bins)
-    if np.any(spread_db < 0.0):
+    spread = raw.get("spread_db", [])
+    spread_db = None if spread is None else _median_array(spread, "spread_db", length=bins)
+    if spread_db is not None and np.any(spread_db < 0.0):
         _unavailable("spread_db is a population sigma and cannot be negative")
 
     ceiling = finite_float(raw.get("ceiling_hz"))
@@ -321,7 +323,7 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
     return RoomMedian(
         freqs_hz=freqs,
         median_db=median_db - level_db,
-        spread_db=spread_db,
+        spread_db=spread_db if spatial_support(len(rows))["sufficient"] else None,
         level_reference_db=level_db,
         evidence=evidence,
         coverage_hz=coverage,
@@ -772,7 +774,7 @@ def _check_composed(
     grid = composed_grid((ROOM_FLOOR_HZ, median.ceiling_hz), median.freqs_hz)
     grid_floor_db = np.maximum(
         np.interp(grid, median.freqs_hz, floor_db),
-        cut_floor_db(0.0, grid, median.ceiling_hz),
+        cut_floor_db(None if median.spread_db is None else 0.0, grid, median.ceiling_hz),
     )
     cap_db = boost_cap_db(grid, median.ceiling_hz)
     spend = 0.0
