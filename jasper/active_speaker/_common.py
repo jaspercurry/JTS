@@ -24,7 +24,7 @@ REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
 
 # Why the applied automatic crossover did not vouch for itself: no
 # `source.measured_candidate_fingerprint` on the applied profile. Names what
-# cannot be CLAIMED, never what is refused (ADR-0019). See ADR-0286.
+# cannot be CLAIMED, never what is refused (ADR-0019). See ADR-0288.
 ROOM_AUTHORITY_RECEIPT_ABSENT = "active_commissioning_receipt_absent"
 
 

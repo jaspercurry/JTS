@@ -281,28 +281,12 @@ def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
     repeat_lock = _mk(
         tmp_path / ".active_speaker_repeat_admission.json.lock", 0o640,
     )
-    commissioning_lock = _mk(
-        tmp_path / ".active_speaker_commissioning_run.json.lock", 0o640,
-    )
-    live_exec_lock = _mk(
-        tmp_path / ".active_speaker_commissioning_run.json.live-execution.lock",
-        0o640,
-    )
-    record = _mk(tmp_path / "active_speaker_commissioning_run.json", 0o600)
-    live_mutation = _mk(
-        tmp_path / ".active_speaker_commissioning_run.json.live-mutation.json",
-        0o600,
-    )
     # The Layer-A SSOT, folded off its own hand-rolled path-following heal.
     baseline = _mk(tmp_path / "active_speaker_baseline_profile.json", 0o600)
 
     _run_heal(tmp_path)
 
     assert _mode(repeat_lock) == 0o660
-    assert _mode(commissioning_lock) == 0o660
-    assert _mode(live_exec_lock) == 0o660
-    assert _mode(record) == 0o640
-    assert _mode(live_mutation) == 0o640
     assert _mode(baseline) == 0o640
 
 

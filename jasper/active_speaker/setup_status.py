@@ -310,7 +310,7 @@ def _acoustic_commissioning_status(
         "allowed": allowed,
         "reason": reason,
         # Only denial today: the applied automatic profile names no
-        # measured-candidate fingerprint. See ADR-0286.
+        # measured-candidate fingerprint. See ADR-0288.
         "cause": str(receipt_authority.get("cause") or "") if reason else "",
         "detail": detail,
         "setup_href": setup_href,

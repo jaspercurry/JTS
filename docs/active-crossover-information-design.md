@@ -264,8 +264,7 @@ captured; a successful calculation is not proof of successful cleanup.
 ### Runtime surface
 
 Use the current command's status and returned artifact paths. The runbook's
-entry contract and generated menu describe the public route. Do not infer a
-live commissioning host from a historical `commissioning_run` field or record.
+entry contract and generated menu describe the public route.
 
 ### Structured events
 

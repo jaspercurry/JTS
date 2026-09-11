@@ -624,7 +624,7 @@ def check_room_correction_authority() -> CheckResult:
         # The state every uncommissioned speaker is in, hence `ok`. It is
         # also the only denial the receipt authority itself emits: the
         # applied automatic profile names no measured-candidate fingerprint.
-        # See ADR-0286.
+        # See ADR-0288.
         return CheckResult(
             label, "ok",
             f"room correction runs unbanked ({denial})"
