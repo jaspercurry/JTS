@@ -2,14 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The record seam filled: where a session's evidence lands.
+"""Route raw records and the live run manifest into a commissioning bundle.
 
-:class:`~.session_seams.RecordStore`'s one method writes every kind of a
-session's evidence to the write-once commissioning bundle, so
-``position_cycle``, ``evidence_packet`` and ``candidate_bank`` find the same
-files. The id a record is banked under IS its store-relative path (ADR-0198).
-Store errors propagate unwrapped: fail-soft belongs in a named caller-side
-wrapper, never here and never a flag.
+Raw evidence is write-once; the manifest is an atomic snapshot. Record ids are
+store-relative paths (ADR-0198). Store errors propagate to the host.
 """
 
 from __future__ import annotations
@@ -17,6 +13,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
+
+from jasper.atomic_io import atomic_write_json
+from ..bundles import BUNDLE_FILE_MODE
 
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.audio_measurement.bundles import record_artifact
@@ -29,7 +28,11 @@ from jasper.attribution.session_identity import (
 )
 from jasper.attribution.storage import findings_relative_path
 
-from ..commissioning_evidence_store import CommissioningEvidenceStore
+from ..commissioning_evidence_store import (
+    EVIDENCE_ROOT, CommissioningEvidenceStore, CommissioningEvidenceStoreError,
+    CommissioningEvidenceStoreErrorCode,
+)
+from ..run_manifest import RUN_MANIFEST_KIND, RUN_MANIFEST_FILENAME
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
 from .contracts import (
     MEASURE_KIND_KEY,
@@ -57,17 +60,11 @@ _ENVELOPE_KEYS = ("schema_version", "capture_session_id")
 
 @dataclass(frozen=True)
 class _Route:
-    """Where one artifact kind lands, and what the store does around it.
-
-    ``enveloped`` is per-kind because three of the six shipped payloads carry
-    ``schema_version``/``kind``/``capture_session_id`` and three do not, and
-    ``MeasuredCrossoverCandidate.from_mapping`` refuses any unknown key.
-    ``stamp`` and ``verify`` are strictness the shipped publishers ran at the
-    write, so they stay here.
-    """
+    """Path, envelope and publication policy for one artifact kind."""
 
     relative_path: Callable[[str, Mapping[str, Any]], str]
     enveloped: bool
+    live: bool = False
     #: Keys a caller supplies to ROUTE the record and that the file does not
     #: carry, taken back off the way ``kind`` is.
     routing_keys: tuple[str, ...] = ()
@@ -107,8 +104,11 @@ def _required(record: Mapping[str, Any], field: str) -> str:
     return value
 
 
-#: kind -> where it lands, for the six artifact kinds on this one seam.
 _ROUTES: dict[str, _Route] = {
+    RUN_MANIFEST_KIND: _Route(
+        lambda capture, _r: f"{_round_dir(capture)}/{RUN_MANIFEST_FILENAME}",
+        enveloped=False, live=True,
+    ),
     # ``take_id`` is REQUIRED and never re-minted here: a geometry retake
     # reuses its position id, so two takes would collide on one path.
     POSITION_EVIDENCE_KIND: _Route(
@@ -193,12 +193,7 @@ class BankedRecordStore:
     capture_session_id: str
 
     async def bank(self, record: Mapping[str, Any]) -> str:
-        """Write one record; return the id that finds it again.
-
-        Re-banking identical bytes is idempotent and returns the same id;
-        different bytes at one path is a ``PATH_CONFLICT`` refusal, and it
-        propagates.
-        """
+        """Publish a raw record once, or atomically update the run manifest."""
         measure, discriminator = _classify(record)
         route = self._route(discriminator)
         relative = route.relative_path(self.capture_session_id, record)
@@ -262,6 +257,17 @@ class BankedRecordStore:
     def _publish(
         self, relative: str, payload: Mapping[str, Any], route: _Route,
     ) -> None:
+        if route.live:
+            # The run owns a live document; raw take records remain write-once (ADR-0017).
+            path = self.evidence._target(f"{EVIDENCE_ROOT}/artifacts/{relative}")
+            self.evidence._prepare_parent(path.parent)
+            try:
+                atomic_write_json(path, payload, mode=BUNDLE_FILE_MODE)
+            except OSError as exc:
+                raise CommissioningEvidenceStoreError(
+                    CommissioningEvidenceStoreErrorCode.PERSIST_FAILED, str(exc),
+                ) from exc
+            return
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if _measure_kind(payload) is not None and payload.get("wav_path"):
             record_artifact(
