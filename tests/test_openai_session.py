@@ -2250,42 +2250,22 @@ async def test_proactive_watchdog_disabled_when_buffer_exceeds_cap():
 # ---------------------------------------------------------------------------
 
 
-async def test_noise_reduction_omitted_by_default_in_session_payload():
-    """Bare adapter construction omits provider denoising by default."""
-    conn, factory = _make_conn()
+@pytest.mark.parametrize("intent, wire", [
+    ("off", None),  # chip-AEC streams opt out of OpenAI-side denoising
+    ("auto", None),  # unresolved intent: omit rather than guess
+    ("near", {"type": "near_field"}),
+    ("far", {"type": "far_field"}),
+])
+async def test_session_payload_maps_host_intent_to_the_openai_wire_value(
+    intent, wire,
+):
+    conn, factory = _make_conn(noise_reduction=intent)
     registry = ToolRegistry()
     await conn.start(registry, "")
     try:
         upd = _find_event(factory.conns[0].sent, "session.update")
         assert upd is not None
-        assert "noise_reduction" not in upd["session"]["audio"]["input"]
-    finally:
-        await conn.stop()
-
-
-async def test_noise_reduction_far_field_in_session_payload_when_requested():
-    """The resolved provider policy can still request far_field explicitly."""
-    conn, factory = _make_conn(noise_reduction="far_field")
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        upd = _find_event(factory.conns[0].sent, "session.update")
-        assert upd is not None
-        nr = upd["session"]["audio"]["input"].get("noise_reduction")
-        assert nr == {"type": "far_field"}
-    finally:
-        await conn.stop()
-
-
-async def test_noise_reduction_can_be_disabled_in_session_payload():
-    """Chip-AEC streams can opt out of OpenAI-side denoising."""
-    conn, factory = _make_conn(noise_reduction="off")
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        upd = _find_event(factory.conns[0].sent, "session.update")
-        assert upd is not None
-        assert "noise_reduction" not in upd["session"]["audio"]["input"]
+        assert upd["session"]["audio"]["input"].get("noise_reduction") == wire
     finally:
         await conn.stop()
 

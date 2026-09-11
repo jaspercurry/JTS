@@ -28,20 +28,23 @@ from jasper.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST, parse_u
 # permanently — see ADR-0152 and ADR-0244.
 ENDPOINTING = "manual_silero"
 
-OPENAI_NOISE_REDUCTION_AUTO = "auto"
-OPENAI_NOISE_REDUCTION_DISABLED = frozenset((
-    "",
-    "off",
-    "none",
-    "disabled",
-    "false",
-    "0",
-))
-OPENAI_NOISE_REDUCTION_WIRE_VALUES = frozenset(("near_field", "far_field"))
-OPENAI_NOISE_REDUCTION_VALUES = (
-    OPENAI_NOISE_REDUCTION_DISABLED
-    | OPENAI_NOISE_REDUCTION_WIRE_VALUES
-    | {OPENAI_NOISE_REDUCTION_AUTO}
+# The host's noise-reduction intent. Provider adapters own the wire values
+# these map to.
+NOISE_REDUCTION_NEAR = "near"
+NOISE_REDUCTION_FAR = "far"
+NOISE_REDUCTION_AUTO = "auto"
+NOISE_REDUCTION_OFF_VALUES = frozenset(
+    ("", "off", "none", "disabled", "false", "0")
+)
+# Spellings JASPER_OPENAI_NOISE_REDUCTION accepts, by the intent each asks for.
+NOISE_REDUCTION_INTENTS = {
+    "near_field": NOISE_REDUCTION_NEAR,
+    "far_field": NOISE_REDUCTION_FAR,
+}
+NOISE_REDUCTION_VALUES = (
+    NOISE_REDUCTION_OFF_VALUES
+    | set(NOISE_REDUCTION_INTENTS)
+    | {NOISE_REDUCTION_AUTO}
 )
 
 
@@ -79,17 +82,14 @@ class EffectiveSpeechInputPolicy:
 
 def normalize_openai_noise_reduction(raw: str | None) -> str:
     value = (raw or "").strip().lower()
-    return value or OPENAI_NOISE_REDUCTION_AUTO
+    return value or NOISE_REDUCTION_AUTO
 
 
 def validate_openai_noise_reduction(value: str) -> None:
-    if value not in OPENAI_NOISE_REDUCTION_VALUES:
-        allowed = sorted(
-            v for v in OPENAI_NOISE_REDUCTION_VALUES if v
-        )
+    if value not in NOISE_REDUCTION_VALUES:
+        allowed = sorted(v for v in NOISE_REDUCTION_VALUES if v)
         raise RuntimeError(
-            "JASPER_OPENAI_NOISE_REDUCTION must be one of: "
-            + ", ".join(allowed)
+            "JASPER_OPENAI_NOISE_REDUCTION must be one of: " + ", ".join(allowed)
         )
 
 
@@ -154,30 +154,30 @@ def _resolve_openai_noise_reduction(
 ) -> tuple[str | None, str, tuple[str, ...]]:
     requested = normalize_openai_noise_reduction(requested)
     validate_openai_noise_reduction(requested)
-    warnings: list[str] = []
 
-    if requested in OPENAI_NOISE_REDUCTION_DISABLED:
+    if requested in NOISE_REDUCTION_OFF_VALUES:
         return None, "explicit_off", ()
 
-    if requested in OPENAI_NOISE_REDUCTION_WIRE_VALUES:
-        if requested == "far_field" and contract.already_processed:
-            warnings.append(
-                "OpenAI far_field noise reduction is enabled on an already "
+    intent = NOISE_REDUCTION_INTENTS.get(requested)
+    if intent is not None:
+        warnings: tuple[str, ...] = ()
+        if intent == NOISE_REDUCTION_FAR and contract.already_processed:
+            warnings = (
+                "Far-field noise reduction was requested on an already "
                 f"processed input profile ({contract.profile}).",
             )
-        return requested, "explicit", tuple(warnings)
+        return intent, "explicit", warnings
 
     if contract.already_processed:
         return None, "auto_processed_input", ()
 
     if contract.profile == "custom_udp":
-        warnings.append(
-            "Custom UDP input profile has no declared preprocessing contract; "
-            "OpenAI noise reduction auto mode leaves provider denoising off.",
+        return None, "auto_unknown_udp", (
+            "Custom UDP input profile has no declared preprocessing "
+            "contract; auto mode leaves provider denoising off.",
         )
-        return None, "auto_unknown_udp", tuple(warnings)
 
-    return "far_field", "auto_raw_far_field", ()
+    return NOISE_REDUCTION_FAR, "auto_raw_far", ()
 
 
 def build_effective_speech_input_policy(cfg: Any) -> EffectiveSpeechInputPolicy:

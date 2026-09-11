@@ -111,13 +111,13 @@ def test_direct_mic_provenance_reflects_known_alsa_cards(
     assert contract.provenance == expected_provenance
 
 
-def test_auto_uses_far_field_for_raw_direct_mic_input():
+def test_auto_asks_for_far_intent_on_raw_direct_mic_input():
     policy = build_effective_speech_input_policy(_cfg(mic_device="Array"))
 
     assert policy.input_contract.profile == "direct_mic"
     assert policy.input_contract.raw is True
-    assert policy.openai_noise_reduction == "far_field"
-    assert policy.openai_noise_reduction_source == "auto_raw_far_field"
+    assert policy.openai_noise_reduction == "far"
+    assert policy.openai_noise_reduction_source == "auto_raw_far"
 
 
 def test_custom_udp_auto_leaves_provider_denoising_off_with_warning():
@@ -129,15 +129,19 @@ def test_custom_udp_auto_leaves_provider_denoising_off_with_warning():
     assert "Custom UDP input profile" in policy.warnings[0]
 
 
-def test_explicit_far_field_is_preserved_but_warns_on_processed_input():
+@pytest.mark.parametrize("knob, intent, warns", [
+    ("near_field", "near", False),
+    ("far_field", "far", True),
+])
+def test_explicit_knob_spelling_resolves_to_a_host_intent(knob, intent, warns):
     policy = build_effective_speech_input_policy(_cfg(
         mic_device="udp:9876",
-        openai_noise_reduction="far_field",
+        openai_noise_reduction=knob,
     ))
 
-    assert policy.openai_noise_reduction == "far_field"
+    assert policy.openai_noise_reduction == intent
     assert policy.openai_noise_reduction_source == "explicit"
-    assert "already processed" in policy.warnings[0]
+    assert bool(policy.warnings) is warns
 
 
 def test_invalid_openai_noise_reduction_rejected():

@@ -60,6 +60,7 @@ from ._base import BaseLiveConnection, BaseLiveTurn
 from ._supervisor import (
     await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
 )
+from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
 from .session import (
     AudioOutChunk,
     ConnectionState,
@@ -91,13 +92,17 @@ SESSION_SETUP_TIMEOUT_SEC = 15.0
 DEFAULT_REASONING_EFFORT = "low"
 
 DEFAULT_NOISE_REDUCTION = "off"
-# ``auto`` is resolved by voice.input_policy before production constructs
-# this adapter. If a bare test/tool instantiates the adapter with auto, omit
-# provider denoising rather than sending an invalid OpenAI wire value.
+# ``auto`` is resolved to an intent by voice.input_policy before production
+# constructs this adapter. If a bare test/tool instantiates the adapter with
+# auto, omit provider denoising rather than guessing a wire value.
 _NOISE_REDUCTION_DISABLED = frozenset((
     "", "auto", "off", "none", "disabled", "false", "0",
 ))
-_NOISE_REDUCTION_WIRE_VALUES = frozenset(("near_field", "far_field"))
+# The host's intent -> the OpenAI wire value this adapter sends.
+_NOISE_REDUCTION_WIRE_VALUES = {
+    NOISE_REDUCTION_NEAR: "near_field",
+    NOISE_REDUCTION_FAR: "far_field",
+}
 
 # Inbound event types that prove the turn is making progress, so they
 # advance the pre-response idle anchor: the whole `response.*` namespace
@@ -121,19 +126,19 @@ def _is_progress_event(etype: str) -> bool:
 
 
 def _normalize_noise_reduction(value: str | None) -> str:
-    normalized = (value or "").strip().lower()
-    if (
-        normalized
-        and normalized not in _NOISE_REDUCTION_DISABLED
-        and normalized not in _NOISE_REDUCTION_WIRE_VALUES
-    ):
+    """Host intent -> OpenAI wire value; "" omits the session block."""
+    intent = (value or "").strip().lower()
+    if intent in _NOISE_REDUCTION_DISABLED:
+        return ""
+    wire = _NOISE_REDUCTION_WIRE_VALUES.get(intent)
+    if wire is None:
         allowed = sorted(
-            (_NOISE_REDUCTION_DISABLED | _NOISE_REDUCTION_WIRE_VALUES) - {""}
+            (_NOISE_REDUCTION_DISABLED | set(_NOISE_REDUCTION_WIRE_VALUES)) - {""}
         )
         raise RuntimeError(
             "OpenAI noise_reduction must be one of: " + ", ".join(allowed)
         )
-    return normalized
+    return wire
 
 
 # ---------- Audio helpers ---------------------------------------------------
@@ -850,7 +855,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 "language": "en",
             },
         }
-        if self._noise_reduction not in _NOISE_REDUCTION_DISABLED:
+        if self._noise_reduction:
             input_audio["noise_reduction"] = {"type": self._noise_reduction}
 
         session: dict = {
