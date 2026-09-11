@@ -54,6 +54,7 @@ from ._common import (
     bonded_follower_leader_web_url,
     dispatch_get,
     dispatch_post,
+    refusal_envelope,
     route_path,
     send_html_response,
     send_json_response,
@@ -97,7 +98,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(payload, status=int(status))
         except Exception as e:  # noqa: BLE001 — route-level 500 net
             logger.exception("%s failed", label)
-            self._send_json({"error": str(e)}, status=500)
+            self._send_json(refusal_envelope(e), status=500)
 
     def _send_html(self, body: bytes, *, status: int = 200) -> None:
         send_html_response(self, body, status=status)
@@ -111,9 +112,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_client_error(
-        self, message: str, *, status: int = 400,
+        self, exc: BaseException, *, status: int = 400,
     ) -> None:
-        self._send_json({"error": message}, status=status)
+        self._send_json(refusal_envelope(exc), status=status)
 
     # --- routes ---
 
@@ -156,7 +157,7 @@ def _dispatch_sync(handler: _Handler) -> None:
                 )
             except BadRequest as e:
                 handler._send_json(
-                    {"ok": False, "error": str(e)},
+                    refusal_envelope(e),
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -168,7 +169,7 @@ def _dispatch_sync(handler: _Handler) -> None:
         handler._send_json(payload, status=int(status))
     except Exception as e:  # noqa: BLE001
         logger.exception("%s failed", path)
-        handler._send_json({"ok": False, "error": str(e)}, status=500)
+        handler._send_json(refusal_envelope(e), status=500)
 
 
 def _dispatch_crossover(handler: _Handler) -> None:
@@ -188,24 +189,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
                 )
             )
         except ValueError as e:
-            # Log the refusal so it is debuggable from the journal,
-            # not just visible as a 400 in the browser. A session-open
-            # refusal never reaches the envelope, because the envelope
-            # renders from a PERSISTED failure and the pre-flight
-            # deliberately refuses before any state is written. So the
-            # reason's own action rides the 400 body instead — the
-            # wizard renders it as a button beside the message, and the
-            # household is one click from the fix rather than one
-            # navigation plus one click. Same registry entry the
-            # hard-stop screen would have read.
-            from jasper.web.correction_crossover_v2 import (
-                refusal_next_action,
-            )
-
-            refusal_body: dict[str, Any] = {"ok": False, "error": str(e)}
-            action = refusal_next_action(e)
-            if action is not None:
-                refusal_body["next_action"] = action
             log_event(
                 logger,
                 "correction.crossover_v2_refused",
@@ -215,24 +198,13 @@ def _dispatch_crossover(handler: _Handler) -> None:
                 code=str(getattr(e, "code", "") or ""),
             )
             handler._send_json(
-                refusal_body,
+                refusal_envelope(e),
                 status=HTTPStatus.BAD_REQUEST,
             )
         except (OSError, RuntimeError, TypeError) as e:
-            # Issue #1833: a CrossoverV2FlowError raised SYNCHRONOUSLY
-            # inside prepare_v2_session's `_open` (the spec/index-map
-            # builders) reaches here, not the 400 arm above -- it is a
-            # RuntimeError subclass, so `except ValueError` misses it.
-            # `str(e)` then put a programmer string
-            # ("cloud_measure_positions must be 6..12, got 14") straight
-            # into the wizard's DOM. Route it through the ONE mapper the
-            # rest of this module already uses; it is the identity for
-            # everything outside the mapped families, so nothing else on
-            # this arm changes. The raw string still reaches the journal
-            # via logger.exception above.
             logger.exception("%s failed", path)
             handler._send_json(
-                {"ok": False, "error": correction_capture._capture_failure_message(e)},
+                refusal_envelope(e),
                 status=500,
             )
         return
@@ -260,15 +232,15 @@ def _dispatch_crossover(handler: _Handler) -> None:
             # traceback and drops the connection with NO response at
             # all. The driver sees a closed socket instead of the
             # reason its body was rejected.
-            handler._send_client_error(str(e))
+            handler._send_client_error(e)
         except ValueError as e:
             handler._send_json(
-                {"ok": False, "error": str(e)},
+                refusal_envelope(e),
                 status=HTTPStatus.CONFLICT,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            handler._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json(refusal_envelope(e), status=500)
         return
 
     if path == "/crossover/v2/complete":
@@ -279,15 +251,15 @@ def _dispatch_crossover(handler: _Handler) -> None:
         try:
             handler._send_json(correction_handlers._handle_crossover_v2_complete(handler))
         except BadRequest as e:
-            handler._send_client_error(str(e))
+            handler._send_client_error(e)
         except ValueError as e:
             handler._send_json(
-                {"ok": False, "error": str(e)},
+                refusal_envelope(e),
                 status=HTTPStatus.CONFLICT,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            handler._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json(refusal_envelope(e), status=500)
         return
 
     if path == "/crossover/v2/retake":
@@ -297,15 +269,15 @@ def _dispatch_crossover(handler: _Handler) -> None:
         try:
             handler._send_json(correction_handlers._handle_crossover_v2_retake(handler))
         except BadRequest as e:
-            handler._send_client_error(str(e))
+            handler._send_client_error(e)
         except ValueError as e:
             handler._send_json(
-                {"ok": False, "error": str(e)},
+                refusal_envelope(e),
                 status=HTTPStatus.CONFLICT,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            handler._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json(refusal_envelope(e), status=500)
         return
 
     if path == "/crossover/v2/apply":
@@ -359,12 +331,12 @@ def _dispatch_crossover(handler: _Handler) -> None:
                     error=str(e),
                 )
             handler._send_json(
-                {"ok": False, "error": str(e)},
+                refusal_envelope(e),
                 status=HTTPStatus.BAD_REQUEST,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            handler._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json(refusal_envelope(e), status=500)
         return
 
     if path == "/crossover/v2/republish":
@@ -376,12 +348,12 @@ def _dispatch_crossover(handler: _Handler) -> None:
             handler._send_json(correction_handlers._handle_crossover_v2_republish(handler))
         except ValueError as e:
             handler._send_json(
-                {"ok": False, "error": str(e)},
+                refusal_envelope(e),
                 status=HTTPStatus.BAD_REQUEST,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            handler._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json(refusal_envelope(e), status=500)
         return
 
     if path == "/crossover/v2/decline":
@@ -390,12 +362,12 @@ def _dispatch_crossover(handler: _Handler) -> None:
             handler._send_json(payload, status=int(status))
         except ValueError as e:
             handler._send_json(
-                {"ok": False, "error": str(e)},
+                refusal_envelope(e),
                 status=HTTPStatus.BAD_REQUEST,
             )
         except (OSError, RuntimeError, TypeError) as e:
             logger.exception("%s failed", path)
-            handler._send_json({"ok": False, "error": str(e)}, status=500)
+            handler._send_json(refusal_envelope(e), status=500)
         return
 
     try:
@@ -461,17 +433,17 @@ def _dispatch_crossover(handler: _Handler) -> None:
         raise ValueError(f"unknown crossover route: {path}")
     except BadRequest as e:
         handler._send_json(
-            {"ok": False, "error": str(e)},
+            refusal_envelope(e),
             status=HTTPStatus.BAD_REQUEST,
         )
     except ValueError as e:
         handler._send_json(
-            {"ok": False, "error": str(e)},
+            refusal_envelope(e),
             status=HTTPStatus.BAD_REQUEST,
         )
     except (OSError, RuntimeError, TypeError) as e:
         logger.exception("%s failed", path)
-        handler._send_json({"ok": False, "error": str(e)}, status=500)
+        handler._send_json(refusal_envelope(e), status=500)
 
 
 def _get_crossover(handler: _Handler) -> None:
@@ -510,10 +482,10 @@ def _get_measurements_data(handler: _Handler) -> None:
             run_b_id=run_b_id,
         ))
     except correction_measurements.MeasurementViewRequestError as exc:
-        handler._send_client_error(str(exc))
+        handler._send_client_error(exc)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.exception("/measurements/data failed")
-        handler._send_json({"error": str(exc)}, status=500)
+        handler._send_json(refusal_envelope(exc), status=500)
 
 
 def _get_crossover_status(handler: _Handler) -> None:
@@ -575,7 +547,7 @@ def _get_sync_status(handler: _Handler) -> None:
         handler._send_json(sync_flow.handle_status())
     except Exception as e:  # noqa: BLE001
         logger.exception("/sync/status failed")
-        handler._send_json({"error": str(e)}, status=500)
+        handler._send_json(refusal_envelope(e), status=500)
 
 
 def _follower_delegated(fn: RouteFn) -> RouteFn:
@@ -607,12 +579,10 @@ def _run_post_route(handler: Any, route: RouteFn, path: str) -> None:
             path=path,
         )
         handler._send_json(
-            {
-                "error": (
-                    "sound measurement is controlled on the pair "
-                    "leader while this speaker is a follower"
-                ),
-            },
+            refusal_envelope(code=None, message=(
+                "sound measurement is controlled on the pair "
+                "leader while this speaker is a follower"
+            )),
             status=HTTPStatus.CONFLICT,
         )
         return
@@ -622,10 +592,10 @@ def _run_post_route(handler: Any, route: RouteFn, path: str) -> None:
     try:
         route(handler)
     except BadRequest as e:
-        handler._send_client_error(str(e))
+        handler._send_client_error(e)
     except Exception as e:  # noqa: BLE001
         logger.exception("POST %s failed", path)
-        handler._send_json({"error": str(e)}, status=500)
+        handler._send_json(refusal_envelope(e), status=500)
 
 
 # do_GET / do_POST dispatch through these exact-path tables

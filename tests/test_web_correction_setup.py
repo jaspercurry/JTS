@@ -199,7 +199,10 @@ def test_crossover_status_contains_unexpected_failures(monkeypatch):
     resp = _drive("/crossover/status")
 
     assert b"500" in resp.split(b"\r\n", 1)[0]
-    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {"error": "surprise"}
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+    assert body["ok"] is False
+    assert body["code"] is None
+    assert body["next_action"] is None
 
 
 def test_unknown_get_route_404():
@@ -409,7 +412,8 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
     plain = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
-    assert "next_action" not in plain
+    assert plain["next_action"] is None
+    assert plain["code"] is None
 
 
 def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):

@@ -67,9 +67,7 @@ from jasper.active_speaker.program_playback import (
 )
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import (
-    correction_capture,
-)
+from jasper.web._common import refusal_envelope
 from tests.crossover_v2_fixtures import fake_measurement_mic
 from tests._log_events import event_fields
 
@@ -149,7 +147,7 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
     exc = _refused(ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
     assert str(exc) == "program re-admission refused: program_profile_not_confirmed"
 
-    message = correction_capture._capture_failure_message(exc)
+    message = refusal_envelope(exc)["error"]
     assert message == REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     assert "program_profile_not_confirmed" not in message
     assert "re-admission" not in message
@@ -180,7 +178,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
     runner classifies must also be mapped here, or the next one to fire leaks
     its own programmer string."""
 
-    assert correction_capture._capture_failure_message(exc) == (
+    assert refusal_envelope(exc)["error"] == (
         REASON_REGISTRY[expected_code].message
     )
 
@@ -188,9 +186,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
 def test_non_program_exceptions_still_fall_through_unchanged():
     """Scope guard: this fix must not swallow every other exception's message."""
 
-    assert correction_capture._capture_failure_message(
-        ValueError("device mismatch")
-    ) == "device mismatch"
+    assert refusal_envelope(ValueError("device mismatch"))["error"] == "device mismatch"
 
 
 # --------------------------------------------------------------------------- #
@@ -787,3 +783,10 @@ def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
     assert "turbo" in fields["detail"]
     assert fields["code"] == REASON_PROGRAM_PLAN_SHAPE_INVALID
     assert fields["error_type"] == "PlanShapeError"
+
+
+def test_graph_refusal_retains_its_classifier_code():
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
+
+    exc = MeasurementGraphRefused("measurement_candidate_room_mismatch", "candidate-1")
+    assert v2host.classify_program_failure(exc) == (exc.reason, ())

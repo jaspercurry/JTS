@@ -985,16 +985,10 @@ def _open_body(args: argparse.Namespace) -> tuple[str, dict[str, Any], int]:
 
 
 def _open_failure_detail(status: int, payload: Any, target: Target) -> str:
-    """The wizard's own words, plus the one cause its words cannot name.
-
-    A 403 from the management-host guard says the Host header was not a name
-    this speaker answers to — but not which name was sent or where it came
-    from, and the pair is resolved from two independent sources (see
-    ``resolve_target``). So a 403 gets both values appended. It is a
-    possibility named for the reader, not a verdict: the guard also refuses for
-    reasons that have nothing to do with a split identity.
-    """
+    """Keep the trail textual; a 403 also names the independently resolved hosts."""
     detail = error_of(payload)
+    if isinstance(detail, dict):
+        detail = ": ".join(str(detail[key]) for key in ("code", "error") if detail.get(key))
     if status == 403:
         detail += (
             f" [two things answer 403 here. The management-host guard, for a "

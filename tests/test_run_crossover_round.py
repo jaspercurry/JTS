@@ -1888,3 +1888,20 @@ def test_an_apply_whose_answer_is_lost_is_not_reported_as_a_wizard_refusal(
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     assert [row["reason"] for row in rows] == [REASON_ANSWER_LOST]
     assert rows[0]["ok"] is False
+
+
+@pytest.mark.parametrize("status", [400, 403])
+@pytest.mark.parametrize("structured", [False, True])
+def test_open_failure_detail_stays_textual_with_coded_bodies(status, structured):
+    runner = _runner()
+    payload = {"error": "x" * 240}
+    if structured:
+        payload["code"] = "measurement_candidate_room_mismatch"
+        payload["next_action"] = {"id": "apply_matching_room_layer"}
+    detail = runner._open_failure_detail(
+        status, payload, runner.Target(host="speaker", hostname="jts.local", user="pi"),
+    )
+    assert isinstance(detail, str)
+    if structured:
+        assert detail.startswith(payload["code"] + ": ")
+        assert len(detail) >= len(payload["code"]) + 2 + len(payload["error"])

@@ -144,6 +144,33 @@ _CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
 _CTX_ATTR = "_jts_request_ctx"
 
 
+def refusal_envelope(
+    exc: BaseException | None = None, *, code: str | None = None, message: str | None = None,
+) -> dict[str, Any]:
+    """Carry an exception or an explicit code and message through one envelope."""
+    from jasper.active_speaker.crossover_v2.refusal_copy import (  # lazy: numpy import cost
+        CrossoverV2Refused, REASON_INTERNAL_ERROR, refusal_copy_for,
+    )
+    from jasper.web.correction_crossover_v2 import (  # lazy: measurement service import cost
+        CrossoverV2LocalSeamError, classify_program_failure,
+    )
+
+    if exc is not None:
+        code = getattr(exc, "code", None) or getattr(exc, "reason", None)
+        if isinstance(exc, CrossoverV2LocalSeamError):
+            code = REASON_INTERNAL_ERROR
+        elif not code:
+            classified = classify_program_failure(exc)
+            code = classified[0] if classified else None
+        if isinstance(exc, CrossoverV2Refused) or not code:
+            message = str(exc)
+    copy, action = refusal_copy_for(code)
+    return {
+        "ok": False, "code": code, "next_action": action,
+        "error": message if message is not None else copy,
+    }
+
+
 def value_for_env(
     state: dict[str, str],
     env_var: str,

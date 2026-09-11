@@ -974,7 +974,10 @@ def _report(
     }
 
 
-def _refused(reason: str, detail: str, *, code: int) -> int:
+def _refused(
+    reason: str, detail: Any, *, code: int,
+    refusal_code: str | None = None, next_action: Mapping[str, Any] | None = None,
+) -> int:
     """One failing stage, under the word its code owns (``_refusal.py``)."""
 
     log_event(
@@ -985,7 +988,7 @@ def _refused(reason: str, detail: str, *, code: int) -> int:
         reason=reason,
         detail=detail,
     )
-    return failed(code, reason, detail)
+    return failed(code, reason, detail, code=refusal_code, next_action=next_action)
 
 
 def _interrupted(exc: MeasureInterrupted) -> int:
@@ -1042,6 +1045,7 @@ def _restore_failed(exc: MeasureRestoreFailed) -> int:
 
 def _cmd_measure(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused  # lazy: graph import cost
 
     request = None
     candidate_scopes: dict[str, str] = {}
@@ -1068,6 +1072,13 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         return _interrupted(exc)
     except MeasureRestoreFailed as exc:
         return _restore_failed(exc)
+    except MeasurementGraphRefused as exc:
+        from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for  # lazy: numpy import cost
+
+        return _refused(
+            exc.reason, exc.detail, code=EXIT_REFUSED, refusal_code=exc.code,
+            next_action=refusal_copy_for(exc.code)[1],
+        )
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(exc.reason, exc.detail, code=EXIT_REFUSED)
     if payload["status"] != "measured":

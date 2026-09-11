@@ -219,9 +219,11 @@ def _as_json(body: str) -> Any:
         return body
 
 
-def error_of(payload: Any) -> str:
-    """The wizard's own words for a refusal, bounded to one readable line."""
+def error_of(payload: Any) -> str | dict[str, Any]:
+    """Keep a structured refusal intact; bound legacy prose to one line."""
     if isinstance(payload, Mapping):
+        if "code" in payload or "next_action" in payload:
+            return {key: payload[key] for key in ("code", "next_action", "error") if key in payload}
         return str(payload.get("error") or payload.get("status") or payload)[:200]
     return str(payload)[:200]
 
@@ -269,11 +271,12 @@ def apply_by_fingerprint(
     outcome = str(payload.get("status") or "") if isinstance(payload, Mapping) else ""
     applied = http == 200 and outcome == "applied"
     lost = http == 0
+    code = payload.get("code") if isinstance(payload, Mapping) else None
     return {
         "status": "applied" if applied else "blocked",
         "refused_by": "" if applied or lost else "wizard",
         "reason": (
-            "" if applied else REASON_ANSWER_LOST if lost else REASON_NOT_APPLIED
+            "" if applied else REASON_ANSWER_LOST if lost else code or REASON_NOT_APPLIED
         ),
         "expected_candidate_fingerprint": named,
         "candidate_fingerprint": live,

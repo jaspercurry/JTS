@@ -184,21 +184,9 @@ _volume_plan: Any = None
 
 
 def refusal_next_action(exc: BaseException) -> dict[str, Any] | None:
-    """The action a refusal's own reason declares, for a 400 response body.
+    from jasper.web._common import refusal_envelope  # lazy: web boundary
 
-    ``None`` when the refusal carries no code or its code declares no action —
-    the ordinary case for the many refusals whose only honest answer is prose.
-    Copy and destination come from the SAME registry entry the envelope's
-    hard-stop screen reads, so the pre-flight 400 and the post-persist screen
-    can never offer different buttons for the same refusal.
-    """
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
-
-    code = str(getattr(exc, "code", "") or "")
-    spec = REASON_REGISTRY.get(code) if code else None
-    if spec is None or not spec.next_action:
-        return None
-    return dict(spec.next_action)
+    return refusal_envelope(exc)["next_action"]
 
 
 class CrossoverV2LocalSeamError(RuntimeError):
@@ -217,29 +205,9 @@ class CrossoverV2LocalSeamError(RuntimeError):
 def classify_program_failure(
     exc: BaseException,
 ) -> tuple[str, tuple[str, ...]] | None:
-    """Map a program-seam exception to its §5.10 reason code + refusal slugs.
+    """Map measurement failures to a reason code and refusal slugs.
 
-    Returns ``None`` for anything outside the program family, so a caller can
-    tell "not mine" from "mine, and here is the honest code".
-
-    Issue #1820 defect 4: the session runner's catch-all arm used to fold the
-    WHOLE family — ``ProgramPlaybackError``, ``ProgramAdmissionError``,
-    ``CrossoverV2FlowError`` — into a single
-    :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_PROGRAM_UNPLAYABLE`,
-    so a deterministic "JTS cannot use the saved safety limits" and
-    a genuine level-ceiling failure rendered the same sentence and offered the
-    same (for the former, actively harmful) action. Refusal identity survives
-    the boundary now: ``PROFILE_NOT_CONFIRMED`` gets its own code and screen,
-    and every other refusal keeps ``program_unplayable`` but carries its own
-    slugs out for forensics (persisted under ``state["failure"]["refusals"]``
-    and logged) instead of being erased.
-
-    This is the ONE classifier. ``build_v2_run_and_consume``'s cleanup arm and
-    ``jasper.web.correction_capture._capture_failure_message`` both call it, so the
-    wizard's capture status line and the failure screen can
-    never disagree about which refusal happened — the drift that let a raw
-    ``"program re-admission refused: program_profile_not_confirmed"`` reach the
-    wizard's DOM while the phone was told something else entirely.
+    Return None for exceptions outside the measurement family.
     """
     from jasper.active_speaker.crossover_v2.capture_plan import PlanShapeError
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
@@ -264,11 +232,14 @@ def classify_program_failure(
         ProgramPlaybackRefused,
     )
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused  # lazy: graph import cost
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
     from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
+    if isinstance(exc, MeasurementGraphRefused):
+        return exc.code, ()
     if (
         isinstance(exc, StimulusCaptureStopped)
         and exc.code == WiredSplCeilingExceeded.code
@@ -325,7 +296,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     :func:`classify_program_failure` exists to close, defeated by the rewrap
     happening BEFORE any classification: once it is a ``ValueError`` the
     classifier no longer claims it, and
-    ``correction_capture._capture_failure_message`` never sees it either.
+    the HTTP envelope must retain its household message.
 
     So classify FIRST and carry the code out. The message comes from the same
     :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY` entry the

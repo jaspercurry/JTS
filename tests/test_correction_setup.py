@@ -36,6 +36,9 @@ from jasper.web import (
     correction_runtime,
     correction_setup,
 )
+from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY
+from jasper.web._common import refusal_envelope
 from jasper.platform.systemd import no_hold
 
 from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
@@ -183,21 +186,20 @@ def test_capture_holds_the_idle_exit_for_the_whole_background_session():
     ]
 
 
-def test_capture_releases_the_idle_hold_when_the_runner_fails():
-    """Every terminal path releases — failure included (#1854).
-
-    A hold that only released on the happy path would trade a killed session
-    for an immortal wizard, and the capture runner's ordinary endings (user stop,
-    capture timeout, begin-refused, the catch-all cleanup arm) are ALL exception
-    paths.
-    """
+@pytest.mark.parametrize("exc,code", [
+    (RuntimeError("link timeout"), None),
+    (MeasurementGraphRefused("measurement_candidate_room_mismatch", {}),
+     "measurement_candidate_room_mismatch"),
+    (MeasurementGraphRefused("measurement_unregistered", {}), "measurement_unregistered"),
+])
+def test_capture_releases_the_idle_hold_when_the_runner_fails(exc, code):
     idle_hold = _RecordingIdleHold()
 
     def open_capture():
         return SimpleNamespace(pi_session=object())
 
     async def run_and_consume(_pi_session):
-        raise RuntimeError("the measurement link timed out")
+        raise exc
 
     correction_capture._set_capture_slot(None)
     try:
@@ -212,6 +214,15 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails():
         wait_until_sync(
             lambda: correction_capture._get_capture_slot()["status"] == "failed"
         )
+        failure = correction_capture._get_capture_slot()
+        assert failure["code"] == code
+        assert failure["ok"] is False
+        if code == "measurement_candidate_room_mismatch":
+            assert failure["next_action"]["id"] == "apply_matching_room_layer"
+        else:
+            assert failure["next_action"] is None
+        if code == "measurement_unregistered":
+            assert failure["error"] is REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     finally:
         correction_capture._set_capture_slot(None)
 
@@ -442,7 +453,7 @@ def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_
     exc = CrossoverV2LocalSeamError(
         "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"
     )
-    message = correction_capture._capture_failure_message(exc)
+    message = refusal_envelope(exc)["error"]
     assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     assert "Errno" not in message
     assert "/etc/camilladsp" not in message

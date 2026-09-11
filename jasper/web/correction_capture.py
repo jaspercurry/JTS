@@ -30,6 +30,7 @@ from typing import Any
 from ..audio_measurement import household_mic
 from ..log_event import log_event
 
+from ._common import refusal_envelope
 from . import correction_runtime
 from .correction_runtime import logger
 
@@ -261,54 +262,6 @@ class CaptureKind:
     request_retake: Callable[[], None] | None = None
 
 
-def _capture_failure_message(exc: BaseException) -> str:
-    """The household-facing text for a capture-lifecycle failure.
-
-    ``CrossoverV2LocalSeamError`` (W6 hardware run 3 finding G) wraps a bare
-    ``OSError`` raised by the v2 crossover's play/DSP seam -- e.g. the DSP
-    writer lock's ``os.open`` hitting a read-only ``config_dir`` (finding F),
-    which surfaced the raw
-    ``"[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"``
-    string on the wizard's status line via the generic ``str(exc)`` fallback
-    below. Its household copy comes from the SAME
-    ``REASON_REGISTRY[REASON_INTERNAL_ERROR]`` text the v2 envelope itself
-    renders for an internal error, so the two surfaces never say different
-    things about the same failure.
-
-    The PROGRAM family -- ``ProgramPlaybackError`` (incl.
-    ``ProgramPlaybackRefused``), ``ProgramAdmissionError``,
-    ``CrossoverV2FlowError`` -- is the leak issue #1820 filed:
-    ``ProgramPlaybackRefused``'s ``str(exc)``, built at its raise site by
-    joining raw enum values
-    (``"program re-admission refused: program_profile_not_confirmed"``),
-    reached the wizard's status line verbatim -- violating
-    ``crossover_v2_flow``'s own written contract that a bare reason code never
-    reaches the household. It routes through
-    ``jasper.web.correction_crossover_v2.classify_program_failure``, the SAME
-    classifier the v2 session runner's cleanup arm uses to pick the failure
-    screen, so both surfaces name the same refusal with the same sentence.
-
-    The raw exception string still reaches the journal unchanged --
-    ``event=correction.capture_failed`` logs with ``exc_info=True`` regardless
-    of the mapped message. Every other exception falls back to ``str(exc)``.
-    """
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_INTERNAL_ERROR,
-        REASON_REGISTRY,
-    )
-    from jasper.web.correction_crossover_v2 import (
-        CrossoverV2LocalSeamError,
-        classify_program_failure,
-    )
-
-    if isinstance(exc, CrossoverV2LocalSeamError):
-        return REASON_REGISTRY[REASON_INTERNAL_ERROR].message
-    classified = classify_program_failure(exc)
-    if classified is not None:
-        return REASON_REGISTRY[classified[0]].message
-    return str(exc)
-
-
 def _run_capture(
     kind: CaptureKind,
     *,
@@ -383,9 +336,6 @@ def _run_capture(
                     kind=kind.label,
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
-                # This outer net flips /status.capture to failed and carries the
-                # household-facing reason (see _capture_failure_message) so the
-                # status page can show why.
                 log_event(
                     logger,
                     "correction.capture_failed",
@@ -397,7 +347,7 @@ def _run_capture(
                 _set_capture_slot({
                     "status": "failed",
                     "kind": kind.label,
-                    "error": _capture_failure_message(exc),
+                    **refusal_envelope(exc),
                 })
             finally:
                 # Every terminal path — complete, stopped, failed, and any
