@@ -43,6 +43,12 @@ DISMISSAL_UTTERANCES = frozenset(map(_normalise_utterance, (
 )))
 
 
+# One model think on top of the follow-up window. It bounds the silence the
+# household hears when a user run draws no audio at all; the 120 s stall cap
+# that used to bound it was the deleted research feature's budget (ADR-0291).
+THINK_ALLOWANCE_SEC = 3.0
+
+
 def is_dismissal(text: str) -> bool:
     """Whole-utterance test: "okay thanks" dismisses, "okay thanks for the
     weather report" does not."""
@@ -97,7 +103,9 @@ async def continuous_watchdog(
                 return "response_stalled"
             continue
         if turn.last_chunk_at() < speech_started:
-            if now - max(last_speech, turn.last_activity_at()) >= stall_seconds:
+            if now - max(last_speech, turn.last_activity_at()) >= (
+                followup_seconds + THINK_ALLOWANCE_SEC
+            ):
                 return "response_stalled"
             continue
         pending = turn.audio_chunks_pending()

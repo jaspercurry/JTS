@@ -11,6 +11,7 @@ import pytest
 
 from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.voice.conversation import (
+    THINK_ALLOWANCE_SEC,
     WATCHDOG_POLL_SEC,
     continuous_watchdog,
     register_conversation_tools,
@@ -145,3 +146,29 @@ async def test_a_dismissal_ends_the_conversation_the_way_the_tool_does():
     ended.assert_awaited_once_with("conversation_ended")
     assert loop._usage_store.close_calls == 1
     await loop._cancel_fire_and_forget_tasks()
+
+
+@pytest.mark.parametrize("slack, ended", [(2.0, False), (-0.5, True)])
+async def test_a_user_run_that_draws_no_audio_is_bounded_by_the_followup_window(
+    slack, ended,
+):
+    """Not by `stall_seconds`, which no longer funds a long delegation."""
+    followup_seconds = 1.0
+    now = time.monotonic()
+    silent_since = now - (followup_seconds + THINK_ALLOWANCE_SEC) + slack
+    turn = FakeLiveTurn()
+    turn.last_chunk_at = lambda: 0.0
+    turn.last_activity_at = lambda: silent_since
+    task = asyncio.create_task(continuous_watchdog(
+        turn, FakeTts(), followup_seconds=followup_seconds, stall_seconds=120,
+        user_activity=lambda: (now - 30, silent_since),
+        request_end=lambda: None,
+    ))
+    try:
+        await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
+        assert task.done() is ended
+        if ended:
+            assert task.result() == "response_stalled"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
