@@ -256,7 +256,7 @@ can't outsource this to the provider. We own the scoping layer.
   can't tell which tool to use, neither can the model."
 
 ### 3.9 Verified codebase corrections (don't build on wrong facts)
-It's **32 tools today**. `build_tool` **warns** on sync functions
+It's **30 tools today**. `build_tool` **warns** on sync functions
 rather than rejecting them (so "everything is a coroutine" is a
 convention, not an invariant). The live connection is **persistent**.
 `peer_id` is **0644**.
