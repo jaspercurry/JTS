@@ -136,6 +136,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0238](0238-the-first-provider-connect-is-one-attempt-and-every-retry-is-the-supervisors.md) | The first provider connect is one attempt, and every retry is the supervisor's | accepted |
 | [0290](0290-followup-windows-belong-to-the-voice-host.md) | Follow-up windows belong to the voice host | accepted |
 | [0291](0291-research-feature-deleted.md) | The background research feature is deleted — the provider model answers, and searches natively | accepted |
+| [0292](0292-followup-windows-are-provider-owned.md) | Follow-up windows are provider-owned | accepted |
 
 ## Wake, mic & AEC
 
