@@ -26,6 +26,7 @@ instead of opening a real socket.
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import threading
 import time
@@ -43,6 +44,7 @@ from jasper.assistant_loudness import (
 from jasper.tts_playout import TtsPlayout
 
 from ._async_wait import wait_signalled
+from ._log_events import event_fields
 
 
 def _make() -> TtsPlayout:
@@ -64,6 +66,7 @@ class _CaptureOutputdStream:
         self.meter_pauses = 0
         self.meter_resumes = 0
         self.ducks: list[bool] = []
+        self.poison_reason: str | None = None
 
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
@@ -109,8 +112,9 @@ class _CaptureOutputdStream:
     def write(self, data: bytes) -> None:
         self.writes.append(data)
 
-    def _poison(self, *, reason=None, timeout_sec=None) -> None:
+    def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
         self.closed = True
+        self.poison_reason = poison_reason if poison_reason is not None else reason
 
     def close(self) -> None:
         self.closed = True
@@ -993,6 +997,7 @@ def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
     try:
         assert adapter.flush_sync() is None
         assert time.monotonic() - start < 0.5
+        assert adapter.poison_reason == "flush_timeout"
         assert child.recv(64) == b"FLUSH_SYNC\n"
         with pytest.raises(OSError):
             adapter.write(b"\0\0\0\0")
@@ -1203,7 +1208,7 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
 
 @pytest.mark.parametrize("accepted_prefix", [False, True])
 async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
-    monkeypatch, accepted_prefix,
+    monkeypatch, accepted_prefix, caplog,
 ) -> None:
 
     monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 5)
@@ -1256,9 +1261,11 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
         return replacement
 
     monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    caplog.set_level(logging.INFO, logger=tts_mod.logger.name)
     await p.write_segment(b"\x01\x00" * 2, segment_kind="cue")
     assert p._stream is replacement
     assert replacement.writes
+    assert event_fields(caplog, "tts_fanin.reconnect")["poison_reason"] == "cancelled"
     child.close()
 
 

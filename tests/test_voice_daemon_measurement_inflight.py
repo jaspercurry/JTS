@@ -615,7 +615,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
             self.closed = False
             self.attempts = 0
 
-        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
             self.closed = True
 
         def set_gain_db(self, _db: float) -> None:
@@ -721,7 +721,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     class _BlockingWrite:
         closed = False
 
-        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
             self.closed = True
 
         def set_gain_db(self, _db: float) -> None:
@@ -818,7 +818,7 @@ async def test_cancelled_cue_tail_retains_output_episode(
     class _AcceptedStream:
         closed = False
 
-        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
             self.closed = True
 
         def set_gain_db(self, _db: float) -> None:
@@ -1824,7 +1824,7 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     class _AcceptedStream:
         closed = False
 
-        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+        def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
             self.closed = True
 
         def set_gain_db(self, _db: float) -> None:
