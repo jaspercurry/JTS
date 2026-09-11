@@ -3602,7 +3602,7 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
 
     The two guards in `install_exit_cleanup` do different jobs. The one on
     `cleanup_build_swap` keeps the unpark REACHABLE (pinned above). The one on
-    `unpark_low_memory_build_units` keeps it COMPLETABLE: a caller's `|| true`
+    `unpark_recorded_units` keeps it COMPLETABLE: a caller's `|| true`
     suspends `set -e` for the callee's entire body, and that is the only reason
     the unpark's three bare `_build_sandbox_log` calls — the deliberate-off
     skip, the failed-restart report, and the closing summary — cannot abort the
@@ -3618,13 +3618,13 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
 
     Measured on the harness's own shell (bash 3.2.57), six parked units with
     `jasper-fanin.service` refusing to start: with the guard, exit 5, five of
-    six back and the summary emitted; with `unpark_low_memory_build_units`
+    six back and the summary emitted; with `unpark_recorded_units`
     bare, exit 1, ONE of six back and no summary at all. Deliberately NOT
     measured on the bash 5.2.x the installer runs under (no 5.x available on
     the authoring host) — 3.2's `set -e` is the looser of the two, so an abort
     seen here is expected to hold there, but that step is inference.
     """
-    # Restore order is the JASPER_LOW_MEMORY_UNPARK_FIRST entries that were
+    # Restore order is the JASPER_UNIT_UNPARK_FIRST entries that were
     # parked — here jasper-outputd, jasper-fanin, jasper-camilla, jasper-mux
     # (jasper-camilla-crossover is in that list but not running) — then the
     # rest in park order. Failing the SECOND one restored puts four units
