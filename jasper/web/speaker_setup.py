@@ -54,14 +54,20 @@ from ._common import (
     send_see_other,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page
-from ._service_state import unit_active as _unit_active
 from ..service_units import (
     FANIN_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
+    read_unit_states,
 )
+from ..service_units import unit_active as _unit_state_active
 
 logger = logging.getLogger(__name__)
+
+
+def _unit_active(unit: str) -> bool:
+    """Whether systemd currently reports ``unit`` active, read fresh."""
+    return _unit_state_active((read_unit_states((unit,)) or {}).get(unit))
 
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"
 
