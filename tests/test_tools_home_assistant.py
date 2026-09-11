@@ -351,7 +351,7 @@ async def test_non_consequential_uses_fast_path():
 
 # ---- Gate is conditional on recent untrusted content (taint window) --------
 
-async def test_clean_session_runs_consequential_without_confirmation():
+async def test_clean_session_runs_consequential_without_confirmation(caplog):
     """No untrusted content read → not tainted → a consequential voice
     command runs directly, no nag. This is the point of the taint window:
     the confirmation cost lands only in the post-email risk window, not on
@@ -360,11 +360,17 @@ async def test_clean_session_runs_consequential_without_confirmation():
     monitor = UntrustedContentMonitor()                      # never marked → clean
     ha_tool, _confirm = make_home_assistant_tools(fake, monitor=monitor)
 
-    out = await ha_tool("unlock the front door")
+    with caplog.at_level(logging.DEBUG, logger="jasper.tools.home_assistant"):
+        out = await ha_tool("unlock the front door")
 
     assert "needs_confirmation" not in out
     assert fake.calls == ["unlock the front door"]           # executed directly
     assert out["success"] is True
+    # DEBUG-only forensics line for "why did this run without a confirm?"
+    # (ha.consequential_direct, jasper/tools/home_assistant.py ~314).
+    assert event_fields(caplog, "ha.consequential_direct")["action"] == (
+        "unlock the door"
+    )
 
 
 async def test_tainted_session_confirms_consequential():

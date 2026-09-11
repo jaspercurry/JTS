@@ -9,8 +9,10 @@ Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
 """
 
 import json
+import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,6 +20,8 @@ from unittest.mock import patch
 import pytest
 
 from jasper.cli.doctor import _evidence, _shared, correction
+from jasper.platform import systemd as _systemd
+from tests._log_events import event_records, parse_event
 
 from .doctor_test_support import (
     _make_unit_states_fake,
@@ -31,10 +35,34 @@ from .doctor_test_support import (
 # ---------- #1860: long-outstanding idle-exit holds
 
 
-_LEAKED_HOLD_LINE = (
-    "event=systemd.idle_exit_deferred active=1 idle_s=7530 busy_for_s=7530 "
-    "threshold_s=600 holds=relay:level_ramp:room"
-)
+_DEFERRED_EVENT = "systemd.idle_exit_deferred"
+
+
+def _render_deferred_exit_line(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    busy_for_s: float,
+    idle_s: float,
+    hold: str,
+    threshold_s: float = 600.0,
+    active: int = 1,
+) -> str:
+    """The exact text ``_log_deferred_exit`` renders for one deferred-exit
+    event — driven through the real tracker + ``log_event`` rather than
+    hand-typed, so a rendering change in either desyncs this fixture loudly
+    instead of silently drifting out of sync with production.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=threshold_s)
+    log = logging.getLogger("jasper.platform.systemd")
+    with tracker.hold(hold):
+        with tracker._lock:
+            tracker._busy_since = time.monotonic() - busy_for_s
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
+            tracker._log_deferred_exit(log, idle_s, active)
+    records = event_records(caplog, _DEFERRED_EVENT)
+    assert len(records) == 1, records
+    return records[0].getMessage()
 
 
 def _idle_exit_journal(monkeypatch, *, journal, active="active"):
@@ -58,20 +86,39 @@ def _journal(stdout="", *, returncode=0, stderr=""):
     )
 
 
-def test_latest_deferred_hold_keeps_the_newest_line():
+def test_check_correction_idle_exit_holds_flags_a_leaked_hold(
+    monkeypatch, caplog: pytest.LogCaptureFixture,
+):
+    """A hold outstanding past the leak bound must surface here, not only
+    buried in the journal (#1860)."""
+    line = _render_deferred_exit_line(
+        caplog, busy_for_s=7530, idle_s=7530, hold="relay:level_ramp:room",
+    )
+    _idle_exit_journal(monkeypatch, journal=_journal(line + "\n"), active="active")
+
+    r = correction.check_correction_idle_exit_holds()
+
+    assert r.status == "warn"
+    assert r.reason == correction.REASON_IDLE_HOLD_LEAKED
+
+
+def test_latest_deferred_hold_keeps_the_newest_line(
+    caplog: pytest.LogCaptureFixture,
+):
     """journalctl returns oldest-first; an older (possibly since-resolved)
     line must not shadow the most recent evidence."""
-    older = (
-        "event=systemd.idle_exit_deferred active=1 idle_s=7300 busy_for_s=7300 "
-        "threshold_s=600 holds=relay:crossover_v2:session"
+    older = _render_deferred_exit_line(
+        caplog, busy_for_s=7300, idle_s=7300, hold="relay:crossover_v2:session",
     )
-    newer = (
-        "event=systemd.idle_exit_deferred active=1 idle_s=7830 busy_for_s=7830 "
-        "threshold_s=600 holds=relay:level_ramp:crossover"
+    newer = _render_deferred_exit_line(
+        caplog, busy_for_s=7830, idle_s=7830, hold="relay:level_ramp:crossover",
     )
+    parsed_newer = parse_event(newer)
+    assert parsed_newer is not None
+    newer_fields = parsed_newer[1]
 
     assert correction._latest_deferred_hold(f"{older}\n{newer}\n") == (
-        "7830", "relay:level_ramp:crossover",
+        newer_fields["busy_for_s"], "relay:level_ramp:crossover",
     )
     assert correction._latest_deferred_hold("nothing to see\n") is None
 
@@ -1082,7 +1129,6 @@ _C = correction
         pytest.param(_corr_case_idle_exit_holds("active", FileNotFoundError("journalctl not found")), "skipped", _C.REASON_IDLE_HOLDS_JOURNAL_UNAVAILABLE, id="test_check_correction_idle_exit_holds_verdicts[journalctl-raises]"),
         pytest.param(_corr_case_idle_exit_holds("active", _journal(returncode=1, stderr="invalid option -- since")), "skipped", _C.REASON_IDLE_HOLDS_JOURNAL_UNREADABLE, id="test_check_correction_idle_exit_holds_verdicts[journalctl-rc]"),
         pytest.param(_corr_case_idle_exit_holds("active", _journal()), "ok", _C.REASON_IDLE_HOLDS_NONE, id="test_check_correction_idle_exit_holds_verdicts[clean]"),
-        pytest.param(_corr_case_idle_exit_holds("active", _journal(_LEAKED_HOLD_LINE + "\n")), "warn", _C.REASON_IDLE_HOLD_LEAKED, id="test_check_correction_idle_exit_holds_verdicts[leaked]"),
         pytest.param(_corr_case_idle_exit_holds_skips_no_systemctl, "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, id="test_check_correction_idle_exit_holds_skips_without_systemctl"),
         pytest.param(_corr_case_https_assets(lambda *a, **k: (200, "")), "ok", "", id="test_check_correction_https_assets_verdicts[served]"),
         pytest.param(_corr_case_https_assets(lambda *a, **k: (308, "http://jts.local/assets/app.css")), "warn", _C.REASON_HTTPS_ASSETS_HTTP_REDIRECT, id="test_check_correction_https_assets_verdicts[http-downgrade]"),
