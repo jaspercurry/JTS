@@ -228,7 +228,7 @@ async def _outputd_io(
             await asyncio.wait({worker})
         except asyncio.CancelledError:
             cancelled = True
-            stream._poison(reason=None)
+            stream._poison(reason=None, poison_reason="cancelled")
             if current is not None:
                 current.uncancel()
     try:
@@ -312,10 +312,17 @@ class _OutputdStreamAdapter:
         self._active_segment: tuple[str, str, tuple[str, ...] | None] | None = None
         self._closed = False
         self._timeout_logged = False
+        self._poison_reason: str | None = None
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def poison_reason(self) -> str | None:
+        """Why `_poison` closed this stream (e.g. "cancelled", "lock",
+        "send") — attribution for a reconnect logged far from the close."""
+        return self._poison_reason
 
     def _readline_locked(self, timeout_sec: float) -> bytes:
         """Read one daemon response line while the caller holds _lock."""
@@ -360,12 +367,20 @@ class _OutputdStreamAdapter:
         *,
         reason: str | None,
         timeout_sec: float | None = None,
+        poison_reason: str | None = None,
     ) -> None:
-        """Close from any thread; blocked operations check closure each slice."""
+        """Close from any thread; blocked operations check closure each slice.
+
+        ``reason`` drives the timeout warning below; ``poison_reason`` is the
+        attribution a later reconnect log reads back (defaults to ``reason``),
+        letting a non-timeout caller (cancellation) name itself without
+        triggering that warning.
+        """
 
         if self._closed:
             return
         self._closed = True
+        self._poison_reason = poison_reason if poison_reason is not None else reason
         self._active_segment = None
         self._recv_buffer.clear()
         try:
@@ -897,6 +912,7 @@ class TtsPlayout:
                     "tts_fanin.reconnect",
                     reason="closed_socket",
                     socket=self._socket_path,
+                    poison_reason=stream.poison_reason,
                 )
                 try:
                     stream = await self._connect_stream_adapter()

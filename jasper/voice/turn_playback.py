@@ -72,7 +72,12 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
             await turn.truncate_assistant_audio(
                 item, frames * 1000 // TtsPlayout.OUTPUT_RATE,
             )
-        log_event(logger, "barge.playback_boundary", items=len(frames_by_item))
+        log_event(
+            logger,
+            "barge.playback_boundary",
+            items=len(frames_by_item),
+            segments=ack.get("segments"),
+        )
     return confirmed
 
 

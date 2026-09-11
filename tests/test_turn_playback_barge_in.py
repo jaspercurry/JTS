@@ -452,8 +452,13 @@ def _segment(item="a", frames=0, segment=1, kind="assistant"):
      True, [("a", 2000), ("b", 500)]),
     (_flush_ack([_segment("a", 480, 1), _segment("a", 960, 2),
                  _segment("cue", 24000, 3, "cue")]), True, [("a", 30)]),
+    # Live passes no item ids: the ack still confirms and counts a real
+    # segment, but nothing is attributable to truncate.
+    (_flush_ack([_segment(item=None, frames=100)]), True, []),
 ])
-async def test_interrupt_stop_and_item_boundary_are_distinct(ack, confirmed, boundaries):
+async def test_interrupt_stop_and_item_boundary_are_distinct(
+    ack, confirmed, boundaries, caplog,
+):
     turn = _SeamTurn()
     tts = _BaseTts()
 
@@ -461,10 +466,15 @@ async def test_interrupt_stop_and_item_boundary_are_distinct(ack, confirmed, bou
         return ack
 
     tts.flush = flush
-    assert await turn_playback._flush_for_interrupt(turn, tts) is confirmed
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await turn_playback._flush_for_interrupt(turn, tts) is confirmed
     assert turn.seam_calls == [("cancel", "barge_in")] + [
         ("truncate", item, ms) for item, ms in boundaries
     ]
+    if confirmed:
+        fields = event_fields(caplog, "barge.playback_boundary")
+        assert fields["items"] == str(len(boundaries))
+        assert fields["segments"] == str(ack["segments"])
 
 
 @pytest.mark.parametrize("phase", ["gap", "write", "drain"])
