@@ -65,7 +65,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
-from tests.transport_camilla_fixtures import FakeCamilla
+from tests.sound_camilla_fixtures import FakeCamilla
 
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The

@@ -1090,26 +1090,35 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     assert body["voice"]["push_to_talk_only"] is True
 
 
+class FakeCamillaMetrics:
+    """Stands in for the whole ``CamillaController`` class (not an injected
+    instance) so ``/state``'s audio-metrics read path exercises its real
+    sanitization against these readings, rather than values a test already
+    sanitized itself."""
+
+    def __init__(self, *, volume_db, playback_rms_all, playback_peak_all, clipped_samples):
+        self._volume_db = volume_db
+        self._playback_rms_all = playback_rms_all
+        self._playback_peak_all = playback_peak_all
+        self._clipped_samples = clipped_samples
+
+    async def get_volume_db(self, *, best_effort=False):
+        return self._volume_db
+
+    async def get_playback_rms_all(self, *, best_effort=False):
+        return self._playback_rms_all
+
+    async def get_playback_peak_all(self, *, best_effort=False):
+        return self._playback_peak_all
+
+    async def get_clipped_samples(self, *, best_effort=False):
+        return self._clipped_samples
+
+
 def test_state_audio_metrics_sanitize_non_finite_values(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
     import jasper.camilla as camilla_mod
-
-    class FakeCamilla:
-        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
-            pass
-
-        async def get_volume_db(self, *, best_effort=False):  # noqa: ARG002
-            return -12.345
-
-        async def get_playback_rms_all(self, *, best_effort=False):  # noqa: ARG002
-            return [float("-inf"), -32.1234]
-
-        async def get_playback_peak_all(self, *, best_effort=False):  # noqa: ARG002
-            return [float("nan"), -3.456]
-
-        async def get_clipped_samples(self, *, best_effort=False):  # noqa: ARG002
-            return 7
 
     base, _ = server_with_coordinator
     state_path = tmp_path / "speaker_volume.json"
@@ -1120,7 +1129,16 @@ def test_state_audio_metrics_sanitize_non_finite_values(
     monkeypatch.setenv(
         "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.env"),
     )
-    monkeypatch.setattr(camilla_mod, "CamillaController", FakeCamilla)
+    monkeypatch.setattr(
+        camilla_mod,
+        "CamillaController",
+        lambda *a, **k: FakeCamillaMetrics(
+            volume_db=-12.345,
+            playback_rms_all=[float("-inf"), -32.1234],
+            playback_peak_all=[float("nan"), -3.456],
+            clipped_samples=7,
+        ),
+    )
 
     status, body = _get(f"{base}/state")
 
@@ -1143,26 +1161,19 @@ def test_state_audio_metrics_publish_every_playback_channel(
     """
     import jasper.camilla as camilla_mod
 
-    class FakeCamilla:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def get_volume_db(self, *, best_effort=False):
-            return -25.757576
-
-        async def get_playback_rms_all(self, *, best_effort=False):
-            return [-108.03, -1000.0, -108.03, -1000.0]
-
-        async def get_playback_peak_all(self, *, best_effort=False):
-            return [-105.81, -1000.0, -105.81, -1000.0]
-
-        async def get_clipped_samples(self, *, best_effort=False):
-            return 0
-
     base, _ = server_with_coordinator
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "speaker_volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.env"))
-    monkeypatch.setattr(camilla_mod, "CamillaController", FakeCamilla)
+    monkeypatch.setattr(
+        camilla_mod,
+        "CamillaController",
+        lambda *a, **k: FakeCamillaMetrics(
+            volume_db=-25.757576,
+            playback_rms_all=[-108.03, -1000.0, -108.03, -1000.0],
+            playback_peak_all=[-105.81, -1000.0, -105.81, -1000.0],
+            clipped_samples=0,
+        ),
+    )
 
     status, body = _get(f"{base}/state")
 

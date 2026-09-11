@@ -67,7 +67,8 @@ from jasper.fanin_coupling import (
     TRANSPORT_RING,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
-from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE, FakeCamilla
+from tests.sound_camilla_fixtures import FakeCamilla
+from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE
 
 ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"

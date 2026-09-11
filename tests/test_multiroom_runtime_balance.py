@@ -10,6 +10,7 @@ from jasper.multiroom.runtime_balance import (
     camilla_patch_for_trim,
     coerce_trim_db,
 )
+from tests.sound_camilla_fixtures import FakeCamilla
 
 
 def _cfg(role: str = "follower", trim_db: float = -2.5) -> GroupingConfig:
@@ -48,23 +49,18 @@ def test_coerce_trim_rejects_boosts_floor_and_nonfinite(value: float) -> None:
 
 
 async def test_apply_local_trim_active_endpoint_patches_camilla() -> None:
-    calls = []
-
-    class FakeCamilla:
-        async def patch_config(self, patch, *, best_effort=False):
-            calls.append((patch, best_effort))
-            return True
+    fake = FakeCamilla()
 
     result = await apply_local_trim(
         -3.0,
         cfg=_cfg("leader", trim_db=-3.0),
         active_box_reader=lambda: True,
-        camilla_factory=lambda _cfg: FakeCamilla(),
+        camilla_factory=lambda _cfg: fake,
     )
 
     assert result.applied is True
     assert result.mode == "active_camilla"
-    assert calls == [(camilla_patch_for_trim(-3.0), True)]
+    assert fake.patches == [(camilla_patch_for_trim(-3.0), True)]
 
 
 async def test_apply_local_trim_passive_endpoint_calls_outputd() -> None:
