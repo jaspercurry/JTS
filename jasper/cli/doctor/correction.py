@@ -148,17 +148,39 @@ def check_correction_web_service() -> CheckResult:
         reason=REASON_WEB_INACTIVE,
     )
 
-# One rendered line from platform/systemd.py's _log_deferred_exit: "systemd idle-exit
-# deferred: 2 active requests/holds after 7530s idle, busy for 7530s
-# (threshold 600s, holds: capture:crossover_v2:session)" — optionally followed
-# by the " — busy past ...LEAKED hold..." note, which pushes it to WARNING.
-# Captures (busy_for_seconds, holds).
+# One rendered line from platform/systemd.py's _log_deferred_exit:
+# "event=systemd.idle_exit_deferred active=2 idle_s=7530 busy_for_s=7530
+# threshold_s=600 holds=capture:crossover_v2:session" — at WARNING once
+# busy_for_s clears HOLD_LEAK_WARN_AFTER_SEC (the journalctl call below
+# already filters to `-p warning`, so a match here is always the escalated
+# case). Captures (busy_for_seconds, holds). The holds alternative tries a
+# logfmt-quoted value first — log_event.py (jasper/log_event.py) quotes any
+# value containing a space — so a hold label with a space is captured whole
+# instead of truncating at the space; `_unquote_logfmt_value` below reverses
+# that quoting.
 _DEFERRED_HOLD_RE = re.compile(
-    r"idle-exit deferred: \d+ active requests/holds after [\d.]+s idle, "
-    r"busy for ([\d.]+)s \(threshold [\d.]+s, holds: ([^)]+)\)"
+    r'event=systemd\.idle_exit_deferred\b.*\bbusy_for_s=(\d+)\b.*'
+    r'\bholds=("(?:[^"\\]|\\.)*"|\S+)'
 )
 
 _CORRECTION_WEB_UNIT = "jasper-correction-web.service"
+
+
+def _unquote_logfmt_value(raw: str) -> str:
+    """Reverse ``log_event``'s logfmt quoting for one captured field value.
+
+    A bare token (the common case) passes through unchanged. A quoted value
+    uses exactly the escape subset ``_escape_logfmt_text`` (jasper/log_event.py)
+    emits — ``\\``, ``\\"``, ``\\n``, ``\\r``, ``\\t``, ``\\uXXXX`` — which is
+    also valid JSON string syntax, so ``json.loads`` decodes it without a
+    hand-rolled unescaper.
+    """
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return raw
+    return raw
 
 
 def _latest_deferred_hold(journal_text: str) -> tuple[str, str] | None:
@@ -169,11 +191,11 @@ def _latest_deferred_hold(journal_text: str) -> tuple[str, str] | None:
     """
     latest: tuple[str, str] | None = None
     for line in journal_text.splitlines():
-        if "idle-exit deferred" not in line:
+        if "event=systemd.idle_exit_deferred" not in line:
             continue
         match = _DEFERRED_HOLD_RE.search(line)
         if match is not None:
-            latest = (match.group(1), match.group(2))
+            latest = (match.group(1), _unquote_logfmt_value(match.group(2)))
     return latest
 
 
@@ -181,8 +203,8 @@ def _latest_deferred_hold(journal_text: str) -> tuple[str, str] | None:
 def check_correction_idle_exit_holds() -> CheckResult:
     """A leaked idle-exit hold must be visible here, not only in the journal.
 
-    ``platform/systemd.py`` escalates its "idle-exit deferred" line to WARNING past
-    ``HOLD_LEAK_WARN_AFTER_SEC``; this reads that escalation back. Read-only:
+    ``platform/systemd.py`` escalates its ``systemd.idle_exit_deferred`` event to
+    WARNING past ``HOLD_LEAK_WARN_AFTER_SEC``; this reads that escalation back. Read-only:
     nothing may release a hold out from under a possibly-still-mutating
     measurement (``correction_runtime.run_async``'s fail-closed invariant).
 
@@ -239,7 +261,7 @@ def check_correction_idle_exit_holds() -> CheckResult:
         label, "warn",
         f"busy {busy_for}s with holds outstanding ({holds}) — the wizard "
         f"cannot idle-exit; see `journalctl -u {_CORRECTION_WEB_UNIT} | grep "
-        "'idle-exit deferred'`",
+        "event=systemd.idle_exit_deferred`",
         reason=REASON_IDLE_HOLD_LEAKED,
     )
 

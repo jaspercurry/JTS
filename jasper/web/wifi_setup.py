@@ -191,10 +191,12 @@ def _run_nmcli(
             text=True,
         )
     except subprocess.TimeoutExpired as e:
-        logger.warning(
-            "nmcli timed out after %ss: %s",
-            timeout,
-            _redacted_argv(cmd),
+        log_event(
+            logger,
+            "wifi.nmcli_timeout",
+            timeout=timeout,
+            argv=_redacted_argv(cmd),
+            level=logging.WARNING,
         )
         # Synthesize a CompletedProcess so callers don't have to
         # special-case TimeoutExpired in addition to non-zero returns.
@@ -1354,7 +1356,13 @@ def _get_state(handler: _Handler) -> None:
         payload = gather_state()
         status = 200
     except Exception as e:  # noqa: BLE001
-        logger.exception("/state failed")
+        log_event(
+            logger,
+            "wifi.state_failed",
+            error=type(e).__name__,
+            level=logging.ERROR,
+            exc_info=True,
+        )
         payload = {"error": str(e)}
         status = 502
     handler._send_json(payload, status=status)

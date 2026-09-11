@@ -104,7 +104,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
     "jasper/tools/bus.py": {"*"},
     "jasper/tools/citibike.py": {"*"},
     "jasper/tools/diagnostic.py": {"*"},
-    "jasper/tools/home_assistant.py": {"*"},
     "jasper/tools/packs.py": {"*"},
 }
 

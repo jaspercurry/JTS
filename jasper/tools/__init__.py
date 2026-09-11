@@ -46,6 +46,8 @@ import typing
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Iterable, Protocol
 
+from ..log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -817,18 +819,21 @@ async def dispatch_tool(
                           never changes the model-visible payload, and
                           unknown names are not reported as registered
       * ``survives_cancellation`` -> see ``tool()``
-    plus the structured timing logs (``tool <name> start`` / ``fn done``
-    / ``TIMED OUT`` / ``RAISED``) journalctl shows for every call —
-    identical across providers.
+    plus the ``tool.dispatch_start`` / ``tool.dispatch_done`` structured
+    events (and plain ``TIMED OUT`` / ``RAISED`` lines on failure)
+    journalctl shows for every call — identical across providers.
 
     A future provider adapter gets timeout, logging, and error-shaping
     for free by calling this.
     """
     tool = registry.get(name)
     if tool is None:
-        logger.warning(
-            "tool %s start args=%s → unknown tool",
-            name, _redacted_mapping_preview(args),
+        log_event(
+            logger,
+            "tool.dispatch_unknown",
+            name=name,
+            args=_redacted_mapping_preview(args),
+            level=logging.WARNING,
         )
         return {"error": f"unknown tool {name}"}
 
@@ -850,7 +855,7 @@ async def _dispatch(
         logger.warning("tool %s observer binding failed: %s", name, exc)
         observer = None
     await _notify_dispatch_observer(observer, "called", name)
-    logger.info("tool %s start args=%s", name, _args_preview(tool, args))
+    log_event(logger, "tool.dispatch_start", name=name, args=_args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
         out = await registry._execute(tool, args)
@@ -862,7 +867,7 @@ async def _dispatch(
         # 4-8 KB and flood the journal. Content-bearing tools redact the
         # preview entirely but keep length/timing diagnostics.
         preview = _payload_preview(tool, payload)
-        logger.info("tool %s fn done in %.0fms ok payload=%s", name, fn_ms, preview)
+        log_event(logger, "tool.dispatch_done", name=name, fn_ms=round(fn_ms), payload=preview)
     except asyncio.TimeoutError:
         fn_ms = (_time.monotonic() - t_fn) * 1000
         logger.warning("tool %s fn TIMED OUT after %.0fms", name, fn_ms)

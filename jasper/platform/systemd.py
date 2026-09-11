@@ -67,6 +67,8 @@ import time
 from collections.abc import Iterator
 from http.server import ThreadingHTTPServer
 
+from jasper.log_event import log_event
+
 # Per sd_listen_fds(3) — fds passed by systemd start at 3.
 SD_LISTEN_FDS_START = 3
 
@@ -438,16 +440,15 @@ class IdleShutdownTracker:
                 0.0 if self._busy_since is None else now - self._busy_since
             )
         leaked = busy_for >= HOLD_LEAK_WARN_AFTER_SEC
-        note = (
-            f" — busy past {HOLD_LEAK_WARN_AFTER_SEC:.0f}s, so this is a "
-            f"LEAKED hold, not a long session: the process can no longer "
-            f"idle-exit and its on-idle-exit hook cannot run"
-        ) if leaked else ""
-        log.log(
-            logging.WARNING if leaked else logging.INFO,
-            "systemd idle-exit deferred: %d active requests/holds after %.0fs "
-            "idle, busy for %.0fs (threshold %.0fs, holds: %s)%s",
-            active, idle, busy_for, self._idle_threshold, holds, note,
+        log_event(
+            log,
+            "systemd.idle_exit_deferred",
+            active=active,
+            idle_s=round(idle),
+            busy_for_s=round(busy_for),
+            threshold_s=round(self._idle_threshold),
+            holds=holds,
+            level=logging.WARNING if leaked else logging.INFO,
         )
 
     def stop(self) -> None:
