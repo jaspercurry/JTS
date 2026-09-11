@@ -978,13 +978,8 @@ class WakeLoop:
     async def _play_dynamic_text(self, text: str) -> bool:
         return await self._assistant_output.play_dynamic_text(text)
 
-    async def _play_cue(
-        self,
-        slug: str,
-        *,
-        episode: AssistantOutputEpisode | None = None,
-    ) -> bool:
-        return await self._assistant_output.play_cue(slug, episode=episode)
+    async def _play_cue(self, slug: str) -> bool:
+        return await self._assistant_output.play_cue(slug)
 
     def _leg_task_dead(self, task: "asyncio.Task[None]") -> bool:
         """A leg or manual-mic consumer task that exited on its own — not

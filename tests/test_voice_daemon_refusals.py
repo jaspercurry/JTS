@@ -26,7 +26,7 @@ import pytest
 
 from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
-from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG, State, WakeLoop
+from jasper.voice_daemon import State, WakeLoop
 
 from tests._live_turn_fake import FakeLiveTurn
 from tests._log_events import event_field_maps
@@ -385,9 +385,8 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
     teardown = asyncio.create_task(wl._end_turn_inner("test"))
     try:
         await asyncio.wait_for(notify.parked.wait(), timeout=5.0)
-        cue_episode = await wl._output_gate.hand_over_if_current(
-            opener_episode, "admin",
-        )
+        await wl._output_gate.end(opener_episode)
+        cue_episode = await wl._output_gate.begin_if_idle("admin")
         assert cue_episode is not None
         timeline.append("surrender")
         notify.resume.set()
@@ -417,53 +416,3 @@ async def test_a_surrender_inside_the_teardown_stops_every_later_write() -> None
     assert wl._session_id is None
     assert wl._turn_output_episode is None
     assert wl._state is State.WAKE
-
-
-
-async def test_failed_timeout_cue_does_not_unduck_successor(monkeypatch):
-    timeline = []
-
-    class FailedCue:
-        async def play(self, _slug):
-            return False
-
-    ducker = _OrderedDucker(timeline)
-    wl = wake_loop_for_tests(ducker=ducker, cues=FailedCue())
-    _record_output_writes(wl, timeline)
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
-    await ducker.duck()
-    cue_released, successor_ducked = asyncio.Event(), asyncio.Event()
-    play_cue = wl._play_cue
-
-    async def hold_return(*args, **kwargs):
-        played = await play_cue(*args, **kwargs)
-        cue_released.set()
-        await asyncio.wait_for(successor_ducked.wait(), timeout=5.0)
-        return played
-
-    monkeypatch.setattr(wl, "_play_cue", hold_return)
-
-    async def start_successor():
-        await asyncio.wait_for(cue_released.wait(), timeout=5.0)
-        episode = await wl._output_gate.begin_turn()
-        await ducker.duck()
-        successor_ducked.set()
-        return episode
-
-    async def surrender_then_cue():
-        cue_episode = await wl._output_gate.hand_over_if_current(
-            wl._turn_output_episode, "admin",
-        )
-        await wl._play_cue(INTERNAL_ERROR_CUE_SLUG, episode=cue_episode)
-
-    _, successor = await asyncio.wait_for(
-        asyncio.gather(surrender_then_cue(), start_successor()),
-        timeout=5.0,
-    )
-    try:
-        assert wl._output_gate.is_current(successor)
-        assert ducker.is_ducked
-        assert timeline.count("restore") == 1
-    finally:
-        await ducker.restore()
-        await wl._output_gate.end_turn(successor)

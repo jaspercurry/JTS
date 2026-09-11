@@ -24,7 +24,7 @@
   through them. Providers without native search have no lookup path
   at all; on those the assistant answers from model knowledge or says it
   does not know. Answers are no longer held and delivered later, so
-  nothing barges into the room unasked. Deleting the announcer also
-  retires the only caller of the output-gate episode handover; that
-  primitive stays, with its own tests. No ADR is superseded — the
+  nothing barges into the room unasked. Deleting the announcer retires
+  the only caller of the output-gate episode handover, so that
+  primitive and its tests go with it. No ADR is superseded — the
   feature came from a plan doc, not a decision record.
