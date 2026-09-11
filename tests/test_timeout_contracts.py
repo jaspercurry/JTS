@@ -101,7 +101,7 @@ ALLOWLIST: dict[str, str] = {
         "TimeoutStartSec, not an arbitrary short literal that would "
         "false-fail a legitimate slow start. Interactive commissioning CLI."
     ),
-    "jasper/platform/uds.py:48": (
+    "jasper/platform/uds.py:45": (
         "_connect's retry loop already bounds itself on retry_budget_sec "
         "wall-clock (default 1.2s); a Unix-domain connect() blocks only on "
         "kernel accept-queue backpressure, not network RTT, so wrapping the "
