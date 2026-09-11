@@ -14,8 +14,7 @@ from google.genai import types
 from google.genai.live import AsyncSession
 
 from ..log_event import log_event
-from ..tools import dispatch_tool
-from ._base import BaseLiveConnection, BaseLiveTurn
+from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import (
     await_connected,
     failure_detail,
@@ -154,7 +153,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         self._conn: GeminiLiveConnection = conn
         self._session = getattr(conn, "_session", None)
         self._activity_end_sent = False
-        self._tool_call_names: list[str] = []
+        self._tool_responses: list[types.FunctionResponse] = []
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost or self._activity_end_sent:
@@ -216,8 +215,8 @@ class GeminiLiveTurn(BaseLiveTurn):
             "kind": "voice_turn",
             "transcripts_available": user is not None or assistant is not None,
         }
-        if self._tool_call_names:
-            data["tools"] = list(self._tool_call_names)
+        if self._dispatched_tools:
+            data["tools"] = list(self._dispatched_tools)
         return TurnCapture(user_text=user, assistant_text=assistant, data=data)
 
     async def cancel_response(self, reason: str) -> None:
@@ -269,7 +268,11 @@ class GeminiLiveTurn(BaseLiveTurn):
         tool_call = getattr(response, "tool_call", None)
         if tool_call is not None:
             self._tool_round_pending = True
-            self._start_tool_round(lambda: self._conn._handle_tool_call(tool_call, self))
+            self._start_tool_calls([
+                ToolCall(id=fc.id, name=fc.name, args=dict(fc.args or {}))
+                for fc in tool_call.function_calls
+            ])
+            self._tool_responses = []
 
         # Server content: turn_complete + interrupted.
         turn_just_completed = False
@@ -310,10 +313,30 @@ class GeminiLiveTurn(BaseLiveTurn):
                 self._chunks_received,
             )
 
-    def _record_tool_call_name(self, name: str | None) -> None:
-        cleaned = str(name or "").strip()
-        if cleaned:
-            self._tool_call_names.append(cleaned)
+    def _tools_may_run(self) -> bool:
+        return (
+            self._conn._owns_turn(self)
+            and not self._cancel_requested and not self._server_turn_complete
+        )
+
+    async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
+        """Gemini takes the whole round in one `send_tool_response`."""
+        self._tool_responses.append(
+            types.FunctionResponse(id=call.id, name=call.name, response=payload)
+        )
+        self._note_activity()
+        return True
+
+    async def _finish_tool_round(self) -> bool:
+        async with self._conn._send_lock:
+            if not self._tools_may_run():
+                return False
+            assert self._session is not None
+            await self._session.send_tool_response(function_responses=self._tool_responses)
+            self._tool_round_pending = False
+        if self._conn._owns_turn(self):
+            self._note_activity()
+        return True
 
 
 class GeminiLiveConnection(BaseLiveConnection):
@@ -777,28 +800,3 @@ class GeminiLiveConnection(BaseLiveConnection):
         # otherwise re-cache a handle for the context being discarded.
         self._drop_resumption_on_teardown = True
 
-    async def _handle_tool_call(self, tool_call, turn: GeminiLiveTurn) -> None:
-        assert self._registry is not None
-        responses = []
-        t0 = _time.monotonic()
-        for fc in tool_call.function_calls:
-            if not self._owns_turn(turn) or turn._cancel_requested or turn._server_turn_complete:
-                return
-            turn._record_tool_call_name(fc.name)
-            payload = await dispatch_tool(self._registry, fc.name, dict(fc.args or {}))
-            if not self._owns_turn(turn) or turn._cancel_requested or turn._server_turn_complete:
-                return
-            responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=payload))
-            turn._note_activity()
-        async with self._send_lock:
-            if not self._owns_turn(turn) or turn._cancel_requested or turn._server_turn_complete:
-                return
-            assert turn._session is not None
-            await turn._session.send_tool_response(function_responses=responses)
-            turn._tool_round_pending = False
-        if self._owns_turn(turn):
-            turn._note_activity()
-            logger.info(
-                "tool responses sent to Gemini (dispatch=%.0fms, calls=%d)",
-                (_time.monotonic() - t0) * 1000, len(responses),
-            )

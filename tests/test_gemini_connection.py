@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 
-from jasper.voice._base import close_code_and_reason
+from jasper.voice._base import ToolCall, close_code_and_reason
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     request_planned_reopen,
@@ -1061,11 +1061,10 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     mid-dispatch at small timeout values.
 
     Mirrors ``test_openai_session.py``'s equivalent contract test.
-    Pin: the per-tool reset inside ``_handle_tool_call`` advances the
-    anchor. Driven by calling the dispatcher directly rather than
-    feeding a ``tool_call`` frame: the receive loop resets the anchor on
-    any progress event, so going through the wire would move it whatever
-    the dispatcher did."""
+    Pin: the per-tool reset inside the round advances the anchor. Driven
+    by running the round directly rather than feeding a ``tool_call``
+    frame: the receive loop resets the anchor on any progress event, so
+    going through the wire would move it whatever the round did."""
     from jasper.tools import tool as tool_decorator
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -1085,11 +1084,10 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
         # Park briefly so the loop clock advances measurably.
         await asyncio.sleep(0.05)
 
-        # The dispatcher resets the anchor per-tool and again after
+        # The round resets the anchor per-tool and again after
         # send_tool_response.
-        await conn._handle_tool_call(
-            _ToolCall(function_calls=[_FC(name="get_weather", id="fc-1", args={})]),
-            turn,
+        await turn._run_tool_calls(
+            [ToolCall(id="fc-1", name="get_weather", args={})],
         )
         assert len(sess.sent_tool_responses) == 1
 

@@ -133,6 +133,27 @@ async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
         assert len(usage) == 1
         await turn.on_event({"type": "session.usage.updated", "usage": {"seconds": 4}})
         await turn.on_event({"type": "session.usage.updated", "usage": {"seconds": 10}})
+
+        # A malformed item (missing `name`) must not crash the reader, and
+        # must not block a well-formed item ahead of it in the same round.
+        await turn.on_event(backend("d1", "response.created", response={"id": "r2"}))
+        await turn.on_event(backend("d1", "response.output_item.done", item={
+            "type": "function_call", "call_id": "r2_call", "name": "timer", "arguments": json.dumps({"seconds": 5}),
+        }))
+        await turn.on_event(backend("d1", "response.output_item.done", item={
+            "type": "function_call", "call_id": "r2_bad_call", "arguments": "{}",
+        }))
+        await turn.on_event(backend("d1", "response.completed", response={"id": "r2", "output": [], "usage": {}}))
+        await wait_until(lambda: any(
+            e["type"] == "response.item.create" and e["item"]["call_id"] == "r2_bad_call" for e in socket.sent
+        ))
+        assert calls == [30, 5]
+        outputs = {
+            e["item"]["call_id"]: json.loads(e["item"]["output"])
+            for e in socket.sent if e["type"] == "response.item.create"
+        }
+        assert outputs["r2_bad_call"] == {"error": "unknown tool "}
+        assert not turn.turn_lost()
     finally:
         await turn.release()
         await conn.stop()
