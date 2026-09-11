@@ -816,6 +816,18 @@ def unconfigured_status(url: str, token: str) -> dict[str, Any] | None:
     }
 
 
+def failed_status(error: str) -> dict[str, Any]:
+    """The status card for a probe that could not be made at all, as opposed
+    to one that ran and could not reach HA. Same field set as
+    :func:`unconfigured_status` so every consumer of the card reads one shape.
+    """
+    return {
+        "configured": False, "connected": False, "url": "",
+        "instance_name": None, "version": None,
+        "error": error,
+    }
+
+
 async def _probe_uncached(
     url: str, token: str, *, verify_ssl: bool = True,
 ) -> dict[str, Any]:

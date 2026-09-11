@@ -134,7 +134,7 @@ def test_reader_reassembles_a_fragmented_reply_and_closes(monkeypatch):
 
 
 def test_reader_accepts_a_reply_of_exactly_the_byte_cap(monkeypatch):
-    cap = status_socket._RESPONSE_MAX_BYTES
+    cap = status_socket.STATUS_MAX_BYTES
     pad = b"x" * (cap - len(b'{"pad":""}'))
     body = b'{"pad":"' + pad + b'"}'
     assert len(body) == cap
@@ -150,13 +150,14 @@ def test_reader_accepts_a_reply_of_exactly_the_byte_cap(monkeypatch):
 
 
 def test_reader_rejects_a_reply_over_the_byte_cap(monkeypatch):
-    fake = FakeStatusSocket(chunks=[b"x" * 65536] * 16 + [b"y"])
+    whole_chunks = status_socket.STATUS_MAX_BYTES // 65536
+    fake = FakeStatusSocket(chunks=[b"x" * 65536] * whole_chunks + [b"y"])
     monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError):
         status_socket.read_status_socket("/run/test.sock", timeout=2.0)
 
-    assert fake.recv_sizes == [65536] * 17
+    assert fake.recv_sizes == [65536] * (whole_chunks + 1)
     assert fake.closed is True
 
 
@@ -288,7 +289,7 @@ def test_converged_consumers_keep_limits_and_failure_policy(monkeypatch, consume
 
 @pytest.mark.parametrize("consumer, cap", [
     (read_fanin_status, 64 * 1024),
-    (audio_health._read_local_status, 256 * 1024),
+    (audio_health._read_local_status, 1024 * 1024),
     (system_soak._status_socket, 64 * 1024),
     (status_socket.read_status_socket, 1024 * 1024),
 ])

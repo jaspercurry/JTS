@@ -41,6 +41,25 @@ def _unconfigured_status(values: Mapping[str, str]) -> dict[str, Any] | None:
     )
 
 
+def _sampled(status: dict[str, Any]) -> dict[str, Any]:
+    """Stamp a card with the wall-clock second it was observed.
+
+    ``time.time()``, not this cache's injected ``clock``: that one is
+    monotonic and paces the TTL, while ``sampled_at`` is aged by a ``/state``
+    consumer against its own wall clock.
+    """
+    return {**status, "sampled_at": time.time()}
+
+
+def failed_status(error: str = "probe failed") -> dict[str, Any]:
+    """The card for a probe this box could not make, stamped as observed now.
+
+    Shared with jasper-control's ``/state`` aggregator, which answers with it
+    when the cache itself raises — the same key set either way.
+    """
+    return _sampled(home_assistant.failed_status(error))
+
+
 def _checking_status(cached: dict[str, Any] | None = None) -> dict[str, Any]:
     if cached is None:
         return {
@@ -51,22 +70,12 @@ def _checking_status(cached: dict[str, Any] | None = None) -> dict[str, Any]:
             "version": None,
             "error": None,
             "checking": True,
+            "sampled_at": None,
         }
     out = dict(cached)
     out["checking"] = True
     out["stale"] = True
     return out
-
-
-def _failed_status(error: str) -> dict[str, Any]:
-    return {
-        "configured": False,
-        "connected": False,
-        "url": "",
-        "instance_name": None,
-        "version": None,
-        "error": error,
-    }
 
 
 class HomeAssistantStatusCache:
@@ -77,6 +86,12 @@ class HomeAssistantStatusCache:
     imports; jasper-control keeps only the small JSON result in memory.
     An env file without usable credentials is answered by the parent, with
     no child at all.
+
+    Every card carries ``sampled_at``: the wall-clock second the parent
+    accepted the reading it is showing, or ``None`` before the first one.
+    A ``checking``/``stale`` card carries the stamp of the older reading it
+    still renders, so a ``/state`` consumer can age what it is looking at
+    rather than only learning that it is not fresh.
     """
 
     def __init__(
@@ -130,6 +145,7 @@ class HomeAssistantStatusCache:
         if unconfigured is not None:
             # A resident daemon must not fork an interpreter on a poll
             # loop; with no credentials the child can only echo this.
+            unconfigured = _sampled(unconfigured)
             self._store(unconfigured, signature, now, skip_if_refreshing=True)
             return dict(unconfigured)
 
@@ -160,7 +176,7 @@ class HomeAssistantStatusCache:
             except Exception as exc:  # noqa: BLE001
                 self._record_failure(exc, signature)
                 with self._lock:
-                    return dict(self._cached or _failed_status("probe failed"))
+                    return dict(self._cached or failed_status())
 
         return _checking_status(cached)
 
@@ -173,7 +189,7 @@ class HomeAssistantStatusCache:
 
         status.pop("checking", None)
         status.pop("stale", None)
-        self._store(status, signature, self._clock())
+        self._store(_sampled(status), signature, self._clock())
 
     def _store(
         self,
@@ -204,8 +220,10 @@ class HomeAssistantStatusCache:
         with self._lock:
             status = dict(self._cached) if self._cached is not None else None
             if status is None:
-                status = _failed_status("probe failed")
+                status = failed_status()
             else:
+                # A failed probe re-samples nothing: the card keeps the
+                # `sampled_at` of the reading it is still showing.
                 status["stale"] = True
                 status["error"] = "probe failed"
             status.pop("checking", None)

@@ -19,7 +19,7 @@ from jasper import outputd_failure_reconcile_state as reader
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
-UNPARK_SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-unpark"
+UNPARK_SCRIPT = ROOT / "deploy" / "bin" / "jasper-unpark"
 UNIT = ROOT / "deploy" / "systemd" / "jasper-outputd.service"
 
 FAILED = {"active_state": "failed", "result": "exit-code"}
@@ -112,19 +112,27 @@ def test_the_env_override_matches_the_scripts_own_name(tmp_path, monkeypatch):
 
 def test_the_record_path_is_the_one_the_script_writes_and_the_unit_removes():
     """A literal duplicated across a shell writer, a unit file and a Python
-    reader is exactly the set that drifts."""
+    reader is exactly the set that drifts.
+
+    The retirer (jasper-unpark) takes the path as argv, not an env read of its
+    own — it is shared with jasper-camilla.service's different record — so the
+    unit is what has to honor the variable: one Environment= the writer's
+    ExecStopPost= and the retirer's ExecStartPost= both run under.
+    """
     script = SCRIPT.read_text()
-    unpark_script = UNPARK_SCRIPT.read_text()
     unit = UNIT.read_text()
     assert (
         f'PARK_RECORD="${{JASPER_OUTPUTD_RECONCILE_PARK_STATE:-{reader.DEFAULT_RECORD_PATH}}}"'
         in script
     )
     assert (
-        f'PARK_RECORD="${{JASPER_OUTPUTD_RECONCILE_PARK_STATE:-{reader.DEFAULT_RECORD_PATH}}}"'
-        in unpark_script
+        f'Environment="JASPER_OUTPUTD_RECONCILE_PARK_STATE={reader.DEFAULT_RECORD_PATH}"'
+        in unit
     )
-    assert f"ExecStartPost=-/usr/local/sbin/{UNPARK_SCRIPT.name}" in unit
+    assert (
+        f"ExecStartPost=-/usr/local/sbin/{UNPARK_SCRIPT.name} "
+        "$JASPER_OUTPUTD_RECONCILE_PARK_STATE outputd.unparked" in unit
+    )
     assert UNIT.name == reader.UNIT
     assert f"ExecStopPost=-/usr/local/sbin/{SCRIPT.name}" in unit
 

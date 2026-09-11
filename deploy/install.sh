@@ -40,6 +40,10 @@ STATE_DIR="/var/lib/jasper"
 SECRETS_DIR="/var/lib/jasper-secrets"
 INTSECRETS_DIR="/var/lib/jasper-intsecrets"
 SYSTEMD_DIR="/etc/systemd/system"
+# The one destructive (rm) path under /usr/local/sbin outside the install
+# table's own `install` calls; a variable so a test harness can confine it to
+# a temp root instead of touching the host's real one.
+LOCAL_SBIN_DIR="/usr/local/sbin"
 INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 

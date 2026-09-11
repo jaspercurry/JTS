@@ -27,6 +27,7 @@ from ._shared import (
     control_signal_path,
     _nested_dict,
     _ONESHOT_RUNTIME_STATE_UNITS,
+    _parked_ago,
     _RUNTIME_STATE_UNITS,
     silence_unobserved,
     speaker_silence_code,
@@ -567,21 +568,6 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
         f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
         reason=REASON_REBOOT_STATE_ARMED,
     )
-
-
-# Wall-clock before this reads as "the clock was not set yet", not as an age:
-# /run records survive no reboot, but a Pi with no RTC stamps 1970 until NTP
-# lands, and "2000000000s ago" is worse than saying so.
-_CLOCK_SET_EPOCH = 1577836800  # 2020-01-01T00:00:00Z
-
-
-def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
-    if parked_at is None:
-        return "at an unrecorded time"
-    if parked_at < _CLOCK_SET_EPOCH:
-        return "with the clock unset at park time"
-    age = (time.time() if now is None else now) - parked_at
-    return f"{age:.0f}s ago"
 
 
 @doctor_check()

@@ -68,11 +68,9 @@ def snapshot(
       this module cannot read must not report a healthy speaker.
     * ``ok`` — no record, outputd running.
 
-    ``last_park`` carries the most recently retired park (R15, #4416):
-    jasper-outputd-unpark copies the record's fields plus ``unparked_at`` to
-    a ``.last`` sibling before removing the live record, so a reader can
-    still answer "was this parked, and for how long" once the park itself
-    is gone. ``None`` when no ``.last`` sibling exists or it is unreadable.
+    ``last_park`` carries the most recently retired park (R15, #4416), or
+    ``None`` when this box has not retired one — the ``.last`` convention
+    itself lives in :mod:`jasper.control.park_record`.
     """
     target = path if path is not None else os.environ.get(
         "JASPER_OUTPUTD_RECONCILE_PARK_STATE", DEFAULT_RECORD_PATH
@@ -81,7 +79,7 @@ def snapshot(
         "path": target,
         "present": False,
         "parked": False,
-        "last_park": _last_park(f"{target}.last"),
+        "last_park": _last_park(target),
     }
     terminal, fields = park_record.read(target)
 
@@ -101,7 +99,7 @@ def snapshot(
 
     out.update({
         "present": True,
-        "parked_at": _epoch(fields.get("parked_at")),
+        "parked_at": park_record.epoch_seconds(fields.get("parked_at")),
         "exit_status": fields.get("exit_status"),
         "park_reason": fields.get("reason"),
     })
@@ -113,21 +111,14 @@ def snapshot(
     return out
 
 
-def _epoch(raw: str | None) -> int | None:
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
-
-
 def _last_park(path: str) -> dict[str, Any] | None:
-    """Fields of the most recently retired park record, or ``None``."""
-    terminal, fields = park_record.read(path)
-    if terminal is not None or not fields:
+    """This record's own fields from the most recently retired park."""
+    fields = park_record.read_last(path)
+    if fields is None:
         return None
     return {
-        "parked_at": _epoch(fields.get("parked_at")),
+        "parked_at": park_record.epoch_seconds(fields.get("parked_at")),
         "exit_status": fields.get("exit_status"),
         "park_reason": fields.get("reason"),
-        "unparked_at": _epoch(fields.get("unparked_at")),
+        "unparked_at": park_record.epoch_seconds(fields.get("unparked_at")),
     }

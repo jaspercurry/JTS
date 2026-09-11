@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 FAILURE_RECONCILE = REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
-UNPARK = REPO / "deploy" / "bin" / "jasper-outputd-unpark"
+UNPARK = REPO / "deploy" / "bin" / "jasper-unpark"
 
 def _write_executable(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
@@ -242,16 +242,19 @@ def test_outputd_failure_reconcile_skips_an_exec_condition_park(
 
 
 
-# --------------------------------------------------- jasper-outputd-unpark
+# ----------------------------------------------------------- jasper-unpark
+
+
+def _unpark(park: Path, event: str = "outputd.unparked") -> list[str]:
+    """The argv jasper-outputd.service's ExecStartPost= builds."""
+    return [str(UNPARK), str(park), event]
 
 
 def test_unpark_is_a_noop_with_no_park_record(tmp_path: Path) -> None:
     park = tmp_path / "failure-reconcile.park"
-    env = os.environ.copy()
-    env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(park)
 
     result = subprocess.run(
-        [str(UNPARK)], env=env, text=True, capture_output=True, check=True,
+        _unpark(park), text=True, capture_output=True, check=True,
     )
 
     assert result.stderr == ""
@@ -264,11 +267,9 @@ def test_unpark_copies_the_record_to_last_with_unparked_at_then_removes_it(
 ) -> None:
     park = tmp_path / "failure-reconcile.park"
     park.write_text("parked_at=1000\nexit_status=78\nreason=recent\n")
-    env = os.environ.copy()
-    env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(park)
 
     result = subprocess.run(
-        [str(UNPARK)], env=env, text=True, capture_output=True, check=True,
+        _unpark(park), text=True, capture_output=True, check=True,
     )
 
     assert not park.exists()
@@ -295,13 +296,11 @@ def test_unpark_journals_preserved_0_when_the_last_write_fails(
     park_dir.mkdir()
     park = park_dir / "failure-reconcile.park"
     park.write_text("parked_at=1000\nexit_status=78\nreason=recent\n")
-    env = os.environ.copy()
-    env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(park)
     park_dir.chmod(0o500)  # read+execute, no write: tmp/.last/mv all fail
 
     try:
         result = subprocess.run(
-            [str(UNPARK)], env=env, text=True, capture_output=True, check=True,
+            _unpark(park), text=True, capture_output=True, check=True,
         )
     finally:
         park_dir.chmod(0o700)  # tmp_path cleanup needs write back

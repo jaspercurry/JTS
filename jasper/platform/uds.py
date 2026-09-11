@@ -19,14 +19,11 @@ import time
 from typing import Any
 
 from . import wire
-from .status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
-
-# The one ceiling every local STATUS reader in jasper-control shares.  It is a
-# safety bound on a hostile or wedged local daemon, not a size estimate for any
-# particular payload — set it far above what any daemon actually answers so
-# that growing a diagnostic surface can never quietly blind a reader.
-# jasper-outputd's own STATUS is tens of KiB on a chip-AEC box.
-MAX_STATUS_BYTES = 256 * 1024
+from .status_socket import (
+    FANIN_STATUS_SOCKET,
+    MUX_CONTROL_SOCKET_PATH,
+    STATUS_MAX_BYTES,
+)
 
 # Seconds. voice_daemon creates its control socket last during startup (~2s
 # after the process itself starts). A connect landing in that window would
@@ -161,7 +158,7 @@ async def local_status_json(
     socket_path: str,
     *,
     timeout: float = 2.0,
-    max_bytes: int = MAX_STATUS_BYTES,
+    max_bytes: int = STATUS_MAX_BYTES,
 ) -> dict | None:
     """Read STATUS JSON to EOF within one deadline; return None on failure."""
     try:

@@ -72,6 +72,13 @@ install_jasper_support_files() {
 #     re-proven driver-domain graph (never flat — a flat crossover would send
 #     full-range to the tweeter). Live only on a reconciled active leader.
 JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
+    # jasper-unpark lands before BOTH units whose ExecStartPost= names it,
+    # jasper-camilla.service and jasper-outputd.service below: `-` makes a
+    # missing script a silent no-op, not a start failure, so a deploy
+    # interrupted between this row and either unit's leaves that park record
+    # un-retired — and jasper-camilla-recover checks the record before every
+    # OnFailure= pass, suppressing recovery while a stale one stands.
+    "0755 deploy/bin/jasper-unpark /usr/local/sbin/jasper-unpark"
     # The gate lands before the unit that names it, for the same reason the
     # hardware reconciler's script does: a systemd exec failure (203) is in the
     # ExecCondition SKIP band, so a deploy interrupted between these two rows
@@ -95,7 +102,6 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     "0644 deploy/systemd/jasper-audio-hardware-reconcile.service ${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
     "0755 deploy/bin/jasper-output-hardware-hotplug /usr/local/sbin/jasper-output-hardware-hotplug"
     "0755 deploy/bin/jasper-outputd-failure-reconcile /usr/local/sbin/jasper-outputd-failure-reconcile"
-    "0755 deploy/bin/jasper-outputd-unpark /usr/local/sbin/jasper-outputd-unpark"
     "0755 deploy/bin/jasper-camilla-pipe-guard /usr/local/sbin/jasper-camilla-pipe-guard"
     "0755 deploy/bin/jasper-camilla-recover /usr/local/sbin/jasper-camilla-recover"
     "0755 deploy/bin/jasper-camilla-crossover-guard /usr/local/sbin/jasper-camilla-crossover-guard"
@@ -136,6 +142,11 @@ install_local_audio_graph_unit_files() {
         echo "  ERROR: core audio-graph unit install failed for: ${failed}" >&2
         return 1
     fi
+    # jasper-unpark serves both parks now; its outputd-only ancestor is called
+    # by no unit. Remove the stale copy only once every row above — including
+    # jasper-unpark's own — has proven it installed: an rm before that could
+    # leave a box with neither script if the loop above never reached here.
+    rm -f "${LOCAL_SBIN_DIR}/jasper-outputd-unpark"
 }
 
 _snapshot_unit_install_destination() {

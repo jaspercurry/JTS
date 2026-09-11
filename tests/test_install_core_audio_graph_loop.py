@@ -58,13 +58,45 @@ EXPECTED_DSTS = (
     "jasper-audio-hardware-reconcile",
     "jasper-output-hardware-hotplug",
     "jasper-outputd-failure-reconcile",
-    "jasper-outputd-unpark",
+    "jasper-unpark",
     "jasper-camilla-guard-common.sh",
     "jasper-camilla-pipe-guard",
     "jasper-camilla-recover",
     "jasper-camilla-crossover-guard",
     "jasper-fanin-pitch-neutralize",
 )
+
+
+# Shim `rm`: confine every call to the temp root, so a destructive absolute
+# path anywhere in the fragment can never delete the real file on a host that
+# ran install.sh. A call outside `{tmp_path}` is logged and refused (not
+# executed) rather than silently allowed through.
+_RM_ESCAPE_GUARD_SHIM = """\
+rm() {{
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -*) continue ;;
+      "{tmp_path}"/*) continue ;;
+      *) echo "REFUSED $arg" >> "{rm_log}"; return 1 ;;
+    esac
+  done
+  command rm "$@"
+}}
+"""
+
+
+def _assert_no_rm_escaped(tmp_path: Path) -> None:
+    """Fail the test if `rm` was ever asked to touch a path outside tmp_path.
+
+    A no-op when the harness never wrote rm.log: not every harness exercises
+    install_local_audio_graph_unit_files's destructive line.
+    """
+    log = tmp_path / "rm.log"
+    if not log.exists():
+        return
+    escaped = [ln for ln in log.read_text().splitlines() if ln.strip()]
+    assert not escaped, f"rm escaped the temp root: {escaped}"
 
 
 def _harness(tmp_path: Path, *, fail_basename: str | None) -> str:
@@ -81,10 +113,13 @@ def _harness(tmp_path: Path, *, fail_basename: str | None) -> str:
             f'  case "$dst" in *{fail_basename}) echo "FAIL $dst" >> '
             f'"{install_log}"; return 1 ;; esac\n'
         )
+    local_sbin_dir = tmp_path / "usrlocalsbin"
+    rm_log = tmp_path / "rm.log"
     return f"""
 set -euo pipefail
 REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{systemd_dir}"
+LOCAL_SBIN_DIR="{local_sbin_dir}"
 # Shim `install`: record the final argument (destination) and the -d dir
 # creates; honor the injected mid-loop failure.
 install() {{
@@ -99,6 +134,7 @@ systemctl() {{
   if [[ "${{1:-}}" == "daemon-reload" ]]; then echo "daemon-reload" >> "{reload_log}"; fi
   return 0
 }}
+{_RM_ESCAPE_GUARD_SHIM.format(tmp_path=tmp_path, rm_log=rm_log)}
 source "{FRAGMENT}"
 install_local_audio_graph_unit_files
 """
@@ -106,12 +142,14 @@ install_local_audio_graph_unit_files
 
 def _run(tmp_path: Path, *, fail_basename: str | None):
     script = _harness(tmp_path, fail_basename=fail_basename)
-    return subprocess.run(
+    result = subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
         text=True,
         timeout=20,
     )
+    _assert_no_rm_escaped(tmp_path)
+    return result
 
 
 def _attempted_dsts(tmp_path: Path) -> set[str]:
@@ -386,7 +424,7 @@ def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
     the newly-added guards at the end) must still be attempted, the function
     must report failure, and a daemon-reload must still run so the units that
     DID land take effect on this deploy."""
-    # jasper-fanin.service is the 4th row — fail it and assert the tail still
+    # jasper-fanin.service is the 6th row — fail it and assert the tail still
     # gets attempted.
     r = _run(tmp_path, fail_basename="jasper-fanin.service")
     assert r.returncode != 0, "the loop must surface the row failure"
@@ -575,19 +613,29 @@ def _shim_preamble(tmp_path: Path, *, errexit: bool = True) -> str:
     at tmp_path, and the fragment itself. `errexit` is off for the runtime
     harness alone: that path also calls install.sh helpers and on-box binaries
     under /usr/local/sbin, neither of which exists here and both non-fatal on
-    the box too."""
+    the box too. `rm` is shimmed here too (not just LOCAL_SBIN_DIR's
+    redirection): install_local_audio_graph_unit_files's cleanup line is the
+    one `rm -f` outside any install() call, so a regression there must fail
+    the test rather than delete the real file on a host that ran install.sh."""
     return f"""
 set -{"euo" if errexit else "uo"} pipefail
 REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{tmp_path}/systemd"
 STATE_DIR="{tmp_path}/state"
+LOCAL_SBIN_DIR="{tmp_path}/usrlocalsbin"
 APPLE_DONGLE_SERVICE_CARD="auto"
-mkdir -p "$SYSTEMD_DIR" "$STATE_DIR"
+mkdir -p "$SYSTEMD_DIR" "$STATE_DIR" "$LOCAL_SBIN_DIR"
+{_RM_ESCAPE_GUARD_SHIM.format(tmp_path=tmp_path, rm_log=tmp_path / "rm.log")}
 source "{FRAGMENT}"
 """
 
 
-_RECORDER_SHIMS = ("systemctl", "clear_install_in_progress", "mktemp")
+# `rm` rides along here (not a recorder's own shim, but excluded from the stub
+# loop for the same reason): _shim_preamble's temp-root guard has to survive
+# the loop, because _stateful_systemctl's own start/restart branch below calls
+# real `rm -f "{tmp_path}/down/$arg"` to clear a unit's down-marker, and a
+# stub swallowing that call would leave every unit reading as still-down.
+_RECORDER_SHIMS = ("systemctl", "clear_install_in_progress", "mktemp", "rm")
 
 
 def _transaction_recorder(tmp_path: Path) -> str:
@@ -1028,6 +1076,7 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
     )
 
     assert result.returncode != 0
+    _assert_no_rm_escaped(tmp_path)
     assert (systemd_dir / seeded).read_text(encoding="utf-8") == "old generation\n"
     assert not (systemd_dir / staged_new).exists()
     assert not (tmp_path / "txn").exists()
@@ -1086,6 +1135,7 @@ def _destinations(tmp_path: Path, function: str) -> set[str]:
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
+    _assert_no_rm_escaped(tmp_path)
     log = tmp_path / "destinations.log"
     return {
         line.replace(str(tmp_path), "")

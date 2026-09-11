@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Retire a resilience park record. Usage:
+#
+#   jasper-unpark <park-record-path> <event-name>
+#
+# JTS parks two daemons out-of-band on a /run record —
+# jasper-outputd-failure-reconcile's (ADR-0141) and jasper-camilla-recover's
+# (ADR-0175) — and both end the same way: the parked unit starting again IS
+# what ends the park, so both units call this from an ExecStartPost=, each
+# passing its own record path and journal event namespace.
+#
+# Before removing the record, its fields plus `unparked_at` are copied to a
+# `.last` sibling so a reader can answer "was this parked, and for how long"
+# after the park record itself is gone (R15, #4416). Usage errors (a missing
+# argument) exit 1 so a wiring mistake is visible in the journal; every
+# runtime path below exits 0, so a write/copy failure never turns the parked
+# unit's own start into a failure.
+
+set -uo pipefail
+
+usage="usage: jasper-unpark <park-record-path> <event-name>"
+PARK_RECORD="${1:?${usage}}"
+EVENT="${2:?${usage}}"
+LAST_RECORD="${PARK_RECORD}.last"
+
+log() {
+    echo "event=${EVENT} ${*}" >&2
+}
+
+now_sec() {
+    date +%s
+}
+
+if [[ ! -e "$PARK_RECORD" ]]; then
+    exit 0
+fi
+
+preserved=0
+tmp="${LAST_RECORD}.tmp.$$"
+if {
+    cat "$PARK_RECORD" 2>/dev/null
+    printf 'unparked_at=%s\n' "$(now_sec)"
+} >"$tmp" 2>/dev/null && mv -f "$tmp" "$LAST_RECORD" 2>/dev/null; then
+    preserved=1
+else
+    rm -f "$tmp" 2>/dev/null || true
+fi
+log state="$LAST_RECORD" preserved="$preserved"
+
+rm -f "$PARK_RECORD" 2>/dev/null || true
+exit 0

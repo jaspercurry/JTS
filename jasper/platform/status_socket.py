@@ -24,9 +24,11 @@ logger = logging.getLogger("jasper.platform.status_socket")
 # deadline was made total.
 DEFAULT_STATUS_TIMEOUT_SECONDS = 3.0
 _RECV_CHUNK_BYTES = 65536
-# A daemon's STATUS reply is a few KiB; the cap bounds what a wedged or
-# runaway writer can make a caller buffer on a 1 GB Pi.
-_RESPONSE_MAX_BYTES = 1_048_576
+# 1 MiB: the one ceiling every local STATUS read shares (sync here, async via
+# jasper.platform.uds) — far above any real reply, so growing a diagnostic
+# surface can never blind a reader. A caller reading a narrower surface passes
+# its own smaller `max_bytes`.
+STATUS_MAX_BYTES = 1024 * 1024
 
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
@@ -45,7 +47,7 @@ def read_status_socket(
     path: str,
     *,
     timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS,
-    max_bytes: int = _RESPONSE_MAX_BYTES,
+    max_bytes: int = STATUS_MAX_BYTES,
 ) -> dict[str, Any]:
     """Connect to a JTS ``STATUS\\n`` control socket and return its JSON reply.
 
@@ -99,7 +101,7 @@ def read_status_socket_or_none(
     path: str,
     *,
     timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS,
-    max_bytes: int = _RESPONSE_MAX_BYTES,
+    max_bytes: int = STATUS_MAX_BYTES,
     event: str = "route_latency.status_socket_unavailable",
 ) -> dict[str, Any] | None:
     """Fail-soft wrapper around :func:`read_status_socket`.
@@ -126,6 +128,7 @@ def read_status_socket_or_none(
 __all__ = [
     "DEFAULT_STATUS_TIMEOUT_SECONDS",
     "FANIN_STATUS_SOCKET",
+    "STATUS_MAX_BYTES",
     "MUX_CONTROL_SOCKET_PATH",
     "OUTPUTD_STATUS_SOCKET",
     "read_status_socket",
