@@ -629,7 +629,10 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
             if self.attempts == 2:
                 raise OSError("second AUDIO command failed")
 
-        def pause_content_meter(self) -> None:
+        def prepare_assistant(self, **kwargs) -> None:
+            return None
+
+        def pause_content_meter(self, deadline_monotonic=None) -> None:
             return None
 
         def resume_content_meter(self) -> None:
@@ -733,7 +736,10 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
                 raise TimeoutError("test did not release AUDIO write")
             write_returned.set()
 
-        def pause_content_meter(self) -> None:
+        def prepare_assistant(self, **kwargs) -> None:
+            return None
+
+        def pause_content_meter(self, deadline_monotonic=None) -> None:
             return None
 
         def resume_content_meter(self) -> None:
@@ -812,6 +818,9 @@ async def test_cancelled_cue_tail_retains_output_episode(
     class _AcceptedStream:
         closed = False
 
+        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+            self.closed = True
+
         def set_gain_db(self, _db: float) -> None:
             return None
 
@@ -819,6 +828,15 @@ async def test_cancelled_cue_tail_retains_output_episode(
             return None
 
         def write(self, _data: bytes) -> None:
+            return None
+
+        def prepare_assistant(self, **kwargs) -> None:
+            return None
+
+        def pause_content_meter(self, deadline_monotonic=None) -> None:
+            return None
+
+        def resume_content_meter(self) -> None:
             return None
 
     tts = TtsPlayout(
@@ -1806,6 +1824,9 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     class _AcceptedStream:
         closed = False
 
+        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+            self.closed = True
+
         def set_gain_db(self, _db: float) -> None:
             return None
 
@@ -1813,6 +1834,15 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
             return None
 
         def write(self, _data: bytes) -> None:
+            return None
+
+        def prepare_assistant(self, **kwargs) -> None:
+            return None
+
+        def pause_content_meter(self, deadline_monotonic=None) -> None:
+            return None
+
+        def resume_content_meter(self) -> None:
             return None
 
     class _Ducker:
@@ -2194,6 +2224,8 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     connect_calls = 0
 
     class _Replacement:
+        closed = False
+
         def __init__(self) -> None:
             self.meter_pauses = 0
 

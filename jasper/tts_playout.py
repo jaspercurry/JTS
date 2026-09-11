@@ -657,8 +657,7 @@ class TtsPlayout:
 
     # The two ends of this class's resample, published so callers that count
     # frames on either side read the rate from the code that converts them.
-    # Provider PCM arrives at the rate the loudness module measures it at;
-    # the fan-in wire is fixed at the rate this module writes.
+    # The fan-in wire is fixed at the rate this module writes.
     INPUT_RATE = ASSISTANT_INPUT_RATE
     OUTPUT_RATE = _OUTPUTD_SAMPLE_RATE
 
@@ -1056,7 +1055,7 @@ class TtsPlayout:
                 return
 
     async def pause_content_meter(self) -> None:
-        await self._send_meter_control("pause_content_meter")
+        await self._send_meter_control(_OutputdStreamAdapter.pause_content_meter)
 
     async def pause_content_meter_for_measurement(
         self,
@@ -1064,9 +1063,9 @@ class TtsPlayout:
     ) -> None:
         """Fail-closed meter pause that cannot outlive MEASURE_PAUSE.
 
-        Do not reconnect here: isolation setup must prove the command landed
-        on the canonical adapter it already owns. A poisoned/missing adapter
-        rolls the window back; ordinary later access owns reconnection.
+        Do not reconnect here: a missing or closed adapter (`stream is None
+        or stream.closed`) fails the window closed instead; ordinary later
+        access owns reconnection.
         """
 
         stream = self._stream
@@ -1082,15 +1081,17 @@ class TtsPlayout:
         stream.pause_content_meter(deadline_monotonic=control_deadline)
 
     async def resume_content_meter(self) -> None:
-        await self._send_meter_control("resume_content_meter")
+        await self._send_meter_control(_OutputdStreamAdapter.resume_content_meter)
 
-    async def _send_meter_control(self, method: str) -> None:
+    async def _send_meter_control(
+        self, method: Callable[[_OutputdStreamAdapter], None]
+    ) -> None:
         for attempt in range(2):
             stream = await self._current_outputd_stream()
             if stream is None:
                 return
             try:
-                await asyncio.to_thread(getattr(stream, method))
+                await asyncio.to_thread(getattr(stream, method.__name__))
                 return
             except OSError as e:
                 if (
@@ -1101,13 +1102,15 @@ class TtsPlayout:
                     log_event(
                         logger,
                         "tts_fanin.control_retry",
-                        method=method,
+                        method=method.__name__,
                         reason="closed_socket",
                         exc_type=type(e).__name__,
                         err=str(e),
                     )
                     continue
-                logger.warning("fan-in TTS IPC %s failed: %s", method, e)
+                logger.warning(
+                    "fan-in TTS IPC %s failed: %s", method.__name__, e
+                )
                 return
 
     async def write(self, pcm: bytes) -> None:
