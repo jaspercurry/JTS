@@ -99,9 +99,8 @@ from ..voice_daemon import (
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     WakeLoop,
-    cancel_tracked_tasks,
-    track_task,
 )
+from ._tasks import cancel_tracked_tasks, track_task
 from .content_activity import ContentActivityTracker
 from .push_to_talk import ManualMicRuntime
 from .wake_detect import CAPTURE_RING_FRAMES, LegRuntime, configured_wake_legs

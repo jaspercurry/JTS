@@ -40,6 +40,7 @@ from .voice.conversation import (
     END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC, continuous_watchdog,
 )
 from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
+from .voice._tasks import cancel_tracked_tasks, track_task
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
@@ -88,46 +89,6 @@ VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 # restart it on plug-in) instead of crash-looping toward
 # StartLimitAction=reboot.
 VOICE_MIC_UNAVAILABLE_EXIT = 66
-
-
-def track_task(
-    task: asyncio.Task,
-    task_set: set[asyncio.Task],
-    *,
-    label: str,
-) -> asyncio.Task:
-    task_set.add(task)
-
-    def _discard(done: asyncio.Task) -> None:
-        task_set.discard(done)
-        try:
-            exc = done.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is not None:
-            logger.warning(
-                "fire-and-forget task %s failed: %s",
-                label,
-                exc,
-                exc_info=(type(exc), exc, exc.__traceback__),
-            )
-
-    task.add_done_callback(_discard)
-    return task
-
-
-async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
-    tasks = list(task_set)
-    if not tasks:
-        return
-    for task in tasks:
-        task.cancel()
-    for task in tasks:
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-    task_set.difference_update(tasks)
 
 
 # `_end_turn` reasons the household or the daemon itself chose: whoever
