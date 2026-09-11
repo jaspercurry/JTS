@@ -4,11 +4,10 @@
 
 """Shared fail-closed main-fader discipline: set-and-confirm, and hold.
 
-The one implementation of the fader primitives both the per-step
-``CrossoverLevelLease`` (``jasper.web.correction_crossover_backend``) and the
-session-scoped ``session_volume_plan.SessionVolumePlan`` use; each consumer
-owns its own durable state schema and lifecycle, so only the primitives and
-their two constants live here.
+The one implementation of the fader primitives the session-scoped
+``session_volume_plan.SessionVolumePlan`` uses; each consumer owns its own
+durable state schema and lifecycle, so only the primitives and their two
+constants live here.
 
 CamillaDSP does not reset ``main_volume`` on a config replace — the fader is
 process state that survives a reload (read at tag ``v4.1.3``/``05e9cfc``:

@@ -909,67 +909,6 @@ def test_crossover_envelope_surfaces_the_v2_capture_slot(monkeypatch):
         v2host.set_volume_plan_for_tests(None)
 
 
-def test_lease_volume_recovery_declares_through_the_owner(monkeypatch):
-    """W11 routed: the recovery's WRITE is the owner's, not a raw fader write.
-
-    The exact-then-emergency ladder stays the lease's — this pins only which
-    door it writes through, which is the whole of the routing claim.
-    """
-    import json
-
-    from jasper.web import correction_crossover_backend as crossover_backend
-    from jasper.volume_owner import VolumeOwner, install_volume_owner
-
-    monkeypatch.setattr(
-        _common, "guard_mutating_request", lambda handler: True
-    )
-
-    declared: list[float] = []
-    live = {"db": -55.0}
-
-    async def _set(db: float) -> bool:
-        live["db"] = float(db)
-        declared.append(float(db))
-        return True
-
-    async def _get() -> float:
-        return live["db"]
-
-    install_volume_owner(VolumeOwner(set_fader_db=_set, get_fader_db=_get))
-
-    cam_writes: list[float] = []
-
-    class _Cam:
-        async def set_volume_db(self, db, best_effort=False):
-            cam_writes.append(db)
-            return True
-
-        async def get_volume_db(self, best_effort=False):
-            return live["db"]
-
-    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: _Cam())
-
-    class _Lease:
-        unresolved_volume_safety = {"status": "unresolved"}
-
-        async def recover_unresolved_volume_safety(self, set_v, get_v):
-            # Exercise the injected door exactly as the real ladder's first
-            # rung does, then report what the lease reports.
-            assert await set_v(-21.0) is True
-            return crossover_backend.UnresolvedVolumeRecoveryResult.EXACT_RESTORED
-
-    monkeypatch.setattr(crossover_backend, "level_lease", lambda: _Lease())
-
-    resp = _drive("/crossover/recover-volume", method="POST", body=b"{}")
-    assert b"200" in resp.split(b"\r\n", 1)[0]
-    body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
-    assert body["status"] == "recovered"
-
-    # The owner's door carried the write; nothing wrote the fader directly.
-    assert declared == [-21.0]
-    assert cam_writes == []
-
-
 def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     """Finding E2: when the v2 conductor owns the unresolved session volume, the
     recover-volume endpoint must drive SessionVolumePlan.recover_unresolved — the
@@ -1021,3 +960,74 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
         assert drained == [True]
     finally:
         v2host.set_volume_plan_for_tests(None)
+
+
+def _write_legacy_volume_safety_file(tmp_path) -> None:
+    import json
+
+    (tmp_path / "active_speaker_crossover_volume_safety.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "jts_crossover_volume_safety",
+            "status": "active",
+            "reason": None,
+            "source": "driver_sweep",
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "original_main_volume_db": -27.0,
+            "emergency_volume_db": -60.0,
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_crossover_reset_ignores_a_legacy_volume_safety_file(
+    monkeypatch, tmp_path,
+) -> None:
+    """The pre-v2 per-step leveler's read side used to hydrate
+    active_speaker_crossover_volume_safety.json as an unresolved latch even
+    after its writer was deleted, so a box that had not re-run install (the
+    file's retirement is a deploy/lib/install/retirements.sh row) got
+    /crossover/reset refused forever. Nothing reads that file any more --
+    writing one here only reproduces the on-disk scenario."""
+    import json
+
+    _write_legacy_volume_safety_file(tmp_path)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(
+        correction_handlers,
+        "_handle_crossover_reset",
+        lambda: ({"status": "cleared"}, HTTPStatus.OK),
+    )
+
+    reset_resp = _drive("/crossover/reset", "POST", body=b"{}")
+
+    assert b"200" in reset_resp.split(b"\r\n", 1)[0]
+    assert json.loads(reset_resp.split(b"\r\n\r\n", 1)[1])["status"] == "cleared"
+
+
+def test_recover_volume_ignores_a_legacy_volume_safety_file(
+    monkeypatch, tmp_path,
+) -> None:
+    """Same legacy file as test_crossover_reset_ignores_a_legacy_volume_safety_file,
+    the other route: /crossover/recover-volume stays decided by the v2
+    session-volume plan alone, never by the retired file."""
+    import json
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    _write_legacy_volume_safety_file(tmp_path)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+
+    v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
+    try:
+        recover_resp = _drive(
+            "/crossover/recover-volume", method="POST", body=b"{}"
+        )
+    finally:
+        v2host.set_volume_plan_for_tests(None)
+
+    assert b"409" in recover_resp.split(b"\r\n", 1)[0]
+    recover_body = json.loads(recover_resp.split(b"\r\n\r\n", 1)[1])
+    assert recover_body["status"] == "refused"
+    assert recover_body["reason"] == "crossover_volume_recovery_not_required"

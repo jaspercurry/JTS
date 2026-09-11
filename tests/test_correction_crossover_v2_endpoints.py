@@ -7859,7 +7859,6 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     the (unchanged) design draft -> apply succeeds again. The test never
     once hand-writes active_speaker_crossover_preview.json."""
     from jasper.active_speaker import compile_preset_from_crossover_preview
-    from jasper.web import correction_crossover_backend as reset_backend
     from jasper.web import correction_crossover_flow as reset_flow
 
     preview_path = tmp_path / "crossover_preview.json"
@@ -7891,11 +7890,11 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     )
     assert payload["status"] == "applied", payload.get("issues")
 
-    # Start-over — the REAL handle_reset (real reset_measurement_journey, a
-    # fresh no-op CrossoverLevelLease; only the envelope-rendering tail is
-    # stubbed, mirroring test_correction_crossover_reset.py's real-clear
-    # pattern). The other measurement-journey artifacts route to tmp_path too
-    # so the real clear never touches /var/lib/jasper.
+    # Start-over — the REAL handle_reset (real reset_measurement_journey;
+    # only the envelope-rendering tail is stubbed, mirroring
+    # test_correction_crossover_reset.py's real-clear pattern). The other
+    # measurement-journey artifacts route to tmp_path too so the real clear
+    # never touches /var/lib/jasper.
     for env_name in (
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
         "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
@@ -7903,8 +7902,6 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
         "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
     ):
         monkeypatch.setenv(env_name, str(tmp_path / f"{env_name.lower()}.json"))
-    fresh_lease = reset_backend.CrossoverLevelLease()
-    monkeypatch.setattr(reset_backend, "level_lease", lambda: fresh_lease)
     monkeypatch.setattr(reset_flow, "handle_status", lambda *, capture=None: ({}, 200))
     monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(

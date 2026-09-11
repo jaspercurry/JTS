@@ -234,14 +234,7 @@ def handle_reset(
     """
     from . import correction_crossover_backend as backend
 
-    try:
-        reset_result = backend.reset_measurement_journey()
-    except backend.MeasurementJourneyResetRefused as exc:
-        return {
-            "status": "refused",
-            "reason": exc.reason,
-            "error": str(exc),
-        }, HTTPStatus.CONFLICT
+    reset_result = backend.reset_measurement_journey()
 
     # Reset the durable v2 session JOURNEY too (W6.10 fold-in). Without this,
     # Start-over left the stale v2 candidate/verify/failure in place, so the v2

@@ -26,7 +26,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "correction_calibration_lookup",
     "correction_calibration_sign_migrated",
     "correction_calibration_sign_migration",
-    "level_lock_stored",
 )
 
 # Top-level event prefixes emitted from more than one package, mapped to the

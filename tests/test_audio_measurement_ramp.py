@@ -16,9 +16,14 @@ import math
 
 import pytest
 
+from jasper.audio_measurement.excitation import (
+    AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+)
 from jasper.audio_measurement.ramp import (
     HARD_CEILING_DBFS,
     LEVEL_EVENT_SCHEMA_VERSION,
+    LISTENING_POSITION_CAP_BUMP_DB,
+    LISTENING_POSITION_CAP_CEIL_DB,
     LevelSample,
     MeasurementRamp,
 )
@@ -97,6 +102,22 @@ def test_dynamic_cap_never_exceeds_bump_or_absolute_ceiling(original, bump, ceil
     assert cap <= original + bump
     assert cap <= ceiling
     assert cap <= HARD_CEILING_DBFS
+
+
+def test_room_cap_keeps_attenuated_stimulus_inside_digital_envelope():
+    shared = MeasurementRamp()
+    room = MeasurementRamp(
+        cap_bump_db=LISTENING_POSITION_CAP_BUMP_DB,
+        cap_ceil_db=LISTENING_POSITION_CAP_CEIL_DB,
+    )
+
+    assert shared.cap_ceil_db == -3.0
+    assert LISTENING_POSITION_CAP_BUMP_DB == 15.0
+    assert room.cap_ceil_db == 0.0
+    assert AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS == -12.0
+    assert (
+        room.cap_ceil_db + AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+    ) == -12.0
 
 
 def test_safety_timeout_derived_from_worst_case_walk():

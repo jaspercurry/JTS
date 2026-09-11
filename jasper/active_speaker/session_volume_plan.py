@@ -11,12 +11,12 @@ held for the whole session: snapshot the household volume on open, set the
 fixed measurement volume, restore it exactly once on close/abandon. Per-driver level differences live in
 the program's per-segment digital gains (§5.5), not in re-leveling the speaker.
 
-This module owns that plan. It reuses the proven fail-closed latch from
-``CrossoverLevelLease`` — durable intent written BEFORE the first volume
-mutation, set-and-confirm through an independent readback (the shared
-:func:`jasper.active_speaker.volume_latch.set_and_confirm_volume`), and
-restore-exactly-once — but adds the lifecycle a *session* needs that a per-step
-lease does not:
+This module owns that plan. It reuses the fail-closed latch pattern the
+pre-v2 per-step leveler established — durable intent written BEFORE the
+first volume mutation, set-and-confirm through an independent readback (the
+shared :func:`jasper.active_speaker.volume_latch.set_and_confirm_volume`),
+and restore-exactly-once — but adds the lifecycle a *session* needs that a
+per-step lease does not:
 
 * a durable ``opened_at`` timestamp and a hard wall-clock ceiling (default
   1800 s ≈ 2× the session TTL), so a walked-away user cannot pin the speaker at
@@ -24,12 +24,13 @@ lease does not:
 * abandon as a defined event set — explicit close, a session-death hook the
   flow calls, and the wall-clock ceiling — each draining the same
   restore-once path;
-* self-owned stale-active handling via the timestamp. ``CrossoverLevelLease``'s
-  ``recover_unresolved_volume_safety`` refuses ``active`` states (it relies on a
-  process restart hydrating them as unresolved); this plan must NOT rely on a
-  restart to flip states, so a hydrated ``active`` state past the ceiling
-  force-drains restore here, and falls back to the emergency floor + latched
-  ``unresolved`` (the volume_recovery path) when readback cannot confirm;
+* self-owned stale-active handling via the timestamp. The pre-v2 per-step
+  lease only ever turned a hydrated ``active`` state into ``unresolved`` on
+  the NEXT process start (nothing drained it within the same process); this
+  plan must NOT rely on a restart to flip states, so a hydrated ``active``
+  state past the ceiling force-drains restore here, and falls back to the
+  emergency floor + latched ``unresolved`` (the volume_recovery path) when
+  readback cannot confirm;
 * a PER-STIMULUS re-proof of the volume it opened
   (:meth:`SessionVolumePlan.hold_measurement_volume`, #2925). "Held for the
   whole session" is the intent; whether the fader actually stayed there is a

@@ -68,6 +68,9 @@ JASPER_RETIRED_LEFTOVERS=(
     # up, with nothing left to read or expire them.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/research_jobs.db|the retired background-research job store"
+    # REMOVAL CONDITION: every box has taken one install after this lands —
+    # the writer is gone, so a stuck latch would never self-resolve.
+    "file|${STATE_DIR}/active_speaker_crossover_volume_safety.json ${STATE_DIR}/active_speaker_crossover_level_run.json ${STATE_DIR}/.active_speaker_crossover_level_run.json.lock|the retired per-step crossover level-run store and volume-safety latch"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort

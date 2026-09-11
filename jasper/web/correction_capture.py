@@ -65,16 +65,6 @@ _CAPTURE_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_capture"})
 _CAPTURE_IN_FLIGHT_STATUSES = _CAPTURE_STOPPABLE_STATUSES | {"stopping"}
 
 
-def _crossover_volume_safety_refusal() -> dict[str, str]:
-    return {
-        "status": "refused",
-        "reason": "crossover_volume_safety_unresolved",
-        "next_step": (
-            "Use Recover safe listening volume before another crossover action."
-        ),
-    }
-
-
 def _set_capture_slot(value: dict[str, Any] | None) -> None:
     global _capture_slot, _capture_stop_request, _capture_position_gate
     global _capture_complete_request, _capture_retake_request
