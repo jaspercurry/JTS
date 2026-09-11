@@ -66,8 +66,23 @@ logger = logging.getLogger(__name__)
 
 
 def _unit_active(unit: str) -> bool:
-    """Whether systemd currently reports ``unit`` active, read fresh."""
-    return _unit_state_active((read_unit_states((unit,)) or {}).get(unit))
+    """Whether systemd currently reports ``unit`` active, read fresh.
+
+    5 s timeout (not the 2 s ``read_unit_states`` default): mirrors the
+    old ``_service_state.systemctl`` probe this converged onto. A timed
+    out/unavailable probe is logged so a skipped USB-gadget rebuild
+    (the ``jasper-usbgadget.service`` caller) leaves evidence.
+    """
+    states = read_unit_states((unit,), timeout=5.0)
+    if states is None:
+        log_event(
+            logger,
+            "speaker_setup.unit_state_unreadable",
+            unit=unit,
+            level=logging.WARNING,
+        )
+        return False
+    return _unit_state_active(states.get(unit))
 
 
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"

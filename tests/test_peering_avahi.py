@@ -5,7 +5,10 @@
 """Peering Avahi files use temporary paths."""
 from __future__ import annotations
 
+import logging
+
 from jasper.peering import avahi as avahi_mod
+from tests._log_events import event_records
 
 
 _TEMPLATE = """<?xml version="1.0" standalone='no'?>
@@ -91,13 +94,22 @@ def test_unknown_token_refused(tmp_path):
     assert not rendered.exists()
 
 
-def test_uninstall_removes_the_file(tmp_path):
-    """Idempotent: uninstalling an already-removed file is a no-op."""
+def test_uninstall_removes_the_file(tmp_path, caplog):
+    """Idempotent: uninstalling an already-removed file is a no-op — file
+    stays absent, no exception, and no second `peering.avahi.uninstalled`
+    (that event fires only on an actual unlink, never on the already-gone
+    no-op path)."""
     target = tmp_path / "rendered.xml"
     target.write_text("anything")
-    avahi_mod.uninstall(rendered_path=str(target))
+    with caplog.at_level(logging.INFO):
+        avahi_mod.uninstall(rendered_path=str(target))
+        assert not target.exists()
+        assert len(event_records(caplog, "peering.avahi.uninstalled")) == 1
+
+        caplog.clear()
+        avahi_mod.uninstall(rendered_path=str(target))
     assert not target.exists()
-    avahi_mod.uninstall(rendered_path=str(target))
+    assert event_records(caplog, "peering.avahi.uninstalled") == []
 
 
 def test_uninstall_failure_leaves_file_and_does_not_raise(tmp_path, monkeypatch):

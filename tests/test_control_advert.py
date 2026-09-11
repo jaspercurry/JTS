@@ -37,6 +37,7 @@ deploys (not a hand-copied approximation that could silently diverge).
 """
 from __future__ import annotations
 
+import logging
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -46,6 +47,7 @@ import pytest
 
 from jasper.net import avahi_service
 from jasper.net import control_advert as ca
+from tests._log_events import event_records
 
 _REPO = Path(__file__).resolve().parent.parent
 _TEMPLATE_SRC = _REPO / "deploy" / "avahi" / "jasper-control.service.template"
@@ -370,6 +372,28 @@ def test_write_failure_returns_false_never_raises(template, tmp_path, monkeypatc
     ok = ca.render_control_advert("x", template=str(template), out=str(out))
     assert ok is False
     assert not out.exists()
+
+
+# ----------------------------------------------------------------------
+# Idempotence — a byte-identical re-render is UNCHANGED, not a second WROTE.
+# ----------------------------------------------------------------------
+
+
+def test_unchanged_render_logs_no_second_install_event(template, tmp_path, caplog):
+    """A byte-identical re-render still succeeds, but must NOT log a second
+    `control_advert.installed` — that event fires only on an actual on-disk
+    write (RenderResult.WROTE), never on the UNCHANGED (byte-stable) path."""
+    out = tmp_path / "rendered.service"
+    with caplog.at_level(logging.INFO):
+        ca.render_control_advert("Stable", template=str(template), out=str(out))
+        assert len(event_records(caplog, "control_advert.installed")) == 1
+        first = out.read_text()
+
+        caplog.clear()
+        ok = ca.render_control_advert("Stable", template=str(template), out=str(out))
+    assert ok is True
+    assert out.read_text() == first
+    assert event_records(caplog, "control_advert.installed") == []
 
 
 # ----------------------------------------------------------------------

@@ -1332,8 +1332,8 @@ DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)
 
 #: A pose whose stated displacement from the mark lies in the HORIZONTAL
 #: plane. Names where the pose's STATED offset lies, not a promise that
-#: nothing else moved: a compound move records its extra rise only in
-#: `spatial.PositionGeometry`'s `prompt`, never in `axis`.
+#: nothing else moved: a compound move records its extra rise in
+#: `spatial.PositionGeometry.vertical_deg`, never in `axis`.
 POSITION_AXIS_HORIZONTAL = "horizontal"
 
 #: A pose stated as a move ABOVE or BELOW mark height. Nothing rotates in

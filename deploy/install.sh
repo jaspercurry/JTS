@@ -1362,8 +1362,9 @@ install_avahi_jasper_control() {
     # /etc/avahi/services/ (Avahi must not parse its __SPEAKER_NAME__
     # placeholder as XML — same reasoning as install_peering_template),
     # then let jasper.net.control_advert.render_control_advert substitute
-    # the (XML-escaped) name, atomic-write the live file, and reload
-    # Avahi. The /speaker save path re-renders on a name change.
+    # the (XML-escaped) name and atomic-write the live file — Avahi picks
+    # up the change via inotify. The /speaker save path re-renders on a
+    # name change.
     install -d -m 0755 /etc/jasper/avahi-templates
     install -m 0644 \
         "${REPO_DIR}/deploy/avahi/jasper-control.service.template" \
@@ -1401,7 +1402,8 @@ from jasper.net.control_advert import render_control_advert
 
 # name=None -> read the current /speaker name (env-first then
 # /var/lib/jasper/speaker_name.env), empty -> hostname default, so the
-# TXT is never empty. render_control_advert handles the reload itself.
+# TXT is never empty. render_control_advert only atomic-writes the file;
+# Avahi picks up the change on its own via inotify.
 sys.exit(0 if render_control_advert() else 1)
 PY
     then
