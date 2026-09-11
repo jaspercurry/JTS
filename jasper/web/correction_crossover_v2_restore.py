@@ -11,6 +11,10 @@ from typing import Any, Callable
 
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.boost_protection import config_graph_fingerprint
+from jasper.web import correction_crossover_v2 as host
+from jasper.web import correction_crossover_backend as backend
+from jasper.web import correction_crossover_v2_republish as republish
+from jasper.web import correction_crossover_v2_status as status
 
 
 def current_graph_fingerprint() -> str:
@@ -21,11 +25,6 @@ def current_graph_fingerprint() -> str:
 
 
 def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], dict[str, Any]]:
-    from jasper.web import correction_crossover_v2 as host  # lazy: host binds this seam
-    from jasper.web import correction_crossover_backend as backend
-    from jasper.web import correction_crossover_v2_republish as republish
-    from jasper.web import correction_crossover_v2_status as status
-
     lock = threading.Lock()
     outcome: dict[str, Any] = {}
 
