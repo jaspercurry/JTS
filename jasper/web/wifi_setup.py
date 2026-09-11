@@ -1241,31 +1241,31 @@ def _landing_html(csrf_token: str = "") -> bytes:
     <div class="empty">Tap Scan to look for nearby networks.</div>
   </div>
 
-  <div class="wifi-region">
-    <h2 class="eyebrow">Join by name</h2>
-  </div>
-  <div class="info-card manual-fields">
-    <div class="field">
-      <label for="manual-ssid">Network name</label>
-      <input id="manual-ssid" type="text" autocomplete="off"
-             autocapitalize="off" spellcheck="false">
+  <details class="disclosure join-by-name">
+    <summary>Join by name</summary>
+    <div class="disclosure__body manual-fields">
+      <div class="field">
+        <label for="manual-ssid">Network name</label>
+        <input id="manual-ssid" type="text" autocomplete="off"
+               autocapitalize="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="manual-password">Password</label>
+        <input id="manual-password" type="password" autocomplete="off"
+               autocapitalize="off" spellcheck="false">
+        <span class="show-pw" data-action="toggle-manual-pw">Show password</span>
+        <label class="manual-check" for="manual-hidden">
+          <input id="manual-hidden" type="checkbox">
+          Hidden network
+        </label>
+      </div>
+      <div id="manual-result"></div>
+      <div class="form-actions">
+        <button id="manual-connect-btn" class="btn btn--primary"
+                data-action="submit-manual">Connect</button>
+      </div>
     </div>
-    <div class="field">
-      <label for="manual-password">Password</label>
-      <input id="manual-password" type="password" autocomplete="off"
-             autocapitalize="off" spellcheck="false">
-      <span class="show-pw" data-action="toggle-manual-pw">Show password</span>
-      <label class="manual-check" for="manual-hidden">
-        <input id="manual-hidden" type="checkbox">
-        Hidden network
-      </label>
-    </div>
-    <div id="manual-result"></div>
-    <div class="form-actions">
-      <button id="manual-connect-btn" class="btn btn--primary"
-              data-action="submit-manual">Connect</button>
-    </div>
-  </div>
+  </details>
 
   <details class="disclosure saved-networks">
     <summary>Saved networks <span class="saved-count" id="saved-count"></span></summary>
