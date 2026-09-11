@@ -833,13 +833,6 @@ def test_the_rounds_residual_is_the_union_masked_number_the_benefit_axis_graded(
     assert evaluation.benefit.evidence["n_bins"] == union[1]
 
 
-#: Every production read of :attr:`RoundEvaluation.post_residual_db` /
-#: ``post_residual_bins``, as ``<module path>::<enclosing scope>``. The field's
-#: docstring says its readership IS the round's journal line; #2433 exists
-#: because the neighbouring claim about a SECOND consumer was never pinned by
-#: anything, and shipped wrong. ``to_dict``'s own sole production caller is
-#: ``_log_round``, and ``_regrade_after_failed_restore`` copies the pair onto
-#: the re-graded evaluation it then re-logs — so all three are the journal.
 POST_RESIDUAL_FIELD_READERS = frozenset({
     "jasper/active_speaker/crossover_v2/coordinator.py::_log_round",
     "jasper/active_speaker/crossover_v2/round_evidence.py::RoundEvaluation.to_dict",
