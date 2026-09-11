@@ -28,12 +28,16 @@ class outright today.
 
 from __future__ import annotations
 
+from ._prescription_common import (
+    RATIONALE_MAX_CHARS, BlendPrescriptionRefused, _refuse, _finite_number, _prescriber, _rationale,
+)
+
 import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any
 
 import numpy as np
 
@@ -114,7 +118,6 @@ PRESCRIPTION_MAX_BYTES = 64 * 1024
 #: Ceiling on the free-text rationale, in characters. It TRUNCATES and
 #: discloses rather than refusing (ADR-0207): nothing reads the prose, so a
 #: document whose only fault was saying too much should not lose its round.
-RATIONALE_MAX_CHARS = 1_200
 
 
 # --------------------------------------------------------------------------- #
@@ -287,27 +290,6 @@ PROHIBITED_PRESCRIPTION_KEYS = frozenset({
     "delay_us",
     "role_attenuations_db",
 })
-
-
-class BlendPrescriptionRefused(ValueError):
-    """One prescription this module would not accept, and why.
-
-    ``reason`` is from :data:`BLEND_PRESCRIPTION_REFUSAL_REASONS`; ``evidence``
-    carries what was actually measured, so a prescriber can fix its proposal
-    rather than guess.
-    """
-
-    def __init__(
-        self,
-        reason: str,
-        detail: str,
-        *,
-        evidence: Mapping[str, Any] | None = None,
-    ) -> None:
-        super().__init__(detail)
-        self.reason = reason
-        self.detail = detail
-        self.evidence: Mapping[str, Any] = dict(evidence or {})
 
 
 @dataclass(frozen=True)
@@ -657,32 +639,6 @@ def positional_support(
 # --------------------------------------------------------------------------- #
 
 
-def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
-    raise BlendPrescriptionRefused(reason, detail, evidence=evidence or None)
-
-
-def _finite_number(value: Any, *, reason: str, field: str) -> float:
-    """One numeric field, strictly — no coercion, ever.
-
-    ``bool`` is refused because it is an ``int`` and ``gain=True`` would read as
-    a +1 dB boost; strings because ``float("1900")`` succeeds, and
-    :func:`~.blend_correction.blend_filters_from_mapping` refuses both.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _refuse(reason, f"{field} must be a number, got {type(value).__name__}")
-    try:
-        number = float(value)
-    except OverflowError:
-        # `10 ** 400` is a legal JSON number and a legal Python int that passes
-        # the isinstance check, and `float()` raises rather than returning inf.
-        # Refusing here keeps it inside the closed vocabulary instead of
-        # escaping the gate as an OverflowError.
-        _refuse(reason, f"{field} is too large to be a filter coefficient")
-    if not math.isfinite(number):
-        _refuse(reason, f"{field} must be finite, got {number!r}")
-    return number
-
-
 def find_prohibited_keys(value: Any, *, depth: int = 0) -> list[str]:
     """Every blocked key anywhere in the document, at any depth.
 
@@ -908,49 +864,6 @@ def _check_boost_evidence(
     return tuple(findings)
 
 
-def _prescriber(raw: Any) -> tuple[str, str]:
-    """Who authored this, strictly and non-blank. Both halves required."""
-    if not isinstance(raw, Mapping):
-        _refuse(
-            BLEND_PRESCRIPTION_PROVENANCE_MISSING,
-            "a prescription must carry a prescriber object naming its model "
-            "and operator",
-        )
-    unknown = sorted(set(raw) - {"model", "operator"})
-    if unknown:
-        _refuse(
-            BLEND_PRESCRIPTION_PROVENANCE_MISSING,
-            f"prescriber carries unknown field(s): {', '.join(unknown)}",
-        )
-    values: list[str] = []
-    for field in ("model", "operator"):
-        value = raw.get(field)
-        if not isinstance(value, str) or not value.strip():
-            _refuse(
-                BLEND_PRESCRIPTION_PROVENANCE_MISSING,
-                f"prescriber.{field} must be a non-blank name",
-            )
-        values.append(" ".join(value.split()))
-    return values[0], values[1]
-
-
-def _rationale(raw: Any) -> tuple[str, int]:
-    """The prescriber's own words, banked to the ceiling, and what was dropped.
-
-    Truncates rather than refusing (ADR-0207), counting the loss onto
-    :attr:`BlendPrescription.rationale_dropped_chars`. Still strictly TEXT.
-    """
-    if raw is None:
-        return "", 0
-    if not isinstance(raw, str):
-        _refuse(
-            BLEND_PRESCRIPTION_MALFORMED,
-            f"rationale must be text, got {type(raw).__name__}",
-        )
-    text = " ".join(raw.split())
-    return text[:RATIONALE_MAX_CHARS], max(0, len(text) - RATIONALE_MAX_CHARS)
-
-
 def _parse_prescription(
     raw: Mapping[str, Any],
 ) -> tuple[tuple[dict[str, Any], ...], str, str, str, str, int]:
@@ -1002,8 +915,8 @@ def _parse_prescription(
             BLEND_PRESCRIPTION_PROVENANCE_MISSING,
             f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
         )
-    model, operator = _prescriber(raw.get("prescriber"))
-    rationale, rationale_dropped = _rationale(raw.get("rationale"))
+    model, operator = _prescriber(raw.get("prescriber"), reason=BLEND_PRESCRIPTION_PROVENANCE_MISSING)
+    rationale, rationale_dropped = _rationale(raw.get("rationale"), reason=BLEND_PRESCRIPTION_MALFORMED)
     return (
         _parse_filters(raw.get("filters")),
         fingerprint.strip(),

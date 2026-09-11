@@ -29,7 +29,6 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
-from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_NO_CROSSOVER_REGION,
@@ -63,15 +62,6 @@ from tests.test_crossover_v2_driver_prescription import (
 #: --state/--drivers/--applied-profile, so none may read whatever sits at the
 #: on-Pi SSOT paths of the box running pytest.
 pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
-
-
-@pytest.fixture(autouse=True)
-def _isolated_spool(tmp_path: Path):
-    """No test may see, or leave, a document in the real speaker's slot."""
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool" / "pending.json")
-    (tmp_path / "spool").mkdir()
-    yield
-    spool.set_prescription_spool_path_for_tests(None)
 
 
 @pytest.fixture(autouse=True)
@@ -149,12 +139,10 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
     state = tmp_path / "flow state.json"
     state.write_text(json.dumps({"session_id": artifacts.name, "phase": "done"}))
     inputs = [str(current), "--state", str(state)]
-    assert cli.main(["packet", *inputs]) == cli.EXIT_OK
-    packet_summary = json.loads(capsys.readouterr().out)
-    packet_path = Path(packet_summary["out"])
-
-    recipe = shlex.split(packet_summary["rebuild_status_command"])
-    assert recipe[1:] == ["status", *inputs]
+    packet = cli._load_packet(cli.build_parser().parse_args(["status", *inputs]))
+    packet_path = cli.default_out(round_inputs_mod.round_inputs(current), current, "packet.json")
+    packet_path.write_text(json.dumps(packet))
+    recipe = [cli.PROG, "status", *inputs]
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     status = json.loads(capsys.readouterr().out)
     assert status["frozen_packet"]["path"] == str(packet_path)
@@ -165,7 +153,7 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
     assert [shlex.split(command)[1] for command in status["next"][:3]] == [
-        "inventory", "classify-features", "packet",
+        "inventory", "classify-features", "contract",
     ]
     assert round_views.main(["inventory", str(current)]) == 0
     inventory = json.loads(capsys.readouterr().out)
@@ -186,7 +174,7 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
 # --------------------------------------------------------------------------- #
 
 
-def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
+def test_a_fully_evidenced_speaker_reports_retained_states(tmp_path, capsys):
     """Declared, banked, staged and applied, each from its own evidence."""
     session, draft = _speaker_dirs(
         tmp_path, draft=_draft(), classification=_classification()
@@ -218,8 +206,6 @@ def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
     assert payload["banked"]["round_id"] == "r1"
     assert payload["banked"]["region"]["available"] is True
     assert payload["banked"]["classification"]["n_verdicts"] == 2
-    # staged — nothing placed in the slot by this test.
-    assert payload["staged"]["pending"] is False
     # applied — both records the packet keeps side by side.
     assert payload["applied"]["from_round_receipt"] == {
         "available": True, "n_filters": 0
@@ -376,25 +362,14 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
     )
 
-    artifact = tmp_path / "packet.json"
-    code = cli.main([
-        "packet", str(session),
-        "--state", str(state_path),
-        "--applied-profile", str(applied),
-        "--out", str(artifact),
-    ])
-    out, _ = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    trim = json.loads(artifact.read_text())["incumbent"]["trim"]["tweeter"]
+    packet = cli.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
+    trim = packet["incumbent"]["trim"]["tweeter"]
     assert trim == {
         "applied_db": -1.361,
         "round_resolved_db": -2.105,
         "delta_db": pytest.approx(-2.105 - (-1.361)),
         "pinned_this_round": False,
     }
-    # The same numbers reach the caller's stdout, not only the artifact.
-    assert json.loads(out)["trim"]["tweeter"] == trim
 
 
 def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
@@ -612,62 +587,6 @@ def test_each_state_comes_from_the_named_reader_its_gate_uses(
     assert section(payload) == expected
 
 
-def test_the_staged_state_comes_from_the_spools_own_predicate(
-    tmp_path, capsys, monkeypatch
-):
-    """Not a ``.is_file()`` spelled again here — the spool owns that question."""
-    session, _ = _speaker_dirs(tmp_path)
-    monkeypatch.setattr(cli, "staged_prescription_pending", lambda: True)
-
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["staged"]["pending"] is True
-
-
-def test_a_spool_this_user_cannot_stat_is_disclosed_rather_than_raised(
-    tmp_path, capsys, monkeypatch
-):
-    """Run as ``pi`` rather than root, the 0640 spool raises out of the stat.
-
-    That used to be a raw traceback, which is the one thing an orientation verb
-    may not do. The section now answers in the shape its three neighbours use —
-    unavailable, with the reason — and ``pending`` is ``None`` rather than
-    ``False``, because a prescriber told "nothing waiting" would stage over a
-    document nobody could see.
-
-    The spool's own predicate still raises: ``stage`` needs the real error, so
-    the catch is this verb's, not the module's.
-    """
-    session, _ = _speaker_dirs(tmp_path)
-
-    def _denied() -> bool:
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(cli, "staged_prescription_pending", _denied)
-
-    code, payload = _status([str(session)], capsys)
-
-    assert code == cli.EXIT_OK, "a partial answer still beats no answer"
-    assert payload["staged"]["available"] is False
-    assert payload["staged"]["pending"] is None
-    assert payload["staged"]["reason"] == cli.SPOOL_UNREADABLE_REASON
-    # The command that WOULD answer, against the same directory.
-    sudo = [command for command in payload["next"] if command.startswith("sudo ")]
-    assert sudo == [f"{cli.ORIENTATION_COMMAND} {session}"]
-    # …and nothing claims a document is or is not waiting.
-    assert cli.STAGED_LIFECYCLE_NOTE not in payload["staged"]["summary"]
-
-
-def test_the_staged_sentence_is_the_one_stage_itself_prints(tmp_path, capsys):
-    """Two wordings of "what becomes of this file" would be two answers."""
-    session, _ = _speaker_dirs(tmp_path)
-    spool.prescription_spool_path().write_text("{}")
-
-    _, payload = _status([str(session)], capsys)
-
-    assert cli.STAGED_LIFECYCLE_NOTE in payload["staged"]["summary"]
-
-
 # --------------------------------------------------------------------------- #
 # 3. hostname-derived handoff URLs
 # --------------------------------------------------------------------------- #
@@ -776,56 +695,9 @@ def test_the_status_verb_mutates_nothing_on_disk(tmp_path, capsys):
     assert _tree(tmp_path) == before
 
 
-def test_reporting_a_staged_prescription_does_not_consume_it(tmp_path, capsys):
-    """The one mutation this verb could plausibly cause, and must not.
-
-    ``take_staged_prescription`` is the only reader of the document and it
-    always consumes; a status verb that reached for it would spend the next
-    round's instruction to print one line about it.
-    """
-    pending = spool.prescription_spool_path()
-    pending.write_text('{"kind": "whatever"}')
-    session, _ = _speaker_dirs(tmp_path)
-
-    _status([str(session)], capsys)
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["staged"]["pending"] is True
-    assert pending.read_text() == '{"kind": "whatever"}'
-    assert spool.staged_prescription_pending() is True
-
-
 # --------------------------------------------------------------------------- #
 # 5. next actions, from artifact dependencies
 # --------------------------------------------------------------------------- #
-
-
-def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
-    tmp_path, capsys
-):
-    """A partial answer beats no answer, and it is still an answer.
-
-    This verb accepts nothing and refuses nothing, so what it could not read is
-    a FIELD — exit 0 with the sentence in ``packet_error`` — never a code that
-    would oblige it to publish a refusal record instead of the orientation the
-    caller ran it for. The spool lives on the speaker rather than in the
-    bundle, so a prescription waiting for the next round is a fact whichever
-    directory was named.
-    """
-    spool.prescription_spool_path().write_text("{}")
-
-    code, payload = _status([str(tmp_path / "not-a-bundle")], capsys)
-
-    assert code == cli.EXIT_OK
-    assert payload["packet_fingerprint"] is None
-    assert payload["packet_error"]
-    assert payload["staged"]["pending"] is True
-    assert payload["banked"]["available"] is False
-    assert payload["banked"]["reason"] == payload["packet_error"]
-    assert payload["speaker"]["crossover_url"].endswith("/sound/speaker/crossover/")
-    # Nothing is offered that would fail for the reason this report already
-    # gave: both round-reading commands read what this verb could not.
-    assert payload["next"] == ["jasper-seat-level"]
 
 
 def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
@@ -958,7 +830,7 @@ def test_both_prescription_classes_are_offered_when_both_have_a_bound(
     assert payload["banked"]["classification"]["available"] is True
     # The next verb, carrying the flag this report was read with: a rebuild
     # without it resolves --drivers against the machine and answers differently.
-    assert f"{cli.PROG} packet {session} --drivers {draft}" in payload["next"]
+    assert f"{cli.PROG} contract --round {session}" in payload["next"]
 
 
 def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
@@ -973,7 +845,6 @@ def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
     assert payload["banked"]["region"] == {
         "available": False, "band_hz": None, "reason": "not reported",
     }
-
 
 
 def _full_range_draft() -> dict[str, Any]:
@@ -1086,8 +957,8 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
 
     # Runnable as printed: the flag carries the file that was named, and is
     # absent when none was — a placeholder path would refuse on the read.
-    assert f"{cli.PROG} packet {session}" in without["next"]
-    assert f"{cli.PROG} packet {session} --state {state}" in with_state["next"]
+    assert f"{cli.PROG} contract --round {session}" in without["next"]
+    assert f"{cli.PROG} contract --round {session}" in with_state["next"]
 
 
 def test_the_banked_seat_level_reference_is_published_either_way(
@@ -1139,7 +1010,6 @@ _STATUS_DOCUMENT_KEYS = {
     "context_error",
     "declared",
     "banked",
-    "staged",
     "applied",
     "seat_level_reference_volume_db",
     "reading_order",
@@ -1171,7 +1041,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
 
     assert set(doc_payload) == _STATUS_DOCUMENT_KEYS
     assert set(doc_payload) == set(cli_payload)
-    for name in ("declared", "banked", "staged", "applied"):
+    for name in ("declared", "banked", "applied"):
         assert set(doc_payload[name]) == set(cli_payload[name])
 
 

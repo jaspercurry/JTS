@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any
 
 import yaml
 
@@ -19,6 +19,7 @@ from .branch_chain import branch_headroom_db, sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal, publish_authored_candidate
 from .baseline_profile import applied_baseline_hardware_match, load_applied_baseline_profile_state, recompose_applied_baseline_yaml
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
+from .crossover_v2.topology_prescription import apply_topology_pin
 from .measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -33,7 +34,6 @@ from .profile import ActiveSpeakerPreset, required_driver_roles
 from .measurement_programs import baseline_scope
 
 COMPOSITION_KIND = "jts_candidate_composition"
-_INHERIT = object()
 
 
 def _source(parent: BankedCandidate) -> dict[str, str]:
@@ -130,18 +130,20 @@ def compose_candidate(
     room_correction: Mapping[str, Any] | None = None,
     room_prescription_sha256: str = "",
     room_measured_basis: Mapping[str, Any] | None = None,
-    bass_extension: Mapping[str, Any] | object = _INHERIT,
+    bass_extension: Mapping[str, Any] | None = None,
+    sections: Mapping[str, Any] | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Replace selected parts without inheriting their measurement claims."""
-    tune_changed = bool(roles or alignment is not None or blend is not None)
-    if bass_extension is not _INHERIT and not isinstance(bass_extension, Mapping):
-        raise CandidateBankRefusal("composition_bass_invalid", "bass extension must be an object")
-    if room_correction and (roles or alignment is not None or blend is not None):
-        raise CandidateBankRefusal(
-            "composition_room_with_tune_change",
-            "a room set is measured through one tune: compose the tune change "
-            "first, then prescribe the room against a round that played it",
-        )
+    selected = dict(sections or {})
+    if room_correction is not None:
+        selected["room"] = room_correction
+    if bass_extension is not None:
+        if not isinstance(bass_extension, Mapping):
+            raise CandidateBankRefusal("composition_bass_invalid", "bass extension must be an object")
+        selected["bass"] = bass_extension
+    if "topology" in selected and not selected["topology"]:
+        raise CandidateBankRefusal("composition_topology_required", "the hardware topology cannot be cleared")
     preset = base.candidate.source_preset
     sources = {role: roles.get(role, base) for role in base.candidate.role_attenuations_db}
     if set(roles) - set(sources):
@@ -152,7 +154,6 @@ def compose_candidate(
             raise CandidateBankRefusal(
                 "composition_preset_mismatch", "all sources must use the same base preset"
             )
-    sections = sections_by_role(preset.crossover_regions)
     trims = {}
     linearization: dict[str, Any] = {}
     for role, source in sources.items():
@@ -161,23 +162,49 @@ def compose_candidate(
             continue
         entry = source.candidate.linearization[role]
         filters = entry.get("filters", []) if isinstance(entry, Mapping) else None
-        linearization[role] = _linearization_entry(filters, role=role, sections=sections, trim_db=trims[role])
-    room = dict(room_correction if room_correction is not None else ({} if tune_changed else base.candidate.room_correction))
-    bass = dict(
-        base.candidate.bass_extension
-        if bass_extension is _INHERIT and not tune_changed and room_correction is None
-        else ({} if bass_extension is _INHERIT else cast(Mapping[str, Any], bass_extension))
-    )
+        linearization[role] = {"filters": filters}
+    preset, _ = apply_topology_pin(selected.get("topology"), preset=preset, fc_hz=None)
+    if "driver" in selected:
+        driver = selected["driver"] or {}
+        if driver:
+            trims.update(driver["role_attenuations_db"])
+            linearization.update(driver["linearization"])
+        else:
+            trims = {role: 0.0 for role in trims}
+            linearization = {}
+    sections_by_driver = sections_by_role(preset.crossover_regions)
+    linearization = {
+        role: _linearization_entry(entry["filters"], role=role, sections=sections_by_driver, trim_db=trims[role])
+        for role, entry in linearization.items()
+    }
+    resolved_alignment = alignment.candidate.alignment
+    if "alignment" in selected:
+        pin = selected["alignment"]
+        role_order = required_driver_roles(preset.way_count)
+        resolved_alignment = (MeasuredCrossoverAlignment(
+            abs(pin.delay_us), role_order[1] if pin.delay_us >= 0 else role_order[0],
+            pin.polarity or resolved_alignment.polarity or "keep",
+        ) if pin else MeasuredCrossoverAlignment())
+    room = dict(selected.get("room", base.candidate.room_correction) or {})
+    bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
+    resolution = {
+        name: "base" if name not in selected else "document" if selected[name] else "cleared"
+        for name in ("driver", "blend", "alignment", "topology", "room", "bass")
+    }
     analysis: dict[str, Any] = {
         "kind": COMPOSITION_KIND,
         "measurement_status": "unmeasured",
+        "resolution": resolution,
+        "evidence": dict(evidence or {}),
         "base": _source(base),
-        "role_sources": {role: _source(source) for role, source in sources.items()},
-        "alignment_source": _source(alignment),
-        "blend_source": _source(blend),
+        **({"role_sources": {role: _source(source) for role, source in sources.items()}} if "driver" not in selected else {}),
+        **({"alignment_source": _source(alignment)} if "alignment" not in selected else {}),
+        **({"blend_source": _source(blend)} if "blend" not in selected else {}),
         "expected_effect": expected_effect, "observation_refs": list(observation_refs), "rationale": rationale,
     }
-    if room:
+    if room and "room" not in selected:
+        analysis["room_source"] = base.candidate.analysis.get("room_source", {"base": _source(base)})
+    elif room:
         measured_basis = dict(room_measured_basis or {})
         measured_candidate = measured_basis.get("speaker_candidate_id") or measured_basis.get("candidate_id")
         analysis["room_source"] = {
@@ -189,13 +216,11 @@ def compose_candidate(
                 "match" if measured_candidate == base.fingerprint else "different"
             ),
         }
-    elif tune_changed and base.candidate.room_correction:
-        analysis["room_source"] = {"dropped_from_base": base.fingerprint}
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND, analysis=analysis, source_preset=preset, role_attenuations_db=trims,
-        alignment=alignment.candidate.alignment,
+        alignment=resolved_alignment,
         linearization=linearization,
-        blend_correction=blend.candidate.blend_correction,
+        blend_correction=selected.get("blend", blend.candidate.blend_correction) or (),
         room_correction=room, bass_extension=bass,
     )
     prove_candidate_config(candidate, compile_candidate_config(

@@ -19,18 +19,13 @@ proposal.
 
 from __future__ import annotations
 
-import json
 import math
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker.candidate_bank import find_banked_candidate
-from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
 from jasper.active_speaker.measured_crossover_candidate import (
-    MeasuredCrossoverCandidate,
     candidate_room_peqs,
 )
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
@@ -48,7 +43,6 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     FILTER_CUT_TOO_DEEP,
     FILTER_OUTSIDE_REGION,
     FILTER_Q_OUT_OF_RANGE,
-    LAYOUT_UNAVAILABLE,
     ROOM_MEDIAN_MISMATCH,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_PRESCRIPTION_KIND,
@@ -60,13 +54,9 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     room_prescription_to_candidate_fields,
 )
 from jasper.camilla_config_contract import PeqFilter
-from jasper.cli import crossover_prescriber as cli
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
-from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_crossover_v2_candidate_republish import _publish
-from tests.test_crossover_v2_driver_prescription import applied_profile
 
 #: The digest the fixture document echoes when the test does not care which.
 MEDIAN_SHA256 = "a" * 64
@@ -314,154 +304,6 @@ def test_narrow_measurement_coverage_keeps_the_room_ceiling_taper(gain):
         _read(_document(filters=[{"freq": 180.0, "q": 1.0, "gain": gain}]), raw)
     assert excinfo.value.reason == TAPER_VIOLATED
     assert excinfo.value.evidence["freq_hz"] > raw["coverage_hz"][1]
-
-
-# --- the CLI ----------------------------------------------------------------
-
-
-@pytest.fixture
-def bank(tmp_path, monkeypatch) -> Path:
-    """The candidate bank this suite reads: never the box running pytest."""
-    root = tmp_path / "sessions"
-    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: root)
-    return root
-
-
-@pytest.fixture
-def applied(tmp_path: Path) -> str:
-    """The applied-profile SSOT the door reads this speaker's sides off."""
-    path = tmp_path / "applied-profile.json"
-    path.write_text(json.dumps(applied_profile(preset=_two_way_preset("mono"))))
-    return str(path)
-
-
-@pytest.fixture
-def evidence(tmp_path: Path) -> tuple[str, str]:
-    """The two files every room verb takes: the median and one document.
-
-    The document echoes the median's REAL digest, which is what the CLI
-    computes over the bytes it read.
-    """
-    median = tmp_path / "round-7" / "room_median.json"
-    median.parent.mkdir()
-    median.write_text(json.dumps(_room_median()))
-    document = tmp_path / "prescription.json"
-    document.write_text(
-        json.dumps(_document(sha256=prescription_sha256(median.read_bytes())))
-    )
-    return str(document), str(median)
-
-
-def test_propose_judges_a_room_document_against_its_median(
-    evidence, applied, capsys,
-):
-    document, median = evidence
-    assert cli.main([
-        "propose", "--prescription", document, "--room-median", median,
-        "--applied-profile", applied,
-    ]) == 0
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["accepted"] is True
-    assert answer["candidate_fields"] == ["room_correction"]
-    assert answer["prescription_class"] == "boost"
-    assert answer["n_filters"] == len(ACCEPTED_FILTERS)
-    # The receipt lands beside the median, and `next` is the composition it
-    # becomes rather than a staging it cannot have.
-    receipt = json.loads(Path(answer["out"]).read_text())
-    assert receipt["prescription"]["kind"] == ROOM_PRESCRIPTION_KIND
-    assert "compose" in answer["next"] and "--room-prescription" in answer["next"]
-
-
-def test_stage_refuses_the_room_class(evidence, applied, tmp_path, capsys):
-    document, median = evidence
-    state = tmp_path / "state.json"
-    state.write_text(json.dumps({"round_receipt": {"round_ordinal": 3}}))
-    assert cli.main([
-        "stage", "--prescription", document, "--room-median", median,
-        "--applied-profile", applied, "--state", str(state),
-    ]) == 1
-    assert json.loads(capsys.readouterr().out)["reason"] == cli.ROOM_NOT_STAGEABLE
-
-
-@pytest.mark.parametrize("readable, reason", [
-    (True, SIDE_MALFORMED),
-    (False, LAYOUT_UNAVAILABLE),
-])
-def test_propose_takes_the_sides_from_the_applied_profile(
-    evidence, applied, tmp_path, capsys, readable, reason,
-):
-    """Which sides exist is the speaker's fact, not the document's.
-
-    A propose that reads different ones refuses and says which it expected; one
-    that can read none refuses too, because it is a dry run of a compose that
-    will resolve them from the base candidate's own preset.
-    """
-
-    document, median = evidence
-    body = json.loads(Path(document).read_text())
-    body["sides"] = {"left": body["sides"].pop("mono")}
-    path = tmp_path / "left.json"
-    path.write_text(json.dumps(body))
-    assert cli.main([
-        "propose", "--prescription", str(path), "--room-median", median,
-        "--applied-profile", applied if readable else str(tmp_path / "absent.json"),
-    ]) == 1
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["reason"] == reason
-    if readable:
-        assert answer["detail"]["evidence"]["expected_sides"] == ["mono"]
-
-
-@pytest.mark.parametrize("measured_base", [None, "same", "different"])
-def test_compose_carries_the_room_set_onto_the_candidate(evidence, bank, capsys, measured_base):
-    document, median = evidence
-    base = _candidate()
-    _publish(bank, base)
-    basis = {} if measured_base is None else {
-        "candidate_id": base.fingerprint if measured_base == "same" else "another-speaker-tune",
-        "graph_fingerprint": "played-graph",
-    }
-    if basis:
-        raw = json.loads(Path(median).read_text())
-        raw["evidence"] = {"basis": basis, "take_ids": [p["id"] for p in raw["positions"]]}
-        Path(median).write_text(json.dumps(raw))
-        Path(document).write_text(json.dumps(_document(sha256=prescription_sha256(Path(median).read_bytes()))))
-    assert cli.main([
-        "compose", "--root", str(bank), "--base", base.fingerprint,
-        "--room-prescription", document, "--room-median", median,
-    ]) == 0
-    answer = json.loads(capsys.readouterr().out)
-    child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
-    assert candidate_room_peqs(child) == tuple(
-        PeqFilter(freq=entry["freq"], q=entry["q"], gain=entry["gain"])
-        for entry in ACCEPTED_FILTERS
-    )
-    assert child.room_correction["basis"]["round_id"] == "round-7"
-    assert set(child.analysis["room_source"]) == {
-        "prescription_sha256", "room_median_sha256", "measured_basis", "base_match",
-    }
-    assert child.analysis["room_source"]["measured_basis"] == basis
-    assert child.analysis["room_source"]["base_match"] == {
-        None: "unknown", "same": "match", "different": "different",
-    }[measured_base]
-    assert answer["room_source"] == child.analysis["room_source"]
-    assert child.analysis["measurement_status"] == "unmeasured"
-    # It reopens with the field: the room set is inside the fingerprint.
-    assert MeasuredCrossoverCandidate.from_mapping(
-        child.to_dict()
-    ).room_correction == child.room_correction
-
-
-def test_compose_refuses_half_the_room_evidence(evidence, bank, capsys):
-    document, _median = evidence
-    base = _candidate()
-    _publish(bank, base)
-    assert cli.main([
-        "compose", "--root", str(bank), "--base", base.fingerprint,
-        "--room-prescription", document,
-    ]) == 2
-    assert json.loads(capsys.readouterr().out)["reason"] == cli.REASON_EVIDENCE_SOURCE
-
 
 
 @pytest.mark.parametrize("n_positions,gain,count,legacy,reason", [

@@ -67,7 +67,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
-    TypeVar, cast,
+    TypeVar,
 )
 
 from jasper.atomic_io import atomic_write_text
@@ -1834,100 +1834,6 @@ declared_transfer_prior_from_state = _durable.declared_transfer_prior_from_state
 
 
 
-def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
-    """This round's staged prescription as ``(blend, driver)`` (A9).
-
-    The ONE place a staged prescription enters the flow, and the one place its
-    refusal is turned into a round that carries on without it. Named and
-    module-level for
-    :func:`alignment_prescription_prior_from_state`'s reason — the seeding path
-    is then drivable in a test without a capture.
-
-    **Both classes, one door (PR-B).** ``accepts`` is
-    :data:`~jasper.active_speaker.crossover_v2.prescription_spool.STAGEABLE_KINDS`
-    because this round now routes both: a blend document becomes the candidate's
-    ``blend_correction``, a per-driver one is merged by role onto the fit in its
-    ``linearization``. This function and its two journal slugs dropped ``blend``
-    from their names in the same edit — a name that is wrong for half the
-    documents it describes is worse than a churned one, and the class-neutral
-    spelling is the spool's own (``take_staged_prescription``,
-    ``StagedPrescription``), so the door has one vocabulary rather than two.
-
-    **The pair is returned already split, and the split is made HERE**, on the
-    envelope's own class field rather than by ``isinstance`` —
-    :class:`~jasper.active_speaker.crossover_v2.prescription_spool.StagedPrescription`
-    states that rule for a caller that accepted both classes. Here rather than at
-    the call site so the class vocabulary has ONE reader: a caller comparing
-    kinds itself would be a second place to keep in step the day a third class
-    exists. At most one arm is ever non-``None``; ``(None, None)`` is every
-    ordinary round and every refused one.
-
-    **Fail-open on the transport, fail-closed on the content.** A document that
-    is stale, corrupt, oversized, tampered, or aimed where its class may not
-    correct is REFUSED by name and never reaches the candidate; the round then
-    runs the deterministic answer for that class exactly as it would have with
-    no document at all — decision 10's banked instruction for the blend region,
-    the Layer-1a fit's own output per driver. Those two directions are not in
-    tension: the content gate protects the speaker from a correction nobody
-    vouched for, and the round proceeding protects the household from losing a
-    measurement session over an optional instruction it never asked for. The
-    refusal is journal-visible rather than silent, because an operator who
-    staged a prescription and got a deterministic round needs to be told which
-    of the two happened.
-
-    The take CONSUMES the document whether or not it is accepted — see
-    :func:`~jasper.active_speaker.crossover_v2.prescription_spool.take_staged_prescription`
-    — so a refusal here cannot repeat itself on the next round.
-    """
-    from jasper.active_speaker.crossover_v2.blend_prescription import (
-        BlendPrescriptionRefused,
-    )
-    from jasper.active_speaker.crossover_v2.driver_prescription import (
-        DRIVER_PRESCRIPTION_KIND,
-        DriverPrescription,
-    )
-    from jasper.active_speaker.crossover_v2.prescription_spool import (
-        STAGEABLE_KINDS,
-        take_staged_prescription,
-    )
-
-    try:
-        staged = take_staged_prescription(
-            round_ordinal=round_ordinal, accepts=STAGEABLE_KINDS,
-        )
-    except BlendPrescriptionRefused as exc:
-        log_event(
-            logger, "correction.crossover_v2_prescription_refused",
-            level=logging.WARNING, reason=exc.reason,
-            round_ordinal=round_ordinal, detail=exc.detail,
-        )
-        return None, None
-    if staged is None:
-        return None, None
-    is_driver = staged.prescription_kind == DRIVER_PRESCRIPTION_KIND
-    log_event(
-        logger, "correction.crossover_v2_prescription_taken",
-        round_ordinal=round_ordinal,
-        # WHICH CLASS was taken, under the spool's own field name.
-        # ``prescription_class`` beside it is cut-vs-boost and has meant that
-        # since the field shipped; naming the document's class with it too
-        # would put two facts on one key.
-        prescription_kind=staged.prescription_kind,
-        prescription_class=staged.prescription.prescription_class,
-        filters=len(staged.prescription.filters),
-        # The per-driver class's deciding number: WHICH branches this document
-        # replaces, and therefore which fitted ones it does not. Empty for the
-        # blend class, whose correction is one region rather than a set of
-        # roles — one event, one shape. The ``cast`` narrows, it does not
-        # decide: the envelope's class field above already settled which type
-        # this is, so an ``isinstance`` here would be a second opinion.
-        roles=",".join(
-            cast(DriverPrescription, staged.prescription).roles
-            if is_driver else ()
-        ),
-        prescription_sha256=staged.prescription_sha256,
-    )
-    return (None, staged) if is_driver else (staged, None)
 
 
 def _take_staged_angle_walk(
@@ -1945,8 +1851,6 @@ def _take_staged_angle_walk(
     """This session's staged angle walk as
     ``(poses, consumer, specs, trims, claims, spl_monitor)``, or ``None``.
 
-    :func:`_take_staged_prescription`'s twin: ONE take, at ONE place. ``None``
-    means NOTHING WAS STAGED — an ordinary session — and nothing else.
 
     A staged walk this session cannot honour REFUSES THE OPEN
     (:class:`CrossoverV2Refused`) with the producing module's own slug, rather
@@ -5145,17 +5049,7 @@ def prepare_v2_session(
                 tuning_attempt_id=tuning_attempt_id,
             )
         else:
-            # A9. Resolved ONCE and used twice, because the two uses have to agree:
-            # the ordinal that decides which round this is is the ordinal a staged
-            # prescription must have been staged for, and re-reading it would let a
-            # state write between the two hand this round an instruction written for
-            # another one.
             series_position = series_position_from_state(prior_raw)
-            # ONE take, already split by class — see the take's own contract for why
-            # the split is made there and not here.
-            staged_blend, staged_driver = _take_staged_prescription(
-                series_position.ordinal
-            )
             conductor = CrossoverV2Session.hydrate(
                 prior_snapshot,
                 session_id=capture_session_id,
@@ -5204,22 +5098,6 @@ def prepare_v2_session(
                 # silently discards every blend instruction the previous round
                 # banked and the series can never converge.
                 series_position=series_position,
-                # A9, and it rides the same stage for the same reason: the door it
-                # enters is ``_blend_prescription``, which runs at candidate-build
-                # time, so a prescription handed to any other stage would be held by
-                # a session that never builds a candidate.
-                blend_prescription=(
-                    None if staged_blend is None else staged_blend.prescription
-                ),
-                blend_prescription_sha256=(
-                    "" if staged_blend is None else staged_blend.prescription_sha256
-                ),
-                # PR-B, on this stage for the line above's reason with the same
-                # deadline and a different door: the per-driver class is merged onto
-                # the Layer-1a fit inside the candidate build, which is MEASURE's.
-                driver_prescription=(
-                    None if staged_driver is None else staged_driver.prescription
-                ),
             )
         # Stage 2 keeps the durable candidate/applied facts and rebinds the
         # session id; stage 1 writes its fresh one.

@@ -95,7 +95,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
     "bass-fit": ViewArtifact("bass_fit.json", ("<fit-request.json>",)),
-    "packet": ViewArtifact("packet.json", producer="jasper-crossover-prescriber packet"),
     "entry": ViewArtifact("entry_state_grade.json"),
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
     "per-seat": ViewArtifact("per_seat.json"),
@@ -240,7 +239,7 @@ def refused_by_name(
 
 def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
     """Paths and sizes only; optional agent prose never becomes measurement data."""
-    packet = default_out(inputs, round_dir, ARTIFACT_BY_VIEW["packet"].artifact)
+    packet = default_out(inputs, round_dir, "packet.json")
     bundles = recent_round_sessions(inputs.session_dir)
     latest_note = next((
         path

@@ -21,6 +21,8 @@ meaning is identical, and the exception class.
 
 from __future__ import annotations
 
+from ._prescription_common import _prescriber, _rationale, _refuse
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn
@@ -72,9 +74,6 @@ from .blend_prescription import (
     # Shared with the blend door rather than re-typed: this door raises the
     # same exception class and refuses under both readers' own values.
     _FILTER_FIELDS,
-    _prescriber,
-    _rationale,
-    _refuse,
 )
 
 __all__ = [
@@ -614,8 +613,8 @@ def _parse_prescription(
         )
     except ValueError as exc:
         _refuse(PRESCRIPTION_PROVENANCE_MISSING, str(exc))
-    model, operator = _prescriber(raw.get("prescriber"))
-    rationale, dropped = _rationale(raw.get("rationale"))
+    model, operator = _prescriber(raw.get("prescriber"), reason=PRESCRIPTION_PROVENANCE_MISSING)
+    rationale, dropped = _rationale(raw.get("rationale"), reason=PRESCRIPTION_MALFORMED)
     return _parse_sides(raw.get("sides")), echoed, model, operator, rationale, dropped
 
 

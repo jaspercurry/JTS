@@ -34,7 +34,6 @@ laptop.
 from __future__ import annotations
 
 import json
-import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -53,10 +52,8 @@ from jasper.active_speaker.branch_chain import (
     chain_response,
 )
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
-from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     PRESCRIPTION_KIND,
-    PRESCRIPTION_MAX_BYTES,
     PRESCRIPTION_SCHEMA_VERSION,
     BlendPrescriptionRefused,
 )
@@ -106,10 +103,7 @@ from jasper.active_speaker.linearization_fit import (
     linearization_filters_by_role,
 )
 from jasper.camilla_config_contract import SHELF_Q
-from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
-from jasper.cli import crossover_prescriber as cli
 
-from tests._log_events import event_fields
 from tests.test_crossover_v2_blend_prescription import _bundle
 
 #: The CLI tests here build a packet from a live session bundle with no
@@ -688,8 +682,6 @@ def test_a_non_finite_lab_column_becomes_null_and_is_named(tmp_path):
     ]
     # …and the document is still exact JSON, which is the whole point.
     assert packet["packet_fingerprint"]
-
-
 
 
 def test_the_response_format_states_every_bound_the_gate_applies():
@@ -1865,40 +1857,6 @@ def test_a_boost_may_not_borrow_a_neighbouring_dips_verdict(tmp_path):
         assert prescription.classification_basis == ()
 
 
-def test_the_take_reads_the_same_vouch_the_staging_step_disclosed(tmp_path):
-    """#2752's whole-row banking is load-bearing for BOOSTS too, not only cuts.
-
-    The take re-runs the gate against the verdicts the staging step banked. If
-    that set dropped the PEAKS, a boost edited onto 4149 Hz would find only the
-    4582 Hz dip, nothing to outrank it, and would come back VOUCHED a round
-    after it was disclosed as unvouched. Banking the whole row set is what makes
-    the two counts equal — which is the property the anchor buys now that the
-    vouch discloses rather than refuses.
-    """
-    _stage_driver(
-        tmp_path,
-        ordinal=2,
-        filters=[_boost(freq=4582.0)],
-        classification=_classification(_banked_rows(depth_db=6.0)),
-    )
-    # The edit: move the boost off its dip and onto the peak beside it.
-    envelope = json.loads(spool.prescription_spool_path().read_text())
-    tampered = json.loads(envelope["document"])
-    tampered["filters"][0]["freq"] = 4149.0
-    payload = json.dumps(tampered).encode()
-    envelope["document"] = payload.decode()
-    envelope["prescription_sha256"] = spool.prescription_sha256(payload)
-    spool.prescription_spool_path().write_text(json.dumps(envelope))
-
-    taken = spool.take_staged_prescription(
-        round_ordinal=2, accepts=frozenset({DRIVER_PRESCRIPTION_KIND}),
-    )
-
-    assert taken.prescription.filters[0]["freq"] == 4149.0
-    assert taken.prescription.unvouched_filters == 1
-    assert taken.prescription.classification_basis == ()
-
-
 def test_a_boost_at_an_unclassified_frequency_is_unvouched_and_admitted(tmp_path):
     """12 kHz is past every banked feature: counted, not refused.
 
@@ -2554,8 +2512,6 @@ def test_the_basis_names_the_filter_it_vouched_for_by_role_and_frequency(tmp_pat
         for basis in prescription.classification_basis
     }
     assert backed == {("tweeter", TWEETER_FEATURE_HZ), ("tweeter", TWEETER_DIP_HZ)}
-    assert "12000 Hz" in cli._vouch_phrase(prescription)
-    assert "5000 Hz" not in cli._vouch_phrase(prescription)
 
 
 def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
@@ -2826,81 +2782,6 @@ def test_an_equidistant_tie_falls_closed_away_from_boostable():
         )
         assert vouching is None
         assert nearest.classification == DEFECT_CUTTABLE
-
-
-def test_the_staged_event_reports_what_the_document_will_spend(tmp_path, caplog):
-    """The journal line carries the numbers that decided, not just that a
-    document was banked.
-
-    ``boost_filters`` is pinned at a NON-ZERO count on purpose: a hardcoded 0
-    satisfies every cut-only staging in the suite, so only a boosting document
-    can tell a real count from a constant. Same for the role — a document that
-    boosts one branch and cuts another must name the branch that spent.
-    """
-    apart = TWEETER_DIP_HZ * 2 ** 0.2
-    with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
-    ):
-        _stage_driver(
-            tmp_path,
-            ordinal=5,
-            filters=[_cut(), _boost(), _boost(freq=apart)],
-            classification=_boostable(
-                [_dip(depth_db=20.0), _dip(hz=apart, depth_db=20.0)]
-            ),
-        )
-
-    fields = event_fields(caplog, "crossover_v2.prescription_staged")
-    assert fields["prescription_class"] == "boost"
-    assert fields["boost_filters"] == "2"
-    assert fields["composed_boost_role"] == "tweeter"
-    assert fields["max_spl_spend_bound_db"] == "13.0"
-
-
-def test_a_cut_only_staging_reports_no_spend_at_all(tmp_path, caplog):
-    """The control: the same line on a cut-only document says zero, not blank."""
-    with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
-    ):
-        _stage_driver(tmp_path, ordinal=6, filters=[_cut()])
-
-    fields = event_fields(caplog, "crossover_v2.prescription_staged")
-    assert fields["prescription_class"] == "cut"
-    assert fields["boost_filters"] == "0"
-    assert fields["composed_boost_db"] == "0.0"
-    # A document that spent nothing has no role that spent. Naming one would
-    # attribute 0.0 dB to whichever role happened to sort first.
-    assert fields["composed_boost_role"] == "null"
-
-
-def test_depth_rides_the_banked_rows_end_to_end_with_no_schema_bump(tmp_path):
-    """``depth_db`` round-trips artifact → packet → gate → spool → take.
-
-    It is an ordinary optional field on an artifact identified by filename and
-    row shape, so nothing versions on it: a row without one reads as ``None``
-    and an older reader handed one ignores it.
-    """
-    packet, _ = _stage_driver(
-        tmp_path, ordinal=3, filters=[_boost()], classification=_boostable(),
-    )
-    dip = next(
-        v for v in packet_feature_classifications(packet)
-        if v.classification == DEFECT_BOOSTABLE
-    )
-    assert dip.depth_db == TWEETER_DIP_DEPTH_DB
-    assert dip.to_dict()["depth_db"] == TWEETER_DIP_DEPTH_DB
-    assert read_feature_verdicts([dip.to_dict()])[0] == dip
-
-    envelope = json.loads(spool.prescription_spool_path().read_text())
-    assert any(row["depth_db"] == TWEETER_DIP_DEPTH_DB
-               for row in envelope["classifications"])
-
-    taken = spool.take_staged_prescription(
-        round_ordinal=3, accepts=frozenset({DRIVER_PRESCRIPTION_KIND}),
-    )
-    assert taken.prescription.classification_basis[0].verdict.depth_db == (
-        TWEETER_DIP_DEPTH_DB
-    )
 
 
 def test_no_bar_reads_a_vertical_blindness_flag_off_a_row(tmp_path):
@@ -3348,40 +3229,6 @@ def test_the_class_size_cap_is_reachable_and_clears_the_largest_honest_document(
     dp.check_driver_document_size(b"x" * dp.DRIVER_PRESCRIPTION_MAX_BYTES)
 
 
-def test_an_oversized_driver_document_refuses_in_its_own_vocabulary(
-    tmp_path, capsys
-):
-    """End to end through the CLI, because the wiring is the point.
-
-    A slug published to a prescriber in ``refusal_reasons`` and raised by
-    nothing is the two-vocabularies failure this module argues against, wearing
-    the module's own name.
-    """
-    session, _ = _bundle(tmp_path / "bundle")
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / "feature_classification.json").write_text(json.dumps(_classification()))
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(json.dumps(_draft()))
-    packet = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
-    document = _document([_cut()], packet)
-    document["rationale"] = "x" * 900  # legal
-    blob = json.dumps(document)
-    # Pad with whitespace: still valid JSON, still this class, just too big.
-    padded = blob[:-1] + " " * (dp.DRIVER_PRESCRIPTION_MAX_BYTES - len(blob) + 8) + "}"
-    prescription_path = tmp_path / "p.json"
-    prescription_path.write_text(padded)
-
-    code = cli.main([
-        "propose", str(session), "--drivers", str(draft_path),
-        "--prescription", str(prescription_path),
-    ])
-
-    out = json.loads(capsys.readouterr().out)
-    assert code == cli.EXIT_REFUSED
-    assert out["reason"] == dp.DRIVER_PRESCRIPTION_TOO_LARGE
-    assert out["detail"]["evidence"]["max_bytes"] == dp.DRIVER_PRESCRIPTION_MAX_BYTES
-
-
 def test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to():
     """Restated rather than imported, so drift is PINNED rather than inherited.
 
@@ -3432,135 +3279,9 @@ def test_a_new_class_does_not_bump_the_blend_classs_schema_version(tmp_path):
     assert accepted.prescription_class == "cut"
 
 
-
-
-def test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it(tmp_path):
-    """The spool rule, tested as the failure it would be rather than asserted.
-
-    An envelope carrying a per-driver document, handed to a taker that speaks
-    only the blend class, must refuse by name. That refusal — not the version
-    number — is what makes the shared slot safe, so it is what gets pinned.
-    """
-    _stage_driver(tmp_path, ordinal=4)
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(round_ordinal=4)
-
-    assert excinfo.value.reason == spool.PRESCRIPTION_CLASS_NOT_ACCEPTED
-    assert spool.SPOOL_SCHEMA_VERSION == 1
-
-
 # --------------------------------------------------------------------------- #
 # the lifecycle — stage, take, refuse, undo, digest, ordinal
 # --------------------------------------------------------------------------- #
-
-
-def _stage_driver(
-    tmp_path: Path,
-    *,
-    ordinal: int = 4,
-    filters: Any = None,
-    classification: dict[str, Any] | None = None,
-    incumbent: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], bytes]:
-    """One accepted per-driver prescription, banked in a temporary spool."""
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    packet = _speaker(
-        tmp_path / "bundle", classification=classification, incumbent=incumbent
-    )
-    document = _document(filters or [_cut()], packet)
-    payload = json.dumps(document).encode()
-    prescription = _gate(packet, document)
-    spool.stage_prescription(
-        payload,
-        prescription,
-        for_round_ordinal=ordinal,
-        classifications=packet_feature_classifications(packet),
-    )
-    return packet, payload
-
-
-@pytest.fixture(autouse=True)
-def _isolated_spool(tmp_path):
-    yield
-    spool.set_prescription_spool_path_for_tests(None)
-
-
-def test_a_staged_per_driver_prescription_round_trips_through_the_one_door(tmp_path):
-    packet, payload = _stage_driver(tmp_path, ordinal=4)
-
-    staged = spool.take_staged_prescription(
-        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-    )
-
-    assert staged.prescription_kind == DRIVER_PRESCRIPTION_KIND
-    assert isinstance(staged.prescription, DriverPrescription)
-    assert staged.for_round_ordinal == 4
-    assert staged.prescription_sha256 == spool.prescription_sha256(payload)
-    assert staged.record()["kind"] == DRIVER_PRESCRIPTION_KIND
-
-
-def test_the_staged_event_names_the_class_rather_than_twinning_the_event(
-    tmp_path, caplog
-):
-    """One event for "a prescription was staged", extended with the class.
-
-    A second event name would make an operator grepping the journal for staging
-    see half of them.
-    """
-    with caplog.at_level("INFO"):
-        _stage_driver(tmp_path)
-
-    fields = event_fields(caplog, "crossover_v2.prescription_staged")
-    assert fields["prescription_kind"] == DRIVER_PRESCRIPTION_KIND
-
-
-def test_a_document_staged_for_another_round_is_refused_by_name(tmp_path):
-    _stage_driver(tmp_path, ordinal=4)
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(
-            round_ordinal=5, accepts=spool.STAGEABLE_KINDS
-        )
-
-    assert excinfo.value.reason == spool.PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND
-
-
-def test_a_hand_edited_document_is_caught_by_the_digest(tmp_path):
-    _stage_driver(tmp_path, ordinal=4)
-    path = spool.prescription_spool_path()
-    envelope = json.loads(path.read_text())
-    document = json.loads(envelope["document"])
-    document["filters"][0]["gain"] = -20.0
-    envelope["document"] = json.dumps(document)
-    path.write_text(json.dumps(envelope))
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(
-            round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-        )
-
-    assert excinfo.value.reason == spool.SPOOL_MALFORMED
-
-
-def test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest(tmp_path):
-    """The re-run gate, with the anchors the staging step banked."""
-    _stage_driver(tmp_path, ordinal=4)
-    path = spool.prescription_spool_path()
-    envelope = json.loads(path.read_text())
-    document = json.loads(envelope["document"])
-    document["filters"][0]["gain"] = DRIVER_MAX_FILTER_BOOST_DB + 1.0
-    payload = json.dumps(document).encode()
-    envelope["document"] = payload.decode()
-    envelope["prescription_sha256"] = spool.prescription_sha256(payload)
-    path.write_text(json.dumps(envelope))
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(
-            round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-        )
-
-    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
 
 #: A minimum-phase DIP 0.143 octaves above the tweeter's cuttable peak — the
@@ -3570,373 +3291,9 @@ def test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest(tmp_
 TWEETER_NEARBY_DIP_HZ = TWEETER_FEATURE_HZ * (2.0 ** 0.143)
 
 
-def _move_staged_filter(freq_hz: float) -> None:
-    """Aim the staged document's first filter somewhere else, digest and all.
-
-    The digest is recomputed because catching this edit is not its job — a
-    hand-edit that forgot to is already refused as malformed, and an edit that
-    stops at the digest never reaches the bar under test.
-    """
-    path = spool.prescription_spool_path()
-    envelope = json.loads(path.read_text())
-    document = json.loads(envelope["document"])
-    document["filters"][0]["freq"] = freq_hz
-    payload = json.dumps(document).encode()
-    envelope["document"] = payload.decode()
-    envelope["prescription_sha256"] = spool.prescription_sha256(payload)
-    path.write_text(json.dumps(envelope))
-
-
-def test_the_take_is_offered_the_whole_classification_not_the_vouching_subset(
-    tmp_path,
-):
-    """What is banked is what the staging gate READ, dips included.
-
-    ``classification_basis`` holds only the verdicts that passed the bar, so
-    every verdict in it is cuttable by construction — banking that subset would
-    drop exactly the dips the nearest-verdict-decides rule needs to say no.
-    """
-    rows = [
-        _verdict(WOOFER_FEATURE_HZ),
-        _verdict(TWEETER_FEATURE_HZ),
-        _verdict(TWEETER_NEARBY_DIP_HZ, DEFECT_BOOSTABLE),
-    ]
-    _stage_driver(tmp_path, ordinal=4, classification=_classification(rows))
-
-    banked = json.loads(spool.prescription_spool_path().read_text())
-
-    assert [row["hz"] for row in banked["classifications"]] == [
-        row["hz"] for row in rows
-    ]
-
-
-def test_a_filter_moved_onto_a_nearby_dip_reads_unvouched_at_take(tmp_path):
-    """The STRONG claim: the take's reading is the staging step's, not a weaker one.
-
-    A cut honestly aimed at the tweeter's classified peak, moved a seventh of an
-    octave onto the minimum-phase dip beside it, still has a cuttable verdict
-    inside the match radius to borrow. The nearest-verdict rule is what stops it
-    borrowing, and the take can only apply that rule if the DIP was banked —
-    which is what the whole-row anchor buys.
-    """
-    _stage_driver(
-        tmp_path,
-        ordinal=4,
-        classification=_classification([
-            _verdict(WOOFER_FEATURE_HZ),
-            _verdict(TWEETER_FEATURE_HZ),
-            _verdict(TWEETER_NEARBY_DIP_HZ, DEFECT_BOOSTABLE),
-        ]),
-    )
-    _move_staged_filter(TWEETER_NEARBY_DIP_HZ)
-
-    staged = spool.take_staged_prescription(
-        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-    )
-
-    assert staged.prescription.unvouched_filters == 1
-    assert staged.prescription.classification_basis == ()
-
-
-def test_a_filter_moved_onto_a_peak_no_filter_targeted_is_admitted_at_take(tmp_path):
-    """The other half of the equality claim, and the subset got it wrong too.
-
-    ``classification_basis`` drops every cuttable feature no filter happened to
-    aim at, so banking that subset would refuse this one as UNCLASSIFIED — a
-    refusal the staging gate, holding the whole artifact, would never have
-    given. The take re-runs the bar rather than diffing the document; a document
-    that clears the bar clears it, and that is what makes the two answers the
-    same answer.
-    """
-    unclaimed_hz = 6000.0
-    assert abs(math.log2(unclaimed_hz / TWEETER_FEATURE_HZ)) > (
-        VERDICT_MATCH_TOLERANCE_OCTAVES
-    ), "must be out of the prescribed filter's own match radius to discriminate"
-    _stage_driver(
-        tmp_path,
-        ordinal=4,
-        classification=_classification([
-            _verdict(WOOFER_FEATURE_HZ),
-            _verdict(TWEETER_FEATURE_HZ),
-            _verdict(unclaimed_hz),
-        ]),
-    )
-    _move_staged_filter(unclaimed_hz)
-
-    staged = spool.take_staged_prescription(
-        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-    )
-
-    assert staged.prescription.filters[0]["freq"] == unclaimed_hz
-    assert staged.prescription.classification_basis[0].verdict.freq_hz == unclaimed_hz
-
-
-def test_a_filter_moved_off_every_verdict_reads_unvouched_at_take(tmp_path):
-    """The far move: 12 kHz is outside every banked verdict's match radius.
-
-    Nothing was classified there at all, so nothing vouches — the same answer
-    the staging step would have given, which is the equality the anchor exists
-    for. It is a count, not a refusal: what the take still refuses is a document
-    whose digest does not match the one that was banked.
-    """
-    _stage_driver(tmp_path, ordinal=4)
-    _move_staged_filter(12_000.0)
-
-    staged = spool.take_staged_prescription(
-        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-    )
-
-    assert staged.prescription.filters[0]["freq"] == 12_000.0
-    assert staged.prescription.unvouched_filters == 1
-
-
-def _cli_stage(tmp_path: Path, rows: list[dict[str, Any]]) -> int:
-    """Drive the real ``stage`` verb end to end, the way an operator does.
-
-    Not ``_stage_driver``: that calls :func:`stage_prescription` directly, so it
-    cannot see whether the CLI hands the spool the verdicts its own gate read.
-    Everything here is a path on disk and the only entry point is ``cli.main``.
-    """
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    session, _ = _bundle(tmp_path / "bundle")
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / "feature_classification.json").write_text(
-        json.dumps(_classification(rows))
-    )
-    draft = tmp_path / "draft.json"
-    draft.write_text(json.dumps(_draft()))
-    state = tmp_path / "state.json"
-    state.write_text(json.dumps({"round_receipt": {"round_ordinal": 3}}))
-    # The packet the CLI itself will build, from the same inputs — a document
-    # written against any other one refuses on the fingerprint. No explicit
-    # --applied-profile below, so this matches the CLI's own true default.
-    packet = build_crossover_evidence_packet(
-        session, state_path=state, driver_draft_path=draft,
-        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
-    )
-    document = tmp_path / "prescription.json"
-    document.write_bytes(json.dumps(_document([_cut()], packet)).encode())
-    return cli.main([
-        "stage", str(session),
-        "--state", str(state),
-        "--drivers", str(draft),
-        "--prescription", str(document),
-    ])
-
-
-def test_the_stage_verb_banks_the_verdicts_its_own_gate_read_dips_included(
-    tmp_path, caplog,
-):
-    """The CLI's half of the anchor, against the 2026-08-19 record itself.
-
-    ``_gate`` reads the classification out of the packet and hands the SAME
-    tuple to the spool rather than letting ``stage`` re-read the packet, so what
-    is banked cannot be a set the gate never saw. Driven through ``cli.main``
-    because that wiring is the subject: a unit test calling
-    :func:`stage_prescription` directly passes whatever it passes.
-
-    The four minimum-phase DIPS are the assertion that matters — they are what
-    the pre-fix vouching subset dropped, and the cut here (5,396 Hz's peak
-    vouches for it) would have banked none of them.
-    """
-    rows = _banked_rows()
-
-    with caplog.at_level("INFO"):
-        exit_code = _cli_stage(tmp_path, rows)
-
-    assert exit_code == cli.EXIT_OK
-    banked = json.loads(spool.prescription_spool_path().read_text())
-    assert [row["hz"] for row in banked["classifications"]] == [
-        row[0] for row in _BANKED_RECORD
-    ]
-    assert [
-        row["hz"] for row in banked["classifications"]
-        if row["classification"] == DEFECT_BOOSTABLE
-    ] == [1037.0, 4582.0, 6245.0, 8530.0]
-    # And the newly-unbounded dimension is visible without opening the file.
-    fields = event_fields(caplog, "crossover_v2.prescription_staged")
-    assert fields["classifications"] == str(len(_BANKED_RECORD))
-
-
-def test_the_banked_classification_stays_far_inside_the_envelope_cap(tmp_path):
-    """``SPOOL_MAX_BYTES``' derivation, re-derived rather than trusted.
-
-    The comment on that constant quotes a per-row cost, and a row's cost is the
-    length of its own strings rather than a constant — so the number is measured
-    HERE, by the route the comment names (stage twice through the real writer,
-    diff the bytes on disk), and what is asserted is the conclusion that has to
-    hold: the room left over is orders of magnitude past any real artifact.
-    """
-    record = _banked_rows()
-    # The anchor row is in BOTH envelopes, so it cancels exactly and the delta
-    # is the record's nine rows and nothing else. It is here because the staged
-    # document has to clear the bar in both runs to be staged at all.
-    anchor = [_verdict(TWEETER_FEATURE_HZ)]
-    _stage_driver(tmp_path / "with", classification=_classification(record + anchor))
-    with_rows = spool.prescription_spool_path().stat().st_size
-    _stage_driver(tmp_path / "without", classification=_classification(anchor))
-    without = spool.prescription_spool_path().stat().st_size
-
-    per_row = (with_rows - without) / len(_BANKED_RECORD)
-    # The escaping bound `SPOOL_MAX_BYTES`' own comment derives, so this test
-    # moves with that constant instead of restating a byte count.
-    headroom = spool.SPOOL_MAX_BYTES - 6 * PRESCRIPTION_MAX_BYTES
-    assert 200 <= per_row <= 320, f"per verdict row: {per_row:.1f} bytes"
-    assert headroom / per_row > 400, (
-        f"room for {headroom / per_row:.0f} rows; the record has "
-        f"{len(_BANKED_RECORD)}"
-    )
-    assert with_rows < spool.SPOOL_MAX_BYTES // 100
-
-
-def test_a_refused_document_is_consumed_too(tmp_path):
-    """It has had its round; left pending it would refuse every round after it."""
-    _stage_driver(tmp_path, ordinal=4)
-
-    with pytest.raises(BlendPrescriptionRefused):
-        spool.take_staged_prescription(round_ordinal=4)
-
-    assert spool.staged_prescription_pending() is False
-
-
-def test_a_taken_prescription_is_never_offered_to_a_second_round(tmp_path):
-    _stage_driver(tmp_path, ordinal=4)
-    assert spool.take_staged_prescription(
-        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-    ) is not None
-
-    assert spool.take_staged_prescription(
-        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-    ) is None
-
-
-def test_the_blend_class_still_stages_and_takes_unchanged(tmp_path):
-    """The one door carries both, and the older class's default is unchanged.
-
-    A caller that has not learned the per-driver class passes no ``accepts`` and
-    keeps working byte-identically.
-    """
-    from tests.test_crossover_v2_blend_prescription import (
-        _cut as _blend_cut,
-        _document as _blend_document,
-        _gate as _blend_gate,
-    )
-
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    session, _ = _bundle(tmp_path / "b")
-    packet = build_crossover_evidence_packet(session)
-    document = _blend_document([_blend_cut()], packet)
-    payload = json.dumps(document).encode()
-    spool.stage_prescription(
-        payload,
-        _blend_gate(packet, document),
-        for_round_ordinal=7,
-        classifications=None,
-    )
-
-    staged = spool.take_staged_prescription(round_ordinal=7)
-
-    assert staged.prescription_kind == PRESCRIPTION_KIND
-    assert staged.prescription.prescription_class == "cut"
-
-
-def test_an_envelope_written_before_the_class_existed_reads_as_the_blend_one(tmp_path):
-    """Absence is the blend class: every envelope predating this change holds one.
-
-    Reading absence as anything else would misdate the corpus.
-    """
-    from tests.test_crossover_v2_blend_prescription import (
-        _cut as _blend_cut,
-        _document as _blend_document,
-        _gate as _blend_gate,
-    )
-
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    session, _ = _bundle(tmp_path / "b")
-    packet = build_crossover_evidence_packet(session)
-    document = _blend_document([_blend_cut()], packet)
-    payload = json.dumps(document).encode()
-    spool.stage_prescription(
-        payload,
-        _blend_gate(packet, document),
-        for_round_ordinal=7,
-        classifications=None,
-    )
-    path = spool.prescription_spool_path()
-    envelope = json.loads(path.read_text())
-    del envelope[spool.ENVELOPE_KIND_FIELD]
-    path.write_text(json.dumps(envelope))
-
-    staged = spool.take_staged_prescription(round_ordinal=7)
-
-    assert staged.prescription_kind == PRESCRIPTION_KIND
-
-
 # --------------------------------------------------------------------------- #
 # the CLI's one door
 # --------------------------------------------------------------------------- #
-
-
-def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
-    """One door, and the kind is what routes — no flag, no shape inference."""
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    session, _ = _bundle(tmp_path / "bundle")
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / "feature_classification.json").write_text(
-        json.dumps(_classification())
-    )
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(json.dumps(_draft()))
-    # No explicit --applied-profile below, so this matches the CLI's default.
-    packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path,
-        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
-    )
-    prescription_path = tmp_path / "p.json"
-    prescription_path.write_text(json.dumps(_document([_cut()], packet)))
-
-    code = cli.main([
-        "propose", str(session), "--drivers", str(draft_path),
-        "--prescription", str(prescription_path), "--out", str(tmp_path / "r.json"),
-    ])
-
-    out = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert out["accepted"] is True
-    assert out["candidate_fields"] == [LINEARIZATION_CANDIDATE_FIELD]
-    # The next command carries the rebuild input this one was judged with: a
-    # rebuild without --drivers resolves it against the machine instead and
-    # fingerprints differently, which is what refuses the same document.
-    assert f"--drivers {draft_path}" in out["next"]
-
-
-def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
-    tmp_path, capsys
-):
-    """The packet's honesty rule reaching the operator: no band, named refusal.
-
-    ``--drivers``/``--applied-profile`` are real argparse defaults now (F-7),
-    so this speaker's own on-disk state at those paths — not just "the flag
-    was typed" — decides whether evidence is read. The module's
-    ``no_real_pi_paths`` points both at files that are never written, so the
-    refusal is deterministic on any machine.
-    """
-    session, _ = _bundle(tmp_path / "bundle")
-    packet = build_crossover_evidence_packet(
-        session,
-        driver_draft_path=round_inputs_mod.DRIVERS_DEFAULT_PATH,
-        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
-    )
-    prescription_path = tmp_path / "p.json"
-    prescription_path.write_text(json.dumps(_document([_cut()], packet)))
-
-    code = cli.main([
-        "propose", str(session), "--prescription", str(prescription_path),
-    ])
-
-    out = json.loads(capsys.readouterr().out)
-    assert code == cli.EXIT_REFUSED
-    assert out["reason"] == dp.PASSBAND_UNAVAILABLE
 
 
 # --------------------------------------------------------------------------- #
@@ -4200,28 +3557,6 @@ def test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it(tmp_path
     assert "refuses any other placement by name" in note
 
 
-def test_the_report_names_each_filters_own_type(tmp_path, capsys):
-    """The operator's line spells what the graph will carry, not a literal.
-
-    It printed ``Peaking`` for every entry while that was the only type either
-    prescription class admitted. With the emitter's whole set open, a Lowshelf
-    printed as a Peaking — at a Q the emitter drops — would be a report
-    disagreeing with the graph it describes, which is how an operator stages a
-    document believing it is something else.
-    """
-    packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
-    kept = [{"role": "tweeter", **entry} for entry in INCUMBENT_TWEETER]
-
-    cli._print_prescription(_gate(packet, _document(kept, packet)), "accepted")
-
-    lines = capsys.readouterr().err.splitlines()
-    assert lines[1] == "  tweeter Lowshelf 5844.7 Hz -6.07 dB"
-    assert lines[2] == "  tweeter Peaking 3249.1 Hz Q2 -2.06 dB"
-    # The shelf's Q is absent rather than printed: the emitter drops it, so
-    # showing one would advertise a steepness nothing honours.
-    assert "Q" not in lines[1]
-
-
 def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
     """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
 
@@ -4466,130 +3801,3 @@ def test_without_an_incumbent_record_the_displacement_is_unknown_not_zero(tmp_pa
     assert prescription.displaced_filters is None
     assert prescription.displaced_boost_db is None
     assert prescription.displaced_boost_role is None
-
-
-def test_the_cli_tells_the_operator_what_staging_this_would_delete(
-    tmp_path, capsys, monkeypatch
-):
-    """The disclosure's operator-facing reader: one line, before staging."""
-    # A LIVE bundle is daemon-owned, so the accepted result lands beside the
-    # CALLER, which here must not be the checkout.
-    monkeypatch.chdir(tmp_path)
-    session, _ = _bundle(tmp_path / "bundle")
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / "feature_classification.json").write_text(
-        json.dumps(_classification())
-    )
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(json.dumps(_draft()))
-    applied_path = tmp_path / "applied-profile.json"
-    applied_path.write_text(json.dumps(
-        applied_profile({"tweeter": INCUMBENT_TWEETER})
-    ))
-    packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path, applied_profile_path=applied_path,
-    )
-    prescription_path = tmp_path / "p.json"
-    prescription_path.write_text(json.dumps(
-        _document([_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)], packet)
-    ))
-
-    code = cli.main([
-        "propose", str(session), "--drivers", str(draft_path),
-        "--applied-profile", str(applied_path),
-        "--prescription", str(prescription_path),
-    ])
-
-    err = capsys.readouterr().err
-    assert code == 0
-    assert "displaces: 4 incumbent filter(s)" in err
-    assert "+8.00 dB" in err
-
-
-def test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved(
-    tmp_path, capsys, monkeypatch
-):
-    """A pin moves a LEVEL, so it cannot be invisible at the decision point.
-
-    The control matters as much as the pin: an ordinary document says nothing
-    about trims, and an operator who never sees the line must be able to read
-    its absence as "this round solves them all".
-    """
-    monkeypatch.chdir(tmp_path)
-    session, _ = _bundle(tmp_path / "bundle")
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / "feature_classification.json").write_text(
-        json.dumps(_classification())
-    )
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(json.dumps(_draft()))
-    # No explicit --applied-profile below, so this matches the CLI's default.
-    packet = build_crossover_evidence_packet(
-        session, driver_draft_path=draft_path,
-        applied_profile_path=round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
-    )
-
-    def _propose(document: dict[str, Any]) -> str:
-        path = tmp_path / "p.json"
-        path.write_text(json.dumps(document))
-        assert cli.main([
-            "propose", str(session), "--drivers", str(draft_path),
-            "--prescription", str(path),
-        ]) == 0
-        return capsys.readouterr().err
-
-    err = _propose(
-        _document([_cut()], packet, pinned_trim_db={"tweeter": -6.5})
-    )
-    assert "pins: tweeter -6.50 dB" in err
-    assert "not re-solved" in err
-
-    assert "pins:" not in _propose(_document([_cut()], packet))
-
-
-def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog):
-    """The disclosures' durable reader: the journal line that banks the stage.
-
-    BOTH of them, on one line, because an operator greps one event for what a
-    staged document is about to do: what it deletes (#2863) and how much of it
-    the round's own evidence backs (2026-08-23). A field written with no reader
-    is a field that rots.
-    """
-    with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
-    ):
-        _stage_driver(
-            tmp_path,
-            filters=[_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)],
-            incumbent={"tweeter": INCUMBENT_TWEETER},
-        )
-
-    fields = event_fields(caplog, "crossover_v2.prescription_staged")
-    assert fields["displaced_filters"] == "4"
-    assert fields["displaced_boost_role"] == "tweeter"
-    # The document's one filter sits on the banked 5 kHz feature, so it IS
-    # vouched — a zero that was measured, which is the answer this line has to
-    # be able to give as clearly as a non-zero one.
-    assert fields["unvouched_filters"] == "0"
-
-
-def test_the_staged_event_counts_a_document_the_evidence_does_not_back(
-    tmp_path, caplog,
-):
-    """The non-zero arm. With the zero above it, both driver spellings are pinned.
-
-    The third — ``null``, which the blend class writes because it has no such
-    evidence — is the sibling of ``composed_boost_role=null`` two tests up and
-    is not asserted here; this file stages only the driver class.
-    """
-    with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
-    ):
-        _stage_driver(
-            tmp_path,
-            filters=[_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)],
-            classification=_classification([_verdict(WOOFER_FEATURE_HZ)]),
-        )
-
-    fields = event_fields(caplog, "crossover_v2.prescription_staged")
-    assert fields["unvouched_filters"] == "1"

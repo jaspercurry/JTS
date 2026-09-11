@@ -6,7 +6,7 @@
 
 The per-driver intake for the prescriber loop; :mod:`.blend_prescription`
 owns the sibling door onto the SUMMED region — same lifecycle, exception
-type, packet-fingerprint anchoring, spool. Every admission bar is SHAPE: the
+type and packet-fingerprint anchoring. Every admission bar is SHAPE: the
 classification vouch DISCLOSES, never refuses (#2863). The band is the
 DRIVER's declared band (:func:`driver_passbands_from_safety_profile`), not
 the crossover region — a cut past the handoff still spends no headroom (#2523).
@@ -14,10 +14,14 @@ the crossover region — a cut past the handoff still spends no headroom (#2523)
 
 from __future__ import annotations
 
+from ._prescription_common import (
+    RATIONALE_MAX_CHARS, _refuse, _finite_number, _prescriber, _rationale,
+)
+
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any
 
 import numpy as np
 
@@ -58,7 +62,6 @@ from jasper.sound.profile import (
 from .blend_prescription import (
     PACKET_FINGERPRINT_FIELD,
     PROHIBITED_PRESCRIPTION_KEYS,
-    BlendPrescriptionRefused,
     find_prohibited_keys,
 )
 from .feature_classification import (
@@ -113,9 +116,6 @@ __all__ = [
 #: invalidate the other's in-flight documents.
 DRIVER_PRESCRIPTION_SCHEMA_VERSION = 1
 
-#: The ``kind`` discriminator. Its distinctness from the blend class's is what
-#: makes the shared spool safe: an older reader reaches this string, does not
-#: recognise it, and refuses rather than parsing this as a blend document.
 DRIVER_PRESCRIPTION_KIND = "jts_crossover_driver_prescription"
 
 #: The byte ceiling on ONE per-driver document, applied once its class is known
@@ -136,7 +136,7 @@ DRIVER_PRESCRIPTION_MAX_BYTES = 32 * 1024
 #: The loss is counted onto :attr:`DriverPrescription.rationale_dropped_chars`,
 #: which keeps :data:`DRIVER_PRESCRIPTION_MAX_BYTES`'s measured largest
 #: document true.
-RATIONALE_MAX_CHARS = 1_200
+
 
 #: The candidate field a per-driver prescription lands in: the role-keyed
 #: ``MeasuredCrossoverCandidate.linearization`` the Layer-1a fit already
@@ -422,7 +422,7 @@ class DriverPrescription:
     computed this" (``None``) from "computed, and the answer is none" (``0``);
     a receipt that spelled them the same would claim a measurement it never
     made. The ``displaced_*`` fields also report it after a request whenever
-    the evidence carried no incumbent — which is every take from the spool.
+    the evidence carried no incumbent.
     """
 
     #: The prescribed biquads, in emission order, each naming its own role.
@@ -600,10 +600,6 @@ def driver_passbands_from_safety_profile(
 # --------------------------------------------------------------------------- #
 
 
-def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
-    raise BlendPrescriptionRefused(reason, detail, evidence=evidence or None)
-
-
 def check_driver_document_size(payload: bytes) -> None:
     """This class's own size bound, applied once the document has named itself.
 
@@ -630,27 +626,6 @@ def _finite_or_none(value: Any) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
-
-
-def _finite_number(value: Any, *, field: str) -> float:
-    """One numeric field, strictly — no coercion, ever.
-
-    ``bool`` is refused because it is an ``int`` and ``gain=True`` would read as
-    a +1 dB boost; strings because ``float("1900")`` succeeds; and
-    ``OverflowError`` is caught because ``10 ** 400`` is legal JSON, a legal
-    Python ``int``, and raises rather than returning infinity.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _refuse(
-            FILTER_MALFORMED, f"{field} must be a number, got {type(value).__name__}"
-        )
-    try:
-        number = float(value)
-    except OverflowError:
-        _refuse(FILTER_MALFORMED, f"{field} is too large to be a filter coefficient")
-    if not math.isfinite(number):
-        _refuse(FILTER_MALFORMED, f"{field} must be finite, got {number!r}")
-    return number
 
 
 def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
@@ -692,10 +667,10 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
                 f"filter {position} must be one of "
                 f"{sorted(LINEARIZATION_BIQUAD_TYPES)}, got {biquad_type!r}",
             )
-        freq = _finite_number(entry.get("freq"), field=f"filter {position} freq")
-        gain = _finite_number(entry.get("gain"), field=f"filter {position} gain")
+        freq = _finite_number(entry.get("freq"), reason=FILTER_MALFORMED, field=f"filter {position} freq")
+        gain = _finite_number(entry.get("gain"), reason=FILTER_MALFORMED, field=f"filter {position} gain")
         if biquad_type == "Peaking":
-            q = _finite_number(entry.get("q"), field=f"filter {position} q")
+            q = _finite_number(entry.get("q"), reason=FILTER_MALFORMED, field=f"filter {position} q")
         else:
             # A SHELF carries no steepness of its own: the emitter's shelf
             # `FilterSpec` has no `q` and the evaluator forces this number, so
@@ -1020,7 +995,7 @@ def _check_displaced(
     and enforced by ``graph_safety``, ``path_safety`` and
     ``excitation_safety_plan``, so no document routed here can delete one.
 
-    Measured against the INCUMBENT, which at staging time is what the speaker
+    Measured against the INCUMBENT, which at authoring time is what the speaker
     is playing rather than the fit this document will displace: the same
     question asked one round apart. It is also a PER-BRANCH number — removing
     an incumbent BOOST additionally releases the pre-split attenuation it was
@@ -1094,51 +1069,6 @@ def _check_classification(
             ClassificationBasis(filter_freq_hz=freq, role=role, verdict=vouching)
         )
     return tuple(basis), unvouched
-
-
-def _prescriber(raw: Any) -> tuple[str, str]:
-    """Who authored this, strictly and non-blank."""
-    if not isinstance(raw, Mapping):
-        _refuse(
-            DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
-            "a prescription must carry a prescriber object naming its model "
-            "and operator",
-        )
-    unknown = sorted(set(raw) - {"model", "operator"})
-    if unknown:
-        _refuse(
-            DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
-            f"prescriber carries unknown field(s): {', '.join(unknown)}",
-        )
-    values: list[str] = []
-    for field in ("model", "operator"):
-        value = raw.get(field)
-        if not isinstance(value, str) or not value.strip():
-            _refuse(
-                DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
-                f"prescriber.{field} must be a non-blank name",
-            )
-        values.append(" ".join(value.split()))
-    return values[0], values[1]
-
-
-def _rationale(raw: Any) -> tuple[str, int]:
-    """The prescriber's own words, banked to the ceiling, and what was dropped.
-
-    Returns ``(the banked text, how many characters were dropped)``. It
-    TRUNCATES rather than refusing (:data:`RATIONALE_MAX_CHARS`) — a prose
-    ceiling cannot be a safety bound because nothing reads the prose — and is
-    still strictly TEXT.
-    """
-    if raw is None:
-        return "", 0
-    if not isinstance(raw, str):
-        _refuse(
-            DRIVER_PRESCRIPTION_MALFORMED,
-            f"rationale must be text, got {type(raw).__name__}",
-        )
-    text = " ".join(raw.split())
-    return text[:RATIONALE_MAX_CHARS], max(0, len(text) - RATIONALE_MAX_CHARS)
 
 
 def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | None]:
@@ -1282,8 +1212,8 @@ def _parse_prescription(
             DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
             f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
         )
-    model, operator = _prescriber(raw.get("prescriber"))
-    rationale, dropped = _rationale(raw.get("rationale"))
+    model, operator = _prescriber(raw.get("prescriber"), reason=DRIVER_PRESCRIPTION_PROVENANCE_MISSING)
+    rationale, dropped = _rationale(raw.get("rationale"), reason=DRIVER_PRESCRIPTION_MALFORMED)
     filters = _parse_filters(raw.get("filters"))
     return (
         filters,
@@ -1686,7 +1616,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "feature_classification.verdicts[] — never the lab_rows[] "
                 "working beside it — and the count that no banked verdict "
                 "vouches for comes back as prescription.unvouched_filters, on "
-                "the propose/stage report and under --json. Nothing about it "
+                "the judged document. Nothing about it "
                 "refuses: what a filter costs is bounded by the caps above, and "
                 "whether it HELPS is what the next round measures"
             ),
@@ -1700,7 +1630,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "delayed copy together, a boost aimed at one feeds it, and a "
                 "room arrival is not the speaker's to correct. Those are the "
                 "reasons an unvouched filter usually measures worse, which is "
-                "why the count is on the report you read before you stage"
+                "why the count is on the judged document"
             ),
             # Per SIGN, and a pair rather than one key, so a reader walking the
             # keys cannot conclude a boost has no bar to satisfy.

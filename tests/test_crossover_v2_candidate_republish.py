@@ -24,12 +24,10 @@ import asyncio
 import json
 import os
 import shutil
-from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import yaml
 
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.candidate_bank import (
@@ -45,20 +43,17 @@ from jasper.active_speaker.candidate_trials import (
 )
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
-from jasper.active_speaker.bundles import latest_bundle, open_bundle
+from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.session_graph import _fingerprint as graph_fingerprint
 from jasper.active_speaker.round_bank import bank_round
 from jasper.audio_measurement.bundles import record_artifact
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
-from jasper.cli import crossover_prescriber
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
 
 from tests.test_active_speaker_measured_crossover_candidate import (
     _candidate,
-    _preset,
     _room_correction,
 )
 from tests.active_speaker_fixtures import mono_output_topology
@@ -102,75 +97,6 @@ def _publish(root: Path, candidate, *, bundle=BUNDLE, capture=CAPTURE) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
     return path
-
-
-@pytest.mark.parametrize("layout", ["live", "bank", "campaign"])
-def test_compose_reuses_losing_parts_without_claiming_measurement(bank, capsys, layout):
-    peak = {"biquad_type": "Peaking", "freq": 500.0, "q": 1.0, "gain": -2.0}
-    base = replace(
-        _candidate(alignment=MeasuredCrossoverAlignment(120.0, "tweeter", "keep")),
-        blend_correction=[peak],
-    )
-    parents = {
-        "base": base,
-        "a": replace(_candidate(
-            trims={"woofer": -1.0, "tweeter": -6.0},
-            linearization={"woofer": {"filters": [peak], "residual_rms_db": 0.2}},
-            linearization_outcome="fitted",
-        ), analysis={"measurement_status": "measured", "outcome": "restored", "verified": True}),
-        "b": _candidate(
-            trims={"woofer": -8.0, "tweeter": -2.0},
-            linearization={"tweeter": {
-                "filters": [{**peak, "freq": 6000.0, "gain": -1.5}],
-                "verify_residual_rms_db": 0.1,
-            }},
-        ),
-    }
-    for name, candidate in parents.items():
-        root = bank if layout == "live" else bank / (name if layout == "campaign" else "") / "bundle"
-        _publish(root, candidate, bundle=name)
-    active_info = bank / "active" / "info.json"
-    active_info.parent.mkdir()
-    active_info.write_text('{"state":"open"}')
-    argv = [
-        "compose", "--root", str(bank), "--base", base.fingerprint,
-        "--role", f"woofer={parents['a'].fingerprint}",
-        "--role", f"tweeter={parents['b'].fingerprint}",
-        "--expected-effect", "reduce the two peaks",
-        "--observation-ref", "round-a/packet.json",
-        "--rationale", "test the useful parts together; causality remains unresolved",
-    ]
-    assert crossover_prescriber.main(argv) == 0
-    answer = json.loads(capsys.readouterr().out)
-    child = find_banked_candidate(answer["candidate_fingerprint"], root=bank)
-    assert answer["adopted"] is False
-    assert answer["measurement_status"] == "unmeasured"
-    assert child.fingerprint not in {parent.fingerprint for parent in parents.values()}
-    assert child.candidate.role_attenuations_db == {"woofer": -1.0, "tweeter": -2.0}
-    assert child.candidate.alignment == base.alignment
-    assert child.candidate.blend_correction == base.blend_correction
-    assert child.candidate.linearization_outcome == ""
-    assert child.candidate.trim_decision == child.candidate.exclusion_evidence == {}
-    for role, parent in (("woofer", parents["a"]), ("tweeter", parents["b"])):
-        part = child.candidate.linearization[role]
-        assert set(part) == {"filters", "headroom_cost_db"}
-        assert part["filters"] == parent.linearization[role]["filters"]
-        assert child.candidate.analysis["role_sources"][role]["fingerprint"] == parent.fingerprint
-    assert child.candidate.analysis["measurement_status"] == "unmeasured"
-    assert "verified" not in child.candidate.analysis
-    assert child.candidate.analysis["expected_effect"] == "reduce the two peaks"
-    assert child.candidate.analysis["observation_refs"] == ["round-a/packet.json"]
-    info = json.loads((child.path.parents[5] / "info.json").read_text())
-    assert info["captures"] == info["summed_captures"] == []
-    assert info["verification"] is None
-    assert info["kind"] == "jts_authored_candidate_bundle"
-    assert "state" not in info
-    assert child.path.is_relative_to(bank.parent / "campaigns")
-    assert json.loads(active_info.read_text()) == {"state": "open"}
-    assert latest_bundle(bank)["bundle_dir"] == str(active_info.parent)
-    assert crossover_prescriber.main(argv) == 0
-    assert json.loads(capsys.readouterr().out) == answer
-    assert sum(one.fingerprint == child.fingerprint for one in banked_candidates(root=bank)) == 1
 
 
 def test_default_candidate_lookup_survives_live_session_retention(bank):
@@ -286,58 +212,6 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
         assert answer["candidate"]["fingerprint"] == child.fingerprint
         assert answer["verify_priors_restored"] is False
         assert v2host._update_current_review("authored", child.fingerprint, None, {})
-
-
-@pytest.mark.parametrize("change", ["alignment", "blend", "preset", "role"])
-def test_compose_requires_explicit_structural_sources_and_matching_roles(bank, change):
-    base, other = _candidate(), replace(
-        _candidate(alignment=MeasuredCrossoverAlignment(250.0, "tweeter", "invert")),
-        blend_correction=[{"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": -1.0}],
-    )
-    if change == "preset":
-        other = _candidate(preset=_preset("stereo"))
-    for name, candidate in (("base", base), ("other", other)):
-        _publish(bank, candidate, bundle=name)
-    base_row = find_banked_candidate(base.fingerprint, root=bank)
-    other_row = find_banked_candidate(other.fingerprint, root=bank)
-    if change in {"preset", "role"}:
-        role = "midrange" if change == "role" else "woofer"
-        with pytest.raises(CandidateBankRefusal) as refusal:
-            compose_candidate(base_row, {role: other_row})
-        assert refusal.value.code == f"composition_{'role_unknown' if change == 'role' else 'preset_mismatch'}"
-    else:
-        child = compose_candidate(base_row, {}, **{change: other_row})
-        field = "blend_correction" if change == "blend" else "alignment"
-        assert getattr(child, field) == getattr(other, field)
-
-
-@pytest.mark.parametrize("change", [None, "roles", "alignment", "blend"])
-def test_a_room_set_never_travels_with_a_tune_change(bank, change):
-    """A room set is fitted to the tune it was measured through (ADR-0256).
-
-    A new room prescription cannot accompany a speaker change. A composition
-    without a speaker change retains the saved room correction.
-    """
-
-    base = _candidate(room_correction=_room_correction())
-    other = _candidate(trims={"woofer": -1.0, "tweeter": -3.5})
-    for name, candidate in (("base", base), ("other", other)):
-        _publish(bank, candidate, bundle=name)
-    base_row = find_banked_candidate(base.fingerprint, root=bank)
-    other_row = find_banked_candidate(other.fingerprint, root=bank)
-
-    if change is None:
-        child = compose_candidate(base_row, {})
-        assert child.room_correction == base.room_correction
-        return
-    with pytest.raises(CandidateBankRefusal) as refusal:
-        compose_candidate(
-            base_row,
-            {"woofer": other_row} if change == "roles" else {},
-            room_correction=_room_correction(),
-            **({change: other_row} if change != "roles" else {}),
-        )
-    assert refusal.value.code == "composition_room_with_tune_change"
 
 
 # --- the round trip: republish, then apply can reach it ---------------------
@@ -1015,117 +889,6 @@ def test_a_tuning_candidate_needs_a_trial_through_its_full_graph(bank, program, 
         with pytest.raises(CandidateBankRefusal) as refusal:
             require_candidate_trial(child)
         assert refusal.value.code == "candidate_trial_required"
-
-
-@pytest.fixture
-def saved_tune():
-    from tests.test_active_speaker_audition import _applied_profile
-
-    topology = mono_output_topology()
-    applied = deepcopy(_applied_profile(topology))
-    snapshot = applied["recomposition_snapshot"]
-    snapshot["corrections"] = {
-        "woofer": {"gain_db": 0.0, "delay_ms": 0.11, "inverted": False},
-        "tweeter": {"gain_db": -10.8, "delay_ms": 0.0, "inverted": True},
-    }
-    snapshot["room_correction"] = _room_correction()
-    snapshot["measured_candidate_fingerprint"] = None
-    return topology, applied
-
-
-@pytest.mark.parametrize("change, code", [
-    ("topology", "composition_saved_tune_unavailable"),
-    ("delay", "composition_saved_tune_unrepresentable"),
-    ("protection", "composition_saved_tune_unrepresentable"),
-])
-def test_saved_candidate_refuses_unrepresentable_upstream_tune(saved_tune, change, code):
-    topology, applied = saved_tune
-    snapshot = applied["recomposition_snapshot"]
-    if change == "topology":
-        snapshot["topology_fingerprint"] = "old-hardware"
-    elif change == "delay":
-        snapshot["corrections"]["tweeter"]["delay_ms"] = 0.22
-    else:
-        snapshot["driver_protection"] = {"targets": [
-            {"role": role, "target_fingerprint": role, "required_protection_filters": ([{
-                "kind": "highpass", "cutoff_hz": 40,
-                "minimum_slope_db_per_octave": 24,
-            }] if role == "woofer" else [])}
-            for role in ("woofer", "tweeter")
-        ]}
-    with pytest.raises(CandidateBankRefusal) as refused:
-        candidate_from_applied_profile(topology, applied)
-    assert refused.value.code == code
-
-
-@pytest.mark.parametrize("base_kind", ["saved", "banked"])
-def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, saved_tune, tmp_path, monkeypatch, capsys, base_kind):
-    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-    from jasper.active_speaker.profile import ActiveSpeakerPreset
-    from jasper.bass_extension.dynamic_graph import validated_base_graph
-    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
-
-    topology, applied = saved_tune
-    original = deepcopy(applied)
-    monkeypatch.setattr(crossover_prescriber, "load_output_topology_strict", lambda: topology)
-    monkeypatch.setattr(crossover_prescriber, "load_applied_baseline_profile_state", lambda: applied)
-    bass = tmp_path / "bass.json"
-    bass.write_text(json.dumps(BASS_EXTENSION))
-    base = "saved" if base_kind == "saved" else publish_authored_candidate(
-        candidate_from_applied_profile(topology, applied), root=bank,
-    ).fingerprint
-    assert crossover_prescriber.main([
-        "compose", "--root", str(bank), "--base", base,
-        "--bass-extension-json", str(bass),
-    ]) == 0
-    answer = json.loads(capsys.readouterr().out)
-    child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
-    snapshot = applied["recomposition_snapshot"]
-    assert driver_corrections(child) == snapshot["corrections"]
-    assert child.alignment == MeasuredCrossoverAlignment(110, "woofer", "invert")
-    assert child.room_correction == snapshot["room_correction"]
-    assert child.analysis["measurement_status"] == "unmeasured"
-    assert child.bass_extension["low_boost_db"] == BASS_EXTENSION["low_boost_db"]
-    profile = MeasurementGraphProfile(
-        ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
-        {"woofer": 0, "tweeter": 1}, "null", applied_profile=applied,
-    )
-    baseline = yaml.safe_load(compile_tuning_graph(profile, candidate=candidate_from_applied_profile(topology, applied, purpose="bass")))
-    proposed = yaml.safe_load(compile_tuning_graph(profile, scope="candidate", candidate=child))
-    assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline
-    assert applied == original
-    assert v2host.load_v2_state() is None
-
-
-@pytest.mark.parametrize("change", [None, "bass_off", "speaker", "room"])
-def test_composition_keeps_only_still_applicable_downstream_layers(bank, change):
-    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
-
-    base = replace(_candidate(room_correction=_room_correction()), bass_extension=BASS_EXTENSION)
-    row = publish_authored_candidate(replace(base, analysis={"measurement_status": "unmeasured"}), root=bank)
-    child = compose_candidate(
-        row, {"woofer": row} if change == "speaker" else {},
-        room_correction=base.room_correction if change == "room" else None,
-        **({"bass_extension": {}} if change == "bass_off" else {}),
-    )
-    assert bool(child.bass_extension) is (change is None)
-    assert bool(child.room_correction) is (change != "speaker")
-    assert child.linearization == base.linearization
-
-
-@pytest.mark.parametrize("document", [[], {"low_boost_db": 4}, {"low_boost_db": "bad"}])
-def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, document):
-    base = _candidate()
-    _publish(bank, base)
-    path = tmp_path / "bass.json"
-    path.write_text(json.dumps(document))
-    assert crossover_prescriber.main([
-        "compose", "--root", str(bank), "--base", base.fingerprint,
-        "--bass-extension-json", str(path),
-    ]) == 1
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["reason"] in {"composition_bass_invalid", "bass_extension_invalid"}
-    assert len(banked_candidates(root=bank)) == 1
 
 
 def test_tuning_trial_lookup_skips_an_older_capture_of_a_different_graph(bank):
