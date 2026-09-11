@@ -16,6 +16,8 @@ import sys
 from typing import Any
 
 
+# Deliberately not jasper.home_assistant.failed_status: this card is what the
+# child answers when importing that module is itself what failed.
 def _fallback(error: str) -> dict[str, Any]:
     return {
         "configured": False,

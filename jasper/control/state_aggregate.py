@@ -37,6 +37,7 @@ from ..volume_diagnostics import (
 from . import (
     debug_control,
     grouping_supervisor,
+    ha_status_cache,
     heal_supervisor,
     measurement_hold,
     shairport_supervisor,
@@ -129,17 +130,6 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "active_manual_mic_source",
     "cues",
 })
-
-
-def _ha_failed_status(error: str = "probe failed") -> dict[str, Any]:
-    return {
-        "configured": False,
-        "connected": False,
-        "url": "",
-        "instance_name": None,
-        "version": None,
-        "error": error,
-    }
 
 
 def _usbsink_renderer_playing(fanin_status: dict[str, Any] | None) -> bool:
@@ -532,7 +522,7 @@ def _ha_status(snapshot: Callable[[], dict[str, Any]]) -> dict:
         return snapshot()
     except Exception:  # noqa: BLE001
         logger.exception("home assistant state snapshot failed")
-        return _ha_failed_status()
+        return ha_status_cache.failed_status()
 
 
 async def _mux_status(cmd: Callable[..., Any]) -> dict | None:

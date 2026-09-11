@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 
+from jasper import home_assistant
+from jasper.control import ha_status_cache
 from jasper.control.ha_status_cache import HomeAssistantStatusCache
 
 
@@ -306,3 +309,69 @@ def test_run_child_raises_on_child_probe_failure(monkeypatch):
         assert "child exited 1" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected child failure")
+
+
+def test_a_card_carries_the_second_its_own_reading_was_observed(monkeypatch):
+    """`sampled_at` ages the reading, not the read: a checking or failed card
+    keeps the stamp of the reading it is still showing."""
+    now = [0.0]
+    outcomes = [
+        {
+            "configured": True,
+            "connected": True,
+            "url": "http://ha.local:8123",
+            "instance_name": "Home",
+            "version": "2026.6.1",
+            "error": None,
+        },
+        RuntimeError("boom"),
+    ]
+
+    def fake_run_child():
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    cache = HomeAssistantStatusCache(
+        ttl_sec=1,
+        thread_factory=_inline_thread,
+        clock=lambda: now[0],
+        env_reader=_configured_env,
+    )
+    monkeypatch.setattr(cache, "_run_child", fake_run_child)
+
+    before = time.time()
+    cache.snapshot()
+    fresh = cache.snapshot()
+    after = time.time()
+
+    assert before <= fresh["sampled_at"] <= after
+
+    now[0] = 2.0
+    stale = cache.snapshot()
+    failed = cache.snapshot()
+
+    assert stale["stale"] is True
+    assert stale["sampled_at"] == fresh["sampled_at"]
+    assert failed["error"] == "probe failed"
+    assert failed["sampled_at"] == fresh["sampled_at"]
+
+
+def test_a_card_with_no_reading_yet_is_stamped_none():
+    cache = HomeAssistantStatusCache(
+        thread_factory=lambda _target: object(),
+        env_reader=_configured_env,
+    )
+
+    first = cache.snapshot()
+
+    assert first["checking"] is True
+    assert first["sampled_at"] is None
+
+
+def test_an_unprobeable_card_keeps_the_shape_of_an_unconfigured_one():
+    card = ha_status_cache.failed_status()
+
+    assert set(card) == set(home_assistant.unconfigured_status("", "")) | {"sampled_at"}
+    assert isinstance(card["sampled_at"], float)
