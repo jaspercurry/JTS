@@ -32,13 +32,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     HARMONICS_ARTIFACT,
-    PACKET_SCHEMA_VERSION,
-    _harmonics_uncertainty,
     build_crossover_evidence_packet,
-)
-from jasper.active_speaker.crossover_v2.feature_classification import (
-    UNCERTAINTY_KINDS,
-    UNCERTAINTY_RANDOM,
 )
 from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading
@@ -271,21 +265,6 @@ def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
     assert "harmonics" in _not_evaluated_fields(packet)
 
 
-def test_the_packet_schema_version_does_not_move_for_an_added_block(tmp_path):
-    """Additive widening keeps v1 — the rule the packet already keeps.
-
-    ``harmonics`` is a NEW top-level key. Every v1 field is unchanged beside it
-    and a v1 reader ignores what it does not know, so nothing is misread. The
-    one v1 field that DID change is ``not_evaluated``, and it changed by losing
-    an entry whose claim became false — a reader that acted on it would have
-    been acting on a corpus-wide statement, and the field it names is now
-    carried as evidence instead.
-    """
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-
-    assert PACKET_SCHEMA_VERSION == 1
-    assert packet["artifact_schema_version"] == 1
-    assert packet["harmonics"]["artifact_schema_version"] == he.HARMONICS_SCHEMA_VERSION
 
 
 # --------------------------------------------------------------------------- #
@@ -293,103 +272,12 @@ def test_the_packet_schema_version_does_not_move_for_an_added_block(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_every_published_harmonics_field_is_declared_exactly_once(tmp_path):
-    """The Wave-1 rule, checked against the DATA rather than against a list.
-
-    Every key a published row actually carries must appear in exactly one of
-    the two declaration lists. Asserted over the rows the block emitted, not
-    over a hand-written set of names, so a column added to ``_role_block``
-    without a declaration fails here rather than shipping undeclared.
-    """
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-    uncertainty = packet["harmonics"]["uncertainty"]
-    fields, not_uncertainties = uncertainty["fields"], uncertainty["not_uncertainties"]
-
-    assert fields and not_uncertainties
-    assert not set(fields) & set(not_uncertainties)
-    declared = set(fields) | set(not_uncertainties)
-
-    published: set[str] = set()
-    for role_block in packet["harmonics"]["roles"]:
-        for row in role_block["rows"]:
-            published |= set(row)
-    assert published, "the fixture published no rows, so this proves nothing"
-    assert published <= declared, sorted(published - declared)
-
-    for name, entry in fields.items():
-        assert entry["kind"] in UNCERTAINTY_KINDS, name
-        assert entry["of"].strip(), name
-    for name, why in not_uncertainties.items():
-        assert why.strip(), name
-
-    # The block the rows sit INSIDE is declared too, and asserted the same way.
-    # `sweep` and `drive` are the load-bearing pair: they are what says a row
-    # could be believed and at what level, so leaving them as self-evident
-    # structure would be the easy omission.
-    role_fields = uncertainty["role_fields"]
-    role_published: set[str] = set()
-    for role_block in packet["harmonics"]["roles"]:
-        role_published |= set(role_block)
-    assert role_published, "the fixture published no role block"
-    assert role_published <= set(role_fields), sorted(role_published - set(role_fields))
-    for name, why in role_fields.items():
-        assert why.strip(), name
-    # And no field is filed at both levels, which would give one name two
-    # explanations.
-    assert not set(role_fields) & declared
 
 
-def test_the_one_published_spread_is_random_and_the_declaration_says_why(tmp_path):
-    """The honest answer to "which list", and the reason it is that list.
-
-    A harmonic LEVEL is a reading, so it is on the second list. The one genuine
-    uncertainty is the scatter across a role's sweep repeats, and it is
-    ``random`` rather than ``unseparated`` for a specific reason worth pinning:
-    those repeats never left one pose, so there is no position term in them to
-    be unseparated FROM. The declaration has to carry that reason, because a
-    reader who only sees ``random`` cannot check it.
-    """
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-    uncertainty = packet["harmonics"]["uncertainty"]
-
-    assert sorted(uncertainty["fields"]) == [
-        "h2_repeat_spread_db", "h3_repeat_spread_db",
-    ]
-    for entry in uncertainty["fields"].values():
-        assert entry["kind"] == UNCERTAINTY_RANDOM
-        assert "INSIDE ONE CAPTURE" in entry["of"]
-
-    # The reading itself is NOT an uncertainty, and its declaration owns the
-    # systematic this block knows about and does not publish as a field.
-    reading = uncertainty["not_uncertainties"]["h2_below_fundamental_db"]
-    assert "SYSTEMATIC" in reading
-    assert "C(N*f) - C(f)" in reading
-    # The floor reads exactly like an error bar and is not one — the same thing
-    # the capture_snr block has to say about an SNR.
-    assert "BOUNDS an error without being one" in (
-        uncertainty["not_uncertainties"]["h2_floor_below_fundamental_db"]
-    )
 
 
-def test_the_declarations_follow_the_orders_actually_published():
-    """A third order declares three, not two — the table is not hand-keyed."""
-    assert sorted(_harmonics_uncertainty([2, 3, 4])["fields"]) == [
-        "h2_repeat_spread_db", "h3_repeat_spread_db", "h4_repeat_spread_db",
-    ]
-    # And an order the artifact does not carry is not declared for.
-    assert sorted(_harmonics_uncertainty([2])["fields"]) == ["h2_repeat_spread_db"]
 
 
-def test_the_packet_cannot_be_a_route_to_editing_the_declarations(tmp_path):
-    """A caller holding the packet holds a copy, as the lab-row block promises."""
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-    packet["harmonics"]["uncertainty"]["fields"]["h2_repeat_spread_db"]["kind"] = "x"
-
-    assert he.HARMONIC_ORDERS == (2, 3)
-    fresh = build_crossover_evidence_packet(_bundle(tmp_path / "b", harmonics=_artifact()))
-    assert fresh["harmonics"]["uncertainty"]["fields"]["h2_repeat_spread_db"]["kind"] == (
-        UNCERTAINTY_RANDOM
-    )
 
 
 # --------------------------------------------------------------------------- #

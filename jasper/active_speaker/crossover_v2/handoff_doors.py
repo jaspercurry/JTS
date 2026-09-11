@@ -2,10 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The request-time doors that describe a HANDOFF between two branches.
-
-A speaker with no crossover region can open neither — see ADR-0212.
-"""
+"""Request-time door availability (ADR-0212)."""
 
 from __future__ import annotations
 
@@ -13,11 +10,10 @@ from typing import Any, Callable
 
 from .alignment_prescription import (
     ALIGNMENT_NO_CROSSOVER_REGION,
-    alignment_prescription_response_format,
 )
+from .prescription_contract import CONTRACT_COMMAND
 from .topology_prescription import (
     TOPOLOGY_NO_CROSSOVER_REGION,
-    topology_prescription_response_format,
 )
 
 __all__ = ["request_time_prescriptions"]
@@ -30,8 +26,8 @@ def request_time_prescriptions(
     """The two doors that open at session request time, or why they do not."""
     if not no_crossover:
         return {
-            "alignment": alignment_prescription_response_format(),
-            "topology": topology_prescription_response_format(),
+            "alignment": {"available": True, "contract": CONTRACT_COMMAND},
+            "topology": {"available": True, "contract": CONTRACT_COMMAND},
         }
     return {
         door: {

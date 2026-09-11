@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ONE inter-driver delay — and optionally its polarity basin — prescribed from
-a named measurement (#2662).
-
-Pure functions, no I/O, no session. A prescription enters at
-``AlignmentEstimate`` (via ``MeasurementPriors.explicit_alignment_delay_us`` /
-``explicit_alignment_polarity_sign``), never stamped on the candidate after,
-so every downstream consumer reads one field. Two gates compose: provenance
-(a named basis) and the lobe bound, measured from that declared basis and NOT
-from the incumbent delay. Refusals raise and are never clamped to the boundary.
-One parser, two policies: :func:`read_alignment_prescription` is the request
-gate and the only place the bound is applied;
-:func:`alignment_prescription_from_mapping` re-checks shape and provenance but
-not the bound, and returns ``None`` rather than raising.
-"""
+"""Pure alignment contracts: declared delay window, provenance, polarity and lobe."""
 
 from __future__ import annotations
 
@@ -40,10 +27,47 @@ __all__ = [
     "ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION",
     "AlignmentPrescription",
     "AlignmentPrescriptionRefused",
+    "alignment_delay_search_bounds_us",
     "alignment_prescription_from_mapping",
     "alignment_prescription_response_format",
     "read_alignment_prescription",
 ]
+
+# Milliseconds added to each declared window edge for the delay search.
+ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
+
+
+def _declared_alignment_delay_range_ms(
+    source_preset: Any,
+) -> tuple[Any, float, float] | None:
+    """Return the single v2 region plus its valid declared delay range."""
+    regions = getattr(source_preset, "crossover_regions", None)
+    if not regions:
+        return None
+    region = regions[0]
+    delay_range_ms = getattr(region, "delay_range_ms", None)
+    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
+        return None
+    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
+    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
+        return None
+    return region, lo_ms, hi_ms
+
+
+def alignment_delay_search_bounds_us(
+    source_preset: Any,
+    *,
+    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
+) -> tuple[float, float] | None:
+    """Flatness-search magnitude bounds from the preset's declaration."""
+    declared = _declared_alignment_delay_range_ms(source_preset)
+    if declared is None:
+        return None
+    _region, lo_ms, hi_ms = declared
+    lo_ms = max(0.0, lo_ms - margin_ms)
+    hi_ms += margin_ms
+    return lo_ms * 1000.0, hi_ms * 1000.0
+
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +138,7 @@ _PRESCRIPTION_FIELDS = frozenset({
 
 
 class AlignmentPrescriptionRefused(ValueError):
-    """One prescription this module would not accept, and why.
-
-    ``reason`` is from :data:`ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS`, so the
-    classification travels with the raise.
-    """
+    """A prescription refusal with its reason code."""
 
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(detail)
@@ -128,15 +148,9 @@ class AlignmentPrescriptionRefused(ValueError):
 
 @dataclass(frozen=True)
 class AlignmentPrescription:
-    """A validated inter-driver delay, and the measurement that justifies it.
+    """Signed delay (D_woofer - D_tweeter): positive delays the tweeter.
 
-    ``delay_us`` and ``basis_delay_us`` are both in ``AlignmentEstimate``'s
-    signed frame, ``(D_woofer − D_tweeter)``: positive delays the tweeter,
-    negative delays the woofer. One frame for both is what makes
-    :attr:`residual_us` a physical quantity. ``basis_artifacts`` is required —
-    a bound checked against an undeclared basis is arithmetic, not provenance.
-    ``polarity`` is the optional basin pin in the candidate's own vocabulary
-    (``POLARITY_KEEP``/``POLARITY_INVERT``); ``None`` leaves the polarity to its objective.
+    The named measurement supplies the basis, not the incumbent delay.
     """
 
     delay_us: float
@@ -323,8 +337,7 @@ def read_alignment_prescription(
 
     ``declared_bounds_us`` is the PRESET's own unsigned delay-magnitude window,
     already margin-expanded; the caller derives it from
-    ``crossover_v2_flow.alignment_delay_search_bounds_us`` because this module
-    may not import the flow. ``None`` means the preset declares no window.
+    ``alignment_delay_search_bounds_us``. ``None`` means the preset declares no window.
     Required and undefaulted: it is the only bound here that does not rest on a
     number the requester supplied.
 

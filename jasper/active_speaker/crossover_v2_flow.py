@@ -5,6 +5,13 @@
 
 from __future__ import annotations
 
+from .crossover_v2.alignment_prescription import (
+    ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS as ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
+    _declared_alignment_delay_range_ms,
+    alignment_delay_search_bounds_us as alignment_delay_search_bounds_us,
+)
+
+
 import hashlib
 import logging
 import math
@@ -369,10 +376,7 @@ MEASUREMENT_DISTANCE_M = 1.0
 # the capture is ACCEPTED and the confidence is banked as a reservation. See
 # ADR-0180.
 ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
-# ms, added on BOTH sides of the crossover region's declared ``delay_range_ms``
-# (a SEARCH bound, not a physical limit) before a measured delay is rejected:
-# GCC can return a confidently wrong lag that still clears the floor above.
-ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
+
 
 # Measurement-honesty disclosure G1, dB. A DISCLOSURE trigger, not a gate. See
 # ADR-0181.
@@ -407,38 +411,6 @@ back_off_gain = _programs.back_off_gain
 
 
 alignment_to_candidate_fields = _planning.alignment_to_candidate_fields
-
-
-def _declared_alignment_delay_range_ms(
-    source_preset: Any,
-) -> tuple[Any, float, float] | None:
-    """Return the single v2 region plus its valid declared delay range."""
-    regions = getattr(source_preset, "crossover_regions", None)
-    if not regions:
-        return None
-    region = regions[0]
-    delay_range_ms = getattr(region, "delay_range_ms", None)
-    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
-        return None
-    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
-    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
-        return None
-    return region, lo_ms, hi_ms
-
-
-def alignment_delay_search_bounds_us(
-    source_preset: Any,
-    *,
-    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-) -> tuple[float, float] | None:
-    """Flatness-search magnitude bounds from the preset's declaration."""
-    declared = _declared_alignment_delay_range_ms(source_preset)
-    if declared is None:
-        return None
-    _region, lo_ms, hi_ms = declared
-    lo_ms = max(0.0, lo_ms - margin_ms)
-    hi_ms += margin_ms
-    return lo_ms * 1000.0, hi_ms * 1000.0
 
 
 def alignment_delay_plausible(
