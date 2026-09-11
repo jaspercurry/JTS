@@ -145,6 +145,7 @@ from jasper.active_speaker.crossover_v2.verification import (
 from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.audio_measurement.household_mic import (
     household_mic_path,
+    resolved_household_sensitivity,
     resolve_setup_calibration as resolve_household_setup_calibration,
 )
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
@@ -2078,7 +2079,7 @@ def _take_staged_angle_walk(
             measure_spec.spl_ceiling_db_spl,
             topology=topology,
             preset=preset,
-            sensitivity=_household_mic_sensitivity(device),
+            sensitivity=resolved_household_sensitivity(device),
             device=device,
         )
         candidate_scopes = resolve_candidate_scopes(candidate_ids)
@@ -2147,39 +2148,6 @@ def _take_staged_angle_walk(
         lateral_claims,
         spl_monitor,
     )
-
-
-def _household_mic_sensitivity(device: Any) -> Any | None:
-    """This box's remembered measurement mic's absolute reference, or ``None``.
-
-    This door has no mic-serial input, so the household record's own resolved
-    calibration file is the only thing an SPL bound could be scaled by —
-    unless that record is for a DIFFERENT mic than ``device`` (the wired
-    capture's own realized input), the identity check
-    :func:`~jasper.audio_measurement.household_mic._wrong_mic` already owns
-    (reused here rather than forked). ``None`` means nothing here can turn a
-    recording into dB SPL, which is a REFUSAL for a walk that states a
-    ceiling (:func:`_take_staged_angle_walk`).
-    """
-    from jasper.audio_measurement.calibration import (  # lazy: numpy
-        resolve_mic_sensitivity,
-    )
-    from jasper.audio_measurement.household_mic import (
-        _wrong_mic,
-        resolved_household_mic,
-    )
-    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-
-    found = resolved_household_mic()
-    if found is None:
-        return None
-    # ``device``'s established contract is ``model_key`` alone (the same field
-    # ``spl_watch`` reads); the registry's own label drives ``_wrong_mic``'s
-    # comparison rather than requiring a second field of ``device``.
-    device_label = SUPPORTED_MODELS.get(device.model_key, {}).get("label", "")
-    if _wrong_mic(found[1], {"label": device_label}) is not None:
-        return None
-    return resolve_mic_sensitivity(calibration_file=found[1].raw_path)
 
 
 def _resolve_measurement_level_trims(

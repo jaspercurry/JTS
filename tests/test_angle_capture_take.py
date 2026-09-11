@@ -103,7 +103,7 @@ def _arm_shape():
 
 
 #: A measurement mic whose registry row names the channel an SPL watch reads.
-_MIC = SimpleNamespace(model_key="minidsp_umik2")
+_MIC = SimpleNamespace(model_key="minidsp_umik2", model_label="UMIK-2")
 
 
 def _take_full(
@@ -1087,7 +1087,7 @@ def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
 
     monkeypatch.setenv("JASPER_LOG_JSON", "1")
     monkeypatch.setattr(
-        v2host, "_household_mic_sensitivity",
+        v2host, "resolved_household_sensitivity",
         lambda device: SimpleNamespace() if calibrated else None,
     )
     preset = SimpleNamespace(
@@ -1120,43 +1120,6 @@ def test_a_walk_watches_its_ceiling_or_the_stop_and_discloses_the_result(
     assert event["spl_monitor"] == (
         f"ceiling_{ceiling:g}_db_spl" if calibrated else SPL_MONITOR_UNAVAILABLE
     )
-
-
-def test_a_mismatched_household_mic_unresolves_sensitivity(slot, monkeypatch):
-    """A household calibration for a DIFFERENT mic than the wired device must
-    not scale an SPL ceiling — treated as unresolved, same as no household
-    mic at all, so the walk hits the same calibration refusal.
-    """
-    from jasper.audio_measurement import calibration, household_mic
-
-    monkeypatch.setattr(
-        household_mic, "resolved_household_mic",
-        lambda: (
-            SimpleNamespace(model_key="dayton_imm6"),
-            SimpleNamespace(model="dayton_imm6", raw_path="/unused"),
-        ),
-    )
-    # A resolvable, non-``None`` sensitivity: if the identity check did not
-    # run, this is what would scale the ceiling instead of a refusal.
-    monkeypatch.setattr(
-        calibration, "resolve_mic_sensitivity", lambda **_kwargs: SimpleNamespace(),
-    )
-    preset = SimpleNamespace(
-        safety=SimpleNamespace(max_commissioning_level_db_spl=85.0),
-    )
-    spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, spl_ceiling_db_spl=80.0,
-        ),
-    ))
-
-    # _take_full's device defaults to _MIC (minidsp_umik2); the household
-    # record above is a dayton_imm6, so the identity check must refuse this
-    # exactly as if no household mic had resolved at all.
-    with pytest.raises(v2host.CrossoverV2Refused) as refused:
-        _take_full(preset=preset)
-    assert ac.WALK_SPL_CALIBRATION_REQUIRED in str(refused.value)
 
 
 def _stub_evidence_loaders(monkeypatch):

@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
     EXIT_OK as EXIT_OK,
@@ -614,37 +615,30 @@ def _spl_monitor(
     box: BoxDeclaration,
     device: Any,
     mic_serial: str | None,
-    volume_db: float | None = None,
+    volume_db: float | None,
 ) -> tuple[Any, str]:
-    """Resolve the batch's mic and ask the shared owner for its SPL watch."""
+    """This door's SPL watch, from the one owner every door asks
+    (:func:`~jasper.active_speaker.plan_run.spl_watch`).
+
+    What is this door's own: a batch states ONE ceiling, and the declaration it
+    already read is the preset the stop is resolved from -- a second disk load
+    of the same answer is what passing it spares.
+    """
     from jasper.active_speaker.angle_capture import LateralWalkRefused  # lazy: measurement stack import cost
     from jasper.active_speaker.plan_run import spl_watch  # lazy: measurement stack import cost
     from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
-    from jasper.audio_measurement.household_mic import _wrong_mic, resolved_household_mic  # lazy: measurement stack import cost
-    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS  # lazy: measurement stack import cost
 
     stated = {spec.spl_ceiling_db_spl for spec in specs}
     if len(stated) > 1:
         raise BoxNotMeasurable(
             REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling",
         )
-    found = resolved_household_mic()
-    if found is not None and _wrong_mic(
-        found[1], {"label": SUPPORTED_MODELS[device.model_key]["label"]},
-    ) is not None:
-        found = None
-    sensitivity = None if found is None else resolve_mic_sensitivity(
-        calibration_file=found[1].raw_path,
+    sensitivity = (
+        resolve_mic_sensitivity(mic_serial=mic_serial) if mic_serial
+        else resolved_household_sensitivity(device)
     )
-    if sensitivity is None:
-        sensitivity = resolve_mic_sensitivity(mic_serial=mic_serial)
-    if volume_db is not None and sensitivity is None:
-        raise BoxNotMeasurable(
-            REFUSE_VOLUME_REQUIRES_SPL_WATCH,
-            "--volume-db requires a resolvable microphone sensitivity for the live SPL watch",
-        )
     try:
-        return spl_watch(
+        monitor, note = spl_watch(
             next(iter(stated)),
             topology=box.topology,
             preset=box.preset,
@@ -653,6 +647,12 @@ def _spl_monitor(
         )
     except LateralWalkRefused as exc:
         raise BoxNotMeasurable(exc.reason, exc.detail) from exc
+    if volume_db is not None and monitor is None:
+        raise BoxNotMeasurable(
+            REFUSE_VOLUME_REQUIRES_SPL_WATCH,
+            "--volume-db requires a resolvable microphone sensitivity for the live SPL watch",
+        )
+    return monitor, note
 
 
 def _wired_setup_reference() -> Mapping[str, Any] | None:
@@ -681,6 +681,16 @@ async def _measure(
     candidate_scopes: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Open the door once, run the plan through it, close, and report.
+
+    ``request`` is a stated angle walk; without one the batch IS the plan — a
+    spec list at one placement. Either way the loop is
+    :mod:`~jasper.active_speaker.plan_run`'s, so what ends a run and what a take
+    reports have one owner.
+
+    ``specs`` is what the BATCH-level questions are asked of — the level match
+    and the SPL ceiling — which is the spec list itself, or the walk's one
+    template when a ``request`` is given. The specs a walk actually plays are
+    the executor's, built from that template per stop.
 
     One session hold for the whole batch: the physical cost is the microphone
     move, and the graph's variant emit-cache makes each swap a single
@@ -714,6 +724,9 @@ async def _measure(
         CapturedRecordStore, WiredStimulusCapture,
     )
 
+    # Resolved ONCE for the batch and asked for by ANY spec in it: the trims
+    # are a property of the speaker, not of a take. Refused before the door
+    # opens, where an operator can still act on it.
     wants_level_match = any(spec.level_matched for spec in specs)
     trims = _level_match_trims(box) if wants_level_match else {}
     if wants_level_match and not trims:
@@ -725,6 +738,7 @@ async def _measure(
     try:
         device = require_wired_mic()
     except WiredMicMissing as exc:
+        # The kernel owns the sentence; this door owns only its exit code.
         raise BoxNotMeasurable(REFUSE_NO_MIC, str(exc)) from exc
     spl_monitor, spl_note = _spl_monitor(
         specs, box=box, device=device, mic_serial=mic_serial, volume_db=volume_db,
