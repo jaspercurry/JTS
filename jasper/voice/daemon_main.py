@@ -2,6 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Composition root for jasper-voice: `run()` assembles the daemon's
+startup phases; `main()` maps boot-time failures to a park. The
+`jasper-voice` script entry point calls `jasper.voice_daemon.main`,
+which lazily delegates here."""
+
 from __future__ import annotations
 
 import asyncio
@@ -244,15 +249,14 @@ def _wake_detection_supported() -> bool:
     """Whether the install profile grants always-on wake inference.
 
     ``read_install_profile()`` raises ``ValueError`` on an unparseable
-    marker token. ``main()`` special-cases only ``InputDeviceUnavailable``,
-    ``VoiceConfigError`` (``VoiceProviderNotConfigured`` included) and
-    ``SpeechVADSetupError`` — anything else would traceback out, exit 1, and
-    climb ``Restart=on-failure`` to ``StartLimitAction=reboot``. Fail OPEN
-    (today's pre-ADR-0217 behaviour: wake detection supported, legs planned
-    as always) rather than reboot a speaker over a corrupt marker file. Mirrors
-    ``jasper.control.server._control_install_profile``, which fails the
-    opposite way because its stakes are a route allowlist, not a daemon
-    crash.
+    marker token; letting that propagate would climb
+    ``Restart=on-failure`` to ``StartLimitAction=reboot`` (`main()` only
+    parks on the exceptions in ``_BOOT_PARK_ARMS``). Fail OPEN instead
+    (pre-ADR-0217 behaviour: wake detection supported, legs planned as
+    always) rather than reboot a speaker over a corrupt marker file.
+    Mirrors ``jasper.control.server._control_install_profile``, which
+    fails the opposite way because its stakes are a route allowlist,
+    not a daemon crash.
     """
     try:
         profile = read_install_profile()
@@ -275,10 +279,8 @@ def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
     naming the model there would tell an operator wake detection is live on a
     box that will never wake.
 
-    Extracted for the same reason as ``_tts_ready_detail`` — the string is
-    the operator's evidence (the #2205 hardware verification greps for it in
-    the journal), so it gets a test rather than living unreachable inside a
-    ~350-line ``run()``.
+    Issue #2205's hardware verification greps the journal for this exact
+    string, hence its own test.
     """
     return cfg.wake_model if planned_wake_legs else "disabled(no wake leg)"
 
@@ -495,10 +497,9 @@ def _build_registry(
     # to the relevant packs via ToolDeps below. See
     # jasper/tools/__init__.py UntrustedContentMonitor.
     untrusted_monitor = UntrustedContentMonitor()
-    # Reuse the router built once for the coordinator; if not passed,
-    # build it here for backward-compat with any caller that doesn't
-    # plumb the shared instance through. Resolved once into the deps
-    # bundle so transport + spotify capture the same Router.
+    # Falls back to building fresh only for backward-compat with a caller
+    # that doesn't plumb the coordinator's router through; resolved once
+    # so transport + spotify capture the same Router.
     router = spotify_router if spotify_router is not None else _build_router(cfg)
     # Tool registration is data-driven: the ordered TOOL_PACKS registry
     # in jasper.tools.packs decides what's included. Per-tool gates
@@ -659,10 +660,6 @@ def _resolve_pricing(cfg: Config) -> tuple[Pricing, dict[str, dict]]:
         cfg.daily_spend_cap_usd, cfg.daily_spend_cap_safety_multiplier,
     )
     if pricing.label.startswith("unpriced:"):
-        # No rate for the active model (not in the bundled dated defaults
-        # nor the override). We do NOT invent one — cost will read $0 and
-        # the spend cap can't bound it until a rate is entered at
-        # /assistant/voice/.
         log_event(
             logger,
             "pricing.unpriced",
@@ -1339,8 +1336,6 @@ def main() -> None:
     except _BOOT_PARK_EXCEPTIONS as exc:
         configure_logging()
         arm = next(a for a in _BOOT_PARK_ARMS if isinstance(exc, a.exc_type))
-        # InputDeviceUnavailable's message is reported as `detail` (plus
-        # `device`); every other arm reports it as `reason`.
         fields: dict[str, object] = (
             {"device": exc.device, "detail": str(exc)}
             if isinstance(exc, InputDeviceUnavailable)
