@@ -97,7 +97,6 @@ __all__ = [
     "DriverPrescription",
     "driver_max_q_for_gain",
     "driver_passbands_from_safety_profile",
-    "driver_prescription_from_mapping",
     "driver_prescription_response_format",
     "driver_prescription_route",
     "driver_prescription_to_candidate_fields",
@@ -357,9 +356,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     EXPECTED_DELTA_FIELD,
     DECLARED_TILT_FIELD,
     "rationale",
-    # Written BY the gate, accepted on the way back in so a durable block
-    # round-trips through this parser. A request that supplies them is
-    # harmless: the gate re-derives every one of them.
+    # The gate re-derives these fields if a request supplies them.
     "prescription_class",
     "passbands_hz",
     "classification_basis",
@@ -424,8 +421,7 @@ class DriverPrescription:
     Every ``int | None`` / ``float | None`` disclosure below separates "nobody
     computed this" (``None``) from "computed, and the answer is none" (``0``);
     a receipt that spelled them the same would claim a measurement it never
-    made. The durable read-back reports ``None`` for all of them. The
-    ``displaced_*`` three also report it after a full request-gate run whenever
+    made. The ``displaced_*`` fields also report it after a request whenever
     the evidence carried no incumbent — which is every take from the spool.
     """
 
@@ -658,12 +654,7 @@ def _finite_number(value: Any, *, field: str) -> float:
 
 
 def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
-    """The filter list's SHAPE and its per-role count, and none of its bounds.
-
-    The shape is what a durable read-back must also re-check; the bounds are
-    what only the request boundary applies. The per-role COUNT sits here
-    because it needs no evidence to decide.
-    """
+    """Parse the filter list and its per-role count."""
     if raw is None:
         _refuse(FILTER_MALFORMED, "a prescription must state a filters list")
     if isinstance(raw, Mapping) or isinstance(raw, (str, bytes)):
@@ -1178,13 +1169,6 @@ def _parse_pinned_trim(
 ) -> tuple[tuple[str, float], ...]:
     """The named trims, judged ONCE — shape, range and scope in one place.
 
-    A pin rides beside the filters rather than replacing the solver: see
-    :attr:`DriverPrescription.pinned_trim_db`. This is the only judgment it
-    gets, which is why it sits in :func:`_parse_prescription` with the other
-    shape checks rather than with the bounds — the durable read-back must
-    re-apply it too, and a banked pin outside this range could never have been
-    produced by the door that wrote it.
-
     **Scope: only a role this same document already names.** A pin on a role the
     filters say nothing about is a bare level command, which is exactly what
     ``role_attenuations_db`` stays prohibited for. The pin travels with the chain
@@ -1254,11 +1238,7 @@ def _parse_prescription(
 ) -> tuple[
     tuple[dict[str, Any], ...], tuple[tuple[str, float], ...], str, str, str, str, int
 ]:
-    """Shape, identity and provenance — and none of the bounds.
-
-    Shared whole between the request gate and the durable read-back, so the only
-    thing that differs between those two is their gate policy.
-    """
+    """Parse the prescription shape, identity and provenance."""
     if not isinstance(raw, Mapping):
         _refuse(
             DRIVER_PRESCRIPTION_MALFORMED,
@@ -1517,67 +1497,6 @@ def driver_prescription_to_candidate_fields(
             entry[MIC_TIER_FIELD] = str(previous[MIC_TIER_FIELD])
         merged[role] = entry
     return {field: merged}
-
-
-def driver_prescription_from_mapping(raw: Any) -> DriverPrescription | None:
-    """A prescription read back out of this repository's own durable state.
-
-    Shape and provenance only — the bounds have one owner and it is the
-    request gate; re-applying them here could only refuse a round that really
-    ran — and ``None`` instead of a raise. It does NOT route and rebuilds no
-    classification basis, which is why
-    :func:`driver_prescription_to_candidate_fields` asks
-    :func:`driver_prescription_route` itself.
-    """
-    if raw is None:
-        return None
-    try:
-        # The dropped-character count is discarded: this reader holds the
-        # already-truncated text and cannot know what was originally written.
-        filters, pinned_trim_db, fingerprint, model, operator, rationale, _dropped = (
-            _parse_prescription(raw)
-        )
-        expected_delta_db, declared_tilt = _pre_registration(raw)
-    except BlendPrescriptionRefused:
-        return None
-    bands = _passbands_from_mapping(raw.get("passbands_hz") if isinstance(raw, Mapping) else None)
-    if not bands:
-        return None
-    return DriverPrescription(
-        filters=filters,
-        pinned_trim_db=pinned_trim_db,
-        prescription_class=(
-            "boost" if any(float(f["gain"]) > 0.0 for f in filters) else "cut"
-        ),
-        packet_fingerprint=fingerprint,
-        prescriber_model=model,
-        prescriber_operator=operator,
-        passbands_hz=bands,
-        rationale=rationale,
-        expected_delta_db=expected_delta_db,
-        declared_tilt_db_per_octave=declared_tilt,
-    )
-
-
-def _passbands_from_mapping(raw: Any) -> tuple[tuple[str, float, float], ...]:
-    """The banked bands, or ``()`` so the caller reads it as absent.
-
-    No Nyquist bound, unlike the spool's band reader: this one EVALUATES
-    nothing. The strict ordering keeps a degenerate band out of the record.
-    """
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-        return ()
-    out: list[tuple[str, float, float]] = []
-    for entry in raw:
-        if not isinstance(entry, Sequence) or isinstance(entry, (str, bytes)):
-            return ()
-        if len(entry) != 3 or not isinstance(entry[0], str) or not entry[0].strip():
-            return ()
-        lo, hi = _finite_or_none(entry[1]), _finite_or_none(entry[2])
-        if lo is None or hi is None or not 0.0 < lo < hi:
-            return ()
-        out.append((entry[0].strip(), lo, hi))
-    return tuple(out)
 
 
 # --------------------------------------------------------------------------- #

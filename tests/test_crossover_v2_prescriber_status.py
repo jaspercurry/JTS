@@ -2,9 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The orientation verb: where a speaker stands, from the doors' own readers.
-
-Three properties are pinned here, and they fail in different ways:
+"""Three properties are pinned here, and they fail in different ways:
 
 * **it is a reader** — ``status`` writes nothing, and in particular does not
   consume the staged prescription it reports;
@@ -30,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from jasper.active_speaker.crossover_alignment import POLARITY_INVERT
+from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.alignment_prescription import (

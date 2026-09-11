@@ -84,8 +84,7 @@ from .camilla_yaml import (
     _role_polarity,
     emit_active_speaker_baseline_config,
 )
-from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
-from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
+from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH, POLARITY_INVERT, POLARITY_KEEP
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .graph_safety import unprotected_tweeter_outputs, view_from_yaml_dict
 from .level_trim import MAX_ATTENUATION_DB

@@ -2,9 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""#2662: the explicit, bounded, provenance-carrying delay prescription.
-
-Covers the request gate (shape, provenance, and the one derivation of the
+"""Covers the request gate (shape, provenance, and the one derivation of the
 bound), the aligner's commitment of a prescribed delay, the single-owner claim
 end to end into the emitted graph and its proof, the round receipt's
 provenance, and — the control that matters most — that a session with no
@@ -25,7 +23,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
+from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_NO_CROSSOVER_REGION,

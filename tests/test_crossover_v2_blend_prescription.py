@@ -1711,8 +1711,7 @@ def test_a_long_rationale_is_truncated_and_disclosed_never_refused(packet):
     assert banked.rationale_dropped_chars == 0
     # The durable read-back holds only the already-truncated text, so it
     # cannot know what was dropped: re-parsing it would recompute 0 and
-    # silently zero the banked disclosure. `None` is the honest answer,
-    # mirroring `driver_prescription_from_mapping`'s identical convention.
+    # silently zero the banked disclosure. `None` is the honest answer.
     assert blend_prescription_from_mapping(
         accepted.to_dict()
     ).rationale_dropped_chars is None

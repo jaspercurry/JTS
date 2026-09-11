@@ -30,7 +30,7 @@ from jasper.log_event import log_event
 from ..branch_chain import CrossoverSection, branch_headroom_db, sections_by_role
 from ..linearization_fit import linearization_filters_by_role
 from .candidates import CloudFitEvidence, LinearizationState
-from .contracts import CandidateAcousticContext
+from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP
 from .driver_prescription import (
     LINEARIZATION_CANDIDATE_FIELD,
     DriverPrescription,
@@ -117,11 +117,6 @@ def alignment_to_candidate_fields(
     role choice. ``(None, None, None)`` when no alignment is trustworthy or
     there is a lone branch — the candidate falls back to a trims-only apply.
     """
-    from jasper.active_speaker.crossover_alignment import (
-        POLARITY_INVERT,
-        POLARITY_KEEP,
-    )
-
     est = analysis.alignment
     if est is None or est.status != ALIGNMENT_OK or len(roles) < 2:
         return None, None, None

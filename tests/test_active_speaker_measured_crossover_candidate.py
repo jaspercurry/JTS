@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 import yaml as yaml_lib
 
-from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
+from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.measured_crossover_candidate import (
     CANDIDATE_KIND,
     _OPTIONAL_FIELD_TYPES,
@@ -133,7 +133,6 @@ def test_alignment_rejects_unknown_polarity_vocabulary():
 
 
 def test_alignment_reuses_crossover_alignment_polarity_vocabulary():
-    # Both existing propose_crossover_alignment tokens are accepted verbatim.
     MeasuredCrossoverAlignment(delay_us=1.0, delay_role="tweeter", polarity=POLARITY_KEEP)
     MeasuredCrossoverAlignment(delay_us=1.0, delay_role="tweeter", polarity=POLARITY_INVERT)
 

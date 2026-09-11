@@ -128,9 +128,8 @@ _TWO_WAY_REGION_KEY = _region_key(*ADJACENT_PAIRS_BY_WAY[2][0])
 def _record_region_key(record: Mapping[str, Any]) -> str | None:
     """The paired-evidence key ``record`` belongs under, from its own stamp.
 
-    Reads the ``region`` block ``commissioning_capture.record_summed_acoustic_
-    capture`` stamps at record time (``{"lower_role", "upper_role", "fc_hz"}``,
-    validated in `record_summed_validation`). ``None`` when the record has no
+    The ``region`` block contains ``{"lower_role", "upper_role", "fc_hz"}``,
+    validated in `record_summed_validation`. ``None`` when the record has no
     resolvable region of its own — the caller decides whether a 2-way legacy
     fallback applies (see `_TWO_WAY_REGION_KEY`).
     """
@@ -191,9 +190,8 @@ def _record_comparison_scope(record: Mapping[str, Any]) -> tuple[str, str | None
 def _valid_region(value: Any) -> dict[str, Any] | None:
     """Validate a caller-supplied ``region`` block before persisting it.
 
-    ``value`` is ``commissioning_capture.record_summed_acoustic_capture``'s
-    ``{"lower_role", "upper_role", "fc_hz"}`` stamp — two non-empty role
-    strings and a finite, positive ``fc_hz``. Anything else (missing,
+    ``value`` contains two non-empty role strings (``lower_role``, ``upper_role``)
+    and a finite, positive ``fc_hz``. Anything else (missing,
     malformed, unresolvable-fc ``None``) persists as ``None`` rather than a
     half-formed region a pair reader could misfile.
     """
@@ -553,27 +551,9 @@ def _latest_current_driver_confirmations(
 ) -> dict[str, dict[str, Any]]:
     """Latest by-ear driver confirmation per target, immune to sweep evidence.
 
-    ``record_driver_measurement`` is the single writer for both the operator
-    by-ear floor-confirmation path (no ``acoustic`` block -- the guided ramp
-    ack: ``sound_setup``'s ``/active-speaker/commission-ramp-ack`` route into
-    ``commission_ramp.record_ramp_operator_ack``) and
-    the sweep+analyze commissioning path (``acoustic`` populated by
-    ``commissioning_capture.record_driver_acoustic_capture``). Both append to
-    the same durable ``driver_measurements`` list, and
-    :func:`_latest_current_driver_records` picks whichever is newest per
-    target regardless of which kind it is -- so a sweep capture recorded
-    seconds after a healthy confirmation can become "the confirmation"
-    :func:`current_driver_floor_evidence` validates, even when that sweep
-    capture failed its OWN, structurally different floor-confirmation check
-    (its own fresh per-capture playback id can never equal the original
-    confirmation's) and recorded ``captured: False`` (JTS3 run 13 -> run 14:
-    a woofer sweep clobbered the healthy ear-check record, then run 14 was
-    refused pre-playback with "the saved driver confirmation is incomplete").
-    This index only ever considers confirmation-kind records (no ``acoustic``
-    block), so the operator's actual ear-check remains discoverable no matter
-    how much sweep evidence has been recorded since -- mirroring
-    ``_record_summed_kind``'s acoustic-block partition for summed validations
-    (see its docstring for the analogous Slice-2 fix).
+    Records with an ``acoustic`` block are sweep evidence, not operator floor
+    confirmations. A newer sweep record must not replace a valid confirmation
+    with a different playback id.
     """
     target_by_id = {target["target_id"]: target for target in targets}
     latest: dict[str, dict[str, Any]] = {}
@@ -1611,10 +1591,8 @@ def record_summed_validation(
     :func:`record_driver_measurement` stores. See its docstring.
 
     ``raw["region"]``, when supplied, is the crossover region this capture
-    belongs to (``{"lower_role", "upper_role", "fc_hz"}`` —
-    ``commissioning_capture.record_summed_acoustic_capture`` resolves it from
-    the preset at the analyzed fc). Validated through :func:`_valid_region`
-    and stored verbatim as ``region``, or ``None`` when absent or malformed —
+    belongs to (``{"lower_role", "upper_role", "fc_hz"}``). Validated through
+    :func:`_valid_region` and stored as ``region``, or ``None`` when absent or malformed —
     never a half-formed region a pair reader could misfile. See
     :func:`_latest_current_summed_records` for how region + polarity
     (``acoustic.expect_null``) combine into paired evidence.
