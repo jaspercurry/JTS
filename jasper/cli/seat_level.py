@@ -55,7 +55,7 @@ control at 100% before trusting any absolute SPL this prints.
 
 Usage::
 
-    jasper-seat-level --mic-serial 810-8494
+    jasper-seat-level
 
 Exit 0 only on a converged, banked reference; 1 on any refusal. Either way the
 answer is ONE JSON document on stdout — the reference reached, or
@@ -80,7 +80,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Awaitable, NamedTuple
 
 from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
@@ -109,6 +109,7 @@ from jasper.audio_measurement.calibration import (
     REFUSE_MIC_CALIBRATION_UNAVAILABLE,
     resolve_mic_sensitivity,
 )
+from jasper.audio_measurement.household_mic import resolved_household_mic
 
 from ._logging import CLI_LOG_FORMAT
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
@@ -133,13 +134,7 @@ def _refused(
 
 
 def _ambient_phrase(ramp: dict[str, Any]) -> str:
-    """Disclose a room floor the pass had to measure twice.
-
-    The rise gate reads ``observed - floor``, so which window supplied the floor
-    changes which readings the pass trusted. An operator reading a terminal is
-    not reading ``--json``, and a silently replaced floor is exactly the kind of
-    correction that must be stated rather than applied invisibly.
-    """
+    """Disclose a room floor the pass had to measure twice."""
     if not ramp.get("ambient_remeasured"):
         return ""
     # Leading ". " and not " ": this is APPENDED to a detail that does not end
@@ -492,6 +487,9 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
             "measurement bands",
         )
 
+    if not args.calibration_file and not args.mic_serial:
+        found = resolved_household_mic()
+        args.calibration_file = found[1].raw_path if found is not None else None
     sensitivity = resolve_mic_sensitivity(
         calibration_file=args.calibration_file,
         mic_serial=args.mic_serial,
@@ -540,26 +538,27 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     cam = primary_controller()
     meter = WiredLevelMeter(mic.pcm, channels=args.mic_channels)
     player: Any = None
-    # #2938: `exec_correction_play` is itself the only await between "nothing
-    # is running" and "the process exists" -- there is no earlier moment to
-    # bind `player` to. A cancel arriving in that window must not be lost, so
-    # it is captured here and honored the instant the handle lands instead of
-    # being a silent no-op against an already-spawned stimulus.
-    cancel_requested = False
+    # #2938: cancellation must survive scheduling and process creation.
+    play_generation = cancelled_generation = 0
 
-    async def _play() -> None:
+    def _play() -> Awaitable[None]:
+        nonlocal play_generation
+        play_generation += 1
+        return _play_generation(play_generation)
+
+    async def _play_generation(generation: int) -> None:
         nonlocal player
         player = await exec_correction_play(
             stimulus, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        if cancel_requested:
+        if cancelled_generation >= generation:
             player.terminate()
         else:
             await player.wait()
 
     def _cancel() -> None:
-        nonlocal cancel_requested
-        cancel_requested = True
+        nonlocal cancelled_generation
+        cancelled_generation = play_generation
         if player is not None and player.returncode is None:
             player.terminate()
 
@@ -643,8 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    PRECONDITION above) -- level first, then re-run this\n"
             "\n"
             "EXAMPLE\n"
-            "  jasper-seat-level \\\n"
-            "      --calibration-file /var/lib/jasper/mic-cal/umik2-7003219.txt\n"
+            "  jasper-seat-level\n"
             "\n"
             "EXIT CODES\n"
             "  0  converged and banked; stdout carries the reference dB\n"
@@ -653,8 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     reason (interrupted, or the ramp's own refusal\n"
             "     vocabulary), with the window the stop abandoned and the\n"
             "     whole ramp telemetry under detail; one sentence on stderr\n"
-            "  2  usage error (argparse) -- most commonly neither\n"
-            "     --calibration-file nor --mic-serial was passed"
+            "  2  usage error (argparse)"
         ),
     )
     parser.add_argument(
@@ -678,7 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--calibration-file",
-        help="explicit vendor calibration .txt carrying the 'Sens Factor' line",
+        help="vendor calibration .txt with 'Sens Factor'; defaults to the household mic",
     )
     parser.add_argument(
         "--mic-serial",
@@ -722,8 +719,6 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format=CLI_LOG_FORMAT,
     )
-    if not args.calibration_file and not args.mic_serial:
-        build_parser().error("pass --calibration-file or --mic-serial")
     try:
         result, detail = asyncio.run(_run(args))
     except KeyboardInterrupt as exc:
@@ -747,14 +742,13 @@ def main(argv: list[str] | None = None) -> int:
         del carried["status"], carried["reason"]
         return failed(EXIT_REFUSED, str(result.reason), {**carried, "detail": detail})
     print(f"converged: {detail}", file=sys.stderr)
-    # The ramp banked the reference; the telemetry behind it stays on the
-    # ``event=`` lines rather than riding a converged run's answer.
     print(
         json.dumps(
             {
                 "reference_volume_db": result.reference_volume_db,
                 "measured_db_spl": result.measured_db_spl,
                 "restored": result.restored,
+                "ramp": result.ramp,
                 "detail": detail,
                 "out": str(seat_level_reference_state_path()),
             },

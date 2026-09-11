@@ -2437,10 +2437,6 @@ def _bench_run(
 
 
 def test_the_replayed_bench_runs_reproduce_the_receipts_own_volumes(tmp_path):
-    """The fixtures are the receipts, not an approximation of them.
-
-    If this drifts, every assertion below is asserting against a simulation.
-    """
     converged = _bench_run(
         tmp_path,
         ambient_db_spl=RUN86_AMBIENT_DB_SPL,
@@ -2448,9 +2444,6 @@ def test_the_replayed_bench_runs_reproduce_the_receipts_own_volumes(tmp_path):
         target=RUN86_TARGET,
     )
     assert converged.status == "converged", converged.reason
-    # The receipts' own volumes and medians, plus the bank confirm's re-read at
-    # the last of them -- the same volume, and on this fixture the same level,
-    # which is why it agrees and banks.
     volumes = list(RUN86_LEVELS)
     levels = list(RUN86_LEVELS.values())
     assert [step["volume_db"] for step in converged.ramp["steps"]] == volumes + [
@@ -2459,8 +2452,13 @@ def test_the_replayed_bench_runs_reproduce_the_receipts_own_volumes(tmp_path):
     assert [step["observed_db_spl"] for step in converged.ramp["steps"]] == levels + [
         levels[-1]
     ]
-    # The bite the bench ran with follows from the bench's own span.
     assert converged.ramp["bite_db"] == 7.5
+    assert set(converged.to_dict()["ramp"]) == {
+        "start_db", "ceiling_db", "bite_db", "bite_fraction", "ambient_dbfs",
+        "ambient_db_spl", "ambient_remeasured", "ambient_remeasured_db_spl",
+        "required_rise_db", "settle_window_s", "settle_agree_db", "settle_timeout_s",
+        "watchdog_s", "final_volume_db", "slope_db_per_db", "steps",
+    }
 
 
 # --- defect 1: the refusal published nothing about the window it stopped in --
