@@ -2137,9 +2137,10 @@ class WakeLoop:
                 await self._cleanup_after_failed_begin()
             # A turn that died because the connection went down between
             # the paused gate above and here (the idle context reset
-            # reopens inside `_begin_turn`) must still answer the press.
-            # See `_arbitrate_acquire_drain`.
-            if self._connection.is_paused():
+            # reopens inside `_begin_turn`) must still answer the press
+            # — same condition and cue as the wake path's acquire
+            # failure. See `_arbitrate_acquire_drain`.
+            if self._connection.is_paused() or self._connection.last_failure_detail():
                 self._spawn_manual_refusal_cue(self._connection.wake_cue())
             else:
                 self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)
