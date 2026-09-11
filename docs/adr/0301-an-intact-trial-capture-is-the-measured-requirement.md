@@ -13,10 +13,6 @@ an apply-time writer proposed for the flag ran after the gate it had to open.
 The owner ratified option (a) on issue #4942. The why and evidence are in the
 issue's brief v2.1 §§2.7 and 3 D3 and evidence comments 3–5 and 12–15.
 
-Three older records contain stale facts and remain immutable. ADR-0179 counts
-five engine seams although four remain. ADR-0198 defers `RecordStore` protocol
-slots that have since reduced to `bank`. ADR-0014 names a source-text pin that
-no longer exists; the invariant needs a behavioral pin when this design lands.
 
 ## Decision
 

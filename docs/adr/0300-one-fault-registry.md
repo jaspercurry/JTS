@@ -13,10 +13,6 @@ to choose recovery. That made the same fault acquire several owners.
 The owner ratified option (a) on issue #4942. The why and evidence are in the
 issue's brief v2.1 §2.5 and evidence comments 1, 2, 5, and 11.
 
-Three older records contain stale facts and remain immutable. ADR-0179 counts
-five engine seams although four remain. ADR-0198 defers `RecordStore` protocol
-slots that have since reduced to `bank`. ADR-0014 names a source-text pin that
-no longer exists; the invariant needs a behavioral pin when this design lands.
 
 ## Decision
 
