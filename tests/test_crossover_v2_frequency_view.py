@@ -827,13 +827,13 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     asyncio.run(bank('repeat'))
     write_manifest(bundle, program='bass')
     before = {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
-    destination = tmp_path / 'bass.json'
+    out = tmp_path / 'bass.json'
     assert round_views_main([
-        'bass', str(bundle), '--calibration-root', str(calibration_root), '--out', str(destination),
+        'bass', str(bundle), '--calibration-root', str(calibration_root), '--out', str(out),
     ]) == 0
-    view = json.loads(destination.read_text())
+    view = json.loads(out.read_text())
     first, repeat = view['takes']
-    assert first['program_id'] == program.program_id
+    assert first['program_id'] == first['record']['program_id'] == program.program_id
     assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
     frequencies = np.array(first['freqs_hz'])

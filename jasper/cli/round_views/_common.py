@@ -39,7 +39,7 @@ from jasper.cli._refusal import (
     failed,
     stage,
 )
-from jasper.cli._report import write_report
+from jasper.cli._report import report_answer, write_report
 
 AUTHORITY_TIER = "advisory (analysis views save artifacts)"
 
@@ -137,7 +137,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     ),
 }
 
-#: ``inventory``'s own report, named apart from the views it reports on.
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
 
 #: A round directory is operator-pulled evidence, not a validated
@@ -203,10 +202,7 @@ def _write(
 
 def answer(view: str, *, out: Path | None = None, line: str, **fields: Any) -> int:
     """Print scalar results and an artifact pointer (ADR-0237)."""
-    if out is not None:
-        fields["out"] = str(out)
-        fields["bytes"] = out.stat().st_size
-    return answered({"view": view, **fields}, line)
+    return answered(report_answer(view, out, **fields), line)
 
 
 class RoundSetRefused(ValueError):

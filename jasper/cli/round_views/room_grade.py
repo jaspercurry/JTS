@@ -7,9 +7,7 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
-from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.room_grade import (
     RoomMedian,
@@ -48,19 +46,6 @@ def _median(path: Path) -> RoomMedian:
     )
 
 
-def _band_line(band: Mapping[str, Any]) -> str:
-    if band["rms_db"] is None:
-        return f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: unavailable"
-    spread = "n/a" if band["spread_db"] is None else f"{band['spread_db']:.1f} dB"
-    line = (
-        f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: rms {band['rms_db']:.1f} dB "
-        f"max {band['max_db']:.1f} dB spread {spread}"
-    )
-    if band["incumbent_rms_db"] is None:
-        return line
-    return f"{line} | incumbent rms {band['incumbent_rms_db']:.1f} (Δ {band['delta_rms_db']:+.1f})"
-
-
 def _cmd_room_grade(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
     resolve_set(banked.inputs, args.set)
@@ -88,10 +73,6 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
                         else bundle_graph_scopes(banked.session_dir),
         "graph_scopes_source": "selected_median" if median.evidence is not None else "round",
     }
-    # Read before filed, as close-reference does: a grade survives an --out the
-    # operator may not write.
-    for band in artifact["bands"]:
-        print(_band_line(band), file=sys.stderr)
     written = _write(artifact, args.out, _view_out(args, banked))
     regressed = artifact["regressed_bands"]
     comparison = artifact["comparison"]

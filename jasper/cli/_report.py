@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""JSON report writer for the tuning CLIs: sort_keys, no NaN."""
+"""JSON artifacts and answers for tuning CLIs."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,6 @@ from jasper.atomic_io import atomic_write_text
 
 
 def _jsonable(value: Any) -> Any:
-    """numpy scalars as numbers; paths and anything else as text."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -22,11 +21,13 @@ def _jsonable(value: Any) -> Any:
 
 
 def render_report(payload: Any) -> str:
-    """``payload`` as the one JSON text every one of these tools publishes."""
+    return json.dumps(payload, indent=2, sort_keys=True, default=_jsonable, allow_nan=False)
 
-    return json.dumps(
-        payload, indent=2, sort_keys=True, default=_jsonable, allow_nan=False
-    )
+
+def report_answer(view: str, out: Path | None, **fields: Any) -> dict[str, Any]:
+    if out is not None:
+        fields.update(out=str(out), bytes=out.stat().st_size)
+    return {"view": view, **fields}
 
 
 def output_path(value: str) -> Path:
