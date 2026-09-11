@@ -62,11 +62,11 @@ def test_require_usable_input_raises_when_nothing_opened() -> None:
         _require_usable_input([], [], ["udp:9892"])
     # The declared-but-unopenable device is named, so the journal says WHICH
     # source was expected rather than just "no mic".
-    assert "udp:9892" in str(exc.value)
+    assert exc.value.device == "udp:9892"
 
     with pytest.raises(InputDeviceUnavailable) as exc:
         _require_usable_input([], [], [])
-    assert "<none>" in str(exc.value)
+    assert exc.value.device == "<none>"
 
 
 def test_require_usable_input_accepts_either_input_alone() -> None:

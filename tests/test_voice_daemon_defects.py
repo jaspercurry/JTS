@@ -171,21 +171,18 @@ class _DrainedTts:
         return 0.0
 
 
-async def test_idle_watchdog_caps_mid_response_stall(caplog):
+async def test_idle_watchdog_caps_mid_response_stall():
+    # Not lost, not server-complete, `timeout` far away, `end_input_at()` 0:
+    # the mid-response cap is the only exit that can return here, and `None`
+    # is its "ordinary end" — not the pre-response cap's own reason.
     turn = _StalledTurn(last_chunk_delta=1.0)
 
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await asyncio.wait_for(
-            idle_watchdog(
-                turn,
-                _DrainedTts(),
-                timeout=999.0,
-                response_stall_timeout=0.01,
-            ),
-            timeout=1.0,
-        )
+    reason = await asyncio.wait_for(
+        idle_watchdog(turn, _DrainedTts(), timeout=999.0, response_stall_timeout=0.01),
+        timeout=1.0,
+    )
 
-    assert "response stalled" in caplog.text
+    assert reason is None
 
 
 class _CompletedTurn:

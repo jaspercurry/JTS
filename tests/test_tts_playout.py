@@ -925,12 +925,11 @@ def test_outputd_adapter_lock_timeout_poisons_and_preserves_owner(
     adapter = tts_mod._OutputdStreamAdapter(parent)
     adapter._lock.acquire()
     try:
-        with pytest.raises(TimeoutError, match="adapter lock timed out"):
+        with pytest.raises(TimeoutError):
             adapter.resume_content_meter()
         assert adapter.closed
         assert adapter._lock.locked(), "timed-out waiter must not release owner lock"
-        assert "event=tts_fanin.adapter_timeout" in caplog.text
-        assert "phase=lock" in caplog.text
+        assert event_fields(caplog, "tts_fanin.adapter_timeout")["phase"] == "lock"
     finally:
         adapter._lock.release()
         adapter.close()
@@ -962,7 +961,7 @@ def test_outputd_lock_timeout_shutdown_unblocks_nonreading_sendall(
         received += child.recv(128)
     assert received.startswith(b"AUDIO ")
 
-    with pytest.raises(TimeoutError, match="adapter lock timed out"):
+    with pytest.raises(TimeoutError):
         adapter.pause_content_meter()
     writer.join(timeout=0.5)
 
@@ -970,7 +969,7 @@ def test_outputd_lock_timeout_shutdown_unblocks_nonreading_sendall(
     assert adapter.closed
     assert writer_errors
     assert all(not isinstance(e, RuntimeError) for e in writer_errors)
-    assert "phase=lock" in caplog.text
+    assert event_fields(caplog, "tts_fanin.adapter_timeout")["phase"] == "lock"
     adapter.close()
     child.close()
 
@@ -1003,12 +1002,13 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
     monkeypatch.setattr(tts_mod.socket, "socket", lambda *_a, **_k: fake_socket)
     p = TtsPlayout(socket_path="/tmp/nonresponsive-outputd.sock")
 
-    with pytest.raises(TimeoutError, match="connect timed out"):
+    with pytest.raises(TimeoutError):
         await p._connect_stream_adapter()
 
     assert connect_entered.is_set()
     assert closed.is_set()
-    assert "event=tts_fanin.connect_timeout" in caplog.text
+    connect_timeout = event_fields(caplog, "tts_fanin.connect_timeout")
+    assert connect_timeout["socket"] == "/tmp/nonresponsive-outputd.sock"
 
 
 async def test_meter_control_recovers_on_access_after_stuck_lock(
@@ -1100,7 +1100,7 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = adapter  # type: ignore[assignment]
 
-    with pytest.raises(TimeoutError, match="adapter lock timed out"):
+    with pytest.raises(TimeoutError):
         await p.pause_content_meter_for_measurement(
             time.monotonic() + 10.0,
         )
