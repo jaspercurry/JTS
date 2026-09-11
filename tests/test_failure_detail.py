@@ -53,6 +53,20 @@ def test_falls_back_to_str_without_a_usable_body(exc: BaseException) -> None:
 
 
 @pytest.mark.parametrize(
+    "exc",
+    [TimeoutError(), ConnectionResetError()],
+    ids=["timeout", "reset"],
+)
+def test_an_exception_with_no_text_falls_back_to_its_type(
+    exc: BaseException,
+) -> None:
+    """A bare `TimeoutError` carries no message, and an open budget that
+    expires reaches the daemon through one — as a reason of its own, not
+    as an empty string."""
+    assert failure_detail(exc) == type(exc).__name__
+
+
+@pytest.mark.parametrize(
     "secret",
     [
         "xai-abcdefgh1234567890abcd",

@@ -118,7 +118,7 @@ def failure_detail(exc: BaseException, *, literals: tuple[str, ...] = ()) -> str
     text = _rejection_text(exc, literals=literals)
     if len(text) > FAILURE_DETAIL_LIMIT:
         text = text[:FAILURE_DETAIL_LIMIT - 3] + "..."
-    return text
+    return text or type(exc).__name__
 
 
 def http_status(exc: BaseException) -> int | None:
