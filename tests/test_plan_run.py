@@ -337,6 +337,19 @@ def test_a_stop_the_spec_will_not_carry_refuses_the_run_before_it_plays(
     assert fakes.play.calls == []
 
 
+def test_a_walk_this_door_plays_nothing_of_is_refused_before_it_plays() -> None:
+    """Every stop is per-driver, which this loop plays no spec for -- composing
+    that phase program is the session host's job. Without this refusal the run
+    would bank zero takes and still call itself measured."""
+    request = ac.per_driver_at([0])
+
+    result, fakes = asyncio.run(_run_gated(request))
+
+    assert result.status == plan_run.RUN_REFUSED
+    assert result.reason == ac.WALK_NOTHING_PLAYABLE
+    assert fakes.play.calls == []
+
+
 # --------------------------------------------------------------------------- #
 # the level bound
 # --------------------------------------------------------------------------- #

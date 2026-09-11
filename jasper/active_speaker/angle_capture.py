@@ -126,6 +126,7 @@ __all__ = [
     "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_CANDIDATE_NOT_MEASURABLE",
+    "WALK_NOTHING_PLAYABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "refuse_unplayable_walk_policy",
@@ -916,6 +917,13 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+
+#: Every stop in the walk is :data:`REGIME_PER_DRIVER`, so the playable subset
+#: :func:`~.plan_run.run_plan` resolves is empty -- nothing here composes that
+#: regime's phase program (the session host's job, not this loop's), and a run
+#: that measured zero takes is a refusal, not an empty success.
+WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
+
 SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 
 WALK_REFUSAL_REASONS = frozenset({
@@ -935,6 +943,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_DELAY_NOT_ACCEPTED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_CANDIDATE_NOT_MEASURABLE,
+    WALK_NOTHING_PLAYABLE,
 })
 
 

@@ -1219,9 +1219,13 @@ def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path
          measure.REFUSE_REQUEST_UNREADABLE),
         (["--request", "staged", "--position", "7"],
          measure.REFUSE_REQUEST_UNREADABLE),
+        (["--request", "staged", "--spl-ceiling-db-spl", "70"],
+         measure.REFUSE_REQUEST_UNREADABLE),
+        (["--request", "staged", "--specs", "unread.json"],
+         measure.REFUSE_REQUEST_UNREADABLE),
         (["--request", "staged"], measure.REFUSE_NO_STAGED_REQUEST),
     ],
-    ids=["kind", "position", "nothing-staged"],
+    ids=["kind", "position", "spl-ceiling-db-spl", "specs", "nothing-staged"],
 )
 def test_a_walk_states_its_own_takes_so_the_flags_are_refused_beside_it(
     staged, capsys, argv, reason,

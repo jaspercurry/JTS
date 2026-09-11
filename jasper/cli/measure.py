@@ -30,7 +30,11 @@ from jasper.cli._refusal import (
     STATUS_BY_CODE,
     failed,
 )
-from jasper.cli._stimulus_args import add_stimulus_args, spec_kwargs_from_args
+from jasper.cli._stimulus_args import (
+    STIMULUS_ARG_DESTS,
+    add_stimulus_args,
+    spec_kwargs_from_args,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -406,9 +410,14 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
 
 #: The flags a ``--request`` walk already states for itself: the template names
 #: what every take measures, and the stops name where. Refused beside it rather
-#: than read and thrown away.
-_WALK_STATED_FLAGS = ("kind", "graph_scope", "axis", "vertical_deg", "regime",
-                      *_PER_TAKE_FLAGS)
+#: than read and thrown away. Stimulus dest names come from
+#: :data:`~jasper.cli._stimulus_args.STIMULUS_ARG_DESTS`, the one place they are
+#: spelled, rather than a second hand-copied list here; ``dict.fromkeys`` drops
+#: the overlap with :data:`_PER_TAKE_FLAGS`, which already names three of them.
+_WALK_STATED_FLAGS = tuple(dict.fromkeys((
+    "kind", "graph_scope", "axis", "vertical_deg", "regime", "specs",
+    *_PER_TAKE_FLAGS, *STIMULUS_ARG_DESTS,
+)))
 
 
 def request_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, str]]:

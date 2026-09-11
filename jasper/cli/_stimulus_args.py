@@ -16,6 +16,14 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+#: The dest name argparse gives each flag :func:`add_stimulus_args` adds
+#: (``--spl-ceiling-db-spl`` -> ``spl_ceiling_db_spl``) -- the one place a
+#: caller reads to recognize these flags by name without building a parser,
+#: e.g. refusing them beside a flag that already states them for a whole walk
+#: (``jasper-measure --request``). Keep in sync with the flags below; a
+#: second hand-copied list is the bug this constant exists to prevent.
+STIMULUS_ARG_DESTS = ("level_dbfs", "sweep_band_hz", "spl_ceiling_db_spl", "sweep_s")
+
 
 def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
     """Add the four ``MeasureSpec`` stimulus flags, under their one spelling."""

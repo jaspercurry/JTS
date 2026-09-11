@@ -39,7 +39,9 @@ from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
+    REGIME_PER_DRIVER,
     WALK_CEILING_ABOVE_STOP,
+    WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED,
     WALK_STIMULUS_NOT_ACCEPTED,
     AngleCaptureRequest,
@@ -352,16 +354,23 @@ async def run_plan(
             # Only the stop's own pose is new on that construction; the spec's
             # own sentence names the field it refused.
             raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+        # The playable subset, resolved ONCE and numbered over itself. The gate
+        # carries a pose's grant on the pair ``(index - 1, attempt - 1)``, so a
+        # skipped stop counted in the numbering would ask a second placement
+        # grant at the pose the microphone is already standing at.
+        playable = [
+            (offset, spec) for offset, spec in enumerate(specs) if spec is not None
+        ]
+        if not playable:
+            raise LateralWalkRefused(
+                WALK_NOTHING_PLAYABLE,
+                f"every stop in this walk is {REGIME_PER_DRIVER!r}: this loop "
+                "plays a spec, not the phase's own composed program, so "
+                "nothing here would play",
+            )
     except LateralWalkRefused as exc:
         return _refused(fingerprint, exc, spl_monitor=spl_monitor)
 
-    # The playable subset, resolved ONCE and numbered over itself. The gate
-    # carries a pose's grant on the pair ``(index - 1, attempt - 1)``, so a
-    # skipped stop counted in the numbering would ask a second placement grant
-    # at the pose the microphone is already standing at.
-    playable = [
-        (offset, spec) for offset, spec in enumerate(specs) if spec is not None
-    ]
     stops = [resolved[offset] for offset, _spec in playable]
     places = [request.stops[offset].place for offset, _spec in playable]
     batches = [
