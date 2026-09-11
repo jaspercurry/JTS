@@ -885,6 +885,16 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys, 
     assert json.loads(capsys.readouterr().out)["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
 
 
+@pytest.mark.parametrize("verb", ["plan", "stage"])
+def test_invalid_resolved_drive_level_is_reported_by_name(slot, monkeypatch, capsys, verb):
+    monkeypatch.setattr(cli, "resolve_anchor_level", lambda: slr.ResolvedLevel(77.5, 1.0, "8108494"))
+    code = cli.main([verb, "--program", "room"])
+    body = json.loads(capsys.readouterr().out)
+    assert code == (cli.EXIT_OK if verb == "plan" else cli.EXIT_REFUSED)
+    assert (body["level"] if verb == "plan" else body)["reason"] == "walk_level_policy_invalid"
+    assert not spool.staged_angle_request_pending()
+
+
 def test_stage_refuses_by_name_when_no_anchor_is_banked(
     slot, tmp_path, monkeypatch, capsys
 ):

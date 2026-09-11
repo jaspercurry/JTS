@@ -61,6 +61,7 @@ from jasper.active_speaker.angle_capture import (
     REGIME_SUMMED,
     AngleCaptureRequest,
     LevelPolicy,
+    LateralWalkRefused,
     AngleStop,
     announced_indexes,
     request_for_program,
@@ -303,12 +304,14 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
 def _resolved_level(request: AngleCaptureRequest) -> tuple[AngleCaptureRequest, LevelUnresolved | None]:
     try:
         anchor = resolve_anchor_level()
+        return replace(request, level=LevelPolicy(
+            anchor_db_spl=anchor.anchor_db_spl,
+            reference_volume_db=anchor.reference_volume_db, mic_serial=anchor.mic_serial,
+        )), None
     except LevelUnresolved as exc:
         return request, exc
-    return replace(request, level=LevelPolicy(
-        anchor_db_spl=anchor.anchor_db_spl,
-        reference_volume_db=anchor.reference_volume_db, mic_serial=anchor.mic_serial,
-    )), None
+    except LateralWalkRefused as exc:
+        return request, LevelUnresolved(exc.reason, exc.detail)
 
 
 def _level_block(level: LevelPolicy | LevelUnresolved) -> dict[str, Any]:
