@@ -152,7 +152,7 @@ class MeasureInterrupted(RuntimeError):
         self.playback = session.last_playback.as_dict()
         self.bundle_dir = str(store.bundle_dir)
         self.session_id = str(session.session_id)
-        #: WHICH spec was in flight, and its zero-based place in the batch: the
+        #: WHICH spec was in flight, and its 1-based place in the batch: the
         #: ids alone cannot say where a batch stopped.
         self.spec = spec
         self.spec_index = int(spec_index)
@@ -828,10 +828,10 @@ async def _measure(
                     # operator interrupting a long run most needs the ids of
                     # what banked, and the door's give-back still runs shielded
                     # on the way out.
-                    stopped_at = result.stopped_at["stop_index"]
+                    stopped_at = result.stopped_at["index"]
                     raise MeasureInterrupted(
                         result.reason, result.detail, session, store,
-                        spec=result.specs[stopped_at], spec_index=stopped_at,
+                        spec=result.specs[stopped_at - 1], spec_index=stopped_at,
                     )
                 if result.status == plan_run.RUN_REFUSED:
                     raise BoxNotMeasurable(result.reason, result.detail)
@@ -852,10 +852,6 @@ async def _measure(
     # The package's own path and its counts; the take ROWS stay in the package,
     # which is where an unbounded list belongs (ADR-0237).
     report["plan_result"] = plan_result
-    report["counts"] = {
-        "measured": result.takes_measured, "skipped": result.takes_skipped,
-        "poses": result.poses, "mic_moves": result.mic_moves,
-    }
     report["spl_monitor"] = result.spl_monitor
     report["measurement_volume_db"] = box.session_volume_db
     report["measurement_loudness_volume_db"] = door.measurement_loudness_volume_db
@@ -868,6 +864,10 @@ async def _measure(
 
 def _session_scoped_aborts() -> dict[type[BaseException], str]:
     """The failures that end the RUN, by TYPE, and the reason each reports.
+
+    An operator's Ctrl-C is HERE as ``CancelledError`` and under no second name:
+    ``asyncio.run`` cancels the main task on SIGINT, so a suspended frame is
+    never handed a ``KeyboardInterrupt``.
 
     The scope split is drawn by exception type at this one site and nowhere
     else — no string matching, no runtime judgement. Everything here is a
@@ -888,7 +888,6 @@ def _session_scoped_aborts() -> dict[type[BaseException], str]:
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
         CommissioningEvidenceStoreError: REFUSE_STORE_LOST,
         asyncio.CancelledError: REFUSE_CANCELLED,
-        KeyboardInterrupt: REFUSE_CANCELLED,
     }
 
 

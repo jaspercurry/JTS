@@ -139,7 +139,7 @@ def test_a_walk_costs_one_placement_per_pose_and_one_take_per_stop(
     result, fakes = asyncio.run(_run_gated(request, gate=gate))
 
     assert result.status == plan_run.RUN_MEASURED
-    assert result.poses == len(angles)
+    assert len(result.wall_s) == len(angles)
     assert result.mic_moves == len(angles)
     assert result.takes_measured == len(angles) * len(candidates)
     assert result.takes_skipped == 0
@@ -268,7 +268,7 @@ def test_an_interrupted_run_keeps_what_it_banked_and_names_where_it_stopped(
     assert result.attempts == banked_before_stop + 1
     assert len(fakes.banked) == banked_before_stop
     assert result.stopped_at == {
-        "pose_index": banked_before_stop // 2, "stop_index": banked_before_stop,
+        "pose_index": banked_before_stop // 2, "index": banked_before_stop + 1,
     }
     # The one give-back still happens: a session that dies holding its claim
     # leaves the speaker at a measurement level nobody chose.
@@ -302,7 +302,7 @@ def test_a_level_policy_nothing_steps_yet_is_refused_before_a_stimulus(
 
     assert result.status == plan_run.RUN_REFUSED
     assert result.reason == ac.WALK_POLICY_UNSUPPORTED_YET
-    assert (result.takes_measured, result.poses) == (0, 0)
+    assert (result.takes_measured, result.wall_s) == (0, ())
     assert fakes.play.calls == []
     assert fakes.banked == []
 
@@ -394,9 +394,10 @@ def test_the_package_round_trips_through_json_with_its_counts() -> None:
     assert document["schema_version"] == plan_run.PLAN_RESULT_SCHEMA_VERSION
     assert document["takes_measured"] == len(document["takes"]) == 2
     assert document["stopped_at"] is None
-    assert document["decisions_needed"] == []
+    assert document["stops_planned"] == 2
     assert [take["candidate_id"] for take in document["takes"]] == ["fp-a", "fp-b"]
-    assert [take["stop_index"] for take in document["takes"]] == [0, 1]
+    # 1-based, the base the gate and the persisted take identity both count in.
+    assert [take["index"] for take in document["takes"]] == [1, 2]
     assert all(take["record_ids"] for take in document["takes"])
 
 

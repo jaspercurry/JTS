@@ -1695,10 +1695,6 @@ def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
     """The dry run still says what the walk would cost; the SLOT only ever holds a
     walk something can play. Refused on the way in and on the way out, so a
     hand-written document is refused the same way a staged one is.
-
-    The SPL ceiling left this arm when the executor learned to install a
-    monitor (#4873): a stated ceiling is now bounded against the box's own
-    commissioning stop where the run resolves it, not refused at the door.
     """
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **walk,
@@ -1720,9 +1716,9 @@ def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
     assert taking.value.reason == ac.WALK_POLICY_UNSUPPORTED_YET
 
 
-def test_a_stated_ceiling_now_stages_and_rides_the_walk(spool_slot) -> None:
-    """The arm that left: a walk stating an SPL ceiling banks and comes back
-    with it, because something installs a monitor for it now."""
+def test_a_stated_ceiling_stages_and_rides_the_walk(spool_slot) -> None:
+    """A walk stating an SPL ceiling banks and comes back with it: the door that
+    plays it installs the monitor that watches it."""
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
         template=ac.walk_template(

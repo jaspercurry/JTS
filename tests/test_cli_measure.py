@@ -560,7 +560,7 @@ def test_a_walk_that_stops_part_way_still_names_what_it_banked(
     assert detail["reason"] == REFUSE_GRAPH_LOST
     assert len(detail["record_ids"]) == 1, "the banked take was not reported"
     assert detail["bundle_dir"]
-    assert detail["stopped_at"]["index"] == 0
+    assert detail["stopped_at"]["index"] == 1
     # Still given back: a partial result is not a stranded speaker.
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
@@ -957,7 +957,7 @@ def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
     assert detail["reason"] == (REFUSE_GRAPH_LOST if setup == "graph" else measure.REFUSE_CANCELLED)
     assert detail["playback"]["emission"] == "not_started"
     assert detail["stopped_at"]["candidate_id"] == "second"
-    assert detail["stopped_at"]["index"] == 1
+    assert detail["stopped_at"]["index"] == 2
     assert len(detail["record_ids"]) == 1
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
 
@@ -990,7 +990,7 @@ def test_capture_stop_ends_ladder_and_batch_and_restores_tune(
     assert code == EXIT_REFUSED
     assert payload["detail"]["reason"] == reason
     assert payload["detail"]["playback"] == stopped_playback.as_dict()
-    assert payload["detail"]["stopped_at"]["index"] == 0
+    assert payload["detail"]["stopped_at"]["index"] == 1
     assert len(payload["detail"]["record_ids"]) == 1
     assert len(speaker["played"]) == 2
     assert speaker["cam"].loaded[-1] == speaker["cam"].entry_path.read_text()
@@ -1041,7 +1041,7 @@ def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
     assert payload["status"] == "refused"
     detail = payload["detail"]
     assert detail["reason"] == measure.REFUSE_STORE_LOST
-    assert detail["stopped_at"]["index"] == 1
+    assert detail["stopped_at"]["index"] == 2
     assert len(detail["record_ids"]) == 1
     # Still given back: a partial result is not a stranded speaker.
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
@@ -1181,9 +1181,6 @@ def test_a_staged_walk_measures_through_the_same_loop_as_a_spec_batch(
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK
     assert payload["n_takes"] == 1
-    assert payload["counts"] == {
-        "measured": 1, "skipped": 0, "poses": 1, "mic_moves": 0,
-    }
     record = json.loads(
         (Path(payload["bundle_dir"]) / ARTIFACTS / payload["record_ids"][0]).read_text()
     )

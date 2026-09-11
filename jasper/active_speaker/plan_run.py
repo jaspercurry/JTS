@@ -185,16 +185,19 @@ def spl_watch(
 class TakeResult:
     """One take: where in the plan it sat, what played, and what banked.
 
-    ``attempt`` is the begin this take was admitted under; nothing here retries,
-    so it tracks :attr:`stop_index` and the gate's batch carry reads the pair.
-    ``level_db`` and ``stimulus_dbfs`` are the FIRST stimulus's -- a ladder walk
-    plays its remaining rungs at the same claimed level, and every rung it banked
-    is in ``record_ids``. ``started_s``/``ended_s`` are seconds from the run's
-    own start, never a wall clock: the package is about durations.
+    ``index`` is 1-based, the base the gate and the persisted take identity
+    (:func:`~.crossover_v2.spatial._take_identity`) both count in. ``attempt``
+    is the begin this take was admitted under; nothing here retries, so it
+    tracks :attr:`index` and the gate's batch carry reads the pair.
+    ``level_db`` and ``stimulus_dbfs`` are the FIRST stimulus's, and every rung
+    the take banked is in ``record_ids`` (the ladder rule is
+    :meth:`~.crossover_v2.session.TuningSession.measure`'s).
+    ``started_s``/``ended_s`` are seconds from the run's own start, never a wall
+    clock: the package is about durations.
     """
 
     pose_index: int
-    stop_index: int
+    index: int
     attempt: int
     candidate_id: str
     graph_fingerprint: str
@@ -209,7 +212,7 @@ class TakeResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "pose_index": self.pose_index,
-            "stop_index": self.stop_index,
+            "index": self.index,
             "attempt": self.attempt,
             "candidate_id": self.candidate_id,
             "graph_fingerprint": self.graph_fingerprint,
@@ -228,9 +231,10 @@ class PlanResult:
     """What one run of a plan produced, compact enough to read whole.
 
     Counts first, then one row per take. ``stopped_at`` is present only on an
-    interrupted run and names the pose and stop in flight, which the banked ids
-    alone cannot locate. ``decisions_needed`` is what the run wants a caller to
-    decide before the next one -- empty until something fills it.
+    interrupted run and names the pose and the 1-based stop in flight, which
+    the banked ids alone cannot locate. ``wall_s`` holds one duration per pose
+    the run WALKED, so its length is the poses reached rather than the poses
+    named.
 
     ``specs`` (one per stop this run PLAYS, in play order -- a skipped stop
     names none) and ``outcomes`` (the engine's own answers, in take order) are
@@ -242,9 +246,6 @@ class PlanResult:
 
     request_fingerprint: str
     status: str
-    poses: int
-    stops_planned: int
-    takes_measured: int
     takes_skipped: int
     mic_moves: int
     #: Begins this run admitted, INCLUDING the one an interruption stopped --
@@ -257,11 +258,19 @@ class PlanResult:
     reason: str = ""
     detail: str = ""
     stopped_at: Mapping[str, int] | None = None
-    decisions_needed: tuple[Any, ...] = ()
     specs: tuple[MeasureSpec, ...] = field(default=(), repr=False)
     outcomes: tuple[tuple[MeasureOutcome, str], ...] = field(
         default=(), repr=False,
     )
+
+    @property
+    def stops_planned(self) -> int:
+        """Stops the plan named: the ones with a spec to play, plus the skipped."""
+        return len(self.specs) + self.takes_skipped
+
+    @property
+    def takes_measured(self) -> int:
+        return len(self.takes)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -271,7 +280,6 @@ class PlanResult:
             "status": self.status,
             "reason": self.reason,
             "detail": self.detail,
-            "poses": self.poses,
             "stops_planned": self.stops_planned,
             "takes_measured": self.takes_measured,
             "takes_skipped": self.takes_skipped,
@@ -281,7 +289,6 @@ class PlanResult:
             "spl_monitor": self.spl_monitor,
             "stopped_at": dict(self.stopped_at) if self.stopped_at else None,
             "takes": [take.to_dict() for take in self.takes],
-            "decisions_needed": list(self.decisions_needed),
         }
 
 
@@ -352,28 +359,30 @@ async def run_plan(
     # carries a pose's grant on the pair ``(index - 1, attempt - 1)``, so a
     # skipped stop counted in the numbering would ask a second placement grant
     # at the pose the microphone is already standing at.
-    playable = [offset for offset, spec in enumerate(specs) if spec is not None]
-    batches = [
-        [place for place, _offset in group]
-        for _place, group in groupby(
-            enumerate(playable), key=lambda row: request.stops[row[1]].place,
-        )
+    playable = [
+        (offset, spec) for offset, spec in enumerate(specs) if spec is not None
     ]
-    indexes = [place + 1 for place in range(len(playable))]
+    stops = [resolved[offset] for offset, _spec in playable]
+    places = [request.stops[offset].place for offset, _spec in playable]
+    batches = [
+        [offset for offset, _place in group]
+        for _key, group in groupby(enumerate(places), key=lambda row: row[1])
+    ]
+    indexes = list(range(1, len(stops) + 1))
     screens = pose_batch_screens(
-        indexes, [prompts[offset] for offset in playable],
-        [resolved[offset].candidate_id for offset in playable],
+        indexes, [stop.prompt for stop in stops],
+        [stop.candidate_id for stop in stops],
     )
     entries = {
         index: SimpleNamespace(screen={
-            **resolved[offset].screen,
-            **position_screen_keys(resolved[offset].prompt),
+            **stop.screen,
+            **position_screen_keys(stop.prompt),
             **screens.get(index, {}),
         })
-        for index, offset in zip(indexes, playable)
+        for index, stop in zip(indexes, stops)
     }
     return await _run(
-        batches, [specs[offset] for offset in playable], entries=entries,
+        batches, [spec for _offset, spec in playable], entries=entries,
         skipped=len(specs) - len(playable), fingerprint=fingerprint,
         session=session, gate=gate, aborts=aborts, spl_monitor=spl_monitor,
         clock=clock,
@@ -422,10 +431,10 @@ async def _run(
 ) -> PlanResult:
     """Poses outer, takes inner, under one grant per pose.
 
-    An interruption -- a cancel, an operator's own ``KeyboardInterrupt``, or one
-    of the caller's ``aborts`` -- KEEPS every take already banked and reports
-    where it stopped. The session's close puts the speaker back exactly once
-    either way, which is the engine's own guarantee and not re-taken here.
+    An interruption -- one of :data:`_OWN_CODE` or one of the caller's
+    ``aborts`` -- KEEPS every take already banked and reports where it stopped.
+    The session's close puts the speaker back exactly once either way, which is
+    the engine's own guarantee and not re-taken here.
     """
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts)
     started = clock()
@@ -455,7 +464,7 @@ async def _run(
             except aborting as exc:
                 stopped = (
                     _abort_reason(exc, aborts), str(exc) or type(exc).__name__,
-                    {"pose_index": pose_index, "stop_index": offset},
+                    {"pose_index": pose_index, "index": index},
                 )
                 break
             # Read before the next take swaps the install: the session re-proves
@@ -463,7 +472,7 @@ async def _run(
             # THIS take measured through.
             outcomes.append((outcome, str(session.graph_fingerprint)))
             takes.append(_take(
-                outcome, pose_index=pose_index, stop_index=offset, attempt=attempt,
+                outcome, pose_index=pose_index, index=index, attempt=attempt,
                 graph_fingerprint=str(session.graph_fingerprint),
                 started_s=take_started - started, ended_s=clock() - started,
             ))
@@ -473,9 +482,6 @@ async def _run(
     result = PlanResult(
         request_fingerprint=fingerprint,
         status=RUN_MEASURED if stopped is None else RUN_INTERRUPTED,
-        poses=len(batches),
-        stops_planned=len(specs) + skipped,
-        takes_measured=len(takes),
         takes_skipped=skipped,
         mic_moves=mic_moves,
         attempts=attempts,
@@ -492,7 +498,7 @@ async def _run(
         logger, "active_speaker.plan_run",
         level=logging.WARNING if stopped is not None else logging.INFO,
         status=result.status, reason=result.reason,
-        poses=result.poses, takes=result.takes_measured,
+        poses=len(result.wall_s), takes=result.takes_measured,
         skipped=result.takes_skipped, mic_moves=result.mic_moves,
         spl_monitor=result.spl_monitor, request=fingerprint[:12],
     )
@@ -536,7 +542,7 @@ def _take(
     outcome: MeasureOutcome,
     *,
     pose_index: int,
-    stop_index: int,
+    index: int,
     attempt: int,
     graph_fingerprint: str,
     started_s: float,
@@ -550,7 +556,7 @@ def _take(
     )
     return TakeResult(
         pose_index=pose_index,
-        stop_index=stop_index,
+        index=index,
         attempt=attempt,
         candidate_id=outcome.spec.candidate_id,
         graph_fingerprint=graph_fingerprint,
@@ -576,9 +582,6 @@ def _refused(
     return PlanResult(
         request_fingerprint=fingerprint,
         status=RUN_REFUSED,
-        poses=0,
-        stops_planned=0,
-        takes_measured=0,
         takes_skipped=0,
         mic_moves=0,
         attempts=0,
