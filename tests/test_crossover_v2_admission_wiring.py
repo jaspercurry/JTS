@@ -41,6 +41,7 @@ from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     FakeSeams,
+    _check_analysis,
     _cloud_conductor,
     _conductor,
     _run_phase,
@@ -120,6 +121,28 @@ def test_an_ordinary_begin_never_asks_the_apply_seam():
     assert len(asked) == 1
 
 
+@pytest.mark.parametrize(("fault", "budget", "counter", "last_fault", "code"), [
+    ({"glitch_detected": True}, admission.MAX_AUTOMATIC_RETAKES_PER_POSITION, "by_speaker",
+     {"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL),
+    ({"linearity_ok": False}, admission.MAX_EXTRA_ATTEMPTS_PER_POSITION, "by_household",
+     {"glitch_detected": True}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE),
+])
+def test_a_spent_budget_stays_terminal_when_the_fault_owner_changes(fault, budget, counter, last_fault, code):
+    fakes = FakeSeams()
+    fakes.check = lambda program: replace(_check_analysis(program), **fault)
+    c = _conductor(fakes)
+    for attempt in range(1, budget + 1):
+        _run_phase(c, 1, attempt)
+    fakes.check = lambda program: replace(_check_analysis(program), **last_fault)
+    final = _run_phase(c, 1, budget + 1)
+    assert final["attempts"][counter] == budget
+    assert final["terminal"] is True and final["next"] == "stop"
+    assert final["code"] == code
+    with pytest.raises(CaptureBeginRefused) as refused:
+        c.authorize_begin(1, budget + 2)
+    assert refused.value.code == code
+
+
 def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
     """The ledger's refusal reaches callers as ``CrossoverV2FlowError``.
 
@@ -148,7 +171,7 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
 
     with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
-    assert "no extra attempts left" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
 
 
 def test_the_spent_slot_outcome_tells_left_out_from_kept():
@@ -310,7 +333,7 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
         base = dict(
             verify_hold=False, apply_failure_code=lambda: "", ledger=None,
             last_reason=None, non_retriable=frozenset({"stopped"}),
-            default_code="locate_failed", geometry_locked_code="geometry",
+            default_code="locate_failed",
         )
         return admission.assess_begin(**{**base, **kw}).kind
 
@@ -860,7 +883,6 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
         last_reason=None,
         non_retriable=frozenset(),
         default_code="unused",
-        geometry_locked_code="unused",
     )
     from_no_ledger = admission.assess_begin(
         ledger=None,
@@ -869,7 +891,6 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
         last_reason=None,
         non_retriable=frozenset(),
         default_code="unused",
-        geometry_locked_code="unused",
     )
 
     assert from_fresh_ledger.kind == admission.ADMIT
