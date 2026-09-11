@@ -36,6 +36,8 @@ from tests._wake_loop import _UNSET, wake_loop_for_tests
 class _SpyTurn:
     """LiveTurn stand-in exposing the forward + end-of-input surface."""
 
+    continuous_input = False
+
     def __init__(self) -> None:
         self.send_audio_calls = 0
         self.end_input_calls = 0
@@ -380,6 +382,11 @@ def test_corpus_label_never_records_a_button_turn_as_a_no_speech_abort():
 class _TeardownTurn:
     """The LiveTurn surface `_end_turn_inner` actually touches, so the
     real teardown can run start to finish without a provider."""
+
+    continuous_input = False
+
+    def discard_input(self) -> None:
+        return None
 
     def __init__(
         self,
@@ -970,6 +977,8 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
 
 class _AcquiredTurn:
     """Enough of a LiveTurn for the real `_begin_turn` to run to the end."""
+
+    continuous_input = False
 
     async def send_audio(self, _data) -> None:
         return None

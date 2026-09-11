@@ -92,7 +92,7 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
         turn = _make_turn(cls)
         assert isinstance(turn, Interruptible), provider_id
         entry = next(p for p in PROVIDERS if p.id == provider_id)
-        assert bool(getattr(turn, "continuous_input", False)) == entry.continuous_input
+        assert turn.continuous_input is entry.continuous_input
         # Only a provider that stops generating on the user's own voice is
         # exempt from the host's barge-in flush. Every other turn carries the
         # default, so a fifth adapter cannot inherit the exemption by accident.

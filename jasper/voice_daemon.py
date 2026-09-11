@@ -1402,8 +1402,8 @@ class WakeLoop:
         await self._assistant_output.prepare_loudness()
 
     def _invalidate_input(self, reason: str) -> None:
-        if self._turn is not None and (discard := getattr(self._turn, "discard_input", None)):
-            discard()
+        if self._turn is not None:
+            self._turn.discard_input()
         self._input_admit_after = time.monotonic()
         self._input_invalidation_reason = reason
         self._input_suspended.update(self._legs)
@@ -2029,7 +2029,8 @@ class WakeLoop:
         """
         if self._manual_endpoint_this_turn:
             return "push_to_talk"
-        return "continuous_audio" if getattr(self._turn, "continuous_input", False) else "silero_aec"
+        continuous = self._turn is not None and self._turn.continuous_input
+        return "continuous_audio" if continuous else "silero_aec"
 
     def _corpus_endpointer_label(self, *, user_speech_seen: bool) -> str:
         """The wake-events ``endpointer`` value for the finished turn.
@@ -2052,7 +2053,7 @@ class WakeLoop:
         ):
             await self._end_session_input("push-to-talk hold cap")
             return
-        if getattr(self._turn, "continuous_input", False):
+        if self._turn is not None and self._turn.continuous_input:
             if not self._continuous_speech_started:
                 self._continuous_speech_started = time.monotonic()
             self._continuous_last_speech = time.monotonic()
@@ -2076,7 +2077,7 @@ class WakeLoop:
         if self._followup.deadline:
             await self._handle_followup_frame(frame, time.monotonic())
             return
-        if getattr(self._turn, "continuous_input", False) and not self._manual_endpoint_this_turn:
+        if self._turn.continuous_input and not self._manual_endpoint_this_turn:
             await self._handle_continuous_frame(frame, captured_at=captured_at)
             return
         if self._input_ended:
@@ -2745,13 +2746,13 @@ class WakeLoop:
             play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
                 report=self._playback_report,
-                continuous=getattr(self._turn, "continuous_input", False),
+                continuous=self._turn.continuous_input,
                 admission_refusal=self._assistant_output.admission_refusal,
                 on_response_started=self._turn_observer("first_response", event_stage="response_started"),
                 on_first_write=self._turn_observer("first_write"),
             )
         )
-        continuous = getattr(self._turn, "continuous_input", False)
+        continuous = self._turn.continuous_input
         idle = asyncio.create_task(
             continuous_watchdog(
                 self._turn, self._tts, followup_seconds=self._followup.seconds,
@@ -2963,8 +2964,7 @@ class WakeLoop:
         if self._ending or self._turn is None:
             return False
         self._ending = True
-        if discard := getattr(self._turn, "discard_input", None):
-            discard()
+        self._turn.discard_input()
         try:
             await await_output_cleanup_owned(
                 self._end_turn_inner(reason), task_name="turn-end-cleanup",

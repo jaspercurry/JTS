@@ -191,9 +191,9 @@ class LiveTurn(Interruptible, Protocol):
     The daemon acquires a turn from a `LiveConnection` on wake, streams
     user audio frames into it, awaits the model's response, and releases
     the turn when idle. The connection itself stays open across turns
-    (see `LiveConnection`). Adapters declaring `continuous_input = True`
-    retain this object through follow-ups; `backend_pending` reports delegated
-    work and `discard_input()` synchronously revokes buffered microphone audio.
+    (see `LiveConnection`). Adapters declaring `continuous_input` retain
+    this object through follow-ups, and `backend_pending` reports their
+    delegated work.
     """
 
     # True when the host may hold this turn open for a local follow-up
@@ -201,7 +201,18 @@ class LiveTurn(Interruptible, Protocol):
     # carries the default; a continuous session runs its own window.
     host_followup_window: bool
 
+    # True when the adapter streams the microphone for the whole
+    # conversation instead of one endpointed utterance per turn. Must
+    # agree with the provider's `catalog.ProviderCatalogEntry` field of
+    # the same name; `_base.BaseLiveTurn` carries the default.
+    continuous_input: bool
+
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
+        ...
+
+    def discard_input(self) -> None:
+        """Synchronously revoke microphone audio accepted for this turn but
+        not yet on the wire. Idempotent; a turn that buffers none no-ops."""
         ...
 
     async def send_text_context(self, text: str) -> None:

@@ -105,6 +105,7 @@ class BaseLiveTurn:
 
     owns_interruption = False
     host_followup_window = False
+    continuous_input = False
 
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
         self._conn = conn
@@ -158,6 +159,9 @@ class BaseLiveTurn:
         task = self._tool_task
         if task is not None and not task.done() and not task.cancelling():
             task.cancel()
+
+    def discard_input(self) -> None:
+        """Nothing to revoke: only a continuous adapter buffers input."""
 
     async def audio_out(self) -> AsyncIterator[bytes]:
         async for chunk in self.audio_out_chunks():
