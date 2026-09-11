@@ -11,8 +11,8 @@ swap runs inside. `_duck_release_target_db`
 (`jasper/camilla.py:96-141`) decides where a releasing holder lands the fader.
 Its docstring carries three separate design constraints, each bought with a
 defect, and it is the only place all three are stated.
-`docs/HANDOFF-volume.md:657-674` carries the first two; nothing anywhere states
-the third. Both files are inside the tuning refactor's blast radius — the
+`docs/HANDOFF-volume.md:657-674` (retired, see ADR-0199) carries the first
+two; nothing anywhere states the third. Both files are inside the tuning refactor's blast radius — the
 release algebra is named as something the new single volume owner must own
 (`docs/REFACTOR-TUNING-2026-08.md` §3 wave 5a), and wave 7e archives
 `HANDOFF-volume.md`.

@@ -7,7 +7,8 @@ Before=jasper-camilla.service shairport-sync.service librespot.service bluealsa-
 # infrastructure (CamillaDSP and the AEC bridge consume its output), but the
 # window still absorbs a transient USB de-enumeration or suspend resume. Five
 # failures in five minutes escalate to a clean reboot, matching the ladder on
-# jasper-camilla / jasper-aec-bridge / jasper-voice / jasper-control.
+# jasper-camilla / jasper-aec-bridge / jasper-voice / jasper-control. See
+# ADR-0146.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 StartLimitAction=reboot

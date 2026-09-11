@@ -15,10 +15,10 @@ only in a comment block inside a god file the refactor rewrites
 what the disclosing code may not do
 (`crossover_v2_flow.py:7220-7240`) and a rule about what its household copy
 may not say (`jasper/active_speaker/crossover_envelope_v2.py:2205-2237`).
-`docs/HANDOFF-crossover-measurement-v2.md:3916-3945` documents the G1
-*instance* — the threshold, the wire fields, the incident — but not the
-discriminator, and that file is collapsed to a runbook spine by the tuning
-refactor's wave 7e.
+`docs/HANDOFF-crossover-measurement-v2.md:3916-3945` (retired, see ADR-0199)
+documents the G1 *instance* — the threshold, the wire fields, the incident —
+but not the discriminator, and that file is collapsed to a runbook spine by
+the tuning refactor's wave 7e.
 
 The refactor plan (`docs/REFACTOR-TUNING-2026-08.md` §1) adopts this test as
 the discriminator for its three-way refusal taxonomy — CLAMP stops, INTEGRITY
