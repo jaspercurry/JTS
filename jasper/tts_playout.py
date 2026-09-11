@@ -321,7 +321,8 @@ class _OutputdStreamAdapter:
     @property
     def poison_reason(self) -> str | None:
         """Why `_poison` closed this stream (e.g. "cancelled", "lock",
-        "send") — attribution for a reconnect logged far from the close."""
+        "send", "send_error", "flush_timeout", "flush_error") —
+        attribution for a reconnect logged far from the close."""
         return self._poison_reason
 
     def _readline_locked(self, timeout_sec: float) -> bytes:
@@ -349,7 +350,9 @@ class _OutputdStreamAdapter:
                 return b""
             self._recv_buffer.extend(chunk)
 
-    def _close_unlocked(self, *, send_close: bool) -> None:
+    def _close_unlocked(
+        self, *, send_close: bool, poison_reason: str | None = None,
+    ) -> None:
         if self._closed:
             return
         try:
@@ -360,7 +363,7 @@ class _OutputdStreamAdapter:
                 self._send_line(wire.TTS_CLOSE)
         except OSError:
             pass
-        self._poison(reason=None)
+        self._poison(reason=None, poison_reason=poison_reason)
 
     def _poison(
         self,
@@ -498,7 +501,7 @@ class _OutputdStreamAdapter:
                 f"{timeout_sec:.3f}s"
             ) from e
         except OSError:
-            self._poison(reason=None)
+            self._poison(reason=None, poison_reason="send_error")
             raise
 
     def set_gain_db(self, db: float) -> None:
@@ -600,11 +603,11 @@ class _OutputdStreamAdapter:
                     "closing socket",
                     _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC,
                 )
-                self._close_unlocked(send_close=False)
+                self._close_unlocked(send_close=False, poison_reason="flush_timeout")
                 return None
             except OSError as e:
                 logger.warning("fan-in TTS IPC flush failed: %s", e)
-                self._close_unlocked(send_close=False)
+                self._close_unlocked(send_close=False, poison_reason="flush_error")
                 return None
         if not line:
             return None

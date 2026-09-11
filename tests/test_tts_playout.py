@@ -997,6 +997,7 @@ def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
     try:
         assert adapter.flush_sync() is None
         assert time.monotonic() - start < 0.5
+        assert adapter.poison_reason == "flush_timeout"
         assert child.recv(64) == b"FLUSH_SYNC\n"
         with pytest.raises(OSError):
             adapter.write(b"\0\0\0\0")

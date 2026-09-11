@@ -45,7 +45,7 @@ class _CaptureStream:
         self.closed = False
         self.writes: list[bytes] = []
 
-    def _poison(self, *, reason=None, timeout_sec=None) -> None:
+    def _poison(self, *, reason=None, timeout_sec=None, poison_reason=None) -> None:
         self.closed = True
 
     def set_gain_db(self, db: float) -> None:
