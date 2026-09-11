@@ -430,18 +430,13 @@ class BaseLiveTurn:
         return {}
 
     def _log_release(self) -> None:
-        """Report the finished turn — one event name, every provider.
-
-        Usage, transcript size and audio counts all settle at release and
-        all belong to the base, so they are reported together rather than
-        once per adapter under a name of its own.
-        """
+        """Report the finished turn — one event name, every provider."""
         usage = self.usage()
         log_event(
             self._conn._logger,
             "provider.turn_ended",
             provider=self._conn.PROVIDER_NAME,
-            ms=round((_time.monotonic() - self._started_at_monotonic) * 1000),
+            turn_ms=round((_time.monotonic() - self._started_at_monotonic) * 1000),
             chunks_received=self._chunks_received,
             bytes_sent=self._bytes_sent,
             input_tokens=usage.input_tokens,

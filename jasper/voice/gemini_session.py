@@ -201,8 +201,8 @@ class GeminiLiveTurn(BaseLiveTurn):
         self._cancel_tools()
         self.drop_pending_audio()
         self._audio_q.put_nowait(None)
-        await self._conn._on_turn_released(self)
         self._log_release()
+        await self._conn._on_turn_released(self)
 
     def capture(self) -> TurnCapture | None:
         user = self.user_transcript().strip() or None
@@ -230,7 +230,7 @@ class GeminiLiveTurn(BaseLiveTurn):
                 self._on_connection_lost()
         log_event(
             logger, "barge.cancel", reason=reason,
-            provider=getattr(self._conn, "PROVIDER_NAME", ""),
+            provider=self._conn.PROVIDER_NAME,
         )
 
     async def truncate_assistant_audio(

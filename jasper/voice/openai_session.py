@@ -282,19 +282,16 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             except Exception as e:  # noqa: BLE001
                 logger.warning("debug record close failed: %s", e)
             self._debug_wav = None
-        await self._conn._on_turn_released(self)
         self._log_release()
+        await self._conn._on_turn_released(self)
 
     def _release_fields(self) -> dict[str, Any]:
         """Chunk-size distribution, so front-loaded vs uniform delivery is
         visible post hoc. 24 kHz mono pcm16 = 48 bytes/ms."""
-        received = self._chunks_received
         return {
             "audio_bytes": self._chunk_bytes_total,
             "first_chunk_bytes": self._first_chunk_bytes,
             "max_chunk_bytes": self._chunk_bytes_max,
-            "avg_chunk_bytes": self._chunk_bytes_total // received if received else 0,
-            "audio_ms": round(self._chunk_bytes_total / 48.0),
         }
 
     def capture(self) -> TurnCapture | None:
@@ -317,7 +314,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._cancel_tools()
         log_event(
             logger, "barge.cancel", reason=reason,
-            provider=getattr(self._conn, "PROVIDER_NAME", ""),
+            provider=self._conn.PROVIDER_NAME,
         )
         if not self._server_turn_complete:
             if self._tool_round_pending:

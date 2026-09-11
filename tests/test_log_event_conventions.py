@@ -136,6 +136,10 @@ class _Event(NamedTuple):
 
     ``fields`` holds the keyword names a ``log_event`` call passes, empty
     for the other emission forms, whose fields are inside a rendered line.
+
+    ``empty_fields`` is the subset of ``fields`` passed a literal empty
+    string (``provider=""``); a non-literal value (an attribute read, a
+    call) can't be judged statically and is never included.
     """
 
     name: str
@@ -143,6 +147,7 @@ class _Event(NamedTuple):
     path: str
     lineno: int
     fields: tuple[str, ...] = ()
+    empty_fields: frozenset[str] = frozenset()
 
 
 class _Scan(NamedTuple):
@@ -207,14 +212,22 @@ def _rel(path: Path) -> str:
         return path.name
 
 
+def _is_empty_literal(value: ast.expr) -> bool:
+    """True when a keyword's value is the literal empty string."""
+    return isinstance(value, ast.Constant) and value.value == ""
+
+
 def _named_event(
-    arg: ast.expr, rel_path: str, fields: tuple[str, ...] = (),
+    arg: ast.expr,
+    rel_path: str,
+    fields: tuple[str, ...] = (),
+    empty_fields: frozenset[str] = frozenset(),
 ) -> list[_Event]:
     """The event an argument that IS the name carries (log_event's name, `event=`)."""
     head = _literal_head(arg)
     if head is None:
         return []
-    return [_Event(head[0], head[1], rel_path, arg.lineno, fields)]
+    return [_Event(head[0], head[1], rel_path, arg.lineno, fields, empty_fields)]
 
 
 def _rendered_events(arg: ast.expr, rel_path: str) -> list[_Event]:
@@ -264,6 +277,10 @@ def _scan(path: Path) -> _Scan:
             events += _named_event(
                 node.args[1], rel_path,
                 tuple(kw.arg for kw in node.keywords if kw.arg),
+                frozenset(
+                    kw.arg for kw in node.keywords
+                    if kw.arg and _is_empty_literal(kw.value)
+                ),
             )
         for keyword in node.keywords:
             if keyword.arg and (
@@ -445,15 +462,19 @@ def test_provider_events_name_the_adapter_they_came_from():
     adapter — OpenAI Realtime, Grok, Gemini Live, OpenAI Live — so the
     adapter is a field, never part of the name. A line without `provider=`
     would leave `journalctl | grep event=provider.` unable to say which
-    adapter produced it, which is the whole reason the family is shared."""
+    adapter produced it, which is the whole reason the family is shared.
+    A literal `provider=""` is just as useless as a missing field, so it
+    fails the same check."""
     offending = sorted(
         f"{event.path}:{event.lineno}  {event.name}"
         for event in _events()
-        if event.name.startswith("provider.") and "provider" not in event.fields
+        if event.name.startswith("provider.")
+        and ("provider" not in event.fields or "provider" in event.empty_fields)
     )
     assert not offending, (
-        "`provider.*` event(s) emitted without a `provider=` field — add it, "
-        "or give the event a name outside the shared family:\n  "
+        "`provider.*` event(s) emitted without a non-empty `provider=` "
+        "field — add it, or give the event a name outside the shared "
+        "family:\n  "
         + "\n  ".join(offending)
     )
 
@@ -578,3 +599,22 @@ def test_collector_sees_every_emission_form(tmp_path):
         ("demo.split_", True),
         ("demo.written", False),
     ]
+
+
+def test_a_literal_empty_field_value_is_tracked(tmp_path):
+    """`provider=""` is recorded as empty; a non-literal value (an attribute
+    read, a call) can't be judged statically and is left out of
+    `empty_fields` — `test_provider_events_name_the_adapter_they_came_from`
+    relies on exactly this distinction to reject the former and accept
+    the latter."""
+    src = (
+        'log_event(logger, "demo.blank", provider="")\n'
+        'log_event(logger, "demo.attr", provider=self._conn.PROVIDER_NAME)\n'
+        'log_event(logger, "demo.guarded", provider=getattr(x, "PROVIDER_NAME", ""))\n'
+    )
+    snippet = tmp_path / "snippet.py"
+    snippet.write_text(src)
+    events = {e.name: e for e in _scan(snippet).events}
+    assert events["demo.blank"].empty_fields == frozenset({"provider"})
+    assert events["demo.attr"].empty_fields == frozenset()
+    assert events["demo.guarded"].empty_fields == frozenset()

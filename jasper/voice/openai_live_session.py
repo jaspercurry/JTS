@@ -175,8 +175,8 @@ class OpenAILiveTurn(BaseLiveTurn):
             await self._conn._close_live_session()
         finally:
             self._audio_q.put_nowait(None)
-            await self._conn._on_turn_released(self)
             self._log_release()
+            await self._conn._on_turn_released(self)
 
     def _release_fields(self) -> dict[str, Any]:
         """Live bills the frontend session per metered second, not per
@@ -435,7 +435,7 @@ class OpenAILiveConnection(BaseLiveConnection):
                         break
         except Exception as exc:  # noqa: BLE001
             log_event(
-                logger, "provider.connect_failed", provider=self.PROVIDER_NAME,
+                logger, "provider.session_lost", provider=self.PROVIDER_NAME,
                 detail=failure_detail(exc, literals=self._secret_literals()),
             )
         finally:
