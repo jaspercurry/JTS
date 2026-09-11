@@ -108,14 +108,16 @@ _KEY_VALUE_RE = re.compile(
 # gets eaten — unless it opens with a quote, which shell escaping puts
 # *inside* the token (`'don'\''t'`). `wpa-psk` is a key-mgmt value, not
 # a secret. This branch IS guarded against a value already reading
-# `<redacted>`, mirroring `_AUTHORIZATION_RE`: re-matching the
-# placeholder `_redacted_argv` leaves on an nmcli PSK would swallow a
-# trailing quote off the end of it. An unmatched group renders empty,
-# so one template serves both shapes.
+# `<redacted>` as a whole token (end, whitespace, or a quote next) —
+# mirroring `_AUTHORIZATION_RE`: re-matching the placeholder
+# `_redacted_argv` leaves on an nmcli PSK would swallow a trailing quote off
+# the end of it. A secret merely glued onto the placeholder still redacts,
+# since only a token-ending `<redacted>` is skipped. An unmatched group
+# renders empty, so one template serves both shapes.
 _SECRET_WORD_RE = re.compile(
     rf"(?im)(?<![A-Za-z0-9])(password|passphrase|(?<!wpa-)psk){_NOT_NM_PROPERTY}"
     rf"(?:([ \t]*:[ \t]*)\S.*$"
-    rf"|([ \t]+)(?!<redacted>)(?:(?:{_QUOTED})\S*|\S{{8,}}))",
+    rf"|([ \t]+)(?!<redacted>(?![^\s'\"]))(?:(?:{_QUOTED})\S*|\S{{8,}}))",
 )
 
 # `key` and `code` alone: every other query-parameter name is already a

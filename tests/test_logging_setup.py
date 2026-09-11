@@ -187,14 +187,29 @@ def test_the_pre_redaction_message_is_not_kept_on_the_record():
             "password <redacted>",
             "nmcli timed out after 30.0s: nmcli device wifi connect HomeNet "
             "password <redacted>",
-            id="unquoted_placeholder_stays_byte_identical",
+            id="unquoted_placeholder_stays_byte_identical_regression_pin",
         ),
         pytest.param(
             'event=wifi.nmcli_timeout argv="nmcli device wifi connect HomeNet '
-            'password hunter2"',
+            'password hunter2xyz"',
             'event=wifi.nmcli_timeout argv="nmcli device wifi connect HomeNet '
             'password <redacted>',
             id="a_real_password_beside_the_guard_still_redacts",
+        ),
+        pytest.param(
+            "password <redacted>hunter2xyz",
+            "password <redacted>",
+            id="a_real_password_glued_to_the_placeholder_still_redacts",
+        ),
+        pytest.param(
+            "psk <redacted>hunter2xyz",
+            "psk <redacted>",
+            id="a_real_psk_glued_to_the_placeholder_still_redacts",
+        ),
+        pytest.param(
+            "passphrase <redacted>hunter2xyz",
+            "passphrase <redacted>",
+            id="a_real_passphrase_glued_to_the_placeholder_still_redacts",
         ),
     ],
 )
@@ -203,10 +218,11 @@ def test_the_secret_word_rule_spares_its_own_placeholder(message, expected):
     mirroring the guard `_AUTHORIZATION_RE` already carries.
     `wifi_setup._redacted_argv` puts that placeholder into a quoted
     `log_event` value before this filter ever sees it; re-matching it let
-    the greedy value class swallow the value's closing quote. The last
-    case pins that the guard is narrow — a real secret beside it still
-    redacts (over-redacting into the field's own closing quote there is
-    pre-existing, unrelated behaviour, untouched by this guard)."""
+    the greedy value class swallow the value's closing quote. The guard is
+    a token boundary, not a prefix: a real secret beside the placeholder,
+    or glued directly onto it, still redacts (over-redacting into the
+    field's own closing quote there is pre-existing, unrelated behaviour,
+    untouched by this guard)."""
     record = logging.LogRecord(
         "jasper.x", logging.WARNING, __file__, 1, message, (), None,
     )
