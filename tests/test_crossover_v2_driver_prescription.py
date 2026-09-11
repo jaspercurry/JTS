@@ -81,7 +81,6 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     read_driver_prescription,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    PACKET_SCHEMA_VERSION,
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
@@ -691,21 +690,6 @@ def test_a_non_finite_lab_column_becomes_null_and_is_named(tmp_path):
     assert packet["packet_fingerprint"]
 
 
-def test_the_two_contracts_sit_side_by_side_and_neither_reads_the_round(tmp_path):
-    """Both response formats are pure constants, on the packet's own rule.
-
-    A packet's instructions are the same bytes whatever the round measured,
-    which is what makes injection through the packet structurally impossible
-    rather than merely filtered.
-    """
-    one = _speaker(tmp_path / "a")
-    two = _speaker(tmp_path / "b", classification=_classification([
-        _verdict(1234.0, INTERFERENCE_BARRED),
-    ]))
-
-    assert one["driver_response_format"] == two["driver_response_format"]
-    assert one["response_format"] == two["response_format"]
-    assert one["driver_response_format"]["kind"].endswith("driver_prescription_contract")
 
 
 def test_the_response_format_states_every_bound_the_gate_applies():
@@ -3448,77 +3432,6 @@ def test_a_new_class_does_not_bump_the_blend_classs_schema_version(tmp_path):
     assert accepted.prescription_class == "cut"
 
 
-def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
-    """The rule: bump when a reader that understood v1 would MISREAD v2.
-
-    Two blocks and one contract were ADDED, ``feature_classification`` was
-    later WIDENED with the classifier's own lab rows beside the gate view it
-    already published, ``lateral_poses``/``capture_snr`` were added after that,
-    and ``positions`` was then widened with ``cross_seat_sigma``. Every v1 field
-    is unchanged in all of those cases and a v1 reader ignores what it does not
-    know, so nothing is misread — the version stays where it is rather than
-    invalidating every banked packet.
-
-    The widening is the case worth naming, because "the block a v1 reader
-    already read grew" sounds like the misreading case and is not one: the seven
-    keys of ``verdicts[]`` still say exactly what they said, and a reader that
-    never looks at ``lab_rows`` reaches every conclusion it reached before.
-    ``positions.cross_seat_sigma`` is the same shape of change — every position
-    row, the grid and the flat reference are byte-identical beside it, and
-    ``packet_positional_evidence`` reads exactly the three it always read.
-
-    ``positions.angle_deg`` is the OTHER case worth naming, and it is the
-    closest call here. Its ``reason`` prose changed once already, from a false
-    corpus-wide claim to a true statement about the cloud record's own shape.
-    The 2026-08-24 geometry ruling then falsified THAT too — a cloud position
-    now stamps its own ``position_deg`` — so the block became CONDITIONAL, and
-    the whole entry changes shape on a round that banks bearings.
-
-    That is still not a misreading, and the reason is the ``harmonics``
-    precedent one paragraph down — VERBATIM, not by analogy. Keeping the old
-    spelling on a round that HAS bearings would assert "no seat in this round
-    states one", which is exactly what a reader would act on; a field whose
-    claim became false is the one case where keeping the spelling is the
-    MISLEADING choice. The shape it changes into is also not new to this
-    document: ``lateral_poses`` beside it has always been ``available`` plus
-    the answer, or ``available`` plus ``status``/``reason``, so a v1 reader of
-    this packet already meets it in the block next door.
-
-    **What this does NOT rest on is byte-identity.** An earlier draft of this
-    paragraph claimed the refusing form was byte-identical for a pre-writer
-    round. It is not: v1 emitted ``{status, reason}`` and this emits
-    ``{available, status, reason}``, with a reason that names different causes
-    — the ``available`` assertion below would fail against v1. The no-bump
-    decision never needed that claim, and a justification resting on a false
-    one is worse than the change it justifies.
-
-    ``harmonics`` (ticket 1.4) is a new top-level block, which is the plain
-    additive case again — but it also RENAMED a ``not_evaluated`` entry, from
-    ``harmonic_distortion`` to ``harmonics``, and that is the one change here
-    a v1 reader could notice. It still does not mislead one: the old entry
-    asserted that NO round writes a distortion reading, and a reader acting on
-    it would have concluded the question was unanswerable. It is now answerable,
-    the entry appears only for a round nobody answered it for, and a reader
-    looking for the old name finds no entry — which is the true state of a round
-    that HAS a reading, and for a round without one the new name carries the
-    honest reason. A field whose claim became false is the one case where
-    keeping the spelling would be the misleading choice.
-    """
-    assert PACKET_SCHEMA_VERSION == 1
-    assert packet["artifact_schema_version"] == 1
-    assert packet["response_format"]["artifact_schema_version"] == (
-        PRESCRIPTION_SCHEMA_VERSION
-    )
-    assert packet["feature_classification"]["lab_rows"]
-    assert len(packet["feature_classification"]["verdicts"][0]) == 7
-    assert packet["lateral_poses"]["available"] is False
-    assert packet["capture_snr"]["available"] is False
-    # This fixture's rows predate the geometry writer, so the block takes its
-    # refusing form — and the refusing form is unchanged from v1.
-    assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
-    assert packet["positions"]["angle_deg"]["available"] is False
-    assert packet["positions"]["cross_seat_sigma"]["available"] is True
-    assert packet["harmonics"]["available"] is False
 
 
 def test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it(tmp_path):

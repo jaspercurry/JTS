@@ -123,8 +123,8 @@ grid with a repeated coordinate. Do not claim a predicted delay was confirmed.
 Nor must every resolved small change be adopted: judge its value for the goal.
 
 The alignment door uses µs and `(D_woofer − D_tweeter)`; a positive value delays
-the tweeter. Read the packet's `request_time_prescriptions.alignment` for its
-basis and lobe bound. A one-period shift can yield a similar null; an honest
+the tweeter. Read `jasper-crossover-prescriber contract --round <dir> --section speaker`
+for its alignment basis and lobe bound. A one-period shift can yield a similar null; an honest
 basis and suitable summed evidence distinguish it.
 
 ## 5. Level match and candidate trims

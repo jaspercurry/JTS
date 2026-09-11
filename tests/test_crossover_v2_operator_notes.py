@@ -23,7 +23,6 @@ from jasper.active_speaker import design_draft as design_draft_module
 from jasper.active_speaker.crossover_v2 import operator_notes as module
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     OPERATOR_NOTES_BLOCK,
-    PACKET_SCHEMA_VERSION,
     build_crossover_evidence_packet,
 )
 from jasper.active_speaker.crossover_v2.operator_notes import (
@@ -453,10 +452,6 @@ def test_household_prose_stays_excluded_while_operator_prose_is_carried(tmp_path
     assert packet[OPERATOR_NOTES_BLOCK]["build_notes"] == WAVEGUIDE
 
 
-def test_the_added_block_does_not_move_the_packet_schema_version(tmp_path):
-    """An added block leaves every v1 field saying what it said."""
-    packet = _packet(tmp_path, _draft())
-    assert packet["artifact_schema_version"] == PACKET_SCHEMA_VERSION == 1
 
 
 # --------------------------------------------------------------------------- #
