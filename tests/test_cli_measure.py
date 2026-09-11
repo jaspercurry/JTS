@@ -30,6 +30,7 @@ from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.active_speaker.round_bank import bank_round
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_KIND
 from jasper.cli import measure
 from jasper.cli.measure import (
     EXIT_OK,
@@ -50,7 +51,7 @@ from jasper.cli.measure import (
     specs_from_args,
 )
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.crossover_v2_fixtures import FakeCam, _preset, _roles
+from tests.crossover_v2_fixtures import FakeCam, _preset, _roles, _loc
 
 ARTIFACTS = "evidence/v1/artifacts"
 CAPTURE_RELPATH = "captures/summed/take.wav"
@@ -357,6 +358,9 @@ def speaker(tmp_path, monkeypatch):
 
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
+    from jasper.audio_measurement.program_analysis import ProgramAnalysis
+    monkeypatch.setattr(measure, "_analyze_take", lambda *a: ProgramAnalysis(
+        phase="verify", program_id="test", locations=(_loc("sweep"),)))
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
     capture_factory.side_effect = _capture
@@ -890,20 +894,15 @@ def test_incomplete_measurements_refuse_and_preserve_partial_results(
     report = payload["detail"]
     bundle = Path(report["bundle_dir"])
     assert json.loads((bundle / "info.json").read_text())["state"] == "closed"
-    assert report["n_takes"] == spec_count - 1
-    assert len(report["record_ids"]) == spec_count - 1
-    assert len(report["specs"]) == spec_count
-    refused = report["specs"][0]
+    assert report["n_takes"] == len(report["record_ids"]) == 0
+    refused, = report["specs"]
     assert refused["n_takes"] == 0
-    assert refused["incidents"] == [
-        program_transaction.STIMULUS_ADMISSION_REFUSED
-    ]
+    assert refused["incidents"] == [program_transaction.STIMULUS_ADMISSION_REFUSED]
     assert refused["playback"][0]["emission"] == "not_started"
-    if spec_count == 2:
-        assert report["specs"][1]["n_takes"] == 1
-        assert report["specs"][1]["incidents"] == []
-        banked = bank_round(bundle, campaign_root=tmp_path / "campaigns")
-        assert (banked.path / "bundle" / bundle.name / ARTIFACTS / report["record_ids"][0]).is_file()
+    manifest = json.loads((bundle / ARTIFACTS / report["run_manifest"]).read_text())
+    assert manifest["status"] == "partial"
+    assert len(manifest["not_measured"]) == spec_count
+    assert manifest["sets"][0]["takes"][0]["next_action"] == "stop"
     cam = speaker["cam"]
     assert cam.loaded[-1] == cam.entry_path.read_text()
     assert cam.volume_db == pytest.approx(HOUSEHOLD_DB)
@@ -1246,12 +1245,13 @@ def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path
     payload = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK
     document = json.loads(
-        (Path(payload["bundle_dir"]) / payload["plan_result"]).read_text()
+        (Path(payload["bundle_dir"]) / ARTIFACTS / payload["run_manifest"]).read_text()
     )
-    assert document["kind"] == plan_run.PLAN_RESULT_KIND
-    assert document["status"] == plan_run.RUN_MEASURED
-    assert document["takes_measured"] == payload["n_takes"] == 2
-    assert [take["candidate_id"] for take in document["takes"]] == ["a", "b"]
+    assert document["kind"] == RUN_MANIFEST_KIND
+    assert document["asked"]["poses"][0]["seat_offset_m"] is None
+    assert document["status"] == "complete"
+    assert document["honoured"]["takes_measured"] == payload["n_takes"] == 2
+    assert [group["capture_basis"]["candidate_id"] for group in document["sets"]] == ["a", "b"]
     # No calibration on this speaker's stand-in microphone, so the run says what
     # did NOT watch its level rather than claiming a bound nothing measured.
     assert payload["spl_monitor"] == plan_run.SPL_MONITOR_UNAVAILABLE
@@ -1393,3 +1393,25 @@ def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsy
     assert payload["detail"] == {"candidate": "candidate-1"}
     assert payload["next_action"]["id"] == "apply_matching_room_layer"
     assert not speaker["played"]
+
+
+def test_manifest_write_failure_reports_banked_takes_and_restores(speaker, monkeypatch, capsys):
+    from jasper.active_speaker import commissioning_evidence_store
+
+    write = commissioning_evidence_store.atomic_write_json
+    calls = 0
+
+    def fail_after_open(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise OSError("disk unavailable")
+        return write(*args, **kwargs)
+
+    monkeypatch.setattr(commissioning_evidence_store, "atomic_write_json", fail_after_open)
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["detail"]["reason"] == measure.REFUSE_STORE_LOST
+    assert len(payload["detail"]["record_ids"]) == 1
+    assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)

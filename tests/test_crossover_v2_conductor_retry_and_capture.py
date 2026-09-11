@@ -245,7 +245,7 @@ def test_speaker_retries_have_a_total_bound_and_keep_the_operator_budget(fault):
     for retry in range(bound + 1):
         result = _run_phase(c, 2, retry + 2)
         assert result["attempts"]["by_household"] == 0
-        assert result["attempts"]["left"] == flow.MAX_EXTRA_ATTEMPTS_PER_POSITION
+        assert result["attempts"]["left"] == min(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION, bound - retry)
         assert result["attempts"]["by_speaker"] == retry
         assert result.get("terminal", False) is (retry == bound)
     assert result["next"] == "stop" and not result["auto_retry"]
