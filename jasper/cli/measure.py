@@ -433,16 +433,13 @@ def request_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, str]]:
     The scopes are resolved off the candidate bank, the way a wizard session
     resolves them, so one walk measures the same graph whichever door runs it.
     """
+    from jasper.active_speaker.angle_capture import LateralWalkRefused
     from jasper.active_speaker.angle_capture_spool import (
         read_angle_request,
         take_staged_angle_request,
     )
-    from jasper.active_speaker.candidate_bank import (
-        CandidateBankRefusal,
-        find_banked_candidate,
-    )
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
-    from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
+    from jasper.active_speaker.plan_run import resolve_candidate_scopes
 
     stated = build_parser()
     named = [
@@ -480,18 +477,9 @@ def request_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, str]]:
             "begin, or stage a walk with one pose",
         )
     try:
-        scopes = {
-            candidate_id: candidate_trial_scope(
-                find_banked_candidate(candidate_id).candidate
-            )
-            for candidate_id in sorted(
-                {stop.candidate_id for stop in request.stops} - {""}
-            )
-        }
-    except (CandidateBankRefusal, CrossoverV2FlowError) as exc:
-        # The bank's own vocabulary, unwrapped: a second slug for "no such
-        # candidate" would send an operator looking in the wrong place.
-        raise MeasureFlagError(REFUSE_REQUEST_UNREADABLE, str(exc)) from exc
+        scopes = resolve_candidate_scopes(stop.candidate_id for stop in request.stops)
+    except LateralWalkRefused as exc:
+        raise MeasureFlagError(REFUSE_REQUEST_UNREADABLE, exc.detail) from exc
     return request, scopes
 
 
@@ -637,14 +625,14 @@ def _spl_monitor(
     """This door's SPL watch, from the one owner every door asks
     (:func:`~jasper.active_speaker.plan_run.spl_watch`).
 
-    What is this door's own: a batch states ONE ceiling, and the box declaration
-    it already resolved is where the commissioning stop is read from.
+    What is this door's own: a batch states ONE ceiling, and the declaration it
+    already read is the preset the stop is resolved from -- a second disk load
+    of the same answer is what passing it spares.
     """
     # lazy: this door refuses flags and reads a declaration before it measures
     # anything, and none of that should pay for the measurement stack (the
     # calibration import also costs numpy, and a test patches it at call time).
     from jasper.active_speaker.angle_capture import LateralWalkRefused
-    from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
     from jasper.active_speaker.plan_run import spl_watch
     from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 
@@ -654,13 +642,10 @@ def _spl_monitor(
             REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling",
         )
     try:
-        stop = commissioning_spl_ceiling_db(box.topology, preset=box.preset)
-    except ValueError as exc:
-        raise BoxNotMeasurable(REFUSE_BOX_NOT_READY, str(exc)) from exc
-    try:
         return spl_watch(
             next(iter(stated)),
-            commissioning_stop_db_spl=stop,
+            topology=box.topology,
+            preset=box.preset,
             sensitivity=resolve_mic_sensitivity(mic_serial=mic_serial),
             device=device,
         )
@@ -981,8 +966,7 @@ def _report(
         for record_id in outcome.record_ids
     ]
     complete = bool(outcomes) and all(
-        outcome.stimuli and all(s.banked and not s.incident for s in outcome.stimuli)
-        for outcome, _fingerprint in outcomes
+        outcome.complete for outcome, _fingerprint in outcomes
     )
     return {
         "status": "measured" if complete else "incomplete",

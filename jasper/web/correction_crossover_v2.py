@@ -2025,7 +2025,6 @@ def _take_staged_angle_walk(
     ordinary shape and the operator stages again.
     """
     from jasper.active_speaker.angle_capture import (
-        WALK_COMMISSIONING_STOP_UNSET,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
         WALK_STIMULUS_NOT_ACCEPTED,
@@ -2035,17 +2034,16 @@ def _take_staged_angle_walk(
         session_lateral_walk,
         stop_specs,
     )
-    from jasper.active_speaker.candidate_bank import (
-        CandidateBankRefusal,
-        find_banked_candidate,
-    )
     from jasper.active_speaker.angle_capture_spool import (
         AngleRequestRefused,
         staged_angle_request_pending,
         take_staged_angle_request,
     )
-    from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-    from jasper.active_speaker.plan_run import spl_monitor_note, spl_watch
+    from jasper.active_speaker.plan_run import (
+        resolve_candidate_scopes,
+        spl_monitor_note,
+        spl_watch,
+    )
     from jasper.active_speaker.crossover_v2.capture_plan import (
         build_v2_cloud_index_phase_map,
         position_angle_deg,
@@ -2116,37 +2114,19 @@ def _take_staged_angle_walk(
     # ``spl_watch`` itself would answer with, from the one owner of that
     # vocabulary — not a second, ad hoc "nothing to say" spelling.
     spl_monitor, spl_note = None, spl_monitor_note(None)
-    if measure_spec.spl_ceiling_db_spl is not None:
-        try:
-            commissioning_stop_db_spl = commissioning_spl_ceiling_db(
-                topology, preset=preset,
-            )
-        except ValueError as exc:
-            # The box's own preset, not the walk: a stated ceiling has nothing
-            # to bound against. The CLI door meets this same ``ValueError``
-            # with ``REFUSE_BOX_NOT_READY`` — this refuses rather than 500s.
-            raise refused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
-        try:
+    candidate_ids = tuple(stop.candidate_id for stop in request.stops)
+    try:
+        if measure_spec.spl_ceiling_db_spl is not None:
             spl_monitor, spl_note = spl_watch(
                 measure_spec.spl_ceiling_db_spl,
-                commissioning_stop_db_spl=commissioning_stop_db_spl,
+                topology=topology,
+                preset=preset,
                 sensitivity=_household_mic_sensitivity(device),
                 device=device,
             )
-        except LateralWalkRefused as exc:
-            raise refused(exc.reason, exc.detail) from exc
-    candidate_ids = tuple(stop.candidate_id for stop in request.stops)
-    try:
-        candidate_scopes = {
-            candidate_id: candidate_trial_scope(find_banked_candidate(candidate_id).candidate)
-            for candidate_id in sorted(set(candidate_ids) - {""})
-        }
+        candidate_scopes = resolve_candidate_scopes(candidate_ids)
     except LateralWalkRefused as exc:
         raise refused(exc.reason, exc.detail) from exc
-    except CandidateBankRefusal as exc:
-        # The bank's own vocabulary, unwrapped: a second slug for "no such
-        # candidate" would send an operator looking in the wrong place.
-        raise refused(exc.code, exc.detail) from exc
     # Asked of the ONE owner of this session's index space rather than counted
     # here, so the specs cannot be keyed to captures the plan never runs.
     walk_index_phase = build_v2_cloud_index_phase_map(

@@ -24,23 +24,23 @@ modules may not reach the flow).
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import time
 from dataclasses import dataclass, field
 from itertools import groupby
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from jasper.log_event import log_event
 
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
     REGIME_PER_DRIVER,
     WALK_CEILING_ABOVE_STOP,
+    WALK_COMMISSIONING_STOP_UNSET,
     WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED,
     WALK_STIMULUS_NOT_ACCEPTED,
@@ -51,12 +51,15 @@ from .angle_capture import (
     stop_specs,
 )
 from .angle_capture_spool import angle_request_document
+from . import candidate_bank
+from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.session import MeasureOutcome, TuningSession
+from .measured_crossover_candidate import candidate_trial_scope
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,7 @@ __all__ = [
     "PlanResult",
     "TakeResult",
     "request_fingerprint",
+    "resolve_candidate_scopes",
     "run_plan",
     "run_specs",
     "spl_monitor_note",
@@ -147,7 +151,8 @@ def spl_monitor_note(ceiling_db_spl: float | None) -> str:
 def spl_watch(
     stated_db_spl: float | None,
     *,
-    commissioning_stop_db_spl: float,
+    topology: Any,
+    preset: Any,
     sensitivity: Any | None,
     device: Any,
 ) -> tuple[WiredSplMonitor | None, str]:
@@ -155,18 +160,21 @@ def spl_watch(
 
     ONE owner for both doors that play a stated walk -- ``jasper-measure`` and
     the wizard's session open -- so the same walk is bounded the same way
-    whichever took it. :func:`take_spl_ceiling` resolves the ceiling every
-    stated request implies, refusing one above the box's own commissioning
-    stop.
+    whichever took it, and each door keeps ONE :class:`LateralWalkRefused` arm
+    to translate rather than a second vocabulary per failure. The box's own
+    commissioning stop is read here, and :func:`take_spl_ceiling` resolves the
+    ceiling every stated request implies against it, refusing one above it.
 
     ``sensitivity`` is ``None`` on a box that cannot turn a recording into dB
     SPL. That DISCLOSES when the run stated no ceiling of its own, and REFUSES
     when it stated one: a bound nothing can enforce is something an operator
     must be able to act on rather than a number quietly ignored.
     """
-    ceiling = take_spl_ceiling(
-        stated_db_spl, commissioning_stop_db_spl=commissioning_stop_db_spl,
-    )
+    try:
+        stop = commissioning_spl_ceiling_db(topology, preset=preset)
+    except ValueError as exc:
+        raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
+    ceiling = take_spl_ceiling(stated_db_spl, commissioning_stop_db_spl=stop)
     if sensitivity is None:
         if stated_db_spl is None:
             return None, SPL_MONITOR_UNAVAILABLE
@@ -301,13 +309,26 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
     receipt names the same shape a staged walk has on disk, minus the clock --
     two runs of one walk fingerprint alike, and an edited stop does not.
     """
-    return _digest(angle_request_document(request))
+    return json_fingerprint(angle_request_document(request))
 
 
-def _digest(payload: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
+    """Each named candidate's scope: the one that compiles its complete graph.
+
+    ONE owner for both doors that play a stated walk, so a walk measures the
+    same graph whichever ran it. The bank's own vocabulary rides out UNWRAPPED
+    under this module's refusal type: a second slug for "no such candidate"
+    would send an operator looking in the wrong place.
+    """
+    try:
+        return {
+            candidate_id: candidate_trial_scope(
+                candidate_bank.find_banked_candidate(candidate_id).candidate
+            )
+            for candidate_id in sorted(set(candidate_ids) - {""})
+        }
+    except candidate_bank.CandidateBankRefusal as exc:
+        raise LateralWalkRefused(exc.code, exc.detail) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -414,7 +435,7 @@ async def run_specs(
     """
     return await _run(
         [list(range(len(specs)))], tuple(specs), entries={}, skipped=0,
-        fingerprint=_digest([spec.to_dict() for spec in specs]),
+        fingerprint=json_fingerprint({"specs": [s.to_dict() for s in specs]}),
         session=session, gate=None, aborts=aborts, spl_monitor=spl_monitor,
         clock=clock,
     )
@@ -423,6 +444,15 @@ async def run_specs(
 # --------------------------------------------------------------------------- #
 # the one loop
 # --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class _Stop:
+    """Where a run stopped: what the failure is called, and the take in flight."""
+
+    reason: str
+    detail: str
+    at: Mapping[str, int]
 
 
 async def _run(
@@ -452,7 +482,7 @@ async def _run(
     wall_s: list[float] = []
     mic_moves = 0
     attempts = 0
-    stopped: tuple[str, str, Mapping[str, int]] | None = None
+    stopped: _Stop | None = None
     for pose_index, batch in enumerate(batches):
         pose_started = clock()
         granted = False
@@ -471,7 +501,7 @@ async def _run(
                 take_started = clock()
                 outcome = await session.measure(spec)
             except aborting as exc:
-                stopped = (
+                stopped = _Stop(
                     _abort_reason(exc, aborts), str(exc) or type(exc).__name__,
                     {"pose_index": pose_index, "index": index},
                 )
@@ -497,9 +527,9 @@ async def _run(
         wall_s=tuple(wall_s),
         spl_monitor=spl_monitor,
         takes=tuple(takes),
-        reason="" if stopped is None else stopped[0],
-        detail="" if stopped is None else stopped[1],
-        stopped_at=None if stopped is None else stopped[2],
+        reason="" if stopped is None else stopped.reason,
+        detail="" if stopped is None else stopped.detail,
+        stopped_at=None if stopped is None else stopped.at,
         specs=tuple(specs),
         outcomes=tuple(outcomes),
     )
@@ -560,9 +590,6 @@ def _take(
     """One engine answer as the package's own row."""
     first = outcome.stimuli[0] if outcome.stimuli else None
     incidents = [s.incident for s in outcome.stimuli if s.incident]
-    complete = bool(outcome.stimuli) and not incidents and all(
-        s.banked for s in outcome.stimuli
-    )
     return TakeResult(
         pose_index=pose_index,
         index=index,
@@ -572,7 +599,7 @@ def _take(
         level_db=None if first is None else first.level_db,
         stimulus_dbfs=None if first is None else first.stimulus_dbfs,
         record_ids=outcome.record_ids,
-        status=TAKE_MEASURED if complete else TAKE_INCOMPLETE,
+        status=TAKE_MEASURED if outcome.complete else TAKE_INCOMPLETE,
         reason=incidents[0] if incidents else "",
         started_s=started_s,
         ended_s=ended_s,

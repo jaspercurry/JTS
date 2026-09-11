@@ -169,6 +169,18 @@ class MeasureOutcome:
     def record_ids(self) -> tuple[str, ...]:
         return tuple(s.record_id for s in self.stimuli if s.record_id)
 
+    @property
+    def complete(self) -> bool:
+        """Whether this take banked everything it asked for, with no incident.
+
+        The one owner of that question: a run's per-take status and a door's
+        batch status are the same fact counted at two altitudes, and two
+        spellings of it would drift.
+        """
+        return bool(self.stimuli) and all(
+            s.banked and not s.incident for s in self.stimuli
+        )
+
 
 @dataclass
 class TuningSession:

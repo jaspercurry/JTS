@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1257,19 +1258,26 @@ def test_a_multi_pose_walk_is_refused_because_this_door_moves_nothing(
 
 
 @pytest.mark.parametrize(
-    ("stated", "expected"),
+    ("stated", "stop", "expected"),
     [
-        (None, ""),
-        (80.0, "measure_spl_calibration_required"),
-        (90.0, "walk_ceiling_above_stop"),
+        (None, 85.0, ""),
+        (80.0, 85.0, "measure_spl_calibration_required"),
+        (90.0, 85.0, "walk_ceiling_above_stop"),
+        (80.0, None, "walk_commissioning_stop_unset"),
     ],
-    ids=["no-ceiling-disclosed", "stated-ceiling-refused", "above-the-stop"],
+    ids=[
+        "no-ceiling-disclosed", "stated-ceiling-refused", "above-the-stop",
+        "no-box-stop",
+    ],
 )
 def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
-    monkeypatch, stated, expected,
+    monkeypatch, stated, stop, expected,
 ):
     """The box's commissioning stop bounds every run now, not only one that typed
     a ceiling — and what cannot be enforced is refused or disclosed, never assumed.
+
+    The slugs are the WALK's, shared with the wizard door: one failure reaching
+    an operator under two names would send them looking in two places.
     """
     from jasper.active_speaker import plan_run
 
@@ -1278,16 +1286,20 @@ def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
         lambda **kw: None,
     )
     specs = (MeasureSpec(kind=MEASURE_KIND_BASELINE, spl_ceiling_db_spl=stated),)
+    box = _declaration() if stop is not None else replace(
+        _declaration(),
+        preset=SimpleNamespace(
+            safety=SimpleNamespace(max_commissioning_level_db_spl=None),
+        ),
+    )
 
     if not expected:
         assert measure._spl_monitor(
-            specs, box=_declaration(), device=object(), mic_serial=None,
+            specs, box=box, device=object(), mic_serial=None,
         ) == (None, plan_run.SPL_MONITOR_UNAVAILABLE)
         return
     with pytest.raises(measure.BoxNotMeasurable) as refused:
-        measure._spl_monitor(
-            specs, box=_declaration(), device=object(), mic_serial=None,
-        )
+        measure._spl_monitor(specs, box=box, device=object(), mic_serial=None)
     assert refused.value.reason == expected
 
 
