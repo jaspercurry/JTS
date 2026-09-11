@@ -19,11 +19,11 @@ import math
 
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import BEAMING_KA, beaming_onset_hz
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
+    _fc_rejection,
 )
 
 # The JTS3 declaration, so the numbers below are the ones the owner's speaker
@@ -90,17 +90,17 @@ def test_a_corner_exactly_at_the_declared_floor_is_legal():
     Pinned at the BOUNDARY, which is what the table below cannot carry: one
     epsilon under the floor is still refused, and refused by name.
     """
-    assert flow._fc_rejection(
+    assert _fc_rejection(
         JTS3_HF_FLOOR_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) is None
     # One epsilon below is still refused, and refused BY NAME.
-    assert flow._fc_rejection(
+    assert _fc_rejection(
         math.nextafter(JTS3_HF_FLOOR_HZ, 0.0),
         JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) == FC_REJECT_BELOW_DECLARED_FLOOR
     # jts3's shipped corner was legal before this ruling and stays legal.
     assert JTS3_CONFIGURED_HZ > JTS3_HF_FLOOR_HZ
-    assert flow._fc_rejection(
+    assert _fc_rejection(
         JTS3_CONFIGURED_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) is None
 
@@ -120,7 +120,7 @@ def test_every_bound_has_a_named_reason(fc, floor, ceiling, expected):
     """No bare numbers reach a household: each bound is a declaration someone
     confirmed, so each refusal names which one. Ordered hardest-first, so a
     value outside two bounds reports the safety one."""
-    assert flow._fc_rejection(fc, floor, ceiling) == expected
+    assert _fc_rejection(fc, floor, ceiling) == expected
 
 
 def test_only_a_declared_hard_band_can_refuse_a_corner():
@@ -132,14 +132,14 @@ def test_only_a_declared_hard_band_can_refuse_a_corner():
     search band could refuse any of these, and half of jts3's own range was.
     """
     for fc in range(int(JTS3_HF_FLOOR_HZ), int(JTS3_WOOFER_CEILING_HZ) + 1, 50):
-        assert flow._fc_rejection(
+        assert _fc_rejection(
             float(fc), JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
         ) is None, fc
     # …and the two edges still bite, one step outside each.
-    assert flow._fc_rejection(
+    assert _fc_rejection(
         JTS3_HF_FLOOR_HZ - 0.1, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) == FC_REJECT_BELOW_DECLARED_FLOOR
-    assert flow._fc_rejection(
+    assert _fc_rejection(
         JTS3_WOOFER_CEILING_HZ + 0.1, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) == FC_REJECT_ABOVE_LOWER_DRIVER_BAND
 

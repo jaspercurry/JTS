@@ -673,6 +673,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not start the measurement because this link's settings "
         "(the tier or number of positions) are not ones this build "
         "recognizes. Start over from this page to pick a tier.",
+        next_action={
+            "id": "select_tier",
+            "label": "Start over",
+            "href": "/sound/speaker/crossover/",
+        },
     ),
     REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
         REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",

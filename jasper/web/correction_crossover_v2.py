@@ -305,8 +305,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     the ``code=`` lets the 400 body pick up that reason's ``next_action`` when
     it declares one. Today the classifier routes here to ``program_unplayable``
     (the rest of the ``CrossoverV2FlowError`` family) or to
-    ``program_plan_shape_invalid`` (:class:`PlanShapeError`); neither
-    declares a ``next_action``, so today's 400 carries the sentence alone.
+    ``program_plan_shape_invalid`` (:class:`PlanShapeError`).
 
     The raw text is logged here rather than dropped: this is the one site that
     discards it, and it is the only place the failed constraint is named. The
