@@ -18,7 +18,7 @@ from jasper.tools import ToolRegistry, tool
 from jasper.voice import openai_live_session
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
-from tests._async_wait import wait_until
+from tests._async_wait import wait_signalled, wait_until
 from tests._log_events import event_fields
 
 
@@ -156,7 +156,7 @@ async def test_correction_discards_stale_tool_results():
     turn = await conn.acquire_turn()
     try:
         await delegate(turn, "old", "r1", "slow_lookup", {})
-        await entered.wait()
+        await wait_signalled(entered, "slow_lookup entered", producer=turn._tool_task)
         await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "new", "target": "responses"}})
         finish.set()
         await asyncio.gather(turn._tool_task, return_exceptions=True)
