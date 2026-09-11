@@ -53,6 +53,7 @@ from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
+from .conversation import register_conversation_tools
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..usage import (
     BillableActivityMeter,
@@ -338,6 +339,12 @@ def _make_connection(
             model=cfg.gemini_model,
             voice=cfg.gemini_voice,
             context_reset_sec=float(cfg.gemini_context_reset_sec),
+        )
+    if cfg.voice_provider == "openai_live":
+        from .openai_live_session import OpenAILiveConnection  # lazy — optional provider SDK
+        return OpenAILiveConnection(
+            api_key=cfg.openai_api_key, model=cfg.openai_live_model,
+            voice=cfg.openai_live_voice, backend_model=cfg.openai_live_backend_model,
         )
     if cfg.voice_provider == "openai":
         from .openai_session import OpenAIRealtimeConnection
@@ -985,6 +992,9 @@ async def run() -> None:
         # fresh open. The location is captured at startup; if you change
         # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
         connection = _make_connection(cfg, speech_policy=speech_policy)
+        record_backend = getattr(connection, "set_background_usage_recorder", None)
+        if record_backend is not None:
+            record_backend(usage_store.record_background_usage)
         # Its release is registered further down, at the escalation-callback
         # site: the connection speaks its failure cue through the wake loop,
         # so it has to stop before the playout and mics that cue uses.
@@ -1184,6 +1194,7 @@ async def run() -> None:
             manual_mics=manual_mics,
         )
         _release(stack, "wake_loop", wake_loop.close_conversation_store)
+        register_conversation_tools(registry, wake_loop.request_conversation_end)
         registry.set_dispatch_observer(
             wake_loop.bind_tool_dispatch,
         )

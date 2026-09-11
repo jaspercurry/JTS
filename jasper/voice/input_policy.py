@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .catalog import provider_by_id
+
 from jasper.mics.xvf3800 import ALSA_CARD_NAMES
 from jasper.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST, parse_udp_device
 
@@ -186,10 +188,11 @@ def build_effective_speech_input_policy(cfg: Any) -> EffectiveSpeechInputPolicy:
         requested_nr,
         contract,
     )
+    entry = provider_by_id(provider)
     return EffectiveSpeechInputPolicy(
         provider=provider,
         input_contract=contract,
-        endpointing=ENDPOINTING,
+        endpointing="continuous_audio" if entry and entry.continuous_input else ENDPOINTING,
         openai_noise_reduction=openai_nr,
         openai_noise_reduction_source=openai_nr_source,
         warnings=warnings,

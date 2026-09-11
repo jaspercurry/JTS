@@ -113,6 +113,7 @@ class _FakeWakeLoop:
         self._trace = trace
         trace.append(("wake_loop", "enter"))
         self.bind_tool_dispatch = lambda: None
+        self.request_conversation_end = lambda: None
         self.play_supervisor_cue = lambda *a, **k: None
         self.record_research_delivery = lambda *a, **k: None
         self.announce_timer = lambda *a, **k: None
@@ -141,6 +142,9 @@ class _FakeRegistry:
     def __init__(self, trace: _Trace) -> None:
         self._trace = trace
         self.pack_outcomes = ()
+
+    def register(self, _tool) -> None:
+        return None
 
     def apply_prompt_overrides(self, _overrides) -> None:
         return None

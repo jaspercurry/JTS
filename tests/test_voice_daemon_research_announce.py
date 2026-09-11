@@ -83,6 +83,7 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
         await wl._end_turn_inner("no_speech")
 
     assert turn.end_input_calls == 0
+    await wl._pending_release
     assert turn.release_calls == 1
     assert scheduler.announced == ["job12345"]
     assert scheduler.read == []

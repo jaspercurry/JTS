@@ -13,11 +13,10 @@ from typing import AsyncGenerator, Awaitable, Callable
 
 from ..tts_playout import TtsPlayout, confirmed_tts_flush
 from ..log_event import log_event
+from .conversation import WATCHDOG_POLL_SEC
 from .session import AudioOutChunk, LiveTurn
 
 logger = logging.getLogger("jasper.voice_daemon")
-
-_WATCHDOG_POLL_SEC = 0.25
 
 #: `_end_turn` reason for a turn the pre-response cap below released: the
 #: model was asked a question, kept making progress, and never answered.
@@ -80,6 +79,7 @@ async def play_responses(
     tts: TtsPlayout,
     *,
     barge_in_enabled: bool = False,
+    continuous: bool = False,
     report: PlaybackReport | None = None,
     admission_refusal: Callable[[], str | None] | None = None,
     on_response_started: Callable[[], Awaitable[None]] | None = None,
@@ -125,6 +125,18 @@ async def play_responses(
         await tts.end_segment()
         if barge_in_enabled:
             await tts.wait_drained()
+
+    if continuous:
+        while not turn.turn_lost():
+            await play_responses(
+                turn, tts, barge_in_enabled=barge_in_enabled, report=report,
+                admission_refusal=admission_refusal, on_response_started=on_response_started,
+                on_first_write=on_first_write,
+            )
+            if report.stop_reason != "barge_in":
+                return
+            report.stop_reason = None
+        return
 
     interrupt = asyncio.create_task(turn.wait_for_interrupt())
     playback = asyncio.create_task(play())
@@ -194,7 +206,7 @@ async def idle_watchdog(
     playout_pending: int | None = None
     progressed_at = time.monotonic()
     while True:
-        await asyncio.sleep(_WATCHDOG_POLL_SEC)
+        await asyncio.sleep(WATCHDOG_POLL_SEC)
         if turn.turn_lost():
             logger.warning("idle watchdog: connection lost mid-turn, ending turn")
             return None

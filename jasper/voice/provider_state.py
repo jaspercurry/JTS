@@ -242,7 +242,7 @@ def read_active_model_from_env_files(
 # --- Per-provider barge-in enable flag ---------------------------------
 #
 # Full-duplex barge-in (the user talking over the assistant flushes local
-# TTS) is opt-in **per provider** and DEFAULTS OFF. It is a provider
+# TTS) is opt-in **per provider** with defaults declared in the catalog. It is a provider
 # selector, so it lives alongside JASPER_VOICE_PROVIDER + the model/voice
 # selectors in the broad-group SSOT file (read fresh on every call), NOT
 # in the typed ``Config``: a long-lived reader that is not restarted on a
@@ -259,13 +259,11 @@ def barge_in_env_key(provider: str) -> str:
 
 
 def resolve_barge_in_enabled(provider: str, env: Mapping[str, str]) -> bool:
-    """Whether barge-in is enabled for ``provider`` per an already-parsed
-    env mapping. Pure (no IO) so the wizard and the file reader below
-    share one rule. Default OFF: unset / falsey / unknown provider all
-    read as disabled — never a guessed-on default."""
-    if provider not in VALID_PROVIDER_IDS:
+    """Resolve the saved toggle, or the adapter's declared default."""
+    entry = provider_by_id(provider)
+    if entry is None:
         return False
-    raw = (env.get(barge_in_env_key(provider)) or "").strip().lower()
+    raw = env.get(barge_in_env_key(provider), "true" if entry.barge_in_default else "").strip().lower()
     return raw in _TRUTHY
 
 
@@ -300,18 +298,10 @@ def _read_env_file_state_mtime_cached(path: str):
 
 
 def read_barge_in_enabled(provider: str, path: str | None = None) -> bool:
-    """Read ``provider``'s barge-in enable flag from the SSOT file.
-
-    Default OFF for an unset flag, an unknown provider, or a
-    missing/unreadable file — mirrors :func:`read_active_provider`'s
-    fail-soft contract. Mtime-gated (:func:`_read_env_file_state_mtime_cached`):
-    the steady state is a single ``os.stat`` and the file is re-parsed only
-    when it changes, so a wizard / operator toggle still takes effect without
-    restarting a long-lived reader — without an open+read+parse every call.
-    """
+    """Read the saved barge-in toggle fresh, using the catalog default when unset."""
     if provider not in VALID_PROVIDER_IDS:
         return False
     file_state = _read_env_file_state_mtime_cached(_resolve_path(path))
     if not file_state.loaded:
-        return False
+        return resolve_barge_in_enabled(provider, {})
     return resolve_barge_in_enabled(provider, file_state.values)

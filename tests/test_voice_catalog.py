@@ -35,6 +35,7 @@ def test_every_provider_resolves_to_a_concrete_kind():
     concrete = {
         InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         InterruptReconcile.SERVER_SELF_TRUNCATES,
+        InterruptReconcile.NATIVE_CONTINUOUS,
     }
     for entry in PROVIDERS:
         resolved = resolve_interrupt_reconcile(entry.id)

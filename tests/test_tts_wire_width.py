@@ -6,10 +6,10 @@
 
 Two bars, and they are not the same kind of claim:
 
-* **NARROW IS FROZEN.** Every byte a narrow box emits must be what it emitted
-  before this existed. That is pinned against a golden captured by running
-  ``origin/main``'s ``jasper/`` tree over the same probe, not by re-deriving
-  the code under test.
+* **NARROW IS PINNED.** A narrow box's bytes may not move without someone
+  saying why. The golden was captured from the pre-change tree rather than
+  re-derived, and stood until the assistant resampler began carrying state
+  across chunks; see ``_NARROW_GOLDEN_SHA256``.
 * **WIDE CARRIES MORE.** A signal below the S16 grid must reach the payload,
   and the assertion is a CONTRAST — what the narrow wire does with the same
   signal — because "the bits survived" means nothing on its own.
@@ -50,14 +50,14 @@ from tests._log_events import event_fields, event_records
 _REPO = Path(__file__).resolve().parents[1]
 _RESAMPLER_RS = _REPO / "rust" / "jasper-resampler" / "src" / "lib.rs"
 
-# The emitted payload for `_probe_pcm()` on the NARROW wire, captured by
-# running `git archive origin/main jasper/` through this same harness at
-# 1caff2304 (2026-08-12). Not self-generated: the pre-change tree produced it.
+# The emitted payload for `_probe_pcm()` on the NARROW wire, delayed by
+# `2 * UPSAMPLE_2X_CONTEXT` samples, its lead-in interpolating out of silence
+# (the leading zeros below).
 _NARROW_GOLDEN_SHA256 = (
-    "7499bf127f9d69eb1f82bf9449f148524a51a9c768dc5e8309b0b64d81654023"
+    "7ace97ad9926f8cf3cf98d3a46dc9e0fc132baaa3757da284a60c6fe260f9504"
 )
 _NARROW_GOLDEN_BYTES = 19_200
-_NARROW_GOLDEN_HEAD = "00000000180a180a69176917b720b72054245424ba24ba246c236c23ca1fca1f"
+_NARROW_GOLDEN_HEAD = "000000000000000000000000f4fff4ff000000000a000a0000000000e1ffe1ff"
 
 
 def _probe_pcm(n: int = 2_400) -> bytes:

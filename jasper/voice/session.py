@@ -100,6 +100,15 @@ class Interruptible(Protocol):
     See ADR-0115.
     """
 
+    # True when the provider stops generating on the user's own voice, so the
+    # host must never issue its own barge-in flush for this turn: the local
+    # detector scores the assistant's echo as well as the user, and flushing
+    # the fan-in lane on that chops the reply mid-word. The host still
+    # forwards mic audio and still honours conversation end.
+    # `_base.BaseLiveTurn` carries the default; an adapter whose provider owns
+    # acoustic interruption overrides it.
+    owns_interruption: bool
+
     def request_local_interrupt(self) -> None:
         """Locally signal a user barge-in WITHOUT telling the provider.
 
@@ -177,16 +186,33 @@ class Interruptible(Protocol):
 
 @runtime_checkable
 class LiveTurn(Interruptible, Protocol):
-    """A single conversational turn within a long-lived voice connection.
+    """An acquired voice exchange, or a continuous wake conversation.
 
     The daemon acquires a turn from a `LiveConnection` on wake, streams
     user audio frames into it, awaits the model's response, and releases
     the turn when idle. The connection itself stays open across turns
-    (see `LiveConnection`); a turn is just the slice of activity between
-    `activity_start` and `activity_end`.
+    (see `LiveConnection`). Adapters declaring `continuous_input` retain
+    this object through follow-ups, and `backend_pending` reports their
+    delegated work.
     """
 
+    # True when the host may hold this turn open for a local follow-up
+    # after playout drains, instead of closing it. `_base.BaseLiveTurn`
+    # carries the default; a continuous session runs its own window.
+    host_followup_window: bool
+
+    # True when the adapter streams the microphone for the whole
+    # conversation instead of one endpointed utterance per turn. Must
+    # agree with the provider's `catalog.ProviderCatalogEntry` field of
+    # the same name; `_base.BaseLiveTurn` carries the default.
+    continuous_input: bool
+
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
+        ...
+
+    def discard_input(self) -> None:
+        """Synchronously revoke microphone audio accepted for this turn but
+        not yet on the wire. Idempotent; a turn that buffers none no-ops."""
         ...
 
     async def send_text_context(self, text: str) -> None:
@@ -307,16 +333,14 @@ CuePlayer = Callable[[str], Coroutine[Any, Any, object]]
 class LiveConnection(Protocol):
     """Provider-agnostic interface for a long-lived voice connection.
 
-    One instance per daemon: opened at startup, kept alive for the
-    daemon's lifetime via the provider's session-resumption mechanism,
-    closed at shutdown. Internally manages reconnection (including any
+    One instance per daemon. Adapters may keep a socket alive across turns
+    or prepare at startup and open only when a conversation is acquired,
+    as required for providers that bill connected silence. Internally manages reconnection (including any
     rotation the provider's session cap forces) and context-reset on
     long idle gaps.
 
-    Three implementations ship today: Gemini Live, OpenAI Realtime, and
-    Grok (a thin OpenAI subclass). A fourth provider plugs in by writing
-    another adapter against this Protocol — daemon code imports only
-    this interface and `LiveTurn`.
+    Gemini Live, OpenAI Realtime, Grok, and OpenAI Live implement this
+    interface. Provider wire details stay inside their adapters.
     """
 
     async def start(
@@ -324,7 +348,8 @@ class LiveConnection(Protocol):
         registry: ToolRegistry,
         system_instruction: "str | Callable[[], str]",
     ) -> None:
-        """Open the connection and start the background tasks
+        """Prepare for acquisition, opening a persistent socket if appropriate,
+        and start the background tasks
         (receive loop, reconnect supervisor). Returns once
         the initial handshake completes, or — when the provider rejects
         it terminally — returns with the connection paused

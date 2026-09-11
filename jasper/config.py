@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
@@ -167,6 +168,8 @@ def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
 def _validate(cfg: "Config") -> "Config":
     if not 0.0 <= cfg.wake_threshold <= 1.0:
         raise VoiceConfigError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
+    if not math.isfinite(cfg.followup_timeout_sec) or cfg.followup_timeout_sec < 0:
+        raise VoiceConfigError("JASPER_FOLLOWUP_TIMEOUT_SEC must be finite and >= 0")
     if cfg.idle_timeout_sec <= 0:
         raise VoiceConfigError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
     if cfg.response_stall_timeout_sec <= 0:
@@ -244,6 +247,9 @@ class Config:
 
     openai_api_key: str = field(repr=False)
     openai_model: str
+    openai_live_model: str
+    openai_live_voice: str
+    openai_live_backend_model: str
     openai_voice: str
     openai_reasoning_effort: str
     openai_noise_reduction: str
@@ -287,6 +293,7 @@ class Config:
     camilla_port: int
     duck_db: float
     idle_timeout_sec: int
+    followup_timeout_sec: float
     response_stall_timeout_sec: int
     # Per-provider idle context reset thresholds (seconds). 0 = disabled
     # (default). Without a reset, the persistent live session keeps
@@ -465,7 +472,7 @@ class Config:
         # block's other env vars have sensible defaults, so the user
         # only needs to set the key + provider to switch backends.
         gemini_key = _env("GEMINI_API_KEY", required=(provider == "gemini"))
-        openai_key = _env("OPENAI_API_KEY", required=(provider == "openai"))
+        openai_key = _env("OPENAI_API_KEY", required=(provider in {"openai", "openai_live"}))
         grok_key = _env("XAI_API_KEY", required=(provider == "grok"))
         # Speaker hostname is the single source of truth for "where do
         # other devices reach this speaker?" — read first so URL
@@ -503,6 +510,9 @@ class Config:
             # Zephyr. Without this, the server picks one per session.
             gemini_voice=_env("JASPER_GEMINI_VOICE", default_voice_id("gemini")),
             openai_api_key=openai_key,
+            openai_live_model=_env("JASPER_OPENAI_LIVE_MODEL", default_model_id("openai_live")),
+            openai_live_voice=_env("JASPER_OPENAI_LIVE_VOICE", default_voice_id("openai_live")),
+            openai_live_backend_model=_env("JASPER_OPENAI_LIVE_BACKEND_MODEL", default_extra_value("openai_live", "backend_model")),
             # Default model is the post-2026-05-07 reasoning-capable
             # GA: gpt-realtime-2 ($32 / $64 / $0.40 per 1M audio tokens
             # in / out / cached). For the cheaper non-reasoning sibling
@@ -697,6 +707,7 @@ class Config:
             # making progress but never answers is released instead by
             # the cap below, measured from end-of-input.
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
+            followup_timeout_sec=_env_float("JASPER_FOLLOWUP_TIMEOUT_SEC", 5.0),
             # Last-resort cap on one answer, applied twice: after a
             # provider has begun speaking but never sends turn_complete,
             # and — measured from end-of-input — on a turn that keeps
@@ -905,6 +916,10 @@ class Config:
             ),
         ))
 
+    @property
+    def openai_live_api_key(self) -> str:
+        return self.openai_api_key
+
     def voice_model_for(self, provider: str) -> str:
         """Model name this config resolves for ``provider``, or "" for an
         unknown provider id. The one provider→model mapping: a new
@@ -923,6 +938,7 @@ class Config:
         return {
             "gemini": self.gemini_model,
             "openai": self.openai_model,
+            "openai_live": self.openai_live_model,
             "grok": self.grok_model,
         }.get(provider, "")
 

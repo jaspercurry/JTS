@@ -1555,6 +1555,8 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
         pass
 
     class _Turn:
+        continuous_input = False
+
         def __init__(self) -> None:
             self.release_calls = 0
 

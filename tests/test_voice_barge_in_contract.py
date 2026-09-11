@@ -22,6 +22,7 @@ from jasper.voice.openai_session import (
     OpenAIRealtimeTurn,
 )
 from jasper.voice.session import Interruptible, LiveTurn
+from jasper.voice.openai_live_session import OpenAILiveTurn
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests.test_gemini_connection import _FakeConnect
 from tests.test_openai_session import _FakeConnectFactory
@@ -34,6 +35,7 @@ PROVIDER_TURN_CLASSES = {
     "gemini": GeminiLiveTurn,
     "openai": OpenAIRealtimeTurn,
     "grok": OpenAIRealtimeTurn,
+    "openai_live": OpenAILiveTurn,
 }
 
 TURN_CLASSES = (OpenAIRealtimeTurn, GeminiLiveTurn)
@@ -54,7 +56,7 @@ def _make_turn(cls):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("cls", TURN_CLASSES)
+@pytest.mark.parametrize("cls", (*TURN_CLASSES, OpenAILiveTurn))
 def test_turn_adapters_conform_to_the_protocols(cls):
     turn = _make_turn(cls)
     assert isinstance(turn, Interruptible)
@@ -85,8 +87,19 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
         assert kind in (
             InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
             InterruptReconcile.SERVER_SELF_TRUNCATES,
+            InterruptReconcile.NATIVE_CONTINUOUS,
         )
-        assert isinstance(_make_turn(cls), Interruptible), provider_id
+        turn = _make_turn(cls)
+        assert isinstance(turn, Interruptible), provider_id
+        entry = next(p for p in PROVIDERS if p.id == provider_id)
+        assert turn.continuous_input is entry.continuous_input
+        # Only a provider that stops generating on the user's own voice is
+        # exempt from the host's barge-in flush. Every other turn carries the
+        # default, so a fifth adapter cannot inherit the exemption by accident.
+        assert turn.owns_interruption is (provider_id == "openai_live")
+        # No provider's follow-ups are proven on hardware yet, so every turn
+        # closes when playout drains; Live runs its own window inside the turn.
+        assert turn.host_followup_window is False, provider_id
 
 
 # ---------------------------------------------------------------------------

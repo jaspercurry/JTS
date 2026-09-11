@@ -66,11 +66,13 @@ def build_provider_tts_backend(
         else max(0.0, float(retry_backoff_sec))
     )
 
-    if provider == "openai" and cfg.openai_api_key:
-        voice = cfg.openai_voice
+    if provider in {"openai", "openai_live"} and (key := (
+        cfg.openai_live_api_key if provider == "openai_live" else cfg.openai_api_key
+    )):
+        voice = cfg.openai_live_voice if provider == "openai_live" else cfg.openai_voice
         return (
             OpenAITTSGenerator(
-                api_key=cfg.openai_api_key,
+                api_key=key,
                 voice=voice,
                 max_attempts=attempts,
                 retry_backoff_sec=backoff,

@@ -29,6 +29,7 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     await_connected,
+    failure_detail,
     hand_off_first_connect,
     provider_code,
     request_planned_reopen,
@@ -102,6 +103,10 @@ class BaseLiveTurn:
     the daemon; this only implements the provider-independent half.
     """
 
+    owns_interruption = False
+    host_followup_window = False
+    continuous_input = False
+
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
         self._conn = conn
         self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
@@ -154,6 +159,9 @@ class BaseLiveTurn:
         task = self._tool_task
         if task is not None and not task.done() and not task.cancelling():
             task.cancel()
+
+    def discard_input(self) -> None:
+        """Nothing to revoke: only a continuous adapter buffers input."""
 
     async def audio_out(self) -> AsyncIterator[bytes]:
         async for chunk in self.audio_out_chunks():
@@ -658,7 +666,12 @@ class BaseLiveConnection:
                 cm.__aexit__(None, None, None), timeout=SESSION_CLOSE_TIMEOUT_SEC,
             )
         except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-            self._logger.debug("%s __aexit__ error (ignored): %s", self._log_tag, e)
+            log_event(
+                self._logger,
+                "live.transport_close_failed",
+                detail=failure_detail(e, literals=self._secret_literals()),
+                level=logging.WARNING,
+            )
 
     def _log_teardown(self, elapsed_sec: float) -> None:
         self._logger.info(

@@ -20,6 +20,7 @@ import numpy as np
 from .assistant_loudness import (
     AssistantSourceMeter,
     DEFAULT_PROFILE_PATH as ASSISTANT_LOUDNESS_PROFILE_PATH,
+    UPSAMPLE_2X_CONTEXT,
     confidence_for_measurement,
     profile_for_outputd,
     update_profile_from_measurement,
@@ -693,6 +694,9 @@ class TtsPlayout:
         # is briefly a legitimate now() value on a freshly-booted Pi.
         self._drain_tail_sec = float(drain_tail_sec)
         self._ring_end_monotonic: float | None = None
+        # Input samples carried between chunks of one segment — see
+        # `_upsample_chunk`. None means "no segment in progress".
+        self._upsample_tail = None
         # Emission-time admission authority — see set_emission_admission.
         self._emission_admission: "Callable[[], str | None] | None" = None
         self._emission_refusal_logged = False
@@ -1176,7 +1180,7 @@ class TtsPlayout:
             self._assistant_meter.observe_pcm_24k(pcm)
         # The wire is fixed at 48 kHz; provider/cue PCM is always 24 kHz, so
         # this upsample ratio is always exactly 2.
-        arr = upsample_2x(arr).astype(np.float32, copy=False)
+        arr = self._upsample_chunk(arr).astype(np.float32, copy=False)
         mono = _quantize_to_wire(arr, wide=self._wire_wide)
         stereo = np.repeat(mono, 2)
 
@@ -1284,7 +1288,28 @@ class TtsPlayout:
             )
         return self._profile_cache
 
+    def _upsample_chunk(self, arr):
+        """2x the next chunk of this segment, seamlessly across the join.
+
+        `upsample_2x` reads UPSAMPLE_2X_CONTEXT input samples either side of
+        every output sample, so a chunk resampled alone is wrong at BOTH of
+        its edges — measured at -9 dB peak, once per provider delta, ~10 times
+        a second. Carrying the previous chunk's tail supplies the left context
+        and holds the right back until the next chunk arrives, which delays
+        the wire by UPSAMPLE_2X_CONTEXT input samples (0.42 ms) and leaves
+        that much of a segment's last chunk unplayed. Sample count is
+        unchanged: every chunk still yields exactly twice its own samples.
+        """
+        tail = self._upsample_tail
+        if tail is None:
+            tail = np.zeros(2 * UPSAMPLE_2X_CONTEXT, dtype=arr.dtype)
+        buf = np.concatenate((tail, arr))
+        self._upsample_tail = buf[-2 * UPSAMPLE_2X_CONTEXT:].copy()
+        skip = 2 * UPSAMPLE_2X_CONTEXT
+        return upsample_2x(buf)[skip:skip + 2 * arr.size]
+
     async def end_segment(self) -> None:
+        self._upsample_tail = None
         stream = self._stream
         if stream is None:
             self._schedule_assistant_source_profile_save()
@@ -1347,6 +1372,7 @@ class TtsPlayout:
             self._profile_cache = None
 
     async def flush(self) -> dict | None:
+        self._upsample_tail = None
         stream = await self._current_outputd_stream()
         if stream is None:
             await self._save_assistant_source_profile(self._pop_assistant_meter())

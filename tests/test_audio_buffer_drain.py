@@ -21,6 +21,11 @@ def _frame(tag):
     return np.full(1280, tag, dtype=np.int16)
 
 
+def _stub_turn(**members) -> SimpleNamespace:
+    """A turn stub plus the `LiveTurn` members the daemon reads on every frame."""
+    return SimpleNamespace(continuous_input=False, discard_input=lambda: None, **members)
+
+
 @pytest.mark.parametrize("overflow", [False, True])
 def test_buffer_drops_oldest_and_marks_next_frame(monkeypatch, overflow):
     monkeypatch.setattr("jasper.audio_buffer.time.monotonic", lambda: 10.0)
@@ -93,7 +98,7 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
         if trigger != "research":
             entered.set()
             await release.wait()
-        return SimpleNamespace(send_audio=send)
+        return _stub_turn(send_audio=send)
 
     if trigger == "research":
         async def cancel_research():
@@ -136,7 +141,7 @@ async def test_endpoint_is_independent_of_acquire_split(split):
     wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn_started_at_loop = time.monotonic() - 2.0
-    wl._turn = SimpleNamespace(send_audio=AsyncMock(), end_input=AsyncMock())
+    wl._turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._vad.predict = lambda frame: float(frame[0])
     frames = [1] * 4 + [0] * 12
     for index, score in enumerate(frames):
@@ -159,7 +164,7 @@ async def test_endpoint_is_independent_of_acquire_split(split):
 async def test_acquire_gap_resets_speech_and_silence_runs(armed):
     wl = wake_loop_for_tests()
     wl._state = State.SESSION
-    wl._turn = SimpleNamespace(send_audio=AsyncMock(), end_input=AsyncMock())
+    wl._turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._turn_started_at_loop = time.monotonic() - 2.0
     wl._user_speech_seen = armed
     wl._speech_run_started_at = wl._silence_started_at = time.monotonic() - 1.0
@@ -181,7 +186,7 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
     turns = []
 
     async def acquire():
-        turn = SimpleNamespace(send_audio=AsyncMock(), end_input=AsyncMock())
+        turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
         turns.append(turn)
         return turn
 
@@ -212,7 +217,7 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
 async def test_endpoint_discarded_tail_does_not_keep_pre_gap_vad_state():
     wl = wake_loop_for_tests()
     wl._state = State.SESSION
-    wl._turn = SimpleNamespace(send_audio=AsyncMock(), end_input=AsyncMock())
+    wl._turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._turn_started_at_loop = time.monotonic() - 2.0
     wl._user_speech_seen = True
     wl._silence_started_at = time.monotonic() - 1.0
@@ -239,7 +244,7 @@ async def test_input_pause_during_acquire_never_uploads_frozen_prefix(
     wl._play_listening_chirp = AsyncMock()
     wl._pre_roll.append(_frame(99))
     entered, release = asyncio.Event(), asyncio.Event()
-    turn = SimpleNamespace(send_audio=AsyncMock(), release=AsyncMock())
+    turn = _stub_turn(send_audio=AsyncMock(), release=AsyncMock())
 
     async def hold(*_args):
         entered.set()
@@ -293,7 +298,7 @@ async def test_endpoint_preserves_sustained_speech_and_peak_rules(buffered, scor
     wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn_started_at_loop = time.monotonic() - 3.0
-    wl._turn = SimpleNamespace(send_audio=AsyncMock(), end_input=AsyncMock())
+    wl._turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._vad.predict = lambda frame: float(frame[0]) / 100
     for index, score in enumerate(scores + [0.0] * 12):
         frame = _frame(round(score * 100))

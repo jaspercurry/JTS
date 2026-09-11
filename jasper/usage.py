@@ -638,14 +638,23 @@ class UsageStore:
             ),
         )
 
-    def record_billable_activity_close(self) -> None:
-        """Close any open billable activity interval — called on turn
-        release / loss. Closes all open rows; there is only ever one
-        active voice turn, so this targets exactly it."""
+    def record_billable_activity_close(self, *, seconds: float | None = None) -> None:
+        """Close the open billable activity interval — one per voice turn."""
+        row = self._conn.execute(
+            "SELECT id, opened_at FROM connection_intervals "
+            "WHERE closed_at IS NULL AND kind = ? LIMIT 1",
+            (_BILLABLE_ACTIVITY_KIND,),
+        ).fetchone()
+        if row is None:
+            return
+        row_id, opened_at = row
+        closed_at = (
+            datetime.now(timezone.utc) if seconds is None
+            else datetime.fromisoformat(opened_at) + timedelta(seconds=max(0.0, seconds))
+        )
         self._conn.execute(
-            "UPDATE connection_intervals SET closed_at = ? "
-            "WHERE closed_at IS NULL AND kind = ?",
-            (datetime.now(timezone.utc).isoformat(), _BILLABLE_ACTIVITY_KIND),
+            "UPDATE connection_intervals SET closed_at = ? WHERE id = ?",
+            (closed_at.isoformat(), row_id),
         )
 
     def close_dangling_intervals(self) -> None:
@@ -1000,8 +1009,8 @@ class BillableActivityMeter:
         except Exception as e:  # noqa: BLE001
             logger.warning("activity meter: open failed: %s", e)
 
-    def mark_ended(self) -> None:
+    def mark_ended(self, *, seconds: float | None = None) -> None:
         try:
-            self._store.record_billable_activity_close()
+            self._store.record_billable_activity_close(seconds=seconds)
         except Exception as e:  # noqa: BLE001
             logger.warning("activity meter: close failed: %s", e)

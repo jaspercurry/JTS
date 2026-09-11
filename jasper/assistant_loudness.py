@@ -92,6 +92,8 @@ class AssistantLoudnessProfile:
 def active_voice_identity(cfg: Any) -> tuple[str, str, str]:
     """Return the active provider/model/voice tuple from Config-like cfg."""
     provider = getattr(cfg, "voice_provider", "")
+    if provider == "openai_live":
+        return provider, getattr(cfg, "openai_live_model", ""), getattr(cfg, "openai_live_voice", "")
     if provider == "openai":
         return provider, getattr(cfg, "openai_model", ""), getattr(cfg, "openai_voice", "")
     if provider == "gemini":
@@ -371,6 +373,14 @@ def measure_pcm_24k_mono(pcm: bytes, *, wide: bool = False) -> LoudnessMeasureme
         voiced_duration_sec=round(voiced_frames / MEASURE_RATE, 3),
         total_duration_sec=round(len(upsampled) / MEASURE_RATE, 3),
     )
+
+
+#: INPUT samples either side of an output sample that `upsample_2x` reads. A
+#: chunk resampled on its own is wrong within this distance of both its edges,
+#: so a caller resampling a stream in chunks has to carry that much context
+#: across every join. `jasper.dsp_numpy` sizes the taps; the value is pinned
+#: against them by tests/test_tts_playout.py.
+UPSAMPLE_2X_CONTEXT = 10
 
 
 def upsample_2x(samples: "Any") -> "Any":
