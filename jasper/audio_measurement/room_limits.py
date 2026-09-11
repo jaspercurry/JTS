@@ -126,15 +126,10 @@ def allowed_depth_db(
     *,
     base_max_cut_db: float = ROOM_MAX_CUT_DB,
 ) -> np.ndarray:
-    """Per-frequency cut floor, dB, non-positive, on ``std_db``'s own grid.
-
-    The array :func:`jasper.audio_measurement.peq.design_peq` accepts as
-    ``max_cut_db``.
-    """
-    fraction = depth_fraction(std_db)
+    """Cut floor in dB; ``std_db=None`` uses the boost cap or the shallower caller base."""
     return np.asarray(
-        max(base_max_cut_db, ROOM_MAX_CUT_DB * fraction) if std_db is None
-        else base_max_cut_db * fraction,
+        max(base_max_cut_db, -ROOM_MAX_FILTER_BOOST_DB) if std_db is None
+        else base_max_cut_db * depth_fraction(std_db),
         dtype=np.float64,
     )
 
@@ -162,7 +157,7 @@ def cut_floor_db(
     *,
     base_max_cut_db: float = ROOM_MAX_CUT_DB,
 ) -> np.ndarray:
-    """The per-bin cut floor, dB, non-positive: spread cap times the taper."""
+    """Tapered cut floor in dB; ``spread_db=None`` caps its magnitude at the boost envelope."""
     return np.asarray(
         allowed_depth_db(spread_db, base_max_cut_db=base_max_cut_db)
         * ceiling_taper(freqs_hz, ceiling_hz),

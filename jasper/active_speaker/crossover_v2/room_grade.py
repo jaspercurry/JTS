@@ -27,7 +27,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-
+from jasper.audio_measurement.room_limits import spatial_support
 from .record_index import bundle_measurements
 from .measurement_context import CAPTURE_FIELDS, compare_capture_basis
 from .room_prescription import RoomMedian, read_room_median
@@ -96,6 +96,7 @@ class RoomGrade:
             "ceiling_hz": self.ceiling_hz,
             "ceiling_source": self.ceiling_source,
             "n_positions": self.n_positions,
+            "spatial_support": spatial_support(self.n_positions),
             "bands": [asdict(band) for band in self.bands],
             "incumbent": None if self.incumbent_ceiling_hz is None else {
                 "ceiling_hz": self.incumbent_ceiling_hz,
@@ -106,23 +107,15 @@ class RoomGrade:
         }
 
 
-
-
 class _BandMetrics(NamedTuple):
     n_bins: int
     rms_db: float
     max_db: float
-    spread_db: float
-
-
-def _metrics(median: RoomMedian, mask: np.ndarray) -> _BandMetrics | None:
-    """One band's bin count, RMS and max against flat, and its mean spread, or
-    ``None`` when this median's grid carries no bin in the band."""
-    return _array_metrics(median.median_db, median.spread_db, mask)
+    spread_db: float | None
 
 
 def _array_metrics(
-    deviation: np.ndarray, spread: np.ndarray, mask: np.ndarray,
+    deviation: np.ndarray, spread: np.ndarray | None, mask: np.ndarray,
 ) -> _BandMetrics | None:
     values = deviation[mask]
     if not values.size:
@@ -131,7 +124,7 @@ def _array_metrics(
         n_bins=int(values.size),
         rms_db=float(np.sqrt(np.mean(values ** 2))),
         max_db=float(np.max(np.abs(values))),
-        spread_db=float(np.mean(spread[mask])),
+        spread_db=None if spread is None else float(np.mean(spread[mask])),
     )
 
 
@@ -167,7 +160,10 @@ def _removed_support(
 
 def _comparison_arrays(
     median: RoomMedian, incumbent: RoomMedian,
-) -> tuple[dict[str, Any], tuple[np.ndarray, ...] | None]:
+) -> tuple[
+    dict[str, Any],
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None] | None,
+]:
     basis = _comparison_basis(median, incumbent)
     now_support, was_support = _support(median), _support(incumbent)
     lo, hi = max(now_support[0], was_support[0]), min(now_support[1], was_support[1])
@@ -200,8 +196,10 @@ def _comparison_arrays(
     was_raw = np.interp(
         grid, incumbent.freqs_hz, incumbent.median_db + incumbent.level_reference_db,
     )
-    now_spread = np.interp(grid, median.freqs_hz, median.spread_db)
-    was_spread = np.interp(grid, incumbent.freqs_hz, incumbent.spread_db)
+    now_spread, was_spread = (
+        None if value.spread_db is None else np.interp(grid, value.freqs_hz, value.spread_db)
+        for value in (median, incumbent)
+    )
     reference = float(np.median(was_raw))
     alignment = reference - float(np.median(now_raw))
     comparison.update({
@@ -231,7 +229,7 @@ def grade_room_median(
         comparison, compared = _comparison_arrays(median, incumbent)
     for index, (low, high, mask) in enumerate(band_masks(median.freqs_hz, median.ceiling_hz)):
         if incumbent is None or compared is None:
-            now = _metrics(median, mask)
+            now = _array_metrics(median.median_db, median.spread_db, mask)
             was = None
             compared_hz = None
         else:

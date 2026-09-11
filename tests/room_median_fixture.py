@@ -2,15 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One seat-cube median document, as lane B's ``room_median.json`` carries it.
-
-The shape is arithmetic a reader can do: one ripple amplitude per band, one
-mode and one dip in the lowest band, and a deviation above the ceiling that no
-band may read. The grid and the ceiling satisfy
-:func:`~jasper.active_speaker.crossover_v2.room_prescription.read_room_median`
-— the door that every reader of this document goes through — so a suite using
-this fixture is grading a median the room door would prescribe against.
-"""
+"""A room median fixture with a mode, dip and per-band ripple."""
 
 from __future__ import annotations
 
