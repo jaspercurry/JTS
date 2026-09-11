@@ -175,9 +175,8 @@ def analyze_program_capture(
     )
     discontinuity = analysis.drift.discontinuity_samples if analysis.drift else None
     return replace(
-        analysis, frame_ledger=frame_ledger, anchor_ambiguous=anchor.ambiguous,
-        anchor_presence=anchor.presence, anchor_confidence=anchor.confidence,
-        anchor_corroborated=anchor.corroborated,
+        analysis, frame_ledger=frame_ledger, anchor=anchor,
+        anchor_ambiguous=anchor.ambiguous if anchor is not None else False,
         discontinuity_samples=(
             float(discontinuity) if isinstance(discontinuity, (int, float)) else None
         ),

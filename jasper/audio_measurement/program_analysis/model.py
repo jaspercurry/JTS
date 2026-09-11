@@ -923,6 +923,14 @@ class GainPlan:
 
 
 @dataclass(frozen=True)
+class AnchorEvidence:
+    ambiguous: bool = False
+    presence: float | None = None
+    confidence: float | None = None
+    corroborated: bool | None = None
+
+
+@dataclass(frozen=True)
 class ProgramAnalysis:
     """The deterministic result of one ``(program, capture)`` pair."""
 
@@ -990,9 +998,7 @@ class ProgramAnalysis:
     # directly rather than through `analyze_program_capture`.
     frame_ledger: FrameLedger | None = None
     anchor_ambiguous: bool = False
-    anchor_presence: float | None = None
-    anchor_confidence: float | None = None
-    anchor_corroborated: bool | None = None
+    anchor: AnchorEvidence | None = None
     # An unresolved drift step has no numeric measurement.
     discontinuity_samples: float | None = None
     mic_meter_status: str | None = None

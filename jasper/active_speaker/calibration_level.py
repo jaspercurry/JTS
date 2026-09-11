@@ -18,12 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
-from jasper.audio_measurement.mic_meter import (
-    MIC_TOO_QUIET_BELOW_DBFS,
-    MIC_USABLE_MIN_DBFS,
-    MIC_USABLE_MAX_DBFS,
-    classify_mic_meter,
-)
+from jasper.audio_measurement import mic_meter
+from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.json_fields import utc_now_iso as _utc_now
 
 from ._common import finite_float as _finite_float
@@ -100,9 +96,9 @@ def calibration_level_payload(
                 observed_dbfs=observed_mic_dbfs,
                 clipping=mic_clipping,
             ),
-            "usable_min_dbfs": MIC_USABLE_MIN_DBFS,
-            "usable_max_dbfs": MIC_USABLE_MAX_DBFS,
-            "too_quiet_below_dbfs": MIC_TOO_QUIET_BELOW_DBFS,
+            "usable_min_dbfs": mic_meter.MIC_USABLE_MIN_DBFS,
+            "usable_max_dbfs": mic_meter.MIC_USABLE_MAX_DBFS,
+            "too_quiet_below_dbfs": mic_meter.MIC_TOO_QUIET_BELOW_DBFS,
         },
         "safety": {
             "operator_controls_level": True,

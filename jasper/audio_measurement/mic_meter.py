@@ -28,10 +28,7 @@ def classify_mic_meter(
     deterministically.
     """
 
-    try:
-        observed = finite_float(float(observed_dbfs))
-    except (TypeError, ValueError, OverflowError):
-        observed = None
+    observed = finite_float(observed_dbfs)
     if clipping:
         return {
             "status": "clipping",

@@ -47,6 +47,7 @@ from .spatial import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from jasper.audio_measurement.program_analysis.model import AnchorEvidence
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
 __all__ = [
@@ -234,7 +235,7 @@ class MeasureScreen:
     it comes back at, ``0.0`` reproducing the no-argument call exactly.
     """
 
-    kind: str
+    kind: str | None
     guard: str = ""
     rearm: bool = False
     rearm_backoff_db: float = 0.0
@@ -267,9 +268,7 @@ class MeasureScreens:
     alignment_present: bool
     alignment_status_ok: bool
     delay_physically_plausible: Callable[[], bool]
-    anchor_presence: float | None
-    anchor_confidence: float | None
-    anchor_corroborated: bool | None
+    anchor: AnchorEvidence | None
     epsilon_ppm: float | None
     max_residual_samples: float | None
     discontinuity_samples: float | None
@@ -283,27 +282,23 @@ class MeasureScreens:
         delay_physically_plausible: Callable[[], bool],
     ) -> MeasureScreens:
         drift, alignment = analysis.drift, analysis.alignment
+        clipped = _clipped_stimulus_peaks(analysis)
         return cls(
             stimulus_located=_stimulus_locate_ok(analysis),
             pilot_snr_ok=analysis.pilot_snr_ok,
             sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
             glitch_detected=bool(analysis.glitch_detected),
             sweep_schedule_ok=sweep_schedule_ok,
-            any_sweep_clipped=_any_sweep_clipped(analysis),
+            any_sweep_clipped=bool(clipped),
             linearity_ok=analysis.linearity_ok,
             alignment_present=alignment is not None,
             alignment_status_ok=alignment is not None and alignment.status == ALIGNMENT_OK,
             delay_physically_plausible=delay_physically_plausible,
-            anchor_presence=analysis.anchor_presence,
-            anchor_confidence=analysis.anchor_confidence,
-            anchor_corroborated=analysis.anchor_corroborated,
+            anchor=analysis.anchor,
             epsilon_ppm=float(drift.epsilon_ppm) if drift else None,
             max_residual_samples=float(drift.max_residual_samples) if drift else None,
             discontinuity_samples=analysis.discontinuity_samples,
-            peak_dbfs=max(
-                (float(loc.peak_dbfs) for loc in analysis.locations
-                 if loc.kind in STIMULUS_KINDS and loc.clipped), default=None,
-            ),
+            peak_dbfs=max(clipped, default=None),
             mic_meter_status=analysis.mic_meter_status,
         )
 
@@ -316,8 +311,8 @@ class MeasureScreens:
 
 def measure_screens(
     screens: MeasureScreens, *, clip_retry_backoff_db: float
-) -> MeasureScreen | None:
-    """MEASURE's ladder: the finding and its directive, or ``None`` to accept.
+) -> MeasureScreen:
+    """MEASURE's ladder: evidence and a finding, with ``kind=None`` to accept.
 
     **"Too quiet" runs before "glitched"** (D3, #1838). A capture nobody could
     hear produces the same symptoms as a spliced one — the locator lands the
@@ -340,10 +335,10 @@ def measure_screens(
     if screens.pilot_snr_ok is False:
         return MeasureScreen(SCREEN_PILOT_LEVEL_COLLAPSE, evidence=screens.evidence())
     # Retire when locate can resolve the timeline without a corroborating witness.
-    if screens.anchor_corroborated is False:
+    if screens.anchor is not None and screens.anchor.corroborated is False:
         return MeasureScreen(SCREEN_ANCHOR_UNCONFIRMED, evidence=screens.evidence(
-            presence=screens.anchor_presence, confidence=screens.anchor_confidence,
-            corroborated=screens.anchor_corroborated,
+            presence=screens.anchor.presence, confidence=screens.anchor.confidence,
+            corroborated=screens.anchor.corroborated,
         ))
     if not screens.sweep_locate_confidence_ok:
         return MeasureScreen(
@@ -374,11 +369,16 @@ def measure_screens(
         and not screens.delay_physically_plausible()
     ):
         return MeasureScreen(SCREEN_DELAY_IMPLAUSIBLE, evidence=screens.evidence())
-    return None
+    return MeasureScreen(None, evidence=screens.evidence())
+
+
+def _clipped_stimulus_peaks(analysis: ProgramAnalysis) -> list[float]:
+    return [float(loc.peak_dbfs) for loc in analysis.locations
+            if loc.kind in STIMULUS_KINDS and loc.clipped]
 
 
 def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
-    return any(loc.clipped for loc in analysis.locations if loc.kind in STIMULUS_KINDS)
+    return bool(_clipped_stimulus_peaks(analysis))
 
 
 def ripple_reservation_due(

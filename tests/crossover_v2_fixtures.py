@@ -4,10 +4,6 @@
 
 """Shared fixture library for the crossover-v2 test surface.
 
-Lifted verbatim out of ``tests/test_crossover_v2_conductor.py`` (#2291 phase
-5c-i). Every definition below is byte-identical to the one it replaced: this
-extraction moved code, it did not change any of it.
-
 Why it exists: the conductor test file had become the campaign's de-facto
 shared fixture library — 18 other test modules imported 25 symbols from it,
 including all three Phase-0 characterization pins (capture sequence, phase
@@ -1362,6 +1358,7 @@ def _pilot_obs(
     channel_map_ok: bool = True,
     peak_hi_dbfs: float = -24.0,
     delta_implausible: bool = False,
+    mic_meter_status: str | None = "usable",
 ) -> PilotObservation:
     return PilotObservation(
         role=role, level_lo_dbfs=-40.0, level_hi_dbfs=-30.0,
@@ -1370,7 +1367,7 @@ def _pilot_obs(
         snr_db=snr_db, peak_hi_dbfs=peak_hi_dbfs,
         channel_map_target_rise_db=target_rise_db,
         channel_map_cross_rise_db=cross_rise_db,
-        delta_implausible=delta_implausible,
+        delta_implausible=delta_implausible, mic_meter_status=mic_meter_status,
     )
 
 

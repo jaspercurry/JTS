@@ -19,7 +19,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
 from jasper.active_speaker.crossover_v2 import spatial, refusal_copy
-from jasper.audio_measurement.program_analysis import DriftEstimate
+from jasper.audio_measurement.program_analysis.model import AnchorEvidence, DriftEstimate
 from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _run_phase
 
 
@@ -67,9 +67,7 @@ def _measure(**overrides) -> tuple[cd.MeasureScreens, _Counter, _Counter]:
         linearity_ok=True,
         alignment_present=True,
         alignment_status_ok=True,
-        anchor_presence=None,
-        anchor_confidence=None,
-        anchor_corroborated=None,
+        anchor=None,
         epsilon_ppm=None,
         max_residual_samples=None,
         discontinuity_samples=None,
@@ -265,7 +263,7 @@ def test_an_unattributed_anchor_is_retriable_and_never_a_wiring_instruction():
 
 def test_measure_accepts_a_clean_capture():
     screens, schedule, plausible = _measure()
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) is None
+    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0).kind is None
     assert (schedule.calls, plausible.calls) == (1, 1)
 
 
@@ -343,7 +341,7 @@ def test_the_schedule_port_is_not_asked_when_a_rung_above_refuses():
     for override in (
         {"stimulus_located": False},
         {"pilot_snr_ok": False},
-        {"anchor_corroborated": False},
+        {"anchor": AnchorEvidence(corroborated=False)},
         {"sweep_locate_confidence_ok": False},
         {"glitch_detected": True},
     ):
@@ -372,7 +370,7 @@ def test_the_plausibility_port_is_asked_only_of_a_resolved_trusted_estimate():
 
 def test_a_trims_only_capture_skips_every_alignment_rung():
     screens, _, _ = _measure(alignment_present=False, alignment_status_ok=False)
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) is None
+    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0).kind is None
 
 
 def test_the_two_alignment_rungs_report_their_own_finding():
@@ -563,8 +561,8 @@ def test_no_household_vocabulary_reaches_this_module():
 @pytest.mark.parametrize("corroborated", [False, True, None])
 def test_measure_anchor_precedes_sweep_confidence(corroborated):
     screens, schedule, _ = _measure(
-        anchor_corroborated=corroborated, anchor_presence=0.0156,
-        anchor_confidence=0.18, sweep_locate_confidence_ok=False,
+        anchor=AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=corroborated),
+        sweep_locate_confidence_ok=False,
     )
     screen = cd.measure_screens(screens, clip_retry_backoff_db=3.0)
     assert screen.kind == (
@@ -587,8 +585,7 @@ def test_measure_anchor_precedes_sweep_confidence(corroborated):
     [
         ({}, None, {}),
         ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, {}),
-        ({"anchor_presence": 0.0156, "anchor_confidence": 0.18,
-          "anchor_corroborated": False}, refusal_copy.REASON_ANCHOR_TOO_QUIET,
+        ({"anchor": AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET,
          {"presence": 0.0156, "confidence": 0.18, "corroborated": False}),
         ({"glitch_detected": True, "discontinuity_samples": -1066.7,
           "drift": DriftEstimate(-3106.0, 1066.7, True, discontinuity_samples=-1066.7)},

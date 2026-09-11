@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
 import numpy as np
 import pytest
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db as _compose_sigma_db
@@ -26,7 +25,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     _analysis_json,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.active_speaker.calibration_level import (
+from jasper.audio_measurement.mic_meter import (
     MIC_USABLE_MAX_DBFS,
     MIC_USABLE_MIN_DBFS,
 )
@@ -418,10 +417,10 @@ def test_check_emits_a_named_row_per_driver_with_its_absolute_level(caplog):
         locations=(_loc("pilot_woofer_hi", "pilot"),),
         ambient_report={"bands": [{"level_dbfs": -70.0}]},
         pilots=(
-            replace(_pilot_obs("woofer", peak_hi_dbfs=-24.0), mic_meter_status="usable"),
+            _pilot_obs("woofer", peak_hi_dbfs=-24.0),
             # Present, correct, and far under the usable window's floor: the
             # exact shape every relative rung passes.
-            replace(_pilot_obs("tweeter", peak_hi_dbfs=-72.0), mic_meter_status="too_quiet"),
+            _pilot_obs("tweeter", peak_hi_dbfs=-72.0, mic_meter_status="too_quiet"),
         ),
         linearity_ok=True, channel_map_ok=True, pilot_snr_ok=True,
         gain_plan=GainPlan(
@@ -1261,7 +1260,7 @@ def test_analysis_owns_mic_grades(monkeypatch, levels, grades, status):
         "jasper.audio_measurement.program_analysis.dispatch._analyze_check",
         lambda *args: ProgramAnalysis(
             program.phase, program.program_id, (),
-            pilots=tuple(_pilot_obs(str(index), peak_hi_dbfs=level)
+            pilots=tuple(_pilot_obs(str(index), peak_hi_dbfs=level, mic_meter_status=None)
                          for index, level in enumerate(levels)),
         ),
     )

@@ -110,7 +110,7 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
                 noise_floor_dbfs_scalar=None, relevant_hz=(1600, 4000), model=DRIVER,
             )
             responses.append(replace(response, snr={DRIVER_SNR_ALIGNMENT_KEY: block}))
-        return replace(result, driver_responses=tuple(responses))
+        return replace(result, driver_responses=tuple(responses), mic_meter_status="low")
 
     fakes.check, fakes.measure = check, measure
     caps = {"woofer": 0.0, "tweeter": {"driver_cap": -65.0, "partial_cap": -48.0}.get(case, 0.0)}
@@ -138,6 +138,7 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
         return
 
     first = _run_phase(c, 2, 2)
+    assert first["evidence"] == {"mic_meter_status": "low"}
     if case in {"driver_cap", "flat_ceiling"}:
         assert first["accepted"]
         assert c.program_for_phase(PHASE_MEASURE).program_id == original.program_id
@@ -168,6 +169,7 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
         fakes.measure = lambda program: measure(program, 41.0)
     second = _run_phase(c, 2, 3)
     assert second["accepted"] and "auto_retry" not in second
+    assert second["evidence"] == {"mic_meter_status": "low"}
     assert c.program_for_phase(PHASE_MEASURE).program_id == retry.program_id
     assert len(banked) == 2 and banked[1][1] == retry.program_id
     if case != "resume":

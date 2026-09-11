@@ -2379,7 +2379,6 @@ class CrossoverV2Session:
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
-        verdict.evidence["mic_meter_status"] = analysis.mic_meter_status or "unmeasured"
         if verdict.code == REASON_MEASURE_GAIN_ADJUSTED:
             # Bank with the program that made THIS response before composing its retry.
             self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
@@ -2551,7 +2550,7 @@ class CrossoverV2Session:
             ),
             clip_retry_backoff_db=CLIP_RETRY_BACKOFF_DB,
         )
-        if screen is not None:
+        if screen.kind is not None:
             if screen.guard:
                 self._last_measure_guard = screen.guard
             if screen.rearm:
@@ -2582,7 +2581,7 @@ class CrossoverV2Session:
                         "next_gain_db": {**gains, **adjusted},
                     },
                     "kept_measurement": True,
-                })
+                }, evidence=screen.evidence)
         # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
         # does not refuse.** The capture is ACCEPTED and carries a reservation, which
         # changes what the household is TOLD and nothing about what is built.
@@ -2633,11 +2632,11 @@ class CrossoverV2Session:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={
                 "measurement_phase": PHASE_MEASURE, **pair_claim,
-            })
+            }, evidence=screen.evidence)
         # The no-deferral shape. The entry baseline is the "before" the round grades
         # against, not the fit's input, so it defers nothing.
         return PhaseVerdict(
-            True,
+            True, evidence=screen.evidence,
             payload={
                 "measurement_phase": PHASE_MEASURE,
                 **pair_claim,

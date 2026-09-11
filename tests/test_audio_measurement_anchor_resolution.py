@@ -868,9 +868,9 @@ def test_the_band_limited_locate_puts_the_whole_timeline_back():
     prog = _incident_program()
     cap = _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
 
-    _offset, anchor, _stimuli, ambiguous = _global_offset(prog, cap, SR)
-    assert anchor.segment_id == "pilot_woofer_lo"
-    assert ambiguous.ambiguous is False
+    _offset, segment, _stimuli, anchor = _global_offset(prog, cap, SR)
+    assert segment.segment_id == "pilot_woofer_lo"
+    assert anchor.ambiguous is False
     assert _anchor_separation(prog, cap) > 100.0
 
     analysis = analyze_program_capture(prog, cap, SR)
@@ -900,9 +900,9 @@ def test_the_quiet_room_sibling_is_untouched_by_both_halves():
     prog = _incident_program()
     cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
 
-    _offset, anchor, _stimuli, ambiguous = _global_offset(prog, cap, SR)
-    assert anchor.segment_id == "pilot_woofer_lo"
-    assert ambiguous.ambiguous is False
+    _offset, segment, _stimuli, anchor = _global_offset(prog, cap, SR)
+    assert segment.segment_id == "pilot_woofer_lo"
+    assert anchor.ambiguous is False
     assert _anchor_separation(prog, cap) > 100.0
 
     analysis = analyze_program_capture(prog, cap, SR)
@@ -957,9 +957,9 @@ def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
     cap = np.concatenate([np.zeros(GLOBAL_OFFSET), mono, np.zeros(20_000)])
     cap = cap + _band_noise(cap.size, 20.0, 20_000.0, 2e-4, seed=3)
 
-    _offset, anchor, _stimuli, ambiguous = _global_offset(program, cap, SR)
-    assert anchor.segment_id == "pilot_woofer_lo"
-    assert ambiguous.ambiguous is False, "a mis-wired capture is not an un-attributed one"
+    _offset, segment, _stimuli, anchor = _global_offset(program, cap, SR)
+    assert segment.segment_id == "pilot_woofer_lo"
+    assert anchor.ambiguous is False, "a mis-wired capture is not an un-attributed one"
 
     analysis = analyze_program_capture(program, cap, SR)
     assert analysis.anchor_ambiguous is False
@@ -1018,10 +1018,10 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
         ),
     )
     prog = _incident_program()
-    _offset, _anchor, _stimuli, resolved_ambiguous = _global_offset(
+    _offset, _anchor, _stimuli, anchor = _global_offset(
         prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
     )
-    assert resolved_ambiguous.ambiguous is ambiguous
+    assert anchor.ambiguous is ambiguous
 
 
 @pytest.mark.parametrize(
@@ -1135,10 +1135,10 @@ def test_the_guard_compares_a_ratio_and_not_a_difference(
         ),
     )
     prog = _incident_program()
-    _offset, _anchor, _stimuli, resolved_ambiguous = _global_offset(
+    _offset, _anchor, _stimuli, anchor = _global_offset(
         prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
     )
-    assert resolved_ambiguous.ambiguous is ambiguous
+    assert anchor.ambiguous is ambiguous
 
 
 def test_the_separation_is_flat_across_room_level(monkeypatch):
@@ -1271,11 +1271,11 @@ def test_a_corrected_anchor_can_also_be_ambiguous(monkeypatch):
         ),
     )
     prog = _incident_program()
-    _offset, anchor, _stimuli, ambiguous = _global_offset(
+    _offset, segment, _stimuli, anchor = _global_offset(
         prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
     )
-    assert anchor.segment_id == "pilot_woofer_hi", "the LATER candidate must win"
-    assert ambiguous.ambiguous is True
+    assert segment.segment_id == "pilot_woofer_hi", "the LATER candidate must win"
+    assert anchor.ambiguous is True
 
 
 def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
@@ -1413,15 +1413,15 @@ def test_the_peakedness_margin_prefers_the_EMPTY_window(monkeypatch, caplog):
     )
     prog = _measure_program()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
-        offset, anchor, _stimuli, ambiguous = _global_offset(
+        offset, segment, _stimuli, anchor = _global_offset(
             prog, _measure_room(prog), SR
         )
 
-    assert anchor.segment_id == "pilot_woofer_lo"
+    assert segment.segment_id == "pilot_woofer_lo"
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
     # A 214x separation is a resolved anchor, not a coin flip -- so the capture
     # is graded rather than handed back as a retake.
-    assert ambiguous.ambiguous is False
+    assert anchor.ambiguous is False
 
     fields = event_fields(caplog, "program_analysis.anchor")
     assert fields["corrected"] == "false"
@@ -1459,9 +1459,9 @@ def test_a_measure_capture_with_both_pilots_present_keeps_its_timeline():
     prog = _measure_program()
     cap = _measure_room(prog)
 
-    offset, anchor, _stimuli, ambiguous = _global_offset(prog, cap, SR)
-    assert anchor.segment_id == "pilot_woofer_lo"
-    assert ambiguous.ambiguous is False
+    offset, segment, _stimuli, anchor = _global_offset(prog, cap, SR)
+    assert segment.segment_id == "pilot_woofer_lo"
+    assert anchor.ambiguous is False
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
     # Hundreds-fold, the way every correctly-attributed capture in this file is.
     assert _anchor_separation(prog, cap) > ANCHOR_DISCRIMINATION_RATIO * 3
@@ -1498,9 +1498,9 @@ def test_a_capture_that_really_started_late_is_still_re_anchored():
     lo = prog.segment("pilot_woofer_lo")
     late = full[GLOBAL_OFFSET + lo.start_sample + lo.n_samples:]
 
-    offset, anchor, stimuli, ambiguous = _global_offset(prog, late, SR)
-    assert anchor.segment_id == "pilot_woofer_hi", "the correction must still fire"
-    assert ambiguous.ambiguous is False
+    offset, segment, stimuli, anchor = _global_offset(prog, late, SR)
+    assert segment.segment_id == "pilot_woofer_hi", "the correction must still fire"
+    assert anchor.ambiguous is False
     assert _anchor_separation(prog, late) > ANCHOR_DISCRIMINATION_RATIO * 3
 
     analysis = analyze_program_capture(
@@ -1596,10 +1596,10 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
         program, _measure_room(program, room_rms=1e-6), SR,
         priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
-    assert analysis.anchor_corroborated is corroborated
+    assert analysis.anchor.corroborated is corroborated
     assert analysis.anchor_ambiguous is False
-    assert analysis.anchor_presence == 0.0156
-    assert analysis.anchor_confidence == confidence
+    assert analysis.anchor.presence == 0.0156
+    assert analysis.anchor.confidence == confidence
     assert analysis.discontinuity_samples == (step if isinstance(step, float) else None)
     screen = cd.measure_screens(cd.MeasureScreens.from_analysis(
         analysis, sweep_schedule_ok=lambda: True, delay_physically_plausible=lambda: True,
@@ -1613,3 +1613,17 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
         assert type(screen.evidence["confidence"]) is float
     else:
         assert "discontinuity_samples" not in screen.evidence
+
+
+def test_measure_without_anchor_evidence_has_no_anchor_rung():
+    program = build_measure_program(
+        {"woofer": -11.0}, _check_roles()[:1], sweep_durations={"woofer": 1.0},
+    )
+    analysis = analyze_program_capture(program, _measure_room(program, room_rms=1e-6), SR)
+    assert analysis.anchor is None
+    assert analysis.anchor_ambiguous is False
+    screen = cd.measure_screens(cd.MeasureScreens.from_analysis(
+        analysis, sweep_schedule_ok=lambda: True, delay_physically_plausible=lambda: True,
+    ), clip_retry_backoff_db=3.0)
+    assert screen.kind is None
+    assert screen.evidence == {"mic_meter_status": "unmeasured"}

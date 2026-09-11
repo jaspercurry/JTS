@@ -33,6 +33,8 @@ from .spatial import GEOMETRY_RETRY_POSITIONS
 
 logger = logging.getLogger(__name__)
 
+LOCATE_RETRY_ACTION = "Check the volume and the microphone, then try again."
+
 
 # The four generic screen templates, each parameterized by reason copy.
 TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
@@ -429,7 +431,7 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     diagnosis = locate_failed_diagnosis(pilot_heard)
     if pilot_heard:
         return f"{diagnosis} Try again."
-    return f"{diagnosis} Check the volume and the microphone, then try again."
+    return f"{diagnosis} {LOCATE_RETRY_ACTION}"
 
 
 @dataclass(frozen=True)
@@ -611,7 +613,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # measured fact.
         RetryableReasonCopy(
             locate_failed_diagnosis(None),
-            "Check the volume and the microphone, then try again.",
+            LOCATE_RETRY_ACTION,
         ),
     ),
     REASON_CAPTURE_TIMEOUT: ReasonSpec(
@@ -956,7 +958,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_ANCHOR_TOO_QUIET, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
             "JTS heard the speaker, but the test tones were too quiet to line up.",
-            "Check the volume and the microphone, then try again.",
+            LOCATE_RETRY_ACTION,
         ),
     ),
 }
@@ -980,10 +982,6 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-    # The six an ANCHOR phase adds. Two do not share their code's name
-    # either: an unresolved alignment renders as
-    # ``delay_exceeds_search_window``, and a bent curve the room caused renders
-    # as ``noisy_room_linearity``.
     _dispatch.SCREEN_ANCHOR_AMBIGUOUS: REASON_ANCHOR_AMBIGUOUS,
     _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
     _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 import numpy as np
 
@@ -21,6 +20,7 @@ from jasper.audio_measurement.program import (
 from jasper.log_event import log_event
 from .model import (
     ANCHOR_DISCRIMINATION_RATIO,
+    AnchorEvidence,
     LOCATOR_RATE_HZ,
     logger,
     SEGMENT_SEARCH_S,
@@ -28,14 +28,6 @@ from .model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
 )
 from .signals import _has_clipped_run, _locate, _peak_dbfs
-
-
-@dataclass(frozen=True)
-class AnchorEvidence:
-    ambiguous: bool = False
-    presence: float | None = None
-    confidence: float | None = None
-    corroborated: bool | None = None
 
 
 def _earliest_strong_peak(
@@ -117,7 +109,7 @@ def _resolve_anchor(
     arrival: int,
     first: ProgramSegment,
     stimuli: dict[str, np.ndarray],
-) -> tuple[ProgramSegment, int, AnchorEvidence]:
+) -> tuple[ProgramSegment, int, AnchorEvidence | None]:
     """Decide WHICH shape-identical stimulus the located ``arrival`` really is,
     and say so when the evidence cannot decide.
 
@@ -174,7 +166,7 @@ def _resolve_anchor(
         default=None,
     )
     if len(candidates) < 2 or witness is None:
-        return first, arrival - first.start_sample, AnchorEvidence()
+        return first, arrival - first.start_sample, None
 
     witness_stim = stimuli.get(witness.segment_id)
     if witness_stim is None:
@@ -257,7 +249,7 @@ def _resolve_anchor(
 
 def _global_offset(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int
-) -> tuple[int, ProgramSegment, dict[str, np.ndarray], AnchorEvidence]:
+) -> tuple[int, ProgramSegment, dict[str, np.ndarray], AnchorEvidence | None]:
     """Locate the anchor stimulus -> integer global offset G. Caches stimuli.
 
     The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ`; the

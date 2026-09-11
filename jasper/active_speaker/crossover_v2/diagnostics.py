@@ -19,7 +19,7 @@ import logging
 import math
 from typing import Any, Callable, Mapping, Sequence
 
-from jasper.active_speaker.calibration_level import (
+from jasper.audio_measurement.mic_meter import (
     MIC_USABLE_MAX_DBFS,
     MIC_USABLE_MIN_DBFS,
 )
@@ -289,14 +289,8 @@ def _log_check_diag(
 def _log_check_pilot_rows(
     logger: logging.Logger, analysis: ProgramAnalysis, *, session_id: str,
 ) -> None:
-    """One event per driver present: which one failed, and how loud it was (#1922).
-
-    The CHECK verdict reduces every per-driver fact to one aggregate boolean, so a
-    ``channel_map_mismatch`` cannot say WHICH driver was silent even though the
-    system knows. A row per role restores that attribution without widening the
-    fixed woofer/tweeter diag line above.
-
-    ``level_sanity`` is the analysis's advisory microphone-window grade.
+    """Per-role levels expose absolute-level misses CHECK's relative gates cannot
+    detect; the mic grade remains advisory (issue #1894).
     """
     for pilot in analysis.pilots:
         log_event(
