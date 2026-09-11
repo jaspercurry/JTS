@@ -539,9 +539,10 @@ class Router:
         none matched) returns False so the caller can fall through to
         DACP without paying retry latency."""
         t0 = time.monotonic()
+        # No return_exceptions=True: _current_playback already catches
+        # Exception and returns None, so gather can never receive one.
         playbacks = await asyncio.gather(
             *(self._current_playback(ac) for ac in self.clients.values()),
-            return_exceptions=True,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
