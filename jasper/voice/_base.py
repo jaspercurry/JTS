@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, ClassVar
 
 from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
@@ -41,6 +41,7 @@ from .session import (
     AudioOutChunk,
     ConnectionState,
     CuePlayer,
+    TurnUsage,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,10 @@ class BaseLiveTurn:
 
     owns_interruption = False
     continuous_input = False
+    # The modality buckets this provider splits its counts into, keyed
+    # as `usage.Pricing.estimate_cost` prices them. Empty reports the
+    # scalars alone, which the store then prices as all-audio.
+    usage_detail_buckets: ClassVar[dict[str, tuple[str, ...]]] = {}
 
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
         self._conn = conn
@@ -131,6 +136,12 @@ class BaseLiveTurn:
         self._cancel_requested = False
         self._tool_task: asyncio.Task[None] | None = None
         self._tool_round_pending = False
+        self._usage_input_tokens = 0
+        self._usage_output_tokens = 0
+        self._usage_details: dict[str, dict[str, int]] | None = {
+            bucket: dict.fromkeys(keys, 0)
+            for bucket, keys in self.usage_detail_buckets.items()
+        } or None
 
     def _start_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
         if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
@@ -196,6 +207,52 @@ class BaseLiveTurn:
 
     def turn_lost(self) -> bool:
         return self._turn_lost
+
+    def add_usage(
+        self, input_tokens: Any = None, output_tokens: Any = None, **details: Any,
+    ) -> None:
+        """Add one provider report, keyword detail per `usage_detail_buckets`.
+
+        For a provider reporting a delta per response: one tool-using
+        turn spans several, and the spend cap wants the round trip.
+        """
+        if isinstance(input_tokens, int):
+            self._usage_input_tokens += input_tokens
+        if isinstance(output_tokens, int):
+            self._usage_output_tokens += output_tokens
+        if self._usage_details is None:
+            return
+        for bucket, counts in self._usage_details.items():
+            reported = details.get(bucket) or {}
+            for key in counts:
+                value = reported.get(key)
+                if isinstance(value, int):
+                    counts[key] += value
+
+    def set_usage(self, input_tokens: Any = None, output_tokens: Any = None) -> None:
+        """Replace the turn's counts with one provider report.
+
+        For a provider reporting a running total, which summing would
+        count twice.
+        """
+        if input_tokens is not None:
+            self._usage_input_tokens = int(input_tokens)
+        if output_tokens is not None:
+            self._usage_output_tokens = int(output_tokens)
+
+    def usage(self) -> TurnUsage:
+        """What the turn observed; a late or absent report leaves it short."""
+        details = self._usage_details
+        return TurnUsage(
+            input_tokens=self._usage_input_tokens,
+            output_tokens=self._usage_output_tokens,
+            # Copied so a caller cannot reach back into the accumulator.
+            breakdown=None if details is None else {
+                "input_tokens": self._usage_input_tokens,
+                "output_tokens": self._usage_output_tokens,
+                **{bucket: dict(counts) for bucket, counts in details.items()},
+            },
+        )
 
     async def wait_for_interrupt(self) -> None:
         await self._interrupt_event.wait()

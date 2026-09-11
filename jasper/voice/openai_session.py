@@ -66,7 +66,6 @@ from .session import (
     ConnectionState,
     LiveTurn,
     TurnCapture,
-    TurnUsage,
     log_first_chunk,
 )
 
@@ -173,37 +172,22 @@ def _upsample_16k_to_24k(
 class OpenAIRealtimeTurn(BaseLiveTurn):
     """A single turn against an open ``OpenAIRealtimeConnection``.
 
-    Adds the resampler state, OpenAI's modality-aware usage accumulator
-    and its transcript/barge-in wire state to ``BaseLiveTurn``. The
-    connection's receive loop routes incoming server events here while a
-    turn is active.
+    Adds the resampler state and its transcript/barge-in wire state to
+    ``BaseLiveTurn``. The connection's receive loop routes incoming
+    server events here while a turn is active.
     """
+
+    # Reported per response.done, and priced per bucket ($32 audio in,
+    # $4 text in, $0.40 cached, $64 audio out, $24 text out for
+    # gpt-realtime-2).
+    usage_detail_buckets = {
+        "input_token_details": ("audio_tokens", "text_tokens", "cached_tokens"),
+        "output_token_details": ("audio_tokens", "text_tokens"),
+    }
 
     def __init__(self, conn: "OpenAIRealtimeConnection", started_at: float) -> None:
         super().__init__(conn, started_at)
         self._conn: OpenAIRealtimeConnection = conn
-        self._usage = {"input_tokens": 0, "output_tokens": 0}
-        # Modality-aware breakdown accumulator. OpenAI Realtime emits
-        # `response.usage.input_token_details.{audio,text,cached}_tokens`
-        # and `output_token_details.{audio,text}_tokens` per
-        # response.done; we sum across responses within a turn so the
-        # spend cap sees the full breakdown when it computes cost.
-        # Pricing.estimate_cost reads this dict and prices each bucket
-        # at the right rate ($32 audio in, $4 text in, $0.40 cached,
-        # $64 audio out, $24 text out for gpt-realtime-2).
-        self._usage_breakdown: dict = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "input_token_details": {
-                "audio_tokens": 0,
-                "text_tokens": 0,
-                "cached_tokens": 0,
-            },
-            "output_token_details": {
-                "audio_tokens": 0,
-                "text_tokens": 0,
-            },
-        }
         # Tracks chunk-size distribution per turn; logged at release so a uniform vs. front-loaded delivery is visible post hoc.
         self._chunk_bytes_total: int = 0
         self._chunk_bytes_max: int = 0
@@ -336,24 +320,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 elapsed_ms, self._chunks_received, self._bytes_sent,
             )
 
-    def usage(self) -> TurnUsage:
-        return TurnUsage(
-            input_tokens=int(self._usage.get("input_tokens", 0)),
-            output_tokens=int(self._usage.get("output_tokens", 0)),
-            # Copied out of the accumulator so a caller can't mutate the
-            # turn's internal state through the returned reference.
-            breakdown={
-                "input_tokens": self._usage_breakdown["input_tokens"],
-                "output_tokens": self._usage_breakdown["output_tokens"],
-                "input_token_details": dict(
-                    self._usage_breakdown["input_token_details"],
-                ),
-                "output_token_details": dict(
-                    self._usage_breakdown["output_token_details"],
-                ),
-            },
-        )
-
     def capture(self) -> TurnCapture | None:
         user = self.user_transcript().strip() or None
         assistant = self.assistant_transcript().strip() or None
@@ -459,40 +425,19 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         ))
 
     def _record_usage(self, usage: dict | None) -> None:
-        """Accumulate tokens from one response.done. A tool-using turn
-        spans multiple OpenAI responses, each carrying its own usage —
-        sum them so the spend cap reflects the full round-trip cost,
-        rather than only the final audio response (which would
-        under-count). Called by both the deferred-completion path
-        (intermediate tool-call response.done) and the final
-        ``_on_response_done``.
+        """Add one ``response.done`` usage payload to the turn's counts.
 
-        Also accumulates the modality breakdown
-        (input.audio/text/cached, output.audio/text) so
-        ``usage().breakdown`` returns the full split for cost
-        estimation."""
+        Called by both the deferred-completion path (intermediate
+        tool-call response.done) and the final ``_on_response_done``.
+        """
         if not usage:
             return
-        in_tok = usage.get("input_tokens")
-        out_tok = usage.get("output_tokens")
-        if isinstance(in_tok, int):
-            self._usage["input_tokens"] += in_tok
-            self._usage_breakdown["input_tokens"] += in_tok
-        if isinstance(out_tok, int):
-            self._usage["output_tokens"] += out_tok
-            self._usage_breakdown["output_tokens"] += out_tok
-        # Modality breakdown — the SDK gives both fields per response;
-        # sum them across the turn's responses.
-        in_d = usage.get("input_token_details") or {}
-        for k in ("audio_tokens", "text_tokens", "cached_tokens"):
-            v = in_d.get(k)
-            if isinstance(v, int):
-                self._usage_breakdown["input_token_details"][k] += v
-        out_d = usage.get("output_token_details") or {}
-        for k in ("audio_tokens", "text_tokens"):
-            v = out_d.get(k)
-            if isinstance(v, int):
-                self._usage_breakdown["output_token_details"][k] += v
+        self.add_usage(
+            usage.get("input_tokens"),
+            usage.get("output_tokens"),
+            input_token_details=usage.get("input_token_details"),
+            output_token_details=usage.get("output_token_details"),
+        )
 
     async def _on_response_done(self, usage: dict | None) -> None:
         self._cancel_tools()
