@@ -5,6 +5,7 @@
 """JSON report writer for the tuning CLIs: sort_keys, no NaN."""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
@@ -28,20 +29,18 @@ def render_report(payload: Any) -> str:
     )
 
 
-def write_report(
-    payload: Any, out: str | None, default_path: Path, *, make_parents: bool = False,
-) -> Path | None:
-    """Write ``payload`` to ``out`` (``-`` = stdout) or ``default_path``.
+def output_path(value: str) -> Path:
+    if value == "-":
+        raise argparse.ArgumentTypeError("an artifact path is required")
+    return Path(value)
 
-    Returns the path, ``None`` for stdout. Without ``make_parents`` a missing
-    parent is a ``FileNotFoundError``, not a directory this invented.
-    """
-    text = render_report(payload)
-    if out == "-":
-        print(text)
-        return None
-    target = Path(out) if out else default_path
+
+def write_report(
+    payload: Any, out: str | Path | None, default_path: Path, *, make_parents: bool = False,
+) -> Path:
+    """Write an artifact; a missing parent requires ``make_parents``."""
+    target = output_path(str(out)) if out is not None else default_path
     if not make_parents and not target.parent.is_dir():
         raise FileNotFoundError(f"no such directory: {target.parent}")
-    atomic_write_text(target, text + "\n")
+    atomic_write_text(target, render_report(payload) + "\n")
     return target

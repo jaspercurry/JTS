@@ -2,25 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""How flat the seat cube's median is, band by band, and how it moved.
-
-* ``room-grade <round-dir> [--baseline <round-dir>]`` — grade this round's
-  ``room_median.json`` (the seat-cube view's artifact, not this one's) against
-  flat, from the prescribable band's floor to the room ceiling and split at
-  :data:`~jasper.active_speaker.crossover_v2.room_views.ROOM_BAND_SPLITS_HZ`,
-  and — with a baseline round — the same numbers of that round's median
-  beside them. Writes ``room_grade.json`` beside the round.
-
-The median is read through the room door's own reader
-(:mod:`~jasper.active_speaker.crossover_v2.room_prescription`), so a
-document this view grades is exactly one the room door would prescribe
-against, and a document neither accepts refuses by the same name here.
-
-A regressed band is DISCLOSED, never acted on: what a band that moved the
-wrong way means for the tune is the reader's judgement, and restoring an
-incumbent is the doctrine's own path (docs/measurement-loop-doctrine.md
-section 3), not this view's.
-"""
+"""Grade the round's own per-set room median and optional baseline."""
 
 from __future__ import annotations
 
@@ -51,7 +33,7 @@ from ._common import (
     answer,
     default_out,
     refused_by_name,
-    resolved_out,
+    resolved_out, resolve_set, round_inputs,
 )
 
 
@@ -81,14 +63,12 @@ def _band_line(band: Mapping[str, Any]) -> str:
 
 def _cmd_room_grade(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
-    candidate_path = Path(args.room_median) if args.room_median else default_out(
-        banked.inputs, banked.round_dir, ROOM_MEDIAN_ARTIFACT
-    )
-    incumbent_path = (
-        Path(args.baseline_room_median) if args.baseline_room_median
-        else resolved_out(Path(args.baseline), ROOM_MEDIAN_ARTIFACT) if args.baseline
-        else None
-    )
+    resolve_set(banked.inputs, args.set)
+    candidate_path = default_out(banked.inputs, banked.round_dir, ROOM_MEDIAN_ARTIFACT, args.set)
+    incumbent_path = None
+    if args.baseline:
+        resolve_set(round_inputs(Path(args.baseline)), args.baseline_set)
+        incumbent_path = resolved_out(Path(args.baseline), ROOM_MEDIAN_ARTIFACT, args.baseline_set)
     try:
         median = _median(candidate_path)
         incumbent = None if incumbent_path is None else _median(incumbent_path)
@@ -155,14 +135,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help=f"{_ROUND_DIR_HELP} whose median is the incumbent; its bands are "
              "disclosed beside this round's, never acted on",
     )
-    room_grade.add_argument(
-        "--room-median", default=None, metavar="PATH",
-        help=f"read this round's median here instead of beside the round "
-             f"({ROOM_MEDIAN_ARTIFACT})",
-    )
-    room_grade.add_argument(
-        "--baseline-room-median", default=None, metavar="PATH",
-        help="read the incumbent median here instead of beside --baseline",
-    )
-    room_grade.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    room_grade.add_argument("--set", help="set whose room median is graded")
+    room_grade.add_argument("--baseline-set", help="set in --baseline")
+    room_grade.add_argument("--out", default=None, help="write the result here")
     room_grade.set_defaults(func=_cmd_room_grade)

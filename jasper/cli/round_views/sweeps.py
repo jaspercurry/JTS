@@ -2,25 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The gate window ladder, and the sweep read onto the spec verdict.
-
-* ``spec-sweep <round-dir>`` — the round's own graded spec verdict, with
-  "is this band's worst bin the room or the speaker" answered AT that bin:
-  the gate ladder's ``sigma_growth_ratio`` (growth with window length is what
-  says room), the window's null-model-corrected contribution in dB, how many
-  rungs were resolution-valid, and the frame all three are stated in.
-  Disclosure only — no grade moves, and every field is a re-reading of the
-  spec report the round already banked. Writes
-  ``spec_gate_sensitivity.json``. Reach for ``gate-sweep --at-hz`` only
-  for a bin this verdict did NOT flag.
-* ``gate-sweep <round-dir>`` — the window ladder itself, over every summed
-  capture the round banked: per spec band and per declared pose, what moves
-  as the gate admits the room and what does not (#3495), with ``--at-hz``
-  naming bins beside each band's own deepest one. What sigma growth MEANS is
-  :mod:`~jasper.active_speaker.crossover_v2.gate_sweep`'s, not restated here.
-  Writes ``gate_sweep.json``. Evidence for an attribution argument, never an
-  EQ instruction.
-"""
+"""One gate ladder, read over a verdict, a round set, or one take."""
 
 from __future__ import annotations
 
@@ -41,7 +23,7 @@ from ._common import (
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _load_round,
-    _view_out,
+    resolve_set, round_inputs,
     _write,
     add_rungs_ms_argument,
     answer,
@@ -73,9 +55,10 @@ def _band_sweep_line(band: Any) -> str:
 
 def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
+    resolve_set(banked.inputs, args.set)
     report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
-    written = _write(payload, args.out, _view_out(args, banked))
+    written = _write(payload, args.out, resolved_out(banked.round_dir, ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set))
     return answer(
         args.command, out=written, overall_within_target=report.overall_within_target,
         bands=[
@@ -100,18 +83,19 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
 
 def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
+    selected = resolve_set(round_inputs(round_dir), args.set)
     try:
         report = stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
             rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
-            candidate_id=args.candidate, graph_fingerprint=args.graph,
+            candidate_id=args.candidate, graph_fingerprint=args.graph, take_ids=selected.selected_ids,
         )
     except RoundCapturesRefused as exc:
         # The ladder's own named refusal, never the resolver's coarser bucket.
         return refused_by_name(exc.reason, exc.detail)
     written = _write(
         report, args.out,
-        resolved_out(round_dir, ARTIFACT_BY_VIEW[args.command].artifact),
+        resolved_out(round_dir, ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set),
     )
     return answer(
         args.command, out=written, poses=len(report["poses"]),
@@ -133,53 +117,39 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
 
 
 def _cmd_windows(args: argparse.Namespace) -> int:
+    selected = resolve_set(round_inputs(Path(args.round_dir)), args.set)
+    take_id = selected.take_id(args.take)
     try:
-        report = window_view(Path(args.round_dir), capture_id=args.capture_id, rungs_ms=args.rungs_ms, role=args.role)
+        report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=args.role)
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
-    written = _write(report, args.out, resolved_out(Path(args.round_dir), "window_view.json"))
+    written = _write(report, args.out, resolved_out(Path(args.round_dir), "window_view.json", args.set))
     image = render_image(args, report)
-    return answer(args.command, out=written, image=image, capture_id=args.capture_id,
-                  line=f"windows: {args.capture_id} -> {written}")
+    return answer(args.command, out=written, image=image, capture_id=take_id,
+                  line=f"sweep take: {take_id} -> {written}")
+
+
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    if args.scope == "take" and not args.take:
+        args.parser.error("--scope take requires --take")
+    if args.scope != "take" and (args.take or args.role != "summed" or args.image):
+        args.parser.error("--take, --role and --image require --scope take")
+    if args.scope != "round" and (args.candidate or args.graph or args.at_hz):
+        args.parser.error("--candidate, --graph and --at-hz require --scope round")
+    return {"verdict": _cmd_spec_sweep, "round": _cmd_gate_sweep, "take": _cmd_windows}[args.scope](args)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    windows = sub.add_parser("windows", help="overlay alternative windows and impulse for one exact recording")
-    windows.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    windows.add_argument("--capture-id", required=True, help="exact retained take ID or WAV stem")
-    windows.add_argument("--role", choices=("summed", "woofer", "tweeter"), default="summed", help="branch in a retained complete-tune diagnostic")
-    add_rungs_ms_argument(windows)
-    add_image_args(windows)
-    windows.add_argument("--out", default=None, help="write the shared frequency view here (- for stdout)")
-    windows.set_defaults(func=_cmd_windows)
-    spec_sweep = sub.add_parser(
-        "spec-sweep",
-        help="the round's spec verdict with room-or-speaker answered at each band's worst bin",
-    )
-    spec_sweep.add_argument(
-        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
-    )
-    add_rungs_ms_argument(spec_sweep)
-    spec_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
-    spec_sweep.set_defaults(func=_cmd_spec_sweep)
-
-    gate_sweep = sub.add_parser(
-        "gate-sweep",
-        help="sweep the gate window over this round's own captures — room or speaker, evidence only",
-    )
-    gate_sweep.add_argument(
-        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
-    )
-    add_rungs_ms_argument(gate_sweep)
-    gate_sweep.add_argument("--candidate", help="only this candidate ID; mixed graphs are refused")
-    gate_sweep.add_argument("--graph", help="only this exact played graph fingerprint")
-    gate_sweep.add_argument(
-        "--at-hz", type=float, nargs="+", default=None, metavar="HZ",
-        help=(
-            "also read these frequencies, whatever each band's deepest bin is "
-            "(the spec verdict's worst bin belongs here); each is snapped to "
-            "the nearest analysis-grid bin"
-        ),
-    )
-    gate_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
-    gate_sweep.set_defaults(func=_cmd_gate_sweep)
+    parser = sub.add_parser("sweep", help="read the window ladder over a verdict, round set, or take")
+    parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
+    parser.add_argument("--scope", required=True, choices=("verdict", "round", "take"))
+    parser.add_argument("--set", help="set in the run manifest")
+    parser.add_argument("--take", help="selected take ID within the set; required for take scope")
+    parser.add_argument("--role", choices=("summed", "woofer", "tweeter"), default="summed")
+    parser.add_argument("--candidate", help="round scope: candidate ID")
+    parser.add_argument("--graph", help="round scope: played graph fingerprint")
+    parser.add_argument("--at-hz", type=float, nargs="+", metavar="HZ", help="round scope: extra bins")
+    add_rungs_ms_argument(parser)
+    add_image_args(parser)
+    parser.add_argument("--out", help="artifact destination")
+    parser.set_defaults(func=_cmd_sweep, parser=parser)

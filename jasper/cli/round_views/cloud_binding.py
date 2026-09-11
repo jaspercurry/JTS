@@ -70,5 +70,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     cloud_binding.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
     )
-    cloud_binding.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    cloud_binding.add_argument("--out", default=None, help="write the result here")
     cloud_binding.set_defaults(func=_cmd_cloud_binding)

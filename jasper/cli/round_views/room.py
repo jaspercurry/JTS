@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room, read off a round's seat-cube takes below the ceiling.
-
-* ``room-ceiling <round-dir>`` — where the room layer stops. Writes
-  ``room_ceiling.json``.
-* ``room-median <round-dir>`` — the cube's median, spread and per-position
-  deviation, 20 Hz to the ceiling. Writes ``room_median.json``.
-* ``room-persistence <round-dir>`` — which peaks and dips hold across the
-  cube, and at what fraction of positions. Writes ``room_persistence.json``.
-
-The reading is :mod:`jasper.active_speaker.crossover_v2.room_views`'; this is
-its door. The ceiling is read from the round's own applied profile (the banked
-copy for a banked round, the box's for a live bundle) unless
-``--applied-profile`` names another.
-"""
+"""Room views over the selected manifest set, below the round's ceiling."""
 
 from __future__ import annotations
 
@@ -49,7 +36,7 @@ from ._common import (
     _write,
     answer,
     default_out,
-    refused_by_name,
+    refused_by_name, resolve_set,
 )
 
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
@@ -66,11 +53,12 @@ def _inputs(args: argparse.Namespace) -> RoundInputs:
 
 
 def _out(args: argparse.Namespace, inputs: RoundInputs) -> Path:
-    return default_out(inputs, Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact)
+    return default_out(inputs, Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact, args.set)
 
 
 def _cmd_room_ceiling(args: argparse.Namespace) -> int:
     inputs = _inputs(args)
+    resolve_set(inputs, args.set)
     ceiling = room_ceiling(inputs.applied_profile_path)
     doc = ceiling.to_dict()
     written = _write(doc, args.out, _out(args, inputs))
@@ -96,8 +84,10 @@ def _seat_view(
 ) -> int:
     """One view over the round's seat takes below its ceiling, written and answered."""
     inputs = _inputs(args)
+    selected = resolve_set(inputs, args.set)
     try:
-        selection = select_seat_takes(inputs.session_dir, capture_id=args.capture_id)
+        selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
+                                      basis=selected.capture_basis)
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     takes = selection.takes
@@ -194,7 +184,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "--applied-profile", default=None, metavar="PATH",
             help="read the ceiling from this applied profile instead of the round's own",
         )
-        if name != "room-ceiling":
-            parser.add_argument("--capture-id", help="select the compatible seat set containing this take")
-        parser.add_argument("--out", default=None, help="write the result here (- for stdout)")
+        parser.add_argument("--set", help="set in the run manifest")
+        parser.add_argument("--out", default=None, help="write the result here")
         parser.set_defaults(func=func)

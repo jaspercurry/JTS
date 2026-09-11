@@ -92,10 +92,6 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
 
 
 def _bank(payload: Any, args: argparse.Namespace) -> Path | None:
-    """``--out`` names a FILE here, never ``-``: the delay grid is what the
-    artifact is for. Where the default lands is :func:`resolved_out`'s.
-    """
-
     beside = resolved_out(
         Path(args.bundle_dir), ARTIFACT_BY_VIEW[args.command].artifact
     )

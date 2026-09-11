@@ -246,5 +246,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help=f"declared rig geometry (default: {DEFAULT_PATH}); absent means "
              "no derived window",
     )
-    close.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    close.add_argument("--out", default=None, help="write the result here")
     close.set_defaults(func=_cmd_close_reference, parser=close)

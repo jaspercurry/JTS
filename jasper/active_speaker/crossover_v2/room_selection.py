@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Select one compatible set of seat records before computing room views."""
+"""Load seat curves and retain legacy selection for non-CLI callers."""
 
 from __future__ import annotations
 
@@ -72,16 +72,15 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         gating if isinstance(gating, bool) else None, (lo, hi),
     )
 
-
-def select_seat_takes(bundle_dir: Path, *, capture_id: str | None = None) -> SeatSelection:
-    """A capture id selects its whole compatible set; no selector may mix sets.
-
-    Unknown identity stays unknown. Within a set, use the newest readable
-    take per physical pose and disclose older and unusable records.
-    """
+def select_seat_takes(
+    bundle_dir: Path, *, capture_id: str | None = None,
+    take_ids: tuple[str, ...] | None = None, basis: Mapping[str, Any] | None = None,
+) -> SeatSelection:
     groups: dict[str, list[tuple[Measurement, Mapping[str, Any]]]] = {}
     bases: dict[str, dict[str, Any]] = {}
     for row, record in measurement_documents(bundle_dir):
+        if take_ids is not None and record.get("take_id") not in take_ids:
+            continue
         try:
             purpose = resolved_measurement_purpose(
                 record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
@@ -90,9 +89,9 @@ def select_seat_takes(bundle_dir: Path, *, capture_id: str | None = None) -> Sea
             continue
         if row.phase != PHASE_LATERAL or purpose != PURPOSE_ROOM:
             continue
-        basis = capture_basis(record)
-        key = json_fingerprint(basis)
-        bases[key] = basis
+        row_basis = dict(basis) if basis is not None else capture_basis(record)
+        key = "manifest" if take_ids is not None else json_fingerprint(row_basis)
+        bases[key] = row_basis
         groups.setdefault(key, []).append((row, record))
     matches = [
         key for key, rows in groups.items()

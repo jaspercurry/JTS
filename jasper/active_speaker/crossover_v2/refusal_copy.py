@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 LOCATE_RETRY_ACTION = "Check the volume and the microphone, then try again."
 
 
-# The four generic screen templates, each parameterized by reason copy.
 TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
 TEMPLATE_FIX_AND_RETRY = "fix_and_retry"
 TEMPLATE_HARD_STOP = "hard_stop"
@@ -41,22 +40,8 @@ TEMPLATE_SESSION_RESTART = "session_restart"
 TEMPLATE_VERIFY_FAIL = "verify_fail"
 TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
 
-# Reason codes (internal — never a bare code reaches the household; the envelope
-# renders each through its template copy).
 REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
-# The same pilot mismatch ``REASON_AGC_BEHAVIORAL_FAIL`` names, caused by a
-# loud ambient burst rather than the phone's AGC. ``_consume_check``
-# distinguishes the two on the CHECK gain solve's own ``gain_plan.
-# snr_floor_ok``, computed against this capture's ambient bands independent of
-# the linearity outcome.
 REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
-# The same discriminator, for the phases CHECK's evidence cannot speak for:
-# `analysis.pilot_snr_ok` False means the quiet pilot did not clear the room's
-# own in-band floor by enough to trust ANY level comparison drawn from the
-# pair — a statement about the room, not the microphone.
-# `_pilot_observations` reports ``linearity_ok`` as None whenever the SNR guard
-# fails, so every verdict below checks this BEFORE
-# `REASON_AGC_BEHAVIORAL_FAIL`.
 REASON_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
 REASON_SNR_FLOOR = "snr_floor"
 REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
@@ -545,6 +530,11 @@ def _retriable_reason(
 # The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
+    "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
+    "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
+    "round_take_unknown": ReasonSpec("round_take_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set."),
+    "round_take_selection_required": ReasonSpec("round_take_selection_required", TEMPLATE_HARD_STOP, 0, "", "Select a set with one retained take for this view."),
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
         next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},

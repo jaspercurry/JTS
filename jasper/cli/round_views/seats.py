@@ -16,7 +16,6 @@ from typing import Any
 
 from jasper.active_speaker.flat_spec_views import DirectivityTable
 
-from jasper.cli._report import render_report
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_WRITE_FAILED, STATUS_BY_CODE, StageFailed, answered
 
 from jasper.active_speaker.crossover_v2.round_views import (
@@ -215,7 +214,7 @@ def _compose_seats(args: argparse.Namespace, banked: BankedRound) -> int:
         preparation_error = exc
     for view in dict.fromkeys(("per-seat", *args.include)):
         path = default_out(banked.inputs, banked.round_dir, ARTIFACT_BY_VIEW[view].artifact)
-        if args.out and args.out != "-":
+        if args.out:
             base = Path(args.out)
             path = base if view == "per-seat" else base.with_name(f"{base.stem}-{path.name}")
         result: dict[str, Any] = {
@@ -302,12 +301,8 @@ def _compose_seats(args: argparse.Namespace, banked: BankedRound) -> int:
                         outcome="unavailable" if metrics.on_axis is None and metrics.pooled_window is None else "partial",
                         reason=metrics.on_axis_reason or metrics.pooled_window_reason,
                     )
-            if args.out == "-":
-                render_report(payload)
-                result["detail"] = payload
-            else:
-                _write(payload, str(path), path)
-                result.update(out=str(path), bytes=path.stat().st_size)
+            _write(payload, str(path), path)
+            result.update(out=str(path), bytes=path.stat().st_size)
         except view_errors as exc:
             code = exc.code if isinstance(exc, StageFailed) else EXIT_REFUSED
             exit_code = max(exit_code, code)
@@ -336,7 +331,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     _add_norm_band_args(agreement)
     _add_agreement_args(agreement)
-    agreement.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    agreement.add_argument("--out", default=None, help="write the result here")
     agreement.set_defaults(func=_cmd_agreement)
 
     co_metrics = sub.add_parser(
@@ -345,7 +340,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     co_metrics.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
     )
-    co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    co_metrics.add_argument("--out", default=None, help="write the result here")
     co_metrics.set_defaults(func=_cmd_co_metrics)
 
     directivity = sub.add_parser(
@@ -355,7 +350,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     directivity.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
     )
-    directivity.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    directivity.add_argument("--out", default=None, help="write the result here")
     directivity.set_defaults(func=_cmd_directivity)
 
     per_seat = sub.add_parser("per-seat", help="normalised seats with optional related evidence")
@@ -368,6 +363,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     per_seat.add_argument(
         "--out", default=None,
-        help="per-seat detail path; included views use prefixed sibling filenames (-: all details on stdout)",
+        help="per-seat detail path; included views use prefixed sibling filenames",
     )
     per_seat.set_defaults(func=_cmd_per_seat)

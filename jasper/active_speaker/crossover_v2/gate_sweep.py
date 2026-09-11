@@ -1096,19 +1096,13 @@ def sweep_round(
     at_hz: Sequence[float] = (),
     candidate_id: str | None = None,
     graph_fingerprint: str | None = None,
+    take_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Sweep one banked round's gate and report what moved with the window.
-
-    ``at_hz`` names the bins the caller already cares about — the spec
-    verdict's worst bin, typically, which is not in general the band's own
-    deepest one. Each is read exactly as a band's worst bin is, null model
-    included, and reported under ``features``.
-
-    Raises :class:`RoundCapturesRefused` naming the missing input.
-    """
+    """Sweep selected captures with the same gate ladder and numerical frame."""
     rungs, wanted = _validated(rungs_ms, at_hz)
     captures = discover_captures(Path(round_dir), select=lambda doc: (
-        (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
+        (take_ids is None or doc.get("take_id") in take_ids)
+        and (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
         and (graph_fingerprint is None or played_graph_fingerprint(doc) == graph_fingerprint)
     ))
     grid, reads, sigma, axes = _prepare(captures, rungs)
