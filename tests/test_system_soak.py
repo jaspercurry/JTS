@@ -31,7 +31,7 @@ def test_tracked_units_cover_resident_usb_mic_export_path() -> None:
 
 
 def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
-    class FakeProc:
+    class FakeCompletedProcess:
         returncode = 0
         stderr = ""
         stdout = "\n".join([
@@ -50,7 +50,7 @@ def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
     monkeypatch.setattr(
         system_soak.subprocess,
         "run",
-        lambda *a, **kw: FakeProc(),
+        lambda *a, **kw: FakeCompletedProcess(),
     )
 
     summary = system_soak._summarize_journal(

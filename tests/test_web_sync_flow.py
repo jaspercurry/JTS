@@ -53,7 +53,7 @@ PEER_G = {
 }
 
 
-class FakeProc:
+class FakeAsyncProcess:
     def __init__(self) -> None:
         self._done = asyncio.Event()
         self._loop = asyncio.get_running_loop()
@@ -148,7 +148,7 @@ def sync_env(loop_thread, monkeypatch):
     patch_measurement_window(monkeypatch, calls)
 
     async def fake_spawn(_wav_path: str):
-        proc = FakeProc()
+        proc = FakeAsyncProcess()
         calls["procs"].append(proc)
         return proc
 
