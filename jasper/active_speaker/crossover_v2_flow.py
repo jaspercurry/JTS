@@ -106,12 +106,10 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.program import (
     KIND_SWEEP,
-    STIMULUS_KINDS,
     ExcitationProgram,
     RoleBand,
 )
 from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
     MEASURE_PAIR_SINGLE_DRIVER,
     AppliedAlignment,
@@ -466,10 +464,7 @@ _analysis_json = _planning.analysis_json
 _stimulus_locate_ok = _dispatch._stimulus_locate_ok
 
 
-def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
-    return any(
-        loc.clipped for loc in analysis.locations if loc.kind in STIMULUS_KINDS
-    )
+_any_sweep_clipped = _dispatch._any_sweep_clipped
 
 
 _per_band_flatness_log_field = _verification._per_band_flatness_log_field
@@ -2384,6 +2379,7 @@ class CrossoverV2Session:
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
+        verdict.evidence["mic_meter_status"] = analysis.mic_meter_status or "unmeasured"
         if verdict.code == REASON_MEASURE_GAIN_ADJUSTED:
             # Bank with the program that made THIS response before composing its retry.
             self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
@@ -2539,22 +2535,10 @@ class CrossoverV2Session:
         self._measure_alignment_reservation = None
         self._measure_calibration_reservation = None
         screen = _dispatch.measure_screens(
-            _dispatch.MeasureScreens(
-                stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok,
-                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
-                glitch_detected=bool(analysis.glitch_detected),
-                # A CALLABLE, and the rung whose eager resolution would be OBSERVABLE:
-                # ``program_for_phase`` RAISES when MEASURE has no composed program.
+            _dispatch.MeasureScreens.from_analysis(
+                analysis,
                 sweep_schedule_ok=lambda: _sweep_schedule_ok(
                     analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
-                ),
-                any_sweep_clipped=_any_sweep_clipped(analysis),
-                linearity_ok=analysis.linearity_ok,
-                alignment_present=analysis.alignment is not None,
-                alignment_status_ok=(
-                    analysis.alignment is not None
-                    and analysis.alignment.status == ALIGNMENT_OK
                 ),
                 # A callable: the physical backstop is asked ONLY of an estimate
                 # that already cleared the rung above.
@@ -2574,7 +2558,9 @@ class CrossoverV2Session:
                 self._rearm_measure_after_transient(
                     extra_backoff_db=screen.rearm_backoff_db
                 )
-            return PhaseVerdict(False, _screen_refusal_code(screen.kind))
+            return PhaseVerdict(
+                False, _screen_refusal_code(screen.kind), evidence=screen.evidence,
+            )
         ledger = self._slot_attempts.get(PHASE_MEASURE)
         if not self._measure_gain_retry_used and (ledger is None or ledger.extras_left > 0):
             program = self.program_for_phase(PHASE_MEASURE)
