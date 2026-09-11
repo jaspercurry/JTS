@@ -254,6 +254,24 @@ def test_secret_literals_reports_the_api_key():
     assert BaseLiveConnection._secret_literals(conn) == ()
 
 
+async def test_transport_close_failure_redacts_the_connection_secret(caplog):
+    """Every live adapter unwinds its SDK context manager through this one
+    bounded helper, so an SDK error echoing the key must not reach the
+    journal verbatim."""
+    conn = OpenAIRealtimeConnection(api_key="plainvalue123")
+
+    class _Cm:
+        async def __aexit__(self, *_exc):
+            raise RuntimeError("close rejected: OPENAI_API_KEY=plainvalue123")
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.voice.openai_session"):
+        await conn._close_cm_with_timeout(_Cm())
+
+    (record,) = event_records(caplog, "live.transport_close_failed")
+    assert record.levelno == logging.WARNING
+    assert "plainvalue123" not in event_fields(caplog, "live.transport_close_failed")["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Tests against a live (faked) connection.
 # ---------------------------------------------------------------------------

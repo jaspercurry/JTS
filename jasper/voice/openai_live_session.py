@@ -18,7 +18,7 @@ import time
 
 from ..log_event import log_event
 from ..tools import dispatch_tool
-from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn
+from ._base import BaseLiveConnection, BaseLiveTurn
 from ._supervisor import failure_detail
 from .conversation import END_CONVERSATION_TOOL
 from .openai_session import _upsample_16k_to_24k
@@ -404,15 +404,10 @@ class OpenAILiveConnection(BaseLiveConnection):
     async def _teardown_session(self) -> None:
         await self._cancel_task(self._receive_task)
         self._receive_task = None
-        if self._session_cm is not None:
-            try:
-                await asyncio.wait_for(
-                    self._session_cm.__aexit__(None, None, None), SESSION_CLOSE_TIMEOUT_SEC,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log_event(logger, "live.transport_close_failed", detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING)
-            finally:
-                self._session_cm = self._session = None
+        try:
+            await self._close_cm_with_timeout(self._session_cm)
+        finally:
+            self._session_cm = self._session = None
 
     async def stop(self) -> None:
         if self._active_turn is not None:

@@ -29,6 +29,7 @@ from ._supervisor import (
     Deferred,
     OutageTracker,
     await_connected,
+    failure_detail,
     hand_off_first_connect,
     provider_code,
     request_planned_reopen,
@@ -661,7 +662,12 @@ class BaseLiveConnection:
                 cm.__aexit__(None, None, None), timeout=SESSION_CLOSE_TIMEOUT_SEC,
             )
         except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-            self._logger.debug("%s __aexit__ error (ignored): %s", self._log_tag, e)
+            log_event(
+                self._logger,
+                "live.transport_close_failed",
+                detail=failure_detail(e, literals=self._secret_literals()),
+                level=logging.WARNING,
+            )
 
     def _log_teardown(self, elapsed_sec: float) -> None:
         self._logger.info(
