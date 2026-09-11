@@ -255,6 +255,7 @@ def server_with_coordinator(monkeypatch):
         fake_subprocess_exec,
     )
     import jasper.control.handlers.volume as volume_mod
+    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
     monkeypatch.setattr(volume_mod, "mux_socket_command", fake_mux_status)
 
     handler = _make_handler(

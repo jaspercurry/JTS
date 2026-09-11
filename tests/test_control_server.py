@@ -432,6 +432,7 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         "_WAKE_MODEL_FILE",
         "_JASPER_ENV_FILE",
         "_TOGGLE_TO_TOKEN",
+        "_USB_MIC_APPLY_UNIT",
         "_aec_bridge_active_impl",
         "_aec_fresh_jasper_env_impl",
         "_aec_full_status",

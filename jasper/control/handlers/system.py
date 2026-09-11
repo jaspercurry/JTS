@@ -287,8 +287,6 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
-# The one-shot restart-audio action's core/local unit lists (R-055: these
-# used to live in server.py, which never used them itself).
 CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
 
