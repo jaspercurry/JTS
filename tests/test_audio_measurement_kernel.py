@@ -263,16 +263,7 @@ def test_fractional_octave_smoothing_uses_bulk_prefix_operations(monkeypatch):
 
 
 def test_quality_model_profiles_carry_preextraction_values():
-    """The forked constants became data; the data must equal the constants.
-
-    Pre-extraction values (verbatim):
-      quality.py           PEAK_TOO_LOW_DBFS=-45.0  RMS_TOO_LOW_DBFS=-65.0
-                           CLIP_ABS_THRESHOLD=0.999 CLIP_FRACTION_FAIL=1e-4
-                           DBFS_FLOOR=-120.0
-      acoustic_quality.py  SNR_OK_DB=25.0  SNR_WARN_DB=20.0
-      driver_acoustics.py  SILENT_PEAK_DBFS=-45.0  DEFAULT_NULL_THRESHOLD_DB=6.0
-                           OVERLAP_MIN_BINS=4
-    """
+    """Quality-model thresholds and shared capture defaults."""
     # Structural (shared across all profiles — digital-full-scale facts).
     for model in (ROOM, DRIVER):
         assert model.dbfs_floor == -120.0

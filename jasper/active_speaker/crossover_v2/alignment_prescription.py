@@ -136,8 +136,7 @@ class AlignmentPrescription:
     :attr:`residual_us` a physical quantity. ``basis_artifacts`` is required —
     a bound checked against an undeclared basis is arithmetic, not provenance.
     ``polarity`` is the optional basin pin in the candidate's own vocabulary
-    (``POLARITY_KEEP``/``POLARITY_INVERT``), never ``POLARITY_REVIEW``;
-    ``None`` leaves the polarity to the objective that owns it.
+    (``POLARITY_KEEP``/``POLARITY_INVERT``); ``None`` leaves the polarity to its objective.
     """
 
     delay_us: float
@@ -275,8 +274,6 @@ def _parse_prescription(
     )
 
 
-#: The basins a round may be pinned to: the candidate's two polarity ACTIONS,
-#: deliberately without ``POLARITY_REVIEW``.
 _PINNABLE_POLARITIES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
 

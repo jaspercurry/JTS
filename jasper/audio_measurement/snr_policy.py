@@ -11,8 +11,7 @@ band (a null of depth D needs about D + 10 dB), and a scalar noise-floor reading
 sufficient evidence there — only a real per-band measurement is.
 
 Two halves: :func:`band_levels_dbfs` (the FFT band-power estimator, shared with room correction)
-and :func:`band_snr_verdicts` (the decision-class verdict builder;
-``jasper.active_speaker.driver_acoustics`` is the first consumer).
+and :func:`band_snr_verdicts` (the decision-class verdict builder).
 
 Pure-data/pure-function: no I/O, no product policy, no CamillaDSP or playback awareness. numpy
 is module-level (the FFT needs it); callers that must stay numpy/scipy-free until a measurement
@@ -106,9 +105,7 @@ def band_levels_dbfs(
     ``window="rectangular"`` is a non-stationary-input escape hatch, not free choice: Hann
     re-weights a swept sine's energy by WHEN it occurs, reading a 4 s sweep's band split wrong
     by tens of dB and varying with capture length (#1847). Pass ``rectangular`` for a
-    sweep/chirp capture — ``capture_band_snr`` does; every other caller keeps the Hann default,
-    including ``driver_acoustics._capture_band_levels``'s sweep-capture gate, whose own bias is
-    measured but unreached in production (see that docstring before reviving it).
+    sweep/chirp capture.
 
     Bounds the FFT input via ``deconv.cap_capture_length``, since callers pass uploaded WAVs
     limited only by the HTTP body cap — unbounded would drive rfft+hanning to OOM on the 1 GB Pi.
