@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
@@ -87,6 +88,7 @@ class ViewArtifact(NamedTuple):
 #: ``repeat-floor`` is absent because it publishes to ``--install`` or
 #: ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
+    "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
     "bass-fit": ViewArtifact("bass_fit.json", ("<fit-request.json>",)),

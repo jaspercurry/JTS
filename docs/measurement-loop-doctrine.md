@@ -31,6 +31,9 @@ summed, cloud, on-axis, and off-axis.
   being tested.
 - **Room correction:** hold the accepted speaker tune below it. Preference EQ
   remains absent.
+- **Bass extension:** test fixed-level windows inside one run. Disclose the Main,
+  Aux1, and stimulus-level table for each row
+  ([ADR-0304](adr/0304-the-bass-level-axis-is-fixed-level-windows.md)).
 - **Preference EQ:** subjective bass, warmth, and other voicing belongs to
   normal listening. It never participates in linearization measurements.
 

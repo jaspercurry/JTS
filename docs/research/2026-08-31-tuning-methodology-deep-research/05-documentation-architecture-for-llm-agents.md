@@ -1,7 +1,7 @@
 # Deep research 5 — documentation architecture for LLM agents driving a CLI toolbox
 
 > Owner-run deep research, received 2026-08-31, answering the fifth Wave 6
-> research assignment (see `docs/tuning-master-plan.md`, ticket 6.9; the
+> research assignment (the
 > assignment itself was issued after the first four). Banked verbatim below
 > the rule; the adjudications live in `00-adjudications.md` and ADR-0204.
 > Frozen: no further edits.

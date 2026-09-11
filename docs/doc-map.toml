@@ -731,13 +731,10 @@ code = [
 ]
 docs = [
   "docs/measurement-loop-doctrine.md",
-  "docs/HANDOFF-bass-extension-plan.md",
   "docs/active-crossover-information-design.md",
   "docs/active-speaker-tuning-layers-design.md",
   "docs/gating-v2-plan.md",
   "docs/room-correction-regime-plan.md",
-  # Planning authority for the measurement/tuning program (supersessions listed in-doc).
-  "docs/tuning-master-plan.md",
   # Entry route, generated tool menu, artifact effects, and diagnostic access.
   "docs/tuning-operator-runbook.md",
   # Optional science: evidence limits, interpretation, and measurement traps.

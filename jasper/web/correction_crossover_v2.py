@@ -1557,7 +1557,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # **This grade reads no ``fc_selection``, on any round.** It once gated its
     # success verdicts on a corner selector's verdict and completeness — "the Fc
     # comparison finished, and the corner on the speaker is the one it
-    # authorized". That selector is retired (``docs/tuning-master-plan.md``
+    # authorized". That selector is retired (historical
     # ticket 2.4) along with the corner hunt that fed it, so no round publishes
     # one and this build cannot restate the adjudication of a round that did.
     #

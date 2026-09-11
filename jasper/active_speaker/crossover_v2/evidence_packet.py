@@ -1350,7 +1350,7 @@ def _repeat_floor_component(
             REPEAT_FLOOR_UNMEASURED,
             "unmeasured -- no banked repeat floor; calibration experiment "
             "E2 (N touched-nothing fixed-pose repeat rounds through "
-            "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
+            "jasper-round-views repeat-floor; "
             "Calibration experiments)",
         )
     if record is None:

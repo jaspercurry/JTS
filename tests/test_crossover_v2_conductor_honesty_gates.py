@@ -356,7 +356,9 @@ def test_check_faults_exhaust_only_the_responsible_attempt_budget(fault, code, c
         assert verdict["code"] == code and verdict["charge"] == charge
         assert verdict["attempts"]["by_household"] == (extra if charge == "operator" else 0)
         assert verdict["attempts"]["by_speaker"] == (extra if charge == "speaker" else 0)
-        assert verdict["attempts"]["left"] == flow.MAX_EXTRA_ATTEMPTS_PER_POSITION - verdict["attempts"]["by_household"]
+        assert verdict["attempts"]["left"] == min(
+            flow.MAX_EXTRA_ATTEMPTS_PER_POSITION - verdict["attempts"]["by_household"],
+            MAX_AUTOMATIC_RETAKES_PER_POSITION - extra)
 
     assert verdict["next"] == "stop"
     armed_before = c.armed_capture
