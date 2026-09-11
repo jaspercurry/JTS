@@ -17,9 +17,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
 from jasper.volume_persistence import (
     VOLUME_MAX_DB,
-    VOLUME_MIN_DB,
     VolumePersistence,
     VolumeRecord,
     db_to_percent,
@@ -46,9 +46,9 @@ def test_percent_dbfs_round_trip():
 
 
 def test_percent_clamps():
-    assert db_to_percent(VOLUME_MIN_DB - 50) == 0
+    assert db_to_percent(DEFAULT_VOLUME_FLOOR_DB - 50) == 0
     assert db_to_percent(VOLUME_MAX_DB + 50) == 100
-    assert percent_to_db(-100) == VOLUME_MIN_DB
+    assert percent_to_db(-100) == DEFAULT_VOLUME_FLOOR_DB
     assert percent_to_db(200) == VOLUME_MAX_DB
 
 

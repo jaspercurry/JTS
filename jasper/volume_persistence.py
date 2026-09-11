@@ -77,8 +77,7 @@ from .volume_curve import (
 logger = logging.getLogger(__name__)
 
 
-# Back-compat names for callers/tests that import the old fixed range.
-VOLUME_MIN_DB = DEFAULT_VOLUME_FLOOR_DB
+# Back-compat name for callers/tests that import the old fixed range.
 VOLUME_MAX_DB = VOLUME_CEILING_DB
 
 
