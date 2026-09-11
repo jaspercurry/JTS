@@ -71,12 +71,15 @@ def assess(
     } if program is not None else {}
     ceilings = gain_ceiling_db or {}
     anchor, drift, alignment = analysis.anchor, analysis.drift, analysis.alignment
+    sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
+    schedule_residual_ms, _ = _sweep_schedule_diag_fields(analysis, sample_rate)
     stimuli = [loc for loc in analysis.locations if loc.kind in STIMULUS_KINDS]
     evidence: dict[str, float | bool | str] = {
         "mic_meter_status": analysis.mic_meter_status or "unmeasured",
         "anchor_ambiguous": analysis.anchor_ambiguous or bool(anchor and anchor.ambiguous),
         "glitch_detected": bool(analysis.glitch_detected),
         "frame_loss": bool(analysis.frame_ledger and analysis.frame_ledger.lost_at),
+        "glitch_inputs": ",".join(drift.glitch_inputs) if drift else "",
     }
     figures = {
         "anchor_presence": anchor.presence if anchor else None,
@@ -84,6 +87,8 @@ def assess(
         "anchor_corroborated": anchor.corroborated if anchor else None,
         "epsilon_ppm": drift.epsilon_ppm if drift else None,
         "max_residual_samples": drift.max_residual_samples if drift else None,
+        "schedule_residual_ms_worst": schedule_residual_ms,
+        "repeat_level_delta_db": drift.repeat_level_delta_db if drift else None,
         "discontinuity_samples": analysis.discontinuity_samples,
         "peak_dbfs": max((loc.peak_dbfs for loc in stimuli), default=None),
         "locate_confidence_min": min((loc.confidence for loc in stimuli), default=None),
@@ -164,7 +169,6 @@ def assess(
         charge: TakeCharge = ("operator" if drift and drift.glitch_inputs == ("repeat_level_disagree",)
                               and not evidence["frame_loss"] and not analysis.discontinuity_samples else "speaker")
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge)
-    sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
     if not _sweep_schedule_ok(analysis, sample_rate):
         evidence["guard"] = "sweep_schedule"
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")

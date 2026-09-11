@@ -1409,10 +1409,10 @@ class PhaseVerdict:
     charge: str = "operator"
 
     @classmethod
-    def from_take(cls, take: TakeVerdict, **kwargs: Any) -> PhaseVerdict:
+    def from_take(cls, take: TakeVerdict) -> PhaseVerdict:
         return cls(take.ok and take.fault is None and take.next == "accept", take.fault,
                    evidence=take.evidence, capabilities=take.capabilities, next=take.next,
-                   next_gain_db=take.next_gain_db, charge=take.charge, **kwargs)
+                   next_gain_db=take.next_gain_db, charge=take.charge)
 
     def to_capture_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.

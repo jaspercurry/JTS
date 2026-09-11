@@ -5147,7 +5147,9 @@ def test_check_buried_pilot_delta_routes_to_snr_floor_not_a_retake():
     assert res.pilot_snr_ok is False
     assert res.channel_map_ok is False, "the guard must not repair the map"
 
-    verdict = _capture_dispatch.assess(res, phase="check")
+    verdict = _capture_dispatch.assess(dataclasses.replace(
+        res, anchor_ambiguous=False, anchor=dataclasses.replace(res.anchor, ambiguous=False),
+    ), phase="check")
     assert not verdict.ok and verdict.fault == "snr_floor"
 
 
