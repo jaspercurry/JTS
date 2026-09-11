@@ -22,7 +22,6 @@ from ...camilla_config_contract import (
 )
 from ...config import Config
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
-from ...service_units import unit_active
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -635,7 +634,7 @@ def check_camilla_recover_park() -> CheckResult:
             reason=REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE,
         )
 
-    if unit_active(evidence.unit_state("jasper-camilla.service")):
+    if evidence.unit_active("jasper-camilla.service"):
         return CheckResult(
             label,
             "warn",
