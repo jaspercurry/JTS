@@ -42,7 +42,6 @@ What a taken walk then does, and what it deliberately does not publish, is
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import logging
 import shlex
 import sys
@@ -60,10 +59,7 @@ from jasper.active_speaker.angle_capture import (
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     AngleCaptureRequest,
-    LevelPolicy,
-    BASE_CANDIDATE,
     candidate_identity,
-    LateralWalkRefused,
     AngleStop,
     announced_indexes,
     request_for_program,
@@ -71,10 +67,8 @@ from jasper.active_speaker.angle_capture import (
     walk_price,
     walk_template,
 )
-from jasper.active_speaker.candidate_bank import (
-    CandidateBankRefusal,
-    find_banked_candidate,
-)
+from jasper.active_speaker.preflight import PreflightReport, preflight
+from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.active_speaker.angle_capture_spool import (
     angle_request_spool_path,
     peek_staged_angle_request,
@@ -91,10 +85,6 @@ from jasper.active_speaker.crossover_v2_flow import TIER_EXPRESS, TIER_REMOTE, T
 from jasper.active_speaker.measurement_programs import (
     POSE_KIND_BEARING,
     MeasurementProgram,
-)
-from jasper.active_speaker.seat_level_reference import (
-    LevelUnresolved,
-    resolve_anchor_level,
 )
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
@@ -234,19 +224,6 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
-    """Resolve banked artifacts; base selects the program’s baseline layer."""
-    fingerprints = tuple(
-        field.strip()
-        for field in (args.candidates or "").split(",")
-        if field.strip()
-    )
-    for fingerprint in fingerprints:
-        if fingerprint != BASE_CANDIDATE:
-            find_banked_candidate(fingerprint)
-    return fingerprints
-
-
 def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
     """The program row ``--program`` names, after the usage rules argparse cannot.
 
@@ -284,7 +261,7 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     if args.program:
         return request_for_program(
             _chosen_program(args),
-            candidates=_resolved_candidates(args),
+            candidates=tuple(name.strip() for name in (args.candidates or "").split(",") if name.strip()),
             **_graph_flags(args),
         )
     if args.candidates:
@@ -303,51 +280,14 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     )
 
 
-def _resolved_level(request: AngleCaptureRequest) -> tuple[AngleCaptureRequest, LevelUnresolved | None]:
-    try:
-        anchor = resolve_anchor_level()
-        return replace(request, level=LevelPolicy(resolved=anchor)), None
-    except LevelUnresolved as exc:
-        return request, exc
-    except LateralWalkRefused as exc:
-        return request, LevelUnresolved(exc.reason, exc.detail)
-
-
-def _level_block(level: LevelPolicy | LevelUnresolved) -> dict[str, Any]:
-    """What this walk drives at, or the input that stops it being knowable.
-
-    Never a relative fallback: a receipt that printed ``+0 dB`` with no anchor
-    behind it would read as an absolute level nobody measured.
-    """
-    if isinstance(level, LevelUnresolved):
-        return {"resolved": False, "reason": level.reason, "detail": level.detail}
-    return {
-        "resolved": level.resolved is not None,
-        **{name: value for name, value in level.to_dict().items() if name != "mode"},
-    }
-
-
-def _walk_payload(
-    request: AngleCaptureRequest, level_error: LevelUnresolved | None = None
-) -> dict[str, Any]:
-    """The resolved walk, as one JSON-able document.
-
-    Everything here is READ off the seam -- ``resolve_request`` for the stops,
-    ``announced_indexes`` for the prelude -- so this function states nothing
-    the session would not.
-
-    ``program``, ``price``, ``level`` and ``handoff_url`` are the RECEIPT: what
-    was asked for, what it drives at, what it costs the household, and where
-    they run it. Everything else is the resolved walk.
-    """
+def _walk_payload(report: PreflightReport) -> dict[str, Any]:
+    """Add CLI prompts and navigation to the resolved report."""
+    request = report.plan
     stops = resolve_request(request)
     return {
         "program": request.program,
         "candidates": list(request.candidates),
-        "baseline_graph_scope": request.baseline_graph_scope,
-        "spl_ceiling_db_spl": request.spl_ceiling_db_spl,
-        "price": walk_price(request),
-        "level": _level_block(level_error or request.level),
+        **report.to_dict(),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
@@ -514,6 +454,12 @@ def _refuse(exc: Exception, *, reason: str | None = None) -> int:
     )
 
 
+def _refuse_report(report: PreflightReport) -> int:
+    issue = next(issue for issue in report.issues if issue.blocking)
+    return failed(EXIT_REFUSED, issue.code, report.to_dict(),
+                  code=issue.code, next_action=issue.next_action)
+
+
 def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """The walk's ANSWER: what was asked for, what it costs, where it is run.
 
@@ -523,6 +469,7 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """
     program, _, size = str(payload["program"]).partition("/")
     return {
+        **{key: payload[key] for key in ("issues", "schedule", "mic_moves", "live_admission")},
         "program": program,
         "size": size,
         "mover": payload["mover"],
@@ -566,20 +513,14 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, reason=UNKNOWN_PROGRAM)
-    except CandidateBankRefusal as exc:
-        return _refuse(exc, reason=exc.code)
     except CrossoverV2FlowError as exc:
         return _refuse(exc)
-    # An unresolved level is PRINTED here and refused by ``stage``: the dry run
-    # exists to show an operator what is missing before they commit to it.
-    request, level_error = _resolved_level(request)
-    payload = _walk_payload(request, level_error)
+    report = preflight(request, read_preflight_facts(request))
+    if report.blocking:
+        return _refuse_report(report)
+    payload = _walk_payload(report)
     _print_walk(payload)
-    # The same invocation with the other verb, quoted back exactly: ``plan`` is
-    # the dry run of ``stage``, so nothing here re-spells the request.
-    staging = " ".join(
-        ["jasper-angle-capture", "stage", *map(shlex.quote, args.invocation[1:])]
-    )
+    staging = " ".join(["jasper-angle-capture", "stage", *map(shlex.quote, args.invocation[1:])])
     return answered(_receipt(payload, next=staging))
 
 
@@ -588,14 +529,13 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, reason=UNKNOWN_PROGRAM)
-    except CandidateBankRefusal as exc:
-        return _refuse(exc, reason=exc.code)
     except CrossoverV2FlowError as exc:
         return _refuse(exc)
-    request, level_error = _resolved_level(request)
-    if level_error is not None:
-        return _refuse(level_error)
-    payload = _walk_payload(request)
+    report = preflight(request, read_preflight_facts(request))
+    if report.blocking:
+        return _refuse_report(report)
+    request = report.plan
+    payload = _walk_payload(report)
     try:
         path = stage_angle_request(request)
     except CrossoverV2FlowError as exc:
@@ -621,7 +561,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         return _refuse(exc)
     if request is None:
         return answered({"staged": False})
-    payload = _walk_payload(request)
+    payload = _walk_payload(PreflightReport(request, (), (), walk_price(request), request.spl_ceiling_db_spl))
     _print_walk(payload)
     receipt = _receipt(payload, staged=True, out=str(angle_request_spool_path()))
     return answered({**receipt, "next": _open_round(receipt["size"], receipt["mover"])})

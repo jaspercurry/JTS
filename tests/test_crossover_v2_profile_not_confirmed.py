@@ -139,6 +139,11 @@ def test_every_reason_renders_household_copy_never_a_bare_code():
         assert "//" not in href, f"{code} action href is not same-origin: {href}"
 
 
+@pytest.mark.parametrize("code", [REASON_PROGRAM_PLAN_SHAPE_INVALID])
+def test_reasons_that_name_a_page_action_carry_one(code):
+    assert REASON_REGISTRY[code].next_action is not None
+
+
 def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
     """The observed leak. ``str(exc)`` is built from raw enum values at the
     raise site; the wizard's capture status line echoes whatever this mapper

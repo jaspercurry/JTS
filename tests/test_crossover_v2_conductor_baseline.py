@@ -53,7 +53,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
-from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.branch_chain import crossover_response_complex, sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
@@ -70,10 +70,6 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
-)
-from jasper.active_speaker.crossover_v2.capture_source import (
-    CaptureBeginDeferred,
-    CaptureBeginRefused,
 )
 from tests._log_events import event_fields, event_records
 from tests.test_active_speaker_profile import _two_way_preset
@@ -732,20 +728,7 @@ def test_happy_path_walks_check_measure_apply_verify():
     # flight (machine-paced seconds, never a human control page).
     assert c.current_phase == PHASE_APPLYING
 
-    # VERIFY is soft-held until the auto-apply completes (§5.2 auto-arm) —
-    # the mechanism is unchanged; only the release trigger moved from a
-    # human tap to the host's own auto-apply.
-    with pytest.raises(CaptureBeginDeferred) as excinfo:
-        c.authorize_begin(3, 3)
-    assert excinfo.value.code == "awaiting_apply"
-
-    # The host's auto-apply background thread finished successfully — this
-    # is what jasper.web.correction_crossover_v2.handle_v2_apply's
-    # observe_apply_success ultimately flips, read here through the seam.
-    # (current_phase reads the conductor's own in-memory ``applied`` flag,
-    # which only updates once authorize_begin actually re-checks the seam —
-    # so it stays "applying" here until the VERIFY begin below observes it.)
-    fakes.apply_done = True
+    c.note_apply_complete()
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is True
     assert c.applied is True
@@ -768,36 +751,6 @@ def test_a_capture_on_a_phase_without_a_consumer_is_refused_loudly():
     # Refused before any analysis, banking, or verify grading ran.
     assert fakes.analyzed == []
     assert c.attempt_history == ()
-
-
-def test_apply_gate_seam_releases_deferred_verify():
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    with pytest.raises(CaptureBeginDeferred):
-        c.authorize_begin(3, 3)
-    # The apply-complete observation arrives through the seam (the host's
-    # own auto-apply thread finishing — never a human tap).
-    fakes.apply_done = True
-    c.authorize_begin(3, 3)  # no longer deferred
-    assert c.applied is True
-
-
-def test_apply_failed_seam_refuses_the_deferred_verify_hold():
-    """Owner ruling (2026-07-20): a TERMINAL auto-apply failure must not
-    strand the phone on the deferred hold toward a dishonest capture_timeout —
-    authorize_begin refuses outright with the real reason."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    fakes.apply_failed_code = "apply_failed"
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(3, 3)
-    assert excinfo.value.code == "apply_failed"
-    assert c.last_failure_code == "apply_failed"
-    assert c.applied is False
 
 
 def test_an_implausible_delay_never_renders_mic_placement_advice():
@@ -1366,7 +1319,7 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
             priors.measurement_protection_response_by_role[role](freqs),
             crossover_response_complex(freqs, (section,)),
         )
-    for role, sections in flow.sections_by_role(preset.crossover_regions).items():
+    for role, sections in sections_by_role(preset.crossover_regions).items():
         np.testing.assert_allclose(
             priors.configured_crossover_response_by_role[role](freqs),
             crossover_response_complex(freqs, sections),
@@ -1536,5 +1489,3 @@ def test_conductor_threads_geometry_and_result_to_analyze():
     # imports — importing it here would make the assertion pass at any value.
     assert geometry.mic_distance_m == pytest.approx(1.0)
     assert geometry.parallax_us() > 0.0
-
-

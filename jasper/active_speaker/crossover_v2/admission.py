@@ -68,10 +68,6 @@ class AttemptOverspendError(RuntimeError):
 #: :attr:`BeginDecision.kind` — admit this begin (``spends_extra`` says whether
 #: it costs one of the position's extras, and ``initiator`` who is charged).
 ADMIT = "admit"
-#: Hold the begin: VERIFY is soft-held until an apply is observed.
-DEFER_AWAITING_APPLY = "defer_awaiting_apply"
-#: Refuse: the auto-apply hit a TERMINAL failure, named by ``code``.
-REFUSE_APPLY_FAILED = "refuse_apply_failed"
 #: Refuse: the slot's last rejection was a condition another take cannot clear.
 REFUSE_NON_RETRIABLE = "refuse_non_retriable"
 #: Refuse: the slot's extras are gone (the backstop — see :func:`assess_begin`).
@@ -85,8 +81,6 @@ REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
 #: again.
 DECISION_KINDS = frozenset({
     ADMIT,
-    DEFER_AWAITING_APPLY,
-    REFUSE_APPLY_FAILED,
     REFUSE_NON_RETRIABLE,
     REFUSE_EXTRAS_SPENT,
 })
@@ -223,21 +217,12 @@ def reflection_measured_for(
 
 def assess_begin(
     *,
-    verify_hold: bool,
-    apply_failure_code: Callable[[], str],
     ledger: SlotAttempts | None,
     last_reason: str | None,
     non_retriable: Container[str],
     default_code: str,
 ) -> BeginDecision:
-    """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
-
-    ``verify_hold`` is the session's "this is VERIFY and no apply has been
-    observed" — VERIFY is soft-held until one is. No shipped session reaches
-    that hold since the two-stage split (D10): stage 1 has no VERIFY index and
-    stage 2's session is constructed ``applied=True``, so no new design may
-    depend on it. A TERMINAL auto-apply failure refuses outright rather than
-    holding toward a dishonest capture_timeout.
+    """Admit (or refuse) one phone ``begin_capture`` (§5.7).
 
     Neither closing condition normally arrives here — both are settled at the
     REJECTION that closed the slot (#2086 item 3, ADR-0227). :data:`REFUSE_EXTRAS_SPENT`
@@ -246,11 +231,6 @@ def assess_begin(
     actually observed at this slot, never a generic exhaustion code that would
     erase what went wrong.
     """
-    if verify_hold:
-        failure_code = apply_failure_code()
-        if failure_code:
-            return BeginDecision(REFUSE_APPLY_FAILED, code=failure_code)
-        return BeginDecision(DEFER_AWAITING_APPLY)
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
     # The ``is not None`` half narrows the type and changes no answer: the flow

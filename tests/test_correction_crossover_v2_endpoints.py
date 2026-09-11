@@ -3148,6 +3148,26 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     )
 
 
+def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
+    from jasper.active_speaker import angle_capture_spool, preflight_live
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
+    from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
+    from tests.test_preflight import ready_facts
+
+    name = "unbanked"
+    request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
+    _arm_stage_1(monkeypatch)
+    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
+    monkeypatch.setattr(angle_capture_spool, "take_staged_angle_request", lambda: request)
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda *args, **kwargs: ready_facts(
+        request,
+    ))
+    with pytest.raises(v2host.CrossoverV2Refused) as exc:
+        v2host.prepare_v2_session({}, status={}, run_async=None, camilla_factory=None)
+    assert exc.value.code == "not_found"
+    assert refusal_copy_for(exc.value.code)[1]
+
+
 def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     monkeypatch,
 ):
