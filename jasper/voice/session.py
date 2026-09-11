@@ -126,13 +126,9 @@ class Interruptible(Protocol):
 
 
 class ProviderTurn(Protocol):
-    """What a provider adapter implements on top of `_base.BaseLiveTurn`.
-
-    Everything else `LiveTurn` names — the playout queue, the progress
-    anchors, the byte and chunk counters, the interrupt event, usage
-    accumulation — is provider-independent, so `BaseLiveTurn` implements
-    it once for every adapter and documents it at that implementation.
-    """
+    """What a provider adapter implements on top of `_base.BaseLiveTurn`;
+    everything else `LiveTurn` names, the base implements once for every
+    adapter."""
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         ...
