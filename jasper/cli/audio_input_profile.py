@@ -18,7 +18,8 @@ import sys
 from ..audio_profile_state import (
     ALL_PROFILES, AEC_MODE_ENV, CHIP_REF_OBSERVE_ENV, PROFILE_AUTO,
     PROFILE_CUSTOM,
-    PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING, AecIntent,
+    PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING, WAKE_LEG_DEFAULTS,
+    AecIntent,
     infer_audio_input_profile, normalize_aec_mode,
     normalize_audio_input_profile, parse_env_bool, profile_env_updates,
     resolve_profile_wake_legs,
@@ -49,15 +50,9 @@ _NEEDS_MIC_READY = (PROFILE_AUTO,)
 
 # The wake legs, in the order both verbs use: the argparse destination the
 # shell hands the raw string on, the aec_mode.env key it comes from, and the
-# build's default for a value an older deploy's file omits. RAW defaults on
-# (cheap OR-fusion wake-rate recovery); every other leg is opt-in.
-_WAKE_LEGS = (
-    ("leg_raw", "JASPER_WAKE_LEG_RAW", True),
-    ("leg_dtln", "JASPER_WAKE_LEG_DTLN", False),
-    ("leg_chip_aec", "JASPER_WAKE_LEG_CHIP_AEC", False),
-    ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", False),
-    ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", False),
-)
+# build's default for a value an older deploy's file omits (owned by
+# audio_profile_state.WAKE_LEG_DEFAULTS, shared with aec_endpoints).
+_WAKE_LEGS = WAKE_LEG_DEFAULTS
 # The chip-ref observe opt-in rides the same boolean vocabulary but is not a
 # wake leg: it arms a lab drift measurement, never a wake detector.
 _CHIP_REF_OBSERVE = ("chip_ref_observe", CHIP_REF_OBSERVE_ENV, False)

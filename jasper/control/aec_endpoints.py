@@ -27,6 +27,7 @@ from ..audio_profile_state import (
     PROFILE_XVF_CHIP_AEC_TESTING,
     PROFILE_XVF_SOFTWARE_AEC3,
     RuntimeAecEnv,
+    WAKE_LEG_DEFAULTS,
     audio_profile_status,
     infer_audio_input_profile,
     normalize_audio_input_profile,
@@ -63,17 +64,13 @@ _AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
 _UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 
-# Default leg policy — must match deploy/install.sh's reconcile_aec_state
-# and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on for
+# Default leg policy, from the shared audio_profile_state.WAKE_LEG_DEFAULTS
+# table (also consumed by jasper.cli.audio_input_profile and mirrored in
+# bash by deploy/bin/jasper-aec-reconcile's ensure_mode_file). Raw is on for
 # software-AEC defaults, DTLN is off, and chip-AEC's extra beam detectors
 # are off. The chip-AEC profile itself may still be selected by `auto`;
 # these defaults only decide whether voice opens extra detector instances
 # beyond the primary/session leg.
-_LEG_DEFAULT_RAW = True
-_LEG_DEFAULT_DTLN = False
-_LEG_DEFAULT_CHIP_AEC = False
-_LEG_DEFAULT_CHIP_AEC_150 = False
-_LEG_DEFAULT_CHIP_AEC_210 = False
 _PROFILE_DEFAULT = "custom"
 
 # Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
@@ -107,13 +104,7 @@ def _read_aec_state() -> dict:
     env_file = read_env_file_state(_AEC_MODE_FILE)
     values = env_file.values
     state: dict[str, Any] = {"mode": values.get(AEC_MODE_ENV) or "auto"}
-    for name, key, default in (
-        ("leg_raw", "JASPER_WAKE_LEG_RAW", _LEG_DEFAULT_RAW),
-        ("leg_dtln", "JASPER_WAKE_LEG_DTLN", _LEG_DEFAULT_DTLN),
-        ("leg_chip_aec", "JASPER_WAKE_LEG_CHIP_AEC", _LEG_DEFAULT_CHIP_AEC),
-        ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", _LEG_DEFAULT_CHIP_AEC_150),
-        ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", _LEG_DEFAULT_CHIP_AEC_210),
-    ):
+    for name, key, default in WAKE_LEG_DEFAULTS:
         raw = values.get(key)
         state[name] = default if raw is None else _parse_env_bool(raw, default)
     profile = values.get("JASPER_AUDIO_INPUT_PROFILE")

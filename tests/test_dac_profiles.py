@@ -12,6 +12,7 @@ import pytest
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
 from jasper.audio_hardware.dac import (
+    APPLE_DONGLE_USB_ID,
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
     DUAL_APPLE_USB_C_DAC_4CH,
@@ -73,7 +74,7 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.outputd_sink == "single_alsa"
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert APPLE_USB_C_DONGLE.active_outputd_lane_channels == 2
-    assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
+    assert APPLE_USB_C_DONGLE.usb_ids == (APPLE_DONGLE_USB_ID,)
     assert APPLE_USB_C_DONGLE.connection == "usb"
     assert APPLE_USB_C_DONGLE.supported_card_matches == ("usb-c to 3.5mm",)
     assert APPLE_USB_C_DONGLE.mixer_controls[0].name == "Headphone"
@@ -479,7 +480,7 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
         APPLE_USB_C_DONGLE_ID,
         APPLE_USB_C_DONGLE_ID,
     )
-    assert DUAL_APPLE_USB_C_DAC_4CH.usb_ids == ("05ac:110a",)
+    assert DUAL_APPLE_USB_C_DAC_4CH.usb_ids == (APPLE_DONGLE_USB_ID,)
     assert DUAL_APPLE_USB_C_DAC_4CH.requires_same_usb_bus is True
     assert DUAL_APPLE_USB_C_DAC_4CH.supports_active_outputd_lane is True
     assert DUAL_APPLE_USB_C_DAC_4CH.active_outputd_lane_channels == 4
@@ -1170,3 +1171,68 @@ def test_every_registry_row_declares_a_sink_outputd_can_parse() -> None:
         "Registry-only (emitted but unparseable -> parked final-output owner "
         f"at exit 78): {sorted(emitted - rust_arms)}"
     )
+
+
+def _all_attr_matches(text: str, attr: str, key: str) -> list[str]:
+    """Every `ATTR{key}=="value"` (or `ATTRS{key}=="value"`) match in text, in
+    order -- so a caller can assert EVERY occurrence carries the same value,
+    not just that some occurrence somewhere does. A whole-file substring
+    check (`f'{attr}{{{key}}}=="{value}"' in text`) would still pass if a
+    partial edit left one of several rule lines with a stale value, as long
+    as at least one other line still had the right one.
+    """
+    return re.findall(rf'{attr}\{{{key}\}}=="([^"]*)"', text)
+
+
+def test_apple_dongle_usb_id_matches_udev_rules_and_installer() -> None:
+    """dac.py's Apple dongle usb id has bash/udev mirrors that cannot import
+    a Python constant (see the comment beside APPLE_DONGLE_USB_ID) — pin all
+    of them against it so a corrected id (e.g. a new dongle revision)
+    cannot land in only one place.
+    """
+    vendor, product = APPLE_DONGLE_USB_ID.split(":")
+
+    mixer_rule = (
+        ROOT / "deploy/udev/99-jasper-apple-dongle.rules"
+    ).read_text(encoding="utf-8")
+    for attr, key, expected in (
+        ("ATTRS", "idVendor", vendor),
+        ("ATTRS", "idProduct", product),
+        ("ATTR", "idVendor", vendor),
+        ("ATTR", "idProduct", product),
+    ):
+        found = _all_attr_matches(mixer_rule, attr, key)
+        assert found, (
+            f"no {attr}{{{key}}} match found in 99-jasper-apple-dongle.rules "
+            "-- the regex found nothing, which would make the contract "
+            "below vacuously true"
+        )
+        assert set(found) == {expected}, (
+            f"{attr}{{{key}}} values drifted across the file's own rule "
+            f"lines: {sorted(set(found))} (expected only {expected!r})"
+        )
+
+    # The remove-path rule matches the kernel PRODUCT uevent, which drops
+    # the vendor's leading zero (that file's own comment explains why a
+    # padded "05ac" match is silently a no-op there).
+    reconcile_rule = (
+        ROOT / "deploy/udev/99-jasper-audio-hardware-reconcile.rules"
+    ).read_text(encoding="utf-8")
+    product_env = re.findall(r'ENV\{PRODUCT\}=="([^"]*)"', reconcile_rule)
+    assert product_env, (
+        "no ENV{PRODUCT} match found in "
+        "99-jasper-audio-hardware-reconcile.rules -- the regex found "
+        "nothing, which would make the contract below vacuously true"
+    )
+    expected_product_env = f'{vendor.lstrip("0")}/{product}/*'
+    assert set(product_env) == {expected_product_env}, (
+        f"ENV{{PRODUCT}} values drifted: {sorted(set(product_env))} "
+        f"(expected only {expected_product_env!r})"
+    )
+
+    installer = (
+        ROOT / "deploy/lib/install/systemd-units.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        f'"${{vendor}}" == "{vendor}" && "${{product}}" == "{product}"'
+    ) in installer

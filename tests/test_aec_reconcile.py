@@ -19,6 +19,7 @@ from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.audio_profile_state import (
     ALL_PROFILES,
+    WAKE_LEG_DEFAULTS,
     normalize_aec_mode,
     parse_env_bool,
     profile_env_updates,
@@ -36,7 +37,6 @@ from jasper.mic_presence import (
     read_mic_presence,
     voice_park_is_transient,
 )
-from jasper.control import aec_endpoints
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
@@ -95,17 +95,7 @@ _PERSISTED_REGISTRY_ENV = "".join(
 def _control_leg_defaults() -> dict[str, str]:
     """Return control's missing-key defaults in systemd-env form."""
     return {
-        "JASPER_WAKE_LEG_RAW": "1" if aec_endpoints._LEG_DEFAULT_RAW else "0",
-        "JASPER_WAKE_LEG_DTLN": "1" if aec_endpoints._LEG_DEFAULT_DTLN else "0",
-        "JASPER_WAKE_LEG_CHIP_AEC": (
-            "1" if aec_endpoints._LEG_DEFAULT_CHIP_AEC else "0"
-        ),
-        "JASPER_WAKE_LEG_CHIP_AEC_150": (
-            "1" if aec_endpoints._LEG_DEFAULT_CHIP_AEC_150 else "0"
-        ),
-        "JASPER_WAKE_LEG_CHIP_AEC_210": (
-            "1" if aec_endpoints._LEG_DEFAULT_CHIP_AEC_210 else "0"
-        ),
+        key: "1" if default else "0" for _, key, default in WAKE_LEG_DEFAULTS
     }
 
 

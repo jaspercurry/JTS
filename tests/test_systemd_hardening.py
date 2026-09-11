@@ -27,6 +27,7 @@ import pytest
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.accessories import status as accessory_status
+from jasper.audio_hardware.dac import APPLE_DONGLE_USB_ID
 from jasper.cli.doctor import drift as doctor_drift
 from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
@@ -1164,6 +1165,7 @@ def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
     jasper-recon, but this root fast path stays explicit until a fixed helper or
     systemd oneshot replacement is hardware-validated against real replug.
     """
+    vendor, product = APPLE_DONGLE_USB_ID.split(":")
     text = APPLE_DONGLE_UDEV_RULE.read_text(encoding="utf-8")
     assert (
         'RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} '
@@ -1171,10 +1173,10 @@ def test_apple_dongle_udev_mixer_fast_path_remains_root_exception():
     ) in text
     assert (
         'ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", '
-        'ATTR{idVendor}=="05ac", ATTR{idProduct}=="110a", '
+        f'ATTR{{idVendor}}=="{vendor}", ATTR{{idProduct}}=="{product}", '
         'ATTR{power/control}="on"'
     ) in text
-    assert 'SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac"' not in text
+    assert f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{vendor}"' not in text
 
 
 def test_camilla_unit_rate_limits_external_log_floods():

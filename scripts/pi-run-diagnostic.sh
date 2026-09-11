@@ -62,7 +62,6 @@ WORKDIR="${JTS_DIAG_WORKDIR:-/home/pi/jts}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 UNIT="jts-diagnostic-${TS}-$$"
-REMOTE_COMMAND="$(quote_args "$@")"
 
 props=(
     "--property=Description=JTS bounded diagnostic"
@@ -93,7 +92,14 @@ remote_systemd_run=(
 )
 
 remote_prefix="$(quote_args "${remote_systemd_run[@]}")"
-remote_tail="$(quote_args -- /usr/bin/bash -lc "$REMOTE_COMMAND")"
+# One shell layer, quoted once: the exec "$@" script is fixed constant
+# text and every token of the caller's own "$@" is quoted exactly once
+# -- no re-quoting an already-quoted blob (the bug #4708 / 609625f43
+# fixed). scripts/fetch-pi-logs.sh's redaction keys on the literal
+# "-- /usr/bin/bash -lc " text this always produces, to strip
+# diagnostic command content from the Pi's sudo audit trail -- keep
+# both in sync.
+remote_tail="$(quote_args -- /usr/bin/bash -lc 'exec "$@"' _ "$@")"
 
 exec ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" \
     "${remote_prefix} ${prop_text} ${remote_tail}"

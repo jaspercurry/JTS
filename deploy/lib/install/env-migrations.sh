@@ -510,6 +510,12 @@ EOF
 # that never re-save a wizard. Idempotent, [[ -f ]]-guarded, no-op before the
 # `jasper` group exists. Owner is left as-is (StateDirectory recursive-chown
 # may have set it to jasper-voice); cross-daemon reads rely on GROUP, not owner.
+#
+# Removal condition: this function itself never expires — the jasper_env
+# chgrp/chmod and the loop's chmod half below are permanent perm-healing
+# install.sh re-asserts every run (a box can carry a pre-fix 0600 file
+# indefinitely, e.g. restored from an old backup). Only the loop's chgrp
+# half has a real expiry; see the dated note beside that loop.
 widen_control_secret_env_modes() {
     getent group jasper >/dev/null 2>&1 || return 0
 
