@@ -2,19 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared timing-locked null-walk decision primitive.
+"""Shared timing-locked null-walk specification primitive.
 
-The player owns the clock-exact DSP mutation.  This module deliberately sees
-only the candidate delay and repeated, gated null-depth measurements; impulse
-arrival times are not part of its input vocabulary.  Active-speaker driver
-alignment and bass-management sub-to-mains timing therefore share one bounded
-search contract without sharing either subsystem's DSP or web orchestration.
-
-This module is **pure decision content**: specs, schedules, candidate scoring
-and selection, plus the frozen :class:`DspPredecessor` rollback identity that
-hosts and :mod:`jasper.audio_measurement.delay_graph` build on. It runs no
-transaction — a host that executes a walk owns its own bounded,
-cancellation-drained restore.
+Active-speaker driver alignment and bass-management sub-to-mains timing share
+the specification and frozen :class:`DspPredecessor` rollback identity without
+sharing either subsystem's DSP or web orchestration.
 """
 
 from __future__ import annotations
@@ -22,22 +14,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import statistics
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Sequence, TypeAlias
+from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.json_fields import finite_float
 
-MIN_CAPTURE_COUNT = 5
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
-MAX_REPEAT_SPREAD_DB = 2.0
 DEFAULT_SOUND_SPEED_M_S = 343.0
-MAX_EXHAUSTIVE_CANDIDATES = 25
-MAX_COARSE_CANDIDATES = MAX_EXHAUSTIVE_CANDIDATES
-MAX_REFINEMENT_CANDIDATES = 2
-MAX_SCHEDULED_CANDIDATES = MAX_COARSE_CANDIDATES + MAX_REFINEMENT_CANDIDATES
 MAX_DSP_DELAY_US = 20_000.0
 
 DelayWalkScope: TypeAlias = Literal["active_crossover", "bass_management"]
@@ -45,10 +30,6 @@ DELAY_WALK_SCOPES: frozenset[str] = frozenset({"active_crossover", "bass_managem
 
 _SPEC_KIND = "jts_null_walk_spec"
 _SPEC_SCHEMA_VERSION = 2
-_SCHEDULE_KIND = "jts_bounded_null_walk_schedule"
-_SCHEDULE_SCHEMA_VERSION = 1
-_SCHEDULE_ALGORITHM_ID = "symmetric_coarse_plus_adjacent_refinement"
-_SCHEDULE_ALGORITHM_VERSION = "1"
 
 
 class NullWalkError(ValueError):
@@ -148,8 +129,7 @@ def geometry_seed_us(
     Both signed differences are ``negative target minus positive target``.
     A positive result therefore means the positive target needs that much DSP
     delay; a negative result means the negative target needs its absolute
-    value. This estimate only bounds the walk; :func:`select_scheduled_delay`
-    emits the final measured candidate.
+    value. This estimate bounds the host-owned walk.
     """
 
     path = _finite(signed_path_difference_m, field="signed_path_difference_m")
@@ -290,27 +270,6 @@ class NullWalkSpec(FingerprintedRecord):
             raise NullWalkError("relative delay is outside the bounded fine grid")
         return index
 
-    def coarse_candidate_delays_us(self) -> tuple[float, ...]:
-        """Return the deterministic bounded first phase of a host schedule.
-
-        Coordinates are symmetric about the geometry seed, retain the seed and
-        both aligned fine-grid endpoints, and never exceed the existing
-        25-coordinate exhaustive budget. A later explicit refinement anchor may
-        add only its immediate fine-grid neighbours.
-        """
-
-        steps = self.steps_each_side
-        if steps == 0:
-            return (self.fine_grid_coordinate(0),)
-        slots_each_side = (MAX_COARSE_CANDIDATES - 1) // 2
-        stride = max(1, math.ceil(steps / slots_each_side))
-        positive = set(range(stride, steps + 1, stride))
-        positive.add(steps)
-        indexes = tuple(sorted({0, *positive, *(-index for index in positive)}))
-        if len(indexes) > MAX_COARSE_CANDIDATES:
-            raise AssertionError("coarse null-walk schedule exceeded its hard bound")
-        return tuple(self.fine_grid_coordinate(index) for index in indexes)
-
     def dsp_candidate(self, relative_delay_us: Any) -> DelayCandidate:
         """Map one signed grid coordinate to a non-negative DSP operation."""
 
@@ -382,168 +341,6 @@ class NullWalkSpec(FingerprintedRecord):
         return result
 
 
-@dataclass(frozen=True, init=False)
-class BoundedNullWalkSchedule(FingerprintedRecord):
-    """Deterministic coarse scan plus explicit local fine-grid refinement.
-
-    The schedule describes only which coordinates a host may measure. It does
-    not evaluate evidence or claim a selected delay; the exhaustive shared
-    runner and selector remain deliberately separate and capped at 25 points.
-    """
-
-    spec_fingerprint: str
-    coarse_delays_us: tuple[float, ...]
-    refinement_anchor_us: float
-    refinement_delays_us: tuple[float, ...]
-    scheduled_delays_us: tuple[float, ...]
-    fingerprint: str
-
-    def __init__(
-        self,
-        spec: NullWalkSpec,
-        *,
-        refinement_anchor_us: Any,
-    ) -> None:
-        if not isinstance(spec, NullWalkSpec):
-            raise NullWalkError("schedule spec must be NullWalkSpec")
-        coarse = spec.coarse_candidate_delays_us()
-        anchor_index = spec.fine_grid_index(refinement_anchor_us)
-        anchor = spec.fine_grid_coordinate(anchor_index)
-        if anchor not in coarse:
-            raise NullWalkError(
-                "refinement anchor must be an exact coarse schedule coordinate"
-            )
-        refinement: list[float] = []
-        for index in (anchor_index - 1, anchor_index + 1):
-            if not spec.fine_grid_index_min <= index <= spec.fine_grid_index_max:
-                continue
-            coordinate = spec.fine_grid_coordinate(index)
-            if coordinate not in coarse:
-                refinement.append(coordinate)
-        refinement_delays = tuple(sorted(refinement))
-        if len(refinement_delays) > MAX_REFINEMENT_CANDIDATES:
-            raise AssertionError("null-walk refinement exceeded its hard bound")
-        scheduled = tuple(sorted({*coarse, *refinement_delays}))
-        if len(scheduled) > MAX_SCHEDULED_CANDIDATES:
-            raise AssertionError("null-walk schedule exceeded its hard bound")
-        object.__setattr__(self, "spec_fingerprint", spec.fingerprint)
-        object.__setattr__(self, "coarse_delays_us", coarse)
-        object.__setattr__(self, "refinement_anchor_us", anchor)
-        object.__setattr__(self, "refinement_delays_us", refinement_delays)
-        object.__setattr__(self, "scheduled_delays_us", scheduled)
-        object.__setattr__(self, "fingerprint", _payload_fingerprint(self._core()))
-
-    @classmethod
-    def from_coarse_evidence(
-        cls,
-        spec: NullWalkSpec,
-        evidence_by_delay: Mapping[Any, Sequence[Mapping[str, Any]]],
-    ) -> BoundedNullWalkSchedule:
-        """Choose the deepest repeatable coarse anchor deterministically.
-
-        This selects only where the bounded host measures its two optional fine
-        neighbors. It does not select or authorize a final delay. Every coarse
-        coordinate must have a complete repeatable capture set before the
-        refinement phase can begin.
-        """
-
-        if not isinstance(spec, NullWalkSpec):
-            raise NullWalkError("schedule spec must be NullWalkSpec")
-        if not isinstance(evidence_by_delay, Mapping):
-            raise NullWalkError("coarse evidence must be a mapping")
-        coarse = spec.coarse_candidate_delays_us()
-        evidence: dict[float, Sequence[Mapping[str, Any]]] = {}
-        for raw_delay, captures in evidence_by_delay.items():
-            index = spec.fine_grid_index(raw_delay)
-            coordinate = spec.fine_grid_coordinate(index)
-            if coordinate not in coarse:
-                raise NullWalkError(
-                    "coarse evidence contains a coordinate outside the coarse schedule"
-                )
-            if coordinate in evidence:
-                raise NullWalkError("coarse evidence contains a duplicate coordinate")
-            evidence[coordinate] = captures
-        if set(evidence) != set(coarse):
-            raise NullWalkError("coarse evidence must cover the exact coarse schedule")
-
-        summarized = [
-            summarize_candidate(spec, coordinate, evidence[coordinate])
-            for coordinate in coarse
-        ]
-        if any(item["repeatable"] is not True for item in summarized):
-            raise NullWalkError(
-                "every coarse coordinate requires complete repeatable evidence"
-            )
-        anchor = min(
-            summarized,
-            key=lambda item: (
-                -float(item["median_null_depth_db"]),
-                abs(float(item["relative_delay_us"]) - spec.geometry_seed_us),
-                float(item["relative_delay_us"]),
-            ),
-        )
-        return cls(
-            spec,
-            refinement_anchor_us=anchor["relative_delay_us"],
-        )
-
-    def _core(self) -> dict[str, Any]:
-        return {
-            "schema_version": _SCHEDULE_SCHEMA_VERSION,
-            "kind": _SCHEDULE_KIND,
-            "algorithm_id": _SCHEDULE_ALGORITHM_ID,
-            "algorithm_version": _SCHEDULE_ALGORITHM_VERSION,
-            "spec_fingerprint": self.spec_fingerprint,
-            "maximum_coarse_candidates": MAX_COARSE_CANDIDATES,
-            "maximum_refinement_candidates": MAX_REFINEMENT_CANDIDATES,
-            "maximum_scheduled_candidates": MAX_SCHEDULED_CANDIDATES,
-            "coarse_delays_us": list(self.coarse_delays_us),
-            "refinement_anchor_us": self.refinement_anchor_us,
-            "refinement_delays_us": list(self.refinement_delays_us),
-            "scheduled_delays_us": list(self.scheduled_delays_us),
-        }
-
-    @classmethod
-    def from_mapping(
-        cls,
-        raw: Any,
-        *,
-        spec: NullWalkSpec,
-    ) -> BoundedNullWalkSchedule:
-        expected = {
-            "schema_version",
-            "kind",
-            "algorithm_id",
-            "algorithm_version",
-            "spec_fingerprint",
-            "maximum_coarse_candidates",
-            "maximum_refinement_candidates",
-            "maximum_scheduled_candidates",
-            "coarse_delays_us",
-            "refinement_anchor_us",
-            "refinement_delays_us",
-            "scheduled_delays_us",
-            "fingerprint",
-        }
-        if not isinstance(raw, Mapping) or set(raw) != expected:
-            raise NullWalkError("bounded null-walk schedule fields are invalid")
-        for field_name in (
-            "coarse_delays_us",
-            "refinement_delays_us",
-            "scheduled_delays_us",
-        ):
-            if type(raw[field_name]) is not list:
-                raise NullWalkError(
-                    "bounded null-walk schedule coordinate fields must be lists"
-                )
-        result = cls(spec, refinement_anchor_us=raw["refinement_anchor_us"])
-        if _canonical_payload(dict(raw)) != _canonical_payload(result.to_dict()):
-            raise NullWalkError(
-                "bounded null-walk schedule is not the exact canonical schedule"
-            )
-        return result
-
-
 @dataclass(frozen=True)
 class DelayCandidate:
     """One executable relative-delay coordinate for a host DSP adapter."""
@@ -562,268 +359,3 @@ class DelayCandidate:
             "delay_target": self.delay_target,
             "delay_us": self.delay_us,
         }
-
-
-def _capture_null_depth(capture: Mapping[str, Any]) -> float:
-    acoustic = capture.get("acoustic")
-    acoustic = acoustic if isinstance(acoustic, Mapping) else capture
-    depth = _finite(acoustic.get("null_depth_db"), field="null_depth_db")
-    if depth < 0.0:
-        raise NullWalkError("null_depth_db must be non-negative")
-    return depth
-
-
-def _capture_issue(
-    capture: Mapping[str, Any],
-    *,
-    expected_crossover_fc_hz: float,
-) -> str | None:
-    acoustic = capture.get("acoustic")
-    acoustic = acoustic if isinstance(acoustic, Mapping) else capture
-    gating = acoustic.get("gating")
-    gating = gating if isinstance(gating, Mapping) else {}
-    snr = acoustic.get("snr")
-    snr = snr if isinstance(snr, Mapping) else {}
-    try:
-        observed_fc = _finite(
-            acoustic.get("crossover_fc_hz"),
-            field="crossover_fc_hz",
-        )
-    except NullWalkError:
-        observed_fc = math.nan
-    if acoustic.get("mic_clipping") is True:
-        return "clipping"
-    if acoustic.get("calibrated") is not True:
-        return "calibrated_mic_required"
-    if acoustic.get("expect_null") is not True:
-        return "reverse_null_required"
-    if not math.isclose(
-        observed_fc,
-        expected_crossover_fc_hz,
-        rel_tol=1e-6,
-        abs_tol=1e-3,
-    ):
-        return "crossover_region_mismatch"
-    if gating.get("applied") is not True:
-        return "gated_null_required"
-    if acoustic.get("above_validity_floor") is not True:
-        return "below_validity_floor"
-    if snr.get("decision_class") != "alignment" or snr.get("verdict") != "ok":
-        return "alignment_snr_insufficient"
-    if acoustic.get("null_depth_capped") is True:
-        return "null_depth_capped"
-    return None
-
-
-def summarize_candidate(
-    spec: NullWalkSpec,
-    relative_delay_us: Any,
-    captures: Sequence[Mapping[str, Any]],
-    *,
-    minimum_captures: int = MIN_CAPTURE_COUNT,
-    maximum_spread_db: float = MAX_REPEAT_SPREAD_DB,
-) -> dict[str, Any]:
-    """Summarize one DSP-applied delay from repeated gated null reads."""
-
-    operation = spec.dsp_candidate(relative_delay_us)
-    if minimum_captures < MIN_CAPTURE_COUNT:
-        raise NullWalkError(f"minimum_captures must be at least {MIN_CAPTURE_COUNT}")
-    spread_limit = _finite(maximum_spread_db, field="maximum_spread_db")
-    if spread_limit <= 0.0 or spread_limit > MAX_REPEAT_SPREAD_DB:
-        raise NullWalkError(
-            f"maximum_spread_db must be in (0, {MAX_REPEAT_SPREAD_DB:g}]"
-        )
-
-    issues: list[dict[str, Any]] = []
-    depths: list[float] = []
-    for index, capture in enumerate(captures):
-        if not isinstance(capture, Mapping):
-            issues.append({"capture": index, "code": "capture_malformed"})
-            continue
-        issue = _capture_issue(
-            capture,
-            expected_crossover_fc_hz=spec.crossover_fc_hz,
-        )
-        if issue is not None:
-            issues.append({"capture": index, "code": issue})
-            continue
-        try:
-            depths.append(_capture_null_depth(capture))
-        except NullWalkError as exc:
-            issues.append(
-                {"capture": index, "code": "null_depth_invalid", "detail": str(exc)}
-            )
-
-    spread = max(depths) - min(depths) if len(depths) >= 2 else None
-    repeatable = bool(
-        len(captures) >= minimum_captures
-        and len(depths) == len(captures)
-        and spread is not None
-        and spread < spread_limit
-    )
-    if len(captures) < minimum_captures:
-        issues.append(
-            {
-                "code": "captures_missing",
-                "required": minimum_captures,
-                "observed": len(captures),
-            }
-        )
-    if spread is not None and spread >= spread_limit:
-        issues.append(
-            {
-                "code": "repeatability_low",
-                "spread_db": spread,
-                "maximum_spread_db": spread_limit,
-            }
-        )
-    return {
-        "relative_delay_us": operation.relative_delay_us,
-        "delay_target": operation.delay_target,
-        "delay_us": operation.delay_us,
-        "capture_count": len(captures),
-        "accepted_capture_count": len(depths),
-        "null_depths_db": depths,
-        "median_null_depth_db": statistics.median(depths) if depths else None,
-        "spread_db": spread,
-        "repeatable": repeatable,
-        "issues": issues,
-    }
-
-
-def _select_summarized_delay(
-    spec: NullWalkSpec,
-    summarized: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    """Apply the one repeatability, plateau, and tie policy to candidates."""
-
-    candidates = [dict(item) for item in summarized]
-    incomplete = [
-        item
-        for item in candidates
-        if item["capture_count"] < MIN_CAPTURE_COUNT
-        or item["accepted_capture_count"] != item["capture_count"]
-    ]
-    if incomplete:
-        return {
-            "schema_version": 1,
-            "status": "refused",
-            "reason": "candidate_evidence_incomplete",
-            "selected_delay_us": None,
-            "selected_relative_delay_us": None,
-            "selected_delay_target": None,
-            "spec": spec.to_dict(),
-            "candidates": candidates,
-        }
-    eligible = [item for item in candidates if item["repeatable"]]
-    if len(eligible) != len(candidates):
-        return {
-            "schema_version": 1,
-            "status": "refused",
-            "reason": "candidate_repeatability_failed",
-            "selected_delay_us": None,
-            "selected_relative_delay_us": None,
-            "selected_delay_target": None,
-            "spec": spec.to_dict(),
-            "candidates": candidates,
-        }
-    deepest = max(float(item["median_null_depth_db"]) for item in eligible)
-    # Candidate-to-candidate differences inside the measured repeat spread are
-    # not resolvable. Treat them as one plateau and make the smallest geometry
-    # correction, rather than chasing a tenth-of-a-decibel noise fluctuation to
-    # an extreme edge of the allowed cycle.
-    deepest_spread = max(
-        float(item["spread_db"])
-        for item in eligible
-        if math.isclose(float(item["median_null_depth_db"]), deepest, abs_tol=1e-9)
-    )
-    plateau = [
-        item
-        for item in eligible
-        if deepest - float(item["median_null_depth_db"])
-        <= max(float(item["spread_db"]), deepest_spread)
-    ]
-    winner = min(
-        plateau,
-        key=lambda item: (
-            abs(float(item["relative_delay_us"]) - spec.geometry_seed_us),
-            -float(item["median_null_depth_db"]),
-            float(item["relative_delay_us"]),
-        ),
-    )
-    selected = spec.dsp_candidate(winner["relative_delay_us"])
-    return {
-        "schema_version": 1,
-        "status": "selected",
-        "reason": None,
-        "selected_relative_delay_us": selected.relative_delay_us,
-        "selected_delay_target": selected.delay_target,
-        "selected_delay_us": selected.delay_us,
-        "selected_null_depth_db": winner["median_null_depth_db"],
-        "best_measured_null_depth_db": deepest,
-        "indistinguishable_delays_us": [item["relative_delay_us"] for item in plateau],
-        "spec": spec.to_dict(),
-        "candidates": candidates,
-    }
-
-
-def select_scheduled_delay(
-    spec: NullWalkSpec,
-    schedule: BoundedNullWalkSchedule,
-    evidence_by_delay: Mapping[Any, Sequence[Mapping[str, Any]]],
-) -> dict[str, Any]:
-    """Select from one exact bounded coarse-plus-refinement schedule.
-
-    This is the final evaluator for low-frequency grids whose exhaustive fine
-    grid exceeds :data:`MAX_EXHAUSTIVE_CANDIDATES`.  It changes only which
-    coordinates are eligible: evidence must cover the persisted schedule
-    exactly, while candidate quality, repeatability, plateau handling, and tie
-    breaking remain owned by :func:`_select_summarized_delay`.
-    """
-
-    if not isinstance(spec, NullWalkSpec):
-        raise NullWalkError("scheduled selection spec must be NullWalkSpec")
-    if not isinstance(schedule, BoundedNullWalkSchedule):
-        raise NullWalkError(
-            "scheduled selection schedule must be BoundedNullWalkSchedule"
-        )
-    if schedule.spec_fingerprint != spec.fingerprint:
-        raise NullWalkError("bounded schedule belongs to a different null-walk spec")
-    if not isinstance(evidence_by_delay, Mapping):
-        raise NullWalkError("scheduled evidence must be a mapping")
-
-    evidence: dict[float, Sequence[Mapping[str, Any]]] = {}
-    allowed = set(schedule.scheduled_delays_us)
-    for raw_delay, captures in evidence_by_delay.items():
-        index = spec.fine_grid_index(raw_delay)
-        coordinate = spec.fine_grid_coordinate(index)
-        if coordinate not in allowed:
-            raise NullWalkError(
-                "scheduled evidence contains a coordinate outside the exact schedule"
-            )
-        if coordinate in evidence:
-            raise NullWalkError("scheduled evidence contains a duplicate coordinate")
-        evidence[coordinate] = captures
-    if set(evidence) != allowed:
-        raise NullWalkError("scheduled evidence must cover the exact schedule")
-    expected_schedule = BoundedNullWalkSchedule.from_coarse_evidence(
-        spec,
-        {
-            coordinate: evidence[coordinate]
-            for coordinate in schedule.coarse_delays_us
-        },
-    )
-    if expected_schedule.fingerprint != schedule.fingerprint:
-        raise NullWalkError(
-            "bounded schedule refinement does not match its coarse evidence"
-        )
-
-    result = _select_summarized_delay(
-        spec,
-        [
-            summarize_candidate(spec, coordinate, evidence[coordinate])
-            for coordinate in schedule.scheduled_delays_us
-        ],
-    )
-    return {**result, "schedule": schedule.to_dict()}
-

@@ -29,7 +29,7 @@ from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
-    read_source_bytes,
+    read_json_source, read_source_bytes,
 )
 # The beside-the-round output rule, reused rather than restated: a live
 # session bundle is daemon-owned, so a view defaulting inside it raises
@@ -56,7 +56,6 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
-    prescription_response_format,
     prescription_sha256,
     read_blend_prescription,
     read_prescription_bytes,
@@ -65,7 +64,6 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_PRESCRIPTION_KIND,
     DriverPrescription,
     check_driver_document_size,
-    driver_prescription_response_format,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
 )
@@ -82,6 +80,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classification import (
     FeatureVerdict,
 )
+from jasper.active_speaker.crossover_v2.prescription_contract import (
+    CONTRACT_COMMAND, SECTIONS, contract_json, prescription_contracts,
+)
 from jasper.active_speaker.crossover_v2.prescription_spool import (
     prescription_spool_path,
     stage_prescription,
@@ -96,7 +97,6 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     RoomPrescriptionRefused,
     read_room_median,
     read_room_prescription,
-    room_prescription_response_format,
     room_prescription_to_candidate_fields,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
@@ -106,7 +106,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     REPEAT_FLOOR_DEFAULT_PATH,
     banked_round_of,
     recent_round_sessions,
-    round_inputs,
+    round_artifact_dir, round_inputs, contract_sources,
 )
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
@@ -452,6 +452,38 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
 PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
 #: The seat cube's median, written by ``jasper-round-views room-median``.
 ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
+
+
+def _cmd_contract(args: argparse.Namespace) -> int:
+    try:
+        sources = {}
+        if args.round:
+            inputs = round_inputs(Path(args.round))
+            sources = contract_sources(inputs.session_dir)
+            artifact_dir, _ = round_artifact_dir(inputs.session_dir)
+            for name, path in (
+                ("draft", inputs.design_draft_path),
+                ("receipt", artifact_dir / "round_receipt.json" if artifact_dir else None),
+            ):
+                try:
+                    raw = read_json_source(str(path)) if path is not None else None
+                except ValueError:
+                    raw = None
+                sources[name] = raw if isinstance(raw, dict) else {}
+            sources["applied_profile"] = (load_applied_baseline_profile_state(inputs.applied_profile_path)
+                                          if inputs.applied_profile_path else None)
+        contracts = prescription_contracts(**sources)
+        document = contracts if args.section == "all" else contracts[args.section]
+        payload = contract_json(document)
+    except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
+    if args.out:
+        try:
+            Path(args.out).write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
+    print(payload)
+    return EXIT_OK
 
 
 def _cmd_packet(args: argparse.Namespace) -> int:
@@ -1370,7 +1402,9 @@ def status_document(
             context.update(context_artifacts(round_inputs(Path(session_dir)), Path(session_dir)))
             frozen = context["frozen_packet"]
             if frozen["present"]:
-                fingerprint = _read_packet_file(Path(frozen["path"])).get("packet_fingerprint")
+                frozen_packet = _read_packet_file(Path(frozen["path"]))
+                fingerprint = frozen_packet.get("packet_fingerprint")
+                frozen["contracts"] = frozen_packet.get("contracts")
                 frozen["packet_fingerprint"] = fingerprint
                 frozen["matches_current_evidence"] = (
                     fingerprint == packet.get("packet_fingerprint") if packet else None
@@ -1398,6 +1432,7 @@ def status_document(
             "declaration_url": speaker_url(SPEAKER_SETUP_PAGE_PATH),
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
+        "contracts": (packet or {}).get("contracts"),
         "packet_error": packet_error or None,
         "selected_round": session_dir,
         "recent_rounds": recent,
@@ -1534,36 +1569,6 @@ _ROOM_MEDIAN_HELP = (
 )
 
 
-def _prescription_fields() -> str:
-    """The document's top-level fields, read off the contracts that gate it.
-
-    Generated rather than restated so a key added to either class's contract
-    reaches ``--help`` with no edit here, and so no field an author cannot
-    write is ever listed: the classes' own dataclasses carry derived fields
-    (the vouched and displaced counts) that only the gate fills in. The BOUNDS
-    stay where they are — each contract rides whole in the packet's
-    ``response_format`` / ``driver_response_format`` block.
-    """
-    lines = ["PRESCRIPTION DOCUMENT -- top-level fields, per class"]
-    for label, contract in (
-        ("blend     ", prescription_response_format()),
-        ("per-driver", driver_prescription_response_format()),
-        ("room      ", room_prescription_response_format()),
-    ):
-        required = ", ".join(sorted(contract["required_top_level"]))
-        optional = ", ".join(sorted(contract["optional_top_level"]))
-        lines.append(f"  {label} kind={contract['required_top_level']['kind']}")
-        lines.append(f"    required: {required}")
-        lines.append(f"    optional: {optional}")
-    lines.append(
-        "  bounds, and what each field means: this round's packet, in its\n"
-        "  response_format (blend) and driver_response_format (per-driver)\n"
-        "  blocks, and the room contract served with the room median --\n"
-        "  one owner each, and it is the gate's own"
-    )
-    return "\n".join(lines)
-
-
 def _add_evidence_args(
     parser: argparse.ArgumentParser,
     *,
@@ -1668,6 +1673,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
+    contract.add_argument("--round", metavar="DIR")
+    contract.add_argument("--section", choices=(*SECTIONS, "all"), default="all")
+    contract.add_argument("--out", metavar="FILE", help="save the served JSON document")
+    contract.set_defaults(func=_cmd_contract)
+
     compose = sub.add_parser("compose", help="combine banked candidate parts into an unmeasured candidate")
     compose.add_argument("--base", required=True, metavar="FINGERPRINT|saved", help="banked candidate or the applied speaker tune")
     compose.add_argument("--bass-extension-json", metavar="FILE", help="dynamic bass descriptor; an empty object removes extension")
@@ -1727,7 +1738,7 @@ def build_parser() -> argparse.ArgumentParser:
         "propose",
         help="validate a prescription against the round it answers",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_prescription_fields(),
+        epilog=f"Run {CONTRACT_COMMAND} --round <dir> for the contracts.",
     )
     _add_evidence_args(propose, packet_source=True)
     propose.add_argument(

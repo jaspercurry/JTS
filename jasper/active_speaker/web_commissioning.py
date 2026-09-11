@@ -23,7 +23,6 @@ from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.active_speaker import capture_entry_anchor
 from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     calibration_level_payload,
@@ -1048,87 +1047,6 @@ def _commission_summed_stimulus_issue(exc: BaseException) -> dict[str, str]:
         "tone_backend_failed",
         f"could not prepare the combined test speech: {exc}",
     )
-
-
-async def restore_pending_capture_entry_config(
-    *,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Restore the stashed production entry config once, at sequence exit.
-
-    The counterpart of ``capture_entry_anchor.record_entry``: automatic
-    capture attempts leave the persisted CamillaDSP path on the all-muted
-    staged anchor between attempts, and this converges it back to the
-    production config from sequence entry. Called from recovery surfaces
-    (jasper-correction-web's service-start claim boundary). Outcomes:
-
-    - ``idle``: no stash — nothing pending.
-    - ``deferred``: CamillaDSP unreachable; stash retained (muted-safe) so a
-      later surface can converge.
-    - ``superseded``: the persisted path is no longer the staged anchor —
-      another owner (a crossover apply, an operator) repointed production;
-      the stash is obsolete and cleared without touching CamillaDSP.
-    - ``entry_missing``: the stashed config file no longer exists; stash
-      cleared, speaker stays on the anchor (muted, never loud).
-    - ``restored``: production reloaded, stash cleared.
-    """
-
-    entry = capture_entry_anchor.pending_entry()
-    if not entry:
-        return {"status": "idle"}
-    cam = camilla_factory()
-    current, current_error = await read_current_config_path(cam)
-    if current_error is not None or not current:
-        log_event(
-            logger,
-            "active_speaker.capture_entry_restore",
-            level=logging.WARNING,
-            status="deferred",
-            reason=current_error or "current_config_unknown",
-        )
-        return {
-            "status": "deferred",
-            "reason": current_error or "current_config_unknown",
-        }
-    staged = load_staged_startup_config()
-    staged_anchor_path = (staged.get("config") or {}).get("path")
-    if not staged_anchor_path or not same_config_file(current, staged_anchor_path):
-        capture_entry_anchor.clear()
-        log_event(
-            logger,
-            "active_speaker.capture_entry_restore",
-            status="superseded",
-            current_config_path=current,
-        )
-        return {"status": "superseded", "current_config_path": current}
-    if not Path(entry).exists():
-        capture_entry_anchor.clear()
-        log_event(
-            logger,
-            "active_speaker.capture_entry_restore",
-            level=logging.WARNING,
-            status="entry_missing",
-            entry_config_path=entry,
-        )
-        return {"status": "entry_missing", "entry_config_path": entry}
-    restored = await cam.set_config_file_path(entry, best_effort=False)
-    if restored is not True:
-        log_event(
-            logger,
-            "active_speaker.capture_entry_restore",
-            level=logging.WARNING,
-            status="failed",
-            entry_config_path=entry,
-        )
-        return {"status": "failed", "entry_config_path": entry}
-    capture_entry_anchor.clear()
-    log_event(
-        logger,
-        "active_speaker.capture_entry_restore",
-        status="restored",
-        entry_config_path=entry,
-    )
-    return {"status": "restored", "config_path": entry}
 
 
 async def play_summed_capture_sweep(

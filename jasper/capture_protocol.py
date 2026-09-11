@@ -36,14 +36,11 @@ MAX_TTL_S = 3600
 CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts", "entries")
 CAPTURE_PLAN_ENTRY_KEYS = ("index", "kind_label", "duration_ms", "screen")
 
-# Per-capture allowance the DISPLAYED session-duration estimate adds on top of
-# each entry's own ``duration_ms`` — reading the prompt, moving the mic, and
-# tapping. It MIRRORS the capture page's ``WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS``
-# (``capture-page/js/main.js``), which is the surface a household actually
-# reads the number on; server-side consent copy derives from the same value so
-# the two cannot quote different durations for one session. Deliberately
-# generous — this is a display promise, not a measurement. Drift between the
-# two constants is pinned by test.
+# Per-capture allowance the displayed session-duration estimate adds on top of
+# each entry's own ``duration_ms`` for reading the prompt, moving the mic, and
+# tapping. The browser display and server-side consent copy derive from this
+# value so they cannot quote different durations for one session. It is
+# deliberately generous because this is a display promise, not a measurement.
 CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS = 20_000
 
 
@@ -201,14 +198,12 @@ class CapturePlan:
     def estimated_minutes(self) -> int:
         """Whole minutes this plan is DISPLAYED as taking, ``0`` when unknown.
 
-        Deliberately the phone's own arithmetic, not a second estimate: the
-        capture page already shows this number in its wake-lock fallback hint
-        (``capture-page/js/main.js``'s ``wakeLockHintText`` — every entry's
-        ``duration_ms`` plus :data:`CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS` of
-        allowance, ``ceil`` to minutes, floored at 1). Server-side consent copy
-        that quotes a duration MUST derive it here rather than hand-writing a
-        prettier figure, or the household reads two different promises about
-        the same session (flow-simplification §1.1).
+        This is the phone's own arithmetic, not a second estimate: every
+        entry's ``duration_ms`` plus
+        :data:`CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS` of allowance, ``ceil`` to
+        minutes, floored at 1. Server-side consent copy that quotes a duration
+        MUST derive it here, or the household reads two different promises
+        about the same session (flow-simplification §1.1).
 
         This is a conservative DISPLAY number — audio plus a generous
         per-capture allowance for reading a prompt, moving the mic, and

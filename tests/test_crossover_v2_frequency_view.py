@@ -25,14 +25,10 @@ from jasper.audio_measurement.program import ExcitationProgram, build_verify_pro
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.frequency_view import (
-    FrequencyViewError,
-    frequency_run,
-)
+from jasper.active_speaker.crossover_v2.frequency_view import FrequencyViewError, frequency_run
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
-from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series
-from jasper.active_speaker.frequency_view import build_frequency_view as neutral_view
+from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view
 from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
@@ -836,9 +832,8 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     ]) == 0
     view = json.loads(destination.read_text())
     first, repeat = view['takes']
-    assert first['program_id'] == program.program_id
-    assert first['record']['take_id'] == 'baseline'
-    assert repeat['record']['take_id'] == 'repeat'
+    assert first['program_id'] == first['record']['program_id'] == program.program_id
+    assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
     frequencies = np.array(first['freqs_hz'])
     assert frequencies.max() > 190
@@ -848,27 +843,33 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
         assert not np.array(harmonic['qualified'])[beyond].any()
         assert all(value is None for value in np.array(harmonic['relative_db'])[beyond])
     assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
+    repeat['record']['program_id'] = 'different-program'
+    assert compare_bass_takes(first, repeat, change='candidate')['context']['incompatible_fields'] == ['program_id']
 
 
-@pytest.mark.parametrize('change,main_delta,stimulus_delta', [('candidate', 0, 0), ('volume', 3, 0), ('demand', 0, 3)])
-def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta):
+@pytest.mark.parametrize('change,main_delta,stimulus_delta,mismatch,field', [
+    ('candidate', 0, 0, {'program_id': 'changed-gains'}, 'program_id'), ('volume', 3, 0, {'program_id': 'changed-gains'}, 'program_id'),
+    ('candidate', 0, 0, {'loudness_volume_db': -23}, 'loudness_volume_db'), ('candidate', 0, 0, {'level_db': -23}, 'level_db'),
+    ('candidate', 0, 0, {'position_deg': 20}, 'pose_key'), ('demand', 0, 3, {'position_deg': 20}, 'pose_key'),
+])
+def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta, mismatch, field):
     before = {
         'record_path': 'before.json',
         'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'bass_candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
-                   'position_deg': 0, 'vertical_deg': 0},
+                   'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0', 'loudness_volume_db': -20},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
         'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
         'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
         'harmonics': {'3': {'freqs_hz': [50, 60, 70], 'relative_db': [-30, -5, None], 'qualified': [True, False, False]}},
     }
-    after = copy.deepcopy(before)
-    after['record_path'] = 'after.json'
+    after = {**copy.deepcopy(before), 'record_path': 'after.json',
+             'fundamental_db': [-20 + 1 - stimulus_delta] * 7}
     after['record']['level_db'] += main_delta
     after['record']['stimulus_dbfs'] += stimulus_delta
+    after['record']['program_id'] = f'program-{stimulus_delta}'
     if change == 'candidate':
         after['record'].update(candidate_id='b', graph_fingerprint='graph-b')
-    after['fundamental_db'] = [-20 + 1 - stimulus_delta] * 7
     result = compare_bass_takes(before, after, change=change)
     assert result['available']
     assert 60 not in result['freqs_hz']
@@ -876,14 +877,13 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert band['qualified_bins'] == 1
     assert band['fundamental_output_change_db'] == pytest.approx(1)
     assert band['combined_compression_db'] == (None if change == 'candidate' else 2)
-    assert band['harmonics']['3']['qualified_bins'] == 1
-    assert band['harmonics']['3']['change_db'] == 0
+    assert (band['harmonics']['3']['qualified_bins'], band['harmonics']['3']['change_db']) == (1, 0)
     assert result['context']['unknown_fields']
-    after['record']['position_deg'] = 20
+    after['record'].update(mismatch)
     assert not compare_bass_takes(before, after, change=change)['available']
     diagnostic = compare_bass_takes(before, after, change='diagnostic')
     assert diagnostic['available']
-    assert 'pose_key' in diagnostic['context']['incompatible_fields']
+    assert field in diagnostic['context']['incompatible_fields']
 
 
 @pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])

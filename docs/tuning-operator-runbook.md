@@ -77,8 +77,8 @@ band supports the claim. Choose the order from the next question.
    an input can change the fingerprint without any saved evidence changing.
    Select the round using the paths/flags in `status` or `packet --help`. This file is a snapshot:
    enriching the source round later does not change what it contains.
-7. **Propose and stage.** Author a prescription using the packet's response
-   formats and `propose --help`. Use `--packet <round-dir>/packet.json` for both
+7. **Propose and stage.** Read `jasper-crossover-prescriber contract --round <dir>`
+   for speaker, room, and bass schemas and bounds. Use `--packet <round-dir>/packet.json` for both
    `propose --prescription -` and `stage --prescription -`. Stage against the
    live state file, not a banked `state.json` copy. If the evidence changes,
    freeze a new packet and author the corresponding new prescription.
@@ -124,7 +124,7 @@ Omitting a filter in that role removes it; read the `displaced_filters`
 disclosure. `pinned_trim_db` is an optional role map, with values in −60 to 0 dB
 for roles the document prescribes. It is not a requirement to recalculate every
 candidate's trim. `Peaking`, `Highshelf`, and `Lowshelf` follow the emitter's
-supported ordering; use the generated response format for bounds.
+supported ordering; read `jasper-crossover-prescriber contract --round <dir> --section speaker` for bounds.
 
 To combine A's woofer change with B's tweeter change, use:
 
@@ -479,7 +479,7 @@ Capture emits sound; apply persists a tune.
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference — PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|show\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage`/`withdraw` write; `serve` moves the arm; `plan`/`show` are reads) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
-| `jasper-crossover-prescriber compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
+| `jasper-crossover-prescriber contract\|compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|windows\|spec-sweep\|gate-sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|bass\|bass-compare\|bass-fit\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |

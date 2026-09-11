@@ -4162,7 +4162,7 @@ def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
 
 
 def _wired_stimulus_capture(
-    wired_device: Any, evidence_store: Any, *, spl_monitor: Any = None,
+    wired_device: Any, evidence_store: Any, *, spl_monitor: Any = None, read_loudness_volume_db: Any = None,
 ) -> Any:
     """The play seam's capture half: the Pi's own microphone, on the box the
     stimulus comes out of.
@@ -4179,7 +4179,7 @@ def _wired_stimulus_capture(
     return WiredStimulusCapture(
         device=wired_device, bundle_dir=Path(evidence_store.bundle_dir),
         setup_reference=lambda: setup_from_hint(default_setup_calibration_for_v2()),
-        spl_monitor=spl_monitor,
+        spl_monitor=spl_monitor, read_loudness_volume_db=read_loudness_volume_db,
     )
 
 
@@ -5244,7 +5244,7 @@ def prepare_v2_session(
         # drains the minted answer so `consume_capture` grades the very take
         # the engine banked).
         stimulus_capture = _wired_stimulus_capture(
-            wired_device, evidence_store, spl_monitor=engine_spl_monitor,
+            wired_device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
         )
         from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
         captured_records = CapturedRecordStore(

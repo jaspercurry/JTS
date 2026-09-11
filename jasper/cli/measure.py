@@ -786,6 +786,7 @@ async def _measure(
                 device=device, bundle_dir=Path(store.bundle_dir),
                 setup_reference=_wired_setup_reference,
                 spl_monitor=spl_monitor,
+                read_loudness_volume_db=lambda: door.measurement_loudness_volume_db,
             )
             seams = bind_engine_seams(
                 session_graph=door.graph,
@@ -795,7 +796,6 @@ async def _measure(
                         capture_session_id=session_id,
                     ),
                     capture=capture,
-                    enrich=lambda _answer, _record: {"loudness_volume_db": door.measurement_loudness_volume_db},
                 ),
                 volume_claim=door.claim,
                 session_volume_plan=door.plan,

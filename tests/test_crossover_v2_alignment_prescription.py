@@ -744,20 +744,6 @@ def test_the_response_format_names_the_request_time_door_and_its_severity():
     )
 
 
-def test_the_response_format_reaches_the_evidence_packet(tmp_path):
-    """Wired beside topology's own block (#2773's shape), so a reader of the
-    packet — not just of the module — learns this door exists."""
-    from jasper.active_speaker.crossover_v2.evidence_packet import (
-        build_crossover_evidence_packet,
-    )
-
-    from tests.test_crossover_v2_blend_prescription import _bundle
-
-    session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
-    doors = packet["request_time_prescriptions"]
-    assert doors["alignment"] == alignment_prescription_response_format()
-    assert doors["topology"]["key"] == "topology_prescription"
 
 
 def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():

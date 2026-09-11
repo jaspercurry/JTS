@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from numbers import Real
 from typing import Any
 
@@ -23,6 +23,14 @@ DETECTOR_CORNER_HZ_MIN = 20.0
 DETECTOR_CORNER_HZ_MAX = 200.0
 DELTA_HIGHPASS_HZ_MIN = 10.0
 COMPRESSOR_THRESHOLD_DBFS_MIN = -60.0
+COMPRESSOR_THRESHOLD_DBFS_MAX = 0.0
+LOW_BOOST_DB_MIN = 0.0
+COMPRESSOR_FACTOR_MIN = 1.0
+COMPRESSOR_FACTOR_MAX = 20.0
+COMPRESSOR_ATTACK_S_MIN = 0.001
+COMPRESSOR_ATTACK_S_MAX = 0.1
+COMPRESSOR_RELEASE_S_MIN = 0.01
+COMPRESSOR_RELEASE_S_MAX = 2.0
 
 _REQUIRED_FIELDS = {
     "low_boost_db",
@@ -63,31 +71,23 @@ class DynamicBassDescriptor:
     def __post_init__(self) -> None:
         values = {
             name: _finite(getattr(self, name), name)
-            for name in (
-                "low_boost_db",
-                "reference_level_db",
-                "detector_lowpass_hz",
-                "compressor_threshold_dbfs",
-                "compressor_factor",
-                "compressor_attack_s",
-                "compressor_release_s",
-            )
+            for name in (field.name for field in fields(self) if field.name != "delta_highpass_hz")
         }
         for name, number in values.items():
             object.__setattr__(self, name, number)
-        if not 0.0 < values["low_boost_db"] <= NATIVE_LOUDNESS_BOOST_MAX_DB:
+        if not LOW_BOOST_DB_MIN < values["low_boost_db"] <= NATIVE_LOUDNESS_BOOST_MAX_DB:
             raise ValueError(f"low_boost_db must be in (0, {NATIVE_LOUDNESS_BOOST_MAX_DB}]")
         if not REFERENCE_LEVEL_DB_MIN <= values["reference_level_db"] <= REFERENCE_LEVEL_DB_MAX:
             raise ValueError("reference_level_db is outside the Main-fader domain")
         if not DETECTOR_CORNER_HZ_MIN <= values["detector_lowpass_hz"] <= DETECTOR_CORNER_HZ_MAX:
             raise ValueError("detector_lowpass_hz is outside the measured bass domain")
-        if not COMPRESSOR_THRESHOLD_DBFS_MIN <= values["compressor_threshold_dbfs"] <= 0.0:
+        if not COMPRESSOR_THRESHOLD_DBFS_MIN <= values["compressor_threshold_dbfs"] <= COMPRESSOR_THRESHOLD_DBFS_MAX:
             raise ValueError("compressor_threshold_dbfs must be in [-60, 0]")
-        if not 1.0 < values["compressor_factor"] <= 20.0:
+        if not COMPRESSOR_FACTOR_MIN < values["compressor_factor"] <= COMPRESSOR_FACTOR_MAX:
             raise ValueError("compressor_factor must be in (1, 20]")
-        if not 0.001 <= values["compressor_attack_s"] <= 0.1:
+        if not COMPRESSOR_ATTACK_S_MIN <= values["compressor_attack_s"] <= COMPRESSOR_ATTACK_S_MAX:
             raise ValueError("compressor_attack_s must be in [0.001, 0.1]")
-        if not 0.01 <= values["compressor_release_s"] <= 2.0:
+        if not COMPRESSOR_RELEASE_S_MIN <= values["compressor_release_s"] <= COMPRESSOR_RELEASE_S_MAX:
             raise ValueError("compressor_release_s must be in [0.01, 2]")
         if self.delta_highpass_hz is not None:
             corner = _finite(self.delta_highpass_hz, "delta_highpass_hz")
@@ -107,16 +107,7 @@ def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
     if not _REQUIRED_FIELDS <= keys or not keys <= _REQUIRED_FIELDS | _OPTIONAL_FIELDS:
         raise ValueError("dynamic_bass has unknown or missing fields")
     descriptor = DynamicBassDescriptor(**dict(value))
-    return {
-        "low_boost_db": descriptor.low_boost_db,
-        "reference_level_db": descriptor.reference_level_db,
-        "detector_lowpass_hz": descriptor.detector_lowpass_hz,
-        "compressor_threshold_dbfs": descriptor.compressor_threshold_dbfs,
-        "compressor_factor": descriptor.compressor_factor,
-        "compressor_attack_s": descriptor.compressor_attack_s,
-        "compressor_release_s": descriptor.compressor_release_s,
-        "delta_highpass_hz": descriptor.delta_highpass_hz,
-    }
+    return {name: getattr(descriptor, name) for name in sorted(_REQUIRED_FIELDS | _OPTIONAL_FIELDS)}
 
 
 def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescriptor) -> float:

@@ -2,34 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The WIRED capture provider's promises (#2662 W2b).
-
-Five layers, least to most integrated:
-
-1. **Mic resolution** — the measurement-class mic is picked when present, and
-   absence is disclosed rather than measured around.
-2. **The host's wiring** — one resolved mic drives the mint and the runner,
-   and the host's refusal translation reaches the tap.
-3. **The wired runner** — drives the conductor conversation (gate → admission
-   → capture-while-play → consume) with the host-owned error mapping; the
-   walked-away volume guarantee holds on every exit; a death never persists a
-   transport claim.
-4. **The fake-ALSA end-to-end** — extends the #2701 wired-readiness pin from
-   a contract-only answer to a REAL engine capture consumed through the REAL
-   host path: a real ``CrossoverV2Session`` (recovery re-verify shape), the
-   real ``bind_production_analyze`` binding decoding the provider's own
-   32-bit 48 kHz WAV, the real calibration-resolver injection point, and the
-   real durable-state persist.
-5. **The play seam's capture half** — the same box plays and records, so one
-   stimulus is one transaction: the recorder rolls before the first sample,
-   stops after the last, and the bytes land in the bundle under a path the
-   engine's record can carry.
-
-Equal-or-more scrutiny is pinned here as behavior: every wired answer carries
-all four frame-ledger counters with real values (so the analyzer's frame
-checks EVALUATE — a wired capture can never pass on "not evaluated"), plus
-the re-homed zero-run disclosure.
-"""
+"""Wired capture, host binding, record metadata, and frame integrity."""
 from __future__ import annotations
 
 import asyncio
@@ -40,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -107,11 +81,6 @@ def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
     _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
     device = v2wired.resolve_v2_wired_mic(proc_asound=tmp_path)
     assert device.model_key == "minidsp_umik2"
-
-
-# --------------------------------------------------------------------------- #
-# 2. the mint + the host fork
-# --------------------------------------------------------------------------- #
 
 
 def _real_verify_spec():
@@ -1672,22 +1641,43 @@ async def test_a_capture_that_cannot_be_placed_says_so_after_the_play(
     assert played == ["played"], "the stimulus really did play"
 
 
-def test_the_capture_half_records_into_this_sessions_bundle():
+@pytest.mark.parametrize("source,level,expected,reason", [
+    (source, level, expected, reason) for source in ("cli", "wizard") for level, expected, reason in (
+        (-23.0, -23.0, ""), (None, None, "unavailable"),
+        (RuntimeError("provider failed"), None, "read_failed"),
+        (float("nan"), None, "invalid_value"), (float("inf"), None, "invalid_value"),
+        (float("-inf"), None, "invalid_value"),
+    )
+] + [("unbound", None, None, "unavailable")])
+@pytest.mark.parametrize("answer", [WiredCaptureAnswer(wav=b"heard", program={"program_id": "played"}), None])
+async def test_the_capture_half_records_into_this_sessions_bundle(source, level, expected, reason, answer, caplog):
     store = SimpleNamespace(bundle_dir="/var/lib/jasper/bundle")
+    banked = []
 
-    half = v2host._wired_stimulus_capture(_device(), store)
+    async def bank(record):
+        banked.append(record)
+        return "record-id"
+
+    provider = None if source == "unbound" else (AsyncMock if source == "wizard" else Mock)(side_effect=[level, -17.0])
+    half = (
+        v2host._wired_stimulus_capture(_device(), store, read_loudness_volume_db=provider)
+        if source == "wizard" else core_capture.WiredStimulusCapture(
+            _device(), Path(store.bundle_dir), read_loudness_volume_db=provider,
+        )
+    )
 
     assert isinstance(half, v2wired.WiredStimulusCapture)
     assert half.device.model_key == "minidsp_umik2"
-    # The bundle this session's evidence lands in, so the path the record
-    # carries resolves against the same root `analyze` will be declared.
     assert half.bundle_dir == Path("/var/lib/jasper/bundle")
-
-
-# --------------------------------------------------------------------------- #
-# layer 6: the ENGINE MEASURE LEG
-# --------------------------------------------------------------------------- #
-#
+    records = core_capture.CapturedRecordStore(
+        SimpleNamespace(bank=bank), half, enrich=lambda *_: {"loudness_volume_db": -99},
+    )
+    for take_id in ("first", "next"):
+        assert await records.bank_answer({"take_id": take_id, "loudness_volume_db": -88, "program_id": "stale"}, answer) == "record-id"
+    assert [record["loudness_volume_db"] for record in banked] == [expected, None if source == "unbound" else -17.0]
+    assert banked[0]["program_id"] == ("played" if answer else None)
+    events = event_field_maps(caplog, "active_speaker.capture_loudness_unknown", take_id="first")
+    assert [event["reason"] for event in events] == ([reason] if reason else [])
 
 
 class _LegSession:

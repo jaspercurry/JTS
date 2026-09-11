@@ -371,7 +371,7 @@ def _verify_analysis(
         integrity = _verify_capture_integrity(
             program, program.sample_rate_hz, locations,
             # This fixture builds an analysis from locations alone — there is no
-            # capture and therefore no capture-page report to reconcile, so the
+            # capture and therefore no browser report to reconcile, so the
             # frame-accounting checks (#2094) are not-evaluated here, exactly as
             # they are for any capture whose page declared no counts.
             reconcile_capture_frames(None, received_frames=0),
