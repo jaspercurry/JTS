@@ -60,6 +60,7 @@ from jasper.audio_measurement.spatial_combine import (
 )
 
 from tests import _flat_lin_corpus as corpus
+from tests._log_events import event_fields, event_records
 
 SAMPLE_RATE = 48_000
 N_FFT = 4096
@@ -211,9 +212,7 @@ def test_derive_cloud_echo_band_hz_falls_back_to_the_passband_when_degenerate(
         derived = _derive_cloud_echo_band_hz(signal_band, declared)
     assert derived.band_hz == signal_band
     assert derived.source == "passband_fallback"
-    assert any(
-        "cloud_echo_band_degenerate" in r.message for r in caplog.records
-    )
+    assert event_records(caplog, "correction.crossover_v2_cloud_echo_band_degenerate")
 
 
 def test_derive_cloud_echo_band_hz_clamps_up_to_the_hf_regime_floor(caplog):
@@ -246,14 +245,12 @@ def test_derive_cloud_echo_band_hz_clamps_up_to_the_hf_regime_floor(caplog):
         "derived_lo_hz": 2000.0,
         "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
     }
-    clamped = [
-        r for r in caplog.records
-        if "cloud_echo_band_clamped_to_hf_regime" in r.message
-    ]
-    assert clamped
-    assert "derived_lo_hz=2000.0" in clamped[0].message
-    assert f"clamped_lo_hz={ECHO_BAND_HF_REGIME_FLOOR_HZ}" in clamped[0].message
-    assert f"floor_hz={ECHO_BAND_HF_REGIME_FLOOR_HZ}" in clamped[0].message
+    clamped = event_fields(
+        caplog, "correction.crossover_v2_cloud_echo_band_clamped_to_hf_regime"
+    )
+    assert clamped["derived_lo_hz"] == "2000.0"
+    assert clamped["clamped_lo_hz"] == str(ECHO_BAND_HF_REGIME_FLOOR_HZ)
+    assert clamped["floor_hz"] == str(ECHO_BAND_HF_REGIME_FLOOR_HZ)
 
 
 def test_derive_cloud_echo_band_hz_falls_back_when_the_clamp_would_be_degenerate(
@@ -282,14 +279,11 @@ def test_derive_cloud_echo_band_hz_falls_back_when_the_clamp_would_be_degenerate
     # the lesser loss against a band too narrow to resolve any delay, and it
     # needs a 2-way system swept no higher than 7.75 kHz to reach at all.
     assert derived.band_hz[1] > signal_band[1]
-    assert any(
-        "cloud_echo_band_clamp_degenerate" in r.message for r in caplog.records
-    )
+    assert event_records(caplog, "correction.crossover_v2_cloud_echo_band_clamp_degenerate")
     # ... and the ordinary clamp event is NOT also emitted: one path, one
     # disclosure.
-    assert not any(
-        "cloud_echo_band_clamped_to_hf_regime" in r.message
-        for r in caplog.records
+    assert not event_records(
+        caplog, "correction.crossover_v2_cloud_echo_band_clamped_to_hf_regime"
     )
 
 
@@ -322,8 +316,8 @@ def test_derive_cloud_echo_band_hz_above_the_floor_is_silent(caplog):
     with caplog.at_level(logging.WARNING):
         derived = _derive_cloud_echo_band_hz(signal_band, declared)
     assert derived.hf_regime_clamped is False
-    assert not any(
-        "cloud_echo_band_clamped" in r.message for r in caplog.records
+    assert not event_records(
+        caplog, "correction.crossover_v2_cloud_echo_band_clamped_to_hf_regime"
     )
 
 

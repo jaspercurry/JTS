@@ -23,6 +23,7 @@ from jasper.active_speaker.measurement import (
     start_active_comparison_set,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
 
 
@@ -1063,11 +1064,8 @@ def test_start_active_comparison_set_stamps_bundle_session_id(
     assert load_measurement_state(topology, state_path=state_path)[
         "active_comparison_set"
     ] == with_bundle
-    assert any(
-        "event=correction.crossover_session_started" in record.getMessage()
-        and "session=abc123def456" in record.getMessage()
-        for record in caplog.records
-    )
+    fields = event_fields(caplog, "correction.crossover_session_started")
+    assert fields["session"] == "abc123def456"
 
     # bundle_session_id sits outside _COMPARISON_SET_CORE_KEYS: changing it
     # (or removing it) on the SAME comparison set must not move the
@@ -1381,19 +1379,14 @@ def test_start_active_comparison_set_emits_session_started_event(
             now="2026-07-11T12:00:00Z",
         )
 
-    started = [
-        r.getMessage() for r in caplog.records
-        if r.getMessage().startswith("event=correction.crossover_session_started")
-    ]
-    assert len(started) == 1
-    message = started[0]
+    fields = event_fields(caplog, "correction.crossover_session_started")
     # group(s) via topology: _topology() has exactly one active group, "mono".
-    assert "group=mono" in message
-    assert "calibration_id=cal-1" in message
-    assert f"comparison_set_fingerprint={comparison_set['fingerprint']}" in message
+    assert fields["group"] == "mono"
+    assert fields["calibration_id"] == "cal-1"
+    assert fields["comparison_set_fingerprint"] == comparison_set["fingerprint"]
     # No bundle exists yet (SC-4 lands in a later lane), so session is omitted
     # rather than rendered as a literal "session=null".
-    assert "session=" not in message
+    assert "session" not in fields
 
 
 def test_start_active_comparison_set_raises_before_persisting_emits_no_event(
@@ -1418,10 +1411,7 @@ def test_start_active_comparison_set_raises_before_persisting_emits_no_event(
                 state_path=state_path,
             )
 
-    assert not any(
-        r.getMessage().startswith("event=correction.crossover_session_started")
-        for r in caplog.records
-    )
+    assert not event_records(caplog, "correction.crossover_session_started")
 
 
 # --- Paired summed evidence (lane E, Slice 2: "Retain both normal- and

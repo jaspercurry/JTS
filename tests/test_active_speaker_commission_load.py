@@ -47,6 +47,7 @@ from jasper.active_speaker.staging import running_graph_matches_staged_anchor
 # evidence writer from the protected-startup-load tests.
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from tests._armed_transport import arm_ring_transport
+from tests._log_events import event_field_maps, event_fields
 from tests.active_speaker_fixtures import mono_output_topology as _topology
 from tests.test_active_speaker_startup_load import (
     _protected_prior,
@@ -530,7 +531,10 @@ def test_durable_statefile_drift_fails_closed(monkeypatch, caplog, tmp_path):
     # Rolled the running graph back to the all-muted staged anchor.
     assert cam.loaded_paths[-1] == staged_path
     # The safety reason reaches the journal, not just the state file.
-    assert "result=failed" in caplog.text
+    assert event_fields(caplog, "active_speaker.driver_commission_load")["result"] == "failed"
+    # `reason=` is hand-rolled (not log_event()), so a multi-word value is
+    # unquoted and truncates under the logfmt parser — caplog.text is the
+    # only surface that can see the whole free-text reason here.
     assert "drifted" in caplog.text
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "failed"
@@ -684,8 +688,8 @@ def test_live_confirm_never_converging_raises_convergence_not_safety(
     assert cam.read_calls > 1
     assert cam.loaded_paths[-1] == staged_path
     # One structured convergence-outcome line per commission attempt.
-    assert "event=active_speaker.driver_commission_live_confirm" in caplog.text
-    assert "converged=false" in caplog.text
+    fields = event_fields(caplog, "active_speaker.driver_commission_live_confirm")
+    assert fields["converged"] == "false"
 
 
 def test_live_confirm_converged_unsafe_graph_keeps_safety_taxonomy(
@@ -806,13 +810,10 @@ The pair is ring vs the journal's `-`: ADR-0100 left one transport, so a
         )
 
     assert result["load"]["status"] == "loaded", result
-    lines = [
-        record.message
-        for record in caplog.records
-        if "event=active_speaker.driver_commission_load result=loaded" in record.message
-    ]
-    assert len(lines) == 1, lines
-    assert f"transport={expect_transport}" in lines[0]
+    (loaded,) = event_field_maps(
+        caplog, "active_speaker.driver_commission_load", result="loaded"
+    )
+    assert loaded["transport"] == expect_transport
 
 
 def test_an_unarmed_ring_blocks_the_load_and_the_arming_is_what_lifts_it(

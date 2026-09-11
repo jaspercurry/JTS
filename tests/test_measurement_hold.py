@@ -368,13 +368,6 @@ def test_a_held_measurement_declines_source_observed_volume(control_server):
     assert all(call[0] != "set" for call in fake.calls), fake.calls
 
 
-def _decline_records(caplog) -> list[logging.LogRecord]:
-    return [
-        r for r in caplog.records
-        if "event=volume.observation_declined" in r.getMessage()
-    ]
-
-
 def test_repeated_declines_log_once_at_info_then_debug(control_server, caplog):
     """The transition is the signal; the repetition is journal spam.
 
@@ -400,7 +393,7 @@ def test_repeated_declines_log_once_at_info_then_debug(control_server, caplog):
             assert status == 200
             assert body["observation_applied"] is False
 
-    records = _decline_records(caplog)
+    records = event_records(caplog, "volume.observation_declined")
     assert len(records) == 5, "every decline is still recorded, just not at INFO"
     assert [r.levelno for r in records] == [logging.INFO] + [logging.DEBUG] * 4
 
@@ -416,7 +409,7 @@ def test_a_new_hold_gets_its_own_info_line(control_server, caplog):
             _post(f"{base}/volume/set", {"percent": 92, "source": "usbsink"})
             _post(f"{base}/measurement/release", {"owner": owner})
 
-    records = _decline_records(caplog)
+    records = event_records(caplog, "volume.observation_declined")
     assert [r.levelno for r in records] == [
         logging.INFO, logging.DEBUG,   # seat-level's hold
         logging.INFO, logging.DEBUG,   # a genuinely new hold
@@ -433,7 +426,9 @@ def test_a_renewal_does_not_re_announce(control_server, caplog):
         _post(f"{base}/measurement/hold", {"owner": "seat-level"})  # renewal
         _post(f"{base}/volume/set", {"percent": 92, "source": "usbsink"})
 
-    assert [r.levelno for r in _decline_records(caplog)] == [
+    assert [
+        r.levelno for r in event_records(caplog, "volume.observation_declined")
+    ] == [
         logging.INFO, logging.DEBUG,
     ]
 
@@ -450,12 +445,7 @@ def test_the_release_line_reports_what_the_demotion_suppressed(control_server, c
     ):
         _post(f"{base}/measurement/release", {"owner": "seat-level"})
 
-    released = [
-        r for r in caplog.records
-        if "event=measurement.hold_released" in r.getMessage()
-    ]
-    assert len(released) == 1
-    assert "declined_observations=4" in released[0].getMessage()
+    assert event_fields(caplog, "measurement.hold_released")["declined_observations"] == "4"
 
 
 def test_a_declined_state_read_failure_is_a_502(control_server, monkeypatch):

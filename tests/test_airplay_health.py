@@ -17,6 +17,7 @@ from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
 )
+from tests._log_events import event_fields, event_records
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -937,7 +938,7 @@ def test_storm_onset_event_captures_controller_and_context(tmp_path, caplog) -> 
     assert onset["cpu_governor"] == "ondemand"
     assert onset["sec_since_camilla_restart"] == 600.0
     assert onset["sec_since_deploy"] == 7200.0
-    assert "event=camilla_rate.storm_onset" in caplog.text
+    assert event_records(caplog, "camilla_rate.storm_onset")
 
     # Tier 2: a bounded trajectory artifact exists with header + the onset row.
     files = list((tmp_path / "rate-storms").glob("storm-*.csv"))
@@ -979,8 +980,7 @@ def test_storm_offset_event_fires_after_debounced_clear(tmp_path, caplog) -> Non
     snap = sampler.snapshot()
     assert snap["storm"]["active"] is False
     assert snap["storm"]["count"] == 1
-    assert "event=camilla_rate.storm_offset" in caplog.text
-    assert "duration_sec=" in caplog.text
+    assert "duration_sec" in event_fields(caplog, "camilla_rate.storm_offset")
 
 
 def test_storm_ignores_short_scan_window(tmp_path) -> None:
@@ -1036,7 +1036,7 @@ def test_storm_capture_is_failsoft_when_artifact_dir_unwritable(
     with caplog.at_level(logging.WARNING, logger="jasper.control.airplay_health"):
         sampler._tick()
     assert sampler.snapshot()["storm"]["active"] is True
-    assert "event=camilla_rate.storm_onset" in caplog.text
+    assert event_records(caplog, "camilla_rate.storm_onset")
 
     now[0] += 30.0
     pending["lines"] = []
@@ -1045,7 +1045,8 @@ def test_storm_capture_is_failsoft_when_artifact_dir_unwritable(
     with caplog.at_level(logging.WARNING, logger="jasper.control.airplay_health"):
         sampler._tick()
     assert sampler.snapshot()["storm"]["active"] is False
-    assert "artifact=null" in caplog.text  # no artifact, rendered as null
+    # No artifact dir, rendered as null.
+    assert event_fields(caplog, "camilla_rate.storm_offset")["artifact"] == "null"
 
 
 def _ring(**overrides) -> dict:

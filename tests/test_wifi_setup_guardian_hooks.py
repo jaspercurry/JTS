@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.net import wifi_guardian_persistence
+from tests._log_events import event_fields, event_records
 from tests._nmcli_fakes import mock_proc as _mock_proc
 from tests._nmcli_fakes import scripted_nmcli as _scripted_nmcli
 
@@ -307,9 +308,7 @@ def test_connect_new_stash_failure_does_not_block_connect(
             ok, _ = wifi_setup.connect_new("Home", "p")
 
     assert ok is True  # MUST stay True — stash failure can't block.
-    assert any(
-        "stash_write_failed" in r.getMessage() for r in caplog.records
-    )
+    assert event_records(caplog, "wifi_guardian.stash_write_failed")
 
 
 def test_connect_new_enterprise_skips_stash(stash_path, monkeypatch, caplog):
@@ -333,10 +332,7 @@ def test_connect_new_enterprise_skips_stash(stash_path, monkeypatch, caplog):
 
     assert ok is True
     assert not stash_path.exists()
-    assert any(
-        "stash_skip" in r.getMessage() and "enterprise" in r.getMessage()
-        for r in caplog.records
-    )
+    assert event_fields(caplog, "wifi_guardian.stash_skip")["reason"] == "enterprise"
 
 
 def test_connect_new_psk_never_in_log_records(stash_path, caplog):

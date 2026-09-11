@@ -82,6 +82,7 @@ from tests._camilla_readback_double import (
     camilla_canonicalize,
     camilla_default_filled,
 )
+from tests._log_events import event_fields, event_records
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -4541,14 +4542,15 @@ def test_parked_decision_emits_no_event_until_something_is_written(
             **_write_authority(tmp_path),
         )
     assert decision.status == PARKED_MUTED_STATUS
-    assert "decision=parked_muted" not in caplog.text
+    assert not event_records(caplog, "active_speaker.runtime_graph")
 
     with caplog.at_level(logging.INFO, logger="jasper.active_speaker.runtime_contract"):
         apply_safe_graph_decision_to_statefile(
             decision, statefile_path=statefile, topology=topology
         )
-    assert "active_speaker.runtime_graph" in caplog.text
-    assert "decision=parked_muted" in caplog.text
+    # Asserted as a LITERAL, not derived from PARKED_MUTED_STATUS: see the
+    # comment on the same pin below.
+    assert event_fields(caplog, "active_speaker.runtime_graph")["decision"] == "parked_muted"
 
 
 def test_parked_materialise_is_a_noop_when_the_bytes_already_match(
@@ -4895,8 +4897,7 @@ def test_blocker_bearing_box_actually_writes_the_parked_statefile(
     # of a stable `event=` line is that operators and journal greps depend on
     # the exact bytes, so renaming `PARKED_MUTED_STATUS` must break this test
     # rather than silently rename the log contract along with it.
-    assert "active_speaker.runtime_graph" in caplog.text
-    assert "decision=parked_muted" in caplog.text
+    assert event_fields(caplog, "active_speaker.runtime_graph")["decision"] == "parked_muted"
     # The written graph is genuinely all-muted and DAC-less.
     written = yaml.safe_load(parked_path.read_text(encoding="utf-8"))
     assert written["devices"]["playback"]["type"] == "File"

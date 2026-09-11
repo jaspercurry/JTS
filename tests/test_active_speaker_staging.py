@@ -53,6 +53,7 @@ from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -1398,14 +1399,14 @@ def test_stage_protected_startup_config_refuses_a_held_anchor_and_writes_nothing
     assert not out.exists()
     assert meta.read_text(encoding="utf-8") == '{"status": "previous"}'
     # Loud: one stable event naming the holder and the bound it exceeded.
-    contended = [
-        rec.getMessage()
-        for rec in caplog.records
-        if "staged_anchor_lock_contended" in rec.getMessage()
-    ]
-    assert len(contended) == 1, caplog.text
-    assert "the-other-writer" in contended[0]
-    assert "timeout_ms=200" in contended[0]
+    contended = event_records(caplog, "active_speaker.staged_anchor_lock_contended")
+    assert len(contended) == 1
+    # `holder=` is hand-rolled (not log_event()), so its multi-word stamp
+    # ("pid <pid> <source>") is unquoted and truncates under the logfmt
+    # parser -- the raw message is the only surface that sees it whole.
+    assert "the-other-writer" in contended[0].getMessage()
+    fields = event_fields(caplog, "active_speaker.staged_anchor_lock_contended")
+    assert fields["timeout_ms"] == "200"
 
 
 def test_staged_anchor_lock_is_released_when_its_holder_is_killed(
@@ -1486,7 +1487,4 @@ def test_staged_anchor_lock_fails_open_when_the_lock_file_cannot_be_opened(
 
     assert payload["status"] == "staged"
     assert out.exists() and meta.exists()
-    assert any(
-        "staged_anchor_lock_unavailable" in rec.getMessage()
-        for rec in caplog.records
-    ), caplog.text
+    assert event_records(caplog, "active_speaker.staged_anchor_lock_unavailable")
