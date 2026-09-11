@@ -18,8 +18,7 @@ import time
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
-from ..tools import dispatch_tool
-from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn
+from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import failure_detail, is_transient
 from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
@@ -69,6 +68,18 @@ SESSION_OPEN_BUDGET_SEC = 15.0
 SESSION_OPEN_ATTEMPTS = 2
 
 
+def _parse_call(call: dict) -> ToolCall:
+    """A backend `function_call` item. Arguments that are not a JSON
+    object are answered without dispatching the tool."""
+    try:
+        args = json.loads(call["arguments"])
+        if not isinstance(args, dict):
+            raise ValueError("tool arguments must be an object")
+    except (ValueError, TypeError):
+        return ToolCall(call["call_id"], call["name"], {}, {"error": "invalid_arguments"})
+    return ToolCall(call["call_id"], call["name"], args)
+
+
 class OpenAILiveTurn(BaseLiveTurn):
     continuous_input = True
     # Live's own VAD stops generation when the user talks over it, and its
@@ -88,6 +99,9 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._quiet_discarded = 0
         self._finalized = False
         self._delegation_id = None
+        # Delegation the in-flight tool round answers; a correction moves
+        # `_delegation_id` on and abandons that round's results.
+        self._round_delegation = None
         self._response_ids = {}
         self._calls = {}
         self._counted_responses = set()
@@ -254,37 +268,27 @@ class OpenAILiveTurn(BaseLiveTurn):
             calls = self._calls.pop(response_id, [])
             if calls:
                 # A correction cancels the old round before a new round is started.
-                old = self._tool_task
-                if old is not None and not old.done():
-                    await asyncio.gather(old, return_exceptions=True)
-                self._start_tool_round(lambda: self._run_calls(delegation, calls))
+                await self._drain_tool_round()
+                self._round_delegation = delegation
+                self._start_tool_calls([_parse_call(c) for c in calls])
             else:
                 self.backend_pending = False
         elif kind in {"response.failed", "response.incomplete"}:
             self.backend_pending = False
             self._on_connection_lost()
 
-    async def _run_calls(self, delegation, calls) -> None:
-        assert self._conn._registry is not None
-        for call in calls:
-            if self._released or delegation != self._delegation_id:
-                return
-            try:
-                args = json.loads(call["arguments"])
-                if not isinstance(args, dict):
-                    raise ValueError("tool arguments must be an object")
-            except (ValueError, TypeError):
-                result = {"error": "invalid_arguments"}
-            else:
-                result = await dispatch_tool(self._conn._registry, call["name"], args)
-            if self._released or delegation != self._delegation_id:
-                return
-            await self._conn._send({"type": "response.item.create", "item": {
-                "type": "function_call_output", "call_id": call["call_id"], "output": json.dumps(result),
-            }})
-            self._note_activity()
-        if not self._released and delegation == self._delegation_id:
-            await self._conn._send({"type": "response.create"})
+    def _tools_may_run(self) -> bool:
+        return not self._released and self._round_delegation == self._delegation_id
+
+    async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
+        await self._conn._send({"type": "response.item.create", "item": {
+            "type": "function_call_output", "call_id": call.id, "output": json.dumps(payload),
+        }})
+        self._note_activity()
+        return True
+
+    async def _finish_tool_round(self) -> None:
+        await self._conn._send({"type": "response.create"})
 
 
 class OpenAILiveConnection(BaseLiveConnection):

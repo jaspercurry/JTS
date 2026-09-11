@@ -55,8 +55,7 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     import wave
 
-from ..tools import dispatch_tool
-from ._base import BaseLiveConnection, BaseLiveTurn
+from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import (
     await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
 )
@@ -424,6 +423,51 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._note_activity()
         self._server_turn_complete = True
         self._audio_q.put_nowait(None)
+
+    def _tools_may_run(self) -> bool:
+        return self._conn._can_respond(self)
+
+    async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
+        if not call.id:
+            return False
+        # An unserializable payload would otherwise raise into
+        # _receive_loop's broad except and force a session reconnect;
+        # contain it so the server still sees a function_call_output.
+        try:
+            output = json.dumps(payload)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "tool %s: result not JSON-serializable (%s: %s); "
+                "sending error output instead of reconnecting",
+                call.name, type(e).__name__, e,
+            )
+            output = json.dumps(
+                {"error": f"tool result not serializable: {type(e).__name__}"}
+            )
+        try:
+            return await self._conn._send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call.id,
+                    "output": output,
+                },
+            }, turn=self)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "tool %s: could not send function_call_output (%s: %s); "
+                "next turn may be confused",
+                call.name, type(e).__name__, e,
+            )
+            self._on_connection_lost()
+            return False
+
+    async def _finish_tool_round(self) -> None:
+        self._tool_round_pending = False
+        try:
+            await self._conn._send_event({"type": "response.create"}, turn=self)
+        except Exception:  # noqa: BLE001
+            self._on_connection_lost()
 
     def _on_assistant_text_delta(self, delta: str) -> None:
         if not delta:
@@ -1080,93 +1124,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if not function_calls or turn._cancel_requested:
             await turn._on_response_done()
             return
-        turn._start_tool_round(lambda: self._run_tool_round(function_calls, turn))
-
-    async def _run_tool_round(self, function_calls: list, turn: OpenAIRealtimeTurn) -> None:
-        for fc in function_calls:
-            if not self._can_respond(turn):
-                return
-            if not await self._dispatch_function_call(fc, turn):
-                return
-        if self._can_respond(turn):
-            turn._tool_round_pending = False
-            try:
-                await self._send_event({"type": "response.create"}, turn=turn)
-            except Exception:  # noqa: BLE001
-                turn._on_connection_lost()
-
-    async def _dispatch_function_call(self, fc, turn: OpenAIRealtimeTurn) -> bool:
-        """Dispatch one call and send its output; `_run_tool_round` requests the next response."""
-        assert self._registry is not None
-        name = _event_field(fc, "name") or ""
-        call_id = _event_field(fc, "call_id") or ""
-        arguments_json = _event_field(fc, "arguments") or "{}"
-
-        try:
-            args = json.loads(arguments_json) if arguments_json else {}
-            if not isinstance(args, dict):
-                args = {}
-        except json.JSONDecodeError:
-            args = {}
-            logger.warning(
-                "openai tool %s: bad JSON arguments; treating as empty", name,
-            )
-
-        # Grok inherits this dispatch path via
-        # GrokRealtimeConnection(OpenAIRealtimeConnection); `dispatch_tool`
-        # owns the per-tool timeout, scalar-wrapping, {"error": …} shapes,
-        # and timing logs uniformly across providers.
-        t0 = _time.monotonic()
-        payload = await dispatch_tool(self._registry, name, args)
-
-        if self._can_respond(turn) and call_id:
-            t_send = _time.monotonic()
-            # Serialize + wire-send guarded like the sibling sends
-            # (send_audio, end_input, …). A tool returning a payload that
-            # is not JSON-serializable would otherwise raise out of this
-            # unguarded send, propagate to _receive_loop's broad except,
-            # and force a full session reconnect. Contain it to this one
-            # tool: emit a synthetic error output so the server still sees
-            # a function_call_output for the call_id, and let the turn's
-            # single response.create proceed.
-            try:
-                output = json.dumps(payload)
-            except (TypeError, ValueError) as e:
-                logger.warning(
-                    "tool %s: result not JSON-serializable (%s: %s); "
-                    "sending error output instead of reconnecting",
-                    name, type(e).__name__, e,
-                )
-                output = json.dumps(
-                    {"error": f"tool result not serializable: {type(e).__name__}"}
-                )
-            try:
-                sent = await self._send_event({
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": output,
-                    },
-                }, turn=turn)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "tool %s: could not send function_call_output (%s: %s); "
-                    "next turn may be confused",
-                    name, type(e).__name__, e,
-                )
-                turn._on_connection_lost()
-                return False
-            if not sent:
-                return False
-            send_ms = (_time.monotonic() - t_send) * 1000
-            total_ms = (_time.monotonic() - t0) * 1000
-            logger.info(
-                "tool result item sent to OpenAI in %.0fms (total dispatch %.0fms)",
-                send_ms, total_ms,
-            )
-            return sent
-        return False
+        turn._start_tool_calls(function_calls)
 
 
 # ---------- Module-level event helpers --------------------------------------
@@ -1208,23 +1166,32 @@ def _normalise_usage(usage_obj) -> dict | None:
     }
 
 
-def _extract_function_calls(response) -> list:
-    """Return the list of ``function_call`` items in a Realtime response's
+def _extract_function_calls(response) -> list[ToolCall]:
+    """Parse the ``function_call`` items out of a Realtime response's
     ``output[]``. Empty list if the response had no tool calls.
 
-    Each returned item is whatever the SDK gave us (dict in tests,
-    ``RealtimeConversationItemFunctionCall`` Pydantic model in
-    production); ``_event_field`` handles both shapes when reading
-    ``name`` / ``call_id`` / ``arguments`` later."""
-    if response is None:
-        return []
-    output = _event_field(response, "output")
-    if not output:
-        return []
-    return [
-        item for item in output
-        if _event_field(item, "type") == "function_call"
-    ]
+    Items are dicts in tests and ``RealtimeConversationItemFunctionCall``
+    models in production; ``_event_field`` reads both. Realtime sends
+    arguments as a JSON string — anything that is not an object becomes
+    empty args, which `dispatch_tool` answers from the tool's signature."""
+    calls = []
+    for item in _event_field(response, "output") or ():
+        if _event_field(item, "type") != "function_call":
+            continue
+        name = _event_field(item, "name") or ""
+        try:
+            args = json.loads(_event_field(item, "arguments") or "{}")
+            if not isinstance(args, dict):
+                args = {}
+        except json.JSONDecodeError:
+            args = {}
+            logger.warning(
+                "openai tool %s: bad JSON arguments; treating as empty", name,
+            )
+        calls.append(
+            ToolCall(id=_event_field(item, "call_id") or "", name=name, args=args)
+        )
+    return calls
 
 
 def _merge_transcript_completion(current: str, text: str) -> str:

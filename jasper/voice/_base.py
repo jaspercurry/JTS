@@ -19,12 +19,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, ClassVar
 
 from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
 
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     Deferred,
     OutageTracker,
@@ -97,6 +98,20 @@ def close_code_and_reason(exc: BaseException) -> tuple[int | None, str | None]:
     return code, getattr(exc, "message", None)
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One model-issued tool call, parsed off a provider's wire.
+
+    `payload` is set only when the adapter could not decode `args` and
+    already knows the answer; the base then skips dispatch.
+    """
+
+    id: str
+    name: str
+    args: dict[str, Any]
+    payload: dict[str, Any] | None = None
+
+
 class BaseLiveTurn:
     """The per-turn state every provider's turn keeps identically.
 
@@ -138,6 +153,9 @@ class BaseLiveTurn:
         self._cancel_requested = False
         self._tool_task: asyncio.Task[None] | None = None
         self._tool_round_pending = False
+        # Tools this turn dispatched, in order, for a provider whose
+        # `capture()` surfaces them.
+        self._dispatched_tools: list[str] = []
         self._usage_input_tokens = 0
         self._usage_output_tokens = 0
         self._usage_details: dict[str, dict[str, int]] | None = {
@@ -150,23 +168,23 @@ class BaseLiveTurn:
         self._user_transcript = ""
         self._assistant_transcript = ""
 
-    def _start_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
+    def _start_tool_calls(self, calls: list[ToolCall]) -> None:
         if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
             return
         if self._tool_task is not None and not self._tool_task.done():
             raise RuntimeError("provider started overlapping blocking tool rounds")
         self._note_activity()
-        task = asyncio.create_task(self._run_tool_round(run))
+        task = asyncio.create_task(self._run_tool_round(calls))
         self._tool_task = task
         self._conn._tool_tasks.add(task)
         task.add_done_callback(self._conn._tool_tasks.discard)
 
-    async def _run_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
+    async def _run_tool_round(self, calls: list[ToolCall]) -> None:
         try:
             if self._conn._active_turn is self and not (
                 self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete
             ):
-                await run()
+                await self._run_tool_calls(calls)
         except Exception as exc:  # noqa: BLE001
             if self._conn._active_turn is self and not (self._released or self._turn_lost):
                 self._on_connection_lost()
@@ -176,6 +194,52 @@ class BaseLiveTurn:
         task = self._tool_task
         if task is not None and not task.done() and not task.cancelling():
             task.cancel()
+
+    async def _drain_tool_round(self) -> None:
+        """Wait out an already-cancelled round so the next cannot overlap."""
+        task = self._tool_task
+        if task is not None and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _run_tool_calls(self, calls: list[ToolCall]) -> None:
+        """Answer one round of model-issued calls, then let it continue.
+
+        `dispatch_tool` owns the whole tool contract — timeout, unknown
+        tool, error-to-payload shaping, the lifecycle observer, and the
+        `survives_cancellation` shield, which is why nothing here adds a
+        second one."""
+        registry = self._conn._registry
+        assert registry is not None
+        started = _time.monotonic()
+        for call in calls:
+            if not self._tools_may_run():
+                return
+            payload = call.payload
+            if payload is None:
+                if call.name:
+                    self._dispatched_tools.append(call.name)
+                payload = await dispatch_tool(registry, call.name, call.args)
+            if not self._tools_may_run() or not await self._send_tool_result(call, payload):
+                return
+        if not self._tools_may_run():
+            return
+        await self._finish_tool_round()
+        self._conn._logger.info(
+            "%s tool round answered: %d call(s) in %.0fms", self._conn._log_tag,
+            len(calls), (_time.monotonic() - started) * 1000,
+        )
+
+    def _tools_may_run(self) -> bool:
+        """Whether the model would still accept this round's results."""
+        raise NotImplementedError
+
+    async def _send_tool_result(self, call: ToolCall, payload: dict[str, Any]) -> bool:
+        """Send one result, or hold it for the flush. False abandons the round."""
+        raise NotImplementedError
+
+    async def _finish_tool_round(self) -> None:
+        """Flush anything held back and let the model continue."""
+        raise NotImplementedError
 
     def discard_input(self) -> None:
         """Nothing to revoke: only a continuous adapter buffers input."""
