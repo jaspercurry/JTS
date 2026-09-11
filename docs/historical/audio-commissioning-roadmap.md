@@ -4,7 +4,7 @@
 > revision — not its ratification date: the roadmap was owner-ratified
 > 2026-08-14 and kept taking rulings after that (its Ethos heading below is
 > marked "extended 2026-08-16"). Tagged historical 2026-08-22, superseded by
-> [`tuning-master-plan.md`](../tuning-master-plan.md) — "the previous
+> later tuning decisions as "the previous
 > program-wide roadmap for the identical scope" (that plan's Supersessions
 > section, which states the one exception below), now the planning authority
 > for the measurement/tuning program.

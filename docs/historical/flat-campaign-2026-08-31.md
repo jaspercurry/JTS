@@ -5,8 +5,7 @@
 > [ADR-0192](../adr/0192-the-campaign-is-the-validation.md)'s ruling ("the
 > campaign is the validation") on the blind-run baseline C5.
 >
-> **What this file is for.** Wave 6 of
-> [`tuning-master-plan.md`](../tuning-master-plan.md) funds work whose
+> **What this file is for.** The retired Wave 6 plan funded work whose
 > evidence is this record — the per-filter re-examination list, the delay
 > disposition, the trim-runaway scoreboard, the r8 regression that
 > `forward_model` must postdict. Read this for *what was measured and what
@@ -16,8 +15,8 @@
 > guidance: shipped operational truth is
 > [`tuning-operator-runbook.md`](../tuning-operator-runbook.md), the
 > acoustics method is [`tuning-methodology.md`](../tuning-methodology.md),
-> and the planning authority is
-> [`tuning-master-plan.md`](../tuning-master-plan.md). The §8 runbook
+> and stable decisions are in the
+> [ADR index](../adr/README.md). The §8 runbook
 > adaptations below are campaign findings; whichever of them the live docs
 > adopt, they hold in their own voice. Frozen: no further edits.
 

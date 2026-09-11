@@ -1,7 +1,7 @@
 # 2026-08-31 tuning-methodology deep research — index and adjudications
 
 > Five owner-run deep-research reports answering Wave 6's research
-> assignments (see `docs/tuning-master-plan.md`, ticket 6.9; the fifth —
+> assignments (the fifth —
 > documentation architecture — was issued after the first four). Files
 > 01–05 are frozen verbatim snapshots; this index records what the
 > program adopted, deferred, or rejected from them, and where each
