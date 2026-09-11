@@ -87,3 +87,150 @@ class FakeRouter:
 
     def revoked_account_names(self) -> list:
         return list(self._revoked_names)
+
+
+class FakeSpotify:
+    """Spotify stand-in.
+
+    `search_results`, when a dict, maps `type` ("artist"/"track"/"album"/
+    "playlist") to a single-item top-level result, e.g.
+        {"artist": ("spotify:artist:abc", "Sufjan Stevens")}
+    `library` is a list of (uri, name) tuples returned by
+    current_user_playlists.
+
+    For backwards compatibility, `search_results` also accepts a raw
+    Spotify-shaped dict (`{"artists": {"items": [...]}}`) returned for
+    every call regardless of type."""
+
+    def __init__(
+        self,
+        *,
+        playback=None,
+        devices=None,
+        search_results=None,
+        library=None,
+    ) -> None:
+        self._playback = playback
+        self._devices = devices or {"devices": []}
+        self._search_results = search_results or {}
+        self._library = library or []
+        self.start_playback = MagicMock()
+        self.add_to_queue = MagicMock()
+        self.next_track = MagicMock()
+        self.previous_track = MagicMock()
+        self.pause_playback = MagicMock()
+        self.last_search_q: str | None = None
+        self.last_search_type: str | None = None
+
+    def current_playback(self):
+        return self._playback
+
+    def devices(self):
+        return self._devices
+
+    def search(self, q, type, limit):
+        self.last_search_q = q
+        self.last_search_type = type
+        if isinstance(self._search_results, dict) and self._search_results and (
+            "artists" in self._search_results
+            or "tracks" in self._search_results
+            or "albums" in self._search_results
+            or "playlists" in self._search_results
+        ):
+            # Legacy raw shape — returned for every call.
+            return self._search_results
+        # Type-keyed shape.
+        hit = self._search_results.get(type) if isinstance(self._search_results, dict) else None
+        if hit is None:
+            return {f"{type}s": {"items": []}}
+        uri, name = hit
+        # Mirror Spotify's real response: both `id` and `uri` are
+        # populated. Derive id from the trailing segment of the URI
+        # (e.g. spotify:artist:rks → rks).
+        item_id = uri.rsplit(":", 1)[-1] if uri else ""
+        return {f"{type}s": {"items": [{"uri": uri, "id": item_id, "name": name}]}}
+
+    def current_user_playlists(self, limit=50):
+        return {
+            "items": [{"uri": uri, "name": name} for uri, name in self._library]
+        }
+
+    def artist_albums(self, artist_id, include_groups=None, limit=20):
+        """Return a page of releases preconfigured via `with_releases`.
+
+        Mirrors the real Spotify endpoint's hard cap of 10 per page —
+        passing limit > 10 RAISES, matching the live API's HTTP 400
+        "Invalid limit" response. This is the regression pin for the
+        2026-05-22 bug where the tool passed limit=50 (spotipy's
+        signature accepted it, but the live API rejected it).
+        """
+        if limit is None or limit > 10:
+            raise ValueError(
+                f"FakeSpotify: limit={limit!r} exceeds Spotify's documented "
+                f"max=10 for /artists/{{id}}/albums — the live API returns "
+                f"HTTP 400 'Invalid limit' here. Use limit<=10 and paginate."
+            )
+        self.last_artist_albums_id = artist_id
+        self.last_artist_albums_include_groups = include_groups
+        self.last_artist_albums_limit = limit
+        releases = list(getattr(self, "_releases", []))
+        page = releases[:limit]
+        next_url = "fake://next" if len(releases) > limit else None
+        self._remaining_releases = releases[limit:]
+        return {"items": page, "next": next_url}
+
+    def next(self, response):
+        """Pagination follower used by spotipy. Returns the next slice
+        of the configured releases until exhausted."""
+        remaining = list(getattr(self, "_remaining_releases", []) or [])
+        if not remaining:
+            return {"items": [], "next": None}
+        limit = getattr(self, "last_artist_albums_limit", 10)
+        page = remaining[:limit]
+        self._remaining_releases = remaining[limit:]
+        next_url = "fake://next" if self._remaining_releases else None
+        return {"items": page, "next": next_url}
+
+    def with_releases(self, releases: list) -> "FakeSpotify":
+        """Configure the items returned by artist_albums.
+
+        Each entry is a dict in Spotify's shape — minimally:
+            {"uri": "spotify:album:abc",
+             "name": "X",
+             "album_type": "single",        # 'album' | 'single'
+             "release_date": "2026-05-20",
+             "release_date_precision": "day"}
+        """
+        self._releases = releases
+        return self
+
+    def shuffle(self, state, device_id=None):
+        self.last_shuffle_state = state
+
+    def playlist(self, pid, fields=None, market=None, additional_types=None):
+        tracks = getattr(self, "_playlist_tracks", {}).get(pid, [])
+        items = [
+            {"added_at": added, "track": {"uri": uri, "name": uri.rsplit(":", 1)[-1]}}
+            for uri, added in tracks
+        ]
+        return {"tracks": {"items": items, "next": None}}
+
+    def playlist_items(self, pid, fields=None, limit=100, offset=0, additional_types=None):
+        # `_playlist_tracks` map: {playlist_id_or_uri_suffix: [(uri, added_at), ...]}
+        tracks = getattr(self, "_playlist_tracks", {}).get(pid, [])
+        items = [
+            {"added_at": added, "track": {"uri": uri, "name": uri.rsplit(":", 1)[-1]}}
+            for uri, added in tracks
+        ]
+        page = items[offset:offset + limit]
+        return {
+            "items": page,
+            "next": None if offset + limit >= len(items) else "next-page",
+        }
+
+    def with_playlist_tracks(self, playlist_id: str, tracks: list):
+        """Configure the tracks returned by playlist_items for this id."""
+        if not hasattr(self, "_playlist_tracks"):
+            self._playlist_tracks = {}
+        self._playlist_tracks[playlist_id] = tracks
+        return self
