@@ -21,7 +21,6 @@ from ...usb_mic import (
 )
 from .. import aec_endpoints
 from .. import restart_broker
-from .. import server as _server
 from ._base import ControlHandlerMixin, logger
 
 
@@ -199,7 +198,7 @@ class AecRoutes(ControlHandlerMixin):
             enabled=enabled,
             client=self.address_string(),
         )
-        if not _server._schedule_usb_gadget_recompose():
+        if not aec_endpoints._schedule_usb_gadget_recompose():
             # A descriptor recompose is not a broker verb: there is no result
             # to answer, only the scheduler's own refusal.
             failed_status = aec_endpoints._aec_full_status()
@@ -254,7 +253,7 @@ class AecRoutes(ControlHandlerMixin):
         # value clears systemd's crash-loop counter before restart so rapid
         # authenticated changes cannot spend StartLimitAction=reboot's
         # recovery budget (the reconciler uses the same safety contract).
-        with _server._usb_mic_leg_apply_lock:
+        with aec_endpoints._usb_mic_leg_apply_lock:
             persisted_matches = read_usb_mic_leg() == leg
             if persisted_matches:
                 current_status = aec_endpoints._aec_full_status()
@@ -263,7 +262,7 @@ class AecRoutes(ControlHandlerMixin):
                 ) or {}
                 applied = selection.get("applied") or {}
                 if applied.get("value") == leg:
-                    _server._usb_mic_leg_apply_pending = None
+                    aec_endpoints._usb_mic_leg_apply_pending = None
                     log_event(
                         logger,
                         "usb_mic.leg_unchanged",
@@ -272,12 +271,12 @@ class AecRoutes(ControlHandlerMixin):
                     )
                     self._send_json(current_status)
                     return
-                pending = _server._usb_mic_leg_apply_pending
+                pending = aec_endpoints._usb_mic_leg_apply_pending
                 if (
                     pending is not None
                     and pending[0] == leg
                     and time.monotonic() - pending[1]
-                    < _server._USB_MIC_LEG_APPLY_COALESCE_SECONDS
+                    < aec_endpoints._USB_MIC_LEG_APPLY_COALESCE_SECONDS
                 ):
                     log_event(
                         logger,
@@ -306,7 +305,7 @@ class AecRoutes(ControlHandlerMixin):
                 client=self.address_string(),
             )
             restart = restart_broker.reset_then_manage(
-                _server._AEC_BRIDGE_UNIT,
+                aec_endpoints._AEC_BRIDGE_SERVICE,
                 verb="restart",
                 reason="usb_mic_leg",
                 no_block=True,
@@ -325,7 +324,7 @@ class AecRoutes(ControlHandlerMixin):
                     usb_mic=failed_status.get("usb_mic") or {},
                 )
                 return
-            _server._usb_mic_leg_apply_pending = (leg, time.monotonic())
+            aec_endpoints._usb_mic_leg_apply_pending = (leg, time.monotonic())
         self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
@@ -399,8 +398,8 @@ class AecRoutes(ControlHandlerMixin):
         # Button-initiated only — nothing else starts this unit. Token-gated
         # like the other high-impact /aec mutations. The lock makes
         # check-then-start atomic across worker threads.
-        with _server._aec_commission_start_lock:
-            if _server._aec_commission_running():
+        with aec_endpoints._aec_commission_start_lock:
+            if aec_endpoints._aec_commission_running():
                 self._send_json(
                     {
                         "error": "chip-AEC re-commissioning is already running",
@@ -409,7 +408,7 @@ class AecRoutes(ControlHandlerMixin):
                     status=409,
                 )
                 return
-            started = _server._start_aec_commission()
+            started = aec_endpoints._start_aec_commission()
         if not started:
             self._send_refused(
                 error="the re-commissioning run could not be started",
