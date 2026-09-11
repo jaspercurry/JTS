@@ -59,8 +59,8 @@ from ..service_units import (
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
     read_unit_states,
+    unit_active as _unit_state_active,
 )
-from ..service_units import unit_active as _unit_state_active
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ logger = logging.getLogger(__name__)
 def _unit_active(unit: str) -> bool:
     """Whether systemd currently reports ``unit`` active, read fresh."""
     return _unit_state_active((read_unit_states((unit,)) or {}).get(unit))
+
 
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"
 

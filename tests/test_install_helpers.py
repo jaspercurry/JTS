@@ -3435,7 +3435,7 @@ def test_unpark_reports_a_masked_unit_it_cannot_put_back(
     assert "jasper-voice.service" not in run.active
     assert "left off on purpose" not in run.syslog, run.syslog
     assert (
-        "event=build_sandbox.low_memory_build_unpark_failed "
+        "event=build_sandbox.unpark_failed "
         "unit=jasper-voice.service recover=systemctl unmask "
         "jasper-voice.service && systemctl start jasper-voice.service "
         f"&& {remask}" in run.syslog
@@ -3496,7 +3496,7 @@ def test_unpark_logs_a_stable_event_token_when_a_unit_will_not_restart(
     assert "shairport-sync.service" not in run.active
     assert "could not restart shairport-sync.service" in run.stderr
     assert (
-        "event=build_sandbox.low_memory_build_unpark_failed "
+        "event=build_sandbox.unpark_failed "
         "unit=shairport-sync.service recover=systemctl start "
         "shairport-sync.service" in run.syslog
     ), run.syslog
@@ -3505,7 +3505,7 @@ def test_unpark_logs_a_stable_event_token_when_a_unit_will_not_restart(
     assert "unmask" not in run.stderr, run.stderr
     assert "unmask" not in run.syslog, run.syslog
     # The summary carries counts even when the failure above happened.
-    assert "event=build_sandbox.low_memory_build_unpark " in run.syslog
+    assert "event=build_sandbox.unpark " in run.syslog
     assert "restored=1 failed=1" in run.syslog, run.syslog
     # jasper-control was restored despite the earlier failure.
     assert "jasper-control.service" in run.active
@@ -3518,7 +3518,7 @@ def test_unpark_summary_records_the_zero_restored_case(tmp_path):
     run = _run_park_cycle(
         tmp_path, active=units, scenario=f"{restart}; mark_trap; exit 0"
     )
-    assert "event=build_sandbox.low_memory_build_unpark " in run.syslog
+    assert "event=build_sandbox.unpark " in run.syslog
     assert "restored=0 failed=0" in run.syslog, run.syslog
 
 
@@ -3653,7 +3653,7 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
     # The failing branch really was exercised — otherwise the log stub never
     # runs from inside the loop and this test proves nothing.
     assert (
-        "event=build_sandbox.low_memory_build_unpark_failed "
+        "event=build_sandbox.unpark_failed "
         "unit=jasper-fanin.service" in run.syslog
     ), run.syslog
     # Every unit ordered AFTER the failure still came back.

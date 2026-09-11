@@ -1383,14 +1383,15 @@ install_avahi_jasper_control() {
     else
         install -d -m 0755 /etc/avahi/services
     fi
-    # Render the live service from the template via the Python module
-    # (it does the XML-escape, atomic write, and Avahi reload). The
-    # package is already pip-installed by install_jasper above, so the
-    # import resolves here. render_control_advert is fail-soft (returns
-    # False, never raises); we still guard the whole call with `|| true`
-    # plus a static-file fallback so a render failure can never leave
-    # _jasper-control._tcp un-advertised — /rooms and jasper-doctor's
-    # "avahi: _jasper-control._tcp" check depend on it always existing.
+    # Render the live service from the template via the Python module (it
+    # does the XML-escape and atomic write; Avahi picks up the change via
+    # inotify). The package is already pip-installed by install_jasper
+    # above, so the import resolves here. render_control_advert is
+    # fail-soft (returns False, never raises); we still guard the whole
+    # call with `|| true` plus a static-file fallback so a render failure
+    # can never leave _jasper-control._tcp un-advertised — /rooms and
+    # jasper-doctor's "avahi: _jasper-control._tcp" check depend on it
+    # always existing.
     local rendered=0
     if [[ -x "${INSTALL_DIR}/.venv/bin/python" ]] \
        && "${INSTALL_DIR}/.venv/bin/python" - <<'PY'

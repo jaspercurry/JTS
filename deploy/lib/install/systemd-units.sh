@@ -1190,7 +1190,7 @@ _unpark_one_unit() {
     case "${enablement}" in
         disabled|masked|masked-runtime)
             if ! _jasper_unit_was_off_at_park "${unit}"; then
-                _build_sandbox_log "low_memory_build_unpark_skip" \
+                _build_sandbox_log "unpark_skip" \
                     "unit=${unit} state=${enablement} left off on purpose"
                 return 0
             fi
@@ -1237,7 +1237,7 @@ _unpark_one_unit() {
             recover_sudo="sudo systemctl unmask ${unit} && ${recover_sudo} && sudo ${remask}"
             ;;
     esac
-    _build_sandbox_log "low_memory_build_unpark_failed" \
+    _build_sandbox_log "unpark_failed" \
         "unit=${unit} recover=${recover}"
     echo "  WARN: could not restart ${unit} after a failed install;" >&2
     echo "  recover with: ${recover_sudo}" >&2
@@ -1269,7 +1269,7 @@ unpark_recorded_units() {
     # Unconditional: restored=0 is the normal success path (the trap ran and
     # found nothing to do) and needs to be distinguishable in the journal from
     # the trap never running at all.
-    _build_sandbox_log "low_memory_build_unpark" \
+    _build_sandbox_log "unpark" \
         "parked=${#JASPER_UNIT_PARK_RECORD[@]} restored=${_JASPER_UNPARK_RESTORED} failed=${_JASPER_UNPARK_FAILED}"
     JASPER_UNIT_PARK_RECORD=()
     JASPER_UNIT_PARK_OFF_AT_PARK=()
