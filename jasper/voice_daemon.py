@@ -3059,7 +3059,7 @@ class WakeLoop:
             raise error
 
     async def _release_and_capture(
-        self, turn: LiveTurn, *, session_id: int, mic_muted: bool,
+        self, turn: LiveTurn, *, session_id: int, mic_muted: bool, capture: bool,
     ) -> None:
         """Release the turn, then persist what it transcribed.
 
@@ -3067,29 +3067,32 @@ class WakeLoop:
         handshake, so a capture read before `release()` returns loses the
         tail of the assistant's line. The turn's own session id and mute
         state are passed in: `_reset_turn` clears them, and the next turn
-        opens its session before it awaits this task.
+        opens its session before it awaits this task. `capture` is false
+        for a turn that handed off to a research job: `ResearchAnnouncer`
+        records that exchange itself once its answer arrives.
         """
         try:
             await self._release_turn(turn)
         finally:
-            try:
-                capture = turn.capture()
-            except (RuntimeError, TypeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "turn.capture_failed",
-                    exc_type=type(exc).__name__,
-                    level=logging.WARNING,
-                )
-                capture = None
-            if capture is not None:
-                self._conversation_capture.record(
-                    capture.user_text,
-                    capture.assistant_text,
-                    data_json=capture.data,
-                    session_id=session_id,
-                    mic_muted=mic_muted,
-                )
+            if capture:
+                try:
+                    captured = turn.capture()
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    log_event(
+                        logger,
+                        "turn.capture_failed",
+                        exc_type=type(exc).__name__,
+                        level=logging.WARNING,
+                    )
+                    captured = None
+                if captured is not None:
+                    self._conversation_capture.record(
+                        captured.user_text,
+                        captured.assistant_text,
+                        data_json=captured.data,
+                        session_id=session_id,
+                        mic_muted=mic_muted,
+                    )
 
     async def _record_and_release_turn(
         self, reason: str, episode: AssistantOutputEpisode | None,
@@ -3133,10 +3136,11 @@ class WakeLoop:
         session_id = self._session_id
         assert session_id is not None
         self._pending_release = self._create_fire_and_forget_task(
-            self._release_turn(turn)
-            if research_window.job is not None
-            else self._release_and_capture(
-                turn, session_id=session_id, mic_muted=self._mic_muted,
+            self._release_and_capture(
+                turn,
+                session_id=session_id,
+                mic_muted=self._mic_muted,
+                capture=research_window.job is None,
             ),
             name="turn-release",
         )
