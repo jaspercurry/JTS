@@ -50,8 +50,19 @@ GENERATION_PATH_PREFIX = f"{ADMISSION_PATH_ROOT}/generation"
 PLAYBACK_PATH_PREFIX = f"{ADMISSION_PATH_ROOT}/playback"
 MAX_ADMISSION_ARTIFACT_BYTES = 64 * 1024
 ADMISSION_FILE_MODE = 0o640
-# Preserve the feature-owned parent group when root and service users publish.
-ADMISSION_DIRECTORY_MODE = 0o2750
+# No SUID/SGID bits: a hardened unit (RestrictSUIDSGID=) refuses a requested
+# one. The installer's setgid parent directories already confer group
+# inheritance for root/service co-publishing; this constant never asks for it.
+ADMISSION_DIRECTORY_MODE = 0o750
+
+def ensure_directory_mode(path: "str | os.PathLike[str]") -> None:
+    """Correct a directory's permission bits to ADMISSION_DIRECTORY_MODE only when
+    the umask left them different: chmod never names the setgid bit, so the bit
+    an installer-owned setgid parent conferred is neither requested (refused
+    under RestrictSUIDSGID) nor stripped."""
+    if stat.S_IMODE(os.stat(path).st_mode) & 0o777 != ADMISSION_DIRECTORY_MODE:
+        os.chmod(path, ADMISSION_DIRECTORY_MODE)
+
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -414,7 +425,10 @@ def _prepare_artifact_parent(root: Path, parent: Path) -> None:
                 pass
         if current.is_symlink() or not current.is_dir():
             raise OSError("artifact parent must be a real directory")
-        os.chmod(current, ADMISSION_DIRECTORY_MODE)
+        # Every artifact write re-walks this path, including the marker
+        # write inside create_admission_authority itself -- an unconditional
+        # chmod here would undo that function's own skip-if-matching check.
+        ensure_directory_mode(current)
         fsync_directory(current)
         if created:
             fsync_directory(current.parent)
@@ -564,7 +578,9 @@ def create_admission_authority(
             f"could not create admission authority directory: {exc}",
         ) from exc
     try:
-        os.chmod(target, ADMISSION_DIRECTORY_MODE)
+        # A setgid parent can already leave mkdir's result at MODE (umask
+        # permitting); chmod only to correct it, never to add SGID back.
+        ensure_directory_mode(target)
         fsync_directory(target)
         fsync_directory(target.parent)
     except OSError as exc:

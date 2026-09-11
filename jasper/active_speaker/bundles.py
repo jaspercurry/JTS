@@ -45,7 +45,7 @@ from jasper.audio_measurement.bundles import (
     write_json_artifact,
 )
 from jasper.audio_measurement.excitation_artifacts import (
-    ADMISSION_DIRECTORY_MODE as BUNDLE_DIR_MODE,
+    ensure_directory_mode,
     AdmissionArtifactError,
     AdmissionAuthority,
     create_admission_authority,
@@ -463,7 +463,7 @@ def open_bundle(
         "rollback_target": None,
         "verification": None,
     }
-    os.chmod(bundle_dir, BUNDLE_DIR_MODE)
+    ensure_directory_mode(bundle_dir)
     _write_info(bundle_dir, info)
     result = {**info, "bundle_dir": str(bundle_dir)}
     enforce_retention(root)
@@ -622,7 +622,7 @@ def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None
 
     dest = bundle_dir / rel_path
     dest.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(dest.parent, BUNDLE_DIR_MODE)
+    ensure_directory_mode(dest.parent)
     tmp = dest.with_name(f".{dest.name}.tmp")
     try:
         shutil.copy2(source, tmp)
