@@ -7,15 +7,13 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from jasper.audio_measurement.excitation_artifacts import (
-    ADMISSION_DIRECTORY_MODE as BUNDLE_DIR_MODE,
-)
 from jasper.active_speaker.bundles import (
     BUNDLE_FILE_MODE,
     DEFAULT_SESSIONS_MAX_BYTES,
@@ -971,14 +969,16 @@ def test_new_artifact_inherits_the_authority_directory_group(
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     os.chown(sessions, -1, shared_gid)
-    sessions.chmod(BUNDLE_DIR_MODE)
+    # Mirror the installer-owned parent (deploy/lib/install/env-migrations.sh
+    # `d:2770`): the setgid bit is what confers the group on Linux.
+    sessions.chmod(stat.S_ISGID | 0o770)
     store = _open_store(tmp_path)
     artifact = store.publish_raw_artifact("nested/group-owned.bin", b"owned")
     path = store.bundle_dir / artifact.relative_path
     assert store.reopen_artifact(artifact) == b"owned"
     assert path.stat().st_gid == path.parent.stat().st_gid
     assert path.stat().st_mode & 0o7777 == 0o640
-    # BUNDLE_DIR_MODE carries no SGID (a hardened unit refuses one). Whether
+    # The mode the store requests carries no SGID (a hardened unit refuses one). Whether
     # mkdir already lands on it under the setgid `sessions` parent is a
     # kernel/filesystem detail this test does not pin -- only that the
     # permission bits end up correct and the group still inherits.
@@ -986,7 +986,7 @@ def test_new_artifact_inherits_the_authority_directory_group(
     assert store.bundle_dir.stat().st_gid == shared_gid
     parent = path.parent
     while parent != sessions:
-        assert parent.stat().st_mode & 0o7777 == 0o750
+        assert parent.stat().st_mode & 0o777 == 0o750
         parent = parent.parent
 
 
