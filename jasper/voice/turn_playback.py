@@ -13,11 +13,10 @@ from typing import AsyncGenerator, Awaitable, Callable
 
 from ..tts_playout import TtsPlayout, confirmed_tts_flush
 from ..log_event import log_event
+from .conversation import WATCHDOG_POLL_SEC
 from .session import AudioOutChunk, LiveTurn
 
 logger = logging.getLogger("jasper.voice_daemon")
-
-_WATCHDOG_POLL_SEC = 0.25
 
 #: `_end_turn` reason for a turn the pre-response cap below released: the
 #: model was asked a question, kept making progress, and never answered.
@@ -207,7 +206,7 @@ async def idle_watchdog(
     playout_pending: int | None = None
     progressed_at = time.monotonic()
     while True:
-        await asyncio.sleep(_WATCHDOG_POLL_SEC)
+        await asyncio.sleep(WATCHDOG_POLL_SEC)
         if turn.turn_lost():
             logger.warning("idle watchdog: connection lost mid-turn, ending turn")
             return None

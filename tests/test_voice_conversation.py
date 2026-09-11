@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jasper.tools import ToolRegistry, dispatch_tool
-from jasper.voice.conversation import continuous_watchdog, register_conversation_tools
+from jasper.voice.conversation import (
+    WATCHDOG_POLL_SEC,
+    continuous_watchdog,
+    register_conversation_tools,
+)
 from jasper.voice_daemon import State
 from tests._async_wait import wait_until
 from tests._live_turn_fake import FakeLiveTurn, silent_frame
@@ -127,7 +131,8 @@ async def test_live_followup_waits_for_playout_speech_and_tools(busy):
         user_activity=lambda: (now - 10, now if busy == "user" else now - 9),
     ))
     try:
-        await asyncio.sleep(0.1)
+        # Long enough for one full watchdog poll to reach its verdict.
+        await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
         assert task.done() == (busy == "quiet")
         if task.done():
             assert task.result() == "followup_timeout"

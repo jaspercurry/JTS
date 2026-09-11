@@ -570,7 +570,7 @@ class _PollClock:
 
 def _run_watchdog(turn, clock, monkeypatch):
     monkeypatch.setattr(turn_playback, "time", clock)
-    monkeypatch.setattr(turn_playback, "_WATCHDOG_POLL_SEC", 0.001)
+    monkeypatch.setattr(turn_playback, "WATCHDOG_POLL_SEC", 0.001)
     return asyncio.wait_for(
         idle_watchdog(turn, _BaseTts(), timeout=999.0, response_stall_timeout=1.0),
         timeout=5.0,

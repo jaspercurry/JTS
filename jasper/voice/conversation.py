@@ -14,6 +14,9 @@ from ..tools import ToolRegistry, tool
 
 
 END_OF_UTTERANCE_SILENCE_SEC = 0.8
+# Both turn watchdogs poll on this; every condition they read is
+# second-scale.
+WATCHDOG_POLL_SEC = 0.25
 NO_SPEECH_ABORT_SEC = 5.0
 END_CONVERSATION_TOOL = "end_conversation"
 
@@ -50,7 +53,7 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
     next_spend_check = started_at
     pending_count, progressed_at = 0, started_at
     while True:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(WATCHDOG_POLL_SEC)
         if turn.turn_lost():
             return "connection_lost"
         now = time.monotonic()
