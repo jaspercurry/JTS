@@ -17,6 +17,7 @@ Lines logged from here go to the subclass's own `_logger` and carry its
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time as _time
 from dataclasses import dataclass
@@ -240,6 +241,23 @@ class BaseLiveTurn:
     async def _finish_tool_round(self) -> bool:
         """Flush anything held back and let the model continue. False if nothing was sent."""
         raise NotImplementedError
+
+    def _tool_result_json(self, name: str, payload: dict[str, Any]) -> str:
+        """JSON-encode a tool result for an adapter that sends it as a wire string.
+
+        An unserializable payload would otherwise raise out of the tool
+        round and into the provider's receive loop, forcing a session
+        reconnect; fall back to a synthetic error string so the model
+        still gets a function_call_output for this call_id."""
+        try:
+            return json.dumps(payload)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "tool %s: result not JSON-serializable (%s: %s); "
+                "sending error output instead of reconnecting",
+                name, type(e).__name__, e,
+            )
+            return json.dumps({"error": f"tool result not serializable: {type(e).__name__}"})
 
     def discard_input(self) -> None:
         """Nothing to revoke: only a continuous adapter buffers input."""

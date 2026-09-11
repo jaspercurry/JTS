@@ -430,22 +430,9 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
         if not call.id:
             return False
-        # An unserializable payload would otherwise raise into
-        # _receive_loop's broad except and force a session reconnect;
-        # contain it so the server still sees a function_call_output.
+        output = self._tool_result_json(call.name, payload)
         try:
-            output = json.dumps(payload)
-        except (TypeError, ValueError) as e:
-            logger.warning(
-                "tool %s: result not JSON-serializable (%s: %s); "
-                "sending error output instead of reconnecting",
-                call.name, type(e).__name__, e,
-            )
-            output = json.dumps(
-                {"error": f"tool result not serializable: {type(e).__name__}"}
-            )
-        try:
-            return await self._conn._send_event({
+            sent = await self._conn._send_event({
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
@@ -461,6 +448,9 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             )
             self._on_connection_lost()
             return False
+        if sent:
+            self._note_activity()
+        return sent
 
     async def _finish_tool_round(self) -> bool:
         self._tool_round_pending = False
