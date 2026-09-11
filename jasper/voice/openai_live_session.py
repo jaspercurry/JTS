@@ -82,8 +82,6 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._input_q = asyncio.Queue(maxsize=16)
         self._input_admitted = True
         self._sender = None
-        # Live times every delta; `capture` publishes the intervals
-        # alongside the text the base turn accumulates.
         self._transcript_intervals = {"user": [], "assistant": []}
         self._seconds = 0.0
         self._quiet_played = 0

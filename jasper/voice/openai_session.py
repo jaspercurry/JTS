@@ -426,6 +426,8 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._audio_q.put_nowait(None)
 
     def _on_assistant_text_delta(self, delta: str) -> None:
+        if not delta:
+            return
         self.add_transcript(assistant=delta)
         self._note_activity()
 

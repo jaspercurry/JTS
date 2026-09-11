@@ -144,11 +144,9 @@ class BaseLiveTurn:
             bucket: dict.fromkeys(keys, 0)
             for bucket, keys in self.usage_detail_buckets.items()
         } or None
-        # Text of the user's and the model's audio as the provider
-        # transcribes it. Retained only so WakeLoop can write opt-in
-        # conversation history; never logged — the flight recorder dumps
-        # DEBUG records around failures, so household utterances must
-        # not reach one.
+        # Retained only so WakeLoop can write opt-in conversation history;
+        # never logged — the flight recorder dumps DEBUG records around
+        # failures, so household utterances must not reach one.
         self._user_transcript = ""
         self._assistant_transcript = ""
 
