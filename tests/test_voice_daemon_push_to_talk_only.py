@@ -54,7 +54,7 @@ def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():
 
     wl = wake_loop_for_tests(legs=[], manual_mics=[remote_mic()])
     assert wl._mic is None
-    assert isinstance(wl._capture_ring_on, deque)
+    assert isinstance(wl._wake_legs.capture_ring_on, deque)
 
 
 def _zero_leg_loop_with_fast_keepalive(monkeypatch):

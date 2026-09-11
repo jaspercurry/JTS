@@ -12,8 +12,8 @@ import pytest
 def test_leg_db_covers_all_wake_input_legs():
     """Every wake-input leg in the registry must have a LEG_DB telemetry
     mapping — otherwise WakeTelemetry.on_fire would KeyError on a leg
-    present in self._legs but missing from LEG_DB. (WakeLoop.__init__ also
-    guards this at construction; this gives a targeted, discoverable
+    present in WakeLegs.legs but missing from LEG_DB. (WakeLegs.__init__
+    also guards this at construction; this gives a targeted, discoverable
     failure if it drifts.)"""
     from jasper.voice.wake_telemetry import LEG_DB
     from jasper.wake_legs import wake_input_legs
@@ -131,7 +131,7 @@ def test_configured_wake_legs_tokens_only(cfg_kwargs, expected_tokens):
     """Optional legs gate independently — voice never opens a UDP
     listener for an unconfigured leg. "on" is always present, even with
     an empty device (the AEC reconciler owns making it real, or parking
-    voice), so `self._legs["on"]` never KeyErrors."""
+    voice), so `WakeLegs.legs["on"]` never KeyErrors."""
     from jasper.voice_daemon import configured_wake_legs
     legs = configured_wake_legs(_cfg(**cfg_kwargs))
     assert [s.token for s, _ in legs] == expected_tokens
@@ -156,7 +156,7 @@ def test_configured_wake_legs_chip_legs_not_built_when_unset():
 def test_leg_device_attr_covers_all_wake_input_legs():
     """Every wake-input leg must have a _LEG_DEVICE_ATTR entry, or
     configured_wake_legs would KeyError at daemon startup."""
-    from jasper.voice_daemon import _LEG_DEVICE_ATTR
+    from jasper.voice.wake_detect import _LEG_DEVICE_ATTR
     from jasper.wake_legs import wake_input_legs
     missing = {leg.token for leg in wake_input_legs()} - set(_LEG_DEVICE_ATTR)
     assert not missing, (

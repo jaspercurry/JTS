@@ -77,12 +77,12 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
                 self.queue.task_done()
 
     mic = Mic()
-    wl._mic = wl._legs["on"].mic = mic
+    wl._mic = wl._wake_legs.legs["on"].mic = mic
     remote = Mic()
     if trigger == "remote":
         wl._push_to_talk.sources["remote"] = SimpleNamespace(mic=remote)
     source = remote if trigger == "remote" else mic
-    wl._legs["on"].detector.score_frame = lambda frame: float(trigger == "wake" and frame[0] == 0)
+    wl._wake_legs.legs["on"].detector.score_frame = lambda frame: float(trigger == "wake" and frame[0] == 0)
     wl._play_listening_chirp = AsyncMock()
 
     async def send(pcm):

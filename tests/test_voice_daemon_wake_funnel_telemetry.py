@@ -221,7 +221,7 @@ async def test_wake_admission_and_arbitration_continue_with_sqlite_locked(tmp_pa
     store = WakeEventStore(tmp_path)
     store.open()
     wl = wake_loop_for_tests(wake_event_store=store)
-    wl._legs["on"].detector.score_frame = lambda _frame: 0.95
+    wl._wake_legs.legs["on"].detector.score_frame = lambda _frame: 0.95
     arbitrated = asyncio.Event()
     event_id = None
     async def lose(**_kwargs):

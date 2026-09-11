@@ -85,7 +85,7 @@ async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
     wl._fire_and_forget = set()
     wl._heartbeat = None
     wl._state = State.WAKE
-    wl._legs = {"on": object(), "off": object()}
+    wl._wake_legs.legs = {"on": object(), "off": object()}
     wl._stop_event = asyncio.Event()
     wl._stop_event.set()
 
@@ -419,7 +419,7 @@ def test_capture_gap_resets_wake_history_and_reports_input_age():
     from jasper.audio_buffer import InputFrame
 
     wl = wake_loop_for_tests()
-    rt = wl._legs["on"]
+    rt = wl._wake_legs.legs["on"]
     rt.detector.reset = Mock()
     rt.shadow_vad = SimpleNamespace(reset=Mock())
     rt.recent_score = 1.0

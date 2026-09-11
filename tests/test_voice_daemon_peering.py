@@ -49,7 +49,7 @@ def _clean_env(monkeypatch):
 
 
 def test_rms_full_scale_sine_is_minus_3_dbfs():
-    from jasper.voice_daemon import _frame_rms_dbfs
+    from jasper.voice.wake_detect import _frame_rms_dbfs
     sig = (32767 * np.sin(2 * np.pi * 200 * np.arange(1280) / 16000)).astype(np.int16)
     db = _frame_rms_dbfs(sig)
     # Full-scale sine has RMS = peak / sqrt(2), so dBFS ≈ -3.01.
@@ -57,7 +57,7 @@ def test_rms_full_scale_sine_is_minus_3_dbfs():
 
 
 def test_rms_silence_is_floor():
-    from jasper.voice_daemon import _frame_rms_dbfs
+    from jasper.voice.wake_detect import _frame_rms_dbfs
     db = _frame_rms_dbfs(np.zeros(1280, dtype=np.int16))
     assert db == -120.0
 
@@ -65,12 +65,12 @@ def test_rms_silence_is_floor():
 def test_rms_empty_frame_returns_none():
     """A malformed (empty) frame must not crash — return None so the
     ranker falls through cleanly to peer_id tiebreaker."""
-    from jasper.voice_daemon import _frame_rms_dbfs
+    from jasper.voice.wake_detect import _frame_rms_dbfs
     assert _frame_rms_dbfs(np.array([], dtype=np.int16)) is None
 
 
 def test_rms_half_scale_is_minus_9_dbfs():
-    from jasper.voice_daemon import _frame_rms_dbfs
+    from jasper.voice.wake_detect import _frame_rms_dbfs
     sig = (32767 * np.sin(2 * np.pi * 200 * np.arange(1280) / 16000)).astype(np.int16)
     db = _frame_rms_dbfs(sig // 2)
     # Halving amplitude = -6 dB; from -3 dBFS sine that's -9.
@@ -108,7 +108,7 @@ async def test_arbitrate_acquire_drain_aborts_when_mic_muted():
     wl._measurement_active = asyncio.Event()
     wl._acquiring = True  # set by caller (_handle_wake_frame)
     wl._acquire_buffer = MagicMock()
-    wl._refractory_until = 0.0
+    wl._wake_legs.refractory_until = 0.0
     wl._state = State.WAKE
 
     # Patch out anything the WIN path would touch — they shouldn't be reached.
@@ -134,7 +134,7 @@ async def test_arbitrate_acquire_drain_aborts_when_measurement_active():
     wl._measurement_active.set()
     wl._acquiring = True
     wl._acquire_buffer = MagicMock()
-    wl._refractory_until = 0.0
+    wl._wake_legs.refractory_until = 0.0
     wl._state = State.WAKE
 
     wl._begin_turn = AsyncMock(side_effect=AssertionError("should not begin turn"))

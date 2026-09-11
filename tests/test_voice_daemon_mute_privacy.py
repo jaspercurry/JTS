@@ -36,7 +36,7 @@ def _wake_loop_for_mute(tmp_path):
     wl._acquire_buffer.append(b"acq")
     on_ring = deque([b"on1", b"on2"], maxlen=8)
     off_ring = deque([b"off1"], maxlen=8)
-    wl._legs = {
+    wl._wake_legs.legs = {
         "on": SimpleNamespace(capture_ring=on_ring, mic=None),
         "off": SimpleNamespace(capture_ring=off_ring, mic=None),
         "dtln": SimpleNamespace(capture_ring=None, mic=None),  # leg without a ring
@@ -85,9 +85,9 @@ async def test_session_status_nulls_idle_level_fields_while_mic_not_feeding(
     frozen value under either gate. last_wake_at is daemon-lifetime and
     is never nulled by either."""
     wl, _, _ = _wake_loop_for_mute(tmp_path)
-    wl._idle_rms_dbfs = -40.0
-    wl._input_last_above_floor_at = 123.0
-    wl._last_wake_at = 456.0
+    wl._wake_legs.idle_rms_dbfs = -40.0
+    wl._wake_legs.input_last_above_floor_at = 123.0
+    wl._wake_legs.last_wake_at = 456.0
 
     if hold == "muted":
         assert await wl.mute_mic() == "ok"
