@@ -27,7 +27,6 @@ from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.frequency_view import (
     FrequencyViewError,
-    build_frequency_view,
     frequency_run,
 )
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
@@ -113,7 +112,7 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
 
 
 def test_frequency_view_exposes_stored_average_baseline_and_positions():
-    view = build_frequency_view(_packet("aaa"))
+    view = neutral_view(frequency_run(_packet("aaa")))
 
     assert view["schema"] == "jts_frequency_view/1"
     run = view["runs"][0]
@@ -141,7 +140,7 @@ def test_frequency_view_gives_the_baseline_its_own_reference_frame():
     packet = _packet("aaa")
     packet["entry_baseline"]["magnitude_db"] = [-35.0, -34.0, -36.0]
 
-    view = build_frequency_view(packet)
+    view = neutral_view(frequency_run(packet))
     average, baseline = view["runs"][0]["series"][:2]
 
     assert average["reference_db"] == -24.0
@@ -202,7 +201,7 @@ def test_image_uses_shared_trust_markings_and_keeps_untrusted_data(tmp_path, mon
 
 
 def test_frequency_view_adds_optional_run_b_without_changing_run_a():
-    view = build_frequency_view(_packet("aaa"), _packet("bbb", offset=1.0))
+    view = neutral_view(frequency_run(_packet("aaa")), frequency_run(_packet("bbb", offset=1.0)))
 
     assert [(run["slot"], run["id"]) for run in view["runs"]] == [
         ("a", "aaa"), ("b", "bbb"),
@@ -214,7 +213,7 @@ def test_frequency_view_adds_optional_run_b_without_changing_run_a():
 
 def test_frequency_view_requires_the_packet_bundle_identity():
     with pytest.raises(FrequencyViewError, match="bundle session id"):
-        build_frequency_view({})
+        frequency_run({})
 
 
 def test_measurement_page_uses_the_canonical_shell_and_static_module():

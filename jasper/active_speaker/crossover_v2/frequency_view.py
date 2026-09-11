@@ -20,7 +20,6 @@ from jasper.active_speaker.frequency_view import (
     FrequencyRun,
     FrequencySeries,
     FrequencyViewError,
-    build_frequency_view as _build_frequency_view,
     frequency_series,
 )
 
@@ -219,16 +218,4 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
             "mic_calibration_id": mic.get("calibration_id"),
         },
         series=tuple(series),
-    )
-
-
-def build_frequency_view(
-    run_a: Mapping[str, Any],
-    run_b: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Backward-compatible evidence-packet door over the neutral projector."""
-
-    return _build_frequency_view(
-        frequency_run(run_a),
-        frequency_run(run_b) if run_b is not None else None,
     )
