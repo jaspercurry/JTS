@@ -29,7 +29,7 @@ from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
-    read_source_bytes,
+    read_json_source, read_source_bytes,
 )
 # The beside-the-round output rule, reused rather than restated: a live
 # session bundle is daemon-owned, so a view defaulting inside it raises
@@ -106,7 +106,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     REPEAT_FLOOR_DEFAULT_PATH,
     banked_round_of,
     recent_round_sessions,
-    round_inputs, contract_sources,
+    round_artifact_dir, round_inputs, contract_sources,
 )
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
@@ -459,10 +459,17 @@ def _cmd_contract(args: argparse.Namespace) -> int:
         sources = {}
         if args.round:
             inputs = round_inputs(Path(args.round))
-            sources = contract_sources(
-                inputs.session_dir, driver_draft_path=inputs.design_draft_path,
-                applied_profile_path=inputs.applied_profile_path,
-            )
+            sources = contract_sources(inputs.session_dir)
+            artifact_dir, _ = round_artifact_dir(inputs.session_dir)
+            for name, path in (
+                ("draft", inputs.design_draft_path),
+                ("receipt", artifact_dir / "round_receipt.json" if artifact_dir else None),
+            ):
+                try:
+                    raw = read_json_source(str(path)) if path is not None else None
+                except ValueError:
+                    raw = None
+                sources[name] = raw if isinstance(raw, dict) else {}
             sources["applied_profile"] = (load_applied_baseline_profile_state(inputs.applied_profile_path)
                                           if inputs.applied_profile_path else None)
         contracts = prescription_contracts(**sources)
@@ -1621,7 +1628,48 @@ def build_parser() -> argparse.ArgumentParser:
             "back through the strict gate, and say where this speaker stands."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"Run {CONTRACT_COMMAND} --round <dir> for the contracts.",
+        epilog=(
+            "WHEN NOT TO USE\n"
+            "  - to actually MEASURE anything -- this tool never opens a\n"
+            "    session or plays a sound; scripts/run-crossover-round.py or\n"
+            "    the guided web flow does that\n"
+            "  - to skip propose and go straight to stage -- stage runs the\n"
+            "    SAME gate propose does, so skipping propose only delays\n"
+            "    finding out about a refusal, it does not avoid the gate\n"
+            "\n"
+            "EXAMPLE -- emit the packet ONCE, then judge against that file\n"
+            "  jasper-crossover-prescriber packet rounds/round-3\n"
+            "      # writes rounds/round-3/packet.json and prints the path\n"
+            "  jasper-crossover-prescriber propose \\\n"
+            "      --packet rounds/round-3/packet.json \\\n"
+            "      --prescription my_prescription.json\n"
+            "  jasper-crossover-prescriber stage \\\n"
+            "      --packet rounds/round-3/packet.json \\\n"
+            "      --prescription my_prescription.json --state flow_state.json\n"
+            "\n"
+            "  The fingerprint the document echoes is the file's, so it\n"
+            "  matches by construction. Rebuilding the packet on another\n"
+            "  machine resolves --drivers/--applied-profile/--repeat-floor/\n"
+            "  --declared-geometry\n"
+            "  against THAT machine and fingerprints differently, which is\n"
+            "  what used to send an operator copying a fingerprint across\n"
+            "  by hand.\n"
+            "\n"
+            "EXIT CODES\n"
+            "  0  accepted -- status (which accepts nothing) always exits 0;\n"
+            "     what it could not read is a field in its document, not a\n"
+            "     code\n"
+            "  1  EXIT_REFUSED -- propose's or stage's gate refused the\n"
+            "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
+            "     and the same record as JSON on stdout\n"
+            "  2  EXIT_UNREADABLE -- the bundle, --state, --drivers,\n"
+            "     --applied-profile, --repeat-floor or --declared-geometry\n"
+            "     could not be read\n"
+            "  3  EXIT_WRITE_FAILED -- packet's or stage's own write failed\n"
+            "     -- a filesystem problem, distinct from a refused\n"
+            "     prescription: 1 means fix the prescription, 3 means fix\n"
+            "     the speaker's filesystem"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

@@ -1121,6 +1121,12 @@ def test_the_banked_seat_level_reference_is_published_either_way(
 # 6. status_document — the value door behind the print door (W3-a)
 # --------------------------------------------------------------------------- #
 
+#: The literal contract, so this pin does not just compare ``status_document``
+#: to itself. Both the CLI JSON below and the direct call below are built by
+#: ``status_document`` — the CLI is a thin wrapper over it — so a set dropped
+#: from ``status_document`` would vanish from BOTH sides of a same-keys
+#: comparison and the pin would stay green. Only a literal expectation, held
+#: nowhere near the code under test, has teeth against that.
 _STATUS_DOCUMENT_KEYS = {
     "speaker",
     "packet_fingerprint",

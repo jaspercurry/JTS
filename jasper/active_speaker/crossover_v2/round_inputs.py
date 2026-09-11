@@ -2,7 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve captures, matching state and banked context for one round."""
+"""Resolve one round's captures, matching state and separate bank-time context.
+
+The capture owner's snapshot lives in the bundle. Legacy live or banked state
+is usable only when its capture ID matches the round's artifact directory.
+Design, applied profile, repeat floor, declared geometry and the CamillaDSP
+statefile retain their own current/bank-time meanings.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +66,7 @@ STATE_SESSION_UNKNOWN = "state_session_unknown"
 
 
 class CrossoverEvidencePacketError(ValueError):
-    """A round bundle could not be read."""
+    """The named directory is not a crossover-v2 session bundle."""
 
 
 NO_ROUND_ARTIFACTS_REASON = "no crossover_v2 round artifacts under evidence/v1"
@@ -85,7 +91,7 @@ class RoundViewsError(CrossoverEvidencePacketError):
 
 @dataclass(frozen=True)
 class RoundInputs:
-    """Resolved paths for one round."""
+    """Paths for a round; unavailable matching state carries a reason code."""
 
     session_dir: Path
     state_path: Path | None
@@ -102,10 +108,18 @@ def state_matches_capture(state: object, capture_id: str) -> bool:
     return isinstance(state, Mapping) and state.get("session_id") == capture_id
 
 
+def _read_json_mapping(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
 def matching_state_path(
     session_dir: Path, fallback: Path | None,
 ) -> tuple[Path | None, str]:
-    """Resolve state by capture ID."""
+    """Prefer the capture owner's snapshot; accept older state only by capture ID."""
     round_dir, _reason = round_artifact_dir(session_dir)
     if round_dir is None:
         return None, STATE_SESSION_UNKNOWN
@@ -113,11 +127,7 @@ def matching_state_path(
     for path in (session_dir / CAPTURE_STATE_FILENAME, fallback):
         if path is None or not path.is_file():
             continue
-        try:
-            state = json.loads(path.read_text())
-        except (OSError, UnicodeDecodeError, ValueError):
-            reason = STATE_SESSION_UNKNOWN
-            continue
+        state = _read_json_mapping(path)
         if state_matches_capture(state, round_dir.name):
             return path, ""
         reason = STATE_SESSION_UNKNOWN
@@ -210,10 +220,10 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
         for directory in directories:
             try:
                 bundle = round_inputs(directory).session_dir
-                info = json.loads((bundle / "info.json").read_text())
-                if not isinstance(info, dict):
-                    continue
-            except (OSError, ValueError, CrossoverEvidencePacketError):
+            except (OSError, CrossoverEvidencePacketError):
+                continue
+            info = _read_json_mapping(bundle / "info.json")
+            if info is None:
                 continue
             sessions.setdefault(str(info.get("session_id") or bundle.name), (
                 finite_float(info.get("started_at")) or 0.0, bundle,
@@ -222,32 +232,33 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
 
 
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
-    """Live bundles are daemon-owned; their views go beside the caller."""
+    """Where a view lands when the operator named no ``--out``.
+
+    A BANKED round tree is the operator's own directory, so its views stay
+    beside the evidence they were computed from — including a view pointed at
+    the bundle INSIDE that tree, which is the only way the bundle-taking verbs
+    can be called: filing beside the caller there would leave every artifact
+    somewhere ``inventory`` never looks. A LIVE session bundle is the daemon's
+    (``/var/lib/jasper/active_speaker/sessions/<id>``, written by the web host
+    as its own user): defaulting inside it made the ordinary invocation —
+    grade the round I just ran — raise ``PermissionError`` for the operator
+    this door was added for (#3498). So a live round's view lands beside the
+    caller instead, named by the session it came from so two sessions graded
+    in one directory do not overwrite each other.
+    """
     root = round_dir if inputs.banked else banked_round_of(inputs.session_dir)
     return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
-def contract_sources(
-    session_dir: Path, *, driver_draft_path: Path | None = None,
-    applied_profile_path: Path | None = None,
-) -> dict[str, Any]:
-    """Read a bundle's contract inputs without live defaults."""
+def contract_sources(session_dir: Path) -> dict[str, Any]:
+    """Read candidate and room evidence; callers supply their receipt and context."""
     artifact_dir, reason = round_artifact_dir(session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
     inputs = round_inputs(session_dir)
     paths = {
-        "draft": driver_draft_path, "applied_profile": applied_profile_path,
-        "receipt": artifact_dir / "round_receipt.json",
         "candidate": artifact_dir / "candidate.json",
         **{key: default_out(inputs, session_dir, f"{key}.json")
            for key in ("room_median", "room_persistence", "room_ceiling")},
     }
-    result: dict[str, Any] = {}
-    for name, path in paths.items():
-        try:
-            raw = json.loads(path.read_text()) if path is not None else None
-        except (OSError, ValueError):
-            raw = None
-        result[name] = raw if isinstance(raw, dict) else {}
-    return result
+    return {name: _read_json_mapping(path) or {} for name, path in paths.items()}

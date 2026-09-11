@@ -2,7 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure alignment contracts: declared delay window, provenance, polarity and lobe."""
+"""ONE inter-driver delay — and optionally its polarity basin — prescribed from
+a named measurement (#2662).
+
+Pure functions, no I/O, no session. A prescription enters at
+``AlignmentEstimate`` (via ``MeasurementPriors.explicit_alignment_delay_us`` /
+``explicit_alignment_polarity_sign``), never stamped on the candidate after,
+so every downstream consumer reads one field. Two gates compose: provenance
+(a named basis) and the lobe bound, measured from that declared basis and NOT
+from the incumbent delay. Refusals raise and are never clamped to the boundary.
+One parser, two policies: :func:`read_alignment_prescription` is the request
+gate and the only place the bound is applied;
+:func:`alignment_prescription_from_mapping` re-checks shape and provenance but
+not the bound, and returns ``None`` rather than raising.
+"""
 
 from __future__ import annotations
 
@@ -138,7 +151,11 @@ _PRESCRIPTION_FIELDS = frozenset({
 
 
 class AlignmentPrescriptionRefused(ValueError):
-    """A prescription refusal with its reason code."""
+    """One prescription this module would not accept, and why.
+
+    ``reason`` is from :data:`ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS`, so the
+    classification travels with the raise.
+    """
 
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(detail)

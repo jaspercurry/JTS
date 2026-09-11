@@ -65,9 +65,11 @@ def round_bank(tmp_path):
 
 
 def _contracts(bank: Path, session: Path):
-    return prescription_contracts(**contract_sources(
-        session, driver_draft_path=bank / "design-draft.json",
-    ))
+    return prescription_contracts(
+        **contract_sources(session),
+        draft=json.loads((bank / "design-draft.json").read_text()),
+        receipt=json.loads((session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/round_receipt.json").read_text()),
+    )
 
 
 @pytest.mark.parametrize("section,door,codes", [
@@ -121,7 +123,6 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     bounds = speaker["driver"]["bounds"]
     assert bounds["max_composed_boost_db"] == driver.DRIVER_MAX_COMPOSED_BOOST_DB
     assert bounds["max_spl_spend_bound_db"] == driver.MAX_SPL_SPEND_BOUND_DB
-    assert bounds["cut_floor_db"] is None
     assert speaker["blend"]["bounds"]["boost_route"]["available"] is False
     assert speaker["blend"]["bounds"]["boost_route"]["reason"] == blend.BOOST_ROUTE_UNAVAILABLE
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())

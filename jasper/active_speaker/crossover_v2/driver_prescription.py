@@ -1517,11 +1517,6 @@ def driver_prescription_response_format() -> dict[str, Any]:
     return {
         "artifact_schema_version": DRIVER_PRESCRIPTION_SCHEMA_VERSION,
         "kind": "jts_crossover_driver_prescription_contract",
-        "the_other_class": (
-            "system-level shaping inside the crossover region is a different "
-            "class with different bounds and its own contract in this packet's "
-            "'response_format' block"
-        ),
         "what_this_class_is_for": (
             "one DRIVER's own full-band shape, corrected in that driver's own "
             "branch. Use it for a defect that belongs to one driver — a "

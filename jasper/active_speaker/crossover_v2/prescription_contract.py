@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from collections.abc import Mapping
 from dataclasses import MISSING, fields
 from copy import deepcopy
@@ -31,6 +30,7 @@ from . import driver_prescription as driver
 from . import room_prescription as room
 from . import topology_prescription as topology
 from .feature_classification import UNCERTAINTY_RANDOM
+from .fc_sweep import fc_rejection_scenarios
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
 SECTIONS = ("speaker", "room", "bass")
@@ -136,13 +136,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         topology_bounds.update(
             fc_hz=[floor, ceiling],
             minimum_slope_db_per_octave=resolve_driver_protection_slope_db_per_octave(safety, upper),
-            declared_fc_refusal=(topology._fc_rejection(corner, floor, ceiling) if corner else None),
-            fc_rejection={
-                "below_minimum": topology._fc_rejection(math.nextafter(floor, -math.inf), floor, ceiling),
-                "above_maximum": topology._fc_rejection(math.nextafter(ceiling, math.inf), floor, ceiling),
-                "at_minimum": topology._fc_rejection(floor, floor, ceiling),
-                "at_maximum": topology._fc_rejection(ceiling, floor, ceiling),
-            },
+            **fc_rejection_scenarios(floor, ceiling, declared_fc_hz=corner),
             slope_db_per_octave_by_order={
                 str(order): topology.TopologyPrescription(corner or floor, order, ()).slope_db_per_octave
                 for order in topology.SUPPORTED_LR_ORDERS
@@ -178,7 +172,6 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
                 "max_filters_per_role": driver.DRIVER_MAX_FILTERS_PER_ROLE,
                 "q_range_cut": [driver.EVALUABLE_Q_MIN, driver.EVALUABLE_Q_MAX],
                 "q_max_boost": driver.DRIVER_MAX_BOOST_Q,
-                "cut_floor_db": None,
                 "max_filter_boost_db": driver.DRIVER_MAX_FILTER_BOOST_DB,
                 "max_composed_boost_db": driver.DRIVER_MAX_COMPOSED_BOOST_DB,
                 "max_spl_spend_bound_db": driver.MAX_SPL_SPEND_BOUND_DB,
@@ -200,7 +193,6 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
                 "band_hz": band, "max_filters": blend.BLEND_MAX_FILTERS,
                 "q_range_cut": [blend.EVALUABLE_Q_MIN, blend.EVALUABLE_Q_MAX],
                 "q_max_boost": blend.PRESCRIPTION_MAX_BOOST_Q,
-                "cut_floor_db": None,
                 "max_filter_boost_db": blend.PRESCRIPTION_MAX_FILTER_BOOST_DB,
                 "max_composed_boost_db": blend.PRESCRIPTION_MAX_TOTAL_BOOST_DB,
                 "boost_route": {"available": False, "reason": blend.BOOST_ROUTE_UNAVAILABLE,

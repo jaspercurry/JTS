@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Request-time door availability (ADR-0212)."""
+"""The request-time doors that describe a HANDOFF between two branches.
+
+A speaker with no crossover region can open neither — see ADR-0212.
+"""
 
 from __future__ import annotations
 
