@@ -67,6 +67,7 @@ from jasper.active_speaker.angle_capture import (
     request_for_program,
     resolve_request,
     walk_price,
+    walk_template,
 )
 from jasper.active_speaker.candidate_bank import (
     CandidateBankRefusal,
@@ -80,6 +81,7 @@ from jasper.active_speaker.angle_capture_spool import (
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLES,
+    MEASURE_KIND_CANDIDATE,
     POLARITIES,
     POLARITY_NORMAL,
 )
@@ -218,22 +220,26 @@ def _declared_on_the_box() -> DeclaredGeometry | None:
 
 
 def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
-    """The walk-level graph and stimulus/level-policy statement, which both request
-    paths carry alike.
+    """The walk-level statement both request paths carry alike: the one
+    ``MeasureSpec`` every capture is built from, and this module's own volume
+    policy beside it.
     """
     return {
         "mover": args.mover,
-        "polarity": args.polarity,
-        "inverted_role": args.inverted_role,
-        "delayed_role": args.delayed_role,
-        "delay_us": args.delay_us,
-        "level_matched": args.level_matched,
-        "sweep_band_hz": tuple(args.sweep_band_hz) if args.sweep_band_hz else None,
-        "sweep_s": args.sweep_s,
-        "level_ladder_dbfs": tuple(args.level_dbfs),
+        "template": walk_template(
+            kind=MEASURE_KIND_CANDIDATE,
+            polarity=args.polarity,
+            inverted_role=args.inverted_role,
+            delayed_role=args.delayed_role,
+            delay_us=args.delay_us,
+            level_matched=args.level_matched,
+            sweep_band_hz=tuple(args.sweep_band_hz),
+            sweep_s=args.sweep_s,
+            level_ladder_dbfs=tuple(args.level_dbfs),
+            spl_ceiling_db_spl=args.spl_ceiling_db_spl,
+        ),
         "level_mode": args.level_mode,
         "main_volume_series_db": tuple(args.level_series),
-        "spl_ceiling_db_spl": args.spl_ceiling_db_spl,
     }
 
 
@@ -357,11 +363,11 @@ def _walk_payload(
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
-        "polarity": request.polarity,
-        "inverted_role": request.inverted_role,
-        "delayed_role": request.delayed_role,
-        "delay_us": request.delay_us,
-        "level_matched": request.level_matched,
+        "polarity": request.template.polarity,
+        "inverted_role": request.template.inverted_role,
+        "delayed_role": request.template.delayed_role,
+        "delay_us": request.template.delay_us,
+        "level_matched": request.template.level_matched,
         "stops": [
             {
                 "index": stop.index,

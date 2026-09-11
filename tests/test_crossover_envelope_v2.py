@@ -386,7 +386,7 @@ def test_check_phase_states_a_staged_walks_price_before_start(tmp_path, monkeypa
         # already catches — so the chooser renders, minus the offer.
         path = spool.angle_request_spool_path()
         doc = json.loads(path.read_text(encoding="utf-8"))
-        doc["delay_us"] = "12us"
+        doc["template"]["delay_us"] = "12us"
         path.write_text(json.dumps(doc), encoding="utf-8")
         unreadable = build_crossover_envelope_v2(_status(phase="check"))
     finally:

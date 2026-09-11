@@ -46,6 +46,11 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_BATCH_SIZE_KEY,
     POSITION_BATCH_START_KEY,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    MEASURE_KIND_CANDIDATE,
+    POLARITY_INVERTED,
+)
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
@@ -1443,8 +1448,11 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
     """
     program = mp.program(program_id, size)
     request = ac.request_for_program(
-        program, candidates=candidates, sweep_s=sweep_s,
-        level_ladder_dbfs=level_ladder_dbfs,
+        program, candidates=candidates,
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, sweep_s=sweep_s,
+            level_ladder_dbfs=level_ladder_dbfs,
+        ),
     )
     cycle = candidates or ("",)
     price = ac.walk_price(request)
@@ -1466,58 +1474,63 @@ def test_a_volume_series_prices_each_rung_as_another_capture_at_every_stop() -> 
         ac.AngleStop(7, ac.REGIME_SUMMED),
     )
     rungs = (-20.0, -14.0, -8.0)
+    template = ac.walk_template(kind=MEASURE_KIND_CANDIDATE, sweep_s=2.0)
 
     series = ac.walk_price(ac.AngleCaptureRequest(
         stops=stops, level_mode=ac.LEVEL_SERIES, main_volume_series_db=rungs,
-        sweep_s=2.0,
+        template=template,
     ))
     assert series == ac.walk_price(
-        ac.AngleCaptureRequest(stops=stops * len(rungs), sweep_s=2.0)
+        ac.AngleCaptureRequest(stops=stops * len(rungs), template=template)
     )
     assert (series["mic_moves"], series["captures"]) == (len(stops), 6)
     assert series["stimulus_s"] == pytest.approx(12.0)
 
 
-def test_every_stageable_stimulus_field_reads_back_whole(spool_slot) -> None:
-    """Request-level, so every stop in the batch is matched by construction: the
-    whole set round-trips through the spool document together.
+def test_the_whole_template_reads_back_whole(spool_slot) -> None:
+    """ONE spec per walk, so every capture is matched by construction: the whole
+    template crosses the document together, written and read by the spec itself.
     """
     request = replace(
         ac.summed_at([0, 7]),
-        sweep_band_hz=(200.0, 3000.0),
-        sweep_s=2.5,
-        level_ladder_dbfs=(-20.0, -14.0),
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE,
+            sweep_band_hz=(200.0, 3000.0),
+            sweep_s=2.5,
+            level_ladder_dbfs=(-20.0, -14.0),
+        ),
     )
     spool.stage_angle_request(request)
+
+    banked = json.loads(spool.angle_request_spool_path().read_text())["template"]
+    assert MeasureSpec.from_mapping(banked) == request.template
     assert spool.peek_staged_angle_request() == request
     assert spool.take_staged_angle_request() == request
 
 
-def test_a_walk_staged_before_the_stimulus_fields_existed_reads_back_as_stated(
+def test_a_document_from_the_older_schema_refuses_rather_than_reading_short(
     spool_slot,
 ) -> None:
-    """Additive, like R-1's delay/polarity pair: a document staged before these keys
-    existed still reads back, as a ``hold_reference`` walk stating no stimulus.
+    """The nine walk-level spec keys became one ``template``; a document written
+    under the old shape names no template at all, so it refuses instead of
+    staging a walk with the spec silently defaulted. The slot is single-use and
+    restaging is one command.
     """
     spool.stage_angle_request(
         ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),))
     )
     path = spool.angle_request_spool_path()
     doc = json.loads(path.read_text())
-    for key in (
-        "sweep_band_hz", "sweep_s", "level_ladder_dbfs", "level_mode",
-        "main_volume_series_db", "spl_ceiling_db_spl",
-    ):
-        doc.pop(key)
-    path.write_text(json.dumps(doc))
+    older = {
+        **{key: value for key, value in doc.items() if key != "template"},
+        "artifact_schema_version": 1,
+        "polarity": "normal",
+    }
+    path.write_text(json.dumps(older))
 
-    restored = spool.take_staged_angle_request()
-    assert restored.sweep_band_hz is None
-    assert restored.sweep_s is None
-    assert restored.level_ladder_dbfs == ()
-    assert restored.level_mode == ac.LEVEL_HOLD_REFERENCE
-    assert restored.main_volume_series_db == ()
-    assert restored.spl_ceiling_db_spl is None
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        spool.take_staged_angle_request()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED
 
 
 @pytest.mark.parametrize(
@@ -1540,24 +1553,45 @@ def test_a_bad_level_policy_refuses_at_statement_time(fields: dict) -> None:
 
 
 @pytest.mark.parametrize(
-    "band",
-    [(3000.0,), (3000.0, 200.0), (200.0, 200.0), (200.0, math.inf),
-     (math.nan, 3000.0), (200.0, 3000.0, 9000.0), ("200", "3000")],
+    ("fields", "reason"),
+    [
+        ({"sweep_band_hz": (3000.0,)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"sweep_band_hz": (3000.0, 200.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"sweep_band_hz": (200.0, 200.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"sweep_band_hz": (200.0, math.inf)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"sweep_band_hz": (math.nan, 3000.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"sweep_band_hz": (200.0, 3000.0, 9000.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"sweep_s": 0.0}, ac.WALK_STIMULUS_NOT_ACCEPTED),
+        ({"polarity": POLARITY_INVERTED}, ac.WALK_POLARITY_NOT_ACCEPTED),
+        ({"inverted_role": "tweeter"}, ac.WALK_POLARITY_NOT_ACCEPTED),
+        ({"delayed_role": "tweater", "delay_us": 250.0},
+         ac.WALK_DELAY_NOT_ACCEPTED),
+        ({"delay_us": 250.0}, ac.WALK_DELAY_NOT_ACCEPTED),
+    ],
     ids=["one-bound", "descending", "equal", "infinite", "nan", "three-bounds",
-         "strings"],
+         "zero-duration", "polarity-with-no-branch", "branch-with-no-polarity",
+         "unknown-delayed-branch", "delay-with-no-branch"],
 )
-def test_a_band_that_is_not_two_ascending_bounds_refuses_at_statement_time(
-    band: tuple,
+def test_a_template_field_the_spec_refuses_names_the_half_it_refused(
+    fields: dict, reason: str,
 ) -> None:
-    """The SHAPE only. Nyquist stays ``MeasureSpec``'s, so a well-shaped band this
-    module cannot judge passes here and is judged when the host builds the walk's
-    specs.
+    """``MeasureSpec`` is the only judge of a spec field, and the refusal reaches
+    an operator under the slug for the flag they got wrong -- with the spec's own
+    sentence as the detail, compared here against what the spec actually raises
+    rather than against a copy of its wording.
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), sweep_band_hz=band,
+        ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields)
+
+    assert excinfo.value.reason == reason
+    with pytest.raises(ValueError) as spec_refusal:
+        MeasureSpec(
+            kind=MEASURE_KIND_CANDIDATE, graph_scope=ac.TEMPLATE_SWEEP_SCOPE
+            if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None
+            else "drivers",
+            **fields,
         )
-    assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
+    assert excinfo.value.detail == str(spec_refusal.value)
 
 
 @pytest.mark.parametrize(
@@ -1573,26 +1607,87 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
     price a stimulus no stop plays.
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **fields)
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+            template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields),
+        )
     assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
 
 
 @pytest.mark.parametrize(
-    "fields",
+    "identity",
+    [{"positions": (7,)}, {"pose_prompts": ("turn it",)},
+     {"candidate_id": "fp-a", "graph_scope": "candidate"}],
+    ids=["positions", "pose_prompts", "candidate_id"],
+)
+def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -> None:
+    """The template is replayed at every stop, so a pose or candidate stated on it
+    would be silently replaced there and silently kept on the design-axis spec --
+    a walk measuring somewhere other than the stops its receipt printed.
+    """
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+            template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **identity),
+        )
+    assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
+
+
+def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> None:
+    """One template, two readers: the design-axis spec drops the summed sweep the
+    drivers scope cannot play and keeps the ladder and ceiling every scope can;
+    each summed stop gets the template at ITS pose, prompt, candidate and scope,
+    and a per-driver stop gets no spec at all (it plays the phase's own program).
+    """
+    template = ac.walk_template(
+        kind=MEASURE_KIND_CANDIDATE, sweep_band_hz=(200.0, 3000.0), sweep_s=2.5,
+        level_ladder_dbfs=(-20.0, -14.0), spl_ceiling_db_spl=100.0,
+    )
+    request = ac.AngleCaptureRequest(
+        stops=(
+            ac.AngleStop(0, ac.REGIME_PER_DRIVER),
+            ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),
+        ),
+        template=template,
+    )
+    prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
+
+    assert ac.design_axis_spec(request) == replace(
+        template, graph_scope="drivers", sweep_band_hz=(), sweep_s=None,
+    )
+    assert ac.stop_specs(
+        request, candidate_scopes={"fp-a": "candidate"}, prompts=prompts,
+    ) == (
+        None,
+        replace(
+            template, positions=(20,), vertical_deg=5,
+            pose_prompts=(prompts[1].text,), candidate_id="fp-a",
+            graph_scope="candidate",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("walk", "banked"),
     [
-        {"spl_ceiling_db_spl": 100.0},
-        {"level_mode": ac.LEVEL_ACQUIRE_AT_ANCHOR},
-        {"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": (-20.0, -14.0)},
+        ({"template": {"spl_ceiling_db_spl": 100.0}}, {"spl_ceiling_db_spl": 100.0}),
+        ({"level_mode": ac.LEVEL_ACQUIRE_AT_ANCHOR}, {}),
+        ({"level_mode": ac.LEVEL_SERIES, "main_volume_series_db": (-20.0, -14.0)}, {}),
     ],
     ids=["ceiling", "acquire-at-anchor", "series"],
 )
 def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
-    spool_slot, fields: dict,
+    spool_slot, walk: dict, banked: dict,
 ) -> None:
     """The dry run still says what the walk would cost; the SLOT only ever holds a
     walk something can play. Refused on the way in and on the way out, so a
     hand-written document is refused the same way a staged one is.
     """
+    fields = {
+        **walk,
+        **({"template": ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **walk["template"])}
+           if "template" in walk else {}),
+    }
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), **fields,
     )
@@ -1608,8 +1703,9 @@ def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
         "kind": spool.SPOOL_KIND,
         "mover": request.mover,
         "stops": [{"angle_deg": 0, "regime": ac.REGIME_PER_DRIVER}],
+        "template": request.template.to_dict() | banked,
         **{key: list(value) if isinstance(value, tuple) else value
-           for key, value in fields.items()},
+           for key, value in walk.items() if key != "template"},
     }
     spool.angle_request_spool_path().write_text(json.dumps(hand_written))
     with pytest.raises(ac.LateralWalkRefused) as taking:
@@ -1621,36 +1717,40 @@ def test_a_policy_no_player_honours_yet_prices_but_does_not_stage(
     ("field", "banked"),
     [
         ("delay_us", "loud"),
+        ("delay_us", "250"),
         ("sweep_s", "two and a half"),
         ("sweep_s", math.nan),
         ("spl_ceiling_db_spl", "loud"),
         ("sweep_band_hz", "200,3000"),
         ("level_ladder_dbfs", "-20"),
         ("level_ladder_dbfs", ["-20", "quiet"]),
-        ("main_volume_series_db", {"rung": -20}),
         ("sweep_s", True),
         ("delay_us", ""),
         ("spl_ceiling_db_spl", []),
+        ("candidate_id", 7),
+        ("level_matched", "true"),
+        ("no_such_field", 1),
     ],
-    ids=["delay-word", "sweep-s-word", "sweep-s-nan", "ceiling-word",
-         "band-string", "ladder-bare-string", "ladder-bad-rung", "series-mapping",
-         "sweep-s-bool", "delay-empty", "ceiling-list"],
+    ids=["delay-word", "delay-numeral", "sweep-s-word", "sweep-s-nan",
+         "ceiling-word", "band-string", "ladder-bare-string", "ladder-bad-rung",
+         "sweep-s-bool", "delay-empty", "ceiling-list", "id-number",
+         "matched-string", "unknown-key"],
 )
-def test_a_banked_number_that_is_not_one_refuses_as_a_malformed_document(
+def test_a_banked_template_field_that_is_not_one_refuses_as_malformed(
     spool_slot, field: str, banked: object,
 ) -> None:
-    """Every banked number is read through ``float`` at the door, so nothing reaches
-    ``AngleCaptureRequest`` as a word -- where ``math.isfinite`` would raise a
-    ``TypeError`` past every caller that catches ``CrossoverV2FlowError``. A bare
-    string is the one that bites quietly: iterated instead of refused, it reads
-    back as one rung per character.
+    """The spec reads its own document, so a hand-edited field is judged exactly
+    as a flag would be -- a numeral STRING included, since ``jasper-measure``
+    refuses one and two doors onto one class may not disagree. Refused as this
+    document's own slug naming the field, never as a ``ValueError``/``TypeError``
+    past every caller that catches ``CrossoverV2FlowError``.
     """
     spool.stage_angle_request(
         ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),))
     )
     path = spool.angle_request_spool_path()
     doc = json.loads(path.read_text())
-    doc[field] = banked
+    doc["template"][field] = banked
     path.write_text(json.dumps(doc))
 
     with pytest.raises(spool.AngleRequestRefused) as excinfo:
@@ -1659,22 +1759,29 @@ def test_a_banked_number_that_is_not_one_refuses_as_a_malformed_document(
     assert field in excinfo.value.detail
 
 
-def test_a_banked_number_written_as_a_numeral_reads_back_as_one(spool_slot) -> None:
-    """The other half of the coercion: a hand-edited ``"2.5"`` becomes 2.5 rather
-    than a string that MULTIPLIES into ``"2.52.52.5"`` when a price scales it.
+@pytest.mark.parametrize(
+    "banked", ["-20", {"rung": -20}, [None], math.nan],
+    ids=["bare-string", "mapping", "null-rung", "nan"],
+)
+def test_a_banked_volume_rung_that_is_not_a_number_refuses_as_malformed(
+    spool_slot, banked: object,
+) -> None:
+    """The walk's own rungs, the one banked list outside the template. A bare
+    string is the one that bites quietly: iterated instead of refused, it reads
+    back as one rung per character.
     """
     spool.stage_angle_request(
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),))
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),))
     )
     path = spool.angle_request_spool_path()
     doc = json.loads(path.read_text())
-    doc["sweep_s"] = "2.5"
-    doc["level_ladder_dbfs"] = ["-20", -14]
+    doc["main_volume_series_db"] = banked
     path.write_text(json.dumps(doc))
 
-    restored = spool.take_staged_angle_request()
-    assert (restored.sweep_s, restored.level_ladder_dbfs) == (2.5, (-20.0, -14.0))
-    assert ac.walk_price(restored)["stimulus_s"] == pytest.approx(5.0)
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        spool.peek_staged_angle_request()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED
+    assert "main_volume_series_db" in excinfo.value.detail
 
 
 def test_the_stimulus_flags_are_one_spelling_in_both_clis() -> None:
@@ -1708,9 +1815,9 @@ def test_cli_stimulus_flags_reach_the_staged_request(spool_slot) -> None:
         "--level-dbfs", "-20", "--level-dbfs", "-14",
     ]
     request = cli._build_request(cli.build_parser().parse_args(argv))
-    assert request.sweep_band_hz == (200.0, 3000.0)
-    assert request.sweep_s == 2.5
-    assert request.level_ladder_dbfs == (-20.0, -14.0)
+    assert request.template.sweep_band_hz == (200.0, 3000.0)
+    assert request.template.sweep_s == 2.5
+    assert request.template.level_ladder_dbfs == (-20.0, -14.0)
     assert request.level_mode == ac.LEVEL_HOLD_REFERENCE
 
     spool.stage_angle_request(request)
@@ -1730,7 +1837,7 @@ def test_the_walk_level_policy_flags_reach_the_request() -> None:
     ]))
     assert request.level_mode == ac.LEVEL_SERIES
     assert request.main_volume_series_db == (-20.0, -14.0)
-    assert request.spl_ceiling_db_spl == 100.0
+    assert request.template.spl_ceiling_db_spl == 100.0
 
 
 def test_cli_stimulus_flags_reach_the_printed_price(capsys) -> None:

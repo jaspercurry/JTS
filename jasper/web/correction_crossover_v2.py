@@ -1968,15 +1968,13 @@ def _take_staged_angle_walk(
     direction is also the cheap one; the document is single-use either way, so
     the operator restages after fixing what was named.
 
-    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, BUILT
-    here rather than checked: the same objects the engine leg plays, so no
-    second construction can disagree with the validated one. The design-axis
-    MEASURE index always carries the walk-level spec; a STOP is in the map only
-    when it names a candidate, which only the engine leg can install. Each spec
-    carries the part of the walk's stimulus statement its scope can play
-    (:meth:`~jasper.active_speaker.angle_capture.AngleCaptureRequest.measure_spec_stimulus`),
-    so a stated field either plays or refuses the open — never silently
-    dropped and reported as staged.
+    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, KEYED
+    here and built by the walk's own owners
+    (:func:`~jasper.active_speaker.angle_capture.design_axis_spec`,
+    :func:`~jasper.active_speaker.angle_capture.stop_specs`), so the objects the
+    engine leg plays are the walk's template placed and never a second reading
+    of it. The design-axis MEASURE index always carries the template; a STOP is
+    in the map only when it plays a summed graph.
     ``claims`` is what each stop's graph CARRIED, for the pose records the flow
     banks.
 
@@ -2003,17 +2001,15 @@ def _take_staged_angle_walk(
     ordinary shape and the operator stages again.
     """
     from jasper.active_speaker.angle_capture import (
-        REGIME_SUMMED,
-        REGIME_BRANCHES,
         WALK_CANDIDATE_NOT_MEASURABLE,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
-        WALK_DELAY_NOT_ACCEPTED,
-        WALK_POLARITY_NOT_ACCEPTED,
         WALK_STIMULUS_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
+        design_axis_spec,
         session_lateral_walk,
+        stop_specs,
     )
     from jasper.active_speaker.candidate_bank import (
         CandidateBankRefusal,
@@ -2029,19 +2025,13 @@ def _take_staged_angle_walk(
         position_angle_deg,
         position_elevation_deg,
     )
-    from jasper.active_speaker.crossover_v2.contracts import (
-        MEASURE_KIND_CANDIDATE,
-        MEASURE_KIND_VERIFY,
-        CrossoverV2FlowError,
-    )
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
     from jasper.active_speaker.crossover_v2.journey import (
         LATERAL_CONSUMER_FORWARD_MODEL,
         PHASE_LATERAL,
         PHASE_MEASURE,
     )
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.spatial import TakeClaim
-    from jasper.active_speaker.measurement_programs import baseline_scope
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2084,32 +2074,7 @@ def _take_staged_angle_walk(
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
         raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
-    try:
-        # Its own arm rather than a fourth clause on the block above: only THIS
-        # construction may be read as a polarity refusal, and a ``ValueError``
-        # from anything else up there must not be relabelled as one.
-        measure_spec = MeasureSpec(
-            kind=MEASURE_KIND_CANDIDATE,
-            polarity=request.polarity,
-            inverted_role=request.inverted_role,
-            delayed_role=request.delayed_role,
-            delay_us=request.delay_us,
-            level_matched=request.level_matched,
-            **request.measure_spec_stimulus(summed=False),
-        )
-    except ValueError as exc:
-        # Attributed by which half the request STATED, never by re-judging
-        # validity here — that rule has one owner and a second copy drifts. A
-        # request stating a delay reads as a delay refusal; the detail is the
-        # spec's own sentence either way, so it always names the real field.
-        # The design-axis spec carries only the ladder and ceiling of the
-        # stimulus, neither of which the spec refuses, so a raise here is the
-        # delay's or the polarity's.
-        stated_delay = bool(request.delayed_role or request.delay_us)
-        raise refused(
-            WALK_DELAY_NOT_ACCEPTED if stated_delay else WALK_POLARITY_NOT_ACCEPTED,
-            str(exc),
-        ) from exc
+    measure_spec = design_axis_spec(request)
     level_trims, trim_source = _resolve_measurement_level_trims(
         measure_spec, preset=preset, topology=topology,
     )
@@ -2127,8 +2092,9 @@ def _take_staged_angle_walk(
             candidate_id: candidate_trial_scope(find_banked_candidate(candidate_id).candidate)
             for candidate_id in sorted(set(candidate_ids) - {""})
         }
-        if any(stop.regime in (REGIME_SUMMED, REGIME_BRANCHES) for stop in request.stops) and (
-            request.level_matched or request.inverted_role or request.delayed_role
+        if any(stop.plays_summed for stop in request.stops) and (
+            request.template.level_matched or request.template.inverted_role
+            or request.template.delayed_role
         ):
             raise LateralWalkRefused(
                 WALK_CANDIDATE_NOT_MEASURABLE,
@@ -2153,25 +2119,20 @@ def _take_staged_angle_walk(
         for index, phase in walk_index_phase.items()
         if phase == PHASE_MEASURE
     }
-    summed_stimulus = request.measure_spec_stimulus(summed=True)
-    for index, prompt, stop in zip(
+    try:
+        placed = stop_specs(
+            request, candidate_scopes=candidate_scopes, prompts=prompts,
+        )
+    except ValueError as exc:
+        # Only the stop's own pose is new on those constructions; the spec's own
+        # sentence names the field.
+        raise refused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+    for index, spec in zip(
         sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
-        prompts, request.stops,
+        placed,
     ):
-        if stop.plays_summed:
-            scope = candidate_scopes[stop.candidate_id] if stop.candidate_id else baseline_scope(stop.purpose)
-            try:
-                specs_by_index[index] = MeasureSpec(
-                    kind=MEASURE_KIND_VERIFY if not stop.candidate_id and scope != "base" else MEASURE_KIND_CANDIDATE,
-                    positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
-                    pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
-                    graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else scope,
-                    **summed_stimulus,
-                )
-            except ValueError as exc:
-                # Only the stimulus is new on this construction; the spec's own
-                # sentence names the field.
-                raise refused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+        if spec is not None:
+            specs_by_index[index] = spec
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
         for stop in request.stops
@@ -2184,11 +2145,11 @@ def _take_staged_angle_walk(
         elevations=",".join(f"{position_elevation_deg(p):+d}" for p in prompts),
         mover=request.mover,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
-        polarity=request.polarity,
-        inverted_role=request.inverted_role,
-        delayed_role=request.delayed_role,
-        delay_us=request.delay_us,
-        level_matched=request.level_matched,
+        polarity=request.template.polarity,
+        inverted_role=request.template.inverted_role,
+        delayed_role=request.template.delayed_role,
+        delay_us=request.template.delay_us,
+        level_matched=request.template.level_matched,
         # WHICH evidence answered, so a take's receipts name the source of the
         # gains its graph carries instead of leaving a reader to guess between
         # the banked trim and the guided captures. Empty on an unmatched walk.
