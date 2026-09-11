@@ -16,7 +16,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0226](0226-constrained-hardware-doctrine-push-dont-pull-no-spawns-one-interpreter.md) | Constrained-hardware doctrine — push don't pull, no spawns, one interpreter | accepted |
 | [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | accepted |
 | [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230 |
-| [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | accepted |
+| [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
 
 ## Deploy, install & system
@@ -209,7 +209,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0002](0002-measure-again-discriminator.md) | "Would measuring again plausibly fix it?" separates a capture defect from a description of the world | accepted |
 | [0003](0003-prediction-gate-frame.md) | A gate's two terms must be the same instrument at the same position — the prediction gate's frame | accepted |
 | [0005](0005-fader-bound-asymmetric-record-point.md) | A fader position tracked across a fallible write is a LOWER BOUND, recorded on an asymmetric point | accepted |
-| [0006](0006-staged-walk-refuses-the-open.md) | A staged request the session cannot honour refuses the open — it never degrades to a different session | accepted |
+| [0006](0006-staged-walk-refuses-the-open.md) | A staged request the session cannot honour refuses the open — it never degrades to a different session | superseded by 0297 |
 | [0007](0007-refuse-dont-mislead-when-begins-are-gated.md) | Refuse, don't mislead — a gated session never prompts a pose its mover cannot reach | accepted |
 | [0008](0008-every-begin-is-gated-no-release-order-coupling.md) | Every begin is gated, including the on-axis ones — and a gated shape may not introduce release-order coupling | accepted |
 | [0009](0009-measurement-volume-hold-is-not-gated-on-observation.md) | The measurement-volume hold is the safety ledger's integrity, not forensics — it is never gated on a diagnostics flag | accepted |
@@ -228,7 +228,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0181](0181-the-ripple-disclosure-corpus-is-thirteen-captures-counted-once.md) | The ripple disclosure's corpus is thirteen captures, counted in one place | accepted |
 | [0182](0182-the-verify-pilot-transfer-ceiling-rests-on-one-clean-session.md) | The VERIFY pilot-transfer ceiling rests on one clean multi-attempt session | accepted |
 | [0183](0183-the-verify-repeat-floor-is-twice-a-measured-consecutive-pair-p95.md) | The VERIFY repeat floor is twice a measured consecutive-pair p95 | accepted |
-| [0188](0188-wired-first-measurement-relay-parked.md) | Wired-first measurement; relay parked | amended by 0222 |
+| [0188](0188-wired-first-measurement-relay-parked.md) | Wired-first measurement; relay parked | §§2–3 superseded by 0222, §1 amended by 0296 |
 | [0192](0192-the-campaign-is-the-validation.md) | The campaign is the validation | accepted |
 | [0193](0193-the-audition-door-is-a-runtime-only-swap.md) | The audition door is a runtime-only swap | accepted |
 | [0194](0194-the-flat-spec-frame-and-its-ceiling.md) | The flat-spec reference is the low-mid band, and the graded ceiling follows the microphone | accepted |
@@ -256,7 +256,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | §4 seat default amended by 0260 |
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
-| [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265 |
+| [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265, §1 superseded by 0303 |
 | [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | amended by 0277, 0278 |
 | [0277](0277-the-seat-cloud-adds-eleven-positions-without-renaming-saved-cubes.md) | The seat cloud adds eleven positions without renaming saved cubes | accepted |
 | [0263](0263-a-ring-ended-camilladsp-graph-takes-the-ring-geometry.md) | A ring-ended CamillaDSP graph takes the ring geometry | accepted |
@@ -266,7 +266,17 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0272](0272-the-decay-snap-lever-is-removed-so-the-cushion-hold-is-not-hardware-provable.md) | The DECAY_SNAP lever is removed, so the cushion hold is not hardware-provable | accepted |
 | [0283](0283-camilladsp-starts-only-on-a-graph-proved-against-its-own-topology.md) | CamillaDSP starts only on a graph proved against its own topology | accepted |
 | [0284](0284-audits-are-frozen-reports-and-issues-are-the-ledger.md) | Audits are frozen reports; issues are the ledger | accepted |
-| [0285](0285-wake-detection-is-off-for-the-whole-measurement-hold.md) | Wake detection is off for the whole measurement hold | accepted |
+| [0285](0285-wake-detection-is-off-for-the-whole-measurement-hold.md) | Wake detection is off for the whole measurement hold | amended by 0305 |
 | [0286](0286-installation-context-guides-bass-trials.md) | Installation context guides bass trials | accepted |
 | [0287](0287-native-bass-range-is-not-a-driver-limit.md) | Native bass range is not a driver limit | accepted |
 | [0288](0288-the-v1-commissioning-lane-is-deleted.md) | The v1 commissioning lane is deleted | accepted |
+| [0296](0296-one-executor-lives-in-the-daemon.md) | One executor lives in the daemon; every mover is a client of one gate | accepted |
+| [0297](0297-the-plan-is-posted-in-the-run-body.md) | The plan is posted in the run body; the staged spool is deleted | accepted |
+| [0298](0298-tiers-and-stages-retire.md) | Tiers and stages retire; the program registry is the only pose vocabulary | accepted |
+| [0299](0299-one-evidence-manifest-per-run.md) | One evidence manifest per run, written by the executor | accepted |
+| [0300](0300-one-fault-registry.md) | One fault registry: code, household copy, next action, retriable | accepted |
+| [0301](0301-an-intact-trial-capture-is-the-measured-requirement.md) | The listening flag retires; an intact trial capture is the measured requirement; verification is advice | accepted |
+| [0302](0302-the-speaker-program-is-explicit.md) | The Speaker program is explicit | accepted |
+| [0303](0303-a-trial-plays-the-candidate-as-composed.md) | A trial plays the candidate as composed; the layer order is speaker → room → bass; the composer owns inherit/clear semantics | accepted |
+| [0304](0304-the-bass-level-axis-is-fixed-level-windows.md) | The bass level axis is fixed-level windows inside one run; canonical pose sets belong to each program and mover | accepted |
+| [0305](0305-the-measurement-hold-spans-a-whole-run.md) | The measurement hold spans a whole run from the mover's join | accepted |

@@ -1,7 +1,9 @@
 # ADR-0188: Wired-first measurement; relay parked
 
 - **Date:** 2026-08-28
-- **Status:** Accepted. Sections 2 and 3 are superseded by
+- **Status:** Accepted. Section 1 is amended by
+  [ADR-0296](0296-one-executor-lives-in-the-daemon.md). Sections 2 and 3 are
+  superseded by
   [ADR-0222](0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md).
 
 ## Context
