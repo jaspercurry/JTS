@@ -11,6 +11,7 @@ from jasper.active_speaker.bass_fit import fit_bass_shape
 from dataclasses import replace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -888,8 +889,8 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert 'pose_key' in diagnostic['context']['incompatible_fields']
 
 
-@pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
-def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale):
+@pytest.fixture
+def bass_fit_pairs():
     grid = np.geomspace(50, 200, 100)
     baseline = {
         'record_path': 'off.json',
@@ -909,6 +910,13 @@ def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(targ
         after['record'].update(graph_scope='bass_candidate', candidate_id='boost', graph_fingerprint='boosted')
         after['fundamental_db'] = [-20 + gain] * len(grid)
         pairs.append((before, after))
+    return pairs
+
+
+@pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
+def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale, bass_fit_pairs):
+    pairs = bass_fit_pairs
+    grid = np.asarray(pairs[0][0]['freqs_hz'])
     kwargs = {'candidate_id': 'boost', 'descriptor': {'low_boost_db': 12, 'reference_level_db': 0,
               'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30},
               'target': {'freqs_hz': [50, 200], 'magnitude_db': [target_db, target_db]}}
@@ -928,3 +936,76 @@ def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(targ
     pairs[1][0]['record']['level_db'] = -10
     with pytest.raises(ValueError):
         fit_bass_shape(pairs, **kwargs)
+
+
+@pytest.mark.parametrize('fault', [None, 'coverage', 'zero_coverage', 'stimulus', 'integrity', 'reference', 'after_reference', 'after_level', 'pair_level', 'reference_band', 'measured_pass'])
+def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_fit_pairs, tmp_path, monkeypatch, fault):
+    descriptor = {'low_boost_db': 12, 'reference_level_db': 0,
+                  'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30}
+    monkeypatch.setattr('jasper.active_speaker.candidate_bank.load_candidate_artifact',
+                        lambda _: SimpleNamespace(fingerprint='boost', bass_extension=descriptor))
+    takes, pairs = [], []
+    for volume, gain in [(-10, 10), (-30, 6), (-20, 3)]:
+        before, after = copy.deepcopy(bass_fit_pairs[0])
+        for index, take in enumerate((before, after)):
+            take['record'].update(level_db=volume, loudness_volume_db=volume, take_id=f'{volume}-{index}')
+            take['record_path'] = f'{volume}-{index}.json'
+            take['fundamental_db'] = [volume - 6 + index * gain] * len(take['freqs_hz'])
+            take['fundamental_qualified'] = [True] * len(take['freqs_hz'])
+            take['frequency_curve']['magnitude_db'] = [volume] * 3
+            takes.append(take)
+        pairs.append({name: {'view': 'view.json', 'take_id': take['record']['take_id']}
+                      for name, take in [('before', before), ('after', after)]})
+    if fault == 'coverage':
+        takes[0]['fundamental_qualified'] = [f > 70 for f in takes[0]['freqs_hz']]
+    elif fault == 'zero_coverage':
+        takes[0]['fundamental_qualified'] = [False] * len(takes[0]['freqs_hz'])
+    elif fault == 'stimulus':
+        for take in takes[:2]:
+            take['record']['stimulus_dbfs'] = -14
+    elif fault == 'integrity':
+        takes[1]['diagnostics'] = {'integrity_failed': True}
+    elif fault == 'reference':
+        del takes[0]['record']['loudness_volume_db']
+    elif fault == 'after_reference':
+        del takes[1]['record']['loudness_volume_db']
+    elif fault == 'after_level':
+        del takes[1]['record']['level_db']
+    elif fault == 'pair_level':
+        takes[1]['record']['level_db'] -= 1
+    elif fault == 'reference_band':
+        for take in takes:
+            take['sweep_band_hz'] = [20, 200]
+    elif fault == 'measured_pass':
+        for index, take in enumerate(takes[:2]):
+            take['fundamental_db'] = [-11 + index * 3] * len(take['freqs_hz'])
+        for index, original in enumerate(takes[:2]):
+            take = copy.deepcopy(original)
+            take['record'].update(position_deg=20, take_id=f'extra-{index}')
+            take['record_path'] = f'extra-{index}.json'
+            take['fundamental_db'] = [-13 + index] * len(take['freqs_hz'])
+            takes.append(take)
+        pairs.append({name: {'view': 'view.json', 'take_id': take['record']['take_id']}
+                      for name, take in zip(('before', 'after'), takes[-2:])})
+    (tmp_path / 'view.json').write_text(json.dumps({'schema': 'jts_bass_view/1', 'takes': takes}))
+    request = tmp_path / 'request.json'
+    request.write_text(json.dumps({'candidate': 'candidate.json', 'pairs': pairs, 'tolerance_db': 2.1 if fault == 'measured_pass' else 1,
+                                   'target': {'freqs_hz': [60, 100], 'magnitude_db': [0, 0]}}))
+    out = tmp_path / 'table.json'
+    code = round_views_main(['bass-fit-table', str(request), '--out', str(out)])
+    if fault not in (None, 'coverage', 'zero_coverage', 'measured_pass'):
+        assert code == EXIT_UNREADABLE
+        assert not out.exists()
+        return
+    assert code == 0
+    table = json.loads(out.read_text())
+    assert table['tested_volume_range_db'] == [-30, -10]
+    assert table['target']['freqs_hz'] == [60, 100]
+    assert [row['volume_db'] for row in table['levels']] == [-30, -20, -10]
+    assert [row['selected_scale'] for row in table['levels']] == [1, 1, None if fault == 'zero_coverage' else 1 if fault == 'measured_pass' else pytest.approx(.6)]
+    assert [row['outcome'] for row in table['levels']] == [
+        'target_met', 'target_not_met', 'target_met' if fault == 'measured_pass' else
+        'insufficient_evidence' if fault else 'measurement_required']
+    assert table['levels'][0]['fit']['choices'][-1]['max_abs_error_db'] == 0
+    if fault == 'measured_pass':
+        assert table['levels'][-1]['fit']['selected_scale'] == pytest.approx(.6)

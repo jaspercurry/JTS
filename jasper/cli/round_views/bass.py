@@ -40,11 +40,14 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     compare.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
     compare.add_argument("--out")
     compare.set_defaults(func=_cmd_compare)
-    fit = sub.add_parser("bass-fit", help="fit one measured native bass shape to an explicit target (laptop)")
-    fit.add_argument("request", type=Path, help="JSON: candidate path, target curve, and exact before/after take pairs")
-    fit.add_argument("--out")
-    fit.add_argument("--descriptor-out", type=Path, help="write the fitted descriptor for compose --bass-extension-json")
-    fit.set_defaults(func=_cmd_fit)
+    for name, help_text in (("bass-fit", "fit one measured bass shape"),
+                            ("bass-fit-table", "fit recorded bass pairs separately at each operating level")):
+        fit = sub.add_parser(name, help=help_text)
+        fit.add_argument("request", type=Path, help="JSON: candidate, target, pairs; table also requires tolerance_db")
+        fit.add_argument("--out")
+        if name == "bass-fit":
+            fit.add_argument("--descriptor-out", type=Path, help="write the fitted descriptor for compose --bass-extension-json")
+        fit.set_defaults(func=_cmd_fit)
 
 
 def _cmd_compare(args: argparse.Namespace) -> int:
@@ -63,6 +66,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 def _cmd_fit(args: argparse.Namespace) -> int:
     from jasper.active_speaker.bass_fit import fit_bass_shape  # lazy: laptop array analysis
+    from jasper.active_speaker.bass_table import fit_bass_table  # lazy: laptop array analysis
     from jasper.active_speaker.bass_comparison import selected_take  # lazy: laptop array analysis
     from jasper.active_speaker.candidate_bank import load_candidate_artifact  # lazy: candidate graph dependencies
 
@@ -74,13 +78,17 @@ def _cmd_fit(args: argparse.Namespace) -> int:
         def take(ref):
             view = json.loads((args.request.parent / ref["view"]).read_text())
             return selected_take(view, ref["take_id"])
-        return fit_bass_shape([(take(pair["before"]), take(pair["after"])) for pair in request["pairs"]],
-                              candidate_id=candidate.fingerprint, descriptor=candidate.bass_extension,
-                              target=request["target"], reference_band_hz=tuple(request.get("reference_band_hz", [300, 1000])))
+        fitter = fit_bass_table if args.command == "bass-fit-table" else fit_bass_shape
+        options = {"tolerance_db": request["tolerance_db"]} if args.command == "bass-fit-table" else {}
+        return fitter([(take(pair["before"]), take(pair["after"])) for pair in request["pairs"]],
+                      candidate_id=candidate.fingerprint, descriptor=candidate.bass_extension,
+                      target=request["target"], reference_band_hz=tuple(request.get("reference_band_hz", [300, 1000])), **options)
     payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, fit)
     written = _write(payload, args.out, args.request.parent / ARTIFACT_BY_VIEW[args.command].artifact)
-    if args.descriptor_out:
+    if getattr(args, "descriptor_out", None):
         selected = next(choice for choice in payload["choices"] if choice["scale"] == payload["selected_scale"])
         _write(selected["descriptor"] or {}, str(args.descriptor_out), args.descriptor_out)
-    return answer(args.command, out=written, position_count=payload["position_count"], selected_scale=payload["selected_scale"],
-                  line=f"bass-fit -> {written}")
+    summary = ({"level_count": len(payload["levels"]), "outcomes": [row["outcome"] for row in payload["levels"]]}
+               if args.command == "bass-fit-table" else
+               {"position_count": payload["position_count"], "selected_scale": payload["selected_scale"]})
+    return answer(args.command, out=written, **summary, line=f"{args.command} -> {written}")
