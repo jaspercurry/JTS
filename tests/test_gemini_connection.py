@@ -291,8 +291,8 @@ async def test_successful_connect_and_turn_cycle():
         # Drain the audio queue from the consumer side.
         async def consume():
             chunks = []
-            async for chunk in turn1.audio_out():
-                chunks.append(chunk)
+            async for chunk in turn1.audio_out_chunks():
+                chunks.append(chunk.pcm)
                 if len(chunks) >= 1:
                     break
             return chunks
@@ -1009,7 +1009,7 @@ async def test_context_reset_that_cannot_reconnect_raises_for_the_cue():
 
 async def test_connection_lost_marks_turn_lost_during_active_turn():
     """If the WS drops while a turn is in flight, `turn_lost()` flips
-    True and the audio_out() iterator yields its sentinel so the
+    True and the audio_out_chunks() iterator yields its sentinel so the
     playback path drains cleanly."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -1019,7 +1019,7 @@ async def test_connection_lost_marks_turn_lost_during_active_turn():
         turn = await conn.acquire_turn()
         # Reader task — should complete when the turn is lost.
         async def consume():
-            async for _ in turn.audio_out():
+            async for _ in turn.audio_out_chunks():
                 pass
         consumer = asyncio.create_task(consume())
         # Drop the connection.
@@ -1389,7 +1389,7 @@ async def test_first_chunk_event_reports_latency_since_end_input(
         sess.feed(_Resp(data=b"audio_chunk_1"))
 
         async def consume():
-            async for _chunk in turn.audio_out():
+            async for _chunk in turn.audio_out_chunks():
                 return
         task = asyncio.create_task(consume())
         await asyncio.sleep(0.05)

@@ -116,12 +116,13 @@ class ToolCall:
 class BaseLiveTurn:
     """The per-turn state every provider's turn keeps identically.
 
-    `jasper.voice.session.LiveTurn` documents what each member means to
-    the daemon; this only implements the provider-independent half.
+    This is the provider-independent half of `session.LiveTurn`; an
+    adapter supplies the other half, `session.ProviderTurn`.
     """
 
     owns_interruption = False
     continuous_input = False
+    backend_pending = False
     # The modality buckets this provider splits its counts into, keyed
     # as `usage.Pricing.estimate_cost` prices them. Empty reports the
     # scalars alone, which the store then prices as all-audio. Declare
@@ -262,17 +263,11 @@ class BaseLiveTurn:
     def discard_input(self) -> None:
         """Nothing to revoke: only a continuous adapter buffers input."""
 
-    async def audio_out(self) -> AsyncIterator[bytes]:
-        async for chunk in self.audio_out_chunks():
-            yield chunk.pcm
-
     async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         while True:
             chunk = await self._audio_q.get()
             if chunk is None:
                 return
-            if isinstance(chunk, bytes):
-                chunk = AudioOutChunk(pcm=chunk)
             self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
             yield chunk
 

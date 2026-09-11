@@ -56,13 +56,6 @@ def _make_turn(cls):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("cls", (*TURN_CLASSES, OpenAILiveTurn))
-def test_turn_adapters_conform_to_the_protocols(cls):
-    turn = _make_turn(cls)
-    assert isinstance(turn, Interruptible)
-    assert isinstance(turn, LiveTurn)
-
-
 def test_fake_live_turn_conforms_to_the_protocol():
     """`FakeLiveTurn` (tests/_live_turn_fake.py) is hand-maintained rather
     than derived from `LiveTurn`, so a member added to the Protocol can
@@ -78,8 +71,8 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
     """The catalog's `interrupt_reconcile` is a REQUIRED field, so declaring
     one is the same act as promising the seam. This pins that the two never
     drift: a fourth provider must appear in both places, and a turn class
-    that drops part of `Interruptible` fails here rather than at the first
-    barge-in."""
+    that drops part of `LiveTurn` or of `Interruptible` fails here rather
+    than at the first barge-in."""
     assert set(PROVIDER_TURN_CLASSES) == {p.id for p in PROVIDERS}
     for provider_id, cls in PROVIDER_TURN_CLASSES.items():
         kind = resolve_interrupt_reconcile(provider_id)
@@ -90,13 +83,16 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
             InterruptReconcile.NATIVE_CONTINUOUS,
         )
         turn = _make_turn(cls)
-        assert isinstance(turn, Interruptible), provider_id
+        assert isinstance(turn, LiveTurn), provider_id
         entry = next(p for p in PROVIDERS if p.id == provider_id)
         assert turn.continuous_input is entry.continuous_input
         # Only a provider that stops generating on the user's own voice is
         # exempt from the host's barge-in flush. Every other turn carries the
         # default, so a fifth adapter cannot inherit the exemption by accident.
         assert turn.owns_interruption is (provider_id == "openai_live")
+        # The two halves are exclusive: an exempt turn carries no reconcile
+        # seam for the host to call, and every other turn carries all of it.
+        assert isinstance(turn, Interruptible) is not turn.owns_interruption, provider_id
 
 
 # ---------------------------------------------------------------------------

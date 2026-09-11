@@ -32,7 +32,7 @@ class _FakeTurn:
 
     async def audio_out_chunks(self):
         for c in self._chunks:
-            yield c
+            yield AudioOutChunk(pcm=c)
 
     async def wait_for_interrupt(self) -> None:
         await self._interrupt_event.wait()
@@ -245,8 +245,7 @@ async def test_received_response_is_observed_even_when_interrupt_prevents_its_wr
     assert len(tts.writes) == 0
 
 
-@pytest.mark.parametrize("chunk_api", [False, True])
-async def test_playback_accepts_audio_iterators_without_a_close_method(chunk_api):
+async def test_playback_accepts_audio_iterators_without_a_close_method():
     class Audio:
         def __init__(self):
             self.frames = iter([b"first", b"second"])
@@ -258,11 +257,10 @@ async def test_playback_accepts_audio_iterators_without_a_close_method(chunk_api
             pcm = next(self.frames, None)
             if pcm is None:
                 raise StopAsyncIteration
-            return AudioOutChunk(pcm) if chunk_api else pcm
+            return AudioOutChunk(pcm)
 
     turn, tts = _FakeTurn(), _tts()
-    turn.audio_out_chunks = Audio if chunk_api else None
-    turn.audio_out = Audio
+    turn.audio_out_chunks = Audio
     await _play_responses(turn, tts)
     assert len(tts.writes) == 2
     assert tts.end_segment_calls == tts.drain_calls == 1
