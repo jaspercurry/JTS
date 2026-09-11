@@ -71,13 +71,13 @@ class EffectiveSpeechInputPolicy:
     provider: str
     input_contract: SpeechInputContract
     endpointing: str
-    openai_noise_reduction: str | None
-    openai_noise_reduction_source: str
+    noise_reduction: str | None
+    noise_reduction_source: str
     warnings: tuple[str, ...] = ()
 
     @property
-    def openai_noise_reduction_label(self) -> str:
-        return self.openai_noise_reduction or "off"
+    def noise_reduction_label(self) -> str:
+        return self.noise_reduction or "off"
 
 
 def normalize_openai_noise_reduction(raw: str | None) -> str:
@@ -193,7 +193,7 @@ def build_effective_speech_input_policy(cfg: Any) -> EffectiveSpeechInputPolicy:
         provider=provider,
         input_contract=contract,
         endpointing="continuous_audio" if entry and entry.continuous_input else ENDPOINTING,
-        openai_noise_reduction=openai_nr,
-        openai_noise_reduction_source=openai_nr_source,
+        noise_reduction=openai_nr,
+        noise_reduction_source=openai_nr_source,
         warnings=warnings,
     )

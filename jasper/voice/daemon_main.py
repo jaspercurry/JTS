@@ -328,7 +328,7 @@ def _make_connection(
             model=cfg.openai_model,
             voice=cfg.openai_voice,
             reasoning_effort=cfg.openai_reasoning_effort,
-            noise_reduction=speech_policy.openai_noise_reduction,
+            noise_reduction=speech_policy.noise_reduction,
             context_reset_sec=float(cfg.openai_context_reset_sec),
             session_max_sec=float(cfg.openai_session_max_sec),
             proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
@@ -634,8 +634,8 @@ def _log_speech_input_policy(cfg: Config) -> EffectiveSpeechInputPolicy:
         profile=policy.input_contract.profile,
         source=policy.input_contract.source,
         endpointing=policy.endpointing,
-        openai_noise_reduction=policy.openai_noise_reduction_label,
-        openai_noise_reduction_source=policy.openai_noise_reduction_source,
+        openai_noise_reduction=policy.noise_reduction_label,
+        openai_noise_reduction_source=policy.noise_reduction_source,
         contract=policy.input_contract.provenance,
     )
     for warning in policy.warnings:
