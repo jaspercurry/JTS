@@ -139,6 +139,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0292](0292-followup-windows-are-provider-owned.md) | Follow-up windows are provider-owned | accepted |
 | [0293](0293-the-no-provider-park-is-owned-by-the-voice-daemon.md) | The no-provider park is owned by the voice daemon — jasper-aec-reconcile no longer disables jasper-voice on that axis | accepted |
 | [0294](0294-interruptible-seam-is-exclusive-to-host-reconciled-adapters.md) | The `Interruptible` seam is exclusive to host-reconciled adapters | accepted |
+| [0295](0295-live-session-may-stay-warm-behind-a-toggle.md) | A Live session may stay warm for a minute, behind a toggle | accepted |
 
 ## Wake, mic & AEC
 

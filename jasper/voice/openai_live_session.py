@@ -5,7 +5,8 @@
 """GPT-Live voice streaming with managed Responses delegation.
 
 See https://developers.openai.com/api/docs/guides/live-migration.
-One billable Live session is owned by one wake conversation.
+One billable Live session is owned by one wake conversation, and by the
+next one too while the warm toggle holds it open (ADR-0295).
 """
 from __future__ import annotations
 
@@ -15,13 +16,14 @@ import base64
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import failure_detail, is_transient
 from .openai_session import _upsample_16k_to_24k
+from .provider_state import read_live_warm_session_enabled
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,12 @@ SESSION_OPEN_BUDGET_SEC = 15.0
 # supervisor behind it. The second attempt covers the 409 race against the
 # session the previous conversation just closed (`_supervisor.is_transient`).
 SESSION_OPEN_ATTEMPTS = 2
+
+# How long a conversation's session stays dialled afterwards when the
+# warm toggle is on, so the next wake answers without paying the dial
+# (measured p50 554 ms, p90 1531 ms, max 3875 ms). Live meters every
+# connected minute, idle included — about $0.05 of it. See ADR-0295.
+WARM_SESSION_SEC = 60.0
 
 
 def _parse_call(call: dict) -> ToolCall:
@@ -114,6 +122,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._response_ids = {}
         self._calls = {}
         self._counted_responses = set()
+        self._session_reused = False
         self.backend_pending = False
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -172,7 +181,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
         try:
-            await self._conn._close_live_session()
+            await self._conn._release_live_session()
         finally:
             self._audio_q.put_nowait(None)
             self._log_release()
@@ -180,10 +189,15 @@ class OpenAILiveTurn(BaseLiveTurn):
 
     def _release_fields(self) -> dict[str, Any]:
         """Live bills the frontend session per metered second, not per
-        token, and bridges the quiet between audible deltas."""
+        token, and bridges the quiet between audible deltas.
+
+        `seconds` is the session's meter, so on a reused session it
+        counts from that session's open, not from this turn's.
+        """
         return {
             "seconds": round(self._seconds, 3),
             "finalized": self._finalized,
+            "session_reused": self._session_reused,
             "quiet_played": self._quiet_played,
             "quiet_discarded": self._quiet_discarded,
         }
@@ -306,14 +320,28 @@ class OpenAILiveConnection(BaseLiveConnection):
     _logger = logger
     _log_tag = "openai live connection:"
 
-    def __init__(self, *, api_key, model="gpt-live-1", voice="marin", backend_model="gpt-5.4-mini", connect=None):
+    def __init__(
+        self, *, api_key, model="gpt-live-1", voice="marin",
+        backend_model="gpt-5.4-mini", connect=None,
+        warm_session: Callable[[], bool] | None = None,
+    ):
         super().__init__(model=model, voice=voice)
         self._api_key = api_key
         self._backend_model = backend_model
         self._connect = connect
-        self._client = None
-        self._session_cm = None
-        self._session = None
+        # Read per conversation, not cached: the wizard owns the toggle's
+        # env file and the daemon outlives a save of it.
+        self._warm_session = warm_session or read_live_warm_session_enabled
+        # The provider SDK's own objects — no shared type to name.
+        self._client: Any = None
+        self._session_cm: Any = None
+        self._session: Any = None
+        # The turn inbound events route to, and whose `_seconds` mirror
+        # the session's meter. Outlives `_active_turn` across a warm
+        # window, so the close still settles the billable interval.
+        self._session_turn: OpenAILiveTurn | None = None
+        self._warm_close_task: asyncio.Task | None = None
+        self._warm_until_epoch: float | None = None
         self._started = asyncio.Event()
         self._closed = asyncio.Event()
         self._billable_activity_meter = None
@@ -337,15 +365,21 @@ class OpenAILiveConnection(BaseLiveConnection):
         async with self._turn_lock:
             if self._active_turn is not None:
                 raise RuntimeError("Live conversation already active")
+            warm = await self._take_warm_session()
+            if warm is not None:
+                self._set_state(ConnectionState.IN_TURN)
+                self._start_sender(warm)
+                return warm
             self._set_state(ConnectionState.CONNECTING)
             try:
                 async with asyncio.timeout(SESSION_OPEN_BUDGET_SEC):
                     turn = await self._open_session_for_turn()
+                # One billable interval per SESSION, not per turn: a reuse
+                # opens none, and the close below settles the whole thing.
                 if self._billable_activity_meter is not None:
                     self._billable_activity_meter.mark_started()
                 self._set_state(ConnectionState.IN_TURN)
-                turn._sender = asyncio.create_task(turn._send_audio_stream())
-                turn._sender.add_done_callback(lambda task: turn._on_connection_lost() if not task.cancelled() and task.exception() else None)
+                self._start_sender(turn)
                 return turn
             except BaseException as exc:  # noqa: BLE001 — release the socket on cancellation and redact SDK failures
                 try:
@@ -356,6 +390,69 @@ class OpenAILiveConnection(BaseLiveConnection):
                 if isinstance(exc, Exception):
                     raise RuntimeError(failure_detail(exc, literals=self._secret_literals())) from None
                 raise
+
+    def _start_sender(self, turn: OpenAILiveTurn) -> None:
+        turn._sender = asyncio.create_task(turn._send_audio_stream())
+        turn._sender.add_done_callback(lambda task: turn._on_connection_lost() if not task.cancelled() and task.exception() else None)
+
+    def warm_session_until(self) -> float | None:
+        return self._warm_until_epoch
+
+    async def _release_live_session(self) -> None:
+        """End the finished conversation's claim on the session.
+
+        Closes it, unless the toggle asks for a warm window — then only
+        the close is deferred, to a timer the next wake cancels. Nothing
+        is sent to a warm session: the turn's sender task is already
+        cancelled, and no other send survives `release`.
+        """
+        if (
+            self._stopping.is_set()
+            or self._closed.is_set()
+            or self._session is None
+            or not self._warm_session()
+        ):
+            await self._close_live_session()
+            return
+        self._warm_until_epoch = time.time() + WARM_SESSION_SEC
+        self._warm_close_task = asyncio.create_task(self._close_when_warm_expires())
+
+    async def _close_when_warm_expires(self) -> None:
+        """Close a warm session once nobody has come back for it.
+
+        Takes `_turn_lock` so an acquire either cancels this first or
+        waits out the close it was too late to stop.
+        """
+        await asyncio.sleep(WARM_SESSION_SEC)
+        async with self._turn_lock:
+            self._warm_close_task = None
+            self._warm_until_epoch = None
+            await self._close_live_session()
+
+    async def _take_warm_session(self) -> OpenAILiveTurn | None:
+        """This wake's turn on the session the last one left warm.
+
+        None when there is no warm session, or when the server closed it
+        first — the caller then dials as it always has, and the dead
+        session's billable interval is settled here rather than left open.
+        """
+        if self._warm_close_task is None:
+            return None
+        await self._cancel_task(self._warm_close_task)
+        self._warm_close_task = None
+        self._warm_until_epoch = None
+        if (
+            self._session is None
+            or self._closed.is_set()
+            or self._receive_task is None
+            or self._receive_task.done()
+        ):
+            await self._close_live_session()
+            return None
+        turn = OpenAILiveTurn(self, time.monotonic())
+        turn._session_reused = True
+        self._active_turn = self._session_turn = turn
+        return turn
 
     async def _open_session_for_turn(self) -> OpenAILiveTurn:
         """Open this wake's session, retrying one transient failure.
@@ -372,7 +469,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             self._started.clear()
             self._closed.clear()
             turn = OpenAILiveTurn(self, time.monotonic())
-            self._active_turn = turn
+            self._active_turn = self._session_turn = turn
             try:
                 await self._open_session()
             except Exception as exc:  # noqa: BLE001
@@ -421,6 +518,13 @@ class OpenAILiveConnection(BaseLiveConnection):
         await self._session.send(event)
 
     async def _receive(self, turn: OpenAILiveTurn) -> None:
+        """Read this session's events into whichever turn owns it now.
+
+        `turn` is the one the session was opened for; a wake that reused
+        it warm has since moved `_session_turn` on. A session lost while
+        warm reaches only a released turn, so it costs no cue and no
+        counted failure.
+        """
         try:
             async for raw in self._session:
                 event = raw if isinstance(raw, dict) else raw.model_dump()
@@ -429,7 +533,7 @@ class OpenAILiveConnection(BaseLiveConnection):
                 elif event["type"] == "error":
                     raise RuntimeError("Live command rejected")
                 else:
-                    await turn.on_event(event)
+                    await (self._session_turn or turn).on_event(event)
                     if event["type"] == "session.closed":
                         self._closed.set()
                         break
@@ -439,8 +543,9 @@ class OpenAILiveConnection(BaseLiveConnection):
                 detail=failure_detail(exc, literals=self._secret_literals()),
             )
         finally:
-            if not turn._released:
-                turn._on_connection_lost()
+            current = self._session_turn or turn
+            if not current._released:
+                current._on_connection_lost()
             self._started.set()
 
     async def _close_live_session(self) -> None:
@@ -456,7 +561,7 @@ class OpenAILiveConnection(BaseLiveConnection):
                 level=logging.WARNING,
             )
         finally:
-            turn = self._active_turn
+            turn = self._session_turn
             if self._billable_activity_meter is not None:
                 self._billable_activity_meter.mark_ended(
                     seconds=turn._seconds if turn and turn._finalized else None,
@@ -469,7 +574,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         try:
             await self._close_cm_with_timeout(self._session_cm)
         finally:
-            self._session_cm = self._session = None
+            self._session_cm = self._session = self._session_turn = None
 
     async def stop(self) -> None:
         # Set before the release, so an acquire still dialling fails its
@@ -491,6 +596,13 @@ class OpenAILiveConnection(BaseLiveConnection):
                     phase="release", detail="release timed out",
                     level=logging.WARNING,
                 )
+        elif self._warm_close_task is not None:
+            # A warm session bills on with nobody talking to it; this is
+            # the last chance to close it and settle its interval.
+            await self._cancel_task(self._warm_close_task)
+            self._warm_close_task = None
+            self._warm_until_epoch = None
+            await self._close_live_session()
         await super().stop()
         if self._client is not None:
             await self._client.close()

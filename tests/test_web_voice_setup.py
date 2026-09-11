@@ -93,6 +93,19 @@ def test_voice_page_renders_all_provider_cards_and_radios():
         assert f'name="active" value="{p.id}"' in out
 
 
+def test_warm_session_control_belongs_to_openai_live_alone():
+    """The paid warm window is a Live setting, so only Live offers it.
+
+    Defaults to off, and says what an idle minute costs before the
+    household turns it on (ADR-0295).
+    """
+    out = _render()
+    owners = [p.id for p in PROVIDERS if f'name="{p.id}_warm_session"' in out]
+    assert owners == ["openai_live"]
+    assert '<option value="off" selected>' in out
+    assert "about $0.05 per idle minute" in out
+
+
 def test_voice_page_has_save_and_test_and_first_time_key_metadata():
     out = _render()
     assert "Save and Test" in out
