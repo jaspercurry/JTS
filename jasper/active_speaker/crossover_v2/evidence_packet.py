@@ -205,17 +205,10 @@ _ECHO_BAND_PHASES = (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 #: from there rather than restated here.
 _POSITIONS_SUBDIR = "positions"
 
-#: How a capture ring's sidecars are found under the ring root. No round
-#: writes this layout on the Pi any more; the rings that reach the two readers
-#: are corpora pulled off a Pi before the retention seam died and rings
-#: :func:`~.ring_projection.project_ring` re-projects laptop-side.
-#:
-#: ``**/`` because a pull splits the speaker's flat ring into ``dumps/wav/`` +
-#: ``dumps/sidecar/``, with a per-phase nesting of that shape too, so a caller
-#: passes the ring ROOT and the pattern finds the sidecars inside it. Both
-#: readers (:func:`~.feature_classifier.load_round_captures` and
-#: :func:`~.harmonic_evidence.read_round_harmonics`) consume this constant, so
-#: ``--dumps`` cannot mean two different directories.
+#: :func:`~jasper.active_speaker.round_bank.bank_round` owns the sidecar/WAV layout.
+#: ``**/`` also admits older pulled rings with a directory per phase. Both
+#: :func:`~.feature_classifier.load_round_captures` and
+#: :func:`~.harmonic_evidence.read_round_harmonics` use this ring-root pattern.
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 #: What :func:`_capture_snr_block` reads off one banked take: the two

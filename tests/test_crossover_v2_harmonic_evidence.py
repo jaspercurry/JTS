@@ -41,6 +41,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
 )
 from jasper.audio_measurement.bundles import sha256_file
+from jasper.audio_measurement.calibration import SUPPORTED_MODELS
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading
 from jasper.audio_measurement.program import (
     FrequencyBand, RoleBand, build_measure_program, render_program_pcm, write_program_wav,
@@ -167,6 +168,13 @@ def _not_evaluated_fields(packet: dict[str, Any]) -> set[str]:
 
 
 def test_a_round_with_no_reading_says_so_about_that_round_by_name(tmp_path):
+    """No artifact: the block refuses, and the honest list names the field.
+
+    The reason must be about THIS round rather than about the corpus. The
+    sentence it replaced ("H2/H3 are computable from banked captures but no
+    round writes them") was a corpus-wide claim, and half of it stopped being
+    true the moment an instrument existed to write one.
+    """
     packet = build_crossover_evidence_packet(_bundle(tmp_path))
 
     block = packet["harmonics"]
@@ -188,6 +196,12 @@ def test_a_round_with_no_reading_says_so_about_that_round_by_name(tmp_path):
 
 
 def test_a_banked_reading_closes_the_row_and_carries_the_rows(tmp_path):
+    """Ticket 1.4, as the state change it is: the row is gone and H2/H3 are in.
+
+    This is the assertion the whole change exists for. A packet that carried
+    the rows AND still printed "there is no distortion record to carry" would
+    be the exact dishonesty the ``not_evaluated`` block exists to prevent.
+    """
     packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
 
     block = packet["harmonics"]
@@ -203,6 +217,7 @@ def test_a_banked_reading_closes_the_row_and_carries_the_rows(tmp_path):
 
 
 def test_a_banked_artifact_with_no_role_block_refuses_rather_than_reading_empty(tmp_path):
+    """A file present but empty is not a reading, and must not close the row."""
     artifact = _artifact()
     artifact["roles"] = []
     packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=artifact))
@@ -215,6 +230,14 @@ def test_a_banked_artifact_with_no_role_block_refuses_rather_than_reading_empty(
 def test_an_artifact_that_is_not_an_object_still_names_itself_in_the_honest_list(
     tmp_path, banked
 ):
+    """The honest list must have no silent gaps, including this one.
+
+    A file that is absent or unreadable carries a read reason; a file that
+    PARSED into something that is not an object carries the empty string,
+    because the read succeeded. The not_evaluated builder drops any entry whose
+    reason is falsy, so passing that empty string through would have removed
+    the row from the one block whose entire job is to have no gaps.
+    """
     session = _bundle(tmp_path)
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     (round_dir / HARMONICS_ARTIFACT).write_text(banked)
@@ -232,6 +255,14 @@ def test_an_artifact_that_is_not_an_object_still_names_itself_in_the_honest_list
 def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
     tmp_path, orders
 ):
+    """The one way this block could quietly break the rule it exists to keep.
+
+    Every row column is declared by generating the declaration FROM the order
+    list, so an artifact that names no readable order would publish `h2_`/`h3_`
+    columns with nothing declaring them. `True` is in here because `bool`
+    subclasses `int` in Python: admitted, it would declare an "h1" no row
+    carries while still leaving the real columns undeclared.
+    """
     artifact = _artifact()
     artifact["orders"] = orders
     packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=artifact))
@@ -252,6 +283,12 @@ def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
 
 
 def test_a_reading_past_an_orders_own_band_edge_is_null_not_a_number():
+    """NaN reaches JSON as null, because a number there would read as clean.
+
+    H3 on this sweep is real only to ``f2/3``; above it the image collapses into
+    the regularization floor. A very negative float published there would be
+    read as a preternaturally clean driver exactly where nothing was measured.
+    """
     block = he._role_block("woofer", [_reading(), _reading(offset_db=0.4)], "abc", ORDERS)
     top = block["rows"][-1]
 
@@ -265,6 +302,7 @@ def test_a_reading_past_an_orders_own_band_edge_is_null_not_a_number():
 
 
 def test_a_spread_over_fewer_than_two_repeats_is_absent_not_zero():
+    """The cross-seat block's rule, kept: 0.0 would say the repeats agreed."""
     assert he._spread([]) is None
     assert he._spread([-50.0]) is None
     assert he._spread([float("nan"), -50.0]) is None
@@ -275,6 +313,7 @@ def test_a_spread_over_fewer_than_two_repeats_is_absent_not_zero():
 
 
 def test_a_point_is_floor_limited_by_majority_vote_of_the_repeats():
+    """One sweep's noise spike cannot flag a point the others read as clear."""
     block = he._role_block("woofer", [_reading(), _reading(offset_db=0.4)], "abc", ORDERS)
     rows = {row["hz"]: row for row in block["rows"]}
 
@@ -285,6 +324,12 @@ def test_a_point_is_floor_limited_by_majority_vote_of_the_repeats():
 
 
 def test_the_worst_point_refuses_when_nothing_clears_the_floor():
+    """An order buried in its own floor reports nothing, never the floor.
+
+    The tweeter case on the real corpus: at a low drive every point is
+    floor-limited, and a summary that headlined the loudest noise bin would be
+    reporting the instrument as if it were the speaker.
+    """
     readings = [_reading(), _reading(offset_db=0.1)]
     for reading in readings:
         # Bury H2 in its own floor everywhere. BOTH readings, because the vote
@@ -301,6 +346,7 @@ def test_the_worst_point_refuses_when_nothing_clears_the_floor():
 
 
 def test_pooling_by_index_across_disagreeing_grids_is_refused():
+    """Pooling by index lies silently otherwise, so it is checked not assumed."""
     other = _reading()
     object.__setattr__(other, "freqs_hz", other.freqs_hz + 1.0)
 
@@ -309,6 +355,13 @@ def test_pooling_by_index_across_disagreeing_grids_is_refused():
 
 
 def test_two_captures_are_two_blocks_because_captures_are_poses(tmp_path):
+    """The reason the one spread above can be called random.
+
+    A MEASURE capture is one pose. Merging two of them would mix the in-capture
+    repeat scatter with whatever differs between takes, which is exactly the
+    unseparated case — so the instrument does not merge them, and a reader who
+    wants them combined can see what they are combining.
+    """
     packet = build_crossover_evidence_packet(
         _bundle(tmp_path, harmonics=_artifact(n_roles=2))
     )
@@ -384,6 +437,12 @@ def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
 
 
 def test_the_crossover_corner_is_read_from_the_applied_profile_not_a_flag():
+    """It is a fact about the round, and the shipped analysis refuses without it.
+
+    A flag would let an operator hand this instrument a different corner from
+    the one the captures were taken through, which would move the analysis's
+    per-driver expectations without moving anything a reader could see.
+    """
     assert he._crossover_fc_hz(_applied_profile(), "") == pytest.approx(1648.7)
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
@@ -393,6 +452,14 @@ def test_the_crossover_corner_is_read_from_the_applied_profile_not_a_flag():
 
 
 def test_the_corner_reports_absent_with_reason_never_a_stash_fallback():
+    """No readable applied-profile SSOT refuses with ITS reason, nothing else.
+
+    ``_crossover_fc_hz`` used to read a flow state's ``pre_apply_profile`` — the
+    Undo stash, one apply behind after any v2 apply and arbitrarily behind
+    after an apply through a door that never touches v2 state. It now takes
+    the SSOT (or the reason there is none) directly and has no stash to fall
+    back to even if it wanted one.
+    """
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
         he._crossover_fc_hz(None, "no applied baseline profile was supplied")
     assert excinfo.value.reason == he.STATE_UNREADABLE
@@ -401,6 +468,7 @@ def test_the_corner_reports_absent_with_reason_never_a_stash_fallback():
 
 @pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), True, "1648.7", None])
 def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
+    """``True`` is an ``int`` in Python and would otherwise pass as 1 Hz."""
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
         he._crossover_fc_hz({
             "recomposition_snapshot": {
@@ -411,6 +479,7 @@ def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
 
 
 def test_a_state_without_a_program_id_refuses_before_any_audio_is_read():
+    """An unproved program cannot be read: every offset derives from its L."""
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
         he.rebuild_measure_program(_state(candidate={}), he_bands())
     assert excinfo.value.reason == he.STATE_UNREADABLE
@@ -428,6 +497,12 @@ def he_bands() -> dict[str, tuple[float, float]]:
 
 
 def test_a_program_that_cannot_prove_itself_is_refused_not_read():
+    """The whole point of proving the rebuild instead of asserting it.
+
+    Slow-ish (it walks the solve grid twice before giving up), and that is the
+    behaviour: the refusal is what a wrong band pair produces, rather than a
+    reading taken through the wrong sweep L.
+    """
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
         he.rebuild_measure_program(_state(), he_bands())
 
@@ -436,6 +511,7 @@ def test_a_program_that_cannot_prove_itself_is_refused_not_read():
 
 
 def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_path):
+    """Harmonics need the per-driver program; a summed capture cannot attribute."""
     ring = tmp_path / "dumps" / "sidecar"
     ring.mkdir(parents=True)
     (ring / "1_verify_x.json").write_text(json.dumps({"phase": "verify"}))
@@ -483,6 +559,7 @@ def _real_state() -> dict[str, Any]:
 
 
 def test_the_solve_recovers_the_session_volume_the_round_never_banked():
+    """The one parameter no artifact carries, proved rather than asserted."""
     program, downstream, prelude = he.rebuild_measure_program(
         _real_state(), he_bands()
     )
@@ -535,6 +612,13 @@ def _fitted_program_at(
 
 
 def test_a_banked_duration_fit_reproduces_without_a_search():
+    """The durable fix, end to end. A fitted sweep's realized length is a
+    continuous float no search grid could ever land on — banking it is what
+    makes a fitted round reproducible AT ALL, not merely faster to reproduce.
+    Before this field existed, this exact state was
+    ``test_a_duration_fitted_round_that_predates_banking_still_names_its_cause``
+    below: an honest refusal, unconditionally.
+    """
     from jasper.active_speaker.crossover_v2 import priors
 
     program = _fitted_program_at(-20.0)
@@ -1421,10 +1505,17 @@ def test_harmonics_output_directory_name_is_not_capture_identity(harmonic_captur
 
 
 @pytest.mark.parametrize("first", ["distortion", "classify-features"])
-def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_path, capsys, first):
-
+@pytest.mark.parametrize("convention", ["response", "correction"])
+def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_path, capsys, monkeypatch, first, convention):
+    monkeypatch.setitem(SUPPORTED_MODELS, "test_mic", {"sign_convention": convention})
+    calibration_id = "vendor-test_mic-hash"
+    calibration = tmp_path / "mic.txt"
+    calibration.write_text("20 2\n20000 4\n")
     _, compose, _, wav, document = harmonic_capture
     session = tmp_path / "session"
+    info = json.loads((session / "info.json").read_text())
+    info["fingerprints"] = {"mic": {"calibration_id": calibration_id}}
+    (session / "info.json").write_text(json.dumps(info))
     capture_id = document["jts_session_identity"]["aliases"]["capture_session_id"]
     artifacts = session / f"evidence/v1/artifacts/crossover_v2/{capture_id}"
     positions = artifacts / "positions"
@@ -1453,14 +1544,21 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     inputs = round_inputs(bank.path)
     before = {p.relative_to(inputs.session_dir): p.read_bytes()
               for p in (inputs.session_dir / "ring").rglob("*") if p.is_file()}
+    assert {json.loads(raw)["setup_calibration_id"] for path, raw in before.items()
+            if path.suffix == ".json"} == {calibration_id}
     commands = [first, "classify-features" if first == "distortion" else "distortion"]
     for command in commands:
-        assert main([command, str(bank.path), *(["--at", str(RESONANCE_HZ)] if command == "classify-features" else [])]) == 0
+        flags = ["--at", str(RESONANCE_HZ)] if command == "classify-features" else ["--calibration", str(calibration)]
+        assert main([command, str(bank.path), *flags]) == 0
         assert json.loads(capsys.readouterr().out)["view"] == command
     output = inputs.session_dir / artifacts.relative_to(session)
     harmonic = json.loads((output / "harmonic_distortion.json").read_text())
     feature_result = json.loads((output / "feature_classification.json").read_text())
     assert harmonic["captures"]["n_read"] == 1
+    assert harmonic["calibration"] == {
+        "applied": True, "sign_convention": convention,
+        "setup_calibration_id": calibration_id, "n_points": 2,
+    }
     assert {row["role"] for row in harmonic["roles"]} == {"woofer", "tweeter"}
     assert feature_result["measurement"]["n_captures"] == 1
     assert feature_result["timing_scatter"]["available"] is False

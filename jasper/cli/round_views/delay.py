@@ -10,11 +10,10 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG, DRIVER_ROLES
+from jasper.active_speaker.crossover_v2.contracts import DRIVER_ROLES
 from jasper.active_speaker.crossover_v2.commanded import profile_crossover_fc_hz
 from jasper.active_speaker.crossover_v2.evidence_packet import applied_profile_source
-from jasper.active_speaker.crossover_v2.position_cycle import read_pose_curve_pair
-from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.active_speaker.crossover_v2.position_cycle import select_pose_curve_pair
 from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
 from jasper.active_speaker.crossover_v2.delay_landscape import (
     BankedLandscape,
@@ -53,22 +52,14 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
             bundle = inputs.session_dir
             if args.fc_hz is None:
                 args.fc_hz = profile_crossover_fc_hz(applied_profile_source(inputs.applied_profile_path)[0])
-        for row, document in reversed(list(measurement_documents(bundle))):
-            if row.phase not in (PHASE_MEASURE, PHASE_LATERAL) or row.vertical_deg != 0:
-                continue
-            if ((args.phase is not None and row.phase != args.phase)
-                or (args.position_deg is not None and row.position_deg != args.position_deg)
-                or (args.take_path is not None and row.path != args.take_path)):
-                continue
-            position = row.position_deg if row.position_deg is not None else DESIGN_AXIS_DEG
-            if read_pose_curve_pair(bundle, phase=row.phase, position_deg=position,
-                                    roles=(args.lower_role, args.upper_role), take_path=row.path):
-                args.phase, args.position_deg, args.take_path = row.phase, position, row.path
-                args.inverted_role = args.inverted_role or document.get("inverted_role") or args.upper_role
-                break
-        args.phase = args.phase or PHASE_MEASURE
-        args.position_deg = DESIGN_AXIS_DEG if args.position_deg is None else args.position_deg
-        args.inverted_role = args.inverted_role or args.upper_role
+        pair = select_pose_curve_pair(
+            bundle, phases=(args.phase,) if args.phase else (PHASE_MEASURE, PHASE_LATERAL),
+            position_deg=args.position_deg, roles=(args.lower_role, args.upper_role),
+            take_path=args.take_path,
+        )
+        if pair is not None:
+            args.phase, args.position_deg = pair.take.phase, pair.take.position_deg
+        args.inverted_role = args.inverted_role or (pair.document.get("inverted_role") if pair else None) or args.upper_role
         if args.fc_hz is None:
             raise DelayLandscapeError("The bank has no crossover corner; supply --fc-hz")
         return landscape_from_bank(
@@ -81,9 +72,7 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
                 step_us=args.step_us,
             ),
             inverted_role=args.inverted_role,
-            phase=args.phase,
-            position_deg=args.position_deg,
-            take_path=args.take_path,
+            pair=pair,
         )
     except DelayLandscapeError:
         raise
