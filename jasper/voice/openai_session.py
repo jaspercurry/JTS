@@ -430,7 +430,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     async def _send_tool_result(self, call: ToolCall, payload: dict) -> bool:
         if not call.id:
             return False
-        output = self._tool_result_json(payload)
+        output = self._tool_result_json(call.name, payload)
         try:
             sent = await self._conn._send_event({
                 "type": "conversation.item.create",

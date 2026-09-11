@@ -242,7 +242,7 @@ class BaseLiveTurn:
         """Flush anything held back and let the model continue. False if nothing was sent."""
         raise NotImplementedError
 
-    def _tool_result_json(self, payload: dict[str, Any]) -> str:
+    def _tool_result_json(self, name: str, payload: dict[str, Any]) -> str:
         """JSON-encode a tool result for an adapter that sends it as a wire string.
 
         An unserializable payload would otherwise raise out of the tool
@@ -252,6 +252,11 @@ class BaseLiveTurn:
         try:
             return json.dumps(payload)
         except (TypeError, ValueError) as e:
+            logger.warning(
+                "tool %s: result not JSON-serializable (%s: %s); "
+                "sending error output instead of reconnecting",
+                name, type(e).__name__, e,
+            )
             return json.dumps({"error": f"tool result not serializable: {type(e).__name__}"})
 
     def discard_input(self) -> None:
