@@ -4,9 +4,6 @@
 
 """Fire-and-forget task bookkeeping shared by jasper-voice's owners.
 
-A tracked task removes itself from its set when it finishes and logs an
-unhandled exception instead of dropping it on the floor; cancelling a set
-awaits every member so a teardown cannot outrun the work it cancelled.
 Both the daemon's startup tasks and `WakeLoop`'s per-turn background work
 use the same pair.
 """
