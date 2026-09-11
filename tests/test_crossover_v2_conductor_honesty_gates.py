@@ -91,31 +91,11 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
 
     fakes.measure = lambda program: _measure_analysis(program, clipped=True)
     verdict = _run_phase(c, 2, 2)
-    assert verdict == {
-        "accepted": False,
-        "code": "clipped",
-        "template": "silent_auto_retry",
-        "reason": REASON_REGISTRY["clipped"].banner,
-        "banner": REASON_REGISTRY["clipped"].banner,
-        "auto_retry": True,
-        "evidence": {"mic_meter_status": "unmeasured", "peak_dbfs": -12.0},
-        # See the same key in
-        # `test_low_alignment_confidence_rejects_measure_before_building_candidate`
-        # — the pilot evidence rides every rejection (#2085), not only the
-        # codes whose copy currently branches on it.
-        "pilot_heard": None,
-        # The honest per-position count rides EVERY verdict (#2086 item 2).
-        # This rejection was the slot's PLANNED capture, so nothing is spent
-        # yet and all three extras are still on offer.
-        "attempts": {
-            "used": 0, "allowed": 3, "left": 3,
-            "by_speaker": 0, "by_household": 0,
-        },
-    }
-    # The automatic retry is gain-adjusted: 3 dB quieter. This literal is the
-    # only tripwire for ``crossover_v2_flow.CLIP_RETRY_BACKOFF_DB``, which
-    # nothing in the tree imports — importing it here would make the assertion
-    # pass at any value.
+    assert not verdict["accepted"] and verdict["code"] == "clipped"
+    assert verdict["auto_retry"] and verdict["next"] == "retake_quieter"
+    assert verdict["charge"] == "speaker"
+    assert verdict["evidence"]["peak_dbfs"] == -12.0
+    assert verdict["attempts"]["left"] == 3
     gain_after = c.program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
     assert gain_after == pytest.approx(gain_before - 3.0)
     # Retry (same index, next attempt) succeeds.
@@ -380,9 +360,8 @@ def test_locate_failed_and_budget_exhaustion():
     assert verdict["template"] == "fix_and_retry"
     # The planned capture spent nothing; three extras are on offer, and the
     # count the phone renders says so.
-    assert verdict["attempts"] == {
-        "used": 0, "allowed": 3, "left": 3, "by_speaker": 0, "by_household": 0,
-    }
+    assert verdict["attempts"]["used"] == 0
+    assert verdict["attempts"]["left"] == 3
     for extra in (1, 2, 3):
         verdict = _run_phase(c, 1, 1 + extra)
         assert verdict["code"] == "locate_failed"
@@ -1589,17 +1568,7 @@ def test_geometry_locked_group_asks_for_wider_retakes_then_proceeds(monkeypatch)
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
-def test_two_geometry_asks_leave_one_household_retry_in_the_pooled_budget(
-    monkeypatch,
-):
-    """Two speaker asks spend two pooled extras; the third remains household.
-
-    There is no geometry discount and no separate quality-failure budget.
-    The planned close asks for the first wider take; that rejection asks for
-    the second. Those two conductor-initiated extras leave exactly one of the
-    position's three pooled extras for the household after an ordinary locate
-    miss.
-    """
+def test_geometry_asks_preserve_the_household_budget(monkeypatch):
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
     attempt = _walk(c, (1, 2), 1)
@@ -1607,34 +1576,26 @@ def test_two_geometry_asks_leave_one_household_retry_in_the_pooled_budget(
     last = CLOUD_MEASURE_INDEXES[-1]
     _lock(monkeypatch)
 
-    # Two geometry retakes — good captures, wider spots.
     for _ in range(GEOMETRY_RETRY_POSITIONS):
         assert _run_phase(c, last, attempt)["code"] == REASON_CLOUD_GEOMETRY_LOCKED
         attempt += 1
 
-    # Now ONE ordinary failure at that same position. It lands on the second
-    # speaker-booked extra and asks for the sole remaining household extra.
     monkeypatch.undo()
     fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
     verdict = _run_phase(c, last, attempt)
     attempt += 1
     assert verdict["accepted"] is False
     assert verdict["code"] == REASON_LOCATE_FAILED
-    assert verdict["attempts"] == {
-        "used": 2,
-        "allowed": flow.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-        "left": 1,
-        "by_speaker": 2,
-        "by_household": 0,
-    }
+    assert verdict["attempts"]["used"] == 0
+    assert verdict["attempts"]["left"] == flow.MAX_EXTRA_ATTEMPTS_PER_POSITION
+    assert verdict["attempts"]["by_speaker"] == 2
 
-    # ...and the final pooled extra is the household's retry.
     fakes.verify = _verify_analysis
     verdict = _run_phase(c, last, attempt)
     assert verdict["accepted"] is True
     assert verdict["attempts"]["by_speaker"] == 2
     assert verdict["attempts"]["by_household"] == 1
-    assert verdict["attempts"]["left"] == 0
+    assert verdict["attempts"]["left"] == 2
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 

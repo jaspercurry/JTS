@@ -76,6 +76,7 @@ def assess(
         "mic_meter_status": analysis.mic_meter_status or "unmeasured",
         "anchor_ambiguous": analysis.anchor_ambiguous or bool(anchor and anchor.ambiguous),
         "glitch_detected": bool(analysis.glitch_detected),
+        "frame_loss": bool(analysis.frame_ledger and analysis.frame_ledger.lost_at),
     }
     figures = {
         "anchor_presence": anchor.presence if anchor else None,
@@ -100,9 +101,11 @@ def assess(
             # Magnitude occupies the top-level SNR block; alignment is nested.
             block = (response.snr or {}) if decision == "magnitude" else (response.snr or {}).get("alignment", {})
             worst = block.get("worst_relevant") or {}
-            band = next((row for row in block.get("bands", ())
+            band: Mapping[str, Any] = next((row for row in block.get("bands", ())
                          if row.get("band_id") == worst.get("band_id")), {})
             prefix = f"snr.{response.role}.{decision}"
+            if worst.get("band_id") is not None:
+                evidence[f"{prefix}.band_id"] = str(worst["band_id"])
             for key in ("estimated_snr_db", "shortfall_db"):
                 value = finite_float(band.get(key))
                 if value is not None:
@@ -157,8 +160,9 @@ def assess(
     if _any_sweep_clipped(analysis) or analysis.mic_meter_status in {"too_loud", "clipping"}:
         targets = {role: gain - CLIP_RETRY_BACKOFF_DB for role, gain in gains.items()}
         return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
-    if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
-        charge: TakeCharge = ("operator" if drift and drift.glitch_inputs == ("repeat_level_disagree",) else "speaker")
+    if evidence["frame_loss"] or analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
+        charge: TakeCharge = ("operator" if drift and drift.glitch_inputs == ("repeat_level_disagree",)
+                              and not evidence["frame_loss"] and not analysis.discontinuity_samples else "speaker")
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge)
     sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
     if not _sweep_schedule_ok(analysis, sample_rate):

@@ -5147,19 +5147,8 @@ def test_check_buried_pilot_delta_routes_to_snr_floor_not_a_retake():
     assert res.pilot_snr_ok is False
     assert res.channel_map_ok is False, "the guard must not repair the map"
 
-    plan = res.gain_plan
-    kind = _capture_dispatch.check_screens(_capture_dispatch.CheckScreens(
-        stimulus_located=True,
-        anchor_ambiguous=False,  # isolate: the near-tie guard is not on trial
-        delta_implausible=res.delta_implausible,
-        channel_map_ok=res.channel_map_ok,
-        pilot_snr_ok=res.pilot_snr_ok,
-        linearity_ok=res.linearity_ok,
-        gain_plan_present=plan is not None,
-        gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
-    ))
-    assert kind == _capture_dispatch.SCREEN_SNR_FLOOR
-    assert kind != _capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS
+    verdict = _capture_dispatch.assess(res, phase="check")
+    assert not verdict.ok and verdict.fault == "snr_floor"
 
 
 def test_pilot_linearity_aggregate_is_tri_state():

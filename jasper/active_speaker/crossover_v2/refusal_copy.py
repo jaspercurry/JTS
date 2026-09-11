@@ -68,7 +68,7 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # the recording rather than the speaker: the alternative,
 # `REASON_CHANNEL_MAP_MISMATCH`, is a hard stop telling a household to open its
 # speaker, and the evidence cannot support that. Ladder rung:
-# `capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS`.
+# `capture_dispatch.assess`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_CLIPPED = "clipped"
@@ -1450,9 +1450,10 @@ class PhaseVerdict:
                    next_gain_db=self.next_gain_db,
                    charge="none" if self.accepted else self.charge)
         if self.next is not None and not self.accepted:
-            out["auto_retry"] = self.charge == "speaker" and self.next in {
-                "retake_same", "retake_louder", "retake_quieter",
-            }
+            out["auto_retry"] = self.charge == "speaker" and (
+                self.next == "retake_same" or self.next in {"retake_louder", "retake_quieter"}
+                and self.next_gain_db is not None
+            )
         if self.payload.get("terminal"):
             out.update(next="stop", auto_retry=False)
         return out

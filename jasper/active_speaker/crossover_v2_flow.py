@@ -105,7 +105,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.program import (
-    KIND_SWEEP,
     ExcitationProgram,
     RoleBand,
 )
@@ -250,6 +249,8 @@ wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     NON_RETRIABLE_CODES,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_DELAY_IMPLAUSIBLE,
+    REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
     REASON_MEASURE_GAIN_ADJUSTED,
@@ -438,23 +439,6 @@ def alignment_delay_search_bounds_us(
     lo_ms = max(0.0, lo_ms - margin_ms)
     hi_ms += margin_ms
     return lo_ms * 1000.0, hi_ms * 1000.0
-
-
-def alignment_delay_plausible(
-    delay_us: float | None,
-    source_preset: Any,
-    *,
-    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-) -> bool:
-    """True when ``|delay_us|`` is inside the preset's declared ``delay_range_ms``."""
-    if delay_us is None:
-        return True
-    declared = _declared_alignment_delay_range_ms(source_preset)
-    if declared is None:
-        return True
-    _region, lo_ms, hi_ms = declared
-    delay_ms = abs(float(delay_us)) / 1000.0
-    return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
 
 
 def _measure_sufficient(take: _dispatch.TakeVerdict, analysis: ProgramAnalysis) -> bool:
@@ -2357,9 +2341,9 @@ class CrossoverV2Session:
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
+        if verdict.payload.get("kept_measurement"):
+            self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
         if verdict.next in {"retake_same", "retake_louder", "retake_quieter"}:
-            if verdict.payload.get("kept_measurement"):
-                self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
             self._rearm_measure_after_transient(verdict)
             if "gain_adjustment" in verdict.payload:
                 verdict.payload["gain_adjustment"]["next_program_id"] = self.program_for_phase(PHASE_MEASURE).program_id
@@ -2527,7 +2511,8 @@ class CrossoverV2Session:
         if not _measure_sufficient(take, analysis):
             code = (REASON_DELAY_IMPLAUSIBLE if take.evidence.get("delay_physically_plausible") is False
                     else REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
-            return replace(verdict, accepted=False, code=code, next="fix_and_retake", charge="operator")
+            return replace(verdict, accepted=False, code=code, next="fix_and_retake", charge="operator",
+                           payload={"kept_measurement": True})
         # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
         # does not refuse.** The capture is ACCEPTED and carries a reservation, which
         # changes what the household is TOLD and nothing about what is built.

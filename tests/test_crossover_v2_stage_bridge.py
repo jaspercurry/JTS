@@ -1663,7 +1663,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "kind",
     "measure",
     "measure_gain_ceiling_db",
-    "measure_gain_retry_used",
     # Deliberate widening (#2923). Banked in the SAME state write as
     # `gain_plan_db` beside it, on the same terms: the round's realized
     # per-role MEASURE sweep length, possibly shortened by #2921's duration

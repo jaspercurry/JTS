@@ -99,7 +99,7 @@ class SlotAttempts:
 
     @property
     def extras_used(self) -> int:
-        return self.by_household + self.by_speaker
+        return self.by_household
 
     @property
     def extras_left(self) -> int:
@@ -158,7 +158,7 @@ def extras_spent_message(
     Deliberately does NOT reuse the full registry ``message``: retriable rows
     end by inviting an action the flow will no longer grant.
     """
-    used = ledger.extras_used
+    used = ledger.by_household + ledger.by_speaker
     tries = "try" if used == 1 else "tries"
     count = (
         f"JTS measured this spot {ledger.admitted} times — the planned one "

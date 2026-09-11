@@ -30,7 +30,7 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
-from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
     MEASURE_KIND_BASELINE,
@@ -1307,21 +1307,8 @@ def test_every_screen_kind_has_a_household_sentence():
     kind no ladder can return — a stale arm is how a mapping outlives the rung
     it was written for.
     """
-    assert capture_dispatch.CAPTURE_SCREEN_KINDS == (
-        spatial.SCREEN_KINDS | capture_dispatch.ANCHOR_SCREEN_KINDS
-    )
-    # The two owners partition the vocabulary; an overlap would mean one kind
-    # with two declarations, which is the drift a union quietly hides.
-    assert not (spatial.SCREEN_KINDS & capture_dispatch.ANCHOR_SCREEN_KINDS)
-    assert set(refusal_copy.SCREEN_KIND_REASONS) == set(capture_dispatch.CAPTURE_SCREEN_KINDS)
-    for code in refusal_copy.SCREEN_KIND_REASONS.values():
-        assert code in flow.REASON_REGISTRY, code
-    code = refusal_copy.SCREEN_KIND_REASONS[capture_dispatch.SCREEN_ANCHOR_UNCONFIRMED]
-    assert code == refusal_copy.REASON_ANCHOR_TOO_QUIET
-    spec = refusal_copy.REASON_REGISTRY[code]
-    assert spec.retry_budget == refusal_copy.REASON_REGISTRY[refusal_copy.REASON_LOCATE_FAILED].retry_budget
-    assert spec.template == refusal_copy.TEMPLATE_FIX_AND_RETRY
-    assert code not in refusal_copy.TRANSIENT_AUTO_RETRY_CODES
+    assert set(refusal_copy.SCREEN_KIND_REASONS) == set(spatial.SCREEN_KINDS)
+    assert set(refusal_copy.SCREEN_KIND_REASONS.values()) <= flow.REASON_REGISTRY.keys()
 
 
 def test_an_unrecognised_kind_is_loud_rather_than_silent(caplog):

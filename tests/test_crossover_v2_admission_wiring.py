@@ -148,7 +148,7 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
 
     with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
-    assert "no extra attempts left" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
 
 
 def test_the_spent_slot_outcome_tells_left_out_from_kept():
@@ -310,7 +310,7 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
         base = dict(
             verify_hold=False, apply_failure_code=lambda: "", ledger=None,
             last_reason=None, non_retriable=frozenset({"stopped"}),
-            default_code="locate_failed", geometry_locked_code="geometry",
+            default_code="locate_failed",
         )
         return admission.assess_begin(**{**base, **kw}).kind
 
@@ -860,7 +860,6 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
         last_reason=None,
         non_retriable=frozenset(),
         default_code="unused",
-        geometry_locked_code="unused",
     )
     from_no_ledger = admission.assess_begin(
         ledger=None,
@@ -869,7 +868,6 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
         last_reason=None,
         non_retriable=frozenset(),
         default_code="unused",
-        geometry_locked_code="unused",
     )
 
     assert from_fresh_ledger.kind == admission.ADMIT
