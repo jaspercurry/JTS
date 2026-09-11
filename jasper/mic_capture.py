@@ -2,6 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Wake/voice audio input: local PortAudio capture and UDP mic ingress.
+
+``MicCapture`` opens a local PortAudio stream (``sounddevice``, imported
+lazily so this module stays importable off-hardware); ``UdpMicCapture``
+accepts frames over a UDP socket instead. Both emit the same contract
+downstream — mono 16 kHz ``InputFrame``s via a shared ``_CaptureQueue`` — so
+wake detection and the voice daemon don't care which backend is active.
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -2,6 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Assistant-audio playout: the fan-in TTS IPC client.
+
+``TtsPlayout`` takes 24 kHz mono provider PCM, upsamples it 2x to the
+fan-in socket's fixed 48 kHz, duplicates mono to stereo, and writes it
+over ``_OutputdStreamAdapter`` with gain carried as metadata so the TTS
+IPC owner applies the final clamp at its mix boundary. Also owns wire-
+format negotiation (``tts_wire_is_wide``) and drain-deadline timing.
+"""
+
 from __future__ import annotations
 
 import asyncio
