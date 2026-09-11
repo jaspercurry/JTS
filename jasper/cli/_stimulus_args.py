@@ -14,6 +14,7 @@ built.
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 
 def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
@@ -31,3 +32,18 @@ def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
         "--sweep-s", type=float,
         help="summed sweep duration; still bounded by declared driver duration caps",
     )
+
+
+def spec_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    """The ``MeasureSpec`` keywords both CLIs' overlay and stimulus flags name."""
+    return {
+        "polarity": args.polarity,
+        "inverted_role": args.inverted_role,
+        "delayed_role": args.delayed_role,
+        "delay_us": args.delay_us,
+        "level_matched": args.level_matched,
+        "level_ladder_dbfs": tuple(args.level_dbfs),
+        "sweep_band_hz": tuple(args.sweep_band_hz),
+        "sweep_s": args.sweep_s,
+        "spl_ceiling_db_spl": args.spl_ceiling_db_spl,
+    }

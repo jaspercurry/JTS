@@ -576,15 +576,15 @@ def _banked(monkeypatch, *, room_correction=None, bass_extension=None, **alignme
     {"delayed_role": DRIVER_ROLE_TWEETER, "delay_us": 250.0},
 ])
 @pytest.mark.parametrize("candidate_id", ["", "fp-a"])
-def test_a_complete_graph_trial_refuses_walk_overlays(slot, monkeypatch, overlay, candidate_id):
-    preset = _banked(monkeypatch, polarity="invert", delay_role=None, delay_us=None)
-    _with_measured_trims(monkeypatch, {DRIVER_ROLE_TWEETER: -9.5})
-    spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),),
-        template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **overlay),
-    ))
-    assert ac.WALK_CANDIDATE_NOT_MEASURABLE in _refused(preset=preset)
-    assert spool.staged_angle_request_pending() is False
+def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
+    """A summed trial plays the selected graph's own trims and alignment, so a
+    template overlay is refused where the walk is stated, not at the open."""
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),),
+            template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **overlay),
+        )
+    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
 
 
 @pytest.mark.parametrize("candidate_ids", [None, ("",), ("", "fp-a", "fp-b")])

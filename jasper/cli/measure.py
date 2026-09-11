@@ -32,7 +32,7 @@ from jasper.cli._refusal import (
     STATUS_BY_CODE,
     failed,
 )
-from jasper.cli._stimulus_args import add_stimulus_args
+from jasper.cli._stimulus_args import add_stimulus_args, spec_kwargs_from_args
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -329,16 +329,8 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             vertical_deg=args.vertical_deg,
             regime=args.regime,
             graph_scope=args.graph_scope,
-            polarity=args.polarity,
-            inverted_role=args.inverted_role,
-            level_ladder_dbfs=tuple(args.level_dbfs),
-            sweep_band_hz=tuple(args.sweep_band_hz),
-            sweep_s=args.sweep_s,
-            spl_ceiling_db_spl=args.spl_ceiling_db_spl,
             candidate_id=args.candidate_id.strip(),
-            delayed_role=args.delayed_role,
-            delay_us=args.delay_us,
-            level_matched=args.level_matched,
+            **spec_kwargs_from_args(args),
         )
     except ValueError as exc:
         raise MeasureFlagError(REFUSE_SPEC_INVALID, str(exc)) from exc

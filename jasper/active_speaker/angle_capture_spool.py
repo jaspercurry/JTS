@@ -30,12 +30,12 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import time
 from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 
 from .angle_capture import (
@@ -364,11 +364,7 @@ def _banked_rungs(raw: Any) -> tuple[float, ...]:
     """
     if raw is None:
         return ()
-    if not isinstance(raw, list) or any(
-        isinstance(rung, bool) or not isinstance(rung, (int, float))
-        or not math.isfinite(rung)
-        for rung in raw
-    ):
+    if not isinstance(raw, list) or any(finite_float(rung) is None for rung in raw):
         _refuse(
             SPOOL_MALFORMED,
             f"the staged walk's main_volume_series_db is not a list of "

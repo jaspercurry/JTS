@@ -2001,7 +2001,6 @@ def _take_staged_angle_walk(
     ordinary shape and the operator stages again.
     """
     from jasper.active_speaker.angle_capture import (
-        WALK_CANDIDATE_NOT_MEASURABLE,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
         WALK_STIMULUS_NOT_ACCEPTED,
@@ -2092,14 +2091,6 @@ def _take_staged_angle_walk(
             candidate_id: candidate_trial_scope(find_banked_candidate(candidate_id).candidate)
             for candidate_id in sorted(set(candidate_ids) - {""})
         }
-        if any(stop.plays_summed for stop in request.stops) and (
-            request.template.level_matched or request.template.inverted_role
-            or request.template.delayed_role
-        ):
-            raise LateralWalkRefused(
-                WALK_CANDIDATE_NOT_MEASURABLE,
-                "Summed trials use the selected graph's own trims and alignment.",
-            )
     except LateralWalkRefused as exc:
         raise refused(exc.reason, exc.detail) from exc
     except CandidateBankRefusal as exc:

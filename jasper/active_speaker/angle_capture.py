@@ -278,8 +278,22 @@ class AngleStop:
 #: overlays only on :data:`~.crossover_v2.measure_spec.GRAPH_SCOPE_DRIVERS`, so
 #: the two statements cannot share one scope -- and nothing measures at the
 #: template's, since :func:`design_axis_spec` and :func:`stop_specs` each replace
-#: it with the scope their capture plays.
+#: it with the scope their capture plays. A template's scope is therefore
+#: derived from its stimulus, never stated.
 TEMPLATE_SWEEP_SCOPE = "base"
+
+
+def _states_summed_sweep(sweep_band_hz: object, sweep_s: object) -> bool:
+    return bool(sweep_band_hz) or sweep_s is not None
+
+
+def _states_overlay(*, polarity: object, inverted_role: object, delayed_role: object,
+                    delay_us: object, level_matched: object) -> bool:
+    """A graph overlay the design-axis capture rides and a summed trial cannot."""
+    return bool(
+        inverted_role or delayed_role or delay_us or level_matched
+        or (polarity or POLARITY_NORMAL) != POLARITY_NORMAL
+    )
 
 
 def walk_template(**spec_fields: object) -> MeasureSpec:
@@ -287,15 +301,21 @@ def walk_template(**spec_fields: object) -> MeasureSpec:
 
     ``MeasureSpec`` is the only judge of a spec field; this names WHICH half of
     the statement was refused, so ``reason=`` sends an operator to the flag they
-    got wrong, and keeps the spec's own sentence as the detail. ``graph_scope``
-    is DERIVED from the stimulus (:data:`TEMPLATE_SWEEP_SCOPE`), never stated.
+    got wrong, and keeps the spec's own sentence as the detail. The scope is
+    :data:`TEMPLATE_SWEEP_SCOPE`'s rule.
     """
     stated_delay = bool(spec_fields.get("delayed_role") or spec_fields.get("delay_us"))
     stated_polarity = bool(
         spec_fields.get("inverted_role")
         or spec_fields.get("polarity", POLARITY_NORMAL) != POLARITY_NORMAL
     )
-    summed = bool(spec_fields.get("sweep_band_hz")) or spec_fields.get("sweep_s") is not None
+    summed = _states_summed_sweep(spec_fields.get("sweep_band_hz"), spec_fields.get("sweep_s"))
+    if summed and _states_overlay(
+        polarity=spec_fields.get("polarity"), inverted_role=spec_fields.get("inverted_role"),
+        delayed_role=spec_fields.get("delayed_role"), delay_us=spec_fields.get("delay_us"),
+        level_matched=spec_fields.get("level_matched"),
+    ):
+        raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH)
     try:
         return MeasureSpec(
             graph_scope=TEMPLATE_SWEEP_SCOPE if summed else GRAPH_SCOPE_DRIVERS,
@@ -409,12 +429,12 @@ class AngleCaptureRequest:
             )
 
     def _refuse_bad_template(self) -> None:
-        """The two questions about a template that are the WALK's, not the spec's.
-
-        Every field value is ``MeasureSpec``'s own (it judged them when the
-        template was stated); what it cannot see is the set of stops the
-        template will be replayed over.
-        """
+        """The questions about a template that are the WALK's, not the spec's:
+        what it may not state, and what its stops can play."""
+        if not isinstance(self.template, MeasureSpec):
+            raise LateralWalkRefused(
+                WALK_TEMPLATE_NOT_ACCEPTED, f"template must be a MeasureSpec, got {self.template!r}",
+            )
         stated = [
             name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
         ]
@@ -424,13 +444,18 @@ class AngleCaptureRequest:
                 f"a walk's template states what each capture is measured at, "
                 f"so it cannot carry {', '.join(stated)}",
             )
-        if (
-            self.template.sweep_band_hz or self.template.sweep_s is not None
-        ) and not any(stop.plays_summed for stop in self.stops):
+        summed_stop = any(stop.plays_summed for stop in self.stops)
+        if _states_summed_sweep(self.template.sweep_band_hz, self.template.sweep_s) and not summed_stop:
             raise LateralWalkRefused(
                 WALK_STIMULUS_NOT_ACCEPTED,
                 "sweep_band_hz/sweep_s ride summed stops; this walk names none",
             )
+        if summed_stop and _states_overlay(
+            polarity=self.template.polarity, inverted_role=self.template.inverted_role,
+            delayed_role=self.template.delayed_role, delay_us=self.template.delay_us,
+            level_matched=self.template.level_matched,
+        ):
+            raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH)
 
     def _refuse_beyond_reach(
         self, axis: str, bound: int, asked: tuple[int, ...]
@@ -527,15 +552,12 @@ def _offset_cm_at(degrees: int, distance_m: float = MARK_DISTANCE_M) -> float:
 
 
 def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
-    """The spec this walk's design-axis MEASURE captures play.
-
-    The template at :data:`~.crossover_v2.measure_spec.GRAPH_SCOPE_DRIVERS`, the
-    scope that carries the graph overlays and cannot play a summed sweep -- so
-    the band and duration are stripped rather than refused, since they were
-    stated for the stops.
-    """
+    """The spec this walk's design-axis MEASURE captures play: the template at
+    :data:`~.crossover_v2.measure_spec.GRAPH_SCOPE_DRIVERS`, the band and duration
+    stripped since that scope cannot play a summed sweep (:data:`TEMPLATE_SWEEP_SCOPE`)."""
     return replace(
         request.template,
+        kind=MEASURE_KIND_CANDIDATE,
         graph_scope=GRAPH_SCOPE_DRIVERS,
         sweep_band_hz=(),
         sweep_s=None,
@@ -877,6 +899,7 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,

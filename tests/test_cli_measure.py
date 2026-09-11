@@ -1134,3 +1134,11 @@ def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys
         assert code == EXIT_REFUSED
         assert result["reason"] == "measurement_volume_invalid"
         assert not speaker["played"]
+
+
+def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
+    from jasper.active_speaker.crossover_v2 import measure_spec as ms
+
+    groups = (ms._TRIMMED_STRINGS, ms._ARRAYS, ms._NUMBERS, ms._PASSTHROUGH)
+    assert frozenset().union(*groups) == ms._FIELD_NAMES
+    assert sum(len(group) for group in groups) == len(ms._FIELD_NAMES)

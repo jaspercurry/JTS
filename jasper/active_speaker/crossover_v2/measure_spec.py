@@ -19,6 +19,7 @@ from dataclasses import dataclass, fields
 from typing import Any, Mapping
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
+from jasper.json_fields import finite_float
 
 from .contracts import (
     DRIVER_ROLES,
@@ -357,14 +358,15 @@ _TRIMMED_STRINGS = frozenset({
 _ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz"})
 #: ``sweep_s``/``spl_ceiling_db_spl`` read ``None`` back as the statement it is.
 _NUMBERS = frozenset({"delay_us", "sweep_s", "spl_ceiling_db_spl"})
+#: Read back as banked; the dataclass judges them.
+_PASSTHROUGH = _FIELD_NAMES - _TRIMMED_STRINGS - _ARRAYS - _NUMBERS
 
 
 def _finite(name: str, value: Any) -> float:
-    """One finite JSON number. ``bool`` is an ``int`` and is never a value."""
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value)):
+    number = finite_float(value)
+    if number is None:
         raise ValueError(f"{name} must be a finite number, got {value!r}")
-    return value
+    return number
 
 
 def _from_json(name: str, value: Any) -> Any:

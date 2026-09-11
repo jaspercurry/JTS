@@ -562,7 +562,7 @@ def _walk(**template):
     )
 
     return AngleCaptureRequest(
-        stops=(AngleStop(angle_deg=0, regime="summed"),),
+        stops=(AngleStop(angle_deg=0, regime="per_driver"),),
         template=walk_template(kind="candidate", **template),
     )
 

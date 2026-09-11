@@ -48,6 +48,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
@@ -1760,8 +1761,8 @@ def test_a_banked_template_field_that_is_not_one_refuses_as_malformed(
 
 
 @pytest.mark.parametrize(
-    "banked", ["-20", {"rung": -20}, [None], math.nan],
-    ids=["bare-string", "mapping", "null-rung", "nan"],
+    "banked", ["-20", {"rung": -20}, [None], math.nan, ["-20", -14]],
+    ids=["bare-string", "mapping", "null-rung", "nan", "numeral-rung"],
 )
 def test_a_banked_volume_rung_that_is_not_a_number_refuses_as_malformed(
     spool_slot, banked: object,
@@ -1859,3 +1860,33 @@ def test_cli_stimulus_flags_reach_the_printed_price(capsys) -> None:
 
     price = document["price"]
     assert price["stimulus_s"] == pytest.approx(price["captures"] * 2.0 * 3)
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [{"polarity": "inverted", "inverted_role": "tweeter"},
+     {"delayed_role": "tweeter", "delay_us": 250.0}, {"level_matched": True}],
+    ids=["polarity", "delay", "level-match"],
+)
+def test_a_summed_sweep_beside_an_overlay_is_refused_as_not_measurable(overlay: dict) -> None:
+    """The two cannot share a template: a summed trial plays its own graph. Named
+    for what it is at statement time, not for whichever half ``MeasureSpec``
+    happened to refuse first.
+    """
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.walk_template(kind=MEASURE_KIND_CANDIDATE, sweep_s=2.5, **overlay)
+    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
+
+
+def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
+    request = ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+        template=ac.walk_template(kind=MEASURE_KIND_VERIFY),
+    )
+    assert ac.design_axis_spec(request).kind == MEASURE_KIND_CANDIDATE
+
+
+def test_a_template_that_is_not_a_spec_is_refused() -> None:
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), template=None)
+    assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED

@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
-from ._stimulus_args import add_stimulus_args
+from ._stimulus_args import add_stimulus_args, spec_kwargs_from_args
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
@@ -226,18 +226,7 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
     """
     return {
         "mover": args.mover,
-        "template": walk_template(
-            kind=MEASURE_KIND_CANDIDATE,
-            polarity=args.polarity,
-            inverted_role=args.inverted_role,
-            delayed_role=args.delayed_role,
-            delay_us=args.delay_us,
-            level_matched=args.level_matched,
-            sweep_band_hz=tuple(args.sweep_band_hz),
-            sweep_s=args.sweep_s,
-            level_ladder_dbfs=tuple(args.level_dbfs),
-            spl_ceiling_db_spl=args.spl_ceiling_db_spl,
-        ),
+        "template": walk_template(kind=MEASURE_KIND_CANDIDATE, **spec_kwargs_from_args(args)),
         "level_mode": args.level_mode,
         "main_volume_series_db": tuple(args.level_series),
     }
