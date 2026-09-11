@@ -888,7 +888,7 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     `InputDeviceUnavailable` and the daemon exits before it ever sees the
     remote. See ADR-0217.
     """
-    from jasper.voice_daemon import configured_wake_legs
+    from jasper.voice.wake_detect import configured_wake_legs
     from tests._manual_mics import remote_mic
 
     plan = configured_wake_legs(
@@ -912,7 +912,7 @@ def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
     always granted WAKE_DETECTION. See ADR-0217.
     """
     from jasper.voice import daemon_main
-    from jasper.voice_daemon import configured_wake_legs
+    from jasper.voice.wake_detect import configured_wake_legs
 
     reason = "invalid install profile 'bogus'"
 

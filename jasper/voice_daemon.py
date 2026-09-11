@@ -43,14 +43,10 @@ from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
-from .voice.wake_detect import (  # noqa: F401
-    # CAPTURE_RING_FRAMES / LegRuntime / configured_wake_legs are re-exported
-    # for jasper.voice.daemon_main, which builds the legs this loop consumes.
-    CAPTURE_RING_FRAMES,
+from .voice.wake_detect import (
     WAKE_REFRACTORY_SEC,
     LegRuntime,
     WakeLegs,
-    configured_wake_legs,
 )
 from .voice.push_to_talk import (
     HARD_RECORDING_CAP_SEC,

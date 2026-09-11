@@ -378,7 +378,7 @@ def _wake_loop_with_legs(*tokens):
     """A WakeLoop with exactly the given wake-input legs armed, in order."""
     from unittest.mock import MagicMock
 
-    from jasper.voice_daemon import LegRuntime
+    from jasper.voice.wake_detect import LegRuntime
     from jasper.wake_legs import by_token
 
     return wake_loop_for_tests(legs=[
