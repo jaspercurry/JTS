@@ -80,7 +80,6 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
             "floor_relative_db": _finite(reading.floor_relative_db[order]),
             "qualified": mask.tolist(), "timing_valid": timing_valid,
             "clearance_s": reading.preceding_silence_s - required,
-            "received_db_spl": None,
         }
     curve = next(curve for curve in document["curves"] if curve["role"] == "summed")
     frequencies = np.asarray(curve["freqs_hz"])
@@ -98,7 +97,6 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
         "freqs_hz": _finite(frequencies),
         "fundamental_db": _finite(np.asarray(curve["magnitude_db"])[bass]),
         "fundamental_qualified": _qualified(frequencies, bands).tolist(), "harmonics": orders,
-        "actual_dsp_drive": None,
     }
 
 

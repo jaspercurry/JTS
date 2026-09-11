@@ -840,7 +840,6 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     assert first['record']['take_id'] == 'baseline'
     assert repeat['record']['take_id'] == 'repeat'
     assert first['fundamental_db'] == repeat['fundamental_db']
-    assert first['actual_dsp_drive'] is None
     frequencies = np.array(first['freqs_hz'])
     assert frequencies.max() > 190
     assert np.array(first['fundamental_qualified'])[frequencies > 125].any()
@@ -848,7 +847,6 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
         beyond = np.array(harmonic['freqs_hz']) > program.segment('sweep_verify').f2_hz / int(order)
         assert not np.array(harmonic['qualified'])[beyond].any()
         assert all(value is None for value in np.array(harmonic['relative_db'])[beyond])
-        assert harmonic['received_db_spl'] is None
     assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
 
 

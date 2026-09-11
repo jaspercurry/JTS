@@ -325,19 +325,6 @@ class MeasurementSessionGraph:
             current_scope_fingerprint=current,
         )
 
-    async def patch(self, changes: Mapping[str, Any]) -> None:
-        """Change what one candidate needs, without re-installing.
-
-        Refuses before there is a graph to patch rather than patching whatever
-        the box happens to be running.
-        """
-        if self._entry_config_path is None:
-            raise SessionGraphError("no measurement graph is installed to patch")
-        cam = self._cam_factory()
-        async with self._writer_lock():
-            if not await cam.patch_config(dict(changes), best_effort=False):
-                raise SessionGraphError("CamillaDSP rejected the candidate patch")
-
     async def restore(self) -> None:
         """Restore the saved entry text; retain it until confirmed live."""
         # The one restore verdict, shared with the commissioning swap paths.

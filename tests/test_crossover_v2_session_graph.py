@@ -474,27 +474,6 @@ def test_scope_refusal_cannot_load_an_unrequested_graph(tmp_path):
     assert cam.ops == []
 
 
-def test_patch_refuses_before_there_is_a_graph_to_patch(tmp_path):
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-
-    with pytest.raises(SessionGraphError, match="no measurement graph"):
-        asyncio.run(graph.patch({"filters": {}}))
-
-
-def test_patch_changes_one_candidate_without_reinstalling(tmp_path):
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-    asyncio.run(graph.install())
-    before = len([op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"])
-
-    asyncio.run(graph.patch({"filters": {"gain": {}}}))
-
-    after = len([op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"])
-    assert after == before
-    assert ("patch", {"filters": {"gain": {}}}) in cam.ops
-
-
 # --------------------------------------------------------------------------- #
 # R-1 — one graph per POLARITY VARIANT, and the entry graph survives the swap
 # --------------------------------------------------------------------------- #
