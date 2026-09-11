@@ -50,15 +50,9 @@ from tests._log_events import event_fields, event_records
 _REPO = Path(__file__).resolve().parents[1]
 _RESAMPLER_RS = _REPO / "rust" / "jasper-resampler" / "src" / "lib.rs"
 
-# The emitted payload for `_probe_pcm()` on the NARROW wire. First captured
-# from the tree at 1caff2304 (2026-08-12) through this same harness — a golden
-# the pre-change tree produced, not a self-generated one — and re-captured
-# when `TtsPlayout._upsample_chunk` began carrying resampler state between
-# chunks. Same audio at the same length, delayed by `2 * UPSAMPLE_2X_CONTEXT`
-# samples, with a lead-in that now interpolates out of silence instead of out
-# of the resampler's zero pad (the leading zeros below). Re-derived bytes prove
-# nothing on their own; what this holds is that assistant audio cannot move
-# again unremarked.
+# The emitted payload for `_probe_pcm()` on the NARROW wire, delayed by
+# `2 * UPSAMPLE_2X_CONTEXT` samples, its lead-in interpolating out of silence
+# (the leading zeros below).
 _NARROW_GOLDEN_SHA256 = (
     "7ace97ad9926f8cf3cf98d3a46dc9e0fc132baaa3757da284a60c6fe260f9504"
 )
