@@ -1,7 +1,8 @@
 # ADR-0197: The commissioning capture stack is deleted
 
 - **Date:** 2026-08-30
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0288](0288-the-v1-commissioning-lane-is-deleted.md)
 
 ## Context
 

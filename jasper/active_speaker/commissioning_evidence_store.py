@@ -44,6 +44,9 @@ from .bundles import (
 )
 from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
+# "v1" is the artifact namespace's on-disk schema version, still written by
+# crossover_v2 and attribution -- unrelated to the deleted v1 commissioning
+# lane (ADR-0288).
 EVIDENCE_ROOT = "evidence/v1"
 MAX_EVIDENCE_ARTIFACT_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 # Bound for a read outside ``evidence/v1/artifacts/`` -- e.g.
@@ -52,7 +55,10 @@ MAX_EVIDENCE_ARTIFACT_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_NON_ARTIFACT_READ_BYTES = 32 * 1024 * 1024
 # Hard ceiling on every byte `_authoritative_total` walks: `evidence/v1`,
 # `stimuli` and `admission`. v2 capture WAVs under `summed/`/`captures/`
-# live outside those subtrees and are not counted here.
+# live outside those subtrees and are not counted here. Fixed disk budget
+# (≈3.8 GiB) carried over from the deleted v1 commissioning lane's
+# proven-maximum capture matrix (582 artifacts × 5 MiB + 1 GiB); v2 writes
+# only KB-scale JSON under this subtree, so the ceiling does not bind today.
 MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
     582 * MAX_EVIDENCE_ARTIFACT_BYTES
 ) + (1024 * 1024 * 1024)

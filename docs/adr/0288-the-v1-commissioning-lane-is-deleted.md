@@ -21,8 +21,14 @@ provisions them.
 
 ## Consequences
 
-ADR-0196 is superseded: its subject, the commissioning run record's
-lock-and-read path, no longer exists. The advisory-lock fix it documented
-still governs the live stores that share the pattern
+ADR-0196 and ADR-0197 are superseded: their subjects — the commissioning
+run record's lock-and-read path, and the deleted capture-producer stack —
+no longer exist. The advisory-lock fix ADR-0196 documented still governs
+the live stores that share the pattern
 (`active_speaker_crossover_level_run.json`,
-`active_speaker_repeat_admission.json`); their citations now point here.
+`active_speaker_repeat_admission.json`). Only the two comments in
+`deploy/lib/install/env-migrations.sh` were repointed to this ADR; the code
+and test citations of ADR-0196 (`jasper/atomic_io.py`,
+`jasper/active_speaker/repeat_admission.py`,
+`jasper/active_speaker/crossover_level_run.py`, `jasper/transition_log.py`,
+and their tests) still name it, and its status line redirects here.

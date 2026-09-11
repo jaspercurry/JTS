@@ -71,6 +71,12 @@ JASPER_RETIRED_LEFTOVERS=(
     # REMOVAL CONDITION: every box has taken one install after this lands —
     # the writer is gone, so a stuck latch would never self-resolve.
     "file|${STATE_DIR}/active_speaker_crossover_volume_safety.json ${STATE_DIR}/active_speaker_crossover_level_run.json ${STATE_DIR}/.active_speaker_crossover_level_run.json.lock|the retired per-step crossover level-run store and volume-safety latch"
+    # ADR-0288 deleted the v1 commissioning lane's run store; install no
+    # longer provisions the run record or its lock/mutation sidecars, so an
+    # already-deployed box still carries whatever a prior run left on disk
+    # with nothing left to read or write them.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${STATE_DIR}/active_speaker_commissioning_run.json ${STATE_DIR}/.active_speaker_commissioning_run.json.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json|the retired v1 commissioning run record and its lock/mutation sidecars"
 )
 
 # Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort
