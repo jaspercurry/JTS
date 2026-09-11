@@ -346,7 +346,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         return AngleCaptureRequest.from_mapping(doc)
     except LateralWalkRefused:
         raise
-    except (UnicodeDecodeError, ValueError, TypeError, KeyError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         _refuse(SPOOL_MALFORMED, str(exc))
 
 

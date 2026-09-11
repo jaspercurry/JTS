@@ -61,6 +61,8 @@ from jasper.active_speaker.angle_capture import (
     REGIME_SUMMED,
     AngleCaptureRequest,
     LevelPolicy,
+    BASE_CANDIDATE,
+    candidate_identity,
     LateralWalkRefused,
     AngleStop,
     announced_indexes,
@@ -240,7 +242,7 @@ def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
         if field.strip()
     )
     for fingerprint in fingerprints:
-        if fingerprint != "base":
+        if fingerprint != BASE_CANDIDATE:
             find_banked_candidate(fingerprint)
     return fingerprints
 
@@ -304,10 +306,7 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
 def _resolved_level(request: AngleCaptureRequest) -> tuple[AngleCaptureRequest, LevelUnresolved | None]:
     try:
         anchor = resolve_anchor_level()
-        return replace(request, level=LevelPolicy(
-            anchor_db_spl=anchor.anchor_db_spl,
-            reference_volume_db=anchor.reference_volume_db, mic_serial=anchor.mic_serial,
-        )), None
+        return replace(request, level=LevelPolicy(resolved=anchor)), None
     except LevelUnresolved as exc:
         return request, exc
     except LateralWalkRefused as exc:
@@ -323,10 +322,8 @@ def _level_block(level: LevelPolicy | LevelUnresolved) -> dict[str, Any]:
     if isinstance(level, LevelUnresolved):
         return {"resolved": False, "reason": level.reason, "detail": level.detail}
     return {
-        "resolved": level.anchor_db_spl is not None and level.reference_volume_db is not None,
-        "anchor_db_spl": level.anchor_db_spl,
-        "reference_volume_db": level.reference_volume_db,
-        "mic_serial": level.mic_serial,
+        "resolved": level.resolved is not None,
+        **{name: value for name, value in level.to_dict().items() if name != "mode"},
     }
 
 
@@ -368,7 +365,7 @@ def _walk_payload(
                 "program_phase": stop.program_phase,
                 "prompt": stop.prompt.text,
                 "screen": dict(stop.screen),
-                "candidate_id": stop.candidate_id,
+                "candidate_id": candidate_identity(stop.candidate_id),
                 "kind": stop.prompt.kind,
                 "purpose": stop.prompt.purpose,
                 "baseline_scope": measurement_programs.baseline_scope(stop.prompt.purpose),

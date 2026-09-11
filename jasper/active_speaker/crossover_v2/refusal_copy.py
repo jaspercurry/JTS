@@ -156,6 +156,7 @@ REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
 REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
+REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
@@ -911,6 +912,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET: ReasonSpec(
         REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
         'Use one fixed reference level for this measurement.',
+    ),
+    REASON_WALK_REPEATS_UNSUPPORTED_YET: ReasonSpec(
+        REASON_WALK_REPEATS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
+        'Use one take per position in the guided measurement.',
+        next_action={"id": 'correct_walk_repeats', "label": 'Set one take per position',
+                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
         REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -366,7 +367,7 @@ def test_the_polarity_pair_rides_the_document_and_an_older_one_reads_as_normal(s
     assert doc["template"]["polarity"] == POLARITY_INVERTED
     assert doc["template"]["inverted_role"] == DRIVER_ROLE_TWEETER
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
-        level=LevelPolicy(anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB, mic_serial="8108494"),
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         template=walk_template(
             kind=MEASURE_KIND_CANDIDATE,
@@ -406,7 +407,7 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc["template"]["level_matched"] is True
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
-        level=LevelPolicy(anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB, mic_serial="8108494"),
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         template=walk_template(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
     )
@@ -744,7 +745,10 @@ def test_the_cli_stage_banks_the_walk_when_the_speaker_is_idle(slot, capsys):
     assert body["stops_count"] == len(CAMPAIGN_ANGLES)
     assert body["mover"] == MOVER_HUMAN
 
-    assert spool.take_staged_angle_request().stops == per_driver_at(CAMPAIGN_ANGLES).stops
+    assert spool.take_staged_angle_request() == replace(
+        per_driver_at(CAMPAIGN_ANGLES),
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
+    )
 
 
 def test_a_filesystem_failure_is_its_own_exit_code(slot, monkeypatch, capsys):
@@ -827,8 +831,9 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
 
     taken = spool.take_staged_angle_request()
-    assert taken.stops == request_for_program(express).stops
-    assert taken.program == "baseline/express"
+    assert taken == request_for_program(
+        express, level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
+    )
 
 
 @pytest.mark.parametrize(
@@ -848,7 +853,7 @@ def test_stage_program_defaults_preserve_explicit_sizes(
 ):
     row = mp.program(program_id, expected_size)
     args = cli.build_parser().parse_args(
-        ["stage", "--program", program_id, "--mover", "human", *size_args]
+        ["stage", "--program", program_id, "--mover", row.mover or MOVER_HUMAN, *size_args]
     )
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
@@ -857,7 +862,10 @@ def test_stage_program_defaults_preserve_explicit_sizes(
     assert body["stops_count"] == row.capture_count
     assert body["price"]["captures"] == row.capture_count
     assert body["price"]["mic_moves"] == row.mic_move_count
-    assert spool.take_staged_angle_request().stops == request_for_program(row).stops
+    assert spool.take_staged_angle_request() == request_for_program(
+        row, mover=row.mover or MOVER_HUMAN,
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
+    )
 
 
 def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys, monkeypatch):

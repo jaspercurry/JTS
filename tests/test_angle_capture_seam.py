@@ -35,6 +35,7 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
+from jasper.active_speaker.seat_level_reference import ResolvedLevel
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
@@ -988,13 +989,11 @@ def test_candidates_expand_pose_major_candidate_minor(
     same place.
     """
     request = ac.request_for_program(program, candidates=candidates)
-    cycle = tuple("" if c == "base" else c for c in candidates) or ("",)
+    cycle = candidates or ("base",)
 
     assert len(request.stops) == program.capture_count * len(cycle)
     # Candidate-minor: the cycle repeats intact under every capture.
-    assert [s.candidate_id for s in request.stops] == (
-        list(cycle) * program.capture_count
-    )
+    assert [s["candidate_id"] for s in request.to_dict()["stops"]] == list(cycle) * program.capture_count
     # Pose-major: one contiguous run per table row, so nothing walks twice.
     assert len(request.stops) > 0
     runs = [
@@ -1377,7 +1376,7 @@ def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
 
 @pytest.mark.parametrize("mover,tier", [(ac.MOVER_HUMAN, "full"), (ac.MOVER_ARM, "remote")])
 def test_plan_copy_survives_staging_and_reaches_the_measurement_screen(spool_slot, mover, tier):
-    custom = dataclasses.replace(mp.program("room", "quick"), poses=(
+    custom = dataclasses.replace(mp.program("room", "cloud"), poses=(
         dataclasses.replace(mp.ProgramPose(-20, 0), headline="Left sample", detail="Keep the mic still."),
     ))
     request = ac.request_for_program(custom, mover=mover)
@@ -1412,7 +1411,7 @@ def test_legacy_staged_stops_keep_their_capture_purpose(spool_slot, kind, purpos
 @pytest.mark.parametrize("size", ["cloud", "quick"])
 def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     program = mp.program("room", size)
-    request = ac.request_for_program(program, candidates=("base", "room-fp"))
+    request = ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=("base", "room-fp"))
     prompts = tuple(s.prompt for s in ac.resolve_request(request))
     plan = flow.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ, acknowledgement_binding="room-position-test",
@@ -1462,13 +1461,13 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
     """
     program = mp.program(program_id, size)
     request = ac.request_for_program(
-        program, candidates=candidates,
+        program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN,
         template=ac.walk_template(
             kind=MEASURE_KIND_CANDIDATE, sweep_s=sweep_s,
             level_ladder_dbfs=level_ladder_dbfs,
         ),
     )
-    cycle = tuple("" if c == "base" else c for c in candidates) or ("",)
+    cycle = candidates or ("base",)
     price = ac.walk_price(request)
 
     assert price["mic_moves"] == program.mic_move_count
@@ -1765,13 +1764,14 @@ def test_a_template_that_is_not_a_spec_is_refused() -> None:
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
 def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candidates):
     request = ac.request_for_program(
-        mp.program("room", "quick"), candidates=candidates, repeats=repeats,
+        mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
         spl_ceiling_db_spl=80.0, retries_per_pose=2,
-        level=ac.LevelPolicy(anchor_db_spl=75.8, reference_volume_db=-12.7, mic_serial="8108494"),
+        level=ac.LevelPolicy(resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
     doc = spool.angle_request_document(request)
     assert doc["artifact_schema_version"] == 3
     assert doc["candidates"] == list(candidates)
+    assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
     assert doc["spl_ceiling_db_spl"] == 80.0
     assert doc["level"] == {"mode": "hold_reference", "anchor_db_spl": 75.8,
                             "reference_volume_db": -12.7, "mic_serial": "8108494"}
@@ -1799,7 +1799,9 @@ def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candida
 ])
 def test_invalid_level_policy_refuses_at_construction(fields):
     with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.LevelPolicy(**fields)
+        ac.LevelPolicy(mode=fields.get("mode", ac.LEVEL_HOLD_REFERENCE),
+                       resolved=replace(ResolvedLevel(75.8, -12.7, "8108494"),
+                                        **{k: v for k, v in fields.items() if k != "mode"}))
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
@@ -1822,7 +1824,7 @@ def test_old_request_version_refuses_by_name(spool_slot, version):
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
-    *[({"spl_ceiling_db_spl": v}, ac.WALK_STIMULUS_NOT_ACCEPTED) for v in (0, -1, True, "80", math.nan, math.inf)],
+    *[({"spl_ceiling_db_spl": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, "80", math.nan, math.inf)],
 ])
 def test_invalid_walk_fields_refuse_by_name(fields, reason):
     with pytest.raises(ac.LateralWalkRefused) as refused:
@@ -1833,3 +1835,41 @@ def test_invalid_walk_fields_refuse_by_name(fields, reason):
 @pytest.mark.parametrize("program, scope", [("baseline", "base"), ("room", "speaker_tune"), ("bass", "room_tune")])
 def test_request_names_the_program_baseline(program, scope):
     assert ac.request_for_program(mp.program(program)).baseline_graph_scope == scope
+
+
+@pytest.mark.parametrize("field,value", [
+    *[(f.name, ...) for f in dataclasses.fields(ac.AngleCaptureRequest)],
+    ("stops", None), ("stops", [None]), ("stops", [{}]),
+    ("stops", [{"angle_deg": 0, "regime": "bad"}]),
+    ("template", None), ("template", []), ("level", None), ("level", []),
+    ("level", {}), ("level", {"mode": "hold_reference"}), ("mover", []), ("program", 3),
+])
+def test_malformed_request_fields_raise_value_error(spool_slot, field, value):
+    doc = ac.summed_at([0]).to_dict()
+    if value is ...:
+        del doc[field]
+    else:
+        doc[field] = value
+    with pytest.raises(ValueError):
+        ac.AngleCaptureRequest.from_mapping(doc)
+    spool.angle_request_spool_path().write_text(json.dumps(doc))
+    with pytest.raises(spool.AngleRequestRefused) as refused:
+        spool.take_staged_angle_request()
+    assert refused.value.reason == spool.SPOOL_MALFORMED
+
+
+@pytest.mark.parametrize("program,size,mover,reason", [
+    ("room", "quick", ac.MOVER_ARM, None),
+    ("room", "quick", ac.MOVER_HUMAN, ac.WALK_MOVER_MISMATCH),
+    ("bass", "quick", ac.MOVER_HUMAN, ac.WALK_MOVER_MISMATCH),
+    ("seat", "cloud", ac.MOVER_HUMAN, None),
+    ("seat", "cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
+])
+def test_program_mover_constraints_refuse_by_name(program, size, mover, reason):
+    row = mp.program(program, size)
+    if reason is None:
+        assert ac.request_for_program(row, mover=mover).mover == mover
+    else:
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            ac.request_for_program(row, mover=mover)
+        assert refused.value.reason == reason
