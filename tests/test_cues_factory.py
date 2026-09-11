@@ -50,8 +50,8 @@ def test_every_catalog_provider_has_a_cue_tts_dispatch_branch(caplog) -> None:
             caplog.clear()
             backend, voice_label = build_cue_tts_backend(_cfg_for(provider.id))
 
-        fellback = [r for r in caplog.records if "falling back" in r.getMessage()]
-        assert backend is not None and not fellback, (
+        degraded = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert backend is not None and not degraded, (
             f"provider {provider.id!r} (with only its own key configured) "
             "did not get a first-class branch in "
             "jasper/cues/factory.py:build_provider_tts_backend — cues would "

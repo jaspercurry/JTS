@@ -306,9 +306,8 @@ def test_input_device_unavailable_carries_device() -> None:
     cause = ValueError("No input device matching 'Array'")
     exc = InputDeviceUnavailable("Array", cause)
     assert exc.device == "Array"
-    assert "Array" in str(exc)
     # The original cause is preserved for the forensic log.
-    assert "No input device matching" in str(exc)
+    assert type(cause).__name__ in str(exc) and str(cause) in str(exc)
 
 
 class _ParkCues:

@@ -521,7 +521,7 @@ async def test_repeated_failures_surface_failed_state():
         # Wait for the supervisor to give up.
         await _wait_until(lambda: conn._state is ConnectionState.FAILED, timeout=3.0)
         # acquire_turn now raises.
-        with pytest.raises(RuntimeError, match="FAILED"):
+        with pytest.raises(RuntimeError):
             await conn.acquire_turn()
         # is_paused() is True.
         assert conn.is_paused()

@@ -1626,11 +1626,11 @@ async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
     assert restore_calls == 1
     assert gate.end_calls == 1
     assert not gate.is_active
-    assert (
-        "contract cue drain cleanup failed: physical drain exploded"
-        in caplog.text
-    )
-    assert "contract cue restore failed: duck restore exploded" in caplog.text
+    assert [
+        (r.levelno, type(r.args[1]))
+        for r in caplog.records
+        if isinstance(r.args, tuple) and r.args[:1] == ("contract cue",)
+    ] == [(logging.WARNING, RuntimeError), (logging.WARNING, ValueError)]
 
 
 @pytest.mark.parametrize("restore_fails", [False, True])
@@ -1868,7 +1868,9 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
     await _close_window(wl)
 
 
-async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None:
+async def test_renewal_timeout_releases_lock_for_auto_clear(
+    monkeypatch, caplog,
+) -> None:
     """An expiring setup cannot starve the generation-bound backstop."""
 
     import jasper.voice.measurement_hold as measurement_hold_mod
@@ -1898,8 +1900,10 @@ async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None
     await wl._output_gate.pause_admission()
     wl.measurement_hold._set_active_local(True, trigger="test")
 
-    with pytest.raises(TimeoutError, match="aggregate deadline"):
+    with pytest.raises(TimeoutError):
         await wl.measurement_hold.pause_response()
+    # The stub's own TimeoutError satisfies `raises`; only the wrapper logs this.
+    assert event_fields(caplog, "measurement.pause_timeout")["phase"] == "volume_guard"
     await wait_signalled(
         safety_started,
         "renewed safety task",
