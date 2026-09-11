@@ -14,14 +14,18 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from jasper.log_event import log_event
+
+if TYPE_CHECKING:
+    from ..google_routes import GoogleRoutesClient
 
 from .. import flight_recorder, transit
 from ..mic_capture import InputDeviceUnavailable, make_mic_capture
 from ..tts_playout import TtsPlayout
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
+from ..assistant_volume import volume_context_publisher_for_runtime
 from ..camilla import (
     CamillaController,
     set_canonical_target_db_provider,
@@ -55,6 +59,9 @@ from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from .conversation import register_conversation_tools
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
+from ..tool_prompt_overrides import read_prompt_overrides
+from ..tool_state import read_tool_state
+from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
 from ..usage import (
     BillableActivityMeter,
     Pricing,
@@ -111,9 +118,11 @@ def _wire_billable_activity_meter(
 ) -> bool:
     """Wire flat-rate realtime billing into a provider connection.
 
-    The adapter owns what "billable activity" means, by exposing
-    ``set_billable_activity_meter``. A missing hook is logged because the
-    spend cap would otherwise under-count a priced provider.
+    Token-billed providers skip this entirely. For flat-rate realtime
+    providers, the provider adapter owns what "billable activity" means
+    by exposing ``set_billable_activity_meter`` and marking the meter at
+    the right lifecycle points. A missing hook is observable because it
+    means the spend cap would otherwise under-count a priced provider.
     """
     if flat_per_hour_usd <= 0:
         return False
@@ -155,17 +164,20 @@ def _require_usable_input(
     manual_mics: list[ManualMicRuntime],
     declared_manual_devices: Iterable[str],
 ) -> None:
-    """Refuse to run a daemon that can never hear anything (NN-6).
+    """Refuse to run a daemon that can never hear anything.
 
-    A planned primary leg that fails to open already raises in
-    `_open_wake_legs`, so this is the backstop for the *other* shape: a
-    speaker with no room mic (no leg planned at all — issue #2205) whose
-    accessory sources then all failed to open. That loop SKIPS a bad source
-    rather than raising, so without this the daemon comes up, logs "ready",
-    keeps patting its watchdog, and is permanently deaf.
+    No wake leg AND no manual mic means every input this daemon could have
+    opened is gone. A planned primary leg that fails to open already raises
+    in the leg factory, so this is the backstop for the *other* shape: a
+    speaker with no room mic (so no leg was planned at all — issue #2205)
+    whose accessory sources then all failed to open. That loop deliberately
+    SKIPS a bad source rather than raising, so without this the daemon would
+    come up, log "ready", pat its watchdog on the keepalive tick, and be
+    permanently deaf — the exact silent failure the house rule forbids.
 
     Fails the same fatal-but-CLEAN way a primary mic-open failure does:
-    `main()` exits VOICE_MIC_UNAVAILABLE_EXIT and systemd parks the unit.
+    `InputDeviceUnavailable` → `main()` exits VOICE_MIC_UNAVAILABLE_EXIT →
+    systemd parks the unit instead of crash-looping toward a reboot.
     """
     if legs or manual_mics:
         return
@@ -212,9 +224,10 @@ def _announce_park_at_boot(slug: str) -> str:
 
     The boot checks that raise 66/78 all run before the daemon's own cue
     manager and TtsPlayout exist, so the largest deaf window on the box is a
-    park nobody hears (NN-6). Called after `asyncio.run(run())` returns, so
-    no loop is running and `play_park_cue` can own one. Never raises, and
-    never changes the exit code the caller hands systemd.
+    park nobody hears (AGENTS.md non-negotiable 6). Called from `main()` after
+    `asyncio.run(run())` has returned, so no loop is running and
+    `play_park_cue` can own one. Never raises, and never changes the exit code
+    the caller is about to hand systemd.
     """
     result = play_park_cue(slug, logger=logger)
     log_event(
@@ -230,12 +243,16 @@ def _announce_park_at_boot(slug: str) -> str:
 def _wake_detection_supported() -> bool:
     """Whether the install profile grants always-on wake inference.
 
-    ``read_install_profile()`` raises ``ValueError`` on an unparseable marker
-    token, which ``main()`` does not special-case: it would traceback out,
-    exit 1, and climb ``Restart=on-failure`` to ``StartLimitAction=reboot``.
-    So fail OPEN rather than reboot a speaker over a corrupt marker file.
-    ``jasper.control.server._control_install_profile`` mirrors this and fails
-    the opposite way — its stakes are a route allowlist, not a daemon crash.
+    ``read_install_profile()`` raises ``ValueError`` on an unparseable
+    marker token. ``main()`` special-cases only ``InputDeviceUnavailable``,
+    ``VoiceConfigError`` (``VoiceProviderNotConfigured`` included) and
+    ``SpeechVADSetupError`` — anything else would traceback out, exit 1, and
+    climb ``Restart=on-failure`` to ``StartLimitAction=reboot``. Fail OPEN
+    (today's pre-ADR-0217 behaviour: wake detection supported, legs planned
+    as always) rather than reboot a speaker over a corrupt marker file. Mirrors
+    ``jasper.control.server._control_install_profile``, which fails the
+    opposite way because its stakes are a route allowlist, not a daemon
+    crash.
     """
     try:
         profile = read_install_profile()
@@ -251,13 +268,17 @@ def _wake_detection_supported() -> bool:
 
 
 def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
-    """The startup line's ``wake=`` field — the operator's evidence that the
-    #2205 hardware verification greps for in the journal.
+    """The startup line's ``wake=`` field.
 
     Keyed on the RESOLVED leg plan, never on ``cfg.wake_model`` alone: on a
     speaker with no room mic the plan is empty and no detector is built, and
-    naming the model there would claim wake detection on a box that will
-    never wake.
+    naming the model there would tell an operator wake detection is live on a
+    box that will never wake.
+
+    Extracted for the same reason as ``_tts_ready_detail`` — the string is
+    the operator's evidence (the #2205 hardware verification greps for it in
+    the journal), so it gets a test rather than living unreachable inside a
+    ~350-line ``run()``.
     """
     return cfg.wake_model if planned_wake_legs else "disabled(no wake leg)"
 
@@ -275,13 +296,15 @@ def _make_connection(
 ) -> LiveConnection:
     """Construct the long-lived voice connection for the active provider.
 
-    The single switch point — `JASPER_VOICE_PROVIDER` selects the adapter,
-    and every other daemon path talks only to the `LiveConnection` /
-    `LiveTurn` Protocols.
+    Single switch point — `JASPER_VOICE_PROVIDER` selects which adapter
+    runs. Daemon code above this function is provider-agnostic; daemon
+    code below it talks only to the `LiveConnection` / `LiveTurn`
+    Protocols and works equally for any provider that implements them.
 
-    Adapter modules are imported lazily inside each branch: loading
-    `gemini_session` pulls in `google.genai` (~49 MB resident), and the
-    OpenAI/Grok branches skip that cost symmetrically."""
+    Adapter modules are imported lazily inside each branch. Loading
+    `gemini_session` pulls in `google.genai` (~49 MB resident); loading
+    `openai_session`/`grok_session` skips that cost when the active
+    provider isn't Gemini. Symmetric for the OpenAI/Grok branches."""
     if speech_policy is None:
         speech_policy = build_effective_speech_input_policy(cfg)
     if cfg.voice_provider == "gemini":
@@ -326,12 +349,16 @@ def _make_connection(
 def _build_cues_manager(
     cfg: Config, tts: TtsPlayout | None = None,
 ) -> AudioCueManager:
-    """Construct the audio-cue manager.
+    """Construct the audio-cue manager. Hostname for templates is
+    extracted from JASPER_MANAGEMENT_URL ("https://jts.local" →
+    "jts.local") so cues say "visit jts.local" rather than reading
+    out the full URL with scheme/path. Backend via the shared
+    `build_cue_tts_backend` so the daemon and `jasper-cues` dispatch
+    identically (ADR-0153).
 
-    The template hostname is the host part of JASPER_MANAGEMENT_URL, so cues
-    say "visit jts.local" rather than reading out a full URL. `tts` may be
-    None when the daemon registers cue-aware tools (timer pre-render) before
-    the TtsPlayout has opened; `attach_tts` wires it."""
+    `tts` may be None at construction time when the daemon needs to
+    register cue-aware tools (timer pre-render) before the
+    TtsPlayout has opened. Call `attach_tts` later once it does."""
     import urllib.parse
     hostname = (
         urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
@@ -355,8 +382,9 @@ def _schedule_cue_regen(
     manager: AudioCueManager,
     task_set: set[asyncio.Task],
 ) -> None:
-    """Background task: bake any missing / stale cues. Failures are logged,
-    never raised — the daemon comes up even if regeneration can't run."""
+    """Background task: bake any missing / stale cues. Failures
+    (network down, API key wrong, quota) are logged but never raised
+    — the daemon should still come up if regeneration can't run."""
     async def _run() -> None:
         try:
             written = await asyncio.to_thread(manager.regenerate)
@@ -384,8 +412,9 @@ def _schedule_assistant_loudness_seed(
 ) -> None:
     """Opt-in background silent provider test that seeds the loudness profile.
 
-    Spends a small provider TTS request, so it never runs by default —
-    passive live-response measurement refines the profile for free.
+    This can spend a small provider TTS request, so it never runs by
+    default. Passive live-response measurement still refines the profile
+    after real replies without extra API calls.
     """
     if not cfg.assistant_loudness_auto_seed:
         return
@@ -417,11 +446,13 @@ def _schedule_assistant_loudness_seed(
 
 
 def _build_router(cfg: Config) -> Router | None:
-    """The multi-account spotify router, or None when Spotify is unconfigured.
+    """Build the multi-account spotify router, or None if Spotify
+    isn't configured at the env level.
 
-    Carries a `rebuild_fn` so a startup-time revocation (or a re-link via the
-    web wizard) recovers without a daemon restart: with `router.clients`
-    empty, the next tool call rebuilds via Router.refresh_if_empty()."""
+    The returned router carries a `rebuild_fn` so it can recover from
+    a startup-time revocation (or a re-link via the web wizard)
+    without a daemon restart: when `router.clients` is empty, the next
+    tool call triggers a rebuild via Router.refresh_if_empty()."""
     if not cfg.spotify_enabled:
         return None
     router = build_router(
@@ -457,14 +488,24 @@ def _build_registry(
     wake_event_store: "WakeEventStore | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    # One shared monitor: the gmail/calendar packs stamp it when they return
-    # third-party text, and the home_assistant pack reads it so only the
-    # post-email window asks to confirm "unlock the door". See
+    # One shared "did we read untrusted content recently?" monitor: the
+    # gmail/calendar packs stamp it when they return third-party text; the
+    # home_assistant pack reads it so a clean voice session runs "unlock the
+    # door" directly and only the post-email window asks to confirm. Threaded
+    # to the relevant packs via ToolDeps below. See
     # jasper/tools/__init__.py UntrustedContentMonitor.
     untrusted_monitor = UntrustedContentMonitor()
-    # Resolved once into the deps bundle so transport + spotify capture the
-    # same Router as the volume coordinator.
+    # Reuse the router built once for the coordinator; if not passed,
+    # build it here for backward-compat with any caller that doesn't
+    # plumb the shared instance through. Resolved once into the deps
+    # bundle so transport + spotify capture the same Router.
     router = spotify_router if spotify_router is not None else _build_router(cfg)
+    # Tool registration is data-driven: the ordered TOOL_PACKS registry
+    # in jasper.tools.packs decides what's included. Per-tool gates
+    # (timer's `is not None`, calendar/gmail's `list_account_names()`)
+    # live in each pack's `gate` predicate; the rest self-gate inside
+    # their factory. The walk is fault-isolated per pack — see
+    # register_packs.
     deps = ToolDeps(
         volume_coordinator=volume_coordinator,
         renderer=renderer,
@@ -481,9 +522,11 @@ def _build_registry(
         wake_event_store=wake_event_store,
         untrusted_monitor=untrusted_monitor,
     )
-    # The outcomes ride back on the registry so a silently-missing tool
-    # family is observable via STATUS -> /state.voice.tool_packs and
-    # jasper-doctor, not just the journal.
+    # Stash the per-pack registration outcomes on the registry (the object
+    # that crosses back to run()) so a silently-missing tool family is
+    # observable via STATUS -> /state.voice.tool_packs + jasper-doctor,
+    # not just the journal. register_packs already mutates `registry.tools`;
+    # the outcome record rides alongside it.
     registry.pack_outcomes = register_packs(registry, deps)
     return registry
 
@@ -495,9 +538,11 @@ async def _serve_while_connecting(
     """Serve wake while the first provider connect is still dialling.
 
     Hearing must not wait on the WAN: mics, cues and ``READY=1`` are up
-    before this is reached, so a boot with the link down answers a wake with
-    a cue instead of silence. A connect that raises ends the run; whichever
-    task finishes first, the other is cancelled on the way out.
+    before this is reached, so a boot with the link down answers a wake
+    with a cue instead of silence. A connect that raises ends the run; a
+    connect that returns leaves the daemon serving with the supervisor
+    retrying. Whichever finishes first, the other is cancelled on the
+    way out.
     """
     connect_task = asyncio.create_task(connect())
     serve_task = asyncio.create_task(serve())
@@ -537,10 +582,11 @@ def _release(
     """Register `fn(*args)` as a teardown that cannot eat the park.
 
     `AsyncExitStack` REPLACES the body's exception with any callback's
-    (demoting the original to `__context__`), so one unlucky teardown turns
-    any park exception `main()` handles into a plain crash: no cue, exit 1,
-    and a systemd restart loop instead of a park (NN-6; ADR-0239). Every
-    release goes through here or `_arelease`. `CancelledError` is a
+    exception (demoting the original to `__context__`), so one unlucky
+    teardown turns ANY park exception `main()` handles — the list is in
+    `main()`, and it grows — into a plain crash: no cue, exit 1, and a
+    systemd restart loop instead of a park (NN-6; ADR-0239). Every release
+    in `run()` goes through here or `_arelease`. `CancelledError` is a
     `BaseException`, so cancellation still propagates.
     """
     def _tolerant() -> None:
@@ -632,13 +678,6 @@ def _resolve_pricing(cfg: Config) -> tuple[Pricing, dict[str, dict]]:
     return pricing, overrides
 
 
-def _open_conversation_store() -> ConversationStore | None:
-    settings = read_conversation_settings()
-    if not settings.capture_enabled:
-        return None
-    return ConversationStore(settings.db_path)
-
-
 async def _open_usage_store(
     stack: contextlib.AsyncExitStack,
     cfg: Config,
@@ -660,12 +699,12 @@ class _Integrations:
     """The third-party services the tool registry and system prompt see."""
 
     weather: WeatherClient
-    transit_tools: list
+    transit_tools: list[Callable[..., Any]]
     # True when ANY transit tool is live: the prompt nudges toward /transit
     # only when every option is absent, because a partial configuration still
     # answers the modes the household did set up.
     transit_configured: bool
-    google_routes: Any
+    google_routes: GoogleRoutesClient | None
     google_clients: GoogleClients | None
     ha: HAClient | None
 
@@ -743,8 +782,6 @@ def _build_volume_coordinator(
     One router for both, so the coordinator's outbound Web API volume and the
     transport / spotify packs share one OAuth refresh cycle per account.
     """
-    from ..assistant_volume import volume_context_publisher_for_runtime
-
     persistence = VolumePersistence(cfg.volume_state_path)
     spotify_router = _build_router(cfg)
     coordinator = VolumeCoordinator(
@@ -821,9 +858,6 @@ def _publish_tool_catalog(registry: ToolRegistry) -> None:
     /assistant/tools/ wizard reads includes EVERY tool (needs_setup ones via
     sentinel deps), not just the live ones.
     """
-    from ..tool_prompt_overrides import read_prompt_overrides
-    from ..tool_state import read_tool_state
-    from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
     tool_state = read_tool_state()
     prompt_overrides = read_prompt_overrides()
     registry.apply_prompt_overrides(prompt_overrides)
@@ -842,11 +876,6 @@ async def _prerender_timer(cues: AudioCueManager, timer: Timer) -> None:
     await cues.prerender_text(announcement_text(timer))
 
 
-def _request_shutdown(stop_event: asyncio.Event) -> None:
-    logger.info("shutdown requested")
-    stop_event.set()
-
-
 def _install_shutdown_signals(stop_event: asyncio.Event) -> None:
     """Route SIGINT/SIGTERM to the stop event.
 
@@ -854,23 +883,34 @@ def _install_shutdown_signals(stop_event: asyncio.Event) -> None:
     unwind must still land here rather than terminate the process mid-cue
     (ADR-0239). `asyncio.run()` closes the loop, and these handlers with it.
     """
+    def _request_shutdown() -> None:
+        logger.info("shutdown requested")
+        stop_event.set()
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, partial(_request_shutdown, stop_event))
+        loop.add_signal_handler(sig, _request_shutdown)
 
 
-def _open_provider_connection(
+def _open_live_session(
     cfg: Config,
     *,
     speech_policy: EffectiveSpeechInputPolicy,
     usage_store: UsageStore,
     pricing: Pricing,
-) -> LiveConnection:
-    """The one live connection, metered for the spend cap.
+    registry: ToolRegistry,
+    integrations: _Integrations,
+) -> tuple[LiveConnection, Callable[[], Awaitable[None]]]:
+    """Open the one live connection, metered for the spend cap, and its dial.
 
     Opened once and held for the daemon's lifetime: wake events acquire turns
     against it rather than opening new WebSockets. Its release is registered
-    later, at the escalation-callback site (see `_wire_wake_loop`).
+    later, at the escalation-callback site (see `_wire_wake_loop`). The
+    prompt is a callable, not a rendered string, so the time injection
+    inside `_build_system_instruction` stays accurate across context resets
+    and reconnects — the connection re-renders it on every fresh open. The
+    location and the linked Google accounts are snapshotted instead:
+    changing either needs a jasper-voice restart, which the wizards trigger.
     """
     connection = _make_connection(cfg, speech_policy=speech_policy)
     record_backend = getattr(connection, "set_background_usage_recorder", None)
@@ -886,29 +926,12 @@ def _open_provider_connection(
         provider=cfg.voice_provider,
         flat_per_hour_usd=pricing.flat_per_hour_usd,
     )
-    return connection
-
-
-def _connect_live_session(
-    cfg: Config,
-    connection: LiveConnection,
-    registry: ToolRegistry,
-    integrations: _Integrations,
-) -> Callable[[], Awaitable[None]]:
-    """The provider dial, with the system instruction rendered per open.
-
-    The prompt is a callable, not a rendered string, so the time injection
-    inside `_build_system_instruction` stays accurate across context resets
-    and reconnects. The location and the linked Google accounts are
-    snapshotted instead: changing either needs a jasper-voice restart, which
-    the wizards trigger.
-    """
     google = integrations.google_clients
     google_account_names = google.list_account_names() if google else []
     google_default_account = (
         google.default_account_name() or ""
     ) if google else ""
-    return partial(
+    connect = partial(
         connection.start,
         registry,
         lambda: _build_system_instruction(
@@ -922,6 +945,7 @@ def _connect_live_session(
             provider=cfg.voice_provider,
         ),
     )
+    return connection, connect
 
 
 async def _open_wake_legs(
@@ -1132,7 +1156,10 @@ async def run() -> None:
     flight_recorder.install("voice")
     speech_policy = _log_speech_input_policy(cfg)
     pricing, pricing_overrides = _resolve_pricing(cfg)
-    conversation_store = _open_conversation_store()
+    conversation_settings = read_conversation_settings()
+    conversation_store: ConversationStore | None = None
+    if conversation_settings.capture_enabled:
+        conversation_store = ConversationStore(conversation_settings.db_path)
 
     async with contextlib.AsyncExitStack() as stack:
         usage_store, spend_cap = await _open_usage_store(
@@ -1210,14 +1237,13 @@ async def run() -> None:
             _wake_ready_detail(cfg, planned_wake_legs),
             cfg.mic_device or "(none)", _tts_ready_detail(cfg),
         )
-        connection = _open_provider_connection(
+        connection, connect_live_session = _open_live_session(
             cfg,
             speech_policy=speech_policy,
             usage_store=usage_store,
             pricing=pricing,
-        )
-        connect_live_session = _connect_live_session(
-            cfg, connection, registry, integrations,
+            registry=registry,
+            integrations=integrations,
         )
 
         legs = await _open_wake_legs(stack, cfg, planned_wake_legs)
