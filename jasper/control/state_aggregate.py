@@ -87,7 +87,6 @@ def _remaining(deadline: float | None) -> float | None:
 
 _VOICE_STATUS_DIRECT_KEYS = (
     "endpointer",
-    "followup_timeout_sec",
     "last_turn_ms",
     "turn_event_id",
     "wake_event_store",
@@ -128,7 +127,6 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "assistant_output",
     "manual_mic_sources",
     "active_manual_mic_source",
-    "barge_in_reconcile",
     "cues",
 })
 
