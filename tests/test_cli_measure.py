@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.crossover_v2 import door as door_module
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_BASELINE,
@@ -670,6 +671,25 @@ def _specs_file(tmp_path: Path, entries: list[dict[str, Any]]) -> str:
     return str(path)
 
 
+@pytest.mark.parametrize("argv", [
+    [],
+    ["--graph-scope", "speaker_tune", "--sweep-band-hz", "20", "20000",
+     "--sweep-s", "1.5", "--spl-ceiling-db-spl", "80", "--level-dbfs", "-12"],
+    ["--polarity", POLARITY_INVERTED, "--inverted-role", "tweeter",
+     "--delayed-role", "woofer", "--delay-us", "120", "--position", "-30",
+     "--prompt", "stand left", "--candidate-id", "null_a1"],
+])
+def test_a_spec_survives_its_own_json_shape_unchanged(argv: list[str]) -> None:
+    """``MeasureSpec`` owns the document both the batch file and the angle-walk
+    spool are written in, so every field it has round-trips through JSON: a
+    field added to the class travels without a second door learning its name.
+    """
+    spec = spec_from_args(_args(*argv))
+    document = json.loads(json.dumps(spec.to_dict()))
+
+    assert MeasureSpec.from_mapping(document) == spec
+
+
 @pytest.mark.parametrize(
     "flag",
     [
@@ -805,6 +825,8 @@ def test_every_spec_in_the_file_needs_its_own_candidate_id(tmp_path, unlabelled)
         {"delayed_role": "woofer", "delay_us": "120"},
         {"level_ladder_dbfs": ["-12"]},
         {"level_ladder_dbfs": [float("nan")]},
+        {"vertical_deg": 2.5},
+        {"positoins": [0]},
     ],
 )
 def test_a_file_entry_with_untyped_fields_is_refused_at_parse(tmp_path, entry):
@@ -812,8 +834,8 @@ def test_a_file_entry_with_untyped_fields_is_refused_at_parse(tmp_path, entry):
 
     Each of these is a value no flag could ever produce — a bare string where
     an array belongs, a truthy string for a boolean, a numeric label, a
-    non-finite rung — and each once crashed outside the typed refusal or flowed
-    through as a silently different measurement.
+    non-finite rung, a misspelled key — and each once crashed outside the typed
+    refusal or flowed through as a silently different measurement.
     """
     with pytest.raises(MeasureFlagError) as caught:
         specs_from_args(build_parser().parse_args(
@@ -1112,3 +1134,11 @@ def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys
         assert code == EXIT_REFUSED
         assert result["reason"] == "measurement_volume_invalid"
         assert not speaker["played"]
+
+
+def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
+    from jasper.active_speaker.crossover_v2 import measure_spec as ms
+
+    groups = (ms._TRIMMED_STRINGS, ms._ARRAYS, ms._NUMBERS, ms._PASSTHROUGH)
+    assert frozenset().union(*groups) == ms._FIELD_NAMES
+    assert sum(len(group) for group in groups) == len(ms._FIELD_NAMES)

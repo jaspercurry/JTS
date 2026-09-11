@@ -35,9 +35,11 @@ from jasper.active_speaker.angle_capture import (
     request_for_program,
     resolve_request,
     summed_at,
+    walk_template,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
+    MEASURE_KIND_CANDIDATE,
     POLARITY_INVERTED,
     POLARITY_NORMAL,
 )
@@ -280,6 +282,24 @@ def test_plan_exits_two_on_a_refusal_and_zero_on_a_walk(capsys):
     assert cli._cmd_plan(parser.parse_args(["plan", "--angles", "0,7"])) == cli.EXIT_OK
 
 
+@pytest.mark.parametrize(("argv", "reason"), [
+    (["--polarity", POLARITY_INVERTED], "walk_polarity_not_accepted"),
+    (["--delayed-role", "tweater", "--delay-us", "250"],
+     "walk_delay_not_accepted"),
+    (["--regime", "summed", "--sweep-band-hz", "3000", "200"],
+     "walk_stimulus_not_accepted"),
+])
+def test_a_spec_the_flags_cannot_make_refuses_at_the_door(capsys, argv, reason):
+    """The template is a ``MeasureSpec``, so a bad flag is refused where it was
+    TYPED rather than carried to the session that would have played it -- under
+    the slug for the half the operator got wrong.
+    """
+    assert cli._cmd_plan(
+        cli.build_parser().parse_args(["plan", "--angles", "0", *argv])
+    ) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == reason
+
+
 def test_plan_carries_the_delay_coordinate_when_stated(monkeypatch):
     rendered = []
     monkeypatch.setattr(cli, "_print_walk", rendered.append)
@@ -342,19 +362,27 @@ def test_the_polarity_pair_rides_the_document_and_an_older_one_reads_as_normal(s
     assert cli._cmd_stage(args) == cli.EXIT_OK
 
     doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["polarity"] == POLARITY_INVERTED
-    assert doc["inverted_role"] == DRIVER_ROLE_TWEETER
+    assert doc["template"]["polarity"] == POLARITY_INVERTED
+    assert doc["template"]["inverted_role"] == DRIVER_ROLE_TWEETER
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
-        polarity=POLARITY_INVERTED,
-        inverted_role=DRIVER_ROLE_TWEETER,
+        template=walk_template(
+            kind=MEASURE_KIND_CANDIDATE,
+            polarity=POLARITY_INVERTED,
+            inverted_role=DRIVER_ROLE_TWEETER,
+        ),
     )
 
-    older = {k: v for k, v in doc.items() if k not in ("polarity", "inverted_role")}
+    older = dict(doc, template={
+        key: value for key, value in doc["template"].items()
+        if key not in ("polarity", "inverted_role")
+    })
     assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
     path.write_text(json.dumps(older), encoding="utf-8")
     taken = spool.take_staged_angle_request()
-    assert (taken.polarity, taken.inverted_role) == (POLARITY_NORMAL, "")
+    assert (taken.template.polarity, taken.template.inverted_role) == (
+        POLARITY_NORMAL, "",
+    )
     assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
 
 
@@ -374,19 +402,29 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
     assert cli._cmd_stage(args) == cli.EXIT_OK
 
     doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["level_matched"] is True
-    # The document states WHETHER, never the dB.
-    assert not [key for key in doc if key.endswith("_db")]
+    assert doc["template"]["level_matched"] is True
+    # The document states WHETHER, never a per-driver trim dB: those resolve
+    # on-box. The allowed set is stated, not excluded by name, so a NEW ``_db``
+    # key fails this pin until someone argues it onto the list:
+    # ``main_volume_series_db`` is a deliberate plan axis (the rungs a series
+    # walk steps the SESSION volume through), not a trim carried from another
+    # cabinet.
+    assert {
+        key for key in (*doc, *doc["template"]) if key.endswith("_db")
+    } == {"main_volume_series_db"}
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
-        level_matched=True,
+        template=walk_template(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
     )
 
-    older = {k: v for k, v in doc.items() if k != "level_matched"}
+    older = dict(doc, template={
+        key: value for key, value in doc["template"].items()
+        if key != "level_matched"
+    })
     assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
     path.write_text(json.dumps(older), encoding="utf-8")
     taken = spool.take_staged_angle_request()
-    assert taken.level_matched is False
+    assert taken.template.level_matched is False
     assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
 
 
@@ -427,8 +465,8 @@ def test_an_ordinary_walk_asks_for_no_level_match(slot):
     assert cli._cmd_stage(args) == cli.EXIT_OK
 
     doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["level_matched"] is False
-    assert spool.take_staged_angle_request().level_matched is False
+    assert doc["template"]["level_matched"] is False
+    assert spool.take_staged_angle_request().template.level_matched is False
 
 
 def test_the_staged_order_is_the_walk_order_not_a_sorted_rewrite(slot):
@@ -803,6 +841,7 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
         "mic_moves": express.mic_move_count,
         "captures": express.capture_count,
         "ceiling_min": 46,
+        "stimulus_s": None,
     }
     assert body["handoff_url"].startswith("http://")
     assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
@@ -920,6 +959,7 @@ def test_a_free_form_walk_is_unnamed_and_priced_by_the_same_rule(slot, capsys):
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(stage1_base_entries() + 2) / 60
         ),
+        "stimulus_s": None,
     }
     assert spool.take_staged_angle_request().program == ""
 

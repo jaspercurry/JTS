@@ -15,10 +15,11 @@ modules including ``numpy`` on a 1 GB Pi.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Mapping
+from dataclasses import dataclass, fields
+from typing import Any, Mapping
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
+from jasper.json_fields import finite_float
 
 from .contracts import (
     DRIVER_ROLES,
@@ -293,6 +294,40 @@ class MeasureSpec:
             )
         self._check_pose_axis()
 
+    def to_dict(self) -> dict[str, Any]:
+        """This spec as the JSON object :meth:`from_mapping` reads back.
+
+        Every field is written, tuples as arrays: a reader never has to guess
+        which default a writer was holding.
+        """
+        return {
+            spec_field.name: (
+                list(value) if isinstance(value, tuple) else value
+            )
+            for spec_field in fields(self)
+            for value in (getattr(self, spec_field.name),)
+        }
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, Any]) -> MeasureSpec:
+        """One spec from a JSON object, with the typing JSON does not carry.
+
+        The field set is CLOSED: an unknown key is a misspelling rather than an
+        extension. Arrays become tuples, strings are trimmed, and a number
+        spelled as a word is refused -- a spec read from a document is judged
+        exactly as one built from flags, and every refusal is this class's own
+        ``ValueError`` rather than a ``TypeError``/``KeyError`` no door catches.
+        """
+        unknown = sorted(set(mapping) - _FIELD_NAMES)
+        if unknown:
+            raise ValueError(f"not MeasureSpec fields: {', '.join(unknown)}")
+        missing = sorted(_REQUIRED_FIELDS - set(mapping))
+        if missing:
+            raise ValueError(f"a spec must state {', '.join(missing)}")
+        return cls(**{
+            name: _from_json(name, value) for name, value in mapping.items()
+        })
+
     def _check_pose_axis(self) -> None:
         """Axis, bearing and elevation, checked by the module that owns the frame.
 
@@ -309,6 +344,62 @@ class MeasureSpec:
                 mark_distance_m=MARK_DISTANCE_M,
                 vertical_deg=self.vertical_deg,
             )
+
+
+_FIELD_NAMES = frozenset(spec_field.name for spec_field in fields(MeasureSpec))
+
+#: The fields with no default: a mapping omitting one states no spec at all.
+_REQUIRED_FIELDS = frozenset({"kind"})
+
+_TRIMMED_STRINGS = frozenset({
+    "kind", "position_axis", "regime", "polarity", "inverted_role",
+    "candidate_id", "delayed_role", "graph_scope", "program_phase",
+})
+_ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz"})
+#: ``sweep_s``/``spl_ceiling_db_spl`` read ``None`` back as the statement it is.
+_NUMBERS = frozenset({"delay_us", "sweep_s", "spl_ceiling_db_spl"})
+#: Read back as banked; the dataclass judges them.
+_PASSTHROUGH = _FIELD_NAMES - _TRIMMED_STRINGS - _ARRAYS - _NUMBERS
+
+
+def _finite(name: str, value: Any) -> float:
+    number = finite_float(value)
+    if number is None:
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    return number
+
+
+def _from_json(name: str, value: Any) -> Any:
+    """One banked value, typed as the flag door would have typed it.
+
+    What is NOT typed here carries no shape JSON can get wrong on its own:
+    ``positions`` entries are whole degrees, which ``__post_init__`` judges.
+    """
+    if name in _TRIMMED_STRINGS:
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be a string, got {value!r}")
+        return value.strip()
+    if name == "level_matched":
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be true or false, got {value!r}")
+        return value
+    if name == "vertical_deg":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be a whole number, got {value!r}")
+        return value
+    if name in _ARRAYS:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{name} must be a JSON array, got {value!r}")
+        if name == "pose_prompts" and not all(
+            isinstance(entry, str) for entry in value
+        ):
+            raise ValueError(f"{name} entries must be strings, got {value!r}")
+        if name in ("level_ladder_dbfs", "sweep_band_hz"):
+            return tuple(_finite(name, entry) for entry in value)
+        return tuple(value)
+    if name in _NUMBERS:
+        return None if value is None else _finite(name, value)
+    return value
 
 
 def measurement_delays_for(spec: MeasureSpec) -> dict[str, float]:

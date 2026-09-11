@@ -32,9 +32,12 @@ from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
 from .crossover_v2.contracts import (
+    MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
 )
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
+from .crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
     POSE_KIND_BEARING,
@@ -43,6 +46,7 @@ from .measurement_programs import (
     REGIME_SUMMED,
     REGIME_BRANCHES,
     REGIMES,
+    baseline_scope,
     validated_capture_purpose,
     pose_place,
     validated_pose,
@@ -79,6 +83,10 @@ __all__ = [
     "MOVER_ARM",
     "MOVER_HUMAN",
     "MOVERS",
+    "LEVEL_HOLD_REFERENCE",
+    "LEVEL_ACQUIRE_AT_ANCHOR",
+    "LEVEL_SERIES",
+    "LEVEL_MODES",
     "MAX_ANGLE_DEG",
     "MAX_ELEVATION_DEG",
     "ARM_ENVELOPE_DEG",
@@ -87,7 +95,12 @@ __all__ = [
     "AngleStop",
     "AngleCaptureRequest",
     "ResolvedStop",
+    "DEFAULT_TEMPLATE",
+    "TEMPLATE_SWEEP_SCOPE",
     "pose_at_angle",
+    "walk_template",
+    "design_axis_spec",
+    "stop_specs",
     "request_for_program",
     "walk_price",
     "per_driver_at",
@@ -100,15 +113,20 @@ __all__ = [
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
+    "WALK_LEVEL_POLICY_INVALID",
+    "WALK_POLICY_UNSUPPORTED_YET",
+    "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
+    "WALK_TEMPLATE_NOT_ACCEPTED",
     "WALK_DELAY_NOT_ACCEPTED",
     "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_CANDIDATE_NOT_MEASURABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
+    "refuse_unplayable_walk_policy",
     "session_lateral_walk",
 ]
 
@@ -125,6 +143,19 @@ MOVER_ARM = "arm"
 MOVER_HUMAN = "human"
 
 MOVERS = (MOVER_ARM, MOVER_HUMAN)
+
+#: How the SESSION's main volume behaves across a walk's stops. ``hold_reference``
+#: (the default) leaves the anchor level untouched throughout; ``acquire_at_anchor``
+#: measures the level ONCE at the anchor (first) pose and holds THAT across every
+#: stop -- never re-acquired per stop, which would move the drive voltage between
+#: takes the walk exists to compare; ``series`` steps through
+#: ``main_volume_series_db`` in turn. Judged here (unlike the stimulus values)
+#: because it is this module's own walk-level policy, not one ``MeasureSpec``
+#: carries.
+LEVEL_HOLD_REFERENCE = "hold_reference"
+LEVEL_ACQUIRE_AT_ANCHOR = "acquire_at_anchor"
+LEVEL_SERIES = "series"
+LEVEL_MODES = (LEVEL_HOLD_REFERENCE, LEVEL_ACQUIRE_AT_ANCHOR, LEVEL_SERIES)
 
 #: How far off the design axis a stop may be asked for. :func:`pose_at_angle` is a
 #: tangent, so 80 deg already puts the microphone 5.7 m off a 1 m mark -- past any room
@@ -230,11 +261,83 @@ class AngleStop:
         object.__setattr__(self, "distance_m", distance)
 
     @property
+    def plays_summed(self) -> bool:
+        """Whether this stop plays a summed graph (the scope a summed sweep rides)."""
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES)
+
+    @property
     def place(self) -> tuple[object, ...]:
         return pose_place(
             self.kind, self.angle_deg, self.elevation_deg,
             self.distance_m, self.seat_offset_m,
         )
+
+
+#: The scope a template naming a summed sweep is VALIDATED under. ``MeasureSpec``
+#: admits ``sweep_band_hz``/``sweep_s`` only on a summed scope and the graph
+#: overlays only on :data:`~.crossover_v2.measure_spec.GRAPH_SCOPE_DRIVERS`, so
+#: the two statements cannot share one scope -- and nothing measures at the
+#: template's, since :func:`design_axis_spec` and :func:`stop_specs` each replace
+#: it with the scope their capture plays. A template's scope is therefore
+#: derived from its stimulus, never stated.
+TEMPLATE_SWEEP_SCOPE = "base"
+
+
+def _states_summed_sweep(sweep_band_hz: object, sweep_s: object) -> bool:
+    return bool(sweep_band_hz) or sweep_s is not None
+
+
+def _states_overlay(*, polarity: object, inverted_role: object, delayed_role: object,
+                    delay_us: object, level_matched: object) -> bool:
+    """A graph overlay the design-axis capture rides and a summed trial cannot."""
+    return bool(
+        inverted_role or delayed_role or delay_us or level_matched
+        or (polarity or POLARITY_NORMAL) != POLARITY_NORMAL
+    )
+
+
+def walk_template(**spec_fields: object) -> MeasureSpec:
+    """One walk's :class:`MeasureSpec` template, refused in this module's words.
+
+    ``MeasureSpec`` is the only judge of a spec field; this names WHICH half of
+    the statement was refused, so ``reason=`` sends an operator to the flag they
+    got wrong, and keeps the spec's own sentence as the detail. The scope is
+    :data:`TEMPLATE_SWEEP_SCOPE`'s rule.
+    """
+    stated_delay = bool(spec_fields.get("delayed_role") or spec_fields.get("delay_us"))
+    stated_polarity = bool(
+        spec_fields.get("inverted_role")
+        or spec_fields.get("polarity", POLARITY_NORMAL) != POLARITY_NORMAL
+    )
+    summed = _states_summed_sweep(spec_fields.get("sweep_band_hz"), spec_fields.get("sweep_s"))
+    if summed and _states_overlay(
+        polarity=spec_fields.get("polarity"), inverted_role=spec_fields.get("inverted_role"),
+        delayed_role=spec_fields.get("delayed_role"), delay_us=spec_fields.get("delay_us"),
+        level_matched=spec_fields.get("level_matched"),
+    ):
+        raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH)
+    try:
+        return MeasureSpec(
+            graph_scope=TEMPLATE_SWEEP_SCOPE if summed else GRAPH_SCOPE_DRIVERS,
+            **spec_fields,  # type: ignore[arg-type]
+        )
+    except (TypeError, ValueError) as exc:
+        raise LateralWalkRefused(
+            WALK_DELAY_NOT_ACCEPTED if stated_delay
+            else WALK_POLARITY_NOT_ACCEPTED if stated_polarity
+            else WALK_STIMULUS_NOT_ACCEPTED,
+            str(exc),
+        ) from exc
+
+
+#: What a walk that states no spec carries: the design-axis capture the host has
+#: always built, with no overlay and no stimulus stated.
+DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
+
+#: The template fields the EXECUTOR assigns per capture, and which a walk
+#: therefore may not state: a stated one would be silently replaced at every
+#: stop and silently kept on the design-axis spec.
+_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id")
 
 
 @dataclass(frozen=True)
@@ -247,30 +350,34 @@ class AngleCaptureRequest:
     degrees reads back in degrees for whoever holds the microphone (see
     :func:`pose_at_angle`).
 
-    ``delayed_role``/``delay_us`` are R-1's confirmation coordinate the DISPOSE step
-    plays, walk-level like the polarity pair, never judged here. ``level_matched`` is a
-    BOOLEAN: the trims belong to the speaker and resolve on-box when the host adopts
-    this walk. ``program`` is PROVENANCE, not geometry -- the name of the
-    :class:`~.measurement_programs.MeasurementProgram`, or ``""`` for a free-form walk;
-    nothing parses it. ``polarity``/``inverted_role`` are walk-level because the
-    reverse-null is ONE act at one place: design-axis-only.
+    ``template`` is the ONE :class:`~.crossover_v2.measure_spec.MeasureSpec` every
+    capture of this walk is built from -- the graph overlays (polarity, delay,
+    level match) the design-axis capture rides and the stimulus each stop plays,
+    judged by the spec itself when it was stated and read only by
+    :func:`design_axis_spec` and :func:`stop_specs`. A campaign that needs TWO
+    stimuli (matched full-range takes plus focused bass takes) is two requests,
+    one per program, the same one-program-one-purpose shape
+    :func:`request_for_program` has. ``program`` is PROVENANCE, not geometry --
+    the name of the :class:`~.measurement_programs.MeasurementProgram`, or ``""``
+    for a free-form walk; nothing parses it.
 
-    Carried, never judged here: :class:`~.crossover_v2.measure_spec.MeasureSpec` already
-    refuses every bad combination, including both one-sided forms (ADR-0006); a second
-    copy of that rule is a copy that drifts.
+    ``level_mode`` is this module's OWN walk-level policy -- how main volume
+    behaves across stops (:data:`LEVEL_MODES`) -- with ``main_volume_series_db``
+    naming the rungs ``level_mode=series`` steps through.
     """
 
     stops: tuple[AngleStop, ...]
     mover: str = MOVER_HUMAN
-    polarity: str = POLARITY_NORMAL
-    inverted_role: str = ""
-    delayed_role: str = ""
-    delay_us: float = 0.0
-    level_matched: bool = False
+    template: MeasureSpec = DEFAULT_TEMPLATE
     program: str = ""
+    level_mode: str = LEVEL_HOLD_REFERENCE
+    main_volume_series_db: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
+        object.__setattr__(
+            self, "main_volume_series_db", tuple(self.main_volume_series_db)
+        )
         if not self.stops:
             raise CrossoverV2FlowError("an angle capture request needs at least one stop")
         if self.mover not in MOVERS:
@@ -294,6 +401,61 @@ class AngleCaptureRequest:
                 f"mover={self.mover!r} turns bearings at the mark, so it cannot "
                 f"reach a {', '.join(unreachable)} pose",
             )
+        self._refuse_bad_level_policy()
+        self._refuse_bad_template()
+
+    def _refuse_bad_level_policy(self) -> None:
+        """The walk-level volume policy: a mode this module names, and rungs only
+        where something steps through them."""
+        if self.level_mode not in LEVEL_MODES:
+            raise LateralWalkRefused(
+                WALK_LEVEL_POLICY_INVALID,
+                f"level_mode must be one of {LEVEL_MODES}, got {self.level_mode!r}",
+            )
+        if self.level_mode == LEVEL_SERIES and not self.main_volume_series_db:
+            raise LateralWalkRefused(
+                WALK_LEVEL_POLICY_INVALID,
+                f"level_mode={LEVEL_SERIES!r} needs at least one "
+                "main_volume_series_db rung",
+            )
+        if self.main_volume_series_db and self.level_mode != LEVEL_SERIES:
+            # Dead data otherwise: only ``series`` steps through the rungs, so a
+            # walk stating them under another mode would price and play as if it
+            # had not, at a level the operator did not mean.
+            raise LateralWalkRefused(
+                WALK_LEVEL_POLICY_INVALID,
+                f"main_volume_series_db is stepped through only under "
+                f"level_mode={LEVEL_SERIES!r}, not {self.level_mode!r}",
+            )
+
+    def _refuse_bad_template(self) -> None:
+        """The questions about a template that are the WALK's, not the spec's:
+        what it may not state, and what its stops can play."""
+        if not isinstance(self.template, MeasureSpec):
+            raise LateralWalkRefused(
+                WALK_TEMPLATE_NOT_ACCEPTED, f"template must be a MeasureSpec, got {self.template!r}",
+            )
+        stated = [
+            name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
+        ]
+        if stated:
+            raise LateralWalkRefused(
+                WALK_TEMPLATE_NOT_ACCEPTED,
+                f"a walk's template states what each capture is measured at, "
+                f"so it cannot carry {', '.join(stated)}",
+            )
+        summed_stop = any(stop.plays_summed for stop in self.stops)
+        if _states_summed_sweep(self.template.sweep_band_hz, self.template.sweep_s) and not summed_stop:
+            raise LateralWalkRefused(
+                WALK_STIMULUS_NOT_ACCEPTED,
+                "sweep_band_hz/sweep_s ride summed stops; this walk names none",
+            )
+        if summed_stop and _states_overlay(
+            polarity=self.template.polarity, inverted_role=self.template.inverted_role,
+            delayed_role=self.template.delayed_role, delay_us=self.template.delay_us,
+            level_matched=self.template.level_matched,
+        ):
+            raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH)
 
     def _refuse_beyond_reach(
         self, axis: str, bound: int, asked: tuple[int, ...]
@@ -385,6 +547,68 @@ def _offset_cm_at(degrees: int, distance_m: float = MARK_DISTANCE_M) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# template -> the specs that play
+# --------------------------------------------------------------------------- #
+
+
+def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
+    """The spec this walk's design-axis MEASURE captures play: the template at
+    :data:`~.crossover_v2.measure_spec.GRAPH_SCOPE_DRIVERS`, the band and duration
+    stripped since that scope cannot play a summed sweep (:data:`TEMPLATE_SWEEP_SCOPE`)."""
+    return replace(
+        request.template,
+        kind=MEASURE_KIND_CANDIDATE,
+        graph_scope=GRAPH_SCOPE_DRIVERS,
+        sweep_band_hz=(),
+        sweep_s=None,
+    )
+
+
+def stop_specs(
+    request: AngleCaptureRequest,
+    *,
+    candidate_scopes: Mapping[str, str],
+    prompts: Sequence[CloudPositionPrompt],
+) -> tuple[MeasureSpec | None, ...]:
+    """One spec per stop in walk order; ``None`` where the stop plays no spec.
+
+    A per-driver stop plays the phase's own composed program object, so it names
+    no spec. A summed stop is the template placed: the pose it was moved to, the
+    prompt it was told, and the graph its regime and candidate select --
+    ``candidate_scopes`` maps a stop's candidate fingerprint to the scope that
+    compiles its complete graph, resolved by the caller that can read the bank.
+
+    Raises ``ValueError`` from :class:`MeasureSpec` when a stop's pose and the
+    template disagree; the caller attributes it.
+    """
+    placed: list[MeasureSpec | None] = []
+    for stop, prompt in zip(request.stops, prompts):
+        if not stop.plays_summed:
+            placed.append(None)
+            continue
+        scope = (
+            candidate_scopes[stop.candidate_id] if stop.candidate_id
+            else baseline_scope(stop.purpose)
+        )
+        placed.append(replace(
+            request.template,
+            kind=(
+                MEASURE_KIND_VERIFY
+                if not stop.candidate_id and scope != "base"
+                else MEASURE_KIND_CANDIDATE
+            ),
+            positions=(stop.angle_deg,),
+            vertical_deg=stop.elevation_deg,
+            pose_prompts=(prompt.text,),
+            candidate_id=stop.candidate_id,
+            graph_scope=(
+                "candidate_branches" if stop.regime == REGIME_BRANCHES else scope
+            ),
+        ))
+    return tuple(placed)
+
+
+# --------------------------------------------------------------------------- #
 # the three constructors -- "per-angle, per-driver, both, whatever we want"
 # --------------------------------------------------------------------------- #
 
@@ -430,13 +654,15 @@ def request_for_program(
     *,
     candidates: tuple[str, ...] = (),
     mover: str = MOVER_HUMAN,
-    polarity: str = POLARITY_NORMAL,
-    inverted_role: str = "",
-    delayed_role: str = "",
-    delay_us: float = 0.0,
-    level_matched: bool = False,
+    template: MeasureSpec = DEFAULT_TEMPLATE,
+    level_mode: str = LEVEL_HOLD_REFERENCE,
+    main_volume_series_db: tuple[float, ...] = (),
 ) -> AngleCaptureRequest:
-    """Expand a plan position-first, with adjacent repeats and candidate trials."""
+    """Expand a plan position-first, with adjacent repeats and candidate trials.
+
+    ONE program per request, so one ``template``: a campaign wanting a second
+    stimulus calls this again for that program.
+    """
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or not candidates[0]):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     return AngleCaptureRequest(
@@ -456,11 +682,9 @@ def request_for_program(
             for candidate in (candidates or ("",))
         ),
         mover=mover,
-        polarity=polarity,
-        inverted_role=inverted_role,
-        delayed_role=delayed_role,
-        delay_us=delay_us,
-        level_matched=level_matched,
+        template=template,
+        level_mode=level_mode,
+        main_volume_series_db=main_volume_series_db,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
         program=(
@@ -473,18 +697,29 @@ def request_for_program(
 
 def walk_price(
     request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | float | None]:
     """What this walk costs the person holding the microphone. ``ceiling_min`` prices the
-    SESSION (base entries plus these stops), rounded UP to whole minutes. ``plan_shape``
-    is ``None`` for a surface pricing a walk before any tier is chosen.
+    SESSION (base entries plus these captures), rounded UP to whole minutes.
+    ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
+    A volume series is another capture at every stop per rung, so it multiplies
+    ``captures`` and the wall clock, never ``mic_moves``. ``stimulus_s`` is ``None``,
+    not ``0``, when the walk states no ``sweep_s``: the two are different statements.
     """
+    rungs = (
+        len(request.main_volume_series_db)
+        if request.level_mode == LEVEL_SERIES else 1
+    )
+    captures = len(request.stops) * rungs
     return {
         "mic_moves": len({s.place for s in request.stops}),
-        "captures": len(request.stops),
+        "captures": captures,
         "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(
-                stage1_base_entries(plan_shape) + len(request.stops)
-            ) / 60
+            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + captures) / 60
+        ),
+        "stimulus_s": (
+            None if request.template.sweep_s is None
+            else captures * request.template.sweep_s
+            * max(1, len(request.template.level_ladder_dbfs))
         ),
     }
 
@@ -608,6 +843,28 @@ WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
+#: The walk's ``level_mode`` is not one :data:`LEVEL_MODES` names, or its
+#: ``main_volume_series_db`` rungs and its mode disagree. Decided by
+#: :class:`AngleCaptureRequest` at statement time, like
+#: :data:`WALK_OVER_MOVER_ENVELOPE`.
+WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
+
+#: The walk states a policy nothing that PLAYS it can honour yet -- an SPL
+#: ceiling (no walk installs a
+#: :class:`~jasper.audio_measurement.wired_capture.WiredSplMonitor`) or a
+#: ``level_mode`` past :data:`LEVEL_HOLD_REFERENCE` (no walk steps the main
+#: volume). Raised by :func:`refuse_unplayable_walk_policy` where a walk is
+#: STAGED, so ``plan`` still prices what is coming. REMOVE each arm as the
+#: executor lane (#4873) lands the behaviour it names.
+WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
+
+#: The walk's stimulus statement is not one that can be played: a summed sweep
+#: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
+#: template field ``MeasureSpec`` refuses that is neither R-1 half
+#: (:func:`walk_template`), or a stop pose it refuses when the host places the
+#: template (:func:`stop_specs`) -- detail is the spec's own sentence.
+WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
+
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 
@@ -620,9 +877,15 @@ WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
 #: :func:`_validated_angle`'s bare :class:`CrossoverV2FlowError` under this slug.
 WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 
+#: The walk's template carries what the EXECUTOR assigns per capture
+#: (:data:`_EXECUTOR_ASSIGNED`), so the walk would measure somewhere other than
+#: the stops it states. Decided by :class:`AngleCaptureRequest` at statement
+#: time, like :data:`WALK_OVER_MOVER_ENVELOPE`.
+WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
+
 #: The walk's ``(polarity, inverted_role)`` pair is not one
-#: :class:`~.crossover_v2.measure_spec.MeasureSpec` accepts, judged by
-#: BUILDING that spec at adoption -- detail is the spec's own sentence.
+#: :class:`~.crossover_v2.measure_spec.MeasureSpec` accepts, judged by BUILDING
+#: the template (:func:`walk_template`) -- detail is the spec's own sentence.
 WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 
 #: The walk's ``(delayed_role, delay_us)`` pair is not one ``MeasureSpec``
@@ -636,14 +899,19 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
+    WALK_LEVEL_POLICY_INVALID,
+    WALK_POLICY_UNSUPPORTED_YET,
+    WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
+    WALK_TEMPLATE_NOT_ACCEPTED,
     WALK_POLARITY_NOT_ACCEPTED,
     WALK_DELAY_NOT_ACCEPTED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
@@ -663,6 +931,33 @@ class LateralWalkRefused(CrossoverV2FlowError):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+
+
+def refuse_unplayable_walk_policy(request: AngleCaptureRequest) -> None:
+    """Refuse a walk stating a policy no player HONOURS yet.
+
+    Not in :meth:`AngleCaptureRequest.__post_init__`: the request is legal to
+    STATE and to price, so ``plan`` reports its cost; what is missing is the
+    playing half. Called where a walk is banked for a session instead, both
+    writing and reading it, so a hand-written document refuses the same way a
+    staged one does.
+
+    Each arm names what would have to exist, and goes when that lands
+    (#4873): the SPL ceiling wants the walk's capture leg to install a
+    :class:`~jasper.audio_measurement.wired_capture.WiredSplMonitor`, and the
+    level modes past :data:`LEVEL_HOLD_REFERENCE` want a session that moves the
+    main volume between stops.
+    """
+    if request.template.spl_ceiling_db_spl is not None:
+        raise LateralWalkRefused(
+            WALK_POLICY_UNSUPPORTED_YET,
+            "spl_ceiling_db_spl: no walk installs an SPL monitor yet",
+        )
+    if request.level_mode != LEVEL_HOLD_REFERENCE:
+        raise LateralWalkRefused(
+            WALK_POLICY_UNSUPPORTED_YET,
+            f"level_mode={request.level_mode!r}: no walk moves the main volume yet",
+        )
 
 
 def session_lateral_walk(

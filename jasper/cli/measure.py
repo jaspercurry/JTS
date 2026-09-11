@@ -32,6 +32,7 @@ from jasper.cli._refusal import (
     STATUS_BY_CODE,
     failed,
 )
+from jasper.cli._stimulus_args import add_stimulus_args, spec_kwargs_from_args
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -328,16 +329,8 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             vertical_deg=args.vertical_deg,
             regime=args.regime,
             graph_scope=args.graph_scope,
-            polarity=args.polarity,
-            inverted_role=args.inverted_role,
-            level_ladder_dbfs=tuple(args.level_dbfs),
-            sweep_band_hz=tuple(args.sweep_band_hz),
-            sweep_s=args.sweep_s,
-            spl_ceiling_db_spl=args.spl_ceiling_db_spl,
             candidate_id=args.candidate_id.strip(),
-            delayed_role=args.delayed_role,
-            delay_us=args.delay_us,
-            level_matched=args.level_matched,
+            **spec_kwargs_from_args(args),
         )
     except ValueError as exc:
         raise MeasureFlagError(REFUSE_SPEC_INVALID, str(exc)) from exc
@@ -398,53 +391,6 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
     return specs
 
 
-#: The spec fields a file entry must state as JSON strings. Each is trimmed, so
-#: a whitespace-only candidate id cannot pass the variant rule.
-_STRING_FIELDS = (
-    "kind", "position_axis", "regime", "polarity", "inverted_role",
-    "delayed_role", "candidate_id", "graph_scope",
-)
-
-
-def _typed_entry(index: int, entry: Mapping[str, Any]) -> dict[str, Any]:
-    """argparse's typing, for a mapping that never went through argparse.
-
-    Raw JSON can hand :class:`MeasureSpec` what no flag could — a truthy string
-    for ``level_matched``, a bare string where a tuple field expects an array
-    (``tuple("030")`` is three bearings), a non-finite delay. Each is refused
-    here with the entry's index.
-    """
-
-    def refuse(what: str) -> MeasureFlagError:
-        return MeasureFlagError(REFUSE_SPEC_INVALID, f"spec {index}: {what}")
-
-    fields = dict(entry)
-    for key in ("positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz"):
-        if key in fields:
-            if not isinstance(fields[key], list):
-                raise refuse(f"{key} must be a JSON array")
-            fields[key] = tuple(fields[key])
-    for key in _STRING_FIELDS:
-        if key in fields:
-            if not isinstance(fields[key], str):
-                raise refuse(f"{key} must be a string")
-            fields[key] = fields[key].strip()
-    if not all(isinstance(p, str) for p in fields.get("pose_prompts", ())):
-        raise refuse("pose_prompts entries must be strings")
-    if not isinstance(fields.get("level_matched", False), bool):
-        raise refuse("level_matched must be true or false")
-    for name, values in (
-        ("delay_us", (fields.get("delay_us", 0.0),)),
-        ("level_ladder_dbfs", fields.get("level_ladder_dbfs", ())),
-    ):
-        for value in values:
-            # ``bool`` is an ``int``; JSON itself can carry NaN/Infinity.
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not math.isfinite(value)):
-                raise refuse(f"{name} must be a finite number, got {value!r}")
-    return fields
-
-
 def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
     """The file's entries as specs, each one held to the same rules as a flag run."""
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
@@ -473,10 +419,12 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
                 REFUSE_SPECS_UNREADABLE,
                 f"spec {index} is not a mapping",
             )
-        fields = {**defaults, **_typed_entry(index, entry)}
         try:
-            spec = MeasureSpec(**fields)
-        except (TypeError, ValueError) as exc:
+            # ``MeasureSpec`` owns its own JSON shape, so a raw entry gets
+            # argparse's typing from the class the flags build too -- one
+            # vocabulary for "this is not a spec", whichever door said it.
+            spec = MeasureSpec.from_mapping({**defaults, **entry})
+        except ValueError as exc:
             raise MeasureFlagError(
                 REFUSE_SPEC_INVALID, f"spec {index}: {exc}",
             ) from exc
@@ -1056,20 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="carry this box's own banked per-driver level trims in the graph",
     )
-    parser.add_argument(
-        "--level-dbfs",
-        type=float,
-        action="append",
-        default=[],
-        metavar="DBFS",
-        help="one stimulus level per ladder rung, repeatable",
-    )
-    parser.add_argument(
-        "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
-        help="summed-sweep bounds in Hz; protected graph admission still applies",
-    )
-    parser.add_argument("--spl-ceiling-db-spl", type=float, default=None)
-    parser.add_argument("--sweep-s", type=float, help="summed sweep duration; still bounded by declared driver duration caps")
+    add_stimulus_args(parser)
     parser.add_argument("--mic-serial", default=None)
     parser.add_argument(
         "--candidate-id",

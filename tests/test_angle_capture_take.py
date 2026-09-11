@@ -228,7 +228,7 @@ def test_a_field_the_document_cannot_coerce_refuses_by_name(slot, read):
     path = spool.angle_request_spool_path()
     spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
     doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["delay_us"] = "12us"
+    doc["template"]["delay_us"] = "12us"
     path.write_text(json.dumps(doc), encoding="utf-8")
 
     with pytest.raises(spool.AngleRequestRefused) as excinfo:
@@ -487,11 +487,12 @@ def test_the_consent_copy_quotes_the_walk_the_household_will_actually_take(slot)
 # --- R-1's reverse polarity ---------------------------------------------------
 
 
-def _inverted_walk(**pair):
+def _inverted_walk(**template):
     return ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
-        polarity=POLARITY_INVERTED,
-        **pair,
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, polarity=POLARITY_INVERTED, **template,
+        ),
     )
 
 
@@ -575,14 +576,15 @@ def _banked(monkeypatch, *, room_correction=None, bass_extension=None, **alignme
     {"delayed_role": DRIVER_ROLE_TWEETER, "delay_us": 250.0},
 ])
 @pytest.mark.parametrize("candidate_id", ["", "fp-a"])
-def test_a_complete_graph_trial_refuses_walk_overlays(slot, monkeypatch, overlay, candidate_id):
-    preset = _banked(monkeypatch, polarity="invert", delay_role=None, delay_us=None)
-    _with_measured_trims(monkeypatch, {DRIVER_ROLE_TWEETER: -9.5})
-    spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),), **overlay,
-    ))
-    assert ac.WALK_CANDIDATE_NOT_MEASURABLE in _refused(preset=preset)
-    assert spool.staged_angle_request_pending() is False
+def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
+    """A summed trial plays the selected graph's own trims and alignment, so a
+    template overlay is refused where the walk is stated, not at the open."""
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),),
+            template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **overlay),
+        )
+    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
 
 
 @pytest.mark.parametrize("candidate_ids", [None, ("",), ("", "fp-a", "fp-b")])
@@ -883,6 +885,54 @@ def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
     assert (ordinary.delayed_role, ordinary.delay_us) == ("", 0.0)
 
 
+def test_a_staged_stimulus_reaches_every_spec_the_walk_plays(slot, monkeypatch):
+    """Request-level, so EVERY spec this walk plays carries it -- the design-axis
+    MEASURE capture and each stop alike. Dropped between the document and the
+    spec, the session would play the program's own single stimulus and bank it
+    as the matched batch the operator staged.
+    """
+    ladder = (-20.0, -14.0)
+    spool.stage_angle_request(replace(
+        ac.summed_at([0, 7]),
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, level_ladder_dbfs=ladder,
+        ),
+    ))
+    _prompts, _consumer, specs, _trims, _claims = _take()
+
+    # Both construction sites, named by the scope only each one builds: the
+    # walk-level design-axis spec and the per-stop summed specs.
+    assert {spec.graph_scope for spec in specs.values()} == {"drivers", "base"}
+    assert {spec.level_ladder_dbfs for spec in specs.values()} == {ladder}
+    assert _played_measure_spec(
+        specs[_MEASURE_INDEX], monkeypatch
+    ).level_ladder_dbfs == ladder
+
+    # …and a walk that states none builds the spec it always did.
+    spool.stage_angle_request(ac.summed_at([0, 7]))
+    _prompts, _consumer, bare, _trims, _claims = _take()
+    assert {spec.level_ladder_dbfs for spec in bare.values()} == {()}
+
+
+def test_a_summed_sweep_rides_the_summed_stops_only(slot):
+    """The band and duration are a SUMMED sweep's, so they reach each stop's
+    summed spec and never the per-driver design-axis MEASURE spec, which plays
+    the program's own excitation; ``MeasureSpec`` refuses them on that scope.
+    """
+    band, seconds = (200.0, 3000.0), 2.5
+    spool.stage_angle_request(replace(
+        ac.summed_at([0, 7]),
+        template=ac.walk_template(
+            kind=MEASURE_KIND_CANDIDATE, sweep_band_hz=band, sweep_s=seconds,
+        ),
+    ))
+    _prompts, _consumer, specs, _trims, _claims = _take()
+
+    by_scope = {spec.graph_scope: spec for spec in specs.values()}
+    assert (by_scope["base"].sweep_band_hz, by_scope["base"].sweep_s) == (band, seconds)
+    assert (by_scope["drivers"].sweep_band_hz, by_scope["drivers"].sweep_s) == ((), None)
+
+
 def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):
     """Answer the level-match evidence question with a stated verdict.
 
@@ -1095,53 +1145,30 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
         )
 
 
-def test_a_coordinate_the_spec_refuses_is_named_as_a_DELAY_refusal(slot):
-    """Its own slug, so an operator reading ``reason=`` learns which half of
-    R-1 was refused rather than being told 'polarity' about a delay."""
-    spool.stage_angle_request(_inverted_walk(
-        inverted_role=DRIVER_ROLE_TWEETER,
-        delayed_role="tweater",          # not a driver branch
-        delay_us=250.0,
-    ))
-    sentence = _refused()
+def test_a_hand_edited_template_refuses_the_open_in_the_specs_own_words(slot, caplog):
+    """The pair is judged by the SPEC, and a document can still carry one it
+    refuses: staging cannot reach a file an operator edits afterwards.
 
-    assert ac.WALK_DELAY_NOT_ACCEPTED in sentence
-    assert ac.WALK_POLARITY_NOT_ACCEPTED not in sentence
-    # The detail is the spec's own refusal, compared against what the spec
-    # actually raises rather than a copy of its wording.
-    with pytest.raises(ValueError) as spec_refusal:
-        MeasureSpec(
-            kind=MEASURE_KIND_CANDIDATE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_TWEETER,
-            delayed_role="tweater",
-            delay_us=250.0,
-        )
-    assert str(spec_refusal.value) in sentence
-
-
-def test_a_one_sided_polarity_refuses_the_open_in_the_specs_own_words(slot, caplog):
-    """The pair is judged by the SPEC, at adoption, and nowhere upstream.
-
-    Staging is a dumb carrier on purpose — one copy of the rule, in
-    ``MeasureSpec`` — so a walk naming ``inverted`` and no branch does reach
-    the host. It refuses the open there, like every other walk this session
-    cannot honour, rather than raising out of a capture callback mid-round.
+    It refuses the open there, like every other walk this session cannot honour,
+    rather than raising out of a capture callback mid-round — and the detail is
+    the spec's own refusal, compared against what the spec actually raises so
+    this pin cannot become the second vocabulary it exists to forbid.
     """
-    spool.stage_angle_request(_inverted_walk())
+    spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["template"]["inverted_role"] = ""
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
     with caplog.at_level(logging.WARNING):
         sentence = _refused()
 
-    assert ac.WALK_POLARITY_NOT_ACCEPTED in sentence
-    # The DETAIL is the spec's own refusal. Compared against what the spec
-    # actually raises rather than against a copy of its wording, so this pin
-    # cannot become the second vocabulary it exists to forbid.
     with pytest.raises(ValueError) as spec_refusal:
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE, polarity=POLARITY_INVERTED)
     assert str(spec_refusal.value) in sentence
 
     line, = _events(caplog)
-    assert f"reason={ac.WALK_POLARITY_NOT_ACCEPTED}" in line
+    assert f"reason={spool.SPOOL_MALFORMED}" in line
     assert "consumed=true" in line and "session_continues=false" in line
     assert spool.staged_angle_request_pending() is False
 

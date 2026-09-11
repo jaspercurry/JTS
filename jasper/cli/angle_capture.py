@@ -49,9 +49,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
+from ._stimulus_args import add_stimulus_args, spec_kwargs_from_args
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
+    LEVEL_HOLD_REFERENCE,
+    LEVEL_MODES,
+    LEVEL_SERIES,
     MOVER_HUMAN,
     MOVER_ARM,
     MOVERS,
@@ -63,13 +67,13 @@ from jasper.active_speaker.angle_capture import (
     request_for_program,
     resolve_request,
     walk_price,
+    walk_template,
 )
 from jasper.active_speaker.candidate_bank import (
     CandidateBankRefusal,
     find_banked_candidate,
 )
 from jasper.active_speaker.angle_capture_spool import (
-    AngleRequestRefused,
     angle_request_spool_path,
     peek_staged_angle_request,
     stage_angle_request,
@@ -77,6 +81,7 @@ from jasper.active_speaker.angle_capture_spool import (
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLES,
+    MEASURE_KIND_CANDIDATE,
     POLARITIES,
     POLARITY_NORMAL,
 )
@@ -215,14 +220,15 @@ def _declared_on_the_box() -> DeclaredGeometry | None:
 
 
 def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
-    """The walk-level graph statement, which both request paths carry alike."""
+    """The walk-level statement both request paths carry alike: the one
+    ``MeasureSpec`` every capture is built from, and this module's own volume
+    policy beside it.
+    """
     return {
         "mover": args.mover,
-        "polarity": args.polarity,
-        "inverted_role": args.inverted_role,
-        "delayed_role": args.delayed_role,
-        "delay_us": args.delay_us,
-        "level_matched": args.level_matched,
+        "template": walk_template(kind=MEASURE_KIND_CANDIDATE, **spec_kwargs_from_args(args)),
+        "level_mode": args.level_mode,
+        "main_volume_series_db": tuple(args.level_series),
     }
 
 
@@ -346,11 +352,11 @@ def _walk_payload(
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
-        "polarity": request.polarity,
-        "inverted_role": request.inverted_role,
-        "delayed_role": request.delayed_role,
-        "delay_us": request.delay_us,
-        "level_matched": request.level_matched,
+        "polarity": request.template.polarity,
+        "inverted_role": request.template.inverted_role,
+        "delayed_role": request.template.delayed_role,
+        "delay_us": request.template.delay_us,
+        "level_matched": request.template.level_matched,
         "stops": [
             {
                 "index": stop.index,
@@ -470,6 +476,12 @@ def _print_walk(payload: dict[str, Any]) -> None:
     say(
         f"  price: {price['mic_moves']} spots, {price['captures']} captures, "
         f"up to {price['ceiling_min']} min for the session that takes it"
+        # Only when the walk picked a sweep duration: a walk that has not
+        # states no stimulus time rather than a wrong one.
+        + (
+            f" ({price['stimulus_s']:g} s of stimulus)"
+            if price["stimulus_s"] is not None else ""
+        )
     )
     level = payload["level"]
     say(
@@ -589,7 +601,10 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     payload = _walk_payload(request, level)
     try:
         path = stage_angle_request(request)
-    except AngleRequestRefused as exc:
+    except CrossoverV2FlowError as exc:
+        # Both slugs, one door: the slot's own refusals (``AngleRequestRefused``
+        # subclasses this) and the walk-policy refusal it raises for a request
+        # no player honours yet.
         return _refuse(exc)
     except OSError as exc:
         return failed(
@@ -831,6 +846,32 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "form. A flag and not a number: the trims are resolved on the box "
             "from its banked evidence when the session adopts the walk, and a "
             "box with none refuses the walk rather than measuring unmatched"
+        ),
+    )
+    # The stimulus half is ``MeasureSpec``'s own, so it is spelled where
+    # ``jasper-measure`` spells it; stated once here for every stop in the walk.
+    add_stimulus_args(parser)
+    parser.add_argument(
+        "--level-mode",
+        default=LEVEL_HOLD_REFERENCE,
+        choices=sorted(LEVEL_MODES),
+        help=(
+            "how main volume behaves across this walk's stops: hold_reference "
+            "leaves the anchor level untouched throughout (the default), "
+            "acquire_at_anchor measures it once at the anchor pose and holds "
+            "that across every stop, series steps through --level-series in "
+            "turn"
+        ),
+    )
+    parser.add_argument(
+        "--level-series",
+        type=float,
+        action="append",
+        default=[],
+        metavar="DB",
+        help=(
+            f"--level-mode {LEVEL_SERIES} only: one main-volume rung in dB, "
+            "repeatable"
         ),
     )
 

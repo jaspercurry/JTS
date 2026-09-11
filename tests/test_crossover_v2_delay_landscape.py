@@ -556,24 +556,15 @@ def test_the_grid_a_curve_was_banked_on_does_not_change_the_answer():
 # --------------------------------------------------------------------------- #
 
 
-def _walk(**kwargs):
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
-
-    return AngleCaptureRequest(
-        stops=(AngleStop(angle_deg=0, regime="summed"),), **kwargs
+def _walk(**template):
+    from jasper.active_speaker.angle_capture import (
+        AngleCaptureRequest, AngleStop, walk_template,
     )
 
-
-def test_a_staged_walk_carries_the_confirmation_coordinate():
-    request = _walk(delayed_role="tweeter", delay_us=250.0)
-    assert (request.delayed_role, request.delay_us) == ("tweeter", 250.0)
-    # Absent by default, so an ordinary walk stages exactly what it always did.
-    assert (_walk().delayed_role, _walk().delay_us) == ("", 0.0)
-
-
-def test_a_staged_walk_carries_whether_to_level_match():
-    assert _walk(level_matched=True).level_matched is True
-    assert _walk().level_matched is False
+    return AngleCaptureRequest(
+        stops=(AngleStop(angle_deg=0, regime="per_driver"),),
+        template=walk_template(kind="candidate", **template),
+    )
 
 
 def test_the_coordinate_survives_the_spool_round_trip(tmp_path):
@@ -587,7 +578,9 @@ def test_the_coordinate_survives_the_spool_round_trip(tmp_path):
         spool.set_angle_request_spool_path_for_tests(None)
 
     assert taken is not None
-    assert (taken.delayed_role, taken.delay_us) == ("tweeter", 250.0)
+    assert (taken.template.delayed_role, taken.template.delay_us) == (
+        "tweeter", 250.0,
+    )
 
 
 def test_the_level_match_survives_the_spool_round_trip(tmp_path):
@@ -600,12 +593,12 @@ def test_the_level_match_survives_the_spool_round_trip(tmp_path):
     finally:
         spool.set_angle_request_spool_path_for_tests(None)
 
-    assert taken is not None and taken.level_matched is True
+    assert taken is not None and taken.template.level_matched is True
 
 
-def test_a_document_spooled_before_the_coordinate_existed_still_reads(tmp_path):
-    """The pair is ADDITIVE: a walk spooled by an older build reads back as an
-    undelayed one rather than refusing."""
+def test_a_document_whose_template_omits_the_coordinate_still_reads(tmp_path):
+    """The pair is ADDITIVE inside the template: a banked spec that names
+    neither half reads back as an undelayed walk rather than refusing."""
     import json
 
     from jasper.active_speaker import angle_capture_spool as spool
@@ -615,15 +608,15 @@ def test_a_document_spooled_before_the_coordinate_existed_still_reads(tmp_path):
     try:
         spool.stage_angle_request(_walk())
         doc = json.loads(path.read_text())
-        doc.pop("delayed_role", None)
-        doc.pop("delay_us", None)
+        doc["template"].pop("delayed_role", None)
+        doc["template"].pop("delay_us", None)
         path.write_text(json.dumps(doc))
         taken = spool.take_staged_angle_request()
     finally:
         spool.set_angle_request_spool_path_for_tests(None)
 
     assert taken is not None
-    assert (taken.delayed_role, taken.delay_us) == ("", 0.0)
+    assert (taken.template.delayed_role, taken.template.delay_us) == ("", 0.0)
 
 
 def test_a_curve_passed_as_the_wrong_branch_is_refused():

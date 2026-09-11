@@ -1098,14 +1098,16 @@ jasper-angle-capture withdraw
   walk is staged the `microphone_check` tier chooser prices it (`staged_walk`)
   through a peek. A taken walk is EVIDENCE: its close adjudicates nothing.
 
-**Eight take-time refusals, each of which REFUSES THE OPEN**
+**The take-time refusals, each of which REFUSES THE OPEN**
 ([ADR-0006](adr/0006-staged-walk-refuses-the-open.md)) rather than opening the
 session in its ordinary shape: `walk_regime_unsupported`,
 `walk_mover_mismatch`, `walk_over_mover_envelope` (arm ±45°, person ±80° —
 normally refused at the door, so reaching the take means a hand-edited or
 pre-bound document), `walk_over_capture_capacity`,
 `walk_lateral_group_already_planned`, `walk_stop_no_longer_valid`,
-`walk_polarity_not_accepted` and `walk_polarity_needs_wired`. The document is
+`walk_polarity_not_accepted`, `walk_delay_not_accepted`,
+`walk_level_match_no_evidence`, `walk_candidate_not_measurable`,
+`walk_stimulus_not_accepted` and `walk_policy_unsupported_yet`. The document is
 consumed except on the spool's two unreadable arms, so a permissions mistake
 cannot destroy the evidence of itself — the `consumed=` field says which
 happened; do not assume it.
