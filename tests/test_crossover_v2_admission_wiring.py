@@ -775,6 +775,28 @@ def test_a_retriable_rejection_on_a_fresh_slot_still_offers_the_retry():
     assert "terminal" not in settled.payload
 
 
+@pytest.mark.parametrize(("budget", "charges"), [
+    (0, ["speaker"] * 6), (3, ["speaker"] * 6),
+    (4, ["operator", "speaker"] * 3), (1, ["operator"]),
+])
+def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, charges):
+    ledger = admission.SlotAttempts(admitted=100, retries_per_pose=budget)
+    assert ledger.to_payload()["left"] == budget
+    for charge in charges:
+        assert ledger.can_retry(charge)
+        ledger.spend(charge)
+    payload = ledger.to_payload()
+    assert payload["left"] == 0
+    assert payload["by_household"] == charges.count("operator")
+    assert payload["by_speaker"] == charges.count("speaker")
+    assert not ledger.can_retry("operator")
+    for charge in ("operator", "speaker"):
+        if not ledger.can_retry(charge):
+            with pytest.raises(admission.AttemptOverspendError):
+                ledger.spend(charge)
+    assert ledger.to_payload() == payload
+
+
 def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
     """``assess_begin``'s precondition, asserted against the pure function.
 
