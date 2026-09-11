@@ -2,17 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The seat-SPL leveling CLI's refusals — the ones that must land before audio.
-
-Every check that can be made without touching hardware runs BEFORE the mic is
-opened or a note is played, so an operator who typed something wrong hears
-nothing at all. The load-bearing one: a microphone with no parseable
-``Sens Factor`` has no absolute level reference, so the verb refuses rather than
-ramping a speaker against an uncalibrated number.
-"""
+"""Calibrated seat-SPL CLI refusals, playback control, and evidence."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -410,8 +404,9 @@ def test_the_verb_resolves_calibration_before_running_the_ramp(
 
 
 @pytest.mark.parametrize("cancel_when", ["spawning", "playing"])
-def test_a_cancel_stops_one_tone_and_allows_the_next_to_play(
-    tmp_path, monkeypatch, cancel_when
+@pytest.mark.parametrize("cancel_restart", [False, True])
+def test_a_cancel_applies_to_the_scheduled_tone(
+    tmp_path, monkeypatch, cancel_when, cancel_restart
 ):
     result = seat_level.SeatLevelResult(
         status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
@@ -438,8 +433,13 @@ def test_a_cancel_stops_one_tone_and_allows_the_next_to_play(
     async def _fake_ramp(*, play_continuous_tone, cancel_tone, **kwargs):
         nonlocal cancel
         cancel = cancel_tone
-        await play_continuous_tone()
-        await play_continuous_tone()
+        await asyncio.ensure_future(play_continuous_tone())
+        restarted = asyncio.ensure_future(play_continuous_tone())
+        if cancel_restart:
+            cancel_tone()
+        await asyncio.sleep(0)
+        await restarted
+        assert players[1].terminate.call_count == int(cancel_restart)
         return result
 
     monkeypatch.setattr(
@@ -449,10 +449,9 @@ def test_a_cancel_stops_one_tone_and_allows_the_next_to_play(
     code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
 
     assert code == seat_level.EXIT_OK
-    players[0].terminate.assert_called_once()
+    assert players[0].terminate.called
     assert players[0].wait.await_count == (1 if cancel_when == "playing" else 0)
-    players[1].wait.assert_awaited_once()
-    players[1].terminate.assert_not_called()
+    assert players[1].wait.await_count == (0 if cancel_restart else 1)
 
 
 def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
@@ -966,12 +965,6 @@ def test_the_measured_SPL_stop_still_rejects_a_target_above_the_profile_ceiling(
 
 
 def _stub_a_ramp_result(monkeypatch, tmp_path, result):
-    """Everything between ``main()`` and the ramp, stubbed to a fixed outcome.
-
-    The ramp's own behaviour is covered in
-    ``tests/test_active_speaker_seat_level.py``; what is under test here is
-    whether the CLI actually SHOWS what the ramp published.
-    """
     stimulus = _stereo_wav(tmp_path / "check.wav", peak_int16=32767)
     cal = tmp_path / "umik2.txt"
     cal.write_text(CAL_WITH_SENS)
@@ -1059,7 +1052,7 @@ def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys
 
 
 @pytest.mark.parametrize("remeasured", [False, True])
-def test_a_converged_run_prints_its_ramp_evidence(
+def test_a_converged_run_prints_its_ramp_evidence_and_ambient_detail(
     tmp_path, monkeypatch, capsys, remeasured
 ):
     ramp = {
@@ -1090,6 +1083,10 @@ def test_a_converged_run_prints_its_ramp_evidence(
     assert answer["restored"] is True
     assert answer["ramp"] == ramp
     assert answer["out"] == str(seat_level_reference_state_path())
+    phrase = seat_level._ambient_phrase(ramp)
+    assert isinstance(phrase, str)
+    assert bool(phrase) is remeasured
+    assert phrase in answer["detail"]
 
 
 @pytest.mark.parametrize(
