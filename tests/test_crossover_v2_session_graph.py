@@ -114,8 +114,7 @@ def test_four_stimuli_cost_one_load_not_four(tmp_path):
     for _ in range(4):
         asyncio.run(graph.install())
 
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 1
+    assert len(cam.loaded) == 1
 
 
 def test_a_graph_another_writer_replaced_is_put_back_not_measured_through(tmp_path):
@@ -132,8 +131,7 @@ def test_a_graph_another_writer_replaced_is_put_back_not_measured_through(tmp_pa
     cam.live = "somebody: else\n"  # a /sound/ apply landed mid-session
     asyncio.run(graph.install())
 
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 2
+    assert len(cam.loaded) == 2
     assert cam.live == GRAPH
 
 
@@ -184,8 +182,7 @@ def test_an_unreadable_liveness_answer_is_never_treated_as_live(tmp_path):
         asyncio.run(graph.install())
     # It got as far as trying to put the graph back, rather than returning a
     # cheerful fingerprint for a graph it could not see.
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 2
+    assert len(cam.loaded) == 2
 
 
 def test_no_entry_config_refuses_before_loading_anything(tmp_path):
@@ -664,8 +661,7 @@ def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
     assert len(stomp) == 1
     assert stomp[0].levelno == logging.WARNING
     assert parse_event(stomp[0].getMessage())[1]["result"] == "reinstall"
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 2, "the stomp is repaired"
+    assert len(cam.loaded) == 2, "the stomp is repaired"
 
 
 # --------------------------------------------------------------------------- #

@@ -120,7 +120,6 @@ class FakeSpotify:
         self.previous_track = MagicMock()
         self.pause_playback = MagicMock()
         self.last_search_q: str | None = None
-        self.last_search_type: str | None = None
 
     def current_playback(self):
         return self._playback
@@ -130,7 +129,6 @@ class FakeSpotify:
 
     def search(self, q, type, limit):
         self.last_search_q = q
-        self.last_search_type = type
         if isinstance(self._search_results, dict) and self._search_results and (
             "artists" in self._search_results
             or "tracks" in self._search_results
@@ -206,31 +204,3 @@ class FakeSpotify:
 
     def shuffle(self, state, device_id=None):
         self.last_shuffle_state = state
-
-    def playlist(self, pid, fields=None, market=None, additional_types=None):
-        tracks = getattr(self, "_playlist_tracks", {}).get(pid, [])
-        items = [
-            {"added_at": added, "track": {"uri": uri, "name": uri.rsplit(":", 1)[-1]}}
-            for uri, added in tracks
-        ]
-        return {"tracks": {"items": items, "next": None}}
-
-    def playlist_items(self, pid, fields=None, limit=100, offset=0, additional_types=None):
-        # `_playlist_tracks` map: {playlist_id_or_uri_suffix: [(uri, added_at), ...]}
-        tracks = getattr(self, "_playlist_tracks", {}).get(pid, [])
-        items = [
-            {"added_at": added, "track": {"uri": uri, "name": uri.rsplit(":", 1)[-1]}}
-            for uri, added in tracks
-        ]
-        page = items[offset:offset + limit]
-        return {
-            "items": page,
-            "next": None if offset + limit >= len(items) else "next-page",
-        }
-
-    def with_playlist_tracks(self, playlist_id: str, tracks: list):
-        """Configure the tracks returned by playlist_items for this id."""
-        if not hasattr(self, "_playlist_tracks"):
-            self._playlist_tracks = {}
-        self._playlist_tracks[playlist_id] = tracks
-        return self

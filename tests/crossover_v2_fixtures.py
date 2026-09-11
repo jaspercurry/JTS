@@ -2189,8 +2189,14 @@ class FakeCam:
         self.ops: list = []
         self.ducked: list[bool] = []
         self.live: str | None = None
-        self.loaded: list[str] = []
         self.volume_db = volume_db
+
+    @property
+    def loaded(self) -> list[str]:
+        """Every config ``set_active_config_raw`` was asked to load, in
+        order — derived from ``ops`` rather than tracked separately, since
+        the two would otherwise have to be kept in sync by hand."""
+        return [op[1] for op in self.ops if isinstance(op, tuple) and op[0] == "set_raw"]
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str | None:
         self.ops.append("get_path")
@@ -2201,7 +2207,6 @@ class FakeCam:
     async def set_active_config_raw(
         self, config: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
-        self.loaded.append(config)
         self.ops.append(("set_raw", config))
         self.ducked.append(duck)
         if self.load_raises is not None:
