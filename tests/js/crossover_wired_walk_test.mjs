@@ -9,8 +9,19 @@
 // then the two holds this panel must NOT serve: one a driver releases, and a
 // capture session, whose phone owns the tap.
 
-import assert from "node:assert/strict";
+import strict from "node:assert/strict";
 import { crossoverMainModule } from "./_dom.mjs";
+
+// The reported count is DERIVED, never typed: a hand-bumped literal drifts from
+// what ran, and the Python bridge only checks it is >= 1.
+let passed = 0;
+const counted = (fn) => (...args) => { fn(...args); passed += 1; };
+const assert = {
+  equal: counted(strict.equal),
+  notEqual: counted(strict.notEqual),
+  deepEqual: counted(strict.deepEqual),
+  ok: counted(strict.ok),
+};
 
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
@@ -139,6 +150,89 @@ assertWiredStatus();
 // prompt is retained across the release.
 assert.notEqual(captureStatus().textContent, holdingStatus);
 
+// -- state: a POSE BATCH — one release, N configs --------------------------- //
+// The defect this pins: configs 2..N of a batch are granted WITHOUT a hold of
+// their own, so no second `position_pending` is ever published and the retained
+// prompt froze the progress line at config 1 for the whole batch. The gate now
+// publishes the entry it is executing; the pose has not changed, so only the
+// progress line follows it.
+const batchCurrent = (ordinal) => ({
+  index: 2 + ordinal,
+  attempt: 1,
+  prompt: {...PROMPT, progress: `Config ${ordinal} of 3 — keep the mic still.`},
+  batch: {start: 3, size: 3, ordinal},
+});
+render(envelope({
+  status: "awaiting_capture",
+  source: "wired",
+  position_current: batchCurrent(2),
+}));
+assert.equal(walk().hidden, false);
+assert.equal(
+  elements.get("crossover-walk-progress").textContent,
+  batchCurrent(2).prompt.progress,
+);
+// The pose is the same spot for every config in the batch, so the headline the
+// household is holding the microphone against must not move under them.
+assert.equal(elements.get("crossover-walk-headline").textContent, PROMPT.title);
+assert.equal(walkAction().children[0].tag, "p");
+
+render(envelope({
+  status: "awaiting_capture",
+  source: "wired",
+  position_current: batchCurrent(3),
+}));
+assert.equal(
+  elements.get("crossover-walk-progress").textContent,
+  batchCurrent(3).prompt.progress,
+);
+
+// -- the NEXT pose: its own hold, its own button, no leftover progress ------- //
+// The gate drops the executed entry when a fresh hold opens, so the batch's
+// last config must not still be the line above the new pose's release button.
+const NEXT_PROMPT = {
+  progress: "Measurement 6 of 9",
+  title: "Turn the microphone to -7° (7° LEFT of the design axis).",
+  body: PROMPT.body,
+};
+const NEXT_PENDING = {
+  ...PENDING,
+  index: 6,
+  degrees: -7,
+  prompt: NEXT_PROMPT,
+  action: {...PENDING.action, body: {index: 6, attempt: 1, degrees: -7}},
+};
+render(envelope({
+  status: "awaiting_capture",
+  source: "wired",
+  position_pending: NEXT_PENDING,
+}));
+assert.equal(
+  elements.get("crossover-walk-progress").textContent, NEXT_PROMPT.progress,
+);
+assert.equal(elements.get("crossover-walk-headline").textContent, NEXT_PROMPT.title);
+assert.equal(walkAction().children[0].tag, "button");
+
+// -- a fresh hold beside a STALE executing entry ---------------------------- //
+// The gate never publishes both, so a poll carrying both straddled a release.
+// The hold wins — its own progress line and its own button — and a repeat poll
+// must not re-key that button under a finger already on it.
+const straddled = {
+  status: "awaiting_capture",
+  source: "wired",
+  position_pending: NEXT_PENDING,
+  position_current: batchCurrent(3),
+};
+render(envelope(straddled));
+assert.equal(
+  elements.get("crossover-walk-progress").textContent, NEXT_PROMPT.progress,
+);
+const heldRelease = walkAction().children[0];
+assert.equal(heldRelease.tag, "button");
+assert.equal(heldRelease.textContent, NEXT_PENDING.action.label);
+render(envelope(straddled));
+assert.equal(walkAction().children[0], heldRelease);
+
 // -- state: the SCREEN takes the control back ------------------------------- //
 // The closing screen's Save / Record-again are `show_during_capture` primaries.
 // One primary at a time: the walkthrough stands down rather than competing.
@@ -242,4 +336,4 @@ render(envelope({
 }));
 assertWiredStatus();
 
-console.log(JSON.stringify({ ok: true, passed: 50 }));
+console.log(JSON.stringify({ ok: true, passed }));

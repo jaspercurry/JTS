@@ -440,7 +440,7 @@ def test_the_gate_defers_until_the_driver_releases_and_then_admits():
     with pytest.raises(CaptureBeginDeferred) as held:
         gate.gate(3, 3, entry)
     assert held.value.code == POSITION_HOLD_CODE
-    pending = gate.pending()
+    pending = gate.published()["pending"]
     assert pending["index"] == 3
     assert pending["attempt"] == 3
     assert pending["degrees"] == -7
@@ -454,7 +454,7 @@ def test_the_gate_defers_until_the_driver_releases_and_then_admits():
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(3, 3, entry)
     gate.release(3, 3)
-    assert gate.pending() is None
+    assert gate.published()["pending"] is None
     gate.gate(3, 3, entry)  # admitted — no raise
     # A released capture stays released across the re-posts still in flight.
     gate.gate(3, 3, entry)
@@ -522,7 +522,7 @@ def test_a_hold_whose_driver_never_answers_expires_loudly():
     assert refused.value.code == POSITION_HOLD_EXPIRED_CODE
     # The expired hold stops being advertised, so the envelope cannot keep
     # asking a driver to move an arm for a capture that has been refused.
-    assert gate.pending() is None
+    assert gate.published()["pending"] is None
 
 
 def test_a_walk_that_outlives_its_ceiling_is_named_rather_than_left_generic():
@@ -552,7 +552,7 @@ def test_a_walk_that_outlives_its_ceiling_is_named_rather_than_left_generic():
     assert refused.value.code != POSITION_HOLD_EXPIRED_CODE
     # …and the refused hold stops being advertised, so a driver is not still
     # being asked to move an arm for a capture that will never run.
-    assert gate.pending() is None
+    assert gate.published()["pending"] is None
 
 
 def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog):
@@ -586,7 +586,7 @@ def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog)
     assert not event_records(caplog, "correction.crossover_v2_position_pending")
     ceiling = event_fields(caplog, "correction.crossover_v2_session_ceiling_expired")
     assert ceiling["waited_s"] == "0.0"
-    assert gate.pending() is None
+    assert gate.published()["pending"] is None
 
 
 def test_a_stalled_driver_keeps_its_own_name_when_both_bounds_are_past():
@@ -646,7 +646,7 @@ def test_a_hold_carries_the_plans_own_words_and_says_who_releases_it():
         gate = PositionGate()
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(1, 1, entry)
-        pending = gate.pending()
+        pending = gate.published()["pending"]
         assert pending["hand_released"] is hand_released
         # Verbatim, not paraphrased: same strings, same three slots.
         assert pending["prompt"] == {
@@ -667,7 +667,7 @@ def _label_at(degrees):
     gate = PositionGate()
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(1, 1, _entry(degrees))
-    return gate.pending()["action"]["label"]
+    return gate.published()["pending"]["action"]["label"]
 
 
 def test_the_release_label_signs_a_bearing_but_never_signs_zero():
@@ -717,7 +717,7 @@ def test_a_raised_stop_reaches_the_gate_and_its_button_as_a_raised_stop():
     gate = PositionGate()
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(1, 1, entry)
-    pending = gate.pending()
+    pending = gate.published()["pending"]
 
     assert pending["degrees"] == 0
     assert pending["vertical_deg"] == 10
@@ -748,7 +748,7 @@ def test_hand_released_tracks_the_entrys_own_advance_policy():
                 POSITION_ROLE_KEY: POSITION_ROLE_ONAX,
                 "auto_advance": policy,
             }))
-        assert gate.pending()["hand_released"] is expected
+        assert gate.published()["pending"]["hand_released"] is expected
 
 
 def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
@@ -817,7 +817,7 @@ def test_an_entry_with_no_target_is_refused_not_measured():
     with pytest.raises(CaptureBeginRefused) as refused:
         gate.gate(1, 1, SimpleNamespace(screen={}))
     assert refused.value.code == POSITION_TARGET_MISSING_CODE
-    assert gate.pending() is None
+    assert gate.published()["pending"] is None
 
 
 def test_the_deferral_the_gate_raises_is_the_shipped_non_terminal_hold():
@@ -1182,7 +1182,7 @@ def test_the_gate_can_read_a_hand_released_plans_own_entries():
     with pytest.raises(CaptureBeginDeferred) as caught:
         gate.gate(1, 1, plan.entry_for_index(1))
     assert caught.value.code == POSITION_HOLD_CODE
-    pending = gate.pending()
+    pending = gate.published()["pending"]
     assert pending["degrees"] == 0
     assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
     # ...and the same release verb admits it, with the same minted payload.
@@ -1501,8 +1501,18 @@ def test_a_live_hold_reaches_the_envelope_on_the_capture_block():
         assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
         # Another flow's reader must never see this session's hold.
         assert correction_capture._get_capture_slot_for("sync:") is None
+        # A hold is not an execution: nothing is recording while the gate waits.
+        assert "position_current" not in capture
         gate.release(2, 2)
-        assert "position_pending" not in correction_capture._get_capture_slot_for("crossover_v2:")
+        capture = correction_capture._get_capture_slot_for("crossover_v2:")
+        assert "position_pending" not in capture
+        assert "position_current" not in capture
+        # The runner's re-entry into its own grant is what publishes the entry
+        # now being recorded, batch identity included.
+        gate.gate(2, 2, _entry(-22, POSITION_ROLE_OFFAX))
+        current = correction_capture._get_capture_slot_for("crossover_v2:")["position_current"]
+        assert (current["index"], current["attempt"]) == (2, 2)
+        assert current["batch"] == {"start": 2, "size": 1, "ordinal": 1}
 
 
 def test_a_finished_session_stops_advertising_its_hold():
@@ -1514,6 +1524,11 @@ def test_a_finished_session_stops_advertising_its_hold():
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(1, 1, _entry(0))
         assert correction_capture._get_capture_slot_for("crossover_v2:")["position_pending"]
+        # …and the same for a session that ends mid-entry rather than mid-hold:
+        # the executing entry is published on the same slot and must go with it.
+        gate.release(1, 1)
+        gate.gate(1, 1, _entry(0))
+        assert correction_capture._get_capture_slot_for("crossover_v2:")["position_current"]
         # The runner's own terminal publish, verbatim in shape.
         correction_capture._set_capture_slot(
             {"status": "complete", "kind": "crossover_v2:session"}
@@ -1521,6 +1536,7 @@ def test_a_finished_session_stops_advertising_its_hold():
         assert correction_capture._capture_position_gate is None
         capture = correction_capture._get_capture_slot_for("crossover_v2:")
         assert "position_pending" not in capture
+        assert "position_current" not in capture
         # …and a late driver POST cannot reach a gate nobody is holding.
         with pytest.raises(ValueError, match="no remote measurement is waiting"):
             correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 1, "attempt": 1}'))
@@ -1568,15 +1584,15 @@ def test_an_abandoned_hold_stops_being_the_advertised_position():
     gate = PositionGate()
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(2, 2, _entry(22, POSITION_ROLE_OFFAX))
-    assert gate.pending()["index"] == 2
+    assert gate.published()["pending"]["index"] == 2
 
     gate.abandon_hold()
-    assert gate.pending() is None
+    assert gate.published()["pending"] is None
     gate.abandon_hold()  # idempotent, and safe with nothing open
 
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(1, 3, _entry(0))
-    pending = gate.pending()
+    pending = gate.published()["pending"]
     assert (pending["index"], pending["attempt"], pending["degrees"]) == (1, 3, 0)
     gate.release(1, 3)
     gate.gate(1, 3, _entry(0))
