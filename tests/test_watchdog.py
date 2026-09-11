@@ -79,7 +79,7 @@ class Transitions:
                 )
 
 
-class FakeClock:
+class FakeMonotonic:
     """The monotonic source the heartbeat reads, under test control."""
 
     def __init__(self, transitions: Transitions) -> None:
@@ -114,7 +114,7 @@ def build(transitions):
     tick's verdict instead of racing the thread for it."""
     built: list[Heartbeat] = []
 
-    def build_one(clock: FakeClock, *, stale_threshold_sec: float) -> Heartbeat:
+    def build_one(clock: FakeMonotonic, *, stale_threshold_sec: float) -> Heartbeat:
         hb = Heartbeat(
             stale_threshold_sec=stale_threshold_sec,
             interval_sec=TICK_S,
@@ -154,7 +154,7 @@ def test_emits_ready_on_start(transitions):
 
 def test_pats_when_progress_is_fresh(transitions, build):
     """Progress bumped within stale_threshold → WATCHDOG=1 each tick."""
-    clock = FakeClock(transitions)
+    clock = FakeMonotonic(transitions)
     hb = build(clock, stale_threshold_sec=1.0)
     # Without the bump the sentinel still holds construction time and every
     # tick reads stale; with it the loop sits 0.1 s into a 1.0 s threshold
@@ -179,7 +179,7 @@ def test_pat_resumes_after_progress_recovers(transitions, build):
     within stale_threshold the heartbeat MUST NOT pat — otherwise it masks
     the wedge — and once progress recovers it resumes, being stateless re:
     past wedges and looking only at `now - last_progress`."""
-    clock = FakeClock(transitions)
+    clock = FakeMonotonic(transitions)
     hb = build(clock, stale_threshold_sec=0.1)
     clock.now = 10.0
     hb.start()
@@ -201,7 +201,7 @@ def test_suppression_speaks_once_per_wedge_not_once_per_tick(
     line per episode, not one per `interval_sec`. Delete with the events.
     """
     caplog.set_level(logging.INFO, logger="jasper.watchdog")
-    clock = FakeClock(transitions)
+    clock = FakeMonotonic(transitions)
     hb = build(clock, stale_threshold_sec=0.1)
     clock.now = 10.0
     hb.start()
@@ -232,7 +232,7 @@ def test_transient_notify_error_does_not_kill_heartbeat(transitions, build, monk
 
     monkeypatch.setattr(watchdog_module, "notify_watchdog", flaky_notify)
 
-    clock = FakeClock(transitions)
+    clock = FakeMonotonic(transitions)
     hb = build(clock, stale_threshold_sec=1.0)
     clock.now = 10.0
     hb.bump()

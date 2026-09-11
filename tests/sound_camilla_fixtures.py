@@ -13,9 +13,13 @@ class FakeCamilla:
     CamillaDSP's readback does, and normalizes a candidate through the same
     round-trip so the two are comparable — which is the property
     ``jasper.sound.live_edit.plan_live_edit_for`` depends on.
+
+    Deliberately independent of any statefile a caller's derivation reads: a
+    double that conflated the two could not express a PRE-arm/ring split
+    (#2339).
     """
 
-    def __init__(self, current_path: str, *, fail_set: bool = False) -> None:
+    def __init__(self, current_path: str = "", *, fail_set: bool = False) -> None:
         self.current_path = current_path
         self.loaded_path: str | None = None
         self.set_calls: list[str] = []
@@ -23,6 +27,7 @@ class FakeCamilla:
         self.ducks: list[bool] = []
         self.fail_set = fail_set
         self.running: str | None = None
+        self.patches: list[tuple[dict, bool]] = []
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
         return self.loaded_path or self.current_path
@@ -32,6 +37,16 @@ class FakeCamilla:
         self.loaded_path = path
         if self.fail_set and not best_effort:
             raise RuntimeError("reload failed")
+        return True
+
+    async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
+        if not isinstance(patch, dict) or not patch:
+            if best_effort:
+                return False
+            raise ValueError("patch must be a non-empty mapping")
+        self.patches.append((patch, best_effort))
+        if self.fail_set and not best_effort:
+            raise RuntimeError("patch failed")
         return True
 
     @staticmethod

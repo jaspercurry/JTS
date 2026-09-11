@@ -33,7 +33,7 @@ class FakeHTTP:
         return self.response
 
 
-class FakeResponse:
+class FakeRoutesResponse:
     def __init__(self, status_code: int, data: dict | None = None):
         self.status_code = status_code
         self._data = data or {}
@@ -234,7 +234,7 @@ async def test_invalid_travel_mode_returns_user_error_without_http_call():
 
 
 async def test_google_api_key_rejection_is_user_facing():
-    http = FakeHTTP(FakeResponse(403))
+    http = FakeHTTP(FakeRoutesResponse(403))
     client = google_routes.build_google_routes_client(ENV, http=http)
     assert client is not None
 

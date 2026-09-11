@@ -32,43 +32,13 @@ from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDA
 from jasper.camilla import CamillaUnavailable
 from jasper.sound.profile import build_sound_filters
 from tests._log_events import event_fields, event_records, parse_event
+from tests.crossover_v2_fixtures import FakeCam
 from tests.test_crossover_v2_tuning_scope import FLAT, SAVED, household_graph
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile
 
 ENTRY_PATH_NAME = "entry.yml"
 GRAPH = "program: graph\n"
 _LOGGER = "jasper.active_speaker.crossover_v2.session_graph"
-
-
-class FakeCam:
-    def __init__(self, *, entry_path, load_ok=True, load_raises=None):
-        self.entry_path = entry_path
-        self.load_ok = load_ok
-        self.load_raises = load_raises
-        self.ops: list = []
-        self.ducked: list[bool] = []
-        self.live: str | None = None
-
-    async def get_config_file_path(self, *, best_effort=False):
-        self.ops.append("get_path")
-        return self.entry_path
-
-    async def set_active_config_raw(self, text, *, best_effort=False, duck=True):
-        self.ops.append(("set_raw", text))
-        self.ducked.append(duck)
-        if self.load_raises is not None:
-            raise self.load_raises
-        if not self.load_ok:
-            return False
-        self.live = text
-        return True
-
-    async def patch_config(self, patch, *, best_effort=False):
-        self.ops.append(("patch", patch))
-        return True
-
-    async def normalize_config_raw(self, text, *, best_effort=False):
-        return text
 
 
 def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
@@ -144,8 +114,7 @@ def test_four_stimuli_cost_one_load_not_four(tmp_path):
     for _ in range(4):
         asyncio.run(graph.install())
 
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 1
+    assert len(cam.loaded) == 1
 
 
 def test_a_graph_another_writer_replaced_is_put_back_not_measured_through(tmp_path):
@@ -162,8 +131,7 @@ def test_a_graph_another_writer_replaced_is_put_back_not_measured_through(tmp_pa
     cam.live = "somebody: else\n"  # a /sound/ apply landed mid-session
     asyncio.run(graph.install())
 
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 2
+    assert len(cam.loaded) == 2
     assert cam.live == GRAPH
 
 
@@ -214,8 +182,7 @@ def test_an_unreadable_liveness_answer_is_never_treated_as_live(tmp_path):
         asyncio.run(graph.install())
     # It got as far as trying to put the graph back, rather than returning a
     # cheerful fingerprint for a graph it could not see.
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 2
+    assert len(cam.loaded) == 2
 
 
 def test_no_entry_config_refuses_before_loading_anything(tmp_path):
@@ -694,8 +661,7 @@ def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
     assert len(stomp) == 1
     assert stomp[0].levelno == logging.WARNING
     assert parse_event(stomp[0].getMessage())[1]["result"] == "reinstall"
-    loads = [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert len(loads) == 2, "the stomp is repaired"
+    assert len(cam.loaded) == 2, "the stomp is repaired"
 
 
 # --------------------------------------------------------------------------- #

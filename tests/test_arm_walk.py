@@ -8,7 +8,7 @@ Every safety sentence the harness's docstrings make is a test here: power before
 every walk move, the envelope clamp, the park-and-verify on each exit path, the
 never-``set-zero`` rule, and the settle floor.
 
-Two harness-level rules the individual tests lean on: :class:`FakeClock` bounds
+Two harness-level rules the individual tests lean on: :class:`FakeWalkClock` bounds
 the sleeps, so a loop that stops terminating FAILS rather than hangs; and
 :meth:`_RecordingTrail.error` records the log LEVEL, so a failure that quietly
 logged at INFO — invisible to an operator grepping the journal for trouble — is
@@ -60,7 +60,7 @@ def _load_turntable():
 # --------------------------------------------------------------------------- #
 
 
-class FakeClock:
+class FakeWalkClock:
     """Time only moves when something sleeps, so a measured settle is exact.
 
     ``max_sleeps`` is the bounded-waits rule: a loop that stops terminating
@@ -217,7 +217,7 @@ class LiveThen:
 
 
 def _walk(mover, session, *, clock=None, trail=None, walk_staged=None, **cfg):
-    clock = clock or FakeClock()
+    clock = clock or FakeWalkClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
         "stuck_alarm_s": 300.0, "unreadable_ceiling_s": 60.0, **cfg,
@@ -807,7 +807,7 @@ def test_a_settle_under_the_floor_is_refused_before_anything_runs():
 
 def test_a_measured_settle_under_the_floor_ends_the_walk():
     """The floor is checked against the settle TAKEN, not the one configured."""
-    class FrozenClock(FakeClock):
+    class FrozenClock(FakeWalkClock):
         def sleep(self, seconds: float) -> None:
             self.t += 1.0  # a sleep that did not sleep
 
@@ -953,7 +953,7 @@ def test_a_finished_session_ends_the_walk_rather_than_the_idle_ceiling():
     ``DEFAULT_IDLE_CEILING_S`` is 1200 s and the round runner is blocked on this
     process, so "the session said it is done" has to be read, not waited out.
     """
-    clock = FakeClock()
+    clock = FakeWalkClock()
     started = clock.now()
     session = FakeSession([_pending(1, 7), _COMPLETE])
     walk = _walk(FakeMover(), session, clock=clock, idle_ceiling_s=1200.0)

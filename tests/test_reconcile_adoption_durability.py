@@ -72,7 +72,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
-from tests.transport_camilla_fixtures import FakeCamilla
+from tests.sound_camilla_fixtures import FakeCamilla
 
 
 def _reigning_candidate_box(tmp_path: Path, monkeypatch):

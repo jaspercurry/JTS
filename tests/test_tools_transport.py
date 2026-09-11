@@ -15,29 +15,17 @@ from jasper.tools.transport import (
     make_transport_dispatcher,
     make_transport_tools,
 )
-from tests._spotify_tool_fakes import FakeAccountClient, FakeRenderer
+from tests._spotify_tool_fakes import FakeAccountClient, FakeRenderer, FakeSpotify
 from tests._spotify_tool_fakes import FakeRouter as _SharedFakeRouter
 
 FakeRouter = partial(_SharedFakeRouter, populate_clients=False)
 
-
-class FakeSpotify:
-    def __init__(self) -> None:
-        self.next_track = MagicMock()
-        self.previous_track = MagicMock()
-        self.pause_playback = MagicMock()
-        self.start_playback = MagicMock()
-
-    def devices(self):
-        return {
-            "devices": [
-                {"id": "dev1", "name": "iPhone", "is_active": True},
-                {"id": "dev2", "name": "Pi", "is_active": False},
-            ]
-        }
-
-    def current_playback(self):
-        return None
+_TWO_DEVICES = {
+    "devices": [
+        {"id": "dev1", "name": "iPhone", "is_active": True},
+        {"id": "dev2", "name": "Pi", "is_active": False},
+    ]
+}
 
 
 def _by_name(tools):
@@ -110,7 +98,7 @@ def test_detect_source(renderer_kwargs, expected):
 )
 def test_spotify_transport_commands(source, tool_name, method, playback):
     renderer = FakeRenderer(selected_source=source)
-    sp = FakeSpotify()
+    sp = FakeSpotify(devices=_TWO_DEVICES)
     sp.current_playback = MagicMock(
         return_value=playback,
         side_effect=playback if isinstance(playback, Exception) else None,
@@ -288,7 +276,7 @@ def test_dispatch_spotify_lazy_rebuild_recovers():
     This is the "no daemon restart required after re-link" promise
     applied to the transport tool path."""
     renderer = FakeRenderer(renderers={"spotactive": True})
-    sp = FakeSpotify()
+    sp = FakeSpotify(devices=_TWO_DEVICES)
     rebuilt = FakeAccountClient("jasper", sp)
     router = FakeRouter(
         active_account=None,
@@ -313,7 +301,7 @@ def test_dispatch_no_source_returns_nothing_playing_error():
 
 def test_dispatch_failures_return_error_dict():
     renderer = FakeRenderer(renderers={"aplactive": True})
-    sp = FakeSpotify()
+    sp = FakeSpotify(devices=_TWO_DEVICES)
     sp.next_track = MagicMock(side_effect=RuntimeError("network down"))
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)

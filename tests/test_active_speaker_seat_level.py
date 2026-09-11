@@ -169,7 +169,7 @@ DEFAULT_BITE_DB = slr.bite_db(
 )
 
 
-class FakeClock:
+class FakeLevelClock:
     """Deterministic monotonic clock advanced by the fake sleep."""
 
     def __init__(self) -> None:
@@ -331,7 +331,7 @@ async def _level(
     spl_ceiling_db_spl: float = SPL_CEILING,
     stimulus: StimulusProvenance | None = None,
 ):
-    clock = FakeClock()
+    clock = FakeLevelClock()
     result = await slr.run_seat_level_ramp(
         target=target,
         sensitivity=sensitivity,
@@ -668,7 +668,7 @@ _JTS3_BITE_DB = slr.bite_db(
 class StampingTone(BlockingTone):
     """A tone that records when it started, so audible seconds are measurable."""
 
-    def __init__(self, clock: FakeClock) -> None:
+    def __init__(self, clock: FakeLevelClock) -> None:
         super().__init__()
         self._clock = clock
         self.started_at: float | None = None
@@ -692,7 +692,7 @@ def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
     stop (``SPL_CEILING``, the ruled 85). The frozen pre-ruling evidence is the
     ``NEW_HORN_*`` replay below, which is a different thing and says so.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     volume = Volume()
     tone = StampingTone(clock)
     mic = Mic(
@@ -917,7 +917,7 @@ class TracedMic(Mic):
 
 
 def _new_horn_pass(tmp_path, run: dict):
-    clock = FakeClock()
+    clock = FakeLevelClock()
     volume = Volume()
     tone = BlockingTone()
     mic = TracedMic(volume, tone, run=run)
@@ -1416,7 +1416,7 @@ def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
     async def _silent() -> list:
         return []
 
-    clock = FakeClock()
+    clock = FakeLevelClock()
     result = asyncio.run(
         slr.run_seat_level_ramp(
             target=TARGET,
@@ -1764,7 +1764,7 @@ def test_cancelling_mid_climb_stops_the_tone_restores_and_banks_nothing(tmp_path
     volume = Volume()
     tone = BlockingTone()
     mic = Mic(volume, tone, gain_db=-10.0)
-    clock = FakeClock()
+    clock = FakeLevelClock()
     started = asyncio.Event()
 
     async def _watched_samples():
@@ -1904,7 +1904,7 @@ def test_the_sigint_path_reports_the_restore_it_measured(tmp_path):
     from jasper.cli import seat_level as cli
 
     volume, tone, mic = _rig(gain_db=-10.0)
-    clock = FakeClock()
+    clock = FakeLevelClock()
     started = asyncio.Event()
 
     async def _watched():
@@ -3325,7 +3325,7 @@ async def _cancel_during(volume: ArmedVolume, tone, mic, tmp_path) -> tuple:
     A single cancel, not the double the mid-climb test uses: one Ctrl-C is the
     ordinary operator stop, and it is the shape the fade legs had never seen.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     task = asyncio.ensure_future(
         slr.run_seat_level_ramp(
             target=TARGET,
@@ -3538,7 +3538,7 @@ def test_a_failing_sample_source_on_a_leg_refuses_instead_of_raising(tmp_path):
             raise RuntimeError("the capture dropped the feed")
         return await mic.next_samples()
 
-    clock = FakeClock()
+    clock = FakeLevelClock()
     result = asyncio.run(
         slr.run_seat_level_ramp(
             target=TARGET,
@@ -3607,7 +3607,7 @@ def test_the_re_measure_under_the_floor_leaves_the_fader_alone(tmp_path):
     volume.value = -57.5
     volume.commanded.clear()
     mic = SettlingRoomMic(volume, tone, room_db_spl=ROOM_DB_SPL)
-    clock = FakeClock()
+    clock = FakeLevelClock()
 
     async def _drive():
         playing = asyncio.ensure_future(tone.play())
@@ -4259,14 +4259,14 @@ def test_the_retired_fixed_settle_reads_a_level_that_never_arrived(tmp_path):
             samples,
             sensitivity=UMIK2,
             spl_ceiling_db_spl=SPL_CEILING,
-            clock=(clock := FakeClock()).now,
+            clock=(clock := FakeLevelClock()).now,
             sleep=clock.sleep,
             session_id="control",
             window="probe",
         )
     )
     samples, _asymptote = _slow_feed(tau_s=tau_s)
-    settled = _settle(samples, clock=FakeClock())
+    settled = _settle(samples, clock=FakeLevelClock())
 
     retired_under = asymptote - UMIK2.db_spl_from_dbfs(retired.rms_dbfs)
     settled_under = asymptote - UMIK2.db_spl_from_dbfs(settled.rms_dbfs)
@@ -4353,7 +4353,7 @@ def test_the_residual_scales_with_the_chains_own_time_constant(tmp_path):
     measured: list[tuple[float, float, float]] = []
     for tau_s in (0.81, 3.0, 5.0):
         samples, asymptote = _slow_feed(tau_s=tau_s)
-        reading = _settle(samples, clock=FakeClock())
+        reading = _settle(samples, clock=FakeLevelClock())
         assert reading.refusal is None, (tau_s, reading.refusal)
         under_read = asymptote - UMIK2.db_spl_from_dbfs(reading.rms_dbfs)
         measured.append((tau_s, under_read, (slr.SETTLED_AGREE_DB / slr.MIC_WINDOW_S) * tau_s))
@@ -4381,7 +4381,7 @@ def test_a_low_window_count_is_not_evidence_of_stillness(tmp_path):
     is why the receipt's ``windows`` is documented as this chain's answer time
     and never as a confidence score.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     samples, asymptote = _slow_feed(tau_s=30.0)
     reading = _settle(samples, clock=clock)
 
@@ -4405,12 +4405,12 @@ def test_raising_the_settle_timeout_can_convert_a_refusal_into_an_under_read(tmp
     knob; this is what makes that sentence checkable.
     """
     samples, asymptote = _slow_feed(tau_s=10.0)
-    refused = _settle(samples, clock=FakeClock())
+    refused = _settle(samples, clock=FakeLevelClock())
     assert refused.refusal == slr.REFUSE_LEVEL_UNSETTLED
     assert refused.rms_dbfs is None
 
     samples, asymptote = _slow_feed(tau_s=10.0)
-    banked = _settle(samples, clock=FakeClock(), timeout_s=3 * slr.SETTLE_TIMEOUT_S)
+    banked = _settle(samples, clock=FakeLevelClock(), timeout_s=3 * slr.SETTLE_TIMEOUT_S)
     assert banked.refusal is None
     under_read = asymptote - UMIK2.db_spl_from_dbfs(banked.rms_dbfs)
     assert under_read > 5.0, under_read
@@ -4736,7 +4736,7 @@ def test_a_still_level_settles_in_the_minimum_two_windows(tmp_path):
     still needs no more than that. This is why the ten-second budget on the
     pass above survives an unbounded-looking wait.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     constant = UMIK2.dbfs_from_db_spl(70.0)
 
     async def _samples():
@@ -4894,7 +4894,7 @@ class AccountingTone(ReplayableTone):
     re-measure, so this one accumulates.
     """
 
-    def __init__(self, clock: FakeClock) -> None:
+    def __init__(self, clock: FakeLevelClock) -> None:
         super().__init__()
         self._clock = clock
         self._started_at: float | None = None
@@ -4941,7 +4941,7 @@ def test_the_dead_mic_walks_audible_seconds_are_what_the_docstring_says(tmp_path
     across two ``MIC_WINDOW_S`` deadlines than one of twice the length); this is
     what makes the next move visible instead of silent.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     volume = Volume()
     tone = StampingTone(clock)
     mic = Mic(volume, tone, deaf=True, ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0))
@@ -5021,7 +5021,7 @@ def test_a_converging_pass_can_spend_the_whole_settle_timeout_per_reading(tmp_pa
     structural bound the prose actually promises, plus the fact that a healthy
     pass can climb a long way into it.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     volume = Volume()
     tone = AccountingTone(clock)
     mic = ChurningMic(
@@ -5089,7 +5089,7 @@ def test_a_wandering_room_buys_windows_and_audible_seconds(tmp_path):
     commissioning stop, so the thing that grew is how long a measurement takes,
     not how loud it gets.
     """
-    clock = FakeClock()
+    clock = FakeLevelClock()
     volume = Volume()
     tone = AccountingTone(clock)
     mic = WanderingRoomMic(

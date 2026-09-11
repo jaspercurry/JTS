@@ -26,6 +26,7 @@ from jasper.control import system_metrics
 from jasper.memory_policy import MemoryPressure
 from jasper.control.server import _make_handler
 from jasper.control.system_metrics import SystemSampler, read_build_info
+from tests.control_server_fixtures import FakeHaStatus
 
 
 # ---------- ring buffer + snapshot --------------------------------------
@@ -1080,10 +1081,6 @@ def test_snapshot_endpoint_returns_metrics_and_build(monkeypatch) -> None:
         lambda *a, **kw: {"JASPER_GIT_SHA": "test123"},
     )
 
-    class FakeHaStatus:
-        def snapshot(self):
-            return {"configured": False, "connected": False, "error": None}
-
     handler = _make_handler(
         "127.0.0.1",
         1234,
@@ -1113,10 +1110,6 @@ def test_snapshot_endpoint_handles_missing_sampler() -> None:
     """If the sampler hasn't been wired in (legacy code path), the
     endpoint returns metrics=None rather than 500ing. Lets tests +
     dev environments work without booting the sampler thread."""
-    class FakeHaStatus:
-        def snapshot(self):
-            return {"configured": False, "connected": False, "error": None}
-
     handler = _make_handler(
         "127.0.0.1",
         1234,

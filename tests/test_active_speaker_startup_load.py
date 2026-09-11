@@ -42,24 +42,11 @@ from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
 )
-
-
-class FakeCamilla:
-    def __init__(self, current_path: str) -> None:
-        self.current_path = current_path
-        self.loaded_paths: list[str] = []
-
-    async def get_config_file_path(self) -> str:
-        return self.current_path
-
-    async def set_config_file_path(self, path: str) -> bool:
-        self.current_path = path
-        self.loaded_paths.append(path)
-        return True
+from tests.sound_camilla_fixtures import FakeCamilla
 
 
 class SnapshotFailingCamilla(FakeCamilla):
-    async def get_config_file_path(self) -> str:
+    async def get_config_file_path(self, *, best_effort: bool = False) -> str:
         raise RuntimeError("camilla unavailable")
 
 
@@ -325,7 +312,7 @@ def test_startup_load_blocks_when_rollback_anchor_is_missing(
 
     assert result["preflight"]["load_allowed"] is False
     assert result["load"]["status"] == "blocked"
-    assert fake.loaded_paths == []
+    assert fake.set_calls == []
     assert "rollback_target_available_not_verified" in {
         issue["code"] for issue in result["preflight"]["issues"]
     }
@@ -363,7 +350,7 @@ def test_startup_load_records_normal_rollback_state(monkeypatch, tmp_path: Path)
 
     assert result["preflight"]["load_allowed"] is True
     assert result["load"]["status"] == "loaded"
-    assert fake.loaded_paths == [stage["config"]["path"]]
+    assert fake.set_calls == [stage["config"]["path"]]
     assert state["rollback_available"] is True
     assert state["previous_config_path"] == str(prior)
     assert state["candidate_config_path"] == stage["config"]["path"]
@@ -414,7 +401,7 @@ def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) ->
 
     assert load["load"]["status"] == "loaded"
     assert rollback["rollback"]["status"] == "rolled_back"
-    assert fake.loaded_paths[-1] == str(prior)
+    assert fake.set_calls[-1] == str(prior)
     assert state["status"] == "rolled_back"
     assert state["rollback_available"] is False
     assert [
@@ -532,7 +519,7 @@ def test_startup_load_refuses_when_the_staged_hold_cannot_be_taken(
         issue["code"] for issue in result["load"]["issues"]
     }
     # Nothing applied, nothing kicked: no DSP load, and no reconcile to undo it.
-    assert fake.loaded_paths == []
+    assert fake.set_calls == []
     assert reconcile_calls == []
     assert state["status"] == "blocked"
     assert state["rollback_available"] is False
@@ -647,7 +634,7 @@ def test_startup_load_proceeds_when_a_root_owned_marker_already_holds(
     )
 
     assert result["load"]["status"] == "loaded"
-    assert fake.loaded_paths == [staged["config"]["path"]]
+    assert fake.set_calls == [staged["config"]["path"]]
     assert reconcile_calls  # the reconcile was kicked, under a real hold
     assert marker.exists()
 

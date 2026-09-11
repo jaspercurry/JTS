@@ -2162,3 +2162,86 @@ def fake_measurement_mic():
         card_id="UMIK2", card_index=9, usb_id="2752:0072",
         model_key="minidsp_umik2", model_label="miniDSP UMIK-2",
     )
+
+
+class FakeCam:
+    """CamillaDSP as the crossover_v2 measurement and graph-install paths
+    use it: a graph slot, a fader, and a set-raw call that can reject or
+    raise for graph-install fault-injection tests.
+
+    ``normalize_config_raw`` and ``get_active_config_raw`` both answer the
+    text last loaded, so the REAL ``confirm_graph_is_live`` proof runs and
+    passes — a double that skipped the proof would let a graph nobody
+    confirmed reach the session and the run would not notice.
+    """
+
+    def __init__(
+        self,
+        entry_path: str | None,
+        *,
+        load_ok: bool = True,
+        load_raises: Exception | None = None,
+        volume_db: float = 0.0,
+    ) -> None:
+        self.entry_path = entry_path
+        self.load_ok = load_ok
+        self.load_raises = load_raises
+        self.ops: list = []
+        self.ducked: list[bool] = []
+        self.live: str | None = None
+        self.volume_db = volume_db
+
+    @property
+    def loaded(self) -> list[str]:
+        """Every config ``set_active_config_raw`` was asked to load, in
+        order — derived from ``ops`` rather than tracked separately, since
+        the two would otherwise have to be kept in sync by hand."""
+        return [op[1] for op in self.ops if isinstance(op, tuple) and op[0] == "set_raw"]
+
+    async def get_config_file_path(self, *, best_effort: bool = False) -> str | None:
+        self.ops.append("get_path")
+        if self.entry_path is None:
+            return None
+        return str(self.entry_path)
+
+    async def set_active_config_raw(
+        self, config: str, *, best_effort: bool = False, duck: bool = True,
+    ) -> bool:
+        self.ops.append(("set_raw", config))
+        self.ducked.append(duck)
+        if self.load_raises is not None:
+            raise self.load_raises
+        if not self.load_ok:
+            return False
+        self.live = config
+        return True
+
+    async def patch_config(self, patch: dict, *, best_effort: bool = False) -> bool:
+        if not isinstance(patch, dict) or not patch:
+            if best_effort:
+                return False
+            raise ValueError("patch must be a non-empty mapping")
+        self.ops.append(("patch", patch))
+        return True
+
+    async def normalize_config_raw(self, config: str, *, best_effort: bool = False) -> str:
+        return config
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
+        return self.loaded[-1]
+
+    async def get_loudness_volume_db(self, *, best_effort: bool = False) -> float:
+        return getattr(self, "loudness_db", self.volume_db)
+
+    async def set_loudness_volume_db(
+        self, db: float, *, best_effort: bool = False, immediate: bool = False,
+    ) -> bool:
+        self.loudness_db = db
+        return True
+
+    async def get_volume_db(self, *, best_effort: bool = False) -> float:
+        return self.volume_db
+
+    async def set_volume_db(self, db: float, *, best_effort: bool = False) -> bool:
+        self.volume_db = float(db)
+        return True

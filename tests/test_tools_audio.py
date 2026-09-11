@@ -7,65 +7,13 @@ from __future__ import annotations
 import asyncio
 
 from jasper.tools.audio import make_audio_tools
-from jasper.volume_coordinator import VolumeState
 from jasper.volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
     db_to_percent,
     percent_to_db,
 )
-
-
-class FakeCoordinator:
-    """Stand-in for VolumeCoordinator. Records every call so tests
-    can assert dispatch shape without touching real DBus/HTTP.
-
-    Mute is faithfully modeled (saves/restores prior level) so the
-    mute→unmute round-trip test continues to exercise the same
-    contract."""
-
-    def __init__(self, level: int = 50) -> None:
-        self._level = int(level)
-        self._pre_mute: int | None = None
-        self.calls: list[tuple[str, int | None]] = []
-
-    def get_listening_level(self) -> int:
-        return self._level
-
-    def is_muted(self) -> bool:
-        return self._pre_mute is not None
-
-    def get_volume_state(self) -> VolumeState:
-        return VolumeState(self._level, self._pre_mute)
-
-    async def set_listening_level(self, percent: int) -> int:
-        target = max(0, min(100, int(percent)))
-        self._level = target
-        self._pre_mute = None
-        self.calls.append(("set", target))
-        return target
-
-    async def adjust_listening_level(self, delta: int) -> int:
-        target = max(0, min(100, self._level + int(delta)))
-        self._level = target
-        self._pre_mute = None
-        self.calls.append(("adjust", int(delta)))
-        return target
-
-    async def mute(self) -> int:
-        if self._pre_mute is None and self._level > 0:
-            self._pre_mute = self._level
-        saved = self._pre_mute or 0
-        self.calls.append(("mute", None))
-        return saved
-
-    async def unmute(self, fallback_level: int = 50) -> int:
-        target = self._pre_mute if self._pre_mute is not None else fallback_level
-        target = max(0, min(100, int(target)))
-        self._pre_mute = None
-        self._level = target
-        self.calls.append(("unmute", target))
-        return target
+from tests.control_server_fixtures import FakeCoordinator
 
 
 def _tools(coordinator):

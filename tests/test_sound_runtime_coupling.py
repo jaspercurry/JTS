@@ -25,7 +25,7 @@ import pytest
 from jasper.sound import runtime
 from jasper.sound.graph_carrier import ReemitResult
 
-from tests.transport_camilla_fixtures import FakeCamilla
+from tests.sound_camilla_fixtures import FakeCamilla
 
 from .fanin_env_fixtures import declare_fanin_env
 
