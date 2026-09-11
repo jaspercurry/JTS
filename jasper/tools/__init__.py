@@ -207,10 +207,8 @@ class ToolDefinition:
     providers: frozenset[str] | None = None
     # Queue and execution wait budget, in seconds.
     timeout: float = DEFAULT_TOOL_TIMEOUT_SEC
-    # True: `dispatch_tool` runs the whole dispatch under `asyncio.shield`, so
-    # a caller whose round is cancelled cannot abandon the tool's effect. For
-    # a tool whose effect a later request must not make obsolete —
-    # `end_conversation`: a dismissal is never stale.
+    # `end_conversation` sets this: a dismissal must not be lost to
+    # cancellation.
     survives_cancellation: bool = False
     # Whether INFO-level tool dispatch logs may include a repr preview
     # of the returned payload. Content-bearing tools opt out so
@@ -609,8 +607,9 @@ def tool(
 
     `survives_cancellation=True` declares that a caller's cancellation never
     abandons this tool once dispatched — `dispatch_tool` shields the whole
-    dispatch. Use it for a tool whose effect a later request must not make
-    obsolete, not to paper over a slow one.
+    dispatch, though the tool's own `timeout` still applies while it waits
+    for the execution slot. Use it for a tool whose effect a later request
+    must not make obsolete, not to paper over a slow one.
 
     `llm_description` overrides the MODEL-FACING description only. None
     (default) sends the model the full docstring `description`. Set it to
@@ -817,10 +816,7 @@ async def dispatch_tool(
                           ``called`` then ``completed``; observer failure
                           never changes the model-visible payload, and
                           unknown names are not reported as registered
-      * ``survives_cancellation`` -> the whole dispatch runs under
-                          ``asyncio.shield``, so a caller whose round is
-                          cancelled cannot abandon the tool's effect; the
-                          caller still gets ``CancelledError``
+      * ``survives_cancellation`` -> see ``tool()``
     plus the structured timing logs (``tool <name> start`` / ``fn done``
     / ``TIMED OUT`` / ``RAISED``) journalctl shows for every call —
     identical across providers.
@@ -845,8 +841,7 @@ async def _dispatch(
 ) -> dict[str, Any]:
     """One dispatch start to finish: observer notify, execution, bookkeeping.
 
-    Separate from `dispatch_tool` only so the whole of it — not just the
-    executor task `_execute` already shields — fits in one `asyncio.shield`.
+    Split out so `survives_cancellation` (see `tool()`) can shield all of it.
     """
     name = tool.name
     try:
