@@ -54,7 +54,8 @@ def test_resolve_sensitivity_is_none_when_there_is_no_absolute_reference(
     assert resolve_mic_sensitivity(calibration_file=str(path)) is None
 
 
-def test_missing_calibration_refuses_before_the_mic_is_opened(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mic_present", [True, False])
+def test_missing_calibration_refuses_before_the_mic_is_opened(tmp_path, monkeypatch, capsys, mic_present):
     stimulus = tmp_path / "check.wav"
     stimulus.write_bytes(b"RIFF....WAVE")
     cal = tmp_path / "curve_only.txt"
@@ -64,14 +65,19 @@ def test_missing_calibration_refuses_before_the_mic_is_opened(tmp_path, monkeypa
         raise AssertionError("hardware was touched despite a missing calibration")
 
     monkeypatch.setattr(
-        "jasper.audio_measurement.wired_capture.resolve_wired_mic", _never
+        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
+        lambda: SimpleNamespace(model_label="UMIK-2") if mic_present else None,
     )
+    monkeypatch.setattr("jasper.audio_measurement.wired_level_meter.WiredLevelMeter", _never)
     monkeypatch.setattr("jasper.camilla.primary_controller", _never)
 
     code = seat_level.main(
         ["--stimulus-wav", str(stimulus), "--calibration-file", str(cal)]
     )
     assert code == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == (
+        seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE if mic_present else seat_level.REFUSE_MIC_ABSENT
+    )
 
 
 def test_a_missing_stimulus_refuses_first(tmp_path, capsys):
@@ -362,7 +368,10 @@ def test_the_generated_default_reaches_the_ramp_with_its_own_provenance(
     assert handed["stimulus"].band_hz == (45.0, 18_000.0)
 
 
-@pytest.mark.parametrize("source", ["file", "household", "missing", "curve_only"])
+@pytest.mark.parametrize("source", [
+    "file", "serial", "household", "missing", "curve_only", "wrong_mic",
+    "unreadable_file", "unresolved_serial",
+])
 def test_the_verb_resolves_calibration_before_running_the_ramp(
     tmp_path, monkeypatch, capsys, source
 ):
@@ -370,34 +379,40 @@ def test_the_verb_resolves_calibration_before_running_the_ramp(
         status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
     )
     stimulus, cal = _stub_a_ramp_result(monkeypatch, tmp_path, result)
-    if source == "curve_only":
-        (tmp_path / "umik2.txt").write_text(CAL_CURVE_ONLY)
-    household = Mock(return_value=(None, SimpleNamespace(raw_path=cal))
+    household_cal = tmp_path / "household.txt"
+    household_cal.write_text(CAL_CURVE_ONLY if source == "curve_only" else "Sens Factor =-8dB\n" + CAL_CURVE_ONLY)
+    household = Mock(return_value=(None, SimpleNamespace(
+        raw_path=household_cal, model="dayton_imm6" if source == "wrong_mic" else "minidsp_umik2",
+    ))
                      if source != "missing" else None)
-    monkeypatch.setattr(seat_level, "resolved_household_mic", household)
-    sensitivity = Mock(wraps=resolve_mic_sensitivity)
-    monkeypatch.setattr(seat_level, "resolve_mic_sensitivity", sensitivity)
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", household)
+    monkeypatch.setattr("jasper.audio_measurement.calibration.find_stored_calibration",
+                        lambda **kw: SimpleNamespace(raw_path=cal, sign_convention="correction")
+                        if source == "serial" else None)
     ramp = AsyncMock(return_value=result)
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", ramp)
     argv = ["--stimulus-wav", stimulus]
     if source == "file":
         argv += ["--calibration-file", cal]
+    elif source == "unreadable_file":
+        argv += ["--calibration-file", str(tmp_path / "missing.txt")]
+    elif source in ("serial", "unresolved_serial"):
+        argv += ["--mic-serial", "test-serial"]
 
     code = seat_level.main(argv)
     answer = json.loads(capsys.readouterr().out)
 
-    assert household.call_count == (0 if source == "file" else 1)
-    if source in ("missing", "curve_only"):
+    assert household.call_count == (0 if source in ("file", "serial", "unreadable_file", "unresolved_serial") else 1)
+    if source in ("missing", "curve_only", "wrong_mic", "unreadable_file", "unresolved_serial"):
         assert code == seat_level.EXIT_REFUSED
         assert answer["reason"] == seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE
         ramp.assert_not_awaited()
         return
     assert code == seat_level.EXIT_OK
-    assert sensitivity.call_args.kwargs["calibration_file"] == cal
     handed = ramp.await_args.kwargs
     assert handed["max_main_volume_db"] == 0.0
     assert handed["spl_ceiling_db_spl"] == 80.0
-    assert handed["sensitivity"].sens_factor_db == -12.07
+    assert handed["sensitivity"].sens_factor_db == (-8.0 if source == "household" else -12.07)
     assert (handed["target"].low_db_spl, handed["target"].high_db_spl) == (75.0, 80.0)
     assert handed["stimulus"].peak_dbfs == pytest.approx(0.0, abs=0.05)
     assert handed["stimulus"].rms_dbfs == pytest.approx(-3.01, abs=0.05)
@@ -979,7 +994,7 @@ def _stub_a_ramp_result(monkeypatch, tmp_path, result):
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
-        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),
+        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0", model_label="UMIK-2"),
     )
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",

@@ -26,7 +26,10 @@ def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
         "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
         help="summed-sweep bounds in Hz; protected graph admission still applies",
     )
-    parser.add_argument("--spl-ceiling-db-spl", type=float, default=None)
+    parser.add_argument(
+        "--spl-ceiling-db-spl", type=float, default=None,
+        help="bounds measured SPL at the mic, must be <= the box's commissioning stop; absent means watched at the stop",
+    )
     parser.add_argument(
         "--sweep-s", type=float,
         help="summed sweep duration; still bounded by declared driver duration caps",

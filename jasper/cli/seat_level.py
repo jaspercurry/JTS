@@ -109,7 +109,7 @@ from jasper.audio_measurement.calibration import (
     REFUSE_MIC_CALIBRATION_UNAVAILABLE,
     resolve_mic_sensitivity,
 )
-from jasper.audio_measurement.household_mic import resolved_household_mic
+from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 
 from ._logging import CLI_LOG_FORMAT
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
@@ -487,25 +487,22 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
             "measurement bands",
         )
 
-    if not args.calibration_file and not args.mic_serial:
-        found = resolved_household_mic()
-        args.calibration_file = found[1].raw_path if found is not None else None
-    sensitivity = resolve_mic_sensitivity(
-        calibration_file=args.calibration_file,
-        mic_serial=args.mic_serial,
-        mic_provider=args.mic_provider,
-        mic_model=args.mic_model,
-    )
-    if sensitivity is None:
-        return _refused(
-            REFUSE_MIC_CALIBRATION_UNAVAILABLE, MIC_CALIBRATION_UNAVAILABLE_DETAIL
-        )
-
     mic = resolve_wired_mic()
     if mic is None:
         return _refused(
             REFUSE_MIC_ABSENT,
             "no measurement-class capture card is present; plug the mic in",
+        )
+    sensitivity = (
+        resolve_mic_sensitivity(
+            calibration_file=args.calibration_file, mic_serial=args.mic_serial,
+            mic_provider=args.mic_provider, mic_model=args.mic_model,
+        ) if args.calibration_file or args.mic_serial
+        else resolved_household_sensitivity(mic)
+    )
+    if sensitivity is None:
+        return _refused(
+            REFUSE_MIC_CALIBRATION_UNAVAILABLE, MIC_CALIBRATION_UNAVAILABLE_DETAIL
         )
 
     try:

@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -26,6 +27,8 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
     ProgramForStimulus, StimulusCaptureStopped,
 )
 from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.calibration import resolve_mic_sensitivity
+from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.active_speaker.round_bank import bank_round
 from jasper.cli import measure
 from jasper.cli.measure import (
@@ -68,6 +71,8 @@ def test_explicit_lf_band_and_spl_ceiling_are_part_of_measure_spec():
     assert spec.sweep_band_hz == (20.0, 20_000.0)
     assert spec.sweep_s == 1.5
     assert spec.spl_ceiling_db_spl == 80.0
+    action, = [a for a in build_parser()._actions if a.dest == "spl_ceiling_db_spl"]
+    assert action.help
 
 
 def test_direct_driver_capture_refuses_lf_summed_band_override():
@@ -342,6 +347,7 @@ def speaker(tmp_path, monkeypatch):
     cam = FakeCam(entry, volume_db=HOUSEHOLD_DB)
     played: list[Any] = []
     capture = _Capture()
+    capture_factory = Mock(return_value=capture)
 
     async def _play_program(program, **_seams: Any) -> Any:
         # The seam under the seam: everything above it — the door, the plan's
@@ -359,14 +365,15 @@ def speaker(tmp_path, monkeypatch):
     monkeypatch.setattr(program_transaction, "play_program", _play_program)
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
-    monkeypatch.setattr(wired, "WiredStimulusCapture", lambda **kw: capture)
+    monkeypatch.setattr(wired, "WiredStimulusCapture", capture_factory)
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
-        lambda **kw: object(),
+        lambda **kw: SimpleNamespace(model_key="minidsp_umik2", model_label="UMIK-2"),
     )
     # This speaker's microphone is a stand-in, so it carries no calibration a
     # run could scale dB SPL by. Stated, not inherited from whatever the
     # developer's own box has stored.
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
     monkeypatch.setattr(
         "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
         lambda **kw: None,
@@ -399,7 +406,7 @@ def speaker(tmp_path, monkeypatch):
         )
     )
     try:
-        yield {"cam": cam, "played": played, "capture": capture}
+        yield {"cam": cam, "played": played, "capture": capture, "capture_factory": capture_factory}
     finally:
         install_volume_owner(None)
 
@@ -1082,13 +1089,52 @@ def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, av
         assert setup is None
 
 
-@pytest.mark.parametrize("volume", [-30, -12, 1, -101, float("nan")])
-def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys, volume):
-    code = measure.main(["--kind", MEASURE_KIND_BASELINE, f"--volume-db={volume}"])
+@pytest.mark.parametrize("source,volume,reason", [
+    ("household", None, ""),
+    ("household", -30, ""), ("household", -12, ""), ("household", 0, ""),
+    ("serial", -12, ""),
+    ("household_serial", -12, ""), ("curve_only_serial", -12, ""),
+    ("unresolved_serial", -12, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("missing", -30, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("missing", 0, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("curve_only", -12, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("wrong_mic", -12, measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH),
+    ("household", 1, "measurement_volume_invalid"),
+    ("household", -101, "measurement_volume_invalid"),
+    ("household", float("nan"), "measurement_volume_invalid"),
+])
+def test_batch_volume_override_is_watched_banked_and_restored_or_refused(
+    speaker, monkeypatch, tmp_path, capsys, source, volume, reason,
+):
+    cal = tmp_path / "mic.txt"
+    cal.write_text("20 0\n20000 0\n" if source.startswith("curve_only") else "Sens Factor =-12.07dB, AGain =18dB\n20 0\n20000 0\n")
+    record = SimpleNamespace(raw_path=cal, sign_convention="correction",
+                             model="dayton_imm6" if source == "wrong_mic" else "minidsp_umik2")
+    serial_cal = tmp_path / "serial.txt"
+    serial_cal.write_text("Sens Factor =-10dB, AGain =18dB\n20 0\n20000 0\n")
+    serial_record = SimpleNamespace(raw_path=serial_cal, sign_convention="correction")
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic",
+                        lambda: (None, record) if source not in ("serial", "missing") else None)
+    monkeypatch.setattr("jasper.audio_measurement.calibration.resolve_mic_sensitivity", resolve_mic_sensitivity)
+    monkeypatch.setattr("jasper.audio_measurement.calibration.find_stored_calibration",
+                        lambda **kw: None if source == "unresolved_serial" else serial_record)
+    argv = ["--kind", MEASURE_KIND_BASELINE]
+    if volume is not None:
+        argv += [f"--volume-db={volume}"]
+    else:
+        volume = _declaration().session_volume_db
+    if source in ("serial", "household_serial", "curve_only_serial", "unresolved_serial"):
+        argv += ["--mic-serial", "test-serial"]
+    code = measure.main(argv)
     result = json.loads(capsys.readouterr().out)
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
-    if volume in (-30, -12):
+    if not reason:
         assert code == EXIT_OK
+        monitor = speaker["capture_factory"].call_args.kwargs["spl_monitor"]
+        assert isinstance(monitor, WiredSplMonitor)
+        assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
+        assert monitor.sensitivity.sens_factor_db == (-10.0 if source in ("serial", "household_serial", "curve_only_serial") else -12.07)
+        assert result["spl_monitor"] == "ceiling_85_db_spl"
         assert speaker["cam"].loudness_db == pytest.approx(HOUSEHOLD_DB)
         assert result["measurement_volume_db"] == volume
         assert result["measurement_loudness_volume_db"] == volume
@@ -1097,8 +1143,10 @@ def test_batch_volume_override_is_banked_and_restored_or_refused(speaker, capsys
         assert record["loudness_volume_db"] == volume
     else:
         assert code == EXIT_REFUSED
-        assert result["reason"] == "measurement_volume_invalid"
+        assert result["status"] == "refused"
+        assert result["reason"] == reason
         assert not speaker["played"]
+        speaker["capture_factory"].assert_not_called()
 
 
 def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
@@ -1270,8 +1318,9 @@ def test_a_multi_pose_walk_is_refused_because_this_door_moves_nothing(
         "no-box-stop",
     ],
 )
+@pytest.mark.parametrize("volume_db", [None, 0.0])
 def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
-    monkeypatch, stated, stop, expected,
+    monkeypatch, stated, stop, expected, volume_db,
 ):
     """The box's commissioning stop bounds every run now, not only one that typed
     a ceiling — and what cannot be enforced is refused or disclosed, never assumed.
@@ -1281,6 +1330,9 @@ def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
     """
     from jasper.active_speaker import plan_run
 
+    if not expected and volume_db is not None:
+        expected = measure.REFUSE_VOLUME_REQUIRES_SPL_WATCH
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
     monkeypatch.setattr(
         "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
         lambda **kw: None,
@@ -1295,37 +1347,12 @@ def test_the_monitor_bounds_every_run_or_says_why_it_could_not(
 
     if not expected:
         assert measure._spl_monitor(
-            specs, box=box, device=object(), mic_serial=None,
+            specs, box=box, device=object(), mic_serial=None, volume_db=volume_db,
         ) == (None, plan_run.SPL_MONITOR_UNAVAILABLE)
         return
     with pytest.raises(measure.BoxNotMeasurable) as refused:
-        measure._spl_monitor(specs, box=box, device=object(), mic_serial=None)
+        measure._spl_monitor(specs, box=box, device=object(), mic_serial=None, volume_db=volume_db)
     assert refused.value.reason == expected
-
-
-def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
-    """The other half: a resolvable sensitivity buys a real monitor, watching the
-    ceiling the run resolved."""
-    from jasper.audio_measurement.wired_capture import WiredSplMonitor
-
-    monkeypatch.setattr(
-        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
-        lambda **kw: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.plan_run.SUPPORTED_MODELS",
-        {"umik2": {"capture_channel": 0}},
-    )
-
-    monitor, note = measure._spl_monitor(
-        (MeasureSpec(kind=MEASURE_KIND_BASELINE),),
-        box=_declaration(), device=SimpleNamespace(model_key="umik2"),
-        mic_serial=None,
-    )
-
-    assert isinstance(monitor, WiredSplMonitor)
-    assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
-    assert note == "ceiling_85_db_spl"
 
 
 def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsys):
