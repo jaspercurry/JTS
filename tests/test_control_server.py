@@ -7,10 +7,12 @@
 Covers what ``jasper.control.server`` itself owns — the route table and
 its install-profile policy, the host/origin/body guards, control-token
 and household-credential gating, leader forwarding for a paired
-follower, the active-speaker setup blocks it consults, and the
-ThreadingHTTPServer's own lifecycle. Route bodies are tested beside the
-``jasper.control.handlers`` mixin that owns them, in the sibling
-``test_control_server_<concern>.py`` modules. ``jasper.control.state_aggregate``'s
+follower, and the ThreadingHTTPServer's own lifecycle. Route bodies are
+tested beside the ``jasper.control.handlers`` mixin that owns them, in the
+sibling ``test_control_server_<concern>.py`` modules — including each
+concern's own active-speaker-setup block (volume's in
+``test_control_server_volume.py``, grouping's in
+``test_control_server_grouping.py``). ``jasper.control.state_aggregate``'s
 own pure functions are tested in ``test_control_state_aggregate.py``.
 """
 
@@ -57,34 +59,6 @@ _IMPORTED_FIXTURES = (
     server_with_coordinator,
     server_with_voice_socket,
 )
-
-
-def test_inactive_unconfigured_topology_still_blocks_volume_and_grouping(
-    monkeypatch,
-) -> None:
-    import jasper.control.server as srv_mod
-
-    blocked = {
-        "active": False,
-        "configured": False,
-        "volume_allowed": False,
-        "grouping_allowed": False,
-        "reason": "output_topology_unconfigured",
-        "detail": "choose and save a speaker layout before using audio",
-    }
-    monkeypatch.setattr(
-        srv_mod,
-        "read_active_speaker_setup_status",
-        lambda **_kwargs: blocked,
-    )
-
-    assert srv_mod._active_speaker_volume_block() is blocked
-    grouping, setup = srv_mod._active_speaker_grouping_evaluation()
-    assert grouping == {
-        "allowed": False,
-        "detail": "choose and save a speaker layout before using audio",
-    }
-    assert setup is blocked
 
 
 # --- management request guardrails ---
