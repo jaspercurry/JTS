@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -224,6 +225,34 @@ async def test_manual_start_failure_cues_the_cause(
     assert await wl.manual_session_start() == "ERROR"
     await _drain_refusal_cue(wl)
     assert wl._cues.played == [expected_slug]
+
+
+async def test_manual_start_cleanup_failure_still_cues_the_refusal(caplog):
+    """A cleanup failure after a failed begin must not swallow the cue.
+
+    `_release_failed_turn` re-raises a stored `BaseException` after every
+    cleanup phase runs. The manual path had no try/except of its own
+    around the cleanup await, so that escape skipped both refusal-cue
+    branches and the button press went unanswered (AGENTS.md's
+    no-silent-deafness rule).
+    """
+    wl = _make_wake_loop(cues=_SpyCues())
+
+    async def _begin_turn_that_fails(**_kwargs) -> None:
+        wl._turns.output_episode = object()
+        raise RuntimeError("begin failed")
+
+    wl._begin_turn = _begin_turn_that_fails
+    wl._turns.cleanup_after_failed_begin = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await wl.manual_session_start() == "ERROR"
+    await _drain_refusal_cue(wl)
+
+    assert wl._cues.played == [INTERNAL_ERROR_CUE_SLUG]
+    fields = event_fields(caplog, "turn.begin_cleanup_failed")
+    assert fields["exc_type"] == "RuntimeError"
+    assert fields["err"] == "boom"
 
 
 async def test_manual_refusal_cue_does_not_hold_up_the_reply():
