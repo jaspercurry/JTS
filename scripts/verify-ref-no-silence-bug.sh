@@ -111,20 +111,12 @@ REMOTE_SCRIPT
 # Pull the captured ref.wav
 rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/ref.wav" "$OUT_LOCAL/" >&2
 
-# Locate a Python that has numpy. Prefer the repo's main venv (one
-# level above worktrees), then per-worktree venv if present, then
-# system python3.
-for candidate in \
-    "$REPO_ROOT/.venv/bin/python" \
-    "/Users/jaspercurry/Code/JTS/.venv/bin/python" \
-    "$(command -v python3)"; do
-    if [[ -x "$candidate" ]] && "$candidate" -c 'import numpy' 2>/dev/null; then
-        PY_BIN="$candidate"
-        break
-    fi
-done
-if [[ -z "${PY_BIN:-}" ]]; then
-    echo "ERROR: no python3 with numpy found" >&2
+# Locate a Python that has numpy: resolve_repo_python (_lib.sh) finds this
+# checkout's venv, or the main checkout's venv when run from a linked
+# worktree, falling back to system python3.
+PY_BIN="$(resolve_repo_python)"
+if ! "$PY_BIN" -c 'import numpy' 2>/dev/null; then
+    echo "ERROR: no python3 with numpy found ($PY_BIN)" >&2
     exit 1
 fi
 echo "Analysing with: $PY_BIN"
