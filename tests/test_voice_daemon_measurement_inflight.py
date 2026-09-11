@@ -612,7 +612,11 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
 
     class _FailSecondWrite:
         def __init__(self) -> None:
+            self.closed = False
             self.attempts = 0
+
+        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+            self.closed = True
 
         def set_gain_db(self, _db: float) -> None:
             return None
@@ -712,6 +716,11 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     write_returned = threading.Event()
 
     class _BlockingWrite:
+        closed = False
+
+        def _poison(self, *, reason=None, timeout_sec=None) -> None:
+            self.closed = True
+
         def set_gain_db(self, _db: float) -> None:
             return None
 
@@ -801,6 +810,8 @@ async def test_cancelled_cue_tail_retains_output_episode(
     release_drain = asyncio.Event()
 
     class _AcceptedStream:
+        closed = False
+
         def set_gain_db(self, _db: float) -> None:
             return None
 
@@ -1793,6 +1804,8 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     restore_calls = 0
 
     class _AcceptedStream:
+        closed = False
+
         def set_gain_db(self, _db: float) -> None:
             return None
 
