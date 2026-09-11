@@ -1614,7 +1614,7 @@ class WakeLoop:
                     "turn acquire cleanup failed before failure cue: %s",
                     cleanup_error,
                 )
-            if self._connection.is_paused():
+            if self._connection.is_paused() or self._connection.last_failure_detail():
                 await self._play_cue(self._connection.wake_cue())
             else:
                 await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
@@ -2140,7 +2140,7 @@ class WakeLoop:
             # reopens inside `_begin_turn`) must still answer the press
             # — same condition and cue as the wake path's acquire
             # failure. See `_arbitrate_acquire_drain`.
-            if self._connection.is_paused():
+            if self._connection.is_paused() or self._connection.last_failure_detail():
                 self._spawn_manual_refusal_cue(self._connection.wake_cue())
             else:
                 self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)

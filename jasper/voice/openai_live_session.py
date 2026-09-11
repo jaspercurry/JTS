@@ -16,10 +16,11 @@ import json
 import logging
 import time
 
+from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ..tools import dispatch_tool
-from ._base import BaseLiveConnection, BaseLiveTurn
-from ._supervisor import failure_detail
+from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn
+from ._supervisor import failure_detail, is_transient
 from .conversation import END_CONVERSATION_TOOL
 from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
@@ -56,6 +57,17 @@ AUDIBLE_RMS_FLOOR = 32
 # torn down; only the ack is given up on. Measured ~2.9 s per turn end on
 # jts.local, which is dead time the next wake would inherit.
 CLOSE_ACK_TIMEOUT_SEC = 1.5
+
+# Ceiling on the whole turn-acquire handshake, every attempt together, so
+# a retry never doubles what a wake waits for. The daemon puts no bound of
+# its own on `acquire_turn`.
+SESSION_OPEN_BUDGET_SEC = 15.0
+
+# Session opens one wake pays for. Live holds no socket between
+# conversations, so the acquire is the only retry it has — there is no
+# supervisor behind it. The second attempt covers the 409 race against the
+# session the previous conversation just closed (`_supervisor.is_transient`).
+SESSION_OPEN_ATTEMPTS = 2
 
 
 class OpenAILiveTurn(BaseLiveTurn):
@@ -151,8 +163,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             await self._conn._close_live_session()
         finally:
             self._audio_q.put_nowait(None)
-            self._conn._active_turn = None
-            self._conn._set_state(ConnectionState.CONNECTED)
+            await self._conn._on_turn_released(self)
 
     async def on_event(self, event: dict) -> None:
         kind = event["type"]
@@ -313,36 +324,12 @@ class OpenAILiveConnection(BaseLiveConnection):
 
     async def acquire_turn(self) -> OpenAILiveTurn:
         async with self._turn_lock:
-            assert self._registry is not None
-            assert self._system_instruction_provider is not None
             if self._active_turn is not None:
                 raise RuntimeError("Live conversation already active")
             self._set_state(ConnectionState.CONNECTING)
-            self._started.clear()
-            self._closed.clear()
-            turn = OpenAILiveTurn(self, time.monotonic())
-            self._active_turn = turn
             try:
-                if self._connect is None:
-                    from openai import AsyncOpenAI  # lazy — optional provider SDK
-                    self._client = AsyncOpenAI(api_key=self._api_key)
-                    self._connect = self._client.live.connect
-                self._session_cm = self._connect()
-                async with asyncio.timeout(15):
-                    self._session = await self._session_cm.__aenter__()
-                    self._receive_task = asyncio.create_task(self._receive())
-                    await self._send({"type": "session.start", "session": {
-                        "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
-                        "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
-                        "delegation": {"type": "responses", "responses": {
-                            "model": self._backend_model, "instructions": self._system_instruction_provider(),
-                            "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],
-                            "tool_choice": "auto", "parallel_tool_calls": False,
-                        }},
-                    }})
-                    await self._started.wait()
-                    if turn.turn_lost():
-                        raise RuntimeError("Live session failed during startup")
+                async with asyncio.timeout(SESSION_OPEN_BUDGET_SEC):
+                    turn = await self._open_session_for_turn()
                 if self._billable_activity_meter is not None:
                     self._billable_activity_meter.mark_started()
                 self._set_state(ConnectionState.IN_TURN)
@@ -359,13 +346,70 @@ class OpenAILiveConnection(BaseLiveConnection):
                     raise RuntimeError(failure_detail(exc, literals=self._secret_literals())) from None
                 raise
 
+    async def _open_session_for_turn(self) -> OpenAILiveTurn:
+        """Open this wake's session, retrying one transient failure.
+
+        A terminal failure — a rejected key, an account out of credit —
+        is raised on the first attempt: `_open_session` has already
+        recorded it and announced its remedy, and retrying cannot help.
+        Each attempt gets its own turn, because tearing a half-open
+        session down marks the turn it was opened for lost.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            self._started.clear()
+            self._closed.clear()
+            turn = OpenAILiveTurn(self, time.monotonic())
+            self._active_turn = turn
+            try:
+                await self._open_session()
+            except Exception as exc:  # noqa: BLE001
+                if (
+                    attempt >= SESSION_OPEN_ATTEMPTS
+                    or self._stopping.is_set()
+                    or not is_transient(exc)
+                ):
+                    raise
+                self._on_reconnect_attempt_failed(exc, attempt, True)
+                await self._teardown_session()
+                await self._sleep(reconnect_delay(attempt, transient=True))
+            else:
+                return turn
+
+    async def _open_session_attempt(self) -> None:
+        assert self._registry is not None
+        assert self._system_instruction_provider is not None
+        # Held locally: a concurrent `stop()` nulls the shared field while
+        # this awaits, and the attempt still owns the turn it opened for.
+        turn = self._active_turn
+        connect = self._connect
+        if connect is None:
+            from openai import AsyncOpenAI  # lazy — optional provider SDK
+            self._client = AsyncOpenAI(api_key=self._api_key)
+            connect = self._connect = self._client.live.connect
+        self._session_cm = connect()
+        self._session = await self._session_cm.__aenter__()
+        self._receive_task = asyncio.create_task(self._receive(turn))
+        await self._send({"type": "session.start", "session": {
+            "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
+            "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
+            "delegation": {"type": "responses", "responses": {
+                "model": self._backend_model, "instructions": self._system_instruction_provider(),
+                "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],
+                "tool_choice": "auto", "parallel_tool_calls": False,
+            }},
+        }})
+        await self._started.wait()
+        if turn.turn_lost() or self._stopping.is_set():
+            raise RuntimeError("Live session failed during startup")
+
     async def _send(self, event) -> None:
         if self._session is None:
             raise RuntimeError("Live socket is closed")
         await self._session.send(event)
 
-    async def _receive(self) -> None:
-        turn = self._active_turn
+    async def _receive(self, turn: OpenAILiveTurn) -> None:
         try:
             async for raw in self._session:
                 event = raw if isinstance(raw, dict) else raw.model_dump()
@@ -409,9 +453,21 @@ class OpenAILiveConnection(BaseLiveConnection):
             self._session_cm = self._session = None
 
     async def stop(self) -> None:
-        if self._active_turn is not None:
-            await self._active_turn.release()
-        await self._teardown_session()
+        # Set before the release, so an acquire still dialling fails its
+        # open instead of handing back a turn on a closed connection.
+        self._stopping.set()
+        # Released first: only the turn's own path sends `session.close` and
+        # settles the billable interval. `super().stop()` then tears down
+        # what is left, idempotently.
+        turn = self._active_turn
+        if turn is not None:
+            # Bounded: the release ends by taking `_turn_lock`, which an
+            # acquire still dialling holds for up to
+            # SESSION_OPEN_BUDGET_SEC — past the unit's TimeoutStopSec.
+            try:
+                await asyncio.wait_for(turn.release(), SESSION_CLOSE_TIMEOUT_SEC)
+            except TimeoutError:
+                log_event(logger, "live.release_abandoned", level=logging.WARNING)
+        await super().stop()
         if self._client is not None:
             await self._client.close()
-        self._set_state(ConnectionState.CLOSED)

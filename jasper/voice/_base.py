@@ -528,10 +528,13 @@ class BaseLiveConnection:
         """Drop any provider state that must not survive a context reset."""
 
     async def _on_turn_released(self, turn: Any) -> None:
-        async with self._turn_lock:
+        locked = await self._take_turn_lock()
+        try:
             if self._active_turn is not turn:
                 return
             self._active_turn = None
+            if not locked:
+                return
             self._last_turn_end_at = asyncio.get_event_loop().time()
             async with self._state_lock:
                 if self._state is ConnectionState.IN_TURN:
@@ -544,6 +547,28 @@ class BaseLiveConnection:
                     "%s turn just ended, firing the deferred reconnect "
                     "(planned=%s)", self._log_tag, self._planned_rotate,
                 )
+        finally:
+            if locked:
+                self._turn_lock.release()
+
+    async def _take_turn_lock(self) -> bool:
+        """Take `_turn_lock`, bounded once the connection is stopping.
+
+        A `stop()` releases the active turn, and that release ends here.
+        An acquire still dialling holds the lock for its whole open
+        budget — longer than the unit's `TimeoutStopSec` — so a teardown
+        gives up on it and leaves the rest to `stop()`.
+        """
+        if not self._stopping.is_set():
+            await self._turn_lock.acquire()
+            return True
+        try:
+            await asyncio.wait_for(
+                self._turn_lock.acquire(), SESSION_CLOSE_TIMEOUT_SEC,
+            )
+        except TimeoutError:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Internal — the pre-emptive reconnect watchdog

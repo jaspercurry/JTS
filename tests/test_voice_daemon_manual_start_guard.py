@@ -179,17 +179,26 @@ async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
 
 
 @pytest.mark.parametrize(
-    ("connection_drops", "expected_slug"),
-    [(True, CANT_CONNECT_CUE_SLUG), (False, INTERNAL_ERROR_CUE_SLUG)],
+    ("connection_drops", "detail", "expected_slug"),
+    [
+        (True, None, CANT_CONNECT_CUE_SLUG),
+        (False, None, INTERNAL_ERROR_CUE_SLUG),
+        (False, "insufficient_quota", CANT_CONNECT_CUE_SLUG),
+    ],
 )
-async def test_manual_start_failure_cues_the_cause(connection_drops, expected_slug):
+async def test_manual_start_failure_cues_the_cause(
+    connection_drops, detail, expected_slug,
+):
     """A press whose turn dies still answers, and names the real cause.
 
     The idle context reset reopens inside `_begin_turn`, so a reopen that
     never lands raises past the paused gate above and reaches the failure
     handler. It must cue rather than return a silent ERROR (AGENTS.md's
     no-silent-deafness rule) — and an outage cue for a connection that is
-    still up would be a lie, so that branch cues `internal_error`.
+    still up would be a lie, so that branch cues `internal_error`. A
+    provider that holds no socket between turns reads as up the instant
+    its failed acquire ends, so there the recorded outage — not the
+    state — is what makes the remedy cue the honest one.
     """
     wl = _make_wake_loop(cues=_SpyCues())
     paused = False
@@ -201,7 +210,7 @@ async def test_manual_start_failure_cues_the_cause(connection_drops, expected_sl
 
     wl._connection = types.SimpleNamespace(
         is_paused=lambda: paused,
-        last_failure_detail=lambda: None,
+        last_failure_detail=lambda: detail,
         wake_cue=lambda: CANT_CONNECT_CUE_SLUG,
         request_reconnect_now=lambda: True,
     )
