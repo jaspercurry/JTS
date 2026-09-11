@@ -32,6 +32,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     CandidateFcDisagreementError,
     NoCrossoverSectionsError,
 )
+from tests._log_events import event_fields, event_records, parse_event
 from tests.crossover_v2_fixtures import (
     FakeSeams,
     _candidate_sections,
@@ -173,19 +174,20 @@ def test_every_planner_record_reaches_this_sessions_journal(caplog):
     assert plan.journal, "the fixture must produce a journal to forward"
     emitted = [
         record for record in caplog.records
-        if record.getMessage().startswith("event=correction.crossover_v2_")
+        if (parsed := parse_event(record.getMessage())) is not None
+        and parsed[0].startswith("correction.crossover_v2_")
     ]
+    journal_events = {r.event for r in plan.journal}
     by_event = [
         record for record in emitted
-        if any(record.getMessage().startswith(f"event={r.event} ")
-               for r in plan.journal)
+        if parse_event(record.getMessage())[0] in journal_events
     ]
     assert [
-        r.getMessage().split(" ", 1)[0][len("event="):] for r in by_event
+        parse_event(r.getMessage())[0] for r in by_event
     ] == [r.event for r in plan.journal]
     for logged, record in zip(by_event, plan.journal):
         assert logged.levelno == record.level, record.event
-        assert f"session_id={c.session_id}" in logged.getMessage()
+        assert parse_event(logged.getMessage())[1]["session_id"] == c.session_id
 
 
 @pytest.mark.parametrize(
@@ -230,10 +232,7 @@ def test_the_realized_level_record_is_a_warning_only_when_it_did_not_match(
     assert record.fields["matched"] is matched
     assert record.level == expected_level, "the planner's own severity"
 
-    logged = [
-        r for r in caplog.records
-        if r.getMessage().startswith(f"event={event} ")
-    ]
+    logged = event_records(caplog, event)
     assert len(logged) == 1, logged
     assert logged[0].levelno == expected_level, "the forwarded severity"
 
@@ -262,15 +261,11 @@ def test_a_journal_consumer_that_raises_is_disclosed_not_swallowed(caplog):
     assert all("OSError" in entry for entry in plan.journal_dropped)
 
     # …and the loss reaches an operator rather than living only on the plan.
-    disclosure = [
-        record.getMessage() for record in caplog.records
-        if record.getMessage().startswith(
-            "event=correction.crossover_v2_linearization_journal_dropped "
-        )
-    ]
-    assert len(disclosure) == 1, disclosure
-    assert f"dropped={len(plan.journal_dropped)}" in disclosure[0]
-    assert "OSError" in disclosure[0]
+    fields = event_fields(
+        caplog, "correction.crossover_v2_linearization_journal_dropped"
+    )
+    assert fields["dropped"] == str(len(plan.journal_dropped))
+    assert "OSError" in fields["detail"]
 
 
 def test_a_healthy_journal_reports_nothing_dropped(caplog):
@@ -279,7 +274,9 @@ def test_a_healthy_journal_reports_nothing_dropped(caplog):
     c, analysis = _walked_to_measure()
     plan = c._plan_linearization(analysis, analysis.candidate, None)
     assert plan.journal_dropped == ()
-    assert "linearization_journal_dropped" not in caplog.text
+    assert not event_records(
+        caplog, "correction.crossover_v2_linearization_journal_dropped"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -323,16 +320,8 @@ def test_a_candidate_with_no_crossover_degrades_to_trims_only(caplog):
     assert candidate.linearization == {}
     assert state.linearized_predicted_sum is None
     assert state.realized_level_match is None
-    # startswith(), not a bare `in caplog.text` substring check: the
-    # journal_dropped line's own `dropped_event=` field ends in the six
-    # characters "event=", so a substring search would also match a drop of
-    # this same event -- see test_the_fit_failure_line_is_said_through_the_
-    # host_and_keeps_its_traceback's comment on the same hazard (#2368).
-    assert any(
-        r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
-        for r in caplog.records
-    )
-    assert "reason=NoCrossoverSectionsError" in caplog.text
+    fields = event_fields(caplog, planning.EVENT_FIT_FAILED)
+    assert fields["reason"] == "NoCrossoverSectionsError"
 
 
 def test_sections_naming_two_corners_degrade_to_trims_only(caplog):
@@ -359,7 +348,8 @@ def test_sections_naming_two_corners_degrade_to_trims_only(caplog):
     )
     assert state.outcome == "fit_failed"
     assert candidate.linearization == {}
-    assert "reason=CandidateFcDisagreementError" in caplog.text
+    fields = event_fields(caplog, planning.EVENT_FIT_FAILED)
+    assert fields["reason"] == "CandidateFcDisagreementError"
 
 
 def test_a_valid_candidate_still_plans(caplog):
@@ -375,7 +365,7 @@ def test_a_valid_candidate_still_plans(caplog):
     assert set(candidate.linearization) == {"woofer", "tweeter"}
     assert state.linearized_predicted_sum is not None
     assert state.realized_level_match is not None
-    assert "linearization_fit_failed" not in caplog.text
+    assert not event_records(caplog, planning.EVENT_FIT_FAILED)
 
 
 def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
@@ -408,13 +398,10 @@ def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
         analysis, None, candidate_sections=empty, source_preset=c._preset,
     )
 
-    said = [
-        record for record in caplog.records
-        if record.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
-    ]
+    said = event_records(caplog, planning.EVENT_FIT_FAILED)
     assert len(said) == 1, "the degrade discloses exactly once"
     line = said[0]
-    assert f"session_id={c.session_id}" in line.getMessage()
+    assert parse_event(line.getMessage())[1]["session_id"] == c.session_id
     assert line.exc_info is not None, "the degrade must carry its stack"
     exc_type, _exc, tb = line.exc_info
     assert exc_type is NoCrossoverSectionsError
@@ -483,25 +470,13 @@ def test_a_raising_journal_costs_a_log_line_not_the_candidate(caplog, port_error
     assert state.realized_level_match is None
 
     # …and the drop is disclosed, not silently swallowed.
-    dropped = [
-        r.getMessage() for r in caplog.records
-        if r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED_JOURNAL_DROPPED} ")
-    ]
-    assert len(dropped) == 1, dropped
-    assert f"dropped_event={planning.EVENT_FIT_FAILED}" in dropped[0]
-    assert f"reason={port_error.__name__}" in dropped[0]
+    fields = event_fields(caplog, planning.EVENT_FIT_FAILED_JOURNAL_DROPPED)
+    assert fields["dropped_event"] == planning.EVENT_FIT_FAILED
+    assert fields["reason"] == port_error.__name__
 
     # The ORIGINAL fit_failed line never got said — the broken port is
-    # exactly why this test exists. Checked per-record with startswith()
-    # rather than a raw substring search on caplog.text: the dropped line's
-    # own "dropped_event=" field ends in the six characters "event=", so a
-    # bare `in` check on the text blob would find EVENT_FIT_FAILED inside it
-    # and pass even if the original line were never said.
-    said_fit_failed = [
-        r for r in caplog.records
-        if r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
-    ]
-    assert said_fit_failed == []
+    # exactly why this test exists.
+    assert not event_records(caplog, planning.EVENT_FIT_FAILED)
 
 
 def test_a_healthy_journal_never_says_the_port_dropped_anything(caplog):
@@ -521,8 +496,8 @@ def test_a_healthy_journal_never_says_the_port_dropped_anything(caplog):
 
     assert state.outcome == "fit_failed"
     assert candidate.linearization_outcome == "fit_failed"
-    assert planning.EVENT_FIT_FAILED_JOURNAL_DROPPED not in caplog.text
-    assert f"event={planning.EVENT_FIT_FAILED} " in caplog.text
+    assert not event_records(caplog, planning.EVENT_FIT_FAILED_JOURNAL_DROPPED)
+    assert event_records(caplog, planning.EVENT_FIT_FAILED)
 
 
 def test_a_split_section_set_refuses_before_the_missing_measure_program():
