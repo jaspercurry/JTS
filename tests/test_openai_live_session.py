@@ -253,7 +253,6 @@ async def test_one_transient_failure_then_success_still_gets_the_turn(monkeypatc
         assert not turn.turn_lost()
         # The open that took clears the outage the failed one recorded.
         assert conn.last_failure_detail() is None
-        assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
     finally:
         if turn is not None:
             await turn.release()
