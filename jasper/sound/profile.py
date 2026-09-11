@@ -41,9 +41,10 @@ PROFILE_PATH = "/var/lib/jasper/sound_profile.json"
 PROFILE_LIBRARY_PATH = "/var/lib/jasper/sound_profiles.json"
 
 # Per-band limit for Simple mode. ±12 dB matches the 5-band sliders in
-# the redesigned /sound/ UI; the headroom preamp auto-attenuates, so
-# boosts stay clip-safe. The calibration advisor shares this bound (via
-# response.py), so model-proposed simple_eq edits get the same range.
+# the redesigned /sound/ UI. Clip safety at that boost is not automatic —
+# it depends on the user's opt-in headroom trim (default 0 dB; see
+# camilla_stereo_prefix.py). The calibration advisor shares this bound
+# (via response.py), so model-proposed simple_eq edits get the same range.
 SIMPLE_EQ_LIMIT_DB = 12.0
 ADVANCED_GAIN_LIMIT_DB = 12.0
 MAX_PARAMETRIC_BANDS = 8
