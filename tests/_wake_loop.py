@@ -43,9 +43,8 @@ def wake_loop_for_tests(
     conversation_store: ConversationStore | None = None,
     wake_event_store: WakeEventStore | None = None,
     current_event_id: str | None = None,
-    **overrides,
 ) -> WakeLoop:
-    """Inject collaborators at construction; overrides seed local turn state."""
+    """Inject collaborators at construction."""
 
     class _TestMic:
         async def frames(self):
@@ -179,6 +178,4 @@ def wake_loop_for_tests(
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
     self._wake_telemetry._current_event_id = current_event_id
-    for key, value in overrides.items():
-        setattr(self, key if key.startswith("_") else f"_{key}", value)
     return self
