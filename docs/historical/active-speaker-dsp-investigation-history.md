@@ -1788,7 +1788,7 @@ Delay alignment is measured, not guessed.
 
 > **Implementation (L2, landed 2026-06-21, corrected 2026-06-21).** The
 > calibrated-mic **polarity** proposal that implements this section lives in
-> [`jasper/active_speaker/crossover_alignment.py`](../../jasper/active_speaker/crossover_alignment.py)
+> ``jasper/active_speaker/crossover_alignment.py``
 > (the `phase_aware` gate + the reverse-vs-in-phase null-margin polarity call) and
 > `driver_acoustics`'s calibrated capture (`analyze_summed_crossover(expect_null=…)`).
 > **The delay VALUE is deliberately NOT proposed
