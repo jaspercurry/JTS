@@ -30,11 +30,7 @@ from jasper.cli._refusal import (
     STATUS_BY_CODE,
     failed,
 )
-from jasper.cli._stimulus_args import (
-    STIMULUS_ARG_DESTS,
-    add_stimulus_args,
-    spec_kwargs_from_args,
-)
+from jasper.cli._stimulus_args import add_stimulus_args, spec_kwargs_from_args
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -349,17 +345,34 @@ def spec_from_args(args: argparse.Namespace) -> Any:
     return spec
 
 
-#: The flags that describe ONE take, refused beside ``--specs`` rather than
-#: merged behind a precedence rule. ``--kind``, ``--axis``, ``--vertical-deg``
-#: and ``--regime`` stay off this list: they are the shared defaults a file
-#: entry may omit. Every stimulus dest
-#: (:data:`~jasper.cli._stimulus_args.STIMULUS_ARG_DESTS`) describes one take
-#: too, spread in here rather than hand-copied a second time; ``dict.fromkeys``
-#: keeps this safe if a future dest ever collides with a name spelled directly.
-_PER_TAKE_FLAGS = tuple(dict.fromkeys((
-    "position", "prompt", "polarity", "inverted_role", "delayed_role",
-    "delay_us", "level_matched", "candidate_id", *STIMULUS_ARG_DESTS,
-)))
+#: The flags that describe the RUN rather than a take, so a document naming
+#: every take still sits beside them: the level it plays at, which microphone
+#: records, and ``--request`` (the document itself).
+_RUN_STATED_FLAGS = ("request", "volume_db", "mic_serial")
+
+#: The batch-wide defaults a ``--specs`` entry may omit, so they are not a
+#: second source of truth beside the file.
+_SPECS_FILE_DEFAULTS = ("specs", "kind", "graph_scope", "axis", "vertical_deg", "regime")
+
+
+def _flags_a_document_states(
+    args: argparse.Namespace, *, coexist: Sequence[str] = (),
+) -> list[str]:
+    """The flags this invocation TYPED that a stated document already names.
+
+    The COMPLEMENT, read off :func:`build_parser` itself rather than an
+    allowlist: a flag added to the parser is refused beside a document that
+    states every take, without a second list learning its name. Compared
+    against the parser's OWN defaults, not against truthiness: ``--polarity``
+    defaults to the truthy string ``normal``.
+    """
+    stated = build_parser()
+    # ``func`` is the subcommand handler, not a flag anybody types.
+    skip = {"func", *_RUN_STATED_FLAGS, *coexist}
+    return [
+        dest for dest in vars(stated.parse_args([]))
+        if dest not in skip and getattr(args, dest) != stated.get_default(dest)
+    ]
 
 
 def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
@@ -378,13 +391,7 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
         )
     if not args.specs:
         return (spec_from_args(args),)
-    # Compared against the parser's OWN defaults, not against truthiness:
-    # ``--polarity`` defaults to the truthy string ``normal``.
-    stated = build_parser()
-    named = [
-        flag for flag in _PER_TAKE_FLAGS
-        if getattr(args, flag) != stated.get_default(flag)
-    ]
+    named = _flags_a_document_states(args, coexist=_SPECS_FILE_DEFAULTS)
     if named:
         raise MeasureFlagError(
             REFUSE_SPECS_WITH_TAKE_FLAGS,
@@ -412,17 +419,6 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
     return specs
 
 
-#: The flags a ``--request`` walk already states for itself: the template names
-#: what every take measures, and the stops name where. Refused beside it rather
-#: than read and thrown away. :data:`_PER_TAKE_FLAGS` already spreads in every
-#: :data:`~jasper.cli._stimulus_args.STIMULUS_ARG_DESTS` name, so nothing here
-#: repeats that list.
-_WALK_STATED_FLAGS = tuple(dict.fromkeys((
-    "kind", "graph_scope", "axis", "vertical_deg", "regime", "specs",
-    *_PER_TAKE_FLAGS,
-)))
-
-
 def request_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, str]]:
     """The walk this run plays, and the graph scope each stop's candidate compiles to.
 
@@ -441,11 +437,7 @@ def request_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, str]]:
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
     from jasper.active_speaker.plan_run import resolve_candidate_scopes
 
-    stated = build_parser()
-    named = [
-        flag for flag in _WALK_STATED_FLAGS
-        if getattr(args, flag) != stated.get_default(flag)
-    ]
+    named = _flags_a_document_states(args)
     if named:
         raise MeasureFlagError(
             REFUSE_REQUEST_UNREADABLE,
