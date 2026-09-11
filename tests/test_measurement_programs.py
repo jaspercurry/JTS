@@ -251,7 +251,7 @@ def test_shared_layout_can_change_to_five_positions_without_code(tmp_path: Path)
 
 def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     config = _bundled_config()
-    pose = config["layouts"]["room_quick"][0]  # type: ignore[index]
+    pose = config["layouts"]["room_quick"]["poses"][0]  # type: ignore[index]
     pose.update({"headline": "Measure the main seat", "detail": "Hold the mic at ear height."})
 
     programs = mp.load_programs(_write_config(tmp_path, config))
@@ -262,13 +262,17 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode"])
+@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key", "mover"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken == "empty":
         config["layouts"]["room_quick"] = []  # type: ignore[index]
     elif broken == "repeats":
-        config["layouts"]["room_quick"][0]["repeats"] = 0  # type: ignore[index]
+        config["layouts"]["room_quick"]["poses"][0]["repeats"] = 0  # type: ignore[index]
+    elif broken == "layout_key":
+        config["layouts"]["room_quick"]["moverr"] = "arm"  # type: ignore[index]
+    elif broken == "mover":
+        config["layouts"]["room_quick"]["mover"] = []  # type: ignore[index]
     elif broken == "purpose":
         config["programs"][0]["purpose"] = "other"  # type: ignore[index]
     elif broken == "regime":
