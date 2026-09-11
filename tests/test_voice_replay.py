@@ -138,7 +138,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
         vad = SpeechVAD.__new__(SpeechVAD)
         vad._vad = model
         wl = wake_loop_for_tests(tts=sink, vad=vad, connection=provider[1])
-        wl._begin_turn_output_episode = AsyncMock()
+        wl._turns.begin_output_episode = AsyncMock()
         wl._prepare_assistant_loudness_context = AsyncMock()
         wl._content_activity.refresh_now = AsyncMock()
         wl._turns.arm_background_end = lambda: None
@@ -158,7 +158,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
             return await acquire()
 
         provider[1].acquire_turn = delayed_acquire
-        begin = asyncio.create_task(wl._begin_turn_inner())
+        begin = asyncio.create_task(wl._turns.begin_inner())
         await wait_signalled(entered, "replay phase")
         # Mutating the rolling buffer cannot change the prefix frozen before acquisition.
         wl._pre_roll.clear()

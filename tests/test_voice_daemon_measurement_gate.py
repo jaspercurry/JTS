@@ -290,7 +290,7 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
     )
     tts = _RecordingTts()
     wl = wake_loop_for_tests(tts=tts)
-    await wl._begin_turn_output_episode()
+    await wl._turns.begin_output_episode()
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
@@ -357,7 +357,7 @@ async def test_wake_mid_acquire_is_dropped_when_a_measurement_opens(caplog):
     """
     wl = wake_loop_for_tests(cues=_RefusingCues())
     assert await wl._output_gate.pause_admission() is True
-    acquire = asyncio.create_task(wl._begin_turn_output_episode())
+    acquire = asyncio.create_task(wl._turns.begin_output_episode())
     await asyncio.sleep(0)
     assert not acquire.done()
 
@@ -382,7 +382,7 @@ async def test_a_released_window_does_not_revive_the_dropped_wake():
     the next one rather than owned by a turn nobody is waiting for."""
     wl = wake_loop_for_tests(cues=_RefusingCues())
     assert await wl._output_gate.pause_admission() is True
-    acquire = asyncio.create_task(wl._begin_turn_output_episode())
+    acquire = asyncio.create_task(wl._turns.begin_output_episode())
     await asyncio.sleep(0)
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
@@ -399,12 +399,12 @@ async def test_turn_episode_is_taken_when_no_measurement_opens():
     second take reuses the one it already owns."""
     wl = wake_loop_for_tests()
 
-    await wl._begin_turn_output_episode()
+    await wl._turns.begin_output_episode()
     first = wl._turns.output_episode
     assert first is not None
     assert wl._output_gate.is_active
 
-    await wl._begin_turn_output_episode()
+    await wl._turns.begin_output_episode()
     assert wl._turns.output_episode is first
 
 

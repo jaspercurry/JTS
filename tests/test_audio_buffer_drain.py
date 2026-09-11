@@ -51,8 +51,8 @@ def _acquire_loop(monkeypatch):
     wl._prepare_assistant_loudness_context = AsyncMock()
     wl._content_activity.refresh_now = AsyncMock()
     wl._turns.arm_background_end = lambda: None
-    monkeypatch.setattr("jasper.voice_daemon.play_responses", lambda *a, **k: _park())
-    monkeypatch.setattr("jasper.voice_daemon.idle_watchdog", lambda *a, **k: _park())
+    monkeypatch.setattr("jasper.voice.turn_lifecycle.play_responses", lambda *a, **k: _park())
+    monkeypatch.setattr("jasper.voice.turn_lifecycle.idle_watchdog", lambda *a, **k: _park())
     return wl
 
 
@@ -191,10 +191,10 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
     wl._connection.acquire_turn = acquire
     wl._turns.end = end
     wl._vad.predict = lambda frame: float(frame[0])
-    await wl._begin_turn_inner(pre_roll=False)
+    await wl._turns.begin_inner(pre_roll=False)
     await wl._handle_session_frame(_frame(0), captured_at=wl._turns.started_at_loop + 5.1)
     assert wl._turns.state is State.WAKE
-    await wl._begin_turn_inner(pre_roll=False)
+    await wl._turns.begin_inner(pre_roll=False)
     try:
         for index, score in enumerate([1] * 4 + [0] * 12):
             await wl._handle_session_frame(
@@ -203,6 +203,7 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
         assert wl._turns.input_ended
         assert turns[0].send_audio.await_count == 0
         assert turns[1].end_input.await_count == 1
+        assert wl._prepare_assistant_loudness_context.await_count == 2
     finally:
         await _stop_playback(wl)
 

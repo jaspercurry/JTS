@@ -252,7 +252,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
         async def prerender_text(self, _text: str) -> bool:
             nonlocal turn_task
             events.append("rendered")
-            turn_task = asyncio.create_task(wl._begin_turn_output_episode())
+            turn_task = asyncio.create_task(wl._turns.begin_output_episode())
             await asyncio.sleep(0)
             events.append(f"turn_active={wl._output_gate.active_kind}")
             return True

@@ -340,13 +340,13 @@ def test_resolve_disables_barge_in_without_aec_reference(monkeypatch, tmp_path, 
     wl._cfg.voice_provider = "gemini"
     wl._cfg.mic_device = "Array"
     wl._barge_in_reference_available = False
-    wl._barge_in_no_ref_warned = False
+    wl._turns._barge_in_no_ref_warned = False
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wl._resolve_barge_in_for_turn()
+        wl._turns._resolve_barge_in_for_turn()
         first = event_records(caplog, "barge.disabled_no_reference")
         # WARN is one-shot per daemon — a second turn does not re-spam.
-        wl._resolve_barge_in_for_turn()
+        wl._turns._resolve_barge_in_for_turn()
         second = event_records(caplog, "barge.disabled_no_reference")
 
     assert wl._turns.barge_in_active is False
@@ -366,7 +366,7 @@ def test_resolve_enables_barge_in_with_reference(monkeypatch, tmp_path):
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True
 
-    wl._resolve_barge_in_for_turn()
+    wl._turns._resolve_barge_in_for_turn()
 
     assert wl._turns.barge_in_active is True
 
@@ -383,7 +383,7 @@ def test_resolve_defaults_off(monkeypatch, tmp_path):
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True
 
-    wl._resolve_barge_in_for_turn()
+    wl._turns._resolve_barge_in_for_turn()
 
     assert wl._turns.barge_in_active is False
 
@@ -413,7 +413,7 @@ def test_barge_in_requires_processing_on_the_selected_stream(
     path.write_text("JASPER_BARGE_IN_OPENAI=1\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
     wl = wake_loop_for_tests(cfg=Config.from_env())
-    wl._resolve_barge_in_for_turn()
+    wl._turns._resolve_barge_in_for_turn()
     assert wl._turns.barge_in_active is eligible
 
 
