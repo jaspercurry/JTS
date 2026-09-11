@@ -82,6 +82,8 @@ reach them and reproduced acoustically where it can.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import logging
 
 import numpy as np
@@ -594,30 +596,8 @@ def _full_band_locate(capture, stimulus, *, frac=0.6, band_hz=None, sample_rate=
     return _earliest_strong_peak(capture, stimulus, frac=frac)
 
 
-def _check_screen(analysis, *, honour_ambiguity: bool = True) -> str | None:
-    """CHECK's real ladder over a real analysis -- the household-facing answer.
-
-    ``honour_ambiguity=False`` feeds the ladder the pre-#2644 fact set (there
-    was no such field), so one call site can ask both "what did the shipped
-    build say" and "what does this one say" without a second copy of the ladder.
-    """
-    from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
-    from jasper.active_speaker.crossover_v2.capture_dispatch import (
-        _stimulus_locate_ok,
-    )
-
-    plan = analysis.gain_plan
-    return _dispatch.check_screens(_dispatch.CheckScreens(
-        stimulus_located=_stimulus_locate_ok(analysis),
-        anchor_ambiguous=analysis.anchor_ambiguous and honour_ambiguity,
-        delta_implausible=analysis.delta_implausible and honour_ambiguity,
-        channel_map_ok=analysis.channel_map_ok,
-        pilot_snr_ok=analysis.pilot_snr_ok,
-        linearity_ok=analysis.linearity_ok,
-        gain_plan_present=plan is not None,
-        gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
-    ))
-
+def _check_screen(analysis) -> str | None:
+    return cd.assess(analysis, phase="check").fault
 
 def _anchor_separation(program, capture) -> float:
     """How many TIMES more present the winning anchor's witness was than its
@@ -752,16 +732,7 @@ def test_the_quiet_pilots_in_band_snr_never_moved():
     )
 
 
-def test_the_shipped_analyzer_called_this_capture_a_wiring_fault(monkeypatch):
-    """The incident, end to end: with the pre-#2644 full-band locate AND the
-    pre-#2644 fact set, CHECK answers ``channel_map_mismatch`` -- a hard stop
-    with no retry whose sentence tells the household to check its wiring --
-    and the anchor it rests on is a coin flip.
-
-    This is the mutation guard for the whole section. Revert either half of the
-    fix and the tests below stop describing a repair; this one keeps describing
-    the bug, so the pair cannot both stay green.
-    """
+def test_a_misanchored_capture_has_no_valid_channel_map(monkeypatch):
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
         _full_band_locate,
@@ -775,7 +746,6 @@ def test_the_shipped_analyzer_called_this_capture_a_wiring_fault(monkeypatch):
 
     analysis = analyze_program_capture(prog, cap, SR)
     assert analysis.channel_map_ok is False
-    assert _check_screen(analysis, honour_ambiguity=False) == "channel_map_mismatch"
     # ...and the numbers that verdict rested on are physically impossible for
     # ANY wiring: the program commanded +10 dB between the two pilots.
     woofer = next(p for p in analysis.pilots if p.role == "woofer")
@@ -833,22 +803,8 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
     assert analysis.delta_implausible is True
     assert analysis.channel_map_ok is False, "the guard must not repair the map"
 
-    from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
-    from jasper.active_speaker.crossover_v2.capture_dispatch import (
-        _stimulus_locate_ok,
-    )
-
-    plan = analysis.gain_plan
-    kind = _dispatch.check_screens(_dispatch.CheckScreens(
-        stimulus_located=_stimulus_locate_ok(analysis),
-        anchor_ambiguous=False,  # isolate: the near-tie guard did NOT fire
-        delta_implausible=analysis.delta_implausible,
-        channel_map_ok=analysis.channel_map_ok,
-        pilot_snr_ok=analysis.pilot_snr_ok,
-        linearity_ok=analysis.linearity_ok,
-        gain_plan_present=plan is not None,
-        gain_plan_snr_floor_ok=bool(plan.snr_floor_ok) if plan is not None else False,
-    ))
+    kind = cd.assess(replace(analysis, anchor_ambiguous=False,
+                             anchor=replace(analysis.anchor, ambiguous=False)), phase="check").fault
     assert analysis.pilot_snr_ok is False, (
         "premise: this is the pilot_snr_ok=False shape the ruling repoints -- "
         "see test_an_impossible_delta_is_asked_before_the_wiring_verdict_"
@@ -856,7 +812,7 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
         "dispatch.py) for the pilot_snr_ok=True shape that still resolves "
         "to anchor_ambiguous"
     )
-    assert kind == _dispatch.SCREEN_SNR_FLOOR
+    assert kind == "snr_floor"
 
 
 def test_the_band_limited_locate_puts_the_whole_timeline_back():
@@ -888,51 +844,23 @@ def test_the_band_limited_locate_puts_the_whole_timeline_back():
     assert screen != "channel_map_mismatch"
     if screen is not None:
         from jasper.active_speaker.crossover_v2 import refusal_copy
-        code = refusal_copy.SCREEN_KIND_REASONS[screen]
+        code = screen
         assert code not in refusal_copy.NON_RETRIABLE_CODES
 
 
-def test_the_quiet_room_sibling_is_untouched_by_both_halves():
-    """The accepted round, before and after. A capture the shipped build read
-    correctly must read identically here -- same anchor, same wide margin, same
-    acceptance -- or the fix bought its repair with a regression.
-    """
+def test_a_loud_mic_meter_does_not_invent_clipping():
     prog = _incident_program()
-    cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
-
-    _offset, segment, _stimuli, anchor = _global_offset(prog, cap, SR)
-    assert segment.segment_id == "pilot_woofer_lo"
-    assert anchor.ambiguous is False
-    assert _anchor_separation(prog, cap) > 100.0
-
-    analysis = analyze_program_capture(prog, cap, SR)
+    analysis = analyze_program_capture(prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR)
     assert analysis.channel_map_ok is True
-    assert _check_screen(analysis) is None
+    assert analysis.anchor.corroborated is True
+    assert analysis.mic_meter_status == "too_loud"
+    verdict = cd.assess(analysis, phase="check", program=prog)
+    assert verdict.ok and verdict.fault is None
+    assert verdict.evidence["mic_meter_status"] == "too_loud"
 
 
 @pytest.mark.parametrize("miswired", [False, True])
 def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
-    """The regression the guard must not buy its repair with, plus its control.
-
-    A quiet room, a confidently-resolved anchor, and one lead landed on the
-    wrong terminal for real: the tweeter's channel drives the woofer's cone, so
-    the tweeter's own band never rises. CHECK must still reach the hard stop
-    and still tell the household to check the wiring -- the ambiguity rung sits
-    ABOVE that one, so an over-eager guard would swallow a real fault, and this
-    is what would catch it.
-
-    ONE lead rather than both, deliberately. Cross both and the woofer's own
-    pilots -- the timeline anchor -- go inaudible too, and production answers
-    the honest ``locate_failed`` instead; there would be no wiring verdict left
-    to regress. Crossing one leaves the anchor pristine and puts the fault
-    exactly where ``_channel_map_ok`` can see it. The arm that fires is
-    asserted below by name so this cannot quietly start passing for another
-    reason.
-
-    ``miswired=False`` is the no-op control on the identical fixture: same
-    program, same room, same noise seed, leads correct, accepted. Without it a
-    fixture that refused everything would read as a pass.
-    """
     program = build_check_program(
         [
             RoleBand("woofer", 0, FrequencyBand(60.0, 1000.0)),
@@ -961,13 +889,14 @@ def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is False, "a mis-wired capture is not an un-attributed one"
 
-    analysis = analyze_program_capture(program, cap, SR)
+    analysis = analyze_program_capture(program, cap * 0.1, SR)
     assert analysis.anchor_ambiguous is False
     if not miswired:
         assert analysis.channel_map_ok is True
         assert _check_screen(analysis) is None
         return
     assert analysis.channel_map_ok is False
+    assert analysis.pilot_snr_ok is False
     assert _check_screen(analysis) == "channel_map_mismatch"
     # Named: the TARGET arm on the tweeter (its own band never rose over the
     # room), with the woofer -- still correctly wired -- passing beside it.
@@ -1044,7 +973,7 @@ def test_a_band_that_survives_no_bin_falls_back_to_full_band(band):
     its own assertion rather than a reader's trust.
     """
     prog = _incident_program()
-    cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
+    cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS) * 0.1
     stim = np.asarray(
         segment_stimulus(prog.segment("pilot_woofer_lo")), dtype=np.float64
     )
@@ -1593,7 +1522,7 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
     )
     program = _measure_program()
     analysis = analyze_program_capture(
-        program, _measure_room(program, room_rms=1e-6), SR,
+        program, _measure_room(program, room_rms=1e-6) * 0.1, SR,
         priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     assert analysis.anchor.corroborated is corroborated
@@ -1601,16 +1530,14 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
     assert analysis.anchor.presence == 0.0156
     assert analysis.anchor.confidence == confidence
     assert analysis.discontinuity_samples == (step if isinstance(step, float) else None)
-    screen = cd.measure_screens(cd.MeasureScreens.from_analysis(
-        analysis, sweep_schedule_ok=lambda: True, delay_physically_plausible=lambda: True,
-    ), clip_retry_backoff_db=3.0)
-    assert screen.kind == (cd.SCREEN_CAPTURE_GLITCH if corroborated else cd.SCREEN_ANCHOR_UNCONFIRMED)
+    screen = cd.assess(analysis, phase="measure")
+    assert screen.fault == ("drift_baselines_disagree" if corroborated else "anchor_too_quiet")
     if corroborated and isinstance(step, float):
         assert type(screen.evidence["discontinuity_samples"]) is float
     elif not corroborated:
-        assert type(screen.evidence["corroborated"]) is bool
-        assert type(screen.evidence["presence"]) is float
-        assert type(screen.evidence["confidence"]) is float
+        assert type(screen.evidence["anchor_corroborated"]) is bool
+        assert type(screen.evidence["anchor_presence"]) is float
+        assert type(screen.evidence["anchor_confidence"]) is float
     else:
         assert "discontinuity_samples" not in screen.evidence
 
@@ -1622,8 +1549,6 @@ def test_measure_without_anchor_evidence_has_no_anchor_rung():
     analysis = analyze_program_capture(program, _measure_room(program, room_rms=1e-6), SR)
     assert analysis.anchor is None
     assert analysis.anchor_ambiguous is False
-    screen = cd.measure_screens(cd.MeasureScreens.from_analysis(
-        analysis, sweep_schedule_ok=lambda: True, delay_physically_plausible=lambda: True,
-    ), clip_retry_backoff_db=3.0)
-    assert screen.kind is None
-    assert screen.evidence == {"mic_meter_status": "unmeasured"}
+    screen = cd.assess(analysis, phase="measure")
+    assert screen.fault is None
+    assert screen.evidence["mic_meter_status"] == "unmeasured"

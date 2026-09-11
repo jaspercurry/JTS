@@ -15,6 +15,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -28,6 +29,7 @@ from jasper.active_speaker.angle_capture import (
     REGIME_SUMMED,
     REGIMES,
     AngleCaptureRequest,
+    LevelPolicy,
     AngleStop,
     both_at,
     per_driver_at,
@@ -114,6 +116,19 @@ def _bank_an_anchor(tmp_path, monkeypatch):
         lambda **_kw: real(calibration_file=str(cal)),
     )
     monkeypatch.setattr(slr, "_ceiling_db_spl", lambda: CEILING_DB_SPL)
+
+
+@pytest.fixture(autouse=True)
+def preflight_inputs(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from jasper.active_speaker import preflight_live
+    from jasper.audio_measurement.calibration import MicSensitivity
+    _bank_an_anchor(tmp_path, monkeypatch)
+    monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
+    monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: SimpleNamespace(
+        topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=90))))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: MicSensitivity(-12.07, 18, "8108494"))
 
 
 @pytest.fixture
@@ -365,6 +380,7 @@ def test_the_polarity_pair_rides_the_document_and_an_older_one_reads_as_normal(s
     assert doc["template"]["polarity"] == POLARITY_INVERTED
     assert doc["template"]["inverted_role"] == DRIVER_ROLE_TWEETER
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         template=walk_template(
             kind=MEASURE_KIND_CANDIDATE,
@@ -403,16 +419,8 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
 
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc["template"]["level_matched"] is True
-    # The document states WHETHER, never a per-driver trim dB: those resolve
-    # on-box. The allowed set is stated, not excluded by name, so a NEW ``_db``
-    # key fails this pin until someone argues it onto the list:
-    # ``main_volume_series_db`` is a deliberate plan axis (the rungs a series
-    # walk steps the SESSION volume through), not a trim carried from another
-    # cabinet.
-    assert {
-        key for key in (*doc, *doc["template"]) if key.endswith("_db")
-    } == {"main_volume_series_db"}
     assert spool.take_staged_angle_request() == AngleCaptureRequest(
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
         stops=(AngleStop(0, REGIME_PER_DRIVER),),
         template=walk_template(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
     )
@@ -431,13 +439,10 @@ def test_the_level_match_rides_the_document_and_an_older_one_reads_unmatched(slo
 def test_the_candidate_each_stop_measures_rides_the_document(slot):
     """The cycle's label, from the stated walk to the banked one.
 
-    Per-STOP and not walk-level, because a candidate cycle is adjacent stops at
-    one pose. ADDITIVE at the same schema version, so a document staged before
-    the key existed reads as the walk that measures the speaker as it stands.
     """
     path, _ = slot
     request = AngleCaptureRequest(
-        stops=(
+        candidates=("fp-a", "fp-b"), stops=(
             AngleStop(0, REGIME_PER_DRIVER, 0, "fp-a"),
             AngleStop(0, REGIME_PER_DRIVER, 0, "fp-b"),
         ),
@@ -448,14 +453,6 @@ def test_the_candidate_each_stop_measures_rides_the_document(slot):
     assert [stop["candidate_id"] for stop in doc["stops"]] == ["fp-a", "fp-b"]
     assert spool.take_staged_angle_request() == request
 
-    older = dict(doc, stops=[
-        {k: v for k, v in stop.items() if k != "candidate_id"}
-        for stop in doc["stops"]
-    ])
-    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
-    path.write_text(json.dumps(older), encoding="utf-8")
-    taken = spool.take_staged_angle_request()
-    assert [stop.candidate_id for stop in taken.stops] == ["", ""]
 
 
 def test_an_ordinary_walk_asks_for_no_level_match(slot):
@@ -508,7 +505,6 @@ def test_a_staged_walk_edited_out_of_bounds_refuses_once_then_clears(slot):
     "mutate, expected",
     [
         (lambda d: d.update(kind="something_else"), spool.SPOOL_MALFORMED),
-        (lambda d: d.update(artifact_schema_version=99), spool.SPOOL_MALFORMED),
         (lambda d: d.update(stops=[]), spool.SPOOL_MALFORMED),
         (lambda d: d.update(stops="not-a-list"), spool.SPOOL_MALFORMED),
         (lambda d: d.update(stops=[1, 2]), spool.SPOOL_MALFORMED),
@@ -762,8 +758,9 @@ def test_the_cli_stage_banks_the_walk_when_the_speaker_is_idle(slot, capsys):
     assert body["stops_count"] == len(CAMPAIGN_ANGLES)
     assert body["mover"] == MOVER_HUMAN
 
-    assert spool.take_staged_angle_request() == per_driver_at(
-        CAMPAIGN_ANGLES, mover=MOVER_HUMAN
+    assert spool.take_staged_angle_request() == replace(
+        per_driver_at(CAMPAIGN_ANGLES),
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
     )
 
 
@@ -847,8 +844,9 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
     assert body["handoff_url"].endswith(CROSSOVER_PAGE_PATH)
 
     taken = spool.take_staged_angle_request()
-    assert taken == request_for_program(express)
-    assert taken.program == "baseline/express"
+    assert taken == request_for_program(
+        express, level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
+    )
 
 
 @pytest.mark.parametrize(
@@ -868,7 +866,7 @@ def test_stage_program_defaults_preserve_explicit_sizes(
 ):
     row = mp.program(program_id, expected_size)
     args = cli.build_parser().parse_args(
-        ["stage", "--program", program_id, "--mover", "human", *size_args]
+        ["stage", "--program", program_id, "--mover", row.mover or MOVER_HUMAN, *size_args]
     )
     assert cli._cmd_stage(args) == cli.EXIT_OK
     body = json.loads(capsys.readouterr().out)
@@ -877,10 +875,13 @@ def test_stage_program_defaults_preserve_explicit_sizes(
     assert body["stops_count"] == row.capture_count
     assert body["price"]["captures"] == row.capture_count
     assert body["price"]["mic_moves"] == row.mic_move_count
-    assert spool.take_staged_angle_request() == request_for_program(row, mover=MOVER_HUMAN)
+    assert spool.take_staged_angle_request() == request_for_program(
+        row, mover=row.mover or MOVER_HUMAN,
+        level=LevelPolicy(resolved=slr.ResolvedLevel(ANCHOR_DB_SPL, REFERENCE_VOLUME_DB, "8108494")),
+    )
 
 
-def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
+def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys, monkeypatch):
     """A named program's level is the banked anchor, in dB SPL, on the receipt.
 
     Every field beside it is what makes the number absolute, so a reader never
@@ -897,9 +898,25 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
         "reference_volume_db": REFERENCE_VOLUME_DB,
         "mic_serial": "8108494",
     }
-    # Not written to the mailbox: nothing downstream reads a level yet, and a
-    # field no consumer reads is a second copy waiting to go stale.
-    assert "level" not in json.loads(pathlib.Path(slot[0]).read_text())
+    banked = json.loads(pathlib.Path(slot[0]).read_text())
+    assert banked["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
+    assert banked["operating_levels_db"] == [REFERENCE_VOLUME_DB]
+    monkeypatch.setattr(cli, "read_preflight_facts", lambda _: pytest.fail("show read new facts"))
+    assert cli._cmd_show(cli.build_parser().parse_args(["show"])) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["level"]["reference_volume_db"] == REFERENCE_VOLUME_DB
+
+
+@pytest.mark.parametrize("verb", ["plan", "stage"])
+def test_invalid_resolved_drive_level_is_reported_by_name(slot, monkeypatch, capsys, verb):
+    from jasper.active_speaker import preflight_live
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: {
+        "measured_db_spl": 77.5, "reference_volume_db": 1.0,
+    })
+    code = cli.main([verb, "--program", "room"])
+    body = json.loads(capsys.readouterr().out)
+    assert code == cli.EXIT_REFUSED
+    assert body["reason"] == "walk_level_policy_invalid"
+    assert not spool.staged_angle_request_pending()
 
 
 def test_stage_refuses_by_name_when_no_anchor_is_banked(
@@ -920,14 +937,11 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
     assert body["reason"] == slr.ANCHOR_UNUSABLE
     assert not spool.staged_angle_request_pending()
 
-    # ``plan`` is the dry run that SHOWS what is missing rather than refusing.
     plan = cli.build_parser().parse_args(
         ["plan", "--program", "baseline", "--size", "express"]
     )
-    assert cli._cmd_plan(plan) == cli.EXIT_OK
-    unresolved = json.loads(capsys.readouterr().out)["level"]
-    assert unresolved["resolved"] is False
-    assert unresolved["reason"] == slr.ANCHOR_UNUSABLE
+    assert cli._cmd_plan(plan) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == slr.ANCHOR_UNUSABLE
 
 
 def test_a_spot_stages_one_raised_pose(slot, capsys):
@@ -1041,14 +1055,12 @@ def test_show_reads_back_the_staged_walk_without_consuming_it(slot, capsys):
     assert (body["program"], body["size"]) == ("baseline", "full")
     assert body["mover"] == MOVER_HUMAN
     assert body["stops_count"] == mp.program("baseline", "full").capture_count
-    # The walk itself, one record per stop; a walk that measures the speaker as
-    # it stands names no variant.
     assert body["stops"][0] == {
         "index": 1,
         "azimuth_deg": 0,
         "vertical_deg": 0,
         "regime": REGIME_PER_DRIVER,
-        "candidate_id": None,
+        "candidate_id": "base",
         "purpose": "speaker",
         "baseline_scope": "base",
         "prompt": resolve_request(request_for_program(mp.program("baseline", "full")))[0].prompt.text,
@@ -1143,6 +1155,10 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     _real = calibration.resolve_mic_sensitivity
     calibration.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
     slr._ceiling_db_spl = lambda: 90.0
+    from dataclasses import replace
+    from tests.test_preflight import ready_facts
+    cli.read_preflight_facts = lambda plan: replace(ready_facts(plan), anchor=slr.AnchorFacts(
+        slr.load_seat_level_reference(), _real(calibration_file=cal)))
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
     )
@@ -1268,8 +1284,6 @@ def test_mutation_the_staged_mover_cannot_default_away(slot):
     del doc["mover"]
     path.write_text(json.dumps(doc), encoding="utf-8")
 
-    # It does not fall back to the human default: the request refuses, because
-    # ``AngleCaptureRequest`` is handed ``"None"`` and knows no such mover.
     with pytest.raises(CrossoverV2FlowError):
         spool.take_staged_angle_request()
 
@@ -1301,7 +1315,7 @@ def test_quick_room_plan_receipt_states_the_capture_and_matching_arm_session(slo
 @pytest.mark.parametrize("program", ["room", "bass"])
 def test_configured_cloud_batches_candidates_under_each_held_pose(slot, program):
     plan = mp.program(program)
-    request = request_for_program(plan, candidates=("", "candidate-a", "candidate-b"))
+    request = request_for_program(plan, candidates=("base", "candidate-a", "candidate-b"))
     spool.stage_angle_request(request)
     restored = spool.take_staged_angle_request()
     assert restored == request

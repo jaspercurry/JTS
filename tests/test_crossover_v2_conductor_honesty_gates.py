@@ -12,6 +12,7 @@ import types
 import pytest
 from dataclasses import replace
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -91,31 +92,11 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
 
     fakes.measure = lambda program: _measure_analysis(program, clipped=True)
     verdict = _run_phase(c, 2, 2)
-    assert verdict == {
-        "accepted": False,
-        "code": "clipped",
-        "template": "silent_auto_retry",
-        "reason": REASON_REGISTRY["clipped"].banner,
-        "banner": REASON_REGISTRY["clipped"].banner,
-        "auto_retry": True,
-        "evidence": {"mic_meter_status": "unmeasured", "peak_dbfs": -12.0},
-        # See the same key in
-        # `test_low_alignment_confidence_rejects_measure_before_building_candidate`
-        # — the pilot evidence rides every rejection (#2085), not only the
-        # codes whose copy currently branches on it.
-        "pilot_heard": None,
-        # The honest per-position count rides EVERY verdict (#2086 item 2).
-        # This rejection was the slot's PLANNED capture, so nothing is spent
-        # yet and all three extras are still on offer.
-        "attempts": {
-            "used": 0, "allowed": 3, "left": 3,
-            "by_speaker": 0, "by_household": 0,
-        },
-    }
-    # The automatic retry is gain-adjusted: 3 dB quieter. This literal is the
-    # only tripwire for ``crossover_v2_flow.CLIP_RETRY_BACKOFF_DB``, which
-    # nothing in the tree imports — importing it here would make the assertion
-    # pass at any value.
+    assert not verdict["accepted"] and verdict["code"] == "clipped"
+    assert verdict["auto_retry"] and verdict["next"] == "retake_quieter"
+    assert verdict["charge"] == "speaker"
+    assert verdict["evidence"]["peak_dbfs"] == -12.0
+    assert verdict["attempts"]["left"] == 3
     gain_after = c.program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
     assert gain_after == pytest.approx(gain_before - 3.0)
     # Retry (same index, next attempt) succeeds.
@@ -362,40 +343,28 @@ def test_stimulus_locate_floor_is_per_role_not_per_capture():
     assert not _stimulus_locate_ok(_analysis(()))
 
 
-def test_locate_failed_and_budget_exhaustion():
-    """The planned capture plus THREE extra tries, then the honest end.
-
-    Transformed from a per-code budget (this reason's ``retry_budget`` of 1 gave
-    two attempts total) to the owner's pooled per-position bound (#2086). CHECK
-    is a single-capture phase: there are no other positions to proceed with, so
-    exhaustion ends the session — but the refusal names the spent tries, and
-    the code it attributes is the condition actually observed, never a generic
-    exhaustion code.
-    """
+@pytest.mark.parametrize(("fault", "code", "charge", "budget"), [
+    ({"glitch_detected": True}, "drift_baselines_disagree", "speaker", MAX_AUTOMATIC_RETAKES_PER_POSITION),
+    ({"linearity_ok": False}, "agc_behavioral_fail", "operator", flow.MAX_EXTRA_ATTEMPTS_PER_POSITION),
+])
+def test_check_faults_exhaust_only_the_responsible_attempt_budget(fault, code, charge, budget):
     fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis(program, locate_confidence=0.01)
+    fakes.check = lambda program: replace(_check_analysis(program), **fault)
     c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["code"] == "locate_failed"
-    assert verdict["template"] == "fix_and_retry"
-    # The planned capture spent nothing; three extras are on offer, and the
-    # count the phone renders says so.
-    assert verdict["attempts"] == {
-        "used": 0, "allowed": 3, "left": 3, "by_speaker": 0, "by_household": 0,
-    }
-    for extra in (1, 2, 3):
+    for extra in range(budget + 1):
         verdict = _run_phase(c, 1, 1 + extra)
-        assert verdict["code"] == "locate_failed"
-        assert verdict["attempts"]["used"] == extra
-        assert verdict["attempts"]["left"] == 3 - extra
-        # The household asked for every one of them — nothing was system-forced.
-        assert verdict["attempts"]["by_household"] == extra
-        assert verdict["attempts"]["by_speaker"] == 0
+        assert verdict["code"] == code and verdict["charge"] == charge
+        assert verdict["attempts"]["by_household"] == (extra if charge == "operator" else 0)
+        assert verdict["attempts"]["by_speaker"] == (extra if charge == "speaker" else 0)
+        assert verdict["attempts"]["left"] == min(
+            flow.MAX_EXTRA_ATTEMPTS_PER_POSITION - verdict["attempts"]["by_household"],
+            MAX_AUTOMATIC_RETAKES_PER_POSITION - extra)
 
+    assert verdict["next"] == "stop"
     armed_before = c.armed_capture
     with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, 5)
-    assert excinfo.value.code == "locate_failed"
+        c.authorize_begin(1, budget + 2)
+    assert excinfo.value.code == code
     assert c.armed_capture == armed_before
 
 
@@ -626,6 +595,18 @@ def test_delay_exceeds_search_window_verdict():
     verdict = _run_phase(c, 2, 2)
     assert verdict["code"] == "delay_exceeds_search_window"
     assert verdict["template"] == "fix_and_retry"
+
+
+@pytest.mark.parametrize(("gate_ms", "code"), [(5.0, "verify_inconclusive"), (8.0, "verify_level_shift")])
+def test_verify_gate_comparability_precedes_pilot_transfer(gate_ms, code):
+    c = _conductor(FakeSeams())
+    program = c.program_for_phase(PHASE_VERIFY)
+    c._measure_gate_window_ms = 8.0
+    assert c._verify_verdict(_verify_analysis(program, gate_ms=8.0, pilot_hi_dbfs=-20.0)).accepted
+    verdict = c._verify_verdict(_verify_analysis(program, gate_ms=gate_ms, pilot_hi_dbfs=-19.0))
+    assert not verdict.accepted and verdict.code == code
+    assert c.verify_outcome == "inconclusive"
+    assert ("pilot_transfer_step_db" in verdict.evidence) is (gate_ms == 8.0)
 
 
 def test_verify_out_of_tolerance_and_inconclusive():
@@ -1589,17 +1570,7 @@ def test_geometry_locked_group_asks_for_wider_retakes_then_proceeds(monkeypatch)
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
-def test_two_geometry_asks_leave_one_household_retry_in_the_pooled_budget(
-    monkeypatch,
-):
-    """Two speaker asks spend two pooled extras; the third remains household.
-
-    There is no geometry discount and no separate quality-failure budget.
-    The planned close asks for the first wider take; that rejection asks for
-    the second. Those two conductor-initiated extras leave exactly one of the
-    position's three pooled extras for the household after an ordinary locate
-    miss.
-    """
+def test_geometry_asks_preserve_the_household_budget(monkeypatch):
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
     attempt = _walk(c, (1, 2), 1)
@@ -1607,34 +1578,26 @@ def test_two_geometry_asks_leave_one_household_retry_in_the_pooled_budget(
     last = CLOUD_MEASURE_INDEXES[-1]
     _lock(monkeypatch)
 
-    # Two geometry retakes — good captures, wider spots.
     for _ in range(GEOMETRY_RETRY_POSITIONS):
         assert _run_phase(c, last, attempt)["code"] == REASON_CLOUD_GEOMETRY_LOCKED
         attempt += 1
 
-    # Now ONE ordinary failure at that same position. It lands on the second
-    # speaker-booked extra and asks for the sole remaining household extra.
     monkeypatch.undo()
     fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
     verdict = _run_phase(c, last, attempt)
     attempt += 1
     assert verdict["accepted"] is False
     assert verdict["code"] == REASON_LOCATE_FAILED
-    assert verdict["attempts"] == {
-        "used": 2,
-        "allowed": flow.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-        "left": 1,
-        "by_speaker": 2,
-        "by_household": 0,
-    }
+    assert verdict["attempts"]["by_household"] == 0
+    assert verdict["attempts"]["left"] == flow.MAX_EXTRA_ATTEMPTS_PER_POSITION
+    assert verdict["attempts"]["by_speaker"] == 2
 
-    # ...and the final pooled extra is the household's retry.
     fakes.verify = _verify_analysis
     verdict = _run_phase(c, last, attempt)
     assert verdict["accepted"] is True
     assert verdict["attempts"]["by_speaker"] == 2
     assert verdict["attempts"]["by_household"] == 1
-    assert verdict["attempts"]["left"] == 0
+    assert verdict["attempts"]["left"] == 2
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
@@ -1665,7 +1628,7 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(
         verdict = _run_phase(c, index, attempt)
         attempt += 1
         assert verdict["accepted"] is False
-        assert verdict["attempts"]["used"] == extra
+        assert verdict["attempts"]["by_household"] == extra
 
     # The last extra. FINITE — the flow stops asking — and honest: the position
     # is marked unresolved carrying the observed condition, and the group

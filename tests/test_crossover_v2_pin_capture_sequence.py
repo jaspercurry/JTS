@@ -73,7 +73,7 @@ def test_the_snapshot_carries_no_retry_ledger_so_a_resume_restores_full_extras()
     spent = _run_phase(conductor, 2, 3)
 
     # One extra really was spent before the rebuild.
-    assert spent["attempts"]["used"] == 1
+    assert spent["attempts"]["by_household"] == 1
     assert spent["attempts"]["left"] == MAX_EXTRA_ATTEMPTS_PER_POSITION - 1
 
     snapshot = conductor.snapshot()
@@ -91,7 +91,7 @@ def test_the_snapshot_carries_no_retry_ledger_so_a_resume_restores_full_extras()
     assert resumed._slot_attempts == {}
 
     after = _run_phase(resumed, 2, 4)
-    assert after["attempts"]["used"] == 0
+    assert after["attempts"]["by_household"] == 0
     assert after["attempts"]["left"] == MAX_EXTRA_ATTEMPTS_PER_POSITION
 
 
