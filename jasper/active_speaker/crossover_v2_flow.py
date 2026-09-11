@@ -1744,8 +1744,7 @@ class CrossoverV2Session:
         ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.get(slot)
 
         decision = _admission.assess_begin(
-            ledger=(replace(executor_ledger, admitted=int(attempt > 1))
-                    if executor_ledger is not None else ledger),
+            ledger=None if executor_ledger is not None and attempt == 1 else ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,

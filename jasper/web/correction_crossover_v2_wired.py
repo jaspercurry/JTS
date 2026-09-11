@@ -13,7 +13,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginRefused,
@@ -32,16 +32,14 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
 )
 from jasper.log_event import log_event
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
+
 
 def resolve_v2_wired_mic(
     *,
     proc_asound: str | os.PathLike[str] = "/proc/asound",
 ) -> WiredMicDevice:
-    """The measurement mic this session records on, resolved at prepare.
+    """The measurement mic this session records on, resolved at admission.
 
     ``require_wired_mic`` owns the probe and the disclosure
     (:class:`~jasper.audio_measurement.wired_capture.WiredMicMissing`); this
@@ -128,12 +126,19 @@ def build_v2_wired_run_and_consume(
                 raise CaptureBeginRefused("session_ceiling_expired", "The run exceeded its time limit")
             conductor.authorize_begin(index, attempt, entry, executor_ledger=ledger)
 
+        async def measure(spec: Any) -> Any:
+            measured: list[Any] = []
+            async def body() -> None:
+                measured.append(await tuning.measure(spec))
+            await host._play_under_session_pause(body)
+            return measured[0]
+
         try:
             opened = await volume.open()
             if opened is not None and str(getattr(opened, "value", opened)) != "opened":
                 raise CrossoverV2Refused("The measurement volume did not open", code="measurement_volume_drift")
             result = await plan_run.run_plan(
-                request, session=tuning, manifest=manifest, analyze=analyze, assessor=assessor,
+                request, session=tuning, manifest=manifest, analyze=analyze, assessor=assessor, measure=measure,
                 gate=position_gate, candidate_scopes=candidate_scopes, captures=captures,
                 signals=signals, admit=admit, aborts={CaptureStopped: "user_stopped"},
                 spl_monitor=spl_monitor, gain_ceiling_db=conductor._measure_gain_ceiling_db,
@@ -142,12 +147,12 @@ def build_v2_wired_run_and_consume(
                 if result.reason == "user_stopped" or result.cancelled:
                     raise CaptureStopped("capture stopped")
                 raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
-            host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
         except BaseException as exc:
             envelope = refusal_envelope(exc)
             code = envelope["code"] or "internal_error"
             if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):
                 code = "user_stopped"
+            envelope = refusal_envelope(code=code)
             try:
                 if position_gate is not None:
                     position_gate.abandon_hold()
@@ -158,7 +163,10 @@ def build_v2_wired_run_and_consume(
                 await _abandon_best_effort(session_id, volume)
             raise
         else:
-            await _drain_volume(session_id, volume.close, "volume_close")
+            try:
+                host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
+            finally:
+                await _drain_volume(session_id, volume.close, "volume_close")
 
     return run
 

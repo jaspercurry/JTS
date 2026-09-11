@@ -67,7 +67,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from jasper.active_speaker import preflight, preflight_live
 from typing import (
-    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
+    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence,
     TypeVar, cast,
 )
 
@@ -102,7 +102,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_PREDICTED_SUM as CAPABILITY_PREDICTED_SUM,
     CAPABILITY_ROLLBACK,
     PHASE_MEASURE,
-    PHASE_VERIFY,
     PHASE_CLOUD_VERIFY,
     PHASE_CLOUD_MEASURE,
     STAGE_MEASURE_CAPABILITIES,
@@ -233,6 +232,7 @@ def classify_program_failure(
     )
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused  # lazy: graph import cost
+    from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
@@ -240,6 +240,8 @@ def classify_program_failure(
 
     if isinstance(exc, MeasurementGraphRefused):
         return exc.code, ()
+    if isinstance(exc, SessionGraphError):
+        return "measurement_graph_unavailable", ()
     if (
         isinstance(exc, StimulusCaptureStopped)
         and exc.code == WiredSplCeilingExceeded.code
@@ -1541,7 +1543,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         TIER_EXPRESS,
         TIER_FULL,
     )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
@@ -3175,16 +3176,6 @@ def bind_production_play(
     return ProductionPlay(graph=session_graph, compose=compose)
 
 
-# --------------------------------------------------------------------------- #
-# what the host hands the capture provider (S1a/S1c)
-# --------------------------------------------------------------------------- #
-#
-# The plan runner itself is jasper.web.correction_crossover_v2_wired's own
-# (reached where it lives). These stay HERE because they are host policy the
-# provider merely drives: the volume lifecycle it is handed, the group-close
-# seam, and the eager-fit starter it calls back into.
-
-
 @dataclass(frozen=True)
 class V2VolumeHooks:
     """The session-volume lifecycle the runner drives (§5.5)."""
@@ -3293,21 +3284,8 @@ class V2PreparedSession:
     open: Callable[[], Any]
     run_and_consume: Callable[[Any], Any]
     request_stop: Callable[[], None]
-    #: This session's position gate, or ``None`` for an ungated one. Built for
-    #: either GATED shape (``V2PlanShape.positions_gated``): the remote tier,
-    #: and a hand-walked round. ``correction_setup`` reads
-    #: :meth:`PositionGate.pending` into the status block the envelope renders,
-    #: and routes the release POST to :meth:`PositionGate.release`.
     position_gate: PositionGate | None = None
-    #: The session's completion signal for a held set (work order D1). The W3
-    #: wizard surface is what will POST this; it exists now because the
-    #: held-set walk semantics need a signal source to be complete.
     request_complete: Callable[[], None] | None = None
-    #: The session's per-take RETAKE signal. ``None`` on a GATELESS session,
-    #: which never waits for a person to serve it in. Routed from
-    #: ``POST /crossover/v2/retake`` through the same slot as
-    #: :attr:`request_complete`, and honoured in either window where the walk
-    #: is waiting on a person: a HELD BEGIN, or the held-set window.
     request_retake: Callable[[], None] | None = None
     join_spec: Any = None
     session_id: str = ""
@@ -3832,13 +3810,6 @@ def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
 def _wired_stimulus_capture(
     wired_device: Any, evidence_store: Any, *, spl_monitor: Any = None, read_loudness_volume_db: Any = None,
 ) -> Any:
-    """The play seam's capture half: the Pi's own microphone, on the box the
-    stimulus comes out of.
-
-    ``spl_monitor`` is the watch a staged walk's stated ceiling bought
-    (:func:`_take_staged_angle_walk`); ``None`` on every session that stages
-    none, which is every ordinary one.
-    """
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
         WiredStimulusCapture,
     )  # lazy: ALSA capture boundary
@@ -4011,7 +3982,7 @@ def prepare_v2_session(
         )
         from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
         from jasper.active_speaker.crossover_v2.journey import (
-            LATERAL_CONSUMER_FC_SELECTOR,
+            LATERAL_CONSUMER_FORWARD_MODEL,
         )
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
@@ -4034,17 +4005,12 @@ def prepare_v2_session(
                 "the measurement volume needs recovery; recover it before starting "
                 "a new session"
             )
-        if session_volume_plan().needs_recovery:
-            raise CrossoverV2Refused(
-                "the measurement volume needs recovery; recover it before starting "
-                "a new session"
-            )
         context = resolve_conductor_context(status)
         facts = preflight_live.read_preflight_facts(request, context=context)
         report = preflight.preflight(request, facts)
         issue = next((issue for issue in report.issues if issue.blocking), None)
         if issue is not None:
-            raise CrossoverV2Refused(issue.detail, code=issue.code)
+            raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
         request = report.plan
         assert request.level.resolved is not None
         context = dataclasses.replace(context, session_volume_db=request.level.resolved.reference_volume_db)
@@ -4120,7 +4086,11 @@ def prepare_v2_session(
         if request.template.level_matched and not engine_level_trims:
             raise CrossoverV2Refused("No measured driver levels are available", code="walk_level_match_no_evidence")
         from jasper.active_speaker.angle_capture import resolve_request
-        lateral_prompts = tuple(stop.prompt for stop in resolve_request(request))
+        lateral_prompts = tuple(
+            resolve_request(dataclasses.replace(request, stops=(capture.stop,),
+                candidates=(capture.stop.candidate_id or "base",), repeats=1))[0].prompt
+            for capture in captures if capture.spec.program_phase == "lateral"
+        )
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     if verify_only:
         import numpy as np
@@ -4198,7 +4168,7 @@ def prepare_v2_session(
     spec = None if verify_only else build_inline_session_spec(
         captures, roles_bands=context.roles_bands, fc_hz=session_fc_hz,
         acknowledgement_binding=acknowledgement_binding,
-        retries_per_pose=request.retries_per_pose,
+        retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
         default_setup_calibration=default_setup_calibration_for_v2(),
     )
     if not verify_only:
@@ -4344,7 +4314,7 @@ def prepare_v2_session(
                 driver_spacing_m=context.driver_spacing_m,
                 driver_class_by_role=context.driver_class_by_role,
                 radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-                lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
+                lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 lateral_prompts=lateral_prompts,
                 measure_specs_by_index=engine_measure_specs,
                 measurement_protection_sections_by_role=protection_sections,
@@ -4381,8 +4351,9 @@ def prepare_v2_session(
             device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
         )
         from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
-        from jasper.active_speaker.run_manifest import RunManifest
-        manifest = RunManifest(session_id, _record_store(evidence_store, session_id))
+        from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
+        manifest = RunManifest(session_id, _record_store(evidence_store, session_id),
+                               incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
         captured_records = CapturedRecordStore(manifest, stimulus_capture)
 
         tuning = TuningSession(
@@ -4398,7 +4369,8 @@ def prepare_v2_session(
             level_match_trims_db=engine_level_trims,
         )
         from jasper.web.correction_plan_capture import bind_plan_analysis
-        analyze, assessor = bind_plan_analysis(conductor, captured_records, verify_only=verify_only)
+        analyze, assessor = bind_plan_analysis(conductor, captured_records, manifest=manifest,
+                                              evidence=refs, verify_only=verify_only)
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
         if verify_only:

@@ -296,9 +296,10 @@ class CrossoverV2Refused(ValueError):
     the same action the hard-stop screen would have shown, from the same entry.
     """
 
-    def __init__(self, *args: Any, code: str = "") -> None:
+    def __init__(self, *args: Any, code: str = "", next_action: Mapping[str, Any] | None = None) -> None:
         super().__init__(*args)
         self.code = code
+        self.next_action = next_action
 
 
 def round_restore_reason(cause: str) -> str:
@@ -702,11 +703,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_PROGRAM_PLAN_SHAPE_INVALID: ReasonSpec(
         REASON_PROGRAM_PLAN_SHAPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
-        "JTS could not start the measurement because this link's settings "
-        "(the tier or number of positions) are not ones this build "
-        "recognizes. Start over from this page to pick a tier.",
+        "JTS could not read the measurement plan. Submit a complete plan in the current format.",
         next_action={
-            "id": "select_tier",
+            "id": "review_plan",
             "label": "Start over",
             "href": "/sound/speaker/crossover/",
         },
@@ -954,7 +953,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
         REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
-        'Restage the measurement plan with the current request format.',
+        'Submit the measurement plan in the current request format.',
+        next_action={"id": "review_plan", "label": "Review measurement settings",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_CEILING_ABOVE_STOP: ReasonSpec(
         REASON_WALK_CEILING_ABOVE_STOP, TEMPLATE_HARD_STOP, 0, "",
@@ -1052,6 +1053,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The measurement stopped because the microphone heard the speaker "
         "louder than the ceiling for this session. Lower the level and "
         "measure again.",
+    ),
+    "capture_slot_busy": ReasonSpec(
+        "capture_slot_busy", TEMPLATE_HARD_STOP, 0, "",
+        "Another measurement holds the capture slot. Finish or cancel it, then join again.",
+        next_action={"id": "finish_measurement", "label": "Review the active measurement",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(
         REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",

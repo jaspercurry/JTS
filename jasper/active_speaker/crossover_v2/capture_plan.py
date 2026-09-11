@@ -97,7 +97,8 @@ def prepare_plan_captures(
     if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
         base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
         base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
-                                                       regime=REGIME_SUMMED),),
+            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
+            headline="", detail="", regime=REGIME_SUMMED),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request, candidate_scopes={},
                                 prompts=(resolve_request(base_request)[0].prompt,))
@@ -117,9 +118,10 @@ def prepare_plan_captures(
 
 def build_inline_session_spec(
     captures: Sequence[PlanCapture], *, roles_bands: Sequence[RoleBand], fc_hz: float | None,
-    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
+    acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
 ) -> Any:
-    from jasper.capture_protocol import CapturePlan, CapturePlanEntry
+    from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
+    from .refusal_copy import CrossoverV2Refused
     from ..angle_capture import pose_at_angle  # lazy: angle_capture imports pose primitives here
 
     prompts = [pose_at_angle(c.stop.angle_deg, c.stop.elevation_deg, kind=c.stop.kind,
@@ -144,9 +146,13 @@ def build_inline_session_spec(
             duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
             screen={"progress": capture_progress_label(index, len(captures)),
                     "title": prompt.headline, "body": prompt.detail,
+                    POSITION_HAND_RELEASED_KEY: str(hand_released).lower(),
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
-    plan = CapturePlan(capture_target=len(entries), max_attempts=len(entries) * (1 + retries_per_pose),
+    attempts = len(entries) + sum(1 for _ in groupby(c.stop.place for c in captures)) * retries_per_pose
+    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
+    plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,
                        schema_version=2, entries=tuple(entries))
     return build_crossover_sweep_spec(
         driver_label="crossover", driver_role="summed", acknowledgement_binding=acknowledgement_binding,

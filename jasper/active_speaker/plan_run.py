@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from threading import Event
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -176,6 +176,7 @@ async def run_plan(
     captures: Sequence[PlanCapture] | None = None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
+    measure: Callable[[MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
     manifest.request_fingerprint = request_fingerprint(request)
     manifest.program = request.program
@@ -230,7 +231,7 @@ async def run_plan(
             work.append(_Work(spec, manifest.planned[offset], pose_index, config, len(rows), entry))
     return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
-                      clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor)
+                      clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
 
 
 async def run_specs(
@@ -283,6 +284,7 @@ async def _run(
     retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
+    measure: Callable[[MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, asyncio.CancelledError)
@@ -349,8 +351,9 @@ async def _run(
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
                 take_started = clock()
-                if retry is not None and admit is None:
-                    ledger.spend(retry.charge)
+                if retry is not None:
+                    if admit is None:
+                        ledger.spend(retry.charge)
                     progress["budget"] = ledger.to_payload()
                     if gate:
                         gate.publish(progress)
@@ -358,7 +361,7 @@ async def _run(
                 if admit is None:
                     ledger.admitted += 1
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
-                outcome = await session.measure(spec)
+                outcome = await (measure or session.measure)(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
                 records = manifest.pending_records or [({}, "")]

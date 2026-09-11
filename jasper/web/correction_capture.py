@@ -28,6 +28,7 @@ from typing import Any
 
 
 from ..audio_measurement import household_mic
+from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from ..log_event import log_event
 
 from ._common import refusal_envelope
@@ -213,8 +214,15 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
     slot prevents a second run from entering during cleanup.
     """
 
-    global _capture_slot
+    global _capture_slot, _pending_capture
     with _session_lock:
+        if _pending_capture is not None and _pending_capture[0].label.startswith(kind_prefix):
+            kind, _ = _pending_capture
+            _pending_capture = None
+            stopped = {"status": "stopped", "kind": kind.label}
+            if not _capture_slot or _capture_slot.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+                _capture_slot = stopped
+            return stopped
         capture = _capture_slot
         if capture is None or capture.get("status") not in _CAPTURE_STOPPABLE_STATUSES:
             raise ValueError("no matching capture is running")
@@ -276,13 +284,16 @@ class CaptureKind:
 def _pending_payload(kind: CaptureKind) -> dict[str, Any]:
     return {"status": "awaiting_join", "kind": kind.label, "session_id": kind.session_id,
             "url": "/sound/speaker/crossover/", "first_prompt": dict(kind.join_entry.screen),
+            "join": kind.position_gate.invitation(kind.join_entry) if kind.position_gate else None,
             "index": 1, "attempt": 1}
 
 
 def _stage_capture(kind: CaptureKind, *, idle_hold: Callable[[str], AbstractContextManager[Any]]) -> dict[str, Any]:
-    global _pending_capture
+    global _pending_capture, _capture_slot
     with _session_lock:
         _pending_capture = (kind, idle_hold)
+        if _capture_slot and _capture_slot.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+            _capture_slot = None
     return _pending_payload(kind)
 
 
@@ -301,9 +312,14 @@ def _join_capture(index: int, attempt: int) -> dict[str, Any] | None:
     except Exception as exc:
         if kind.position_gate is not None:
             envelope = refusal_envelope(exc)
+            if not envelope["code"]:
+                envelope = refusal_envelope(code="internal_error")
             kind.position_gate.abandon_hold()
             kind.position_gate.publish({"status": "failed", "fault": envelope["code"],
                                         "next_action": envelope["next_action"]})
+            capture = _get_capture_slot()
+            if capture and capture.get("status") == "failed" and capture.get("kind") == kind.label:
+                _set_capture_slot({**capture, **envelope, "run": kind.position_gate.published()["run"]})
         raise
 
 
@@ -344,10 +360,10 @@ def _run_capture(
         # wording, never misreport which measurement is in the way.
         holder = _get_capture_slot()
         held_by = str(holder.get("kind") or "") if holder else ""
-        raise ValueError(
+        raise CrossoverV2Refused(
             (f"a capture ({held_by})" if held_by else "another capture")
             + " already holds the measurement slot; finish or cancel it"
-            " before starting another"
+            " before starting another", code="capture_slot_busy",
         )
     spawned = False
     session_hold = ExitStack()

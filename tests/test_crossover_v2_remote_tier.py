@@ -28,7 +28,6 @@ import logging
 import re
 import secrets
 import threading
-import contextlib
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -107,7 +106,6 @@ from tests.crossover_v2_fixtures import (
 # says the module-level name is deliberate.
 from tests.test_crossover_v2_stage_bridge import (
     _isolated_v2_state as _isolated_v2_state,
-    _open_prepared,
     _production_host_seams as _production_host_seams,
     _status,
 )
@@ -1269,61 +1267,19 @@ def test_only_a_hand_walked_shape_is_told_a_person_releases_its_begins():
     assert _hand_released_plan_shape(None) is None
 
 
-def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
-    caplog, monkeypatch,
-):
-    """The acceptance criterion, through the REAL preparer.
-
-    A hand-walked round has nothing pacing it: without a hold the local runner
-    fires every capture back to back while the household is still walking. So
-    a hand-walked shape opens gated, announces WHO releases the holds, and
-    carries the local retake seam.
-    """
-    from jasper.web import correction_crossover_v2 as v2host
-
-    caplog.set_level(logging.INFO, logger=v2host.__name__)
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic",
-        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
-    )
-    prepared = v2host.prepare_v2_session(
-        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
-    )
-
-    assert prepared.position_gate is not None
-    assert prepared.request_retake is not None
-    assert prepared.request_complete is not None
-    fields = event_fields(caplog, "correction.crossover_v2_remote_session_open")
-    assert fields["tier"] == TIER_FULL
-    assert fields["hand_released"] == "true"
-
-
-def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
-    """STAGE 2 through the real preparer (#2879 gate S2).
-
-    The gate is built at TWO construction sites, and a source pin says they
-    read the same predicate — but only a drive proves stage 2 rebinds the shape
-    at all. Its plan is built inside ``_open``, so a rebind that landed one
-    line too late would emit a plan whose entries the gate cannot read.
-    """
+def test_a_hand_walked_wired_re_verify_opens_with_a_gate(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host
 
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
-    caplog.set_level(logging.INFO, logger=v2host.__name__)
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic",
-        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
-    )
+    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic",
+                        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"))
     prepared = v2host.prepare_v2_session(
         {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
         status=_status(), run_async=None, camilla_factory=None, verify_only=True,
     )
-
     assert prepared.position_gate is not None
     assert prepared.request_retake is not None
-    fields = event_fields(caplog, "correction.crossover_v2_remote_session_open")
-    assert fields["stage"] == "2"
-    assert fields["hand_released"] == "true"
+    assert prepared.join_spec is None
 
 
 def _opened_conductor(monkeypatch, v2host, prepared):
@@ -1349,45 +1305,17 @@ def _opened_conductor(monkeypatch, v2host, prepared):
     return captured["conductor"]
 
 
-def test_both_preparers_tell_their_conductor_whether_its_begins_are_held(
-    monkeypatch,
-):
-    """The wiring the two behavioural tests above cannot see (#2879 round-2).
-
-    ``test_a_geometry_locked_hand_released_group_refuses_too`` drives a
-    conductor directly, so it proves the RULE. This proves each REAL preparer
-    hands its conductor the fact that rule reads — the gate the host builds and
-    the fact the conductor decides with come off ONE shape, or they are two
-    answers again. Stage 2 needs saying most: its ctor is handed no ``tier`` at
-    all, so before this it decided from a tier it never had. (Its argument also
-    landed one call too early during this fix round, inside ``open_stage``,
-    which every existing test tolerated because nothing opened a stage-2
-    session on this path.)
-
-    Read privately on purpose. The fact selects a refusal branch and is
-    rendered nowhere, so it has no public surface; walking a whole opened
-    stage-2 session into a geometry lock would restate the behavioural test
-    rather than pin the wiring.
-    """
+def test_verify_preparer_binds_the_conductors_gate(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host
 
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic",
-        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
-    )
-    stage_1 = v2host.prepare_v2_session(
-        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
-    )
-    assert stage_1.position_gate is not None
-    assert _opened_conductor(monkeypatch, v2host, stage_1)._positions_gated is True
-
+    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic",
+                        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"))
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
-    stage_2 = v2host.prepare_v2_session(
+    prepared = v2host.prepare_v2_session(
         {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
         status=_status(), run_async=None, camilla_factory=None, verify_only=True,
     )
-    assert stage_2.position_gate is not None
-    assert _opened_conductor(monkeypatch, v2host, stage_2)._positions_gated is True
+    assert _opened_conductor(monkeypatch, v2host, prepared)._positions_gated is True
 
 
 def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatch):
@@ -1749,140 +1677,3 @@ def test_a_tap_paced_session_registers_no_gate_at_all():
         assert "position_pending" not in capture
     finally:
         correction_capture._set_capture_slot(None)
-
-
-def _tier_resolved_by_prepare(body, state, tmp_path):
-    """Which tier ``prepare_v2_session`` hands to ``resolve_plan_shape``.
-
-    Recorded at the resolver rather than inferred from a later refusal: the
-    preparer runs several gates this harness cannot satisfy, and "it failed
-    somewhere after the tier gate" is not evidence about the tier.
-    """
-    from jasper.active_speaker.crossover_v2 import capture_plan as plan_mod
-    from jasper.web import correction_crossover_v2 as v2host
-
-    seen: list = []
-    original = plan_mod.resolve_plan_shape
-
-    def _record(tier=None, **kwargs):
-        seen.append(tier)
-        return original(tier, **kwargs)
-
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
-    try:
-        v2host.save_v2_state(state)
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(plan_mod, "resolve_plan_shape", _record)
-            with contextlib.suppress(Exception):
-                v2host.prepare_v2_session(
-                    body, status={}, run_async=None, camilla_factory=None,
-                )
-    finally:
-        v2host.set_state_path_for_tests(None)
-    assert seen, "the preparer never reached the tier resolver"
-    return seen[0]
-
-
-@pytest.mark.parametrize(
-    "tier",
-    ["remote", "express", "full"],
-    ids=["remote_stays_remote", "express_stays_express", "full_stays_full"],
-)
-def test_a_re_measure_with_no_tier_inherits_the_lapsed_sessions(tier, tmp_path):
-    """#2639: every re-measure action the envelope mints posts ``{}``.
-
-    ``resolve_plan_shape`` is strict about unknown names and LENIENT about
-    absence, so an empty body resolved to ``full`` — and the envelope has no
-    way to name a tier, because the action does not know what the session was.
-    Observed on a live round-2 review screen: a REMOTE session's own retry
-    silently minted a tier the turntable rig cannot walk (full is not
-    externally positioned, and its verify plan raises in
-    ``position_angle_deg``). Express households were demoted by the same line.
-
-    All three tiers are walked rather than just the reported one: the defect
-    is the ABSENT-tier path, and a fix that special-cased remote would leave
-    express demoted exactly as it was.
-    """
-    resolved = _tier_resolved_by_prepare(
-        {}, {"session_id": "cap_lapsed", "tier": tier}, tmp_path,
-    )
-
-    assert resolved == tier
-
-
-def test_the_tier_a_household_explicitly_chooses_still_wins(tmp_path):
-    """The control. Inheriting must not turn the tier chooser into a no-op.
-
-    The Express done screen's "Run a Full measurement" posts an explicit tier
-    over a lapsed express session, and that is a household changing
-    instrument rather than retrying one.
-    """
-    from jasper.web import correction_crossover_v2 as v2host  # noqa: F401
-    from jasper.active_speaker.crossover_v2_flow import TIER_FULL
-
-    resolved = _tier_resolved_by_prepare(
-        {"tier": TIER_FULL}, {"session_id": "cap_lapsed", "tier": "express"},
-        tmp_path,
-    )
-
-    assert resolved == TIER_FULL
-
-
-def test_a_first_session_with_nothing_to_inherit_keeps_the_shipped_default(
-    tmp_path,
-):
-    """No lapsed session is not a tier. ``None`` must still reach the resolver
-    as ``None`` so the shipped default answers, rather than becoming an empty
-    string the strict half would refuse."""
-    from jasper.web import correction_crossover_v2 as v2host  # noqa: F401
-    assert _tier_resolved_by_prepare({}, {"session_id": "cap_first"}, tmp_path) is None
-
-
-def _walked_index_map(conductor):
-    """The index→phase map this conductor was OPENED with.
-
-    Reached past the session's public surface because the count it carries has
-    no public reader — ``session_phases`` de-duplicates, so it answers "which
-    phases" and never "how many captures". Named for the fact so a future
-    public property can replace the body.
-    """
-    return conductor._journey.plan.index_phase_map
-
-
-def test_a_remote_session_open_announces_the_captures_it_will_actually_take(
-    caplog, monkeypatch,
-):
-    """The positioner's only sizing surface must be the plan, not the shape.
-
-    ``crossover_v2_remote_session_open`` is emitted for an externally
-    positioned session and read by whoever is driving the arm. Why the old
-    value was wrong, which direction it fails in, and the 2026-08-19 near-miss
-    are written ONCE, at the emitter — ``prepare_v2_session``'s comment on this
-    field. Deliberately not restated here: a fact restated in a second place is
-    a fact that drifts, and this one already did.
-
-    Driven through the REAL preparer and compared against the map the conductor
-    is actually opened with, so the pin is "these two agree" rather than "the
-    line prints a 3". The control underneath is what makes that meaningful: the
-    shape target is a genuinely DIFFERENT number, so a regression to it fails
-    here instead of tying.
-    """
-    from jasper.web import correction_crossover_v2 as v2host
-
-    caplog.set_level(logging.INFO, logger=v2host.__name__)
-
-    prepared = v2host.prepare_v2_session(
-        {"tier": TIER_REMOTE}, status=_status(), run_async=None, camilla_factory=None,
-    )
-
-    fields = event_fields(caplog, "correction.crossover_v2_remote_session_open")
-    assert fields["stage"] == "1"
-    announced = int(fields["captures"])
-
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-    walked = len(_walked_index_map(conductor))
-
-    assert announced == walked
-    # The discriminating control, and the defect in one line: the number this
-    # journal used to carry is not the number of captures anyone walks.
-    assert resolve_plan_shape(TIER_REMOTE).measure_capture_target != walked

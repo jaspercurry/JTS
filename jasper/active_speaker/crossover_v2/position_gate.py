@@ -169,6 +169,15 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
+    def invitation(self, entry: Any) -> dict[str, Any]:
+        screen = entry.screen
+        return {"index": 1, "attempt": 1, "prompt": _prompt_of(screen),
+                "degrees": int(screen.get(POSITION_DEG_KEY, 0)),
+                "vertical_deg": int(screen.get(POSITION_VERTICAL_DEG_KEY, 0)),
+                "hand_released": screen.get(POSITION_HAND_RELEASED_KEY, "true") == "true",
+                "action": {"id": "crossover_v2_position_ready", "label": "Microphone is in place",
+                           "endpoint": POSITION_READY_ENDPOINT, "body": {"index": 1, "attempt": 1}}}
+
     def join(self, entry: Any) -> dict[str, Any]:
         """The first placement starts the hold clock (ADR-0305)."""
         try:

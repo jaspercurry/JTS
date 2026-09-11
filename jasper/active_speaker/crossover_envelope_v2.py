@@ -2386,6 +2386,14 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "cloud": None,
         }
 
+    capture = _mapping(status.get("capture"))
+    if capture.get("join"):
+        return _envelope(screen="microphone_check", active_step="microphone_check", verdict="",
+                         next_action=None, status=status)
+    if _mapping(capture.get("run")).get("status") == "complete":
+        return _envelope(screen="done", active_step="verify", verdict="Measurements saved.",
+                         next_action=None, status=status)
+
     v2 = _v2(status)
     phase = str(v2.get("phase") or PHASE_CHECK)
     active_step = _PHASE_STEP[phase]

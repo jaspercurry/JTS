@@ -240,7 +240,7 @@ def assess_begin(
         # outran the terminal verdict :data:`SETTLE_CONDITION_NOT_RETRIABLE`,
         # which names the same code, so the two accounts agree.
         return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
-    if not ledger.can_retry():
+    if not ledger.can_retry(ledger.charge):
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
     return BeginDecision(
         ADMIT,

@@ -14,7 +14,8 @@ from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, Excitation
 from jasper.audio_measurement.branch_program import build_branch_program
 
 
-def bind_plan_analysis(conductor: Any, records: Any, *, verify_only: bool = False) -> tuple[Any, Any]:
+def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
+                       verify_only: bool = False) -> tuple[Any, Any]:
     answer: Any = None
     index = attempt = 0
     phase = ""
@@ -33,10 +34,14 @@ def bind_plan_analysis(conductor: Any, records: Any, *, verify_only: bool = Fals
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
                   conductor._measure_priors() if phase == PHASE_MEASURE else
                   conductor._verify_priors() if verify_only else conductor._lateral_priors())
-        return conductor._seams.analyze(
+        analysis = conductor._seams.analyze(
             ExcitationProgram.from_dict(record["program"]), answer, priors,
             conductor._capture_geometry(phase, index), phase=phase,
         )
+        calibration = evidence.get("calibration", {}).get(phase, {})
+        manifest.calibration = {"id": calibration.get("calibration_id"),
+                                "curve_fingerprint": calibration.get("curve_fingerprint")}
+        return analysis
 
     def assessor(analysis: Any, **kwargs: Any) -> TakeVerdict:
         if phase == PHASE_CHECK:
@@ -46,7 +51,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, verify_only: bool = Fals
                        if phase == PHASE_VERIFY else
                        conductor._consume_cloud_position(PHASE_CLOUD_VERIFY, index, attempt, analysis, answer))
         else:
-            return assess(analysis, **kwargs)
+            return assess(analysis, **{**kwargs, "gain_ceiling_db": conductor._measure_gain_ceiling_db})
         if verdict.accepted:
             conductor._note_accepted(phase, index)
         return TakeVerdict(verdict.accepted, fault=verdict.code, evidence=verdict.evidence,
