@@ -4,7 +4,7 @@
 
 """Delta-probe verification: did the speaker do what the correction asked?
 
-Pure computation; the session owns I/O, state and rollback.
+Pure computation; verdicts advise the operator and do not change playback.
 ``commanded_delta_db`` is the applied graph's predicted sum minus the graph
 it replaces; ``realized_delta_db`` is the measured post-apply response minus
 that same prior-graph prediction — not level-offset-invariant (hence
@@ -28,21 +28,21 @@ from jasper.audio_measurement.frame_fit import FRAME_UNFITTED, FrameFit, fit_fra
 
 #: The correction realized what it commanded.
 VERDICT_MATCHED = "matched"
-#: Realized and commanded disagree in SHAPE. Roll back and flag.
+#: Realized and commanded disagree in SHAPE. Advise against keeping.
 VERDICT_MODEL_ERROR = "model_error"
 #: Realized tracks commanded shape but falls materially short in scale on a
-#: lift. A compression diagnostic. Roll back and flag.
+#: lift. A compression diagnostic. Advise against keeping.
 VERDICT_LEVEL_DEPENDENT_SHORTFALL = "level_dependent_shortfall"
 #: Matched at the mark, but the cross-position spread WIDENED — routes to a
-#: placement-vs-speaker service verdict. Roll back.
+#: placement-vs-speaker service verdict.
 VERDICT_SPATIALLY_COSTLY = "spatially_costly"
 #: Fails ONLY because of a level shift measured where nothing was commanded
 #: (sufficient alone to explain the failure). Not in
-#: :data:`DELTA_PROBE_ROLLBACK_VERDICTS`.
+#: :data:`DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`.
 VERDICT_LEVEL_MISMATCH = "level_mismatch"
 #: Fails ONLY because of the FRAME between the two curves — offset and tilt
 #: fitted over quiet (uncommanded) bins (#2521). Supersedes any other
-#: rollback verdict; not in :data:`DELTA_PROBE_ROLLBACK_VERDICTS`.
+#: rollback verdict; not in :data:`DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`.
 VERDICT_FRAME_MISMATCH = "frame_mismatch"
 #: The correction commands nothing in the probe band, or curves could not
 #: be compared. Not a pass: no evidence to refuse on either.
@@ -67,11 +67,11 @@ DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
     VERDICT_SAFETY_ONLY,
 })
 
-#: Verdicts on which rollback is AUTOMATIC. ``unavailable`` is excluded — an
+#: Verdicts that advise against keeping the correction. ``unavailable`` is excluded — an
 #: absent measurement is not evidence of a bad correction. LEVEL_MISMATCH
 #: and FRAME_MISMATCH are excluded too (level/tilt axis, not shape; the
 #: known cause is our own accounting, not the correction).
-DELTA_PROBE_ROLLBACK_VERDICTS: frozenset[str] = frozenset({
+DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS: frozenset[str] = frozenset({
     VERDICT_MODEL_ERROR,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
     VERDICT_SPATIALLY_COSTLY,
@@ -296,8 +296,8 @@ def evaluate_spatial_cost(
 class DeltaProbeMap:
     """One applied correction's realized-vs-commanded verdict and evidence.
 
-    ``verdict`` is one of :data:`DELTA_PROBE_VERDICTS`; ``rollback`` is True
-    exactly when it is in :data:`DELTA_PROBE_ROLLBACK_VERDICTS`.
+    ``verdict`` is one of :data:`DELTA_PROBE_VERDICTS`; ``advises_against_keep`` is True
+    exactly when it is in :data:`DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`.
     ``gain_factor`` is the least-squares realized/commanded scale (1.0 =
     full depth), ``None`` when unavailable (never 0.0). Measured on the
     frame-removed curve (#2521), with an intercept
@@ -407,14 +407,14 @@ class DeltaProbeMap:
         return self.verdict == VERDICT_MATCHED
 
     @property
-    def rollback(self) -> bool:
-        return self.verdict in DELTA_PROBE_ROLLBACK_VERDICTS
+    def advises_against_keep(self) -> bool:
+        return self.verdict in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "verdict": self.verdict,
             "reason": self.reason,
-            "rollback": self.rollback,
+            "advises_against_keep": self.advises_against_keep,
             "probe_band_hz": list(self.probe_band_hz),
             "n_bins": self.n_bins,
             "max_error_db": self.max_error_db,
@@ -1219,7 +1219,7 @@ __all__ = [
     "DELTA_PROBE_REALIZATION_BANDS",
     "DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB",
     "DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS",
-    "DELTA_PROBE_ROLLBACK_VERDICTS",
+    "DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS",
     "DELTA_PROBE_SHORTFALL_GAIN_CEILING",
     "DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB",
     "DELTA_PROBE_TOLERANCE_HIGH_DB",

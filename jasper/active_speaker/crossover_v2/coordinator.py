@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The round coordinator: grade a round, act on the adoption table, restore if
-the table says restore, and bank the receipt.
-
-The module in the round tail that changes the speaker — it calls seams that act. It
-holds no session state (every input an argument, every output a return value),
-reaches no host object beyond :class:`RoundPorts`, and owns no household
-vocabulary: a refusal leaves as a :class:`RoundRefusal` kind the flow maps to a
-:mod:`.refusal_copy` code."""
+"""Grade a round and bank its advice without changing playback."""
 
 from __future__ import annotations
 
@@ -25,7 +18,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.log_event import log_event
 from jasper.output_topology import load_output_topology, topology_config_fingerprint
 
-from .contracts import ENTRY_GRAPH_FINGERPRINT_UNKNOWN, AdoptionOutcome
+from .contracts import ENTRY_GRAPH_FINGERPRINT_UNKNOWN
 from .journey import PHASE_VERIFY
 from .round_evidence import (
     EntryBaseline,
@@ -33,7 +26,7 @@ from .round_evidence import (
     build_round_receipt,
     evaluate_round,
 )
-from .verification import FlatnessObjectives, decide_adoption
+from .verification import FlatnessObjectives
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -46,14 +39,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.flat_spec import FlatSpecReport, GradedSpec
 
 logger = logging.getLogger(__name__)
-
-#: The refusal kinds :func:`run_round` returns. The reason code and its
-#: household sentence belong to :mod:`.refusal_copy`'s ``REASON_REGISTRY``.
-REFUSAL_RESTORED = "restored"
-REFUSAL_ROLLBACK_FAILED = "rollback_failed"
-
-#: Every kind above, so the flow's mapping can be checked for completeness.
-REFUSAL_KINDS = frozenset({REFUSAL_RESTORED, REFUSAL_ROLLBACK_FAILED})
 
 #: The exception family four of the five seam calls are guarded against: losing
 #: the round's verdict is worse than reporting it with the seam marked
@@ -75,8 +60,6 @@ class RoundPorts:
     below; ``None`` never means "skip the question".
     """
 
-    #: Put the previous graph back. Takes the adoption reason, returns success.
-    rollback: Callable[[str], bool] | None = None
     #: Is a prior candidate recorded to go back to? (the state half of "can we
     #: restore")
     rollback_available: Callable[[], bool] | None = None
@@ -112,15 +95,7 @@ def applied_boosts(ports: RoundPorts, *, session_id: str) -> bool:
 
 
 def rollback_available(ports: RoundPorts, *, session_id: str) -> bool:
-    """Can this host actually put the previous sound back?
-
-    BOTH-AND: the ``rollback`` seam is bound (a process fact) AND a prior
-    candidate is recorded (a state fact). Either half alone answers
-    :func:`~.verification.decide_adoption`'s question wrongly. Fails closed on
-    both halves, which routes the adoption table to ``recovery_required``.
-    """
-    if ports.rollback is None:
-        return False
+    """Is a previous candidate available for an operator to restore?"""
     seam = ports.rollback_available
     if seam is None:
         return False
@@ -256,33 +231,10 @@ class RoundEvidence:
 
 
 @dataclass(frozen=True)
-class RoundRefusal:
-    """A round-driven refusal, as a *kind* the flow maps to its own code.
-
-    ``kind`` is :data:`REFUSAL_RESTORED` or :data:`REFUSAL_ROLLBACK_FAILED`.
-    ``rollback_anchor_available`` is recorded here, never re-derived at render
-    time: the record can change between the round and the screen, and the
-    screen must describe the round.
-    """
-
-    kind: str
-    #: The adoption reason a successful restore was made for.
-    cause: str = ""
-    rollback_anchor_available: bool | None = None
-
-
-@dataclass(frozen=True)
 class RoundDecision:
-    """What the round decided, and what it left behind.
-
-    ``refusal is None`` means the caller's own capture verdict stands. A round
-    whose grading raised returns every field at its default, which is the state
-    the caller started in. What a restore DID is not here: its owners are the
-    receipt's ``restore_result`` and the ``crossover_v2_round_restore`` line.
-    """
+    """The round evaluation and its durable receipt identity."""
 
     evaluation: RoundEvaluation | None = None
-    refusal: RoundRefusal | None = None
     receipt_identity: dict[str, Any] | None = None
 
 
@@ -290,14 +242,7 @@ class RoundDecision:
 
 
 def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
-    """Grade one round, act on the adoption table, and bank the receipt.
-
-    Called once per session, on an ACCEPTED capture; the fire-once guard
-    belongs to the caller, the only party that knows the capture was accepted.
-    Fail-soft: a grading failure logs and returns an empty decision, leaving
-    the caller's own verdict untouched. The receipt is written LAST so it
-    records what the round actually did, a restore's result included.
-    """
+    """Grade one accepted capture and bank advice; grading failures stay visible."""
     try:
         evaluation = evaluate_round(
             post_analysis=evidence.post_analysis,
@@ -327,18 +272,8 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
         )
         return RoundDecision()
     _log_round(evaluation, session_id=evidence.session_id)
-    # Rebound rather than reused: a failed restore re-grades through the same
-    # table, and both the refusal and the receipt must record the decision the
-    # round ended on.
-    evaluation, refusal, restore_result = _act_on_adoption(
-        evaluation, evidence, ports,
-    )
-    receipt_identity = _write_round_receipt(
-        evaluation, evidence, ports, restore_result=restore_result,
-    )
-    return RoundDecision(
-        evaluation=evaluation, refusal=refusal, receipt_identity=receipt_identity,
-    )
+    receipt_identity = _write_round_receipt(evaluation, evidence, ports)
+    return RoundDecision(evaluation=evaluation, receipt_identity=receipt_identity)
 
 
 def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
@@ -376,157 +311,10 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
     )
 
 
-def _act_on_adoption(
-    evaluation: RoundEvaluation, evidence: RoundEvidence, ports: RoundPorts,
-) -> tuple[RoundEvaluation, RoundRefusal | None, dict[str, Any] | None]:
-    """Turn the adoption outcome into what the household gets.
-
-    The table already decided; this carries it out and never re-decides.
-
-    * ``KEEP`` and ``KEEP_FOR_ITERATION`` — the caller's verdict stands and the
-      graph stays live; what differs between them is the receipt.
-    * ``RESTORE`` — fire the rollback seam (once-guarded on the host side, so
-      the delta probe's own rollback and this one cannot both run), then refuse
-      under the cause's own code. A failed restore is re-graded through the
-      SAME table with ``restore_failed=True``.
-    * ``RECOVERY_REQUIRED`` — refuse loudly under the rollback-failed code.
-    """
-    outcome = evaluation.adoption.outcome
-    if outcome in (AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION):
-        return evaluation, None, None
-    if outcome is AdoptionOutcome.RESTORE:
-        restored, restore_result = _run_round_restore(
-            evaluation.adoption.reason, evidence, ports,
-        )
-        if restored:
-            return (
-                evaluation,
-                RoundRefusal(
-                    kind=REFUSAL_RESTORED, cause=evaluation.adoption.reason,
-                ),
-                restore_result,
-            )
-        return (
-            _regrade_after_failed_restore(evaluation, evidence, ports),
-            # A prior candidate was recorded and the restore against it did
-            # not complete, so going back is still a real remedy.
-            RoundRefusal(
-                kind=REFUSAL_ROLLBACK_FAILED, rollback_anchor_available=True,
-            ),
-            restore_result,
-        )
-    # RECOVERY_REQUIRED — the table already knew no restore was possible (no
-    # prior candidate recorded), so nothing is attempted here.
-    log_event(
-        logger, "correction.crossover_v2_round_recovery_required",
-        level=logging.ERROR, session_id=evidence.session_id,
-        reason=evaluation.adoption.reason, rollback_anchor_available=False,
-    )
-    return (
-        evaluation,
-        RoundRefusal(
-            kind=REFUSAL_ROLLBACK_FAILED, rollback_anchor_available=False,
-        ),
-        {
-            "attempted": False,
-            "restored": False,
-            "reason": evaluation.adoption.reason,
-        },
-    )
-
-
-def _regrade_after_failed_restore(
-    evaluation: RoundEvaluation, evidence: RoundEvidence, ports: RoundPorts,
-) -> RoundEvaluation:
-    """Re-run the table with ``restore_failed=True``, or keep what we had.
-
-    The speaker is still on the APPLIED graph: every reachable failure shape
-    leaves it there, which is what makes the ``restore_failed`` row right — the
-    intended graph is live and unverified with its automatic remedy spent.
-    Re-grading rather than editing the decision keeps
-    :func:`~.verification.decide_adoption` the only producer of an
-    :class:`~.contracts.AdoptionDecision`.
-    """
-    try:
-        adoption = decide_adoption(
-            trust=evaluation.trust,
-            safety=evaluation.safety,
-            quality=evaluation.quality,
-            # The SAME verdict, not a re-evaluation: a failed restore changes
-            # what the speaker is running, not how much headroom was measured.
-            headroom=evaluation.headroom,
-            boosted=applied_boosts(ports, session_id=evidence.session_id),
-            rollback_available=rollback_available(
-                ports, session_id=evidence.session_id,
-            ),
-            restore_failed=True,
-        )
-    except (TypeError, ValueError, KeyError):
-        log_event(
-            logger, "correction.crossover_v2_round_regrade_failed",
-            level=logging.WARNING, session_id=evidence.session_id, exc_info=True,
-        )
-        return evaluation
-    regraded = RoundEvaluation(
-        capture=evaluation.capture,
-        realization=evaluation.realization,
-        benefit=evaluation.benefit,
-        spec=evaluation.spec,
-        result=evaluation.result,
-        trust=evaluation.trust,
-        safety=evaluation.safety,
-        quality=evaluation.quality,
-        headroom=evaluation.headroom,
-        adoption=adoption,
-        post_residual_db=evaluation.post_residual_db,
-        post_residual_bins=evaluation.post_residual_bins,
-        blend=evaluation.blend,
-        region_benefit=evaluation.region_benefit,
-    )
-    _log_round(regraded, session_id=evidence.session_id)
-    return regraded
-
-
-def _run_round_restore(
-    cause: str, evidence: RoundEvidence, ports: RoundPorts,
-) -> tuple[bool, dict[str, Any]]:
-    """Fire the rollback seam for an adoption-driven restore.
-
-    The ONLY caller of that seam, and the restore is NOT idempotent: a
-    completed one re-stamps the displaced candidate as the new previous one, so
-    a second ask would put the just-removed graph back. The host's closure is
-    once-guarded as well — see ``bind_delta_probe_rollback`` in
-    :mod:`jasper.web.correction_crossover_v2`.
-    """
-    restored = False
-    error = ""
-    if ports.rollback is not None:
-        try:
-            restored = bool(ports.rollback(cause))
-        except _SEAM_ERRORS as exc:
-            error = str(exc)
-    result = {
-        "attempted": True,
-        "restored": restored,
-        "reason": cause,
-        "error": error,
-        "seam_bound": ports.rollback is not None,
-    }
-    log_event(
-        logger, "correction.crossover_v2_round_restore",
-        level=logging.INFO if restored else logging.ERROR,
-        session_id=evidence.session_id, reason=cause, restored=restored,
-        seam_bound=ports.rollback is not None, error=error,
-    )
-    return restored, result
-
-
 def _write_round_receipt(
     evaluation: RoundEvaluation,
     evidence: RoundEvidence,
     ports: RoundPorts,
-    *,
-    restore_result: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Assemble the round receipt and hand it to the publishing seam.
 
@@ -574,7 +362,7 @@ def _write_round_receipt(
                 reference_mark=evidence.reference_mark,
                 phase=PHASE_VERIFY,
             ),
-            restore_result=restore_result,
+            advice=identity["advice"],
             round_measurements=_round_measurements(evidence, evaluation),
             evidence_identities={
                 "session_id": evidence.session_id,
@@ -611,18 +399,6 @@ def _write_round_receipt(
     return identity
 
 
-#: The two adoption outcomes that leave the round's own graph playing.
-_GRAPH_KEPT_OUTCOMES = frozenset({
-    AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION,
-})
-
-
-def _round_kept_its_graph(evaluation: RoundEvaluation) -> bool:
-    """Is the speaker still on the graph this round measured?"""
-
-    return evaluation.adoption.outcome in _GRAPH_KEPT_OUTCOMES
-
-
 def _round_identity(
     evaluation: RoundEvaluation, evidence: RoundEvidence,
 ) -> dict[str, Any]:
@@ -649,6 +425,11 @@ def _round_identity(
         "adoption": evaluation.adoption.outcome.value,
         "row": evaluation.adoption.row,
         "reason": evaluation.adoption.reason,
+        "advice": {
+            "adoption_row": evaluation.adoption.row,
+            "verdicts": evaluation.to_dict()["verdicts"],
+            "delta_probe": _probe_record(evidence.delta_probe),
+        },
         # The series' own memory, read off the headroom verdict's evidence
         # rather than recomputed.
         "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
@@ -660,13 +441,9 @@ def _round_identity(
         # Disclosure: nothing reads it back, and the adoption table does not
         # branch on it.
         "spec": dict(evaluation.spec.evidence) or None,
-        # The blend prescription for the NEXT round, read back by
-        # ``series_position_from_state`` below. ``None`` when the round did not
-        # KEEP its graph: a prescription is derived through a specific
-        # incumbent, and a restored round threw that graph away.
         "blend": (
             None
-            if evaluation.blend is None or not _round_kept_its_graph(evaluation)
+            if evaluation.blend is None
             else {
                 "filters": [dict(f) for f in evaluation.blend.filters],
                 "residual_db": (
@@ -747,7 +524,13 @@ def _round_measurements(
 
 
 def _probe_realization(probe: Any) -> dict[str, Any] | None:
-    """The probe's ``realization`` block, verbatim, or ``None``."""
+    record = _probe_record(probe)
+    realization = None if record is None else record.get("realization")
+    return dict(realization) if isinstance(realization, Mapping) else None
+
+
+def _probe_record(probe: Any) -> dict[str, Any] | None:
+    """The probe report, or no report when the instrument cannot answer."""
 
     if probe is None:
         return None
@@ -760,8 +543,7 @@ def _probe_realization(probe: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(record, Mapping):
         return None
-    realization = record.get("realization")
-    return dict(realization) if isinstance(realization, Mapping) else None
+    return dict(record)
 
 
 # --- the series' own memory ---

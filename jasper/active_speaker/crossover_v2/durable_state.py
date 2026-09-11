@@ -1078,15 +1078,7 @@ def build_conductor_state(
         if failure_code == getattr(conductor, "last_failure_code", None)
         else None
     )
-    # Which arm of ``correction_rollback_failed`` this is. Gated on the SAME
-    # code-agreement check, so a terminal arm passing a different
-    # ``failure_code`` cannot render a sentence about a restore it never
-    # attempted.
-    failure_rollback_anchor = (
-        getattr(conductor, "last_failure_rollback_anchor", None)
-        if failure_code == getattr(conductor, "last_failure_code", None)
-        else None
-    )
+
     # Let the journey learn about a restore it could not see (#2616): durable
     # state is the authority on whether a restore HAPPENED, the journey owns
     # the flag, so this tells the journey and writes what it says. Scoped to
@@ -1303,10 +1295,6 @@ def build_conductor_state(
                 # does not apply to this code" and the copy owner reads it as
                 # the Undo arm, so a bare ``False`` would tell a household with
                 # a good anchor that they have none.
-                **(
-                    {"rollback_anchor_available": bool(failure_rollback_anchor)}
-                    if failure_rollback_anchor is not None else {}
-                ),
             }
             if failure_code else None
         ),

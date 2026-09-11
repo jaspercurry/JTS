@@ -668,7 +668,7 @@ def build_round_receipt(
     proposal_fingerprint_kind: str,
     applied_graph_fingerprint: str,
     post_measurement: Mapping[str, Any] | None,
-    restore_result: Mapping[str, Any] | None,
+    advice: Mapping[str, Any] | None,
     evidence_identities: Mapping[str, Any] | None,
     created_at: str,
     round_measurements: Mapping[str, Any] | None = None,
@@ -705,7 +705,7 @@ def build_round_receipt(
         # The axes the row was read off (#2537, #2602), banked with the decision
         # so a receipt's targets travel to the NEXT round.
         round_axes=evaluation.axes(),
-        restore_result=restore_result,
+        advice=advice,
         round_measurements=round_measurements,
         evidence_identities=evidence_identities,
         created_at=created_at,

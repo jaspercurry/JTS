@@ -1070,8 +1070,6 @@ class RoundReceipt(FingerprintedRecord):
 
     #2291's receipt field list, bound together so a later round can treat the
     currently active profile as its new entry graph without re-deriving history.
-    ``restore_result`` is present only when a restore was attempted, and a
-    :attr:`AdoptionOutcome.RECOVERY_REQUIRED` adoption must carry one.
     Persisted as a write-once evidence-bundle artifact at
     ``crossover_v2/<capture_session_id>/round_receipt.json``.
 
@@ -1097,7 +1095,7 @@ class RoundReceipt(FingerprintedRecord):
     #: graded before this shipped, which is an absence and not "they all
     #: passed"; a three-key mapping is a round graded before #2602.
     round_axes: Mapping[str, Any]
-    restore_result: Mapping[str, Any]
+    advice: Mapping[str, Any]
     #: The round's own measured numbers that no verdict collapsed — the
     #: band-resolved realization the delta probe reported (#2649) and the
     #: per-position residual the post-apply cloud produced (§4.2). A THIRD
@@ -1126,7 +1124,7 @@ class RoundReceipt(FingerprintedRecord):
         applied_graph_fingerprint: str = "",
         post_measurement: Mapping[str, Any] | None = None,
         round_axes: Mapping[str, Any] | None = None,
-        restore_result: Mapping[str, Any] | None = None,
+        advice: Mapping[str, Any] | None = None,
         round_measurements: Mapping[str, Any] | None = None,
         evidence_identities: Mapping[str, Any] | None = None,
     ) -> None:
@@ -1146,11 +1144,6 @@ class RoundReceipt(FingerprintedRecord):
         if kind not in PROPOSAL_FINGERPRINT_KINDS:
             raise CrossoverV2ContractError(
                 f"unknown proposal fingerprint kind {kind!r}"
-            )
-        restore = _json_mapping(restore_result, field_name="restore_result")
-        if adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED and not restore:
-            raise CrossoverV2ContractError(
-                "a recovery_required round must record its restore result"
             )
         object.__setattr__(self, "round_id", _text(round_id, field_name="round_id"))
         object.__setattr__(
@@ -1190,7 +1183,7 @@ class RoundReceipt(FingerprintedRecord):
         object.__setattr__(
             self, "round_axes", _json_mapping(round_axes, field_name="round_axes")
         )
-        object.__setattr__(self, "restore_result", restore)
+        object.__setattr__(self, "advice", _json_mapping(advice, field_name="advice"))
         object.__setattr__(
             self,
             "round_measurements",
@@ -1218,7 +1211,7 @@ class RoundReceipt(FingerprintedRecord):
             "verification": self.verification.to_dict(),
             "adoption": self.adoption.to_dict(),
             "round_axes": dict(self.round_axes),
-            "restore_result": dict(self.restore_result),
+            "advice": dict(self.advice),
             "round_measurements": dict(self.round_measurements),
             "evidence_identities": dict(self.evidence_identities),
             "created_at": self.created_at,

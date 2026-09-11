@@ -258,7 +258,6 @@ wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     NON_RETRIABLE_CODES,
     REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
     REASON_MEASURE_GAIN_ADJUSTED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
@@ -271,7 +270,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     _screen_refusal_code,
     reason_diagnosis,
     reason_message,
-    round_restore_reason,
 )
 
 from jasper.active_speaker.crossover_v2.spatial import (
@@ -546,9 +544,6 @@ class V2FlowSeams:
     apply_failed: ApplyFailureGate
     # Called once per ACCEPTED capture of every retained kind. Fail-soft.
     bank_take: BankTake = _no_bank_take
-    # Undo the applied correction; True when the previous profile was
-    # restored. Absent, the session still classifies and refuses.
-    rollback: Callable[[str], bool] | None = None
     # #1811: the whole-band level move the APPLY made and did not command, read at
     # probe time. ``None`` is "nothing known", which the probe reports honestly.
     applied_offset_db: Callable[[], float] | None = None
@@ -1020,10 +1015,6 @@ class CrossoverV2Session:
         # Where this round's receipt landed. ``None`` when writing failed — an
         # identity for a receipt that does not exist would be worse than none.
         self._round_receipt_identity: dict[str, Any] | None = None
-        # Which arm of ``correction_rollback_failed`` this is: ``True`` a restore
-        # failed against a real anchor, ``False`` there was never one, ``None``
-        # not established.
-        self._last_failure_rollback_anchor: bool | None = None
         # The post-apply VERIFY analysis, retained for the Full tier's later grading.
         self._verify_analysis: ProgramAnalysis | None = None
         # ``None`` until VERIFY is consumed.
@@ -1608,32 +1599,6 @@ class CrossoverV2Session:
         """
         return self._last_failure_pilot_heard if self._last_failure_code else None
 
-    @property
-    def last_failure_rollback_anchor(self) -> bool | None:
-        """Which ``correction_rollback_failed`` arm this failure is (#2291)."""
-        return self._last_failure_rollback_anchor if self._last_failure_code else None
-
-    def _pilot_heard_for(
-        self, code: str | None, *, slot: str | None = None,
-    ) -> bool | None:
-        """The pilot evidence recorded WITH ``code``, else ``None`` (#2085)."""
-        if slot is not None:
-            paired = self._last_pilot_evidence.get(slot)
-        elif self._last_failure_code is None:
-            paired = None
-        else:
-            paired = (
-                self._last_failure_code, self._last_failure_pilot_heard, None,
-            )
-        return _admission.pilot_heard_for(code, paired)
-
-    def _reflection_measured_for(
-        self, code: str | None, *, slot: str,
-    ) -> bool | None:
-        """The gate discriminator recorded with ``code`` at ``slot``."""
-        return _admission.reflection_measured_for(
-            code, self._last_pilot_evidence.get(slot)
-        )
 
     @property
     def armed_capture(self) -> tuple[int, int] | None:
@@ -3800,11 +3765,10 @@ class CrossoverV2Session:
     # --- #2291: the round, graded and acted on -------------------------------
 
     def _round_ports(self) -> "RoundPorts":
-        """Narrow this session's seams down to the five a round may call."""
+        """Bind the round's readers and receipt publisher."""
         from jasper.active_speaker.crossover_v2.coordinator import RoundPorts
 
         return RoundPorts(
-            rollback=self._seams.rollback,
             rollback_available=self._seams.rollback_available,
             applied_boosts=self._seams.applied_boosts,
             entry_graph_fingerprint=self._seams.entry_graph_fingerprint,
@@ -3818,7 +3782,7 @@ class CrossoverV2Session:
         )
 
     def _grade_round_once(self, verdict: PhaseVerdict) -> PhaseVerdict:
-        """Grade this round and act on the adoption table. Once per session.
+        """Grade this round and record the adoption advice. Once per session.
 
         **One owner, two triggers**: express, at the end of :meth:`_consume_verify`;
         full, at the ``PHASE_CLOUD_VERIFY`` close. **Both require an ACCEPTED
@@ -3904,38 +3868,7 @@ class CrossoverV2Session:
         )
         self._round_evaluation = decision.evaluation
         self._round_receipt_identity = decision.receipt_identity
-        refusal = decision.refusal
-        if refusal is None:
-            return verdict
-        return self._round_refusal_for(refusal)
-
-    def _round_refusal_for(self, refusal: Any) -> PhaseVerdict:
-        """Map a coordinator refusal KIND to the code the household reads."""
-        from jasper.active_speaker.crossover_v2 import coordinator
-
-        if refusal.kind == coordinator.REFUSAL_RESTORED:
-            return self._round_refusal(round_restore_reason(refusal.cause))
-        if refusal.kind != coordinator.REFUSAL_ROLLBACK_FAILED:
-            log_event(
-                logger, "correction.crossover_v2_round_refusal_kind_unmapped",
-                level=logging.ERROR, session_id=self.session_id,
-                kind=str(refusal.kind),
-            )
-        return self._round_refusal(
-            REASON_CORRECTION_ROLLBACK_FAILED,
-            rollback_anchor_available=refusal.rollback_anchor_available,
-        )
-
-    def _round_refusal(
-        self, code: str, *, rollback_anchor_available: bool | None = None,
-    ) -> PhaseVerdict:
-        """Stamp a round-driven refusal the way the delta probe already does."""
-        self._last_failure_code = code
-        # A round verdict, not a capture — no pilot evidence belongs to it, and
-        # the prior capture's must not trail in (#2085).
-        self._last_failure_pilot_heard = None
-        self._last_failure_rollback_anchor = rollback_anchor_available
-        return PhaseVerdict(False, code)
+        return verdict
 
     def _consume_verify(
         self,

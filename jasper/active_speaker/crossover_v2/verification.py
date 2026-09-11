@@ -27,7 +27,7 @@ import numpy as np
 from jasper.log_event import log_event
 
 from ..delta_probe import (
-    DELTA_PROBE_ROLLBACK_VERDICTS,
+    DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_SAFETY_ONLY,
@@ -982,7 +982,7 @@ def evaluate_round_quality(
 
     The STATUS is :data:`_QUALITY_TABLE`, keyed on ``(realization, benefit)``.
     A probe verdict in
-    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
     that the probe's own seam did not defer overrides it to
     :attr:`~.contracts.QualityStatus.REGRESSED`.
 
@@ -1058,13 +1058,13 @@ def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
     """The probe verdict that takes this graph off, or ``""``.
 
     Two owners consulted, neither re-derived here:
-    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
     for which classes restore, and
     :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
     ones that are spared.
     """
 
-    if not verdict or verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
+    if not verdict or verdict not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS:
         return ""
     return "" if seam_rollback_deferral(probe) else verdict
 
@@ -1346,7 +1346,7 @@ def decide_adoption(
     rollback_available: bool,
     restore_failed: bool = False,
 ) -> AdoptionDecision:
-    """Keep an acceptable tune; restore a measured regression or invalid apply.
+    """Advise whether to keep a tune or restore a previous candidate.
 
     The headroom verdict changes advice only. Neither kept outcome starts or
     prevents another round. A failed restore takes precedence over all grades.
@@ -1370,50 +1370,20 @@ def decide_adoption(
             row=ADOPTION_ROW_RESTORE_FAILED,
         )
     if safety.status is SafetyStatus.UNSAFE:
-        return _restore_or_recover(
-            safety.reason,
-            row=ADOPTION_ROW_RESTORE_UNSAFE,
-            rollback_available=rollback_available,
-        )
-    if trust.status is EvidenceTrust.UNTRUSTED:
-        return _restore_or_recover(
-            ADOPTION_UNPROVEN_BOOST if boosted else trust.reason,
-            row=ADOPTION_ROW_RESTORE_UNTRUSTED,
-            rollback_available=rollback_available,
-        )
-    outcome, row = _QUALITY_ROWS[quality.status]
-    if outcome is AdoptionOutcome.RESTORE:
-        return _restore_or_recover(
-            quality.reason, row=row, rollback_available=rollback_available,
-        )
-    if outcome is AdoptionOutcome.KEEP:
-        # Keyed off the OUTCOME the table above resolved to rather than off
-        # ``quality.status`` directly, so the passing cell has exactly one
-        # definition and this branch cannot drift from it.
-        outcome, row = _PASSED_ROWS[headroom.status]
-        return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
-    return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
-
-
-def _restore_or_recover(
-    reason: str, *, row: str, rollback_available: bool
-) -> AdoptionDecision:
-    """A restore the host can run, or the escalation when it cannot.
-
-    The branch is taken before the attempt: a decision to restore with no
-    anchor to restore TO is not one the host can carry out. The ROW is the same
-    either way — the rule fired, and only its execution was impossible.
-    """
-
-    if rollback_available:
-        return AdoptionDecision(
-            outcome=AdoptionOutcome.RESTORE, reason=reason, row=row
-        )
-    return AdoptionDecision(
-        outcome=AdoptionOutcome.RECOVERY_REQUIRED,
-        reason=f"{ADOPTION_NO_ROLLBACK_ANCHOR}:{reason}",
-        row=row,
-    )
+        outcome, row, reason = AdoptionOutcome.RESTORE, ADOPTION_ROW_RESTORE_UNSAFE, safety.reason
+    elif trust.status is EvidenceTrust.UNTRUSTED:
+        outcome, row = AdoptionOutcome.RESTORE, ADOPTION_ROW_RESTORE_UNTRUSTED
+        reason = ADOPTION_UNPROVEN_BOOST if boosted else trust.reason
+    else:
+        outcome, row = _QUALITY_ROWS[quality.status]
+        reason = quality.reason
+        if outcome is AdoptionOutcome.KEEP:
+            outcome, row = _PASSED_ROWS[headroom.status]
+            reason = headroom.reason
+    if outcome is AdoptionOutcome.RESTORE and not rollback_available:
+        outcome = AdoptionOutcome.RECOVERY_REQUIRED
+        reason = f"{ADOPTION_NO_ROLLBACK_ANCHOR}:{reason}"
+    return AdoptionDecision(outcome=outcome, reason=reason, row=row)
 
 
 # --------------------------------------------------------------------------
