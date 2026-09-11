@@ -49,18 +49,21 @@ def _make_wake_loop(**collaborators):
     """A WakeLoop with only the attributes manual_session_start reads
     plus spies on the side effects we assert must NOT fire.
     """
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
+    collaborators.setdefault(
+        "connection",
+        types.SimpleNamespace(
+            is_paused=lambda: False, last_failure_detail=lambda: None,
+        ),
+    )
     wl = wake_loop_for_tests(**collaborators)
-    wl._state = State.WAKE
+    wl._turns.state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     # If a guard is skipped, these would be reached — make them visible.
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
-    wl._connection = types.SimpleNamespace(
-        is_paused=lambda: False, last_failure_detail=lambda: None,
-    )
     wl._begin_turn = _SpyCalls()
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
@@ -133,24 +136,24 @@ async def test_manual_start_at_the_spend_cap_cues_and_refuses(caplog):
     }
 
 
-def _paused_connection(wl, *, paused_for_sec: float):
-    """Wire a connection that reports paused for `paused_for_sec` of
-    loop time, then reports connected. Counts the reconnect nudges."""
+def _paused_connection(*, paused_for_sec: float):
+    """A connection that reports paused for `paused_for_sec` of loop time,
+    then reports connected. Counts the reconnect nudges on `.nudges`."""
     loop = asyncio.get_event_loop()
     clears_at = loop.time() + paused_for_sec
-    state = types.SimpleNamespace(nudges=0)
 
     def _nudge() -> bool:
-        state.nudges += 1
+        conn.nudges += 1
         return True
 
-    wl._connection = types.SimpleNamespace(
+    conn = types.SimpleNamespace(
+        nudges=0,
         is_paused=lambda: loop.time() < clears_at,
         last_failure_detail=lambda: None,
         wake_cue=lambda: "cant_connect",
         request_reconnect_now=_nudge,
     )
-    return state
+    return conn
 
 
 async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
@@ -162,15 +165,15 @@ async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
     from jasper import voice_daemon
 
     monkeypatch.setattr(voice_daemon, "PAUSED_CONNECTION_WAIT_SEC", 0.2)
-    wl = _make_wake_loop()
+    conn = _paused_connection(paused_for_sec=99.0)
+    wl = _make_wake_loop(connection=conn)
     wl._play_cue = _SpyCalls()
-    state = _paused_connection(wl, paused_for_sec=99.0)
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         assert await wl.manual_session_start() == "PAUSED"
 
     _assert_no_turn_no_duck(wl)
-    assert state.nudges == 1
+    assert conn.nudges == 1
     await _drain_refusal_cue(wl)
     assert wl._play_cue.called is True
     assert event_fields(caplog, "session.manual_refused")["reason"] == (
@@ -200,7 +203,6 @@ async def test_manual_start_failure_cues_the_cause(
     its failed acquire ends, so there the recorded outage — not the
     state — is what makes the remedy cue the honest one.
     """
-    wl = _make_wake_loop(cues=_SpyCues())
     paused = False
 
     async def _begin_turn_that_fails(**_kwargs) -> None:
@@ -208,11 +210,14 @@ async def test_manual_start_failure_cues_the_cause(
         paused = connection_drops
         raise RuntimeError("live connection: not connected after backoff window")
 
-    wl._connection = types.SimpleNamespace(
-        is_paused=lambda: paused,
-        last_failure_detail=lambda: detail,
-        wake_cue=lambda: CANT_CONNECT_CUE_SLUG,
-        request_reconnect_now=lambda: True,
+    wl = _make_wake_loop(
+        cues=_SpyCues(),
+        connection=types.SimpleNamespace(
+            is_paused=lambda: paused,
+            last_failure_detail=lambda: detail,
+            wake_cue=lambda: CANT_CONNECT_CUE_SLUG,
+            request_reconnect_now=lambda: True,
+        ),
     )
     wl._begin_turn = _begin_turn_that_fails
 
@@ -251,9 +256,8 @@ async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
     from jasper import voice_daemon
 
     monkeypatch.setattr(voice_daemon, "PAUSED_CONNECTION_WAIT_SEC", 1.2)
-    wl = _make_wake_loop()
+    wl = _make_wake_loop(connection=_paused_connection(paused_for_sec=0.3))
     wl._play_cue = _SpyCalls()
-    _paused_connection(wl, paused_for_sec=0.3)
 
     assert await wl.manual_session_start() == "OK"
 
@@ -290,7 +294,7 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
 
     assert await wl.manual_session_start() == "ERROR"
     assert cleanup_calls == 1
-    assert wl._turn_output_episode is None
+    assert wl._turns.output_episode is None
     assert not wl._output_gate.is_active
 
 
@@ -317,7 +321,7 @@ async def test_manual_start_cleans_prefix_failure_before_turn_inner():
     assert await wl.manual_session_start() == "ERROR"
     assert inner.called is False
     assert cleanup_calls == 1
-    assert wl._turn_output_episode is None
+    assert wl._turns.output_episode is None
     assert not wl._output_gate.is_active
 
 
@@ -427,14 +431,14 @@ async def test_manual_start_source_uses_source_audio_without_primary_preroll():
 
 
 async def test_manual_mic_loop_forwards_only_active_source():
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     class _FakeMic:
         async def frames(self):
             yield "frame-a"
 
     wl = _make_wake_loop()
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
     wl._push_to_talk.sources = {
         "wiim_remote_2": types.SimpleNamespace(mic=_FakeMic()),
     }
@@ -461,18 +465,20 @@ def _ptt_only_wake_loop():
     `_push_to_talk.only` derives True, and the only audio path is the
     remote's loop.
     """
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
     from tests._manual_mics import remote_mic
 
-    wl = wake_loop_for_tests(legs=[], manual_mics=[remote_mic()], cues=_SpyCues())
-    wl._state = State.WAKE
+    wl = wake_loop_for_tests(
+        legs=[], manual_mics=[remote_mic()], cues=_SpyCues(),
+        connection=types.SimpleNamespace(
+            is_paused=lambda: False, last_failure_detail=lambda: None,
+        ),
+    )
+    wl._turns.state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
-    wl._connection = types.SimpleNamespace(
-        is_paused=lambda: False, last_failure_detail=lambda: None,
-    )
     wl._begin_turn = _SpyCalls()
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
@@ -560,15 +566,15 @@ async def test_source_less_refusal_reads_the_single_derivation():
     gates below (here BUSY) instead of refusing — even though `_mic` is still
     None. Nothing else about the speaker changed.
     """
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl = _ptt_only_wake_loop()
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
     assert await wl.manual_session_start() == "NO_ROOM_MIC"
     await _drain_refusal_cue(wl)
 
     wl2 = _ptt_only_wake_loop()
-    wl2._state = State.SESSION
+    wl2._turns.state = State.SESSION
     wl2._push_to_talk.only = False
     assert wl2._mic is None  # unchanged: only the derived fact moved
     assert await wl2.manual_session_start() == "BUSY"
@@ -581,10 +587,10 @@ async def test_no_room_mic_outranks_the_transient_gates():
     A passing BUSY/MUTED would mask a request that can NEVER succeed on this
     speaker, and the household would keep pressing.
     """
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl = _ptt_only_wake_loop()
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
     wl._mic_muted = True
 
     assert await wl.manual_session_start() == "NO_ROOM_MIC"
@@ -592,12 +598,12 @@ async def test_no_room_mic_outranks_the_transient_gates():
 
 
 async def test_manual_end_is_idempotent_after_input_already_closed():
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     wl = _make_wake_loop()
-    wl._state = State.SESSION
-    wl._turn = object()
-    wl._input_ended = True
+    wl._turns.state = State.SESSION
+    wl._turns.turn = object()
+    wl._turns.input_ended = True
 
     result = await wl.manual_session_end()
 
@@ -619,13 +625,13 @@ async def test_background_completion_ignores_tasks_from_a_previous_turn():
     async def _pending():
         await asyncio.Event().wait()
 
-    wl._end_turn = _end_turn
-    wl._turn = object()
+    wl._turns.end = _end_turn
+    wl._turns.turn = object()
     old_task = asyncio.create_task(_complete())
     new_task = asyncio.create_task(_pending())
-    wl._bg_tasks = {old_task}
-    wl._arm_turn_background_end()
-    wl._bg_tasks = {new_task}
+    wl._turns.bg_tasks = {old_task}
+    wl._turns.arm_background_end()
+    wl._turns.bg_tasks = {new_task}
 
     await old_task
     await asyncio.gather(*wl._fire_and_forget)

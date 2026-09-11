@@ -39,9 +39,8 @@ from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
-
 def _make_wakeloop(tts: FakeTts):
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     class _Noop:
         def note_voice_session(self, *_a, **_k):
@@ -54,20 +53,21 @@ def _make_wakeloop(tts: FakeTts):
         async def restore(self):
             return None
 
-    wl = wake_loop_for_tests(volume_coordinator=_Noop(), ducker=_AsyncNoop(), tts=tts)
-    wl._state = State.SESSION
-    wl._turn = _FakeTurn()
-    wl._session_id = 7
-    wl._usage_store = FakeUsageStore()
-    wl._bg_tasks = set()
-    wl._user_speech_seen = True
-    wl._max_silero_score_in_turn = 0.0
-    wl._max_silero_raw_in_turn = 0.0
-    wl._silero_aec_armed_at_ms = None
-    wl._silero_raw_armed_at_ms = None
-    wl._input_ended = False
-    wl._ending = False
-    wl._content_activity = _Noop()
+    wl = wake_loop_for_tests(
+        volume_coordinator=_Noop(), ducker=_AsyncNoop(), tts=tts,
+        usage_store=FakeUsageStore(), content_activity=_Noop(),
+    )
+    wl._turns.state = State.SESSION
+    wl._turns.turn = _FakeTurn()
+    wl._turns.session_id = 7
+    wl._turns.bg_tasks = set()
+    wl._turns.user_speech_seen = True
+    wl._turns.max_silero_aec = 0.0
+    wl._turns.max_silero_raw = 0.0
+    wl._turns.silero_aec_armed_at_ms = None
+    wl._turns.silero_raw_armed_at_ms = None
+    wl._turns.input_ended = False
+    wl._turns.ending = False
 
     async def _noop_stage(_stage):
         await asyncio.sleep(0)
@@ -92,8 +92,8 @@ async def _teardown_owning_output(wl, reason: str = "ended") -> None:
     """A real turn always holds the output episode `_end_turn_inner` guards
     its stream writes on, `end_segment` among them; a fixture without one
     would satisfy the counts below by never reaching the call."""
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
-    await wl._end_turn(reason)
+    wl._turns.output_episode = await wl._output_gate.begin_turn()
+    await wl._turns.end(reason)
 
 
 def test_teardown_calls_end_segment_once():
@@ -129,7 +129,7 @@ def test_teardown_drops_the_queued_tail_only_when_it_must_not_be_heard(reason, f
 def test_teardown_survives_end_segment_failure():
     """A failing end_segment (e.g. fan-in socket gone) must not abort
     the rest of teardown: usage row still closes, state flips to WAKE."""
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
     tts = FakeTts(end_segment_error=OSError("fan-in socket gone"))
     wl = _make_wakeloop(tts)
@@ -138,5 +138,5 @@ def test_teardown_survives_end_segment_failure():
 
     assert tts.end_segment_calls == 1
     assert wl._usage_store.close_calls == 1
-    assert wl._state is State.WAKE
-    assert wl._turn is None
+    assert wl._turns.state is State.WAKE
+    assert wl._turns.turn is None

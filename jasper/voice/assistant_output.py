@@ -184,11 +184,11 @@ class AssistantOutput:
         cues: AudioCueManager | None,
         volume_coordinator: VolumeCoordinator,
     ) -> None:
-        self._cfg = cfg
-        self._tts = tts
-        self._ducker = ducker
+        self.cfg = cfg
+        self.tts = tts
+        self.ducker = ducker
         self._cues = cues
-        self._volume_coordinator = volume_coordinator
+        self.volume_coordinator = volume_coordinator
         self._output_gate = AssistantOutputGate()
         self._opening_feedback: tuple[
             AssistantOutputEpisode | None, asyncio.Task[None]
@@ -393,10 +393,10 @@ class AssistantOutput:
         restore: Callable[[], Awaitable[None]] | None = None
         try:
             await self._prepare_feedback_loudness_context(kind="dynamic_text")
-            restore = self._ducker.restore
+            restore = self.ducker.restore
             played = False
             try:
-                await self._ducker.duck()
+                await self.ducker.duck()
                 played = await _speak()
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
@@ -473,7 +473,7 @@ class AssistantOutput:
         cues = self._cues
         if cues is None:
             return False
-        ducker = self._ducker
+        ducker = self.ducker
         played = False
         try:
             await self._prepare_feedback_loudness_context(kind="cue", slug=slug)
@@ -512,7 +512,7 @@ class AssistantOutput:
             drain_base_error: BaseException | None = None
             try:
                 drain_error = await capture_cleanup_error(
-                    lambda: wait_tts_drained_owned(self._tts),
+                    lambda: wait_tts_drained_owned(self.tts),
                 )
                 if isinstance(drain_error, Exception):
                     logger.warning(
@@ -561,7 +561,7 @@ class AssistantOutput:
 
         async def _drain_and_release() -> None:
             try:
-                await wait_tts_drained_owned(self._tts)
+                await wait_tts_drained_owned(self.tts)
             finally:
                 await self._output_gate.end(episode)
 
@@ -593,14 +593,14 @@ class AssistantOutput:
                 if going_on else self._mute_click_off_profile
             )
             try:
-                await self._tts.write_segment(
+                await self.tts.write_segment(
                     pcm,
                     segment_kind="cue",
                     source_profile=profile,
                     pcm_wide=self._earcon_wide,
                 )
             finally:
-                await wait_tts_drained_owned(self._tts)
+                await wait_tts_drained_owned(self.tts)
         except Exception as e:  # noqa: BLE001
             logger.warning("mic mute click failed: %s", e)
         finally:
@@ -648,7 +648,7 @@ class AssistantOutput:
         try:
             if on_attempt is not None:
                 await on_attempt()
-            await self._tts.write_segment(
+            await self.tts.write_segment(
                 self._chirp_on_pcm if going_on else self._chirp_off_pcm,
                 segment_kind="chirp",
                 source_profile=self._chirp_on_profile if going_on else self._chirp_off_profile,
@@ -659,9 +659,9 @@ class AssistantOutput:
             logger.warning("listening chirp failed: %s", e)
 
     async def prepare_loudness(self) -> None:
-        provider, model, voice = active_voice_identity(self._cfg)
+        provider, model, voice = active_voice_identity(self.cfg)
         tts_envelope = tts_envelope_lufs_for_level(
-            self._volume_coordinator.get_listening_level(),
+            self.volume_coordinator.get_listening_level(),
         )
         prepare_kwargs: dict[str, Any] = {
             "provider": provider,
@@ -679,7 +679,7 @@ class AssistantOutput:
             or tts_socket_feeds_post_dsp_outputd(os.environ)
         )
         context_reader = (
-            getattr(self._volume_coordinator, "effective_volume_context", None)
+            getattr(self.volume_coordinator, "effective_volume_context", None)
             if route_consumes_context
             else None
         )
@@ -704,7 +704,7 @@ class AssistantOutput:
                     muted=volume_context.muted,
                     context_stamp_boot_ns=volume_context.stamp_boot_ns,
                 )
-        await self._tts.prepare_assistant_context(
+        await self.tts.prepare_assistant_context(
             **prepare_kwargs,
         )
 
@@ -730,10 +730,10 @@ class AssistantOutput:
         if completed:
             steps.append(("chirp", lambda: self.listening_chirp(going_on=False), True))
         steps.extend((
-            ("drain", lambda: wait_tts_drained_owned(self._tts), True),
-            ("duck_restore", self._ducker.restore, True),
-            ("volume_session", lambda: self._volume_coordinator.note_voice_session(False), False),
-            ("content_meter_resume", self._tts.resume_content_meter, False),
+            ("drain", lambda: wait_tts_drained_owned(self.tts), True),
+            ("duck_restore", self.ducker.restore, True),
+            ("volume_session", lambda: self.volume_coordinator.note_voice_session(False), False),
+            ("content_meter_resume", self.tts.resume_content_meter, False),
             ("output_episode_release", lambda: self._output_gate.end_turn(episode), True),
         ))
         for phase, operation, needs_output in steps:

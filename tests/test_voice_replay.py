@@ -137,12 +137,11 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
         model.reset_states()
         vad = SpeechVAD.__new__(SpeechVAD)
         vad._vad = model
-        wl = wake_loop_for_tests(tts=sink, vad=vad)
-        wl._connection = provider[1]
+        wl = wake_loop_for_tests(tts=sink, vad=vad, connection=provider[1])
         wl._begin_turn_output_episode = AsyncMock()
         wl._prepare_assistant_loudness_context = AsyncMock()
         wl._content_activity.refresh_now = AsyncMock()
-        wl._arm_turn_background_end = lambda: None
+        wl._turns.arm_background_end = lambda: None
         if scenario == "manual":
             wl._push_to_talk.active_source = "replay-button"
         prefix = [np.full(MicCapture.OUTPUT_FRAME_SAMPLES, tag, dtype=np.int16)
@@ -163,13 +162,13 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
         await wait_signalled(entered, "replay phase")
         # Mutating the rolling buffer cannot change the prefix frozen before acquisition.
         wl._pre_roll.clear()
-        anchor = wl._turn_started_at_loop
+        anchor = wl._turns.started_at_loop
         for i in range(split):
             wl._acquire_buffer.append(frames[i], anchor + (i + 1) * (frame_sec + 1e-6))
         proceed.set()
         await begin
         provider[1].acquire_turn = acquire
-        turn = wl._turn
+        turn = wl._turns.turn
         if _wire(provider) is not prior_wire:
             before_audio, before_closes = [], 0
         try:
@@ -177,12 +176,12 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
             for i in range(split, len(frames)):
                 await wl._handle_session_frame(frames[i], captured_at=anchor + (i + 1) * (frame_sec + 1e-6))
                 if scenario == "pause" and i == 9 * repeats - 1:
-                    assert not wl._input_ended
+                    assert not wl._turns.input_ended
             if scenario == "manual":
-                assert not wl._input_ended
+                assert not wl._turns.input_ended
                 assert await wl.manual_session_end() == "OK"
                 assert await wl.manual_session_end() == "OK"
-            assert wl._user_speech_seen is (scenario in {"quiet", "pause"})
+            assert wl._turns.user_speech_seen is (scenario in {"quiet", "pause"})
             audio, closes = _input_events(provider)
             assert closes - before_closes == int(scenario != "no_speech")
             uploaded = audio[len(before_audio):]
@@ -193,7 +192,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
             uploads.append(uploaded)
             if scenario == "no_speech":
                 await wl._handle_session_frame(frames[-1], captured_at=anchor + 5.1)
-                assert wl._turn is None
+                assert wl._turns.turn is None
                 assert not sink.audio
                 assert _input_events(provider)[1] == closes
             else:
@@ -202,9 +201,9 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
                 assert sink.audio == b"\x07\x00" * 2400
                 assert turn.capture().assistant_text == "Captured reply"
         finally:
-            for task in wl._bg_tasks:
+            for task in wl._turns.bg_tasks:
                 task.cancel()
-            await asyncio.gather(*wl._bg_tasks, return_exceptions=True)
+            await asyncio.gather(*wl._turns.bg_tasks, return_exceptions=True)
             await turn.release()
             await wl._cancel_fire_and_forget_tasks()
     assert uploads[0] == uploads[1]

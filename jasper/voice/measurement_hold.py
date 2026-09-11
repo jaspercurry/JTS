@@ -414,7 +414,7 @@ class MeasurementHold:
             self._auto_clear(generation, autoclear_sec),
             name=f"measurement-auto-clear-{generation}",
         )
-        # Deliberately not in WakeLoop._bg_tasks: those drive turn completion.
+        # Deliberately not in TurnLifecycle.bg_tasks: those drive turn completion.
         self._safety_task = task
 
     async def _auto_clear(self, generation: int, autoclear_sec: float) -> None:

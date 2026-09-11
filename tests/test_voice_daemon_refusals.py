@@ -26,7 +26,8 @@ import pytest
 
 from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
-from jasper.voice_daemon import State, WakeLoop
+from jasper.voice.turn_lifecycle import State
+from jasper.voice_daemon import WakeLoop
 
 from tests._live_turn_fake import FakeLiveTurn
 from tests._log_events import event_field_maps
@@ -149,9 +150,8 @@ async def _trigger_idle_init_connection(
     connection = BaseLiveConnection(model="test-model", voice="test-voice")
     assert connection.is_paused() is True
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(connection=connection)
     played, rec = _cue_recorder()
-    wl._connection = connection
     wl._peering.arbitrate = _win
     wl._play_cue = rec
     wl._await_connection = _never_recovers
@@ -169,7 +169,7 @@ async def _trigger_idle_init_connection(
 async def _trigger_manual_busy(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(d) manual_session_start while a session is already open."""
     wl = wake_loop_for_tests()
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
     result = await wl.manual_session_start()
     assert result == "BUSY"
     return []
@@ -187,15 +187,15 @@ def _prepare_teardown(
     """The `_end_turn_inner` surface a real teardown touches, per
     `tests/test_voice_daemon_push_to_talk_endpointer.py::_torn_down_mid_hold`."""
     wl._cfg.active_voice_model = "test-model"
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
     turn = FakeLiveTurn(bytes_sent=bytes_sent, chunks_received=chunks_received)
-    wl._turn = turn
-    wl._bg_tasks = set()
+    wl._turns.turn = turn
+    wl._turns.bg_tasks = set()
     wl._wake_telemetry.store = None
-    wl._session_id = "sess-refusals"
-    wl._input_ended = input_ended
-    wl._user_speech_seen = user_speech
-    wl._manual_endpoint_this_turn = manual
+    wl._turns.session_id = "sess-refusals"
+    wl._turns.input_ended = input_ended
+    wl._turns.user_speech_seen = user_speech
+    wl._turns.manual_endpoint_this_turn = manual
     return turn
 
 
@@ -207,8 +207,8 @@ async def _trigger_hold_timeout(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
         wl, bytes_sent=4096, chunks_received=0,
         input_ended=False, manual=True,
     )
-    await wl._end_turn_inner("test")
-    assert wl._state is State.WAKE
+    await wl._turns._end_turn_inner("test")
+    assert wl._turns.state is State.WAKE
     return []
 
 
@@ -220,8 +220,8 @@ async def _trigger_no_audio_sent(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
         wl, bytes_sent=0, chunks_received=0,
         input_ended=False, manual=False,
     )
-    await wl._end_turn_inner("test")
-    assert wl._state is State.WAKE
+    await wl._turns._end_turn_inner("test")
+    assert wl._turns.state is State.WAKE
     return []
 
 
@@ -237,8 +237,8 @@ async def _trigger_no_audio_sent_suppressed(
         wl, bytes_sent=0, chunks_received=0,
         input_ended=False, manual=False,
     )
-    await wl._end_turn_inner("mic_muted")
-    assert wl._state is State.WAKE
+    await wl._turns._end_turn_inner("mic_muted")
+    assert wl._turns.state is State.WAKE
     return []
 
 
@@ -252,8 +252,8 @@ async def _trigger_recording_timeout(
         wl, bytes_sent=4096, chunks_received=0,
         input_ended=False, manual=False,
     )
-    await wl._end_turn_inner("test")
-    assert wl._state is State.WAKE
+    await wl._turns._end_turn_inner("test")
+    assert wl._turns.state is State.WAKE
     return []
 
 
@@ -265,8 +265,8 @@ async def _trigger_input_ended_reason(_monkeypatch: pytest.MonkeyPatch) -> list[
         wl, bytes_sent=4096, chunks_received=0,
         input_ended=True, manual=False, user_speech=True,
     )
-    await wl._end_turn_inner("test")
-    assert wl._state is State.WAKE
+    await wl._turns._end_turn_inner("test")
+    assert wl._turns.state is State.WAKE
     return []
 
 
@@ -379,10 +379,10 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
     )
     await wl._begin_turn_output_episode()
     await wl._ducker.duck()
-    opener_episode = wl._turn_output_episode
+    opener_episode = wl._turns.output_episode
     assert opener_episode is not None
 
-    teardown = asyncio.create_task(wl._end_turn_inner("test"))
+    teardown = asyncio.create_task(wl._turns._end_turn_inner("test"))
     try:
         await asyncio.wait_for(notify.parked.wait(), timeout=5.0)
         await wl._output_gate.end(opener_episode)
@@ -412,7 +412,7 @@ async def test_a_surrender_inside_the_teardown_stops_every_later_write() -> None
     # The cue that took the gate still owns it — the teardown released
     # nothing — while the opener still finished the turn it was holding.
     assert wl._output_gate.active_kind == "admin"
-    assert wl._turn is None
-    assert wl._session_id is None
-    assert wl._turn_output_episode is None
-    assert wl._state is State.WAKE
+    assert wl._turns.turn is None
+    assert wl._turns.session_id is None
+    assert wl._turns.output_episode is None
+    assert wl._turns.state is State.WAKE

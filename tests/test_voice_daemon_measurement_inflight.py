@@ -58,7 +58,8 @@ from jasper.voice.measurement_hold import (
     MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC,
     MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC,
 )
-from jasper.voice_daemon import State, WakeLoop
+from jasper.voice.turn_lifecycle import State
+from jasper.voice_daemon import WakeLoop
 
 from ._async_wait import wait_signalled
 from ._cue_spy import SpyCues
@@ -1160,9 +1161,9 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         tts=tts,
         volume_coordinator=volume,
         output_gate=gate,
+        content_activity=content,
+        usage_store=usage,
     )
-    wl._content_activity = content
-    wl._usage_store = usage
     cleanup_calls = 0
     real_cleanup = wl._cleanup_after_failed_begin
 
@@ -1226,13 +1227,13 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         assert volume.session_calls == [True, False]
         assert usage.open_calls == 0
         assert usage.close_calls == 0
-        assert wl._turn is None
-        assert wl._session_id is None
-        assert wl._bg_tasks == set()
+        assert wl._turns.turn is None
+        assert wl._turns.session_id is None
+        assert wl._turns.bg_tasks == set()
         assert wl._push_to_talk.active_source is None
         assert wl._acquiring is False
-        assert wl._state is State.WAKE
-        assert wl._turn_output_episode is None
+        assert wl._turns.state is State.WAKE
+        assert wl._turns.output_episode is None
     finally:
         release_on.set()
         release_off.set()
@@ -1264,8 +1265,7 @@ async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
     failure = _BeginAbort("begin aborted")
     content = _FailingContentActivity()
     gate = _EndCountingGate()
-    wl = wake_loop_for_tests(output_gate=gate)
-    wl._content_activity = content
+    wl = wake_loop_for_tests(output_gate=gate, content_activity=content)
     cleanup_calls = 0
     real_cleanup = wl._cleanup_after_failed_begin
 
@@ -1284,8 +1284,8 @@ async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
     assert content.resume_calls == 1
     assert gate.end_calls == 1
     assert not gate.is_active
-    assert wl._state is State.WAKE
-    assert wl._turn_output_episode is None
+    assert wl._turns.state is State.WAKE
+    assert wl._turns.output_episode is None
 
 
 @pytest.mark.parametrize("path", ["wake", "manual"])
@@ -1341,8 +1341,8 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
         tts=tts,
         volume_coordinator=volume,
         output_gate=gate,
+        content_activity=content,
     )
-    wl._content_activity = content
     monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", held_prepare)
     cleanup_calls = 0
     real_cleanup = wl._cleanup_after_failed_begin
@@ -1407,11 +1407,11 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     assert volume.session_calls == [False]
     assert gate.end_calls == 1
     assert not gate.is_active
-    assert wl._turn_output_episode is None
-    assert wl._turn is None
-    assert wl._session_id is None
-    assert wl._bg_tasks == set()
-    assert wl._state is State.WAKE
+    assert wl._turns.output_episode is None
+    assert wl._turns.turn is None
+    assert wl._turns.session_id is None
+    assert wl._turns.bg_tasks == set()
+    assert wl._turns.state is State.WAKE
     assert wl._acquiring is False
 
 
@@ -1455,9 +1455,9 @@ async def test_begin_turn_centralizes_feedback_prefix_without_reordering(
 
     assert events == expected_events
     assert gate.is_active is listening_feedback
-    if wl._turn_output_episode is not None:
-        await gate.end_turn(wl._turn_output_episode)
-        wl._turn_output_episode = None
+    if wl._turns.output_episode is not None:
+        await gate.end_turn(wl._turns.output_episode)
+        wl._turns.output_episode = None
 
 
 @pytest.mark.parametrize(
@@ -1546,18 +1546,18 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
         volume_coordinator=volume,
         tts=tts,
         output_gate=gate,
+        content_activity=content,
+        usage_store=usage,
     )
-    wl._turn_output_episode = await gate.begin_turn()
-    wl._turn = turn
-    wl._session_id = 42
-    wl._bg_tasks = {asyncio.create_task(asyncio.sleep(60))}
-    wl._bg_end_scheduled = True
+    wl._turns.output_episode = await gate.begin_turn()
+    wl._turns.turn = turn
+    wl._turns.session_id = 42
+    wl._turns.bg_tasks = {asyncio.create_task(asyncio.sleep(60))}
+    wl._turns._bg_end_scheduled = True
     wl._push_to_talk.active_source = "test_remote"
     wl._acquiring = True
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
     wl._wake_legs.refractory_until = -1.0
-    wl._content_activity = content
-    wl._usage_store = usage
     wl._begin_turn_inner = failed_inner
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
@@ -1571,15 +1571,15 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     assert content.resume_calls == 1
     assert tts.meter_resumes == 1
     assert usage.close_calls == 1
-    assert wl._turn is None
-    assert wl._session_id is None
-    assert wl._bg_tasks == set()
-    assert wl._bg_end_scheduled is False
+    assert wl._turns.turn is None
+    assert wl._turns.session_id is None
+    assert wl._turns.bg_tasks == set()
+    assert wl._turns._bg_end_scheduled is False
     assert wl._push_to_talk.active_source is None
     assert wl._acquiring is False
-    assert wl._state is State.WAKE
+    assert wl._turns.state is State.WAKE
     assert wl._wake_legs.refractory_until > 0.0
-    assert wl._turn_output_episode is None
+    assert wl._turns.output_episode is None
     assert gate.end_calls == 1
     assert not gate.is_active
     if failed_phase is None:
@@ -1917,7 +1917,7 @@ async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None
 async def test_active_session_still_refuses_without_draining() -> None:
     gate = _StuckGate()
     wl = wake_loop_for_tests(output_gate=gate)
-    wl._state = State.SESSION
+    wl._turns.state = State.SESSION
 
     assert (await wl.measurement_hold.pause_response())["result"] == "BUSY"
     assert not wl._measurement_active.is_set()
@@ -2277,4 +2277,4 @@ async def test_failed_begin_drains_opening_feedback_without_completion_chirp():
     assert writes == [wl._assistant_output._chirp_on_pcm]
     wl._ducker.restore.assert_awaited_once()
     assert not wl._output_gate.is_active
-    assert wl._turn is None
+    assert wl._turns.turn is None

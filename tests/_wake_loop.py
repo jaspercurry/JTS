@@ -37,15 +37,17 @@ def wake_loop_for_tests(
     cfg=None,
     cues=None,
     ducker=None,
+    connection=None,
+    content_activity=None,
+    usage_store=None,
     volume_coordinator=None,
     output_gate=None,
     vad=_UNSET,
     conversation_store: ConversationStore | None = None,
     wake_event_store: WakeEventStore | None = None,
     current_event_id: str | None = None,
-    **overrides,
 ) -> WakeLoop:
-    """Inject collaborators at construction; overrides seed local turn state."""
+    """Inject collaborators at construction."""
 
     class _TestMic:
         async def frames(self):
@@ -153,11 +155,13 @@ def wake_loop_for_tests(
         self = WakeLoop(
             cfg=cfg,
             tts=FakeTts() if tts is None else tts,
-            connection=_TestConnection(),
+            connection=_TestConnection() if connection is None else connection,
             ducker=_TestDucker() if ducker is None else ducker,
             cues=cues,
-            content_activity=_TestContentActivity(),
-            usage_store=_TestUsageStore(),
+            content_activity=(
+                _TestContentActivity() if content_activity is None else content_activity
+            ),
+            usage_store=_TestUsageStore() if usage_store is None else usage_store,
             spend_cap=_TestSpendCap(),
             stop_event=asyncio.Event(),
             volume_coordinator=(
@@ -179,6 +183,4 @@ def wake_loop_for_tests(
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
     self._wake_telemetry._current_event_id = current_event_id
-    for key, value in overrides.items():
-        setattr(self, key if key.startswith("_") else f"_{key}", value)
     return self

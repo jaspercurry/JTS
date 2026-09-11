@@ -30,19 +30,20 @@ def _wake_loop(tmp_path, monkeypatch, *, capture: bool = True):
     monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1" if capture else "0")
     monkeypatch.setenv(DB_PATH_ENV, str(db_path))
     store = ConversationStore(str(db_path))
-    wl = wake_loop_for_tests(conversation_store=store)
+    wl = wake_loop_for_tests(
+        conversation_store=store, usage_store=FakeUsageStore(),
+    )
     return wl, store
 
 
 def _put_in_session(wl, turn: _FakeTurn) -> None:
-    from jasper.voice_daemon import State
+    from jasper.voice.turn_lifecycle import State
 
-    wl._state = State.SESSION
-    wl._turn = turn
-    wl._session_id = 7
-    wl._usage_store = FakeUsageStore()
-    wl._user_speech_seen = True
-    wl._input_ended = False
+    wl._turns.state = State.SESSION
+    wl._turns.turn = turn
+    wl._turns.session_id = 7
+    wl._turns.user_speech_seen = True
+    wl._turns.input_ended = False
 
     async def _noop(*_args, **_kwargs):
         return None
@@ -63,8 +64,8 @@ async def test_end_turn_records_transcripts_through_single_write_path(
     wl, store = _wake_loop(tmp_path, monkeypatch)
     _put_in_session(wl, _FakeTurn("what is the next train", "Four minutes."))
 
-    await wl._end_turn_inner("test")
-    await wl._pending_release
+    await wl._turns._end_turn_inner("test")
+    await wl._turns.pending_release
 
     rows = store.recent(10)
     assert len(rows) == 1
@@ -93,8 +94,8 @@ async def test_end_turn_records_metadata_when_provider_has_no_transcripts(
         ),
     )
 
-    await wl._end_turn_inner("gemini")
-    await wl._pending_release
+    await wl._turns._end_turn_inner("gemini")
+    await wl._turns.pending_release
 
     rows = store.recent(10)
     assert len(rows) == 1
@@ -123,8 +124,51 @@ async def test_capture_includes_transcript_from_the_close_handshake(
     turn.release = release
     _put_in_session(wl, turn)
 
-    await wl._end_turn_inner("test")
-    await wl._pending_release
+    await wl._turns._end_turn_inner("test")
+    await wl._turns.pending_release
 
     (row,) = store.recent(10)
     assert row.assistant_text == "Four minutes, from Union Square."
+
+
+class _RecordingCapture:
+    """Stands in for `ConversationCapture`, recording each `record()` call
+    instead of persisting it — isolates the loop's mic-muted wiring from
+    the real capture's own settings/store gating (covered separately in
+    tests/test_conversation_capture.py)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def record(
+        self,
+        user_text,
+        assistant_text,
+        *,
+        data_json=None,
+        provider=None,
+        session_id,
+        mic_muted,
+    ) -> None:
+        self.calls.append({"user_text": user_text, "mic_muted": mic_muted})
+
+
+async def test_end_turn_records_the_loops_live_mic_muted_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """`_release_and_capture` reads `_mic_muted` at teardown through the
+    injected callable — a muted turn's transcript must never reach
+    capture, and this is the only path that knows the live mic state."""
+    wl, _store = _wake_loop(tmp_path, monkeypatch)
+    fake_capture = _RecordingCapture()
+    wl._turns._conversation_capture = fake_capture
+    _put_in_session(wl, _FakeTurn("what is the next train", "Four minutes."))
+    wl._mic_muted = True
+
+    await wl._turns.end("mic_muted")
+    await wl._turns.pending_release
+
+    assert fake_capture.calls == [
+        {"user_text": "what is the next train", "mic_muted": True},
+    ]

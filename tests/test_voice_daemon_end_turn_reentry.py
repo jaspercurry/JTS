@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jasper.voice.turn_playback import play_responses
-from jasper.voice_daemon import State
+from jasper.voice.turn_lifecycle import State
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from tests._async_wait import wait_signalled, wait_until
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn, silent_frame
@@ -23,19 +23,18 @@ from tests.usage_store_fixtures import FakeUsageStore
 
 
 def _make_wakeloop():
-    wl = wake_loop_for_tests()
-    wl._state = State.SESSION
-    wl._turn = _FakeTurn()
-    wl._session_id = 7
-    wl._usage_store = FakeUsageStore()
-    wl._bg_tasks = set()
-    wl._user_speech_seen = True
-    wl._max_silero_score_in_turn = 0.0
-    wl._max_silero_raw_in_turn = 0.0
-    wl._silero_aec_armed_at_ms = None
-    wl._silero_raw_armed_at_ms = None
-    wl._input_ended = False
-    wl._ending = False
+    wl = wake_loop_for_tests(usage_store=FakeUsageStore())
+    wl._turns.state = State.SESSION
+    wl._turns.turn = _FakeTurn()
+    wl._turns.session_id = 7
+    wl._turns.bg_tasks = set()
+    wl._turns.user_speech_seen = True
+    wl._turns.max_silero_aec = 0.0
+    wl._turns.max_silero_raw = 0.0
+    wl._turns.silero_aec_armed_at_ms = None
+    wl._turns.silero_raw_armed_at_ms = None
+    wl._turns.input_ended = False
+    wl._turns.ending = False
 
     async def _noop_stage(_stage):
         # Yield control so a concurrent _end_turn entrant actually gets
@@ -62,44 +61,44 @@ def test_end_turn_is_idempotent_serial():
     """A second _end_turn call after teardown completes is a no-op."""
     wl = _make_wakeloop()
 
-    asyncio.run(wl._end_turn())
-    assert wl._state is State.WAKE
+    asyncio.run(wl._turns.end())
+    assert wl._turns.state is State.WAKE
     assert wl._usage_store.close_calls == 1
-    assert wl._turn is None
+    assert wl._turns.turn is None
 
     # Second call: not in a turn anymore — must short-circuit, no crash.
-    asyncio.run(wl._end_turn())
+    asyncio.run(wl._turns.end())
     assert wl._usage_store.close_calls == 1
 
 
 def test_end_turn_reentry_while_teardown_in_flight_short_circuits():
     wl = _make_wakeloop()
-    wl._ending = True  # first teardown is in flight
-    wl._state = State.SESSION  # still SESSION — teardown flips it at the end
+    wl._turns.ending = True  # first teardown is in flight
+    wl._turns.state = State.SESSION  # still SESSION — teardown flips it at the end
     # Exact crash window: the in-flight teardown has already cleared
     # _session_id but not yet _turn. Without the guard the body would run,
     # reach `if self._turn is not None:`, and trip the
     # `assert self._session_id is not None` that crashed the daemon.
-    wl._session_id = None
+    wl._turns.session_id = None
 
-    asyncio.run(wl._end_turn())  # must NOT raise and must do nothing
+    asyncio.run(wl._turns.end())  # must NOT raise and must do nothing
 
     # Re-entrant call did nothing — the in-flight teardown owns cleanup.
     assert wl._usage_store.close_calls == 0
-    assert wl._turn is not None  # untouched by the short-circuited call
+    assert wl._turns.turn is not None  # untouched by the short-circuited call
 
 
 def test_end_turn_concurrent_callers_teardown_once():
     wl = _make_wakeloop()
-    turn = wl._turn  # _end_turn clears self._turn on completion
+    turn = wl._turns.turn  # _end_turn clears self._turn on completion
 
     async def drive():
-        await asyncio.gather(wl._end_turn(), wl._end_turn())
+        await asyncio.gather(wl._turns.end(), wl._turns.end())
 
     asyncio.run(drive())
 
-    assert wl._state is State.WAKE
-    assert wl._turn is None
+    assert wl._turns.state is State.WAKE
+    assert wl._turns.turn is None
     assert wl._usage_store.close_calls == 1
     assert turn.end_input_calls == 1
     assert turn.release_calls == 1
@@ -111,25 +110,25 @@ async def test_background_task_completion_ends_turn_without_new_mic_frame(
 ):
     """Manual mics stop sending frames when the button is released."""
     wl = _make_wakeloop()
-    turn = wl._turn
+    turn = wl._turns.turn
 
     async def finish():
         if completion == "failed":
             raise RuntimeError("playback failed")
 
     finished_task = asyncio.create_task(finish())
-    wl._bg_tasks = {finished_task}
-    wl._arm_turn_background_end()
+    wl._turns.bg_tasks = {finished_task}
+    wl._turns.arm_background_end()
     if completion == "cancelled":
         finished_task.cancel()
     try:
-        await wait_until(lambda: wl._state is State.WAKE, timeout=10.0)
+        await wait_until(lambda: wl._turns.state is State.WAKE, timeout=10.0)
     finally:
         await wl._cancel_fire_and_forget_tasks()
         await asyncio.gather(finished_task, return_exceptions=True)
 
-    assert wl._state is State.WAKE
-    assert wl._turn is None
+    assert wl._turns.state is State.WAKE
+    assert wl._turns.turn is None
     assert wl._usage_store.close_calls == 1
     assert turn.end_input_calls == 1
     assert turn.release_calls == 1
@@ -137,17 +136,17 @@ async def test_background_task_completion_ends_turn_without_new_mic_frame(
 
 async def _response_loop(pcm=bytes(8)):
     wl = _make_wakeloop()
-    turn = wl._turn
+    turn = wl._turns.turn
     turn._bytes_sent, turn._chunks_received = 4096, 1
-    wl._input_ended = True
+    wl._turns.input_ended = True
     wl._turn_timeline.anchor_at()
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    wl._turns.output_episode = await wl._output_gate.begin_turn()
     wl._wake_telemetry.outcome = AsyncMock()
     wl._assistant_output.listening_chirp = AsyncMock()
 
     async def cue(slug):
         assert not wl._output_gate.is_active
-        assert wl._state is State.SESSION
+        assert wl._turns.state is State.SESSION
 
     wl._play_cue = AsyncMock(side_effect=cue)
 
@@ -161,7 +160,7 @@ async def _response_loop(pcm=bytes(8)):
 
 def _start_playback(wl):
     return asyncio.create_task(play_responses(
-        wl._turn, wl._tts, report=wl._playback_report,
+        wl._turns.turn, wl._tts, report=wl._turns.playback_report,
         admission_refusal=wl._assistant_output.admission_refusal,
         on_response_started=wl._turn_timeline.observer("first_response"),
         on_first_write=wl._turn_timeline.observer("first_write"),
@@ -202,21 +201,21 @@ async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_pat
     wl._tts.flush = AsyncMock()
     playback = _start_playback(wl)
     watchdog = asyncio.create_task(asyncio.sleep(0))
-    wl._bg_tasks = {playback, watchdog}
+    wl._turns.bg_tasks = {playback, watchdog}
     await asyncio.gather(playback, watchdog, return_exceptions=True)
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         try:
             if end_path == "callback":
-                wl._arm_turn_background_end()
-                wl._on_turn_background_done(watchdog)
-                await wait_until(lambda: wl._state is State.WAKE, timeout=10.0)
+                wl._turns.arm_background_end()
+                wl._turns._on_turn_background_done(watchdog)
+                await wait_until(lambda: wl._turns.state is State.WAKE, timeout=10.0)
             else:
                 await wl._handle_session_frame(silent_frame())
         finally:
             await wl._cancel_fire_and_forget_tasks()
 
     outcome = "session_failed" if failed or lost_reply else "completed"
-    reason = "playback_failed" if failed else wl._playback_report.stop_reason or "ended"
+    reason = "playback_failed" if failed else wl._turns.playback_report.stop_reason or "ended"
     wl._wake_telemetry.outcome.assert_awaited_once_with(outcome, reason)
     assert wl._assistant_output.listening_chirp.await_count == (0 if failed else 1)
     assert wl._play_cue.await_count == (1 if failed or lost_reply or mode == "empty" else 0)
@@ -236,7 +235,7 @@ async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_pat
         assert wl.session_status()["last_turn_ms"]["outcome"] == "complete"
     assert ("first_write_ms" in timeline) == accepted
     assert turn.release_calls == turn.end_input_calls == wl._usage_store.close_calls == 1
-    assert wl._turn is None and wl._state is State.WAKE
+    assert wl._turns.turn is None and wl._turns.state is State.WAKE
 
 
 @pytest.mark.parametrize("reason", ["ended", "mic_muted", "stopping"])
@@ -257,17 +256,17 @@ async def test_teardown_joins_accepted_prefix_before_its_final_outcome(reason, w
 
     wl._tts.write_segment = write
     playback = _start_playback(wl)
-    wl._bg_tasks = {playback}
+    wl._turns.bg_tasks = {playback}
     await wait_signalled(writing, "pending output write", producer=playback)
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        await wl._end_turn(reason)
+        await wl._turns.end(reason)
     failed = write_fails and reason == "ended"
     wl._wake_telemetry.outcome.assert_awaited_once_with(
         "session_failed" if failed else "completed", "playback_failed" if failed else reason,
     )
     assert "first_write_ms" in event_fields(caplog, "turn.timeline")
     assert wl._play_cue.await_count == int(failed)
-    assert wl._silent_responses_session == 0
+    assert wl._turns.silent_responses_session == 0
     assert turn.release_calls == wl._usage_store.close_calls == 1
     assert playback.done()
 
@@ -287,35 +286,35 @@ async def test_barge_signal_is_kept_when_teardown_cancels_the_pending_write(acce
 
     wl._tts.write_segment = write
     playback = _start_playback(wl)
-    wl._bg_tasks = {playback}
+    wl._turns.bg_tasks = {playback}
     await wait_signalled(writing, "pending output write", producer=playback)
     interrupt.set()
-    await wl._end_turn()
+    await wl._turns.end()
     wl._wake_telemetry.outcome.assert_awaited_once_with("completed", "barge_in")
     wl._play_cue.assert_not_awaited()
     wl._tts.flush.assert_awaited_once()
-    assert wl._silent_responses_session == 0
+    assert wl._turns.silent_responses_session == 0
     assert turn.release_calls == 1
 
 
 def test_simultaneous_background_task_completion_schedules_one_teardown():
     """Multiple completed bg tasks should coalesce to one _end_turn task."""
     wl = wake_loop_for_tests()
-    wl._state = State.SESSION
-    wl._turn = object()
+    wl._turns.state = State.SESSION
+    wl._turns.turn = object()
     calls = 0
 
     async def fake_end_turn(reason="ended"):
         nonlocal calls
         calls += 1
 
-    wl._end_turn = fake_end_turn
+    wl._turns.end = fake_end_turn
 
     async def drive():
         task_a = asyncio.create_task(asyncio.sleep(0), name="bg-a")
         task_b = asyncio.create_task(asyncio.sleep(0), name="bg-b")
-        wl._bg_tasks = {task_a, task_b}
-        wl._arm_turn_background_end()
+        wl._turns.bg_tasks = {task_a, task_b}
+        wl._turns.arm_background_end()
         await asyncio.gather(task_a, task_b)
         for _ in range(10):
             pending = list(wl._fire_and_forget)
@@ -336,7 +335,7 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
     """PAUSE cannot open while the final chirp is still physically audible."""
     wl = _make_wakeloop()
     wl._cfg.tts_outputd_socket = tts_socket
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    wl._turns.output_episode = await wl._output_gate.begin_turn()
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
 
@@ -345,20 +344,20 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
         await wait_signalled(release_drain, "release final chirp drain")
 
     wl._tts.wait_drained = wait_drained
-    teardown = asyncio.create_task(wl._end_turn())
+    teardown = asyncio.create_task(wl._turns.end())
     await wait_signalled(
         drain_started,
         "final chirp physical drain",
         producer=teardown,
     )
 
-    assert wl._state is State.SESSION
+    assert wl._turns.state is State.SESSION
     assert wl._output_gate.active_kind == "turn"
     assert (await wl.measurement_hold.pause_response())["result"] == "BUSY"
 
     release_drain.set()
     await teardown
-    assert wl._state is State.WAKE
+    assert wl._turns.state is State.WAKE
     assert not wl._output_gate.is_active
 
 
@@ -366,7 +365,7 @@ async def test_closure_completes_without_waiting_for_the_provider_release():
     """The user's ending — chirp, duck restore, back to wake listening —
     runs while the provider teardown is still in flight."""
     wl = _make_wakeloop()
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    wl._turns.output_episode = await wl._output_gate.begin_turn()
     finish_release = asyncio.Event()
     order: list[str] = []
 
@@ -382,19 +381,19 @@ async def test_closure_completes_without_waiting_for_the_provider_release():
     async def chirp(*, going_on):
         order.append(f"chirp_{going_on}")
 
-    wl._turn.release = release
+    wl._turns.turn.release = release
     wl._ducker.restore = restore
     wl._assistant_output.listening_chirp = chirp
 
-    teardown = asyncio.create_task(wl._end_turn("conversation_ended"))
+    teardown = asyncio.create_task(wl._turns.end("conversation_ended"))
     try:
-        await wait_until(lambda: wl._state is State.WAKE)
+        await wait_until(lambda: wl._turns.state is State.WAKE)
         assert order == ["chirp_False", "duck_restore"]
         assert teardown.done()
     finally:
         finish_release.set()
         await asyncio.gather(teardown, return_exceptions=True)
-    await wl._pending_release
+    await wl._turns.pending_release
     assert order[-1] == "release_done"
 
 
@@ -403,17 +402,17 @@ async def test_shutdown_waits_out_a_pending_provider_release():
     `session.close`: a cancelled one leaves the provider session open, and
     a live session bills per connected minute."""
     wl = _make_wakeloop()
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    wl._turns.output_episode = await wl._output_gate.begin_turn()
     closed = asyncio.Event()
 
     async def release():
         await asyncio.sleep(0.05)
         closed.set()
 
-    wl._turn.release = release
+    wl._turns.turn.release = release
 
-    await wl._end_turn("conversation_ended")
-    pending = wl._pending_release
+    await wl._turns.end("conversation_ended")
+    pending = wl._turns.pending_release
     assert pending is not None
 
     await wl._cancel_fire_and_forget_tasks()
@@ -430,8 +429,8 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     from unittest.mock import AsyncMock, Mock
 
     wl = _make_wakeloop()
-    turn = wl._turn
-    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    turn = wl._turns.turn
+    wl._turns.output_episode = await wl._output_gate.begin_turn()
     entered, proceed = asyncio.Event(), asyncio.Event()
     calls = []
 
@@ -452,7 +451,7 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     wl._tts.resume_content_meter = lambda: step("meter")
     wl._assistant_output.listening_chirp = AsyncMock()
     wl._content_activity.resume = Mock()
-    cleanup = asyncio.create_task(wl._end_turn())
+    cleanup = asyncio.create_task(wl._turns.end())
     try:
         await wait_signalled(entered, phase, producer=cleanup)
         if cancellation == "caller":
@@ -460,7 +459,7 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
                 cleanup.cancel()
                 await asyncio.sleep(0)
             assert not cleanup.done()
-            assert wl._state is State.SESSION
+            assert wl._turns.state is State.SESSION
             assert wl._output_gate.is_active
             proceed.set()
         with pytest.raises(asyncio.CancelledError):
@@ -474,13 +473,13 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     assert [name for name in calls if name != "release"] == [
         "outcome", "peering", "segment", "drain", "restore", "meter",
     ]
-    await wl._pending_release
+    await wl._turns.pending_release
     assert "release" in calls
     assert wl._usage_store.close_calls == 1
-    assert wl._state is State.WAKE
-    assert wl._turn is None
+    assert wl._turns.state is State.WAKE
+    assert wl._turns.turn is None
     assert not wl._output_gate.is_active
-    assert wl._ending is False
+    assert wl._turns.ending is False
     wl._content_activity.resume.assert_called_once()
-    await wl._end_turn()
+    await wl._turns.end()
     assert wl._usage_store.close_calls == 1
