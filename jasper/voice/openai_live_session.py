@@ -102,8 +102,9 @@ class OpenAILiveTurn(BaseLiveTurn):
                 pcm = self._input_q.get_nowait()
             except asyncio.QueueEmpty:
                 pcm = bytes(2560)  # 80 ms at 16 kHz, including button-release silence
-            if not self._input_admitted:
-                pcm = bytes(len(pcm))
+            else:
+                if not self._input_admitted:
+                    pcm = bytes(len(pcm))
             wire, self._resample_state = _upsample_16k_to_24k(pcm, self._resample_state)
             await self._conn._send({"type": "session.input_audio.append", "audio": base64.b64encode(wire).decode("ascii")})
             await asyncio.sleep(max(0, len(pcm) / 32000 - (time.monotonic() - started)))
