@@ -199,14 +199,10 @@ class GeminiLiveTurn(BaseLiveTurn):
             return
         self._released = True
         self._cancel_tools()
-        elapsed_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
         self.drop_pending_audio()
         self._audio_q.put_nowait(None)
         await self._conn._on_turn_released(self)
-        logger.info(
-            "live turn: ended in %.0fms, %d chunks received (sent=%dB)",
-            elapsed_ms, self._chunks_received, self._bytes_sent,
-        )
+        self._log_release()
 
     def capture(self) -> TurnCapture | None:
         user = self.user_transcript().strip() or None
@@ -232,7 +228,10 @@ class GeminiLiveTurn(BaseLiveTurn):
             except Exception as e:  # noqa: BLE001
                 logger.warning("Gemini cancel failed (%s)", type(e).__name__)
                 self._on_connection_lost()
-        log_event(logger, "barge.cancel", reason=reason, provider="gemini")
+        log_event(
+            logger, "barge.cancel", reason=reason,
+            provider=getattr(self._conn, "PROVIDER_NAME", ""),
+        )
 
     async def truncate_assistant_audio(
         self, provider_item_id: str | None, audio_played_ms: int,
@@ -275,7 +274,6 @@ class GeminiLiveTurn(BaseLiveTurn):
             self._tool_responses = []
 
         # Server content: turn_complete + interrupted.
-        turn_just_completed = False
         sc = getattr(response, "server_content", None)
         if sc is not None:
             if not self._cancel_requested:
@@ -287,7 +285,6 @@ class GeminiLiveTurn(BaseLiveTurn):
                 self._note_activity()
                 self._server_turn_complete = True
                 self._audio_q.put_nowait(None)
-                turn_just_completed = True
             if getattr(sc, "interrupted", False):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
@@ -304,13 +301,6 @@ class GeminiLiveTurn(BaseLiveTurn):
             self.set_usage(
                 getattr(usage, "prompt_token_count", None),
                 getattr(usage, "response_token_count", None),
-            )
-        if turn_just_completed:
-            td = self.usage()
-            logger.info(
-                "gemini turn complete: observed in=%d out=%d chunks=%d",
-                td.input_tokens, td.output_tokens,
-                self._chunks_received,
             )
 
     def _tools_may_run(self) -> bool:

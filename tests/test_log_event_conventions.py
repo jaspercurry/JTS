@@ -133,12 +133,16 @@ class _Event(NamedTuple):
     ``partial`` marks a name an f-string placeholder completes
     (``f"multiroom.reconcile.{key}_env_failed"`` → ``multiroom.reconcile.``):
     the literal head is all a static reader can know.
+
+    ``fields`` holds the keyword names a ``log_event`` call passes, empty
+    for the other emission forms, whose fields are inside a rendered line.
     """
 
     name: str
     partial: bool
     path: str
     lineno: int
+    fields: tuple[str, ...] = ()
 
 
 class _Scan(NamedTuple):
@@ -203,12 +207,14 @@ def _rel(path: Path) -> str:
         return path.name
 
 
-def _named_event(arg: ast.expr, rel_path: str) -> list[_Event]:
+def _named_event(
+    arg: ast.expr, rel_path: str, fields: tuple[str, ...] = (),
+) -> list[_Event]:
     """The event an argument that IS the name carries (log_event's name, `event=`)."""
     head = _literal_head(arg)
     if head is None:
         return []
-    return [_Event(head[0], head[1], rel_path, arg.lineno)]
+    return [_Event(head[0], head[1], rel_path, arg.lineno, fields)]
 
 
 def _rendered_events(arg: ast.expr, rel_path: str) -> list[_Event]:
@@ -255,7 +261,10 @@ def _scan(path: Path) -> _Scan:
         )
         if called == "log_event" and len(node.args) >= 2:
             emit_linenos.update({node.lineno, node.args[1].lineno})
-            events += _named_event(node.args[1], rel_path)
+            events += _named_event(
+                node.args[1], rel_path,
+                tuple(kw.arg for kw in node.keywords if kw.arg),
+            )
         for keyword in node.keywords:
             if keyword.arg and (
                 keyword.arg == "event" or keyword.arg.endswith("_event")
@@ -428,6 +437,24 @@ def test_event_names_are_domain_action():
     assert not offending, (
         "Event name(s) outside the `domain.action` vocabulary (lower snake "
         "segments, at least one dot):\n  " + "\n  ".join(offending)
+    )
+
+
+def test_provider_events_name_the_adapter_they_came_from():
+    """The `provider.*` family is one vocabulary shared by every voice
+    adapter — OpenAI Realtime, Grok, Gemini Live, OpenAI Live — so the
+    adapter is a field, never part of the name. A line without `provider=`
+    would leave `journalctl | grep event=provider.` unable to say which
+    adapter produced it, which is the whole reason the family is shared."""
+    offending = sorted(
+        f"{event.path}:{event.lineno}  {event.name}"
+        for event in _events()
+        if event.name.startswith("provider.") and "provider" not in event.fields
+    )
+    assert not offending, (
+        "`provider.*` event(s) emitted without a `provider=` field — add it, "
+        "or give the event a name outside the shared family:\n  "
+        + "\n  ".join(offending)
     )
 
 

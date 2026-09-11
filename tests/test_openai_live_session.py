@@ -493,7 +493,8 @@ async def test_quiet_deltas_play_only_while_the_answer_is_running(
         # Quiet never counts as an answer, whether it is played or not.
         assert turn.chunks_received() == 1
         assert turn.last_chunk_at() == audible_at
-    fields = event_fields(caplog, "live.turn_audio")
+    fields = event_fields(caplog, "provider.turn_ended")
+    assert fields["provider"] == "openai_live"
     assert int(fields["chunks_received"]) == 1
     assert int(fields["quiet_played"]) == played
     assert int(fields["quiet_discarded"]) == discarded

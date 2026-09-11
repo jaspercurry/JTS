@@ -11,10 +11,12 @@ pipeline with hand-built fake response objects matching the SDK's shape.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
 from jasper.voice._base import BaseLiveConnection
+from tests._log_events import event_fields
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _GoAwayResp
 
@@ -64,6 +66,33 @@ async def test_sdk_combined_audio_transcripts_and_completion(transcripts):
 
 async def _collect_chunks(turn):
     return [chunk async for chunk in turn.audio_out_chunks()]
+
+
+async def test_released_turn_reports_usage_under_the_shared_event(caplog):
+    """Gemini reports the turn the same way every other adapter does.
+
+    The base turn owns usage and transcript, so a provider that files no
+    usage event of its own is not a provider that goes unreported."""
+    caplog.set_level(logging.INFO, logger="jasper.voice.gemini_session")
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = GeminiLiveTurn(conn, started_at=0.0)
+    conn._active_turn = turn
+    await turn._on_response(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            output_transcription=types.Transcription(text="good day"),
+            turn_complete=True,
+        ),
+        usage_metadata=types.UsageMetadata(
+            prompt_token_count=11, response_token_count=7,
+        ),
+    ))
+
+    await turn.release()
+
+    fields = event_fields(caplog, "provider.turn_ended")
+    assert fields["provider"] == "gemini"
+    assert (fields["input_tokens"], fields["output_tokens"]) == ("11", "7")
+    assert fields["assistant_chars"] == "8"
 
 
 def test_secret_literals_reports_the_api_key():

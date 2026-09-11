@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import time
+from typing import Any
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
@@ -167,12 +168,6 @@ class OpenAILiveTurn(BaseLiveTurn):
         if self._released:
             return
         self._released = True
-        log_event(
-            logger, "live.turn_audio",
-            chunks_received=self._chunks_received,
-            quiet_played=self._quiet_played,
-            quiet_discarded=self._quiet_discarded,
-        )
         self.discard_input()
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
@@ -181,6 +176,17 @@ class OpenAILiveTurn(BaseLiveTurn):
         finally:
             self._audio_q.put_nowait(None)
             await self._conn._on_turn_released(self)
+            self._log_release()
+
+    def _release_fields(self) -> dict[str, Any]:
+        """Live bills the frontend session per metered second, not per
+        token, and bridges the quiet between audible deltas."""
+        return {
+            "seconds": round(self._seconds, 3),
+            "finalized": self._finalized,
+            "quiet_played": self._quiet_played,
+            "quiet_discarded": self._quiet_discarded,
+        }
 
     async def on_event(self, event: dict) -> None:
         kind = event["type"]
@@ -428,7 +434,10 @@ class OpenAILiveConnection(BaseLiveConnection):
                         self._closed.set()
                         break
         except Exception as exc:  # noqa: BLE001
-            log_event(logger, "live.connection_failed", detail=failure_detail(exc, literals=self._secret_literals()))
+            log_event(
+                logger, "provider.connect_failed", provider=self.PROVIDER_NAME,
+                detail=failure_detail(exc, literals=self._secret_literals()),
+            )
         finally:
             if not turn._released:
                 turn._on_connection_lost()
@@ -440,7 +449,12 @@ class OpenAILiveConnection(BaseLiveConnection):
                 await self._send({"type": "session.close"})
                 await asyncio.wait_for(self._closed.wait(), CLOSE_ACK_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001
-            log_event(logger, "live.finalization_incomplete", detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING)
+            log_event(
+                logger, "provider.close_failed", provider=self.PROVIDER_NAME,
+                phase="finalize",
+                detail=failure_detail(exc, literals=self._secret_literals()),
+                level=logging.WARNING,
+            )
         finally:
             turn = self._active_turn
             if self._billable_activity_meter is not None:
@@ -472,7 +486,11 @@ class OpenAILiveConnection(BaseLiveConnection):
             try:
                 await asyncio.wait_for(turn.release(), SESSION_CLOSE_TIMEOUT_SEC)
             except TimeoutError:
-                log_event(logger, "live.release_abandoned", level=logging.WARNING)
+                log_event(
+                    logger, "provider.close_failed", provider=self.PROVIDER_NAME,
+                    phase="release", detail="release timed out",
+                    level=logging.WARNING,
+                )
         await super().stop()
         if self._client is not None:
             await self._client.close()

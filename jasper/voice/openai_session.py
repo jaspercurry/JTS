@@ -48,7 +48,7 @@ import json
 import logging
 import os
 import time as _time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from jasper.log_event import log_event
 
@@ -185,7 +185,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     def __init__(self, conn: "OpenAIRealtimeConnection", started_at: float) -> None:
         super().__init__(conn, started_at)
         self._conn: OpenAIRealtimeConnection = conn
-        # Tracks chunk-size distribution per turn; logged at release so a uniform vs. front-loaded delivery is visible post hoc.
+        # Chunk-size distribution per turn; reported by `_release_fields`.
         self._chunk_bytes_total: int = 0
         self._chunk_bytes_max: int = 0
         self._first_chunk_bytes: int = 0
@@ -268,7 +268,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             return
         self._released = True
         self._cancel_tools()
-        elapsed_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
         self.drop_pending_audio()
         self._audio_q.put_nowait(None)
         # Close debug WAV if open. Always log the path so the user
@@ -284,26 +283,19 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 logger.warning("debug record close failed: %s", e)
             self._debug_wav = None
         await self._conn._on_turn_released(self)
-        if assistant_text := self.assistant_transcript().strip():
-            # Metadata only; the base turn's transcript fields say why.
-            log_event(
-                logger, "openai.assistant_transcript",
-                chars=len(assistant_text), level=logging.DEBUG,
-            )
-        if self._chunks_received > 0:
-            avg = self._chunk_bytes_total // self._chunks_received
-            logger.info(
-                "openai turn: ended in %.0fms, %d chunks received "
-                "(sent=%dB, audio=%dB first=%dB max=%dB avg=%dB ~%.0fms total)",
-                elapsed_ms, self._chunks_received, self._bytes_sent,
-                self._chunk_bytes_total, self._first_chunk_bytes,
-                self._chunk_bytes_max, avg, self._chunk_bytes_total / 48.0,
-            )
-        else:
-            logger.info(
-                "openai turn: ended in %.0fms, %d chunks received (sent=%dB)",
-                elapsed_ms, self._chunks_received, self._bytes_sent,
-            )
+        self._log_release()
+
+    def _release_fields(self) -> dict[str, Any]:
+        """Chunk-size distribution, so front-loaded vs uniform delivery is
+        visible post hoc. 24 kHz mono pcm16 = 48 bytes/ms."""
+        received = self._chunks_received
+        return {
+            "audio_bytes": self._chunk_bytes_total,
+            "first_chunk_bytes": self._first_chunk_bytes,
+            "max_chunk_bytes": self._chunk_bytes_max,
+            "avg_chunk_bytes": self._chunk_bytes_total // received if received else 0,
+            "audio_ms": round(self._chunk_bytes_total / 48.0),
+        }
 
     def capture(self) -> TurnCapture | None:
         user = self.user_transcript().strip() or None
@@ -323,7 +315,10 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             return
         self._cancel_requested = True
         self._cancel_tools()
-        log_event(logger, "barge.cancel", reason=reason)
+        log_event(
+            logger, "barge.cancel", reason=reason,
+            provider=getattr(self._conn, "PROVIDER_NAME", ""),
+        )
         if not self._server_turn_complete:
             if self._tool_round_pending:
                 await self._on_response_done()
@@ -1040,16 +1035,19 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 text = _event_field(event, "transcript")
                 if isinstance(text, str):
                     turn._on_user_text_done(text)
-                    log_event(logger, "openai.user_transcript", chars=len(text), level=logging.DEBUG)
             elif etype.endswith(".failed"):
-                log_event(logger, "openai.user_transcription_failed", level=logging.WARNING)
+                log_event(
+                    logger, "provider.transcript_failed",
+                    provider=self.PROVIDER_NAME, side="user",
+                    level=logging.WARNING,
+                )
             return
 
         response = _event_field(event, "response")
         response_id = _event_field(response, "id") if response is not None else _event_field(event, "response_id")
         if not turn._response_id or response_id != turn._response_id:
             if etype == "response.done":
-                log_event(logger, "voice.stale_response", provider=self.PROVIDER_NAME, level=logging.DEBUG)
+                log_event(logger, "provider.response_stale", provider=self.PROVIDER_NAME, level=logging.DEBUG)
             return
         if etype == "response.done":
             await self._handle_response_done(response, turn)
@@ -1098,7 +1096,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         function_calls = _extract_function_calls(response)
         turn._tool_round_pending = bool(function_calls)
         log_event(
-            logger, "voice.response_done", provider=self.PROVIDER_NAME,
+            logger, "provider.response_done", provider=self.PROVIDER_NAME,
             response_id=_event_field(response, "id"), status=status,
             function_calls=len(function_calls),
             input_tokens=(usage or {}).get("input_tokens", 0),
