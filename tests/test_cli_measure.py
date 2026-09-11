@@ -46,55 +46,11 @@ from jasper.cli.measure import (
     specs_from_args,
 )
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.crossover_v2_fixtures import _preset, _roles
+from tests.crossover_v2_fixtures import FakeCam, _preset, _roles
 
 ARTIFACTS = "evidence/v1/artifacts"
 CAPTURE_RELPATH = "captures/summed/take.wav"
 HOUSEHOLD_DB = -14.0
-
-
-class FakeCam:
-    """CamillaDSP, as the door actually uses it: a graph slot and a fader.
-
-    ``normalize_config_raw`` and ``get_active_config_raw`` both answer the text
-    last loaded, so the REAL ``confirm_graph_is_live`` proof runs and passes — a
-    double that skipped the proof would let a graph nobody confirmed reach the
-    session and the run would not notice.
-    """
-
-    def __init__(self, entry_path) -> None:
-        self.entry_path = entry_path
-        self.loaded: list[str] = []
-        self.volume_db = HOUSEHOLD_DB
-
-    async def get_config_file_path(self, best_effort: bool = True) -> str:
-        return str(self.entry_path)
-
-    async def set_active_config_raw(
-        self, text: str, best_effort: bool = True, duck: bool = True,
-    ) -> bool:
-        self.loaded.append(text)
-        return True
-
-    async def normalize_config_raw(self, text: str, best_effort: bool = True) -> str:
-        return text
-
-    async def get_active_config_raw(self, best_effort: bool = True) -> str:
-        return self.loaded[-1]
-
-    async def get_loudness_volume_db(self, best_effort: bool = True) -> float:
-        return getattr(self, "loudness_db", self.volume_db)
-
-    async def set_loudness_volume_db(self, db: float, *, best_effort: bool = True, immediate: bool = False) -> bool:
-        self.loudness_db = db
-        return True
-
-    async def get_volume_db(self, best_effort: bool = True) -> float:
-        return self.volume_db
-
-    async def set_volume_db(self, db: float, best_effort: bool = True) -> bool:
-        self.volume_db = float(db)
-        return True
 
 
 def _args(*argv: str):
@@ -382,7 +338,7 @@ def speaker(tmp_path, monkeypatch):
 
     entry = tmp_path / "entry.yml"
     entry.write_text("devices: {}\n", encoding="utf-8")
-    cam = FakeCam(entry)
+    cam = FakeCam(entry, volume_db=HOUSEHOLD_DB)
     played: list[Any] = []
     capture = _Capture()
 

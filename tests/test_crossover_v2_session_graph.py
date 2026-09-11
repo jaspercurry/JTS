@@ -32,43 +32,13 @@ from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDA
 from jasper.camilla import CamillaUnavailable
 from jasper.sound.profile import build_sound_filters
 from tests._log_events import event_fields, event_records, parse_event
+from tests.crossover_v2_fixtures import FakeCam
 from tests.test_crossover_v2_tuning_scope import FLAT, SAVED, household_graph
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile
 
 ENTRY_PATH_NAME = "entry.yml"
 GRAPH = "program: graph\n"
 _LOGGER = "jasper.active_speaker.crossover_v2.session_graph"
-
-
-class FakeCam:
-    def __init__(self, *, entry_path, load_ok=True, load_raises=None):
-        self.entry_path = entry_path
-        self.load_ok = load_ok
-        self.load_raises = load_raises
-        self.ops: list = []
-        self.ducked: list[bool] = []
-        self.live: str | None = None
-
-    async def get_config_file_path(self, *, best_effort=False):
-        self.ops.append("get_path")
-        return self.entry_path
-
-    async def set_active_config_raw(self, text, *, best_effort=False, duck=True):
-        self.ops.append(("set_raw", text))
-        self.ducked.append(duck)
-        if self.load_raises is not None:
-            raise self.load_raises
-        if not self.load_ok:
-            return False
-        self.live = text
-        return True
-
-    async def patch_config(self, patch, *, best_effort=False):
-        self.ops.append(("patch", patch))
-        return True
-
-    async def normalize_config_raw(self, text, *, best_effort=False):
-        return text
 
 
 def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
