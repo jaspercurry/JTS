@@ -17,21 +17,12 @@ from typing import NoReturn
 from jasper.log_event import log_event
 
 from .audio_buffer import AudioBuffer
-from .mic_capture import InputDeviceUnavailable, MicCapture
+from .mic_capture import InputDeviceUnavailable
 from .tts_playout import TtsPlayout
-from .wake_events import (
-    WakeEventStore,
-    make_event_id,
-    CAPTURE_PRE_SEC,
-    CAPTURE_POST_SEC,
-)
+from .wake_events import WakeEventStore, make_event_id
 from .cues import AudioCueManager
 from .cues.registry import NO_ROOM_MIC_CUE_SLUG
 from .vad import SpeechVAD
-from .wake_legs import LegSpec, wake_input_legs
-from .wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
-from .wake_conditions import DEFAULT_CONDITION
-from .wake_fusion import WakeFuser
 from .config import Config
 from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
@@ -52,6 +43,15 @@ from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
+from .voice.wake_detect import (  # noqa: F401
+    # CAPTURE_RING_FRAMES / LegRuntime / configured_wake_legs are re-exported
+    # for jasper.voice.daemon_main, which builds the legs this loop consumes.
+    CAPTURE_RING_FRAMES,
+    WAKE_REFRACTORY_SEC,
+    LegRuntime,
+    WakeLegs,
+    configured_wake_legs,
+)
 from .voice.push_to_talk import (
     HARD_RECORDING_CAP_SEC,
     PTT_KEEPALIVE_INTERVAL_SEC,
@@ -59,7 +59,7 @@ from .voice.push_to_talk import (
     PushToTalk,
     keepalive_ticks,
 )
-from .voice.wake_telemetry import LEG_DB, LegFireScore, WakeTelemetry
+from .voice.wake_telemetry import WakeTelemetry
 from .voice.assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
     AssistantOutput,
@@ -134,9 +134,6 @@ async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
     task_set.difference_update(tasks)
 
 
-# Acoustic tail margin after the output owner has drained a turn.
-WAKE_REFRACTORY_SEC = 0.2
-
 # `_end_turn` reasons the household or the daemon itself chose: whoever
 # muted, shut down or spoke over the turn already knows why it went quiet,
 # so no failure cue is owed however little the model said.
@@ -157,31 +154,6 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
 # jasper.platform.control_client.DEFAULT_TIMEOUT (2.0 s) with room for the
 # round trip. A refusal outlives that either way: it cues first.
 PAUSED_CONNECTION_WAIT_SEC = 1.2
-
-# Per-leg score-freshness window. When a leg fires, another leg's most-
-# recent score counts toward `fired_legs` (and the per-leg log line) only
-# if it landed within this window — so a stream that stopped feeding (e.g.
-# the bridge died) surfaces as "none" rather than lying with a stale
-# score. 4x MicCapture's 80 ms frame period.
-WAKE_STALE_SCORE_SEC = 0.32
-
-# How often the WAKE loop recomputes the acoustic condition the fuser keys
-# on. The fire gate reads a cached `_current_condition`; this bounds its
-# staleness while keeping the ring-noise-floor cost off the per-frame path
-# (recompute ~1x/s, not ~12x/s/leg). Conditions — music starting, the room
-# going quiet — change on a human timescale, so ~1 s is ample.
-CONDITION_REFRESH_SEC = 1.0
-
-# Per-leg wake-telemetry capture-ring depth, in frames. Sized to the
-# (pre + post) capture window plus a safety margin: a 4 + 2 = 6 s window
-# with ~2 s slack for the post-fire collection window, so a snapshot
-# never runs off the end of the ring. One ring per leg is allocated at
-# the run() wiring site and handed to its LegRuntime.
-CAPTURE_RING_FRAMES = int(
-    ((CAPTURE_PRE_SEC + CAPTURE_POST_SEC) * MicCapture.OUTPUT_RATE
-     / MicCapture.OUTPUT_FRAME_SAMPLES) + 25
-)
-
 
 # Pre-roll: when wake fires, replay the most recent ~560 ms of mic
 # audio into the turn so the first phoneme of the user's command
@@ -272,166 +244,19 @@ class State(Enum):
     SESSION = "session"
 
 
-def _frame_rms_dbfs(frame) -> float | None:
-    """Waveform RMS in dBFS for a single int16 mic frame.
-
-    Cheap (≤80 µs per 1280-sample frame on Pi 5). Returns None on any
-    error so callers fall through rather than crashing on a malformed
-    frame.
-
-    Reference: full-scale int16 is ±32768; RMS of full-scale sine
-    ≈ 23170, so a -3 dBFS signal reads ~16384 RMS.
-    """
-    try:
-        import numpy as _np  # local — keep module import cheap
-        arr = _np.asarray(frame, dtype=_np.float32)
-        if arr.size == 0:
-            return None
-        rms = float(_np.sqrt(_np.mean(arr * arr)))
-        if rms <= 0.0:
-            return -120.0  # digital silence floor
-        return 20.0 * _np.log10(rms / 32768.0)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
-    """Ambient noise floor (dBFS) from a wake capture ring.
-
-    A low percentile of the ring's per-frame RMS: the wake utterance is a
-    minority of the ~6 s window, so the quieter frames approximate the room
-    background. Computed once at fire time (never per frame), it splits
-    "quiet" from "ambient" for the condition estimator. Returns None for an
-    empty/absent ring or any error — telemetry must never break the wake
-    fire path, and the caller treats None as "can't tell" (-> quiet).
-    """
-    if not ring:
-        return None
-    try:
-        import numpy as _np  # local — keep module import cheap
-        levels = [r for f in ring if (r := _frame_rms_dbfs(f)) is not None]
-        if not levels:
-            return None
-        return float(_np.percentile(levels, percentile))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-
-class LegRuntime:
-    """Live state for one wake-detection leg.
-
-    The set of legs is declared in `jasper.wake_legs`; adding a leg is a
-    registry entry plus a config-driven construction in
-    `WakeLoop.__init__`.
-    """
-
-    __slots__ = (
-        "spec", "mic", "detector", "capture_ring",
-        "shadow_vad", "recent_score", "recent_score_at",
-    )
-
-    def __init__(self, spec, mic, detector, capture_ring, shadow_vad=None):
-        self.spec = spec
-        self.mic = mic
-        self.detector = detector
-        self.capture_ring = capture_ring
-        # Session-state shadow VAD — set only on the AEC-OFF leg. When
-        # present, the leg loop scores it during SESSION for telemetry
-        # (`_shadow_vad_score_raw`); other legs idle in SESSION.
-        self.shadow_vad = shadow_vad
-        # Most-recent raw wake score + the loop-clock time it was set.
-        # Read at fire time so the wake event carries every leg's recent
-        # peak, and to gate `fired_legs` on freshness.
-        self.recent_score = 0.0
-        self.recent_score_at = 0.0
-
-
-# Which Config field carries each wake leg's mic device string. Kept here, a
-# voice-daemon construction concern, rather than on the jasper.wake_legs
-# registry, which stays a pure cross-process identity table. The token and
-# field name deliberately skew: the chip-direct leg's token is "off" but its
-# device var is cfg.mic_device_raw, the operator-facing "raw" vocabulary
-# (JASPER_MIC_DEVICE_RAW). The reconciler sets and clears these vars from the
-# JASPER_WAKE_LEG_* booleans; an empty string means the leg is not configured.
-_LEG_DEVICE_ATTR: dict[str, str] = {
-    "on": "mic_device",
-    "off": "mic_device_raw",
-    "dtln": "mic_device_dtln",
-    "chip_aec_150": "mic_device_chip_aec_150",
-    "chip_aec_210": "mic_device_chip_aec_210",
-}
-
-
-def configured_wake_legs(
-    cfg: Config,
-    *,
-    wake_detection_supported: bool = True,
-) -> list[tuple[LegSpec, str]]:
-    """Decide which wake legs to build and each one's device string.
-
-    Pure (no I/O) so it is unit-testable; run() layers mic-open and
-    AsyncExitStack lifecycle on top. The "on" (AEC3/primary) leg carries
-    session audio and the Tier-1 heartbeat and is normally always built; the
-    AEC reconciler owns making its device present, or parking voice. Optional
-    "off"/"dtln" legs are built only when their device var is non-empty, so
-    voice never opens a UDP listener nobody feeds.
-
-    Two things produce an empty plan — a box with real voice input (a paired
-    remote's button) but no always-listening stream to detect wake on:
-
-    * the install profile does not grant ``Capability.WAKE_DETECTION``; the
-      caller reads the marker and passes ``wake_detection_supported``, and
-      ``Config`` stays env-only;
-    * ``jasper-aec-reconcile`` published "no local mic" while an accessory
-      offers a manual source (ADR-0217).
-
-    Building the primary leg anyway would open a card that is not present,
-    ``run()`` would re-raise ``InputDeviceUnavailable``, and the daemon would
-    park before reaching the accessory sources (issue #2205).
-
-    Both facts in the second case are read from their writers, never guessed:
-    ``local_mic_present`` from ``jasper-aec-reconcile``, owner of the
-    voice-input gate (``JASPER_LOCAL_MIC_PRESENT``) — ``Config`` defaults it
-    to the literal ``"Array"`` and the reconciler writes a real candidate name
-    on no-mic paths, so deriving it from ``cfg.mic_device`` misreads a real
-    box; ``manual_mic_sources`` from ``jasper-accessory-reconcile``
-    (``JASPER_MANUAL_MIC_SOURCES``).
-
-    Only an explicit ``False`` drops the leg. ``None`` — the reconciler never
-    ran, or did not resolve a custom device — keeps current behaviour, which
-    keeps "this speaker has no room mic" distinguishable from "the room mic
-    should be here and isn't": the second still raises and parks loudly rather
-    than downgrading a mic-bearing speaker to push-to-talk.
-    """
-    if not wake_detection_supported:
-        return []
-    if cfg.local_mic_present is False and cfg.manual_mic_sources:
-        return []
-    legs: list[tuple[LegSpec, str]] = []
-    for spec in wake_input_legs():
-        device = getattr(cfg, _LEG_DEVICE_ATTR[spec.token])
-        if spec.token == "on" or device:
-            legs.append((spec, device))
-    return legs
-
-
 class WakeLoop:
     """Sole consumer of the primary mic. Dispatches each frame to either
     the wake-word detector (WAKE state) or the active live turn (SESSION
     state).
 
-    `self._legs` holds one `LegRuntime` per configured wake leg (keyed
-    by jasper.wake_legs token), assembled by run() and passed in via
-    `legs`. The primary "on" (AEC3) leg drives this main loop and carries
-    session audio plus the watchdog heartbeat; optional "off"
-    (chip-direct) and "dtln" legs run as parallel `_wake_leg_loop` tasks,
-    each with its own `WakeWordDetector`. Any leg crossing threshold
-    fires the wake event (OR-gate); a shared refractory + asyncio lock
-    guarantees one user attempt = one wake event regardless of which
-    leg(s) crossed first. Secondary legs are wake-detection-only: their
-    frames don't populate pre-roll or flow into sessions — the primary
-    "on" stream stays the canonical session audio source.
+    `self._wake_legs` (voice/wake_detect.py) owns the configured legs and
+    decides which one heard the wake word. The primary "on" (AEC3) leg
+    drives this main loop and carries session audio plus the watchdog
+    heartbeat; optional "off" (chip-direct) and "dtln" legs run as
+    parallel `_wake_leg_loop` tasks. Secondary legs are
+    wake-detection-only: their frames don't populate pre-roll or flow into
+    sessions — the primary "on" stream stays the canonical session audio
+    source.
     """
 
     def __init__(
@@ -465,68 +290,15 @@ class WakeLoop:
         # here; held only so session_status can surface which tool
         # families registered / were gated off / failed to build.
         self._tool_packs: list[dict] = tool_packs or []
-        # Wake-detection legs, keyed by jasper.wake_legs token. Assembled
-        # by run(), which opens each leg's mic under the AsyncExitStack
-        # and builds its detector, capture ring and — for "off" — a
-        # session shadow VAD.
-        self._legs: dict[str, LegRuntime] = {
-            leg.spec.token: leg for leg in legs
-        }
+        self._wake_legs = WakeLegs(legs, music_dbfs=self._read_music_dbfs)
         self._push_to_talk = PushToTalk(
-            manual_mics or [], have_wake_legs=bool(self._legs),
+            manual_mics or [], have_wake_legs=bool(self._wake_legs.legs),
         )
-        # A configured leg without a LEG_DB telemetry mapping would raise an
-        # uncaught KeyError in the wake hot path, where telemetry must be
-        # fail-soft; fail at startup instead of at fire time.
-        _unmapped = [tok for tok in self._legs if tok not in LEG_DB]
-        if _unmapped:
-            raise RuntimeError(
-                f"wake legs missing a LEG_DB telemetry mapping: "
-                f"{sorted(_unmapped)} (add them to LEG_DB in "
-                "voice/wake_telemetry.py)"
-            )
-        # `_on` is absent on a push-to-talk-only speaker: no
-        # always-listening microphone, so `configured_wake_legs` planned no
-        # legs. Every read site reachable in that mode is None-tolerant —
-        # `run()` branches to a keepalive loop, and the capture-ring readers
-        # sit behind a wake fire that cannot happen without a detector. The
-        # ring still gets a real deque so no reader special-cases it.
-        _on = self._legs.get("on")
+        # Absent on a push-to-talk-only speaker: no always-listening
+        # microphone, so `configured_wake_legs` planned no legs and `run()`
+        # branches to a keepalive loop instead of iterating frames.
+        _on = self._wake_legs.legs.get("on")
         self._mic = _on.mic if _on is not None else None
-        self._capture_ring_on = (
-            _on.capture_ring if _on is not None
-            else deque(maxlen=CAPTURE_RING_FRAMES)
-        )
-        self._capture_ring_off = (
-            self._legs["off"].capture_ring if "off" in self._legs
-            else deque(maxlen=CAPTURE_RING_FRAMES)
-        )
-        self._capture_ring_dtln = (
-            self._legs["dtln"].capture_ring if "dtln" in self._legs
-            else deque(maxlen=CAPTURE_RING_FRAMES)
-        )
-        # Shared OR-gate lock across the parallel leg loops. Held only for
-        # the critical section that sets refractory_until + reads the
-        # other legs' recent scores. Without this, two legs could race to
-        # fire the same wake event simultaneously.
-        self._wake_fire_lock: asyncio.Lock = asyncio.Lock()
-        # The fire-decision seam: the single place a leg's fire threshold
-        # is decided, so per-condition thresholds and any corroboration /
-        # veto land here rather than in the parallel leg loops.
-        # `_current_condition` is the acoustic condition the fuser keys
-        # on.
-        self._fuser: WakeFuser = WakeFuser()
-        self._current_condition: str = DEFAULT_CONDITION
-        # Loop-clock timestamp of the last condition recompute; 0.0 forces
-        # a refresh on the first WAKE frame.
-        self._condition_refreshed_at: float = 0.0
-        # last_wake_at is daemon-lifetime and never nulled.
-        self._last_wake_at: float | None = None
-        # Derived by _maybe_refresh_condition; session_status() reads these
-        # as None while the mic is not feeding the refresh (muted or a
-        # measurement hold), since the refresh stops ticking then.
-        self._idle_rms_dbfs: float | None = None
-        self._input_last_above_floor_at: float | None = None
         self._connection = connection
         self._turn_output_episode: AssistantOutputEpisode | None = None
         self._content_activity = content_activity
@@ -551,10 +323,11 @@ class WakeLoop:
         if self._vad is None and not self._push_to_talk.only:
             self._vad = SpeechVAD()
         # Session-state shadow VAD for the chip-direct ("off") leg, when
-        # configured. Created in run() and carried on that leg's
-        # LegRuntime.
+        # configured. Built by jasper.voice.daemon_main and carried on that
+        # leg's LegRuntime.
         self._vad_off: SpeechVAD | None = (
-            self._legs["off"].shadow_vad if "off" in self._legs else None
+            self._wake_legs.legs["off"].shadow_vad
+            if "off" in self._wake_legs.legs else None
         )
 
         self._state = State.WAKE
@@ -575,7 +348,6 @@ class WakeLoop:
         self._continuous_speech_started = self._continuous_last_speech = 0.0
         self._bg_end_scheduled: bool = False
         self._fire_and_forget: set[asyncio.Task] = set()
-        self._refractory_until: float = 0.0
         # Populated by run() when it starts the leg/manual-mic consumer
         # loops; emptied again by its finally sweep. session_status's
         # wake_legs derives from _leg_tasks (see there).
@@ -941,10 +713,10 @@ class WakeLoop:
     async def run(self) -> None:
         # One wake-only consumer per non-primary leg; the primary "on" leg
         # is driven by this method's main loop below. A leg is in
-        # self._legs only when both its mic and detector were configured,
-        # so there is no misconfiguration case to warn about here.
+        # _wake_legs.legs only when both its mic and detector were
+        # configured, so there is no misconfiguration case to warn about.
         self._leg_tasks = {}
-        for _leg_name in self._legs:
+        for _leg_name in self._wake_legs.legs:
             if _leg_name == "on":
                 continue
             _leg_task = asyncio.create_task(
@@ -967,7 +739,8 @@ class WakeLoop:
             self._manual_tasks.append(_manual_task)
         if self._leg_tasks:
             logger.info(
-                "multi-leg wake enabled: %s", " + ".join(self._legs.keys()),
+                "multi-leg wake enabled: %s",
+                " + ".join(self._wake_legs.legs.keys()),
             )
         if self._manual_tasks:
             log_event(
@@ -1055,7 +828,7 @@ class WakeLoop:
                 # sized for the 6 s offline-review window, not the 560 ms
                 # turn-open window. Filled in both states so the pre-fire
                 # context is already on hand the moment a wake fires.
-                self._capture_ring_on.append(frame)
+                self._wake_legs.capture_ring_on.append(frame)
 
                 if self._acquiring:
                     if self._push_to_talk.active_source is None:
@@ -1129,7 +902,7 @@ class WakeLoop:
         SESSION state a leg with a shadow VAD (the AEC-OFF leg) feeds
         `_shadow_vad_score_raw` for telemetry; other legs idle.
         """
-        rt = self._legs[leg_name]
+        rt = self._wake_legs.legs[leg_name]
         async for frame in rt.mic.frames():
             if self._stop_event.is_set():
                 return
@@ -1171,14 +944,7 @@ class WakeLoop:
         self._input_suspended.discard(source)
         if gap:
             self._input_gaps += 1
-            rt = self._legs.get(source)
-            if rt is not None:
-                rt.detector.reset()
-                rt.recent_score = rt.recent_score_at = 0.0
-                if rt.capture_ring is not None:
-                    rt.capture_ring.clear()
-                if rt.shadow_vad is not None:
-                    rt.shadow_vad.reset()
+            self._wake_legs.reset_leg(source)
             if source == "on":
                 self._pre_roll.clear()
             if not self._acquiring and source == (self._push_to_talk.active_source or "on"):
@@ -1218,14 +984,12 @@ class WakeLoop:
             self._turn.discard_input()
         self._input_admit_after = time.monotonic()
         self._input_invalidation_reason = reason
-        self._input_suspended.update(self._legs)
+        self._input_suspended.update(self._wake_legs.legs)
         self._input_suspended.update(self._push_to_talk.sources)
         self._pre_roll.clear()
         self._frozen_pre_roll = None
         self._acquire_buffer.clear()
-        for rt in self._legs.values():
-            if rt.capture_ring is not None:
-                rt.capture_ring.clear()
+        self._wake_legs.clear_rings()
 
     async def mute_mic(self) -> str:
         """Pause input and end the active turn; repeated calls are no-ops."""
@@ -1261,138 +1025,28 @@ class WakeLoop:
         """
         return self._content_activity.music_dbfs
 
-    def _maybe_refresh_condition(self, now_loop: float) -> None:
-        """Refresh `_current_condition` (the acoustic condition the fuser
-        keys on) at most once per CONDITION_REFRESH_SEC, so the per-frame
-        fire gate works off a ~1 s-fresh condition without paying the
-        ring-noise-floor cost every frame."""
-        if (now_loop - self._condition_refreshed_at) < CONDITION_REFRESH_SEC:
-            return
-        # Stamp the timer BEFORE the recompute so a persistent failure retries
-        # at ~1 Hz (not every frame). Keep the recompute fail-soft: the wake
-        # path must never break because of ancillary condition estimation.
-        self._condition_refreshed_at = now_loop
-        try:
-            noise_floor_dbfs = _ring_noise_floor_dbfs(self._capture_ring_on)
-            self._current_condition = classify_condition(
-                music_dbfs=self._read_music_dbfs(),
-                noise_floor_dbfs=noise_floor_dbfs,
-            ).condition
-            self._idle_rms_dbfs = noise_floor_dbfs
-            if noise_floor_dbfs is not None and noise_floor_dbfs > AMBIENT_FLOOR_DBFS:
-                self._input_last_above_floor_at = time.time()
-        except Exception:  # noqa: BLE001
-            # Keep the last good condition: an unguarded raise here would
-            # propagate out of the frame loop and stop wake detection.
-            pass
-
     async def _handle_wake_frame(self, frame, *, leg: str = "on") -> None:
-        """Score one frame on the named leg. Legs:
-          - 'on'   → post-AEC3 BEST_A (primary, the session audio source)
-          - 'off'  → chip-direct raw mic (no AEC)
-          - 'dtln' → DTLN-aec output
-          - 'chip_aec_150' / 'chip_aec_210' → the XVF3800 hardware-AEC ASR
-                     beams (profile-selected and hardware-conditional)
+        """Dispatch one WAKE-state frame to the leg fan-in, and on a fire
+        hand the acquire window to `_arbitrate_acquire_drain`.
 
-        Always tracks the leg's recent peak. If the threshold is crossed
-        AND this leg wins the OR-gate race against the other legs, fires a
-        single wake event with ALL legs' recent scores attached.
-
-        Refractory + acquiring checks ensure one user attempt = one
-        wake event, regardless of which leg(s) fire first."""
-        # Refractory early-out before scoring: the previous wake's TTS may
-        # still be bleeding into the mic.
-        now_loop = asyncio.get_event_loop().time()
-        if now_loop < self._refractory_until:
-            return
-
-        # Keep the condition the fuser keys on fresh (~1x/s) so the
-        # per-frame gate below works off a live condition.
-        self._maybe_refresh_condition(now_loop)
-
-        # Track the raw score regardless of threshold so another leg, when it
-        # fires, can pull this leg's most-recent peak into the wake event.
-        rt = self._legs.get(leg)
-        if rt is None:
-            return  # unknown / unconfigured leg
-        detector = rt.detector
-        score = detector.score_frame(frame)
-        rt.recent_score = score
-        rt.recent_score_at = now_loop
-
-        firing_threshold = self._fuser.effective_threshold(
-            leg, self._current_condition, detector.threshold,
+        The fan-in owns the decision (which leg heard it, with what
+        evidence); what is left here is what a fire costs this loop — the
+        pre-roll freeze that preserves the user's first phoneme, and the
+        background task that opens the turn."""
+        fire = await self._wake_legs.score_frame(
+            frame,
+            leg=leg,
+            mic_muted=self._mic_muted,
+            capture_event=self._wake_telemetry.store is not None,
         )
-        if score < firing_threshold:
+        if fire is None:
             return
 
-        # Win the OR-gate race against the other legs' loops. The lock covers
-        # only the critical section; the rest of the wake flow runs unlocked so
-        # both loops stay responsive.
-        async with self._wake_fire_lock:
-            if asyncio.get_event_loop().time() < self._refractory_until:
-                # The other leg won the race while we awaited the
-                # lock. Bow out — only one wake event per user attempt.
-                return
-            # Win. Set refractory IMMEDIATELY so the other leg's next
-            # frame backs off cleanly. `_arbitrate_acquire_drain` will
-            # extend this in its finally block.
-            self._refractory_until = now_loop + WAKE_REFRACTORY_SEC
-            # `fired_legs` is which leg(s) crossed threshold at fire time.
-            # A non-firing leg counts only if its most-recent score is
-            # FRESH (within WAKE_STALE_SCORE_SEC, so a stream that stopped
-            # feeding doesn't lie with a stale score) AND above that leg's
-            # own threshold. `trigger_kind` records the winner.
-            fired_set = {leg}
-            for _name, _other in self._legs.items():
-                if _name == leg:
-                    continue
-                if (now_loop - _other.recent_score_at) > WAKE_STALE_SCORE_SEC:
-                    continue
-                if _other.recent_score >= self._fuser.effective_threshold(
-                    _name, self._current_condition, _other.detector.threshold,
-                ):
-                    fired_set.add(_name)
-            fired_legs = ",".join(sorted(fired_set))
-
-        self._wake_event_at_monotonic = time.monotonic()
-        # Reset ALL detectors after a wake fires. openWakeWord's
-        # prediction smoothing keeps recent-activation state across
-        # calls; without resetting, the post-fire baseline stays
-        # elevated and music vocals or TTS-tail bleed can false-fire on
-        # the next listening window. Every leg was elevated by the same
-        # user utterance, so reset them all.
-        for _other in self._legs.values():
-            _other.detector.reset()
-
+        self._wake_event_at_monotonic = fire.at_monotonic
         self._frozen_pre_roll = tuple(self._pre_roll)
         self._acquire_input_epoch = self._input_admit_after
         self._acquiring = True
         self._acquire_buffer.clear()
-        # Per-leg score summary for the log — ONLY the legs this install
-        # actually built, so a single-stream or non-chip-AEC install emits
-        # no fields for legs it isn't running. "none" means an ACTIVE leg
-        # whose last score is stale (its UDP stream dried up), distinct
-        # from an unconfigured leg, which is simply absent.
-        _score_fields: dict[str, str] = {}
-        for _n, _lr in self._legs.items():
-            if _n != leg and (
-                _lr.recent_score_at == 0.0
-                or (now_loop - _lr.recent_score_at) > WAKE_STALE_SCORE_SEC
-            ):
-                _score_fields[f"score_{_n}"] = "none"
-            else:
-                _score_fields[f"score_{_n}"] = f"{_lr.recent_score:.2f}"
-        log_event(
-            logger,
-            "wake.detected",
-            leg=leg,
-            **_score_fields,
-            threshold=f"{firing_threshold:.2f}",
-            fired=fired_legs,
-        )
-        # Marks the wake pipeline alive even if this attempt isn't served.
-        self._last_wake_at = time.time()
 
         # In peering mode `can_serve` is broadcast in the WAKE message so the
         # fleet's ranking function can prefer a peer that can serve. We bid
@@ -1403,80 +1057,19 @@ class WakeLoop:
         conn_paused = self._connection.is_paused()
         can_serve = spend_allowed and not conn_paused
 
-        # Tertiary tiebreaker for the peering ranking function. SNR would rank
-        # better but needs rolling-noise-floor state nothing tracks; the
-        # ranker falls through to RMS when SNR is missing.
-        rms_dbfs = _frame_rms_dbfs(frame)
-
-        wake_event = None
-        if self._wake_telemetry.store is not None:
-            condition_ctx = classify_condition(
-                music_dbfs=self._read_music_dbfs(),
-                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
-            )
-            wake_event = dict(
-                leg=leg,
-                score=score,
-                now_loop=now_loop,
-                legs={
-                    _name: LegFireScore(
-                        score=_rt.recent_score,
-                        score_at=_rt.recent_score_at,
-                        # Instantaneous mic RMS at fire-time from the last
-                        # frame in this leg's capture ring — separates
-                        # low-energy FPs from real attempts in offline
-                        # review.
-                        mic_rms_dbfs=self._tail_frame_rms_dbfs(
-                            _rt.capture_ring,
-                        ),
-                    )
-                    for _name, _rt in self._legs.items()
-                },
-                firing_threshold=firing_threshold,
-                fired_legs=fired_legs,
-                condition=condition_ctx,
-                mic_muted=self._mic_muted,
-            )
         # Background task so the main mic loop stays responsive while
         # input continues to enter the bounded acquire buffer.
         self._create_fire_and_forget_task(
             self._arbitrate_acquire_drain(
-                score=score,
-                rms_dbfs=rms_dbfs,
+                score=fire.score,
+                rms_dbfs=fire.rms_dbfs,
                 spend_allowed=spend_allowed,
                 conn_paused=conn_paused,
                 can_serve=can_serve,
-                wake_event=wake_event,
+                wake_event=fire.wake_event,
             ),
             name="wake-arbitrate-acquire-drain",
         )
-
-    def _snapshot_leg_audio(self, leg: str, n_frames: int) -> bytes | None:
-        """Snapshot the trailing wake-event window for one configured leg."""
-        runtime = self._legs.get(leg)
-        if runtime is None:
-            return None
-        return self._snapshot_ring(runtime.capture_ring, n_frames)
-
-    @staticmethod
-    def _snapshot_ring(ring: deque, n_frames: int) -> bytes | None:
-        """Concatenate the last `n_frames` of the ring, or None when it is
-        empty (e.g. the AEC OFF leg in single-stream mode)."""
-        if not ring:
-            return None
-        # Fewer than n_frames early in startup, before the ring fills.
-        take = min(len(ring), n_frames)
-        frames = list(ring)[-take:]
-        # Each frame is a numpy int16 array.
-        return b"".join(f.tobytes() for f in frames)
-
-    @staticmethod
-    def _tail_frame_rms_dbfs(ring: "deque | None") -> float | None:
-        """RMS in dBFS of the most-recent frame in `ring`, or None when the
-        ring is empty or missing."""
-        if ring is None or not ring:
-            return None
-        return _frame_rms_dbfs(ring[-1])
 
     def bind_tool_dispatch(self) -> Callable[[str, str], Awaitable[None]]:
         return self._wake_telemetry.bind_tool_dispatch()
@@ -1538,7 +1131,7 @@ class WakeLoop:
                 if event_id is not None:
                     self._create_fire_and_forget_task(
                         self._wake_telemetry.finalize_event_audio(
-                            event_id, snapshot=self._snapshot_leg_audio,
+                            event_id, snapshot=self._wake_legs.snapshot,
                         ),
                         name="wake-event-audio-finalize",
                     )
@@ -1630,8 +1223,8 @@ class WakeLoop:
             self._frozen_pre_roll = None
             # Protects against the detector re-firing on the TTS tail (won
             # path) or on a quick repeat-wake (lost path).
-            self._refractory_until = max(
-                self._refractory_until,
+            self._wake_legs.refractory_until = max(
+                self._wake_legs.refractory_until,
                 asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
             )
 
@@ -2236,7 +1829,7 @@ class WakeLoop:
         # Legs whose consumer loop is alive right now, not merely
         # configured — /aec reports configured intent from aec_mode.env.
         _wake_legs = [
-            leg for leg in self._legs
+            leg for leg in self._wake_legs.legs
             if leg == "on"
             or leg not in self._leg_tasks
             or not self._leg_tasks[leg].done()
@@ -2245,9 +1838,10 @@ class WakeLoop:
             leg for leg, task in self._leg_tasks.items()
             if self._leg_task_dead(task)
         ]
-        # Neither gate feeds _maybe_refresh_condition (see the dispatch
-        # sites in run() / _manual_mic_loop / _wake_leg_loop), so the level
-        # fields below go stale, not just missing, while either is set.
+        # Neither gate feeds the fan-in's condition refresh (see the
+        # dispatch sites in run() / _manual_mic_loop / _wake_leg_loop), so
+        # the level fields below go stale, not just missing, while either
+        # is set.
         mic_feeding = not (self._mic_muted or self._measurement_active.is_set())
         return {
             "state": self._state.name,
@@ -2259,7 +1853,10 @@ class WakeLoop:
                 "acquire_dropped_frames": self._acquire_buffer.dropped_frames,
                 "capture_dropped_frames": sum(
                     getattr(rt.mic, "dropped_frames", 0)
-                    for rt in (*self._legs.values(), *self._push_to_talk.sources.values())
+                    for rt in (
+                        *self._wake_legs.legs.values(),
+                        *self._push_to_talk.sources.values(),
+                    )
                 ),
             },
             "spend_allowed": self._spend_cap.allowed(),
@@ -2316,10 +1913,13 @@ class WakeLoop:
             # daemon has seen the signal. last_wake_at is daemon-lifetime
             # and never nulled; the other two read None while mic_feeding
             # is false (see above) rather than a stale frozen value.
-            "last_wake_at": self._last_wake_at,
-            "idle_rms_dbfs": self._idle_rms_dbfs if mic_feeding else None,
+            "last_wake_at": self._wake_legs.last_wake_at,
+            "idle_rms_dbfs": (
+                self._wake_legs.idle_rms_dbfs if mic_feeding else None
+            ),
             "input_last_above_floor_at": (
-                self._input_last_above_floor_at if mic_feeding else None
+                self._wake_legs.input_last_above_floor_at
+                if mic_feeding else None
             ),
             "wake_legs": _wake_legs,
             "wake_legs_dead": _wake_legs_dead,
@@ -2711,7 +2311,7 @@ class WakeLoop:
             self._push_to_talk.active_source = None
             self._barge_in_active = False
             self._state = State.WAKE
-            self._refractory_until = (
+            self._wake_legs.refractory_until = (
                 asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
             )
 

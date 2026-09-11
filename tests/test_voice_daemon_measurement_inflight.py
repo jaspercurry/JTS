@@ -1634,7 +1634,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     wl._push_to_talk.active_source = "test_remote"
     wl._acquiring = True
     wl._state = State.SESSION
-    wl._refractory_until = -1.0
+    wl._wake_legs.refractory_until = -1.0
     wl._content_activity = content
     wl._usage_store = usage
     wl._begin_turn_inner = failed_inner
@@ -1657,7 +1657,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     assert wl._push_to_talk.active_source is None
     assert wl._acquiring is False
     assert wl._state is State.WAKE
-    assert wl._refractory_until > 0.0
+    assert wl._wake_legs.refractory_until > 0.0
     assert wl._turn_output_episode is None
     assert gate.end_calls == 1
     assert not gate.is_active

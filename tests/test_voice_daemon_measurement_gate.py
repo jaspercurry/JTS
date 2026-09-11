@@ -321,9 +321,9 @@ async def test_measurement_between_frames_discards_old_input_and_resets_history(
     fresh = np.ones(1280, dtype=np.int16)
     captured_at = time.monotonic()
     wl._pre_roll.append(old)
-    wl._capture_ring_on.append(old)
+    wl._wake_legs.capture_ring_on.append(old)
     wl._acquire_buffer.append(old, captured_at)
-    detector = wl._legs["on"].detector
+    detector = wl._wake_legs.legs["on"].detector
     detector.reset = Mock()
     wl._handle_wake_frame = AsyncMock()
 
@@ -334,11 +334,11 @@ async def test_measurement_between_frames_discards_old_input_and_resets_history(
         yield fresh
 
     mic = SimpleNamespace(frames=frames, last_frame=None)
-    wl._mic = wl._legs["on"].mic = mic
+    wl._mic = wl._wake_legs.legs["on"].mic = mic
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     await wl.measurement_hold.resume()
     assert not wl._pre_roll
-    assert not wl._capture_ring_on
+    assert not wl._wake_legs.capture_ring_on
     assert not wl._acquire_buffer
     await wl.run()
     assert len(wl._pre_roll) == 1

@@ -13,7 +13,7 @@ into one :data:`jasper.wake_conditions.CONDITIONS` label:
     first.
   * **quiet vs ambient** — from the mic-capture noise floor (a low percentile
     of the pre-fire capture ring's per-frame RMS; see
-    ``jasper.voice_daemon._ring_noise_floor_dbfs``).
+    ``jasper.voice.wake_detect._ring_noise_floor_dbfs``).
 
 :func:`classify_condition` is intentionally **pure** — both signals are
 passed in — so it is unit-testable and so the Phase-1.2 fuser can call it

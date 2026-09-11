@@ -60,34 +60,34 @@ def _make_wake_loop_triple(
     store = MagicMock()
     store.begin_event = AsyncMock()
     wl = wake_loop_for_tests(wake_event_store=store)
-    wl._legs["on"].detector = _make_detector()
+    wl._wake_legs.legs["on"].detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     # capture_ring=None is fine — _tail_frame_rms_dbfs tolerates None.
-    wl._legs = {
-        "on": LegRuntime(by_token("on"), MagicMock(), wl._legs["on"].detector, None),
+    wl._wake_legs.legs = {
+        "on": LegRuntime(by_token("on"), MagicMock(), wl._wake_legs.legs["on"].detector, None),
     }
     if detector_off is not None:
-        wl._legs["off"] = LegRuntime(
+        wl._wake_legs.legs["off"] = LegRuntime(
             by_token("off"), MagicMock(), detector_off, None,
         )
     if detector_dtln is not None:
-        wl._legs["dtln"] = LegRuntime(
+        wl._wake_legs.legs["dtln"] = LegRuntime(
             by_token("dtln"), MagicMock(), detector_dtln, None,
         )
     if detector_chip_aec_150 is not None:
-        wl._legs["chip_aec_150"] = LegRuntime(
+        wl._wake_legs.legs["chip_aec_150"] = LegRuntime(
             by_token("chip_aec_150"), MagicMock(), detector_chip_aec_150, None,
         )
     if detector_chip_aec_210 is not None:
-        wl._legs["chip_aec_210"] = LegRuntime(
+        wl._wake_legs.legs["chip_aec_210"] = LegRuntime(
             by_token("chip_aec_210"), MagicMock(), detector_chip_aec_210, None,
         )
-    wl._wake_fire_lock = asyncio.Lock()
+    wl._wake_legs.fire_lock = asyncio.Lock()
     from jasper.wake_fusion import WakeFuser
-    wl._fuser = WakeFuser()
-    wl._current_condition = "quiet"
-    wl._condition_refreshed_at = 0.0
-    wl._refractory_until = 0.0
+    wl._wake_legs.fuser = WakeFuser()
+    wl._wake_legs.condition = "quiet"
+    wl._wake_legs.condition_refreshed_at = 0.0
+    wl._wake_legs.refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()
     wl._fire_and_forget = set()
@@ -97,10 +97,8 @@ def _make_wake_loop_triple(
     wl._connection = MagicMock()
     wl._connection.is_paused = MagicMock(return_value=conn_paused)
     wl._mic_muted = False
-    # Capture rings — empty deques; _tail_frame_rms_dbfs handles None.
-    wl._capture_ring_on = None
-    wl._capture_ring_off = None
-    wl._capture_ring_dtln = None
+    # _tail_frame_rms_dbfs / _ring_noise_floor_dbfs tolerate a missing ring.
+    wl._wake_legs.capture_ring_on = None
     wl._content_activity = MagicMock()
     wl._content_activity.music_dbfs = None
 
@@ -120,11 +118,6 @@ def _make_wake_loop_triple(
             await wl._cancel_fire_and_forget_tasks()
 
     wl._handle_wake_frame = wake_and_record
-
-    # Snapshot helper used by the capture finalize task; not exercised
-    # here (we never reach the finalize path), but stub anyway so any
-    # attribute lookup is safe.
-    wl._snapshot_ring = MagicMock(return_value=None)
     return wl
 
 
@@ -193,7 +186,7 @@ async def test_aec_on_fire_still_records_fire_aec_on():
     """Regression on the non-broken path — make sure adding the dtln
     branch didn't change AEC ON behavior."""
     wl = _make_wake_loop_triple()
-    wl._legs["on"].detector.score_frame.return_value = 0.91
+    wl._wake_legs.legs["on"].detector.score_frame.return_value = 0.91
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
@@ -225,9 +218,9 @@ async def test_non_primary_fire_records_firing_leg_effective_threshold():
     detector_off = _make_detector(threshold=0.5)
     detector_off.score_frame.return_value = 0.72
     wl = _make_wake_loop_triple(detector_off=detector_off)
-    wl._fuser = WakeFuser({("off", "music"): 0.2})
-    wl._current_condition = "music"
-    wl._condition_refreshed_at = asyncio.get_event_loop().time()
+    wl._wake_legs.fuser = WakeFuser({("off", "music"): 0.2})
+    wl._wake_legs.condition = "music"
+    wl._wake_legs.condition_refreshed_at = asyncio.get_event_loop().time()
 
     await wl._handle_wake_frame(_frame(), leg="off")
 
@@ -251,10 +244,10 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
     # AEC ON + AEC OFF have very recent above-threshold scores —
     # within the STALE_SEC window (0.32 s).
     now = asyncio.get_event_loop().time()
-    wl._legs["on"].recent_score = 0.87
-    wl._legs["on"].recent_score_at = now
-    wl._legs["off"].recent_score = 0.95
-    wl._legs["off"].recent_score_at = now
+    wl._wake_legs.legs["on"].recent_score = 0.87
+    wl._wake_legs.legs["on"].recent_score_at = now
+    wl._wake_legs.legs["off"].recent_score = 0.95
+    wl._wake_legs.legs["off"].recent_score_at = now
 
     await wl._handle_wake_frame(_frame(), leg="dtln")
 
@@ -297,10 +290,10 @@ async def test_chip_beam_corroborates_in_fired_legs_when_software_leg_fires():
     and the corroborating beam's recent score lands in its own column."""
     detector_chip = _make_detector(threshold=0.5)
     wl = _make_wake_loop_triple(detector_chip_aec_150=detector_chip)
-    wl._legs["on"].detector.score_frame.return_value = 0.90  # "on" wins the race
+    wl._wake_legs.legs["on"].detector.score_frame.return_value = 0.90  # "on" wins the race
     now = asyncio.get_event_loop().time()
-    wl._legs["chip_aec_150"].recent_score = 0.81
-    wl._legs["chip_aec_150"].recent_score_at = now
+    wl._wake_legs.legs["chip_aec_150"].recent_score = 0.81
+    wl._wake_legs.legs["chip_aec_150"].recent_score_at = now
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
@@ -324,14 +317,13 @@ async def test_finalize_event_audio_attaches_chip_beam_rings(monkeypatch):
     frame_on = np.full(4, 1, dtype=np.int16)
     frame_150 = np.full(4, 150, dtype=np.int16)
     frame_210 = np.full(4, 210, dtype=np.int16)
-    wl._legs["on"].capture_ring = deque([frame_on])
-    wl._legs["chip_aec_150"].capture_ring = deque([frame_150])
-    wl._legs["chip_aec_210"].capture_ring = deque([frame_210])
-    wl._snapshot_ring = WakeLoop._snapshot_ring
+    wl._wake_legs.legs["on"].capture_ring = deque([frame_on])
+    wl._wake_legs.legs["chip_aec_150"].capture_ring = deque([frame_150])
+    wl._wake_legs.legs["chip_aec_210"].capture_ring = deque([frame_210])
     wl._wake_telemetry.store.attach_audio = AsyncMock()
 
     await wl._wake_telemetry.finalize_event_audio(
-        "evt-chip", snapshot=wl._snapshot_leg_audio,
+        "evt-chip", snapshot=wl._wake_legs.snapshot,
     )
 
     kwargs = wl._wake_telemetry.store.attach_audio.await_args.kwargs
@@ -351,7 +343,7 @@ async def test_wake_log_omits_unconfigured_leg_scores(caplog):
     leg regardless of hardware."""
     import logging
     wl = _make_wake_loop_triple()  # "on" only — no off/dtln/chip detectors
-    wl._legs["on"].detector.score_frame.return_value = 0.91
+    wl._wake_legs.legs["on"].detector.score_frame.return_value = 0.91
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
     fields = event_fields(caplog, "wake.detected")
@@ -371,7 +363,7 @@ async def test_wake_log_emits_only_active_legs_with_chip(caplog):
         detector_chip_aec_150=_make_detector(),
         detector_chip_aec_210=_make_detector(),
     )
-    wl._legs["on"].detector.score_frame.return_value = 0.88
+    wl._wake_legs.legs["on"].detector.score_frame.return_value = 0.88
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
     fields = event_fields(caplog, "wake.detected")
