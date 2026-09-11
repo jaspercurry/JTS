@@ -36,6 +36,7 @@ from jasper.atomic_io import (
 )
 
 from ._async_wait import wait_signalled
+from ._log_events import event_records
 
 
 def test_write_read_round_trip(tmp_path):
@@ -112,8 +113,8 @@ def test_post_publish_directory_fsync_failure_is_soft(
 
     assert path.read_text(encoding="utf-8") == "published\n"
     assert list(tmp_path.iterdir()) == [path]
-    assert "event=atomic_io.post_publish_dir_fsync_failed" in caplog.text
-    assert "event=atomic_io.temp_cleanup_failed" not in caplog.text
+    assert event_records(caplog, "atomic_io.post_publish_dir_fsync_failed")
+    assert not event_records(caplog, "atomic_io.temp_cleanup_failed")
 
 
 @pytest.mark.parametrize(
@@ -154,7 +155,7 @@ def test_fsync_directory_tolerance_contract(
         assert raised.value.errno == code
 
     assert closed == fsynced != []
-    assert ("event=atomic_io.dir_fsync_unsupported" in caplog.text) is (
+    assert bool(event_records(caplog, "atomic_io.dir_fsync_unsupported")) is (
         tolerated and code is not None
     )
 
@@ -261,7 +262,7 @@ def test_writers_keep_their_own_group_when_the_chgrp_is_denied(
     assert "JASPER_X" in path.read_text(encoding="utf-8")
     assert stat.S_IMODE(published.st_mode) == 0o640
     assert published.st_gid == own_gid != foreign_parent_gid
-    assert "event=atomic_io.group_publish_failed" in caplog.text
+    assert event_records(caplog, "atomic_io.group_publish_failed")
 
 
 def test_shared_lock_does_not_chmod_an_already_correct_root_owned_mode(
@@ -297,7 +298,7 @@ def test_lock_is_acquired_when_the_mode_repair_is_denied(tmp_path, monkeypatch, 
     with advisory_file_lock(lock_path) as handle:
         assert not handle.closed
 
-    assert "event=atomic_io.lock_mode_failed" in caplog.text
+    assert event_records(caplog, "atomic_io.lock_mode_failed")
     assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
 
 
@@ -624,7 +625,7 @@ def test_cleanup_failure_is_observable_without_masking_publish_error(
     with pytest.raises(OSError):
         atomic_write_text(path, "doomed")
 
-    assert "event=atomic_io.temp_cleanup_failed" in caplog.text
+    assert event_records(caplog, "atomic_io.temp_cleanup_failed")
     assert list(tmp_path.glob(".state.txt.*.tmp"))
 
 

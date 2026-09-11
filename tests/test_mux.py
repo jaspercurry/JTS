@@ -31,7 +31,7 @@ from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
 from ._async_wait import wait_signalled
-from ._log_events import event_field_maps, event_records
+from ._log_events import event_field_maps, event_fields, event_records
 from .fake_clock_fixtures import FakeClock
 
 REPO = Path(__file__).resolve().parents[1]
@@ -391,13 +391,10 @@ async def test_noop_alert_reconcile_uses_mux_event_at_debug(
             dirty_sources={Source.SPOTIFY},
         )
 
-    records = [
-        record for record in caplog.records
-        if "event=mux.source_reconcile" in record.getMessage()
-    ]
+    records = event_records(caplog, "mux.source_reconcile")
     assert len(records) == 1
     assert records[0].levelno == logging.DEBUG
-    assert "event=source.reconcile" not in caplog.text
+    assert not event_records(caplog, "source.reconcile")
 
 
 async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
@@ -1316,7 +1313,7 @@ async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         await m._usbsink_set_preempt(True, reason="preempted_by_winner")
     assert m._usbsink_preempted is False  # not advanced → will retry
-    assert "event=usbsink.preempt_failed" in caplog.records[-1].message
+    assert event_records(caplog, "usbsink.preempt_failed")
     # State guard did NOT latch, so a subsequent tick tries again and succeeds.
     fanin_mute.side_effect = None
     await m._usbsink_set_preempt(True, reason="preempted_by_winner")
@@ -2121,8 +2118,8 @@ async def test_bluetooth_preempt_avrcp_failure_is_best_effort(
     with caplog.at_level(logging.WARNING, logger="jasper.mux"):
         await mux._pause(Source.BLUETOOTH)
 
-    assert "event=bluetooth.preempt_pause_failed" in caplog.records[-1].message
-    assert "phone_side_pause_required" in caplog.records[-1].message
+    fields = event_fields(caplog, "bluetooth.preempt_pause_failed")
+    assert fields["action"] == "phone_side_pause_required"
 
 
 async def test_manual_tick_keeps_selected_source_when_other_source_starts(

@@ -36,6 +36,7 @@ from jasper.active_speaker.model_error_store import (
     store_snapshot,
     stored_floor,
 )
+from tests._log_events import event_fields, event_records
 
 METRIC = "max_db_notch_excluded"
 SPEAKER = "speaker-a"
@@ -191,8 +192,8 @@ def test_model_error_sign_is_realized_minus_predicted(tmp_path, caplog):
     record = state["model_error"][0]
     # Positive means the hardware came out WORSE than the model promised.
     assert record["error_db"] == pytest.approx(0.4)
-    assert "event=active_speaker.model_error_recorded" in caplog.text
-    assert f"speaker_id={SPEAKER}" in caplog.text
+    fields = event_fields(caplog, "active_speaker.model_error_recorded")
+    assert fields["speaker_id"] == SPEAKER
     state = record_model_error(
         speaker_id=SPEAKER, attempt_id="a2", metric=METRIC,
         predicted_db=1.4, realized_db=1.0, path=path,
@@ -220,8 +221,8 @@ def test_model_error_write_is_idempotent_by_stable_observation_identity(
     assert len(first["model_error"]) == 1
     assert len(repeated["model_error"]) == 1
     assert repeated["model_error"][0]["speaker_id"] == SPEAKER
-    assert "event=active_speaker.model_error_duplicate_ignored" in caplog.text
-    assert f"speaker_id={SPEAKER}" in caplog.text
+    fields = event_fields(caplog, "active_speaker.model_error_duplicate_ignored")
+    assert fields["speaker_id"] == SPEAKER
 
 
 def test_model_error_identity_conflict_refuses_to_replace_the_first_observation(
@@ -440,7 +441,7 @@ def test_a_corrupt_file_reads_as_empty_rather_than_half_trusted(tmp_path, caplog
     state = load_state(path)
     assert state["floor"] is None
     assert state["model_error"] == []
-    assert "model_error_store_unreadable" in caplog.text
+    assert event_records(caplog, "active_speaker.model_error_store_unreadable")
 
 
 def test_a_bad_byte_reads_as_empty_too_not_a_vanished_status_block(tmp_path, caplog):
@@ -453,7 +454,7 @@ def test_a_bad_byte_reads_as_empty_too_not_a_vanished_status_block(tmp_path, cap
     state = load_state(path)
     assert state["floor"] is None
     assert state["model_error"] == []
-    assert "model_error_store_unreadable" in caplog.text
+    assert event_records(caplog, "active_speaker.model_error_store_unreadable")
 
 
 @pytest.mark.parametrize("floor_payload", [
