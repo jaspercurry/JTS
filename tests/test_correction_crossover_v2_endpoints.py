@@ -9298,3 +9298,35 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
     assert plan.needs_recovery is False, "a live session is not a recovery case"
     assert plan.unresolved_volume_safety is None, "nothing latched"
     v2host.set_volume_plan_for_tests(None)
+
+
+@pytest.mark.parametrize("route,handler_name", [
+    ("session", "capture"), ("verify", "capture"), ("apply", "apply"),
+    ("position-ready", "position_ready"), ("complete", "complete"),
+    ("retake", "retake"), ("republish", "republish"), ("decline", "decline"),
+])
+def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
+    monkeypatch, route, handler_name,
+):
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
+    from jasper.web import correction_setup, correction_handlers
+
+    def refuse(*args, **kwargs):
+        raise MeasurementGraphRefused("measurement_candidate_room_mismatch", "candidate-1")
+
+    monkeypatch.setattr(correction_handlers, "_handle_crossover_v2_" + handler_name, refuse)
+    handler_cls = correction_setup._make_handler_class(
+        hostname="jts.local", idle_hold=contextlib.nullcontext,
+    )
+    handler = handler_cls.__new__(handler_cls)
+    handler.path = "/crossover/v2/" + route
+    responses = []
+    handler._send_json = lambda payload, status=200: responses.append((int(status), payload))
+    correction_setup._dispatch_crossover(handler)
+    status, body = responses.pop()
+    assert 400 <= status < 500
+    assert set(body) == {"ok", "code", "next_action", "error"}
+    assert body["ok"] is False
+    assert body["code"] == "measurement_candidate_room_mismatch"
+    assert isinstance(body["next_action"], dict)
+    assert body["next_action"]["id"] == "apply_matching_room_layer"

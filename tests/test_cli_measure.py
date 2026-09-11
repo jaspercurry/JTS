@@ -1326,3 +1326,21 @@ def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
     assert isinstance(monitor, WiredSplMonitor)
     assert monitor.ceiling_db_spl == _preset().safety.max_commissioning_level_db_spl
     assert note == "ceiling_85_db_spl"
+
+
+def test_a_graph_install_refusal_exits_with_its_code(speaker, monkeypatch, capsys):
+    from jasper.active_speaker.crossover_v2.session_graph import MeasurementSessionGraph
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
+
+    async def refuse(*args, **kwargs):
+        raise MeasurementGraphRefused("measurement_candidate_room_mismatch", {"candidate": "candidate-1"})
+
+    monkeypatch.setattr(MeasurementSessionGraph, "install", refuse)
+    code = measure.main(["--kind", MEASURE_KIND_BASELINE])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "refused"
+    assert payload["code"] == payload["reason"] == "measurement_candidate_room_mismatch"
+    assert payload["detail"] == {"candidate": "candidate-1"}
+    assert payload["next_action"]["id"] == "apply_matching_room_layer"
+    assert not speaker["played"]

@@ -131,6 +131,41 @@ REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 # which is not true of a genuine host fault. Terminal.
 REASON_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
 
+REASON_MEASUREMENT_CANDIDATE_REQUIRED = "measurement_candidate_required"
+REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
+REASON_MEASUREMENT_CANDIDATE_NO_BASS = "measurement_candidate_no_bass"
+REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH = "measurement_candidate_base_mismatch"
+REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH = "measurement_candidate_tune_mismatch"
+REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH = "measurement_candidate_room_mismatch"
+REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE = "measurement_candidate_bass_scope"
+REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE = "measurement_candidate_room_scope"
+REASON_MEASUREMENT_CANDIDATE_NO_ROOM = "measurement_candidate_no_room"
+REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
+REASON_MEASUREMENT_PROFILE_UNAVAILABLE = "measurement_profile_unavailable"
+REASON_MEASUREMENT_GRAPH_UNAVAILABLE = "measurement_graph_unavailable"
+REASON_MEASUREMENT_BASE_MISMATCH = "measurement_base_mismatch"
+REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
+REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
+REASON_MEASUREMENT_CORRECTIONS_INVALID = "measurement_corrections_invalid"
+REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
+REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
+REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
+REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
+REASON_WALK_POLICY_UNSUPPORTED_YET = "walk_policy_unsupported_yet"
+REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
+REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
+REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
+REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
+REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
+REASON_WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
+REASON_WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
+REASON_WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
+REASON_WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
+REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
+REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
+REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
+
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
 # The seams raise open-endedly (CamillaUnavailable is a bare Exception,
 # analyze/emit raise ValueError/RuntimeError, the held measurement window
@@ -738,6 +773,237 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "href": "/sound/speaker/#confirm-safety-limits",
         },
     ),
+    # Measurement graph and walk refusals (tracking issue #4942).
+    REASON_MEASUREMENT_CANDIDATE_REQUIRED: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
+        'This measurement needs a saved tuning to test. Select the tuning, then measure again.',
+        next_action={"id": 'select_candidate', "label": 'Select a tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_INVALID: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        'JTS cannot read the selected tuning. Select a valid saved tuning, then measure again.',
+        next_action={"id": 'select_candidate', "label": 'Select a valid tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_NO_BASS: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_NO_BASS, TEMPLATE_HARD_STOP, 0, "",
+        'The selected tuning has no bass extension to test. Select a tuning with bass extension.',
+        next_action={"id": 'select_bass_candidate', "label": 'Select a bass tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        'The selected tuning uses a different speaker setup. Select a tuning made for this setup.',
+        next_action={"id": 'match_candidate_base', "label": 'Match the speaker setup',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        'The selected tuning was built on a different speaker tuning. Apply that speaker tuning '
+        'before this measurement.',
+        next_action={"id": 'apply_matching_speaker_tune', "label": 'Apply the matching speaker tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        'The bass tuning was built on room tuning that is not applied. Apply the room tuning it '
+        'was built on, then measure again.',
+        next_action={"id": 'apply_matching_room_layer', "label": 'Apply the matching room tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE, TEMPLATE_HARD_STOP, 0, "",
+        'This tuning includes bass extension. Select a bass measurement to test all of it.',
+        next_action={"id": 'select_bass_scope', "label": 'Select a bass measurement',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE, TEMPLATE_HARD_STOP, 0, "",
+        'This tuning includes room correction. Select a room measurement to test all of it.',
+        next_action={"id": 'select_room_scope', "label": 'Select a room measurement',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_NO_ROOM: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_NO_ROOM, TEMPLATE_HARD_STOP, 0, "",
+        'The selected tuning has no room correction to test. Select a tuning with room correction.',
+        next_action={"id": 'select_room_candidate', "label": 'Select a room tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_SCOPE_INVALID: ReasonSpec(
+        REASON_MEASUREMENT_SCOPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        'JTS cannot measure the selected tuning layer. Select a supported measurement layer.',
+        next_action={"id": 'select_measurement_scope', "label": 'Select a measurement layer',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_PROFILE_UNAVAILABLE: ReasonSpec(
+        REASON_MEASUREMENT_PROFILE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        'JTS cannot use the saved speaker setup for this measurement. Check the speaker setup and '
+        'save it again.',
+        next_action={"id": 'speaker_setup', "label": 'Review speaker setup',
+                     "href": '/sound/speaker/'},
+    ),
+    REASON_MEASUREMENT_GRAPH_UNAVAILABLE: ReasonSpec(
+        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        'JTS could not prepare the sound path for this measurement. Check the saved speaker setup '
+        'before measuring again.',
+        next_action={"id": 'speaker_setup', "label": 'Review speaker setup',
+                     "href": '/sound/speaker/'},
+    ),
+    REASON_MEASUREMENT_BASE_MISMATCH: ReasonSpec(
+        REASON_MEASUREMENT_BASE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        'The saved tuning and the declared speaker setup do not match. Apply a tuning for the '
+        'current setup.',
+        next_action={"id": 'match_applied_base', "label": 'Match the saved speaker setup',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_FILTERS_INVALID: ReasonSpec(
+        REASON_MEASUREMENT_FILTERS_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        'JTS cannot read all the filters in this tuning. Select a valid saved tuning before '
+        'measuring again.',
+        next_action={"id": 'select_candidate', "label": 'Select a valid tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_BRANCH_CHANNELS: ReasonSpec(
+        REASON_MEASUREMENT_BRANCH_CHANNELS, TEMPLATE_HARD_STOP, 0, "",
+        'This measurement needs the woofer and tweeter on separate supported outputs. Review their '
+        'output assignments in speaker setup.',
+        next_action={"id": 'speaker_setup', "label": 'Review speaker outputs',
+                     "href": '/sound/speaker/'},
+    ),
+    REASON_MEASUREMENT_CORRECTIONS_INVALID: ReasonSpec(
+        REASON_MEASUREMENT_CORRECTIONS_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        'The saved driver tuning has missing or invalid values. Repair the driver tuning before '
+        'measuring again.',
+        next_action={"id": 'repair_driver_tuning', "label": 'Repair the driver tuning',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_REGIME_UNSUPPORTED: ReasonSpec(
+        REASON_WALK_REGIME_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
+        'This session cannot run that type of measurement. Choose a measurement type the session '
+        'supports.',
+        next_action={"id": 'select_walk_regime', "label": 'Choose a measurement type',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_MOVER_MISMATCH: ReasonSpec(
+        REASON_WALK_MOVER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        'The measurement plan and the session disagree about how the microphone moves. Make their '
+        'movement settings match.',
+        next_action={"id": 'match_walk_mover', "label": 'Match the movement settings',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_OVER_MOVER_ENVELOPE: ReasonSpec(
+        REASON_WALK_OVER_MOVER_ENVELOPE, TEMPLATE_HARD_STOP, 0, "",
+        'A measurement position is beyond the stated movement range. Move that position within the '
+        'range.',
+        next_action={"id": 'adjust_walk_positions', "label": 'Adjust the positions',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_LEVEL_POLICY_INVALID: ReasonSpec(
+        REASON_WALK_LEVEL_POLICY_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        'The measurement levels do not match the selected level mode. Correct the level settings '
+        'before starting.',
+        next_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_POLICY_UNSUPPORTED_YET: ReasonSpec(
+        REASON_WALK_POLICY_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
+        'JTS cannot change the volume between these positions yet. Use one fixed reference level '
+        'for this measurement.',
+        next_action={"id": 'use_reference_level', "label": 'Use a fixed reference level',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_CEILING_ABOVE_STOP: ReasonSpec(
+        REASON_WALK_CEILING_ABOVE_STOP, TEMPLATE_HARD_STOP, 0, "",
+        "The requested sound level limit is above this speaker's stop level. Lower the requested "
+        'limit to the stop level or below.',
+        next_action={"id": 'lower_walk_ceiling', "label": 'Lower the requested sound level limit',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASURE_SPL_CALIBRATION_REQUIRED: ReasonSpec(
+        REASON_MEASURE_SPL_CALIBRATION_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
+        'JTS needs microphone calibration to check the sound level during this measurement. '
+        'Register calibration with microphone sensitivity, then measure again.',
+        next_action={"id": 'register_mic_calibration', "label": 'Register microphone calibration',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_COMMISSIONING_STOP_UNSET: ReasonSpec(
+        REASON_WALK_COMMISSIONING_STOP_UNSET, TEMPLATE_HARD_STOP, 0, "",
+        'This speaker has no sound level stop set for measurements. Set the stop level in speaker '
+        'setup before measuring.',
+        next_action={"id": 'speaker_setup', "label": 'Set the measurement stop level',
+                     "href": '/sound/speaker/'},
+    ),
+    REASON_WALK_STIMULUS_NOT_ACCEPTED: ReasonSpec(
+        REASON_WALK_STIMULUS_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        'The test signal does not fit this measurement plan. Choose a supported signal for its '
+        'positions.',
+        next_action={"id": 'correct_walk_stimulus', "label": 'Correct the test signal',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_OVER_CAPTURE_CAPACITY: ReasonSpec(
+        REASON_WALK_OVER_CAPTURE_CAPACITY, TEMPLATE_HARD_STOP, 0, "",
+        'This plan has more recordings than one session can hold. Split the positions across '
+        'separate sessions.',
+        next_action={"id": 'split_walk', "label": 'Split the measurement plan',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_LATERAL_GROUP_ALREADY_PLANNED: ReasonSpec(
+        REASON_WALK_LATERAL_GROUP_ALREADY_PLANNED, TEMPLATE_HARD_STOP, 0, "",
+        'This session already has a plan for these positions. Start a new session for the new '
+        'plan.',
+        next_action={"id": 'new_measurement_session', "label": 'Start a new session',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_STOP_NO_LONGER_VALID: ReasonSpec(
+        REASON_WALK_STOP_NO_LONGER_VALID, TEMPLATE_HARD_STOP, 0, "",
+        'A saved measurement position is no longer valid. Correct that position before starting.',
+        next_action={"id": 'correct_walk_stop', "label": 'Correct the saved position',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_TEMPLATE_NOT_ACCEPTED: ReasonSpec(
+        REASON_WALK_TEMPLATE_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        'The test signal settings include position fields that the plan must set. Remove those '
+        'fields from the signal settings.',
+        next_action={"id": 'correct_walk_template', "label": 'Correct the signal settings',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_POLARITY_NOT_ACCEPTED: ReasonSpec(
+        REASON_WALK_POLARITY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        'The selected driver and polarity settings do not match. Correct the polarity settings '
+        'before starting.',
+        next_action={"id": 'correct_walk_polarity', "label": 'Correct the polarity settings',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_DELAY_NOT_ACCEPTED: ReasonSpec(
+        REASON_WALK_DELAY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        'The selected driver and delay settings do not match. Correct the delay settings before '
+        'starting.',
+        next_action={"id": 'correct_walk_delay', "label": 'Correct the delay settings',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_LEVEL_MATCH_NO_EVIDENCE: ReasonSpec(
+        REASON_WALK_LEVEL_MATCH_NO_EVIDENCE, TEMPLATE_HARD_STOP, 0, "",
+        'JTS has no measured driver levels to match. Measure the driver levels before asking it to '
+        'match them.',
+        next_action={"id": 'measure_driver_levels', "label": 'Measure the driver levels',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_CANDIDATE_NOT_MEASURABLE: ReasonSpec(
+        REASON_WALK_CANDIDATE_NOT_MEASURABLE, TEMPLATE_HARD_STOP, 0, "",
+        "A summed tuning test must use that tuning's own levels and alignment. Remove the separate "
+        'level or alignment overrides.',
+        next_action={"id": 'remove_trial_overrides', "label": "Use the tuning's own settings",
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_NOTHING_PLAYABLE: ReasonSpec(
+        REASON_WALK_NOTHING_PLAYABLE, TEMPLATE_HARD_STOP, 0, "",
+        'This plan contains only separate driver measurements, which this runner cannot play. Run '
+        'it through the guided speaker measurement.',
+        next_action={"id": 'guided_measurement', "label": 'Open guided measurement',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    # End measurement graph and walk refusals.
     REASON_SPL_CEILING_EXCEEDED: ReasonSpec(
         REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
         "The measurement stopped because the microphone heard the speaker "

@@ -945,3 +945,20 @@ def test_close_awaitable_releases_an_unsubmitted_coroutine():
     _common.close_awaitable(object())
 
     assert closed == [True]
+
+
+@pytest.mark.parametrize("code", [None, "unknown_refusal", "walk_ceiling_above_stop"])
+def test_refusal_envelope_preserves_named_codes_even_without_registry_rows(code):
+    from jasper.web._common import refusal_envelope
+
+    exc = ValueError("request")
+    if code is not None:
+        exc.code = code
+    body = refusal_envelope(exc)
+    assert body["ok"] is False
+    assert body["code"] == code
+    assert set(body) == {"ok", "code", "next_action", "error"}
+    if code == "walk_ceiling_above_stop":
+        assert body["next_action"]["id"] == "lower_walk_ceiling"
+    else:
+        assert body["next_action"] is None

@@ -544,3 +544,26 @@ def test_wait_does_not_finish_before_capture_cleanup(monkeypatch, capsys):
     assert code == cli.EXIT_OK
     assert answer["capture"]["status"] == "complete"
     assert not opener.envelopes
+
+
+@pytest.mark.parametrize("path", [wc.APPLY_PATH, cli.REPUBLISH_PATH, wc.SESSION_PATH])
+def test_a_box_refusal_keeps_its_code_action_and_full_detail(path, monkeypatch, capsys):
+    body = {
+        "ok": False, "code": "measurement_candidate_room_mismatch",
+        "next_action": {"id": "apply_matching_room_layer", "label": "x" * 240},
+        "error": "x" * 400,
+    }
+    opener = _opener(
+        v2={"candidate": {"fingerprint": _OTHER if path == cli.REPUBLISH_PATH else _FINGERPRINT}},
+        raises={path: urllib.error.HTTPError(
+            "http://127.0.0.1", 400, "", {}, io.BytesIO(json.dumps(body).encode()),
+        )},
+    )
+    argv = (["open", "--tier", "full"] if path == wc.SESSION_PATH
+            else ["apply", "--expected-fingerprint", _FINGERPRINT])
+    code, receipt = _run(argv, opener, monkeypatch, capsys)
+    assert code == cli.EXIT_REFUSED
+    assert receipt["status"] == "refused"
+    assert receipt["reason"] == receipt["code"] == body["code"]
+    assert receipt["next_action"] == body["next_action"]
+    assert receipt["detail"]["error"] == {k: v for k, v in body.items() if k != "ok"}

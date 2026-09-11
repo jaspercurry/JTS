@@ -222,7 +222,7 @@ def _as_json(body: str) -> Any:
 def error_of(payload: Any) -> str | dict[str, Any]:
     """Keep a structured refusal intact; bound legacy prose to one line."""
     if isinstance(payload, Mapping):
-        if payload.get("code") or payload.get("next_action"):
+        if "code" in payload or "next_action" in payload:
             return {key: payload[key] for key in ("code", "next_action", "error") if key in payload}
         return str(payload.get("error") or payload.get("status") or payload)[:200]
     return str(payload)[:200]

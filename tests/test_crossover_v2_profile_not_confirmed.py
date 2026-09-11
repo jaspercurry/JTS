@@ -787,3 +787,10 @@ def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
     assert "turbo" in fields["detail"]
     assert fields["code"] == REASON_PROGRAM_PLAN_SHAPE_INVALID
     assert fields["error_type"] == "PlanShapeError"
+
+
+def test_graph_refusal_retains_its_classifier_code():
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
+
+    exc = MeasurementGraphRefused("measurement_candidate_room_mismatch", "candidate-1")
+    assert v2host.classify_program_failure(exc) == (exc.reason, ())
