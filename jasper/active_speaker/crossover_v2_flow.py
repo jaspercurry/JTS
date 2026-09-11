@@ -1732,20 +1732,26 @@ class CrossoverV2Session:
 
     # --- capture callbacks ---------------------------------------------------
 
-    def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
+    def authorize_begin(
+        self, index: int, attempt: int, entry: Any = None, *,
+        executor_ledger: SlotAttempts | None = None,
+    ) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7)."""
         phase = self._phase_of_index(index)
         slot = self._slot_of_index(index)
         # READ, never create: a begin held at the VERIFY anchor must not leave a meter
         # behind for a capture that never started.
-        ledger = self._slot_attempts.get(slot)
+        ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.get(slot)
 
         decision = _admission.assess_begin(
-            ledger=ledger,
+            ledger=(replace(executor_ledger, admitted=int(attempt > 1))
+                    if executor_ledger is not None else ledger),
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
         )
+        if executor_ledger is not None and attempt > 1 and executor_ledger.can_retry(executor_ledger.charge):
+            executor_ledger.spend(executor_ledger.charge)
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
             self.capture_published_refusal = True
@@ -1797,8 +1803,8 @@ class CrossoverV2Session:
                     REASON_LOCATE_FAILED, REASON_REGISTRY[REASON_LOCATE_FAILED],
                 ),
             )
-        ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
-        if decision.spends_extra:
+        ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.setdefault(slot, SlotAttempts())
+        if decision.spends_extra and executor_ledger is None:
             try:
                 ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
             except _admission.AttemptOverspendError as exc:

@@ -169,6 +169,14 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
+    def join(self, entry: Any) -> dict[str, Any]:
+        """The first placement starts the hold clock (ADR-0305)."""
+        try:
+            self.gate(1, 1, entry)
+        except CaptureBeginDeferred:
+            return self.release(1, 1)
+        raise ValueError("This run has already joined")
+
     def publish(self, progress: dict[str, Any]) -> None:
         with self._lock:
             self._progress = deepcopy(progress)

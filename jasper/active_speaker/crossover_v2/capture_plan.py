@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import groupby
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -28,6 +28,7 @@ from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
+    DEFAULT_VERIFY_SWEEP_S,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -62,6 +63,95 @@ from .spatial import GEOMETRY_RETRY_POSITIONS
 from .sweep_spec import build_crossover_sweep_spec
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ..angle_capture import AngleCaptureRequest, AngleStop
+    from .measure_spec import MeasureSpec
+
+
+@dataclass(frozen=True)
+class PlanCapture:
+    stop: AngleStop
+    spec: MeasureSpec
+    repeat: int = 1
+
+
+def prepare_plan_captures(
+    request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
+) -> tuple[PlanCapture, ...]:
+    """Derive preparation and requested captures together (ADR-0297)."""
+    from ..angle_capture import (  # lazy: angle_capture imports pose primitives here
+        BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, AngleStop,
+        candidate_identity, design_axis_spec, resolve_request, stop_specs,
+    )
+
+    resolved = resolve_request(request)
+    placed = stop_specs(request, candidate_scopes=candidate_scopes,
+                        prompts=tuple(stop.prompt for stop in resolved))
+    captures: list[PlanCapture] = []
+    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
+        captures.append(PlanCapture(
+            AngleStop(0, REGIME_PER_DRIVER),
+            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
+        ))
+    if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
+        base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
+        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
+                                                       regime=REGIME_SUMMED),),
+                               candidates=(), repeats=1)
+        base_spec, = stop_specs(base_request, candidate_scopes={},
+                                prompts=(resolve_request(base_request)[0].prompt,))
+        assert base_spec is not None
+        captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
+    for offset, spec in enumerate(placed):
+        stop = request.stops[offset // request.repeats]
+        if spec is None:
+            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
+                           vertical_deg=stop.elevation_deg,
+                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
+        captures.append(PlanCapture(stop, replace(spec, program_phase=(
+            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
+        )), offset % request.repeats + 1))
+    return tuple(captures)
+
+
+def build_inline_session_spec(
+    captures: Sequence[PlanCapture], *, roles_bands: Sequence[RoleBand], fc_hz: float | None,
+    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
+) -> Any:
+    from jasper.capture_protocol import CapturePlan, CapturePlanEntry
+    from ..angle_capture import pose_at_angle  # lazy: angle_capture imports pose primitives here
+
+    prompts = [pose_at_angle(c.stop.angle_deg, c.stop.elevation_deg, kind=c.stop.kind,
+                            distance_m=c.stop.distance_m, seat_offset_m=c.stop.seat_offset_m) for c in captures]
+    batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
+                                 [c.stop.candidate_id for c in captures])
+    entries = []
+    for index, (capture, prompt) in enumerate(zip(captures, prompts), 1):
+        phase = capture.spec.program_phase
+        if phase == PHASE_CHECK:
+            program = build_check_program(roles_bands, courtesy_prelude=True)
+        elif phase == PHASE_MEASURE:
+            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
+        else:
+            program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
+                                           sweep_band_hz=capture.spec.sweep_band_hz or None,
+                                           sweep_s=capture.spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
+        if capture.spec.graph_scope == "candidate_branches":
+            program = build_branch_program(program, {r.role: r.channel for r in roles_bands})
+        entries.append(CapturePlanEntry(
+            index=index - 1, kind_label=phase,
+            duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
+            screen={"progress": capture_progress_label(index, len(captures)),
+                    "title": prompt.headline, "body": prompt.detail,
+                    **position_screen_keys(prompt), **batches.get(index, {})},
+        ))
+    plan = CapturePlan(capture_target=len(entries), max_attempts=len(entries) * (1 + retries_per_pose),
+                       schema_version=2, entries=tuple(entries))
+    return build_crossover_sweep_spec(
+        driver_label="crossover", driver_role="summed", acknowledgement_binding=acknowledgement_binding,
+        stimulus_duration_ms=max(e.duration_ms for e in entries), capture_plan=plan, **spec_kwargs,
+    )
 
 
 CAPTURE_PLAN_TARGET = 3

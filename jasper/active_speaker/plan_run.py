@@ -33,8 +33,8 @@ from .crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
 )
 from .crossover_v2.capture_dispatch import assess
-from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
-from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused
+from .crossover_v2.capture_plan import PlanCapture, pose_batch_screens, position_screen_keys
+from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
@@ -56,6 +56,7 @@ class RunSignals:
 
     retake: Event = field(default_factory=Event)
     complete: Event = field(default_factory=Event)
+    stop: Event = field(default_factory=Event)
 
 
 def take_spl_ceiling(
@@ -172,6 +173,9 @@ async def run_plan(
     signals: RunSignals | None = None, spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
+    captures: Sequence[PlanCapture] | None = None,
+    admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
+    assessor: Callable[..., TakeVerdict] | None = None,
 ) -> RunManifest:
     manifest.request_fingerprint = request_fingerprint(request)
     manifest.program = request.program
@@ -197,27 +201,36 @@ async def run_plan(
         for offset, spec in enumerate(specs):
             if spec is None:
                 manifest.planned[offset]["reason"] = WALK_NOTHING_PLAYABLE
-        if not playable:
+        if not playable and captures is None:
             raise LateralWalkRefused(WALK_NOTHING_PLAYABLE, "No composed per-driver spec was supplied")
     except LateralWalkRefused as exc:
         manifest.reason, manifest.detail, manifest.finalized = exc.reason, exc.detail, True
         await manifest.persist()
         return manifest
 
-    stops = [resolved[offset // request.repeats] for offset, _spec in playable]
+    if captures is not None:
+        stops = [resolve_request(replace(request, stops=(capture.stop,),
+                   candidates=(capture.stop.candidate_id or "base",), repeats=1))[0] for capture in captures]
+        playable = list(enumerate(capture.spec for capture in captures))
+        manifest.planned = [{"index": index, "repeat": capture.repeat,
+                             "pose": _pose(capture.stop), "candidate_id": capture.stop.candidate_id}
+                            for index, capture in enumerate(captures, 1)]
+        places = [capture.stop.place for capture in captures]
+    else:
+        stops = [resolved[offset // request.repeats] for offset, _spec in playable]
+        places = [request.stops[offset // request.repeats].place for offset, _spec in playable]
     screens = pose_batch_screens(list(range(1, len(stops) + 1)),
                                  [stop.prompt for stop in stops], [stop.candidate_id for stop in stops])
     work: list[_Work] = []
-    for pose_index, (_place, batch) in enumerate(groupby(
-        enumerate(playable), key=lambda row: request.stops[row[1][0] // request.repeats].place,
-    )):
+    for pose_index, (_place, batch) in enumerate(groupby(enumerate(playable), key=lambda row: places[row[0]])):
         rows = list(batch)
         for config, (index, (offset, spec)) in enumerate(rows, 1):
             entry = SimpleNamespace(screen={**stops[index].screen,
                                     **position_screen_keys(stops[index].prompt), **screens.get(index + 1, {})})
             work.append(_Work(spec, manifest.planned[offset], pose_index, config, len(rows), entry))
     return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=gate,
-                      aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose, clock=clock, gain_ceiling_db=gain_ceiling_db)
+                      aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
+                      clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor)
 
 
 async def run_specs(
@@ -247,12 +260,18 @@ class _Control(Exception):
     pass
 
 
-async def _grant(gate: PositionGate, index: int, attempt: int, entry: Any, signals: RunSignals) -> None:
+async def _grant(gate: PositionGate | None, index: int, attempt: int, entry: Any, signals: RunSignals,
+                 admit: Callable[[], None] | None = None) -> None:
     while True:
+        if signals.stop.is_set():
+            raise CaptureStopped("capture stopped")
         if signals.complete.is_set() or signals.retake.is_set():
             raise _Control
         try:
-            gate.gate(index, attempt, entry)
+            if gate:
+                gate.gate(index, attempt, entry)
+            if admit:
+                admit()
             return
         except CaptureBeginDeferred:
             await asyncio.sleep(POSITION_HOLD_POLL_S)
@@ -262,6 +281,8 @@ async def _run(
     work: Sequence[_Work], *, session: TuningSession, manifest: RunManifest, analyze: Analyze,
     gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
     retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
+    admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
+    assessor: Callable[..., TakeVerdict] | None = None,
 ) -> RunManifest:
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, asyncio.CancelledError)
@@ -316,20 +337,26 @@ async def _run(
                 entry = SimpleNamespace(screen={**entry.screen, "body": REASON_REGISTRY[retry.fault].message})
             take_started: float | None = None
             try:
+                if signals.stop.is_set():
+                    raise CaptureStopped("capture stopped")
+                ledger.charge = retry.charge if retry is not None else "none"
                 if gate:
                     gate.publish(progress)
-                    await _grant(gate, offset + 1, offset + 1 + grant_epoch, entry, signals)
+                await _grant(gate, offset + 1, offset + 1 + grant_epoch, entry, signals,
+                             (lambda: admit(offset + 1, attempt, entry, ledger)) if admit else None)
+                if gate:
                     if item.pose_index not in moved:
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
                 take_started = clock()
-                if retry is not None:
+                if retry is not None and admit is None:
                     ledger.spend(retry.charge)
                     progress["budget"] = ledger.to_payload()
                     if gate:
                         gate.publish(progress)
                 attempts[offset] = attempt
-                ledger.admitted += 1
+                if admit is None:
+                    ledger.admitted += 1
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
                 outcome = await session.measure(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
@@ -340,7 +367,7 @@ async def _run(
                         try:
                             analysis = await asyncio.to_thread(analyze, record, record_id)
                             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
-                            assessed = assess(analysis, phase=program.phase if program else spec.program_phase or "verify",
+                            assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
                                               program=program, gain_ceiling_db=gain_ceiling_db)
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program)}

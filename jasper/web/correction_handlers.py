@@ -58,6 +58,9 @@ def _handle_crossover_v2_position_ready(
             raise BadRequest(f"{key} is required")
         if isinstance(raw[key], bool) or not isinstance(raw[key], int):
             raise BadRequest(f"{key} must be an integer")
+    joined = correction_capture._join_capture(raw["index"], raw["attempt"])
+    if joined is not None:
+        return {"ok": True, "capture": joined}
     with _session_lock:
         gate = correction_capture._capture_position_gate
     if gate is None:
@@ -180,8 +183,11 @@ def _handle_crossover_v2_capture(
         position_gate=prepared.position_gate,
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
+        session_id=prepared.session_id,
+        join_entry=prepared.join_spec.capture_plan.entries[0] if prepared.join_spec is not None else None,
     )
-    return {"capture": correction_capture._run_capture(kind, idle_hold=idle_hold)}
+    start = correction_capture._run_capture if verify_only else correction_capture._stage_capture
+    return {"capture": start(kind, idle_hold=idle_hold)}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
