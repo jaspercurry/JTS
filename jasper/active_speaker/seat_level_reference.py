@@ -34,7 +34,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
@@ -299,34 +299,22 @@ def _ceiling_db_spl() -> float:
         raise LevelUnresolved(PRESET_UNAVAILABLE, str(exc)) from exc
 
 
+@dataclass(frozen=True)
+class AnchorFacts:
+    record: Mapping[str, Any]
+    sensitivity: Any | None
+
+
 def resolve_anchor_level(
     *,
     state_path: str | Path | None = None,
     ceiling_db_spl: float | None = None,
     calibration_file: str | Path | None = None,
     mic_serial: str | None = None,
+    facts: AnchorFacts | None = None,
 ) -> ResolvedLevel:
-    """The banked anchor as an absolute level, or :class:`LevelUnresolved`.
-
-    The anchor's ``measured_db_spl`` is already calibrated SPL — the mic's
-    sensitivity entered it at the ramp, which is why nothing here re-derives
-    ``dB SPL = dBFS - sens_factor + 94``
-    (:meth:`~jasper.audio_measurement.calibration.MicSensitivity.db_spl_from_dbfs`
-    owns that relation). What is asked here is whether that number still means
-    something for a session about to run: the mic it was measured with must
-    still resolve, at the same sensitivity, and the level must sit under the
-    preset's ``max_commissioning_level_db_spl``.
-
-    ``calibration_file``/``mic_serial`` mirror ``jasper-seat-level``'s own mic
-    inputs; with neither, the mic banked with the anchor is looked up.
-    """
-
-    # Function-local: importing ``jasper.audio_measurement`` costs numpy, and
-    # this module's other readers (jasper-doctor, session_volume_plan) never
-    # reach here. Pinned by ``test_seat_level_anchor.py``.
-    from jasper.audio_measurement.calibration import resolve_mic_sensitivity
-
-    record = load_seat_level_reference(state_path=state_path) or {}
+    """Resolve supplied facts purely, or load the banked anchor for local callers."""
+    record = facts.record if facts is not None else load_seat_level_reference(state_path=state_path) or {}
     anchor = finite_float(record.get("measured_db_spl"))
     reference_volume_db = finite_float(record.get("reference_volume_db"))
     if anchor is None or reference_volume_db is None:
@@ -340,12 +328,12 @@ def resolve_anchor_level(
     banked = banked_raw if isinstance(banked_raw, dict) else {}
     banked_serial = banked.get("serial")
     serial = mic_serial or (str(banked_serial) if banked_serial else None)
-    # The banked block is ``MicSensitivity.to_dict()`` — sens factor, gain and
-    # serial, no model — while a stored record is keyed provider/model/serial,
-    # so the lookup runs under ``resolve_mic_sensitivity``'s default model.
-    sensitivity = resolve_mic_sensitivity(
-        calibration_file=calibration_file, mic_serial=serial
-    )
+    if facts is None:
+        from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
+
+        sensitivity = resolve_mic_sensitivity(calibration_file=calibration_file, mic_serial=serial)
+    else:
+        sensitivity = facts.sensitivity
     if sensitivity is None:
         raise LevelUnresolved(
             ANCHOR_UNUSABLE,
