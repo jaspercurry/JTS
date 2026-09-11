@@ -71,6 +71,7 @@ from jasper.web import (
     correction_capture,
 )
 from tests.crossover_v2_fixtures import fake_measurement_mic
+from tests._log_events import event_fields
 
 
 def _admission(*refusals: ProgramAdmissionRefusal) -> ProgramAdmission:
@@ -551,9 +552,9 @@ def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
     )
     assert "save them again" in str(excinfo.value).lower()
     assert excinfo.value.code == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
-    assert "event=correction.crossover_v2_profile_not_confirmed" in caplog.text
-    assert "gate=session_open" in caplog.text
-    assert "profile_status=malformed" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_profile_not_confirmed")
+    assert fields["gate"] == "session_open"
+    assert fields["profile_status"] == "malformed"
     # Nothing downstream of the gate ran: no evidence bundle opened, and the
     # capture registration that mints the phone link was never reached (its seam
     # raises loudly if it is — see the fixture).
@@ -782,13 +783,7 @@ def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
             {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None,
         )
 
-    lines = [
-        r.getMessage() for r in caplog.records
-        if r.getMessage().startswith(
-            "event=correction.crossover_v2_plan_shape_refused"
-        )
-    ]
-    assert len(lines) == 1
-    assert "turbo" in lines[0]
-    assert f"code={REASON_PROGRAM_PLAN_SHAPE_INVALID}" in lines[0]
-    assert "error_type=PlanShapeError" in lines[0]
+    fields = event_fields(caplog, "correction.crossover_v2_plan_shape_refused")
+    assert "turbo" in fields["detail"]
+    assert fields["code"] == REASON_PROGRAM_PLAN_SHAPE_INVALID
+    assert fields["error_type"] == "PlanShapeError"

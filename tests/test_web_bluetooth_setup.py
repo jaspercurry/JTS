@@ -40,7 +40,7 @@ from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -353,11 +353,7 @@ def test_unexpected_pair_driver_failure_is_logged_once(monkeypatch, caplog):
     }
     assert attempt.queue.get_nowait() is None
     bluetooth_setup._release_pair_attempt(mac, attempt)
-    records = [
-        record
-        for record in caplog.records
-        if record.getMessage() == "event=bluetooth.pair_failed"
-    ]
+    records = event_records(caplog, "bluetooth.pair_failed")
     assert len(records) == 1
     assert records[0].levelno == logging.ERROR
     assert records[0].exc_info is not None
@@ -396,10 +392,7 @@ def test_expected_pair_error_event_is_not_logged_as_driver_failure(
     }
     assert attempt.queue.get_nowait() is None
     bluetooth_setup._release_pair_attempt(mac, attempt)
-    assert not any(
-        record.getMessage() == "event=bluetooth.pair_failed"
-        for record in caplog.records
-    )
+    assert not event_records(caplog, "bluetooth.pair_failed")
 
 
 class _PendingFuture:
@@ -1154,10 +1147,7 @@ def test_engine_bootstrap_defers_environment_failures_and_crashes_on_bugs(
                 with pytest.raises(RuntimeError):
                     dispatcher.start()
 
-        events = [
-            r for r in caplog.records
-            if "event=bluetooth.engine_start_deferred" in r.getMessage()
-        ]
+        events = event_records(caplog, "bluetooth.engine_start_deferred")
         assert bool(events) is deferred
         if deferred:
             assert event_fields(

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 from jasper.accounts import Account
 from jasper.spotify_router import AccountClient, Router
+from tests._log_events import event_records
 
 
 def _ac(name: str, *, title: str | None = None, is_playing: bool = False) -> AccountClient:
@@ -791,17 +792,12 @@ def test_build_clients_dedupes_persistent_account_warnings(
         build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
         build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
 
-    warnings = [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING
-        and r.message.startswith("event=spotify.account_unavailable ")
-    ]
-    suppressed = [
-        r for r in caplog.records
-        if r.message.startswith("event=spotify.account_unavailable_suppressed ")
-    ]
+    warnings = event_records(caplog, "spotify.account_unavailable")
+    suppressed = event_records(caplog, "spotify.account_unavailable_suppressed")
     assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
     assert len(suppressed) == 1
+    assert suppressed[0].levelno == logging.DEBUG
 
 
 # --- _ACCOUNT_FAILURE_LOG_CACHE eviction on recovery ---
@@ -885,18 +881,14 @@ def test_failure_log_cache_evicted_on_recovery(tmp_path, monkeypatch, caplog):
             patch("jasper.spotify_router._now", return_value=1015.0):
         build_clients(registry, client_id="a" * 32, redirect_uri="https://x/cb")
 
-    post_recovery_warnings = [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING
-        and r.message.startswith("event=spotify.account_unavailable ")
-    ]
-    post_recovery_suppressed = [
-        r for r in caplog.records
-        if r.message.startswith("event=spotify.account_unavailable_suppressed ")
-    ]
+    post_recovery_warnings = event_records(caplog, "spotify.account_unavailable")
+    post_recovery_suppressed = event_records(
+        caplog, "spotify.account_unavailable_suppressed"
+    )
     assert len(post_recovery_warnings) == 1, (
         "failure after recovery must log at WARNING again — cache was not evicted"
     )
+    assert post_recovery_warnings[0].levelno == logging.WARNING
     assert len(post_recovery_suppressed) == 0
 
 

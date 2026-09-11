@@ -66,6 +66,7 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from tests.sound_camilla_fixtures import FakeCamilla
+from tests._log_events import event_fields
 
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The
@@ -257,10 +258,9 @@ async def test_the_jts4_deploy_converges_instead_of_aborting(
     assert f"format: {STALE_PLAYBACK_FORMAT}" not in booted_text
 
     # Observable: one line, naming the transport that carried the pass.
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=reconciled" in caplog.text
-    assert "transport=statefile" in caplog.text
-    assert caplog.text.count("event=sound.reconcile_current_dsp") == 1
+    fields = event_fields(caplog, "sound.reconcile_current_dsp")
+    assert fields["result"] == "reconciled"
+    assert fields["transport"] == "statefile"
 
 
 async def test_a_roleful_box_never_falls_back_to_the_flat_cutover(
