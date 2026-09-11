@@ -225,7 +225,8 @@ async def test_a_terminal_connect_failure_reports_the_outage_and_its_remedy():
     # Retrying a rejected account cannot help, so the wake pays for one dial.
     assert attempts == 1
     # Live has no supervisor to clear a pause, so a paused connection would
-    # refuse every later wake without dialling (voice_daemon.py:1656).
+    # refuse every later wake without dialling — `WakeLoop._await_connection`
+    # waits out its bound and cues instead of opening a turn.
     assert not conn.is_paused()
     await conn.stop()
 
