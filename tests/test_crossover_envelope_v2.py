@@ -4098,17 +4098,10 @@ def test_deterministic_mismatch_copy_matches_the_controls_on_its_own_screen():
 
 
 def test_no_registry_sentence_names_undo():
-    """The Undo verb left the wizard (owner ruling): no reason copy may point
-    a household at a control the flow no longer has. Counted over the whole
-    registry — banners, messages, and the anchor-branched
-    ``correction_rollback_failed`` renderings — so a future row that re-grows
-    the promise fails here rather than shipping."""
     for code, spec in REASON_REGISTRY.items():
         for text in (
             spec.message, spec.banner,
             reason_message(code, spec),
-            reason_message(code, spec, rollback_anchor_available=True),
-            reason_message(code, spec, rollback_anchor_available=False),
         ):
             assert "undo" not in text.lower(), (code, text)
 

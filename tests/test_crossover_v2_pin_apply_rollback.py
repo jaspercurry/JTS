@@ -6,29 +6,23 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
+import pytest
+
 from jasper.active_speaker import compile_preset_from_crossover_preview
 from jasper.active_speaker.baseline_profile import apply_baseline_profile
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_republish as republish_door
 from tests.test_active_speaker_baseline_profile import (
     _draft, _dual_apple_topology, _measurements, _v2_candidate, _valid_config,
 )
-import json
-from dataclasses import replace
 
-
-
-import pytest
-
-from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_republish as republish_door
-
-RESTORE_EVENT = "correction.crossover_v2_delta_probe_restore"
-REFUSED_EVENT = "correction.crossover_v2_delta_probe_restore_refused"
-
-RUN_ASYNC = object()
-CAMILLA_FACTORY = object()
 PREVIOUS = "fp-previous-measured"
+CURRENT = "fp-current-measured"
 
 
 @pytest.fixture(autouse=True)
@@ -36,9 +30,6 @@ def _isolated_v2_state(tmp_path):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
     yield
     v2host.set_state_path_for_tests(None)
-
-
-CURRENT = "fp-current-measured"
 
 
 def _seed_previous_candidate(*, paired: bool = True) -> None:
@@ -77,7 +68,6 @@ def test_rollback_available_pairs_and_preflights(
 async def test_apply_refuses_the_candidates_measured_boost_excess(
     monkeypatch, tmp_path, over_bound, same_candidate, expected,
 ):
-
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
     topology = _dual_apple_topology()

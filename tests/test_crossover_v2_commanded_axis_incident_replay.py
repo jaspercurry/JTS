@@ -1173,7 +1173,7 @@ def test_the_state_axis_adds_bins_and_changes_nothing_else():
     without = _repeat_round_probe(hot_db=4.0, state_axis=False)
     with_state = _repeat_round_probe(hot_db=4.0, state_axis=True)
     for field in (
-        "verdict", "reason", "rollback", "max_error_db", "rms_error_db",
+        "verdict", "reason", "advises_against_keep", "max_error_db", "rms_error_db",
         "worst_hz", "exceedance_octaves", "gain_factor", "residual_offset_db",
         "probe_band_hz", "n_bins", "quiet_n_bins",
     ):
