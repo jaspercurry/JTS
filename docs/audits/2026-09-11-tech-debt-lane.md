@@ -31,8 +31,8 @@ tier diffs also through `/adversarial-review`.
 
 - **19 PRs merged**: #4832, #4345, #4895 (Wave 0); #4900, #4902, #4905,
   #4912, #4914, #4915, #4916 (Wave 1); #4901, #4908, #4911, #4924, #4926,
-  #4929, #4933 (Wave 2); #4931 (secrets); one further PR closing #4930
-  (see §5, PR number not confirmed in the assigned source set).
+  #4929, #4933 (Wave 2); #4931 (secrets); #4935 (closes #4930, landed after
+  this lane's own tracker synthesis was written — see §5).
 - **23 issues closed**: 21 in Wave 0 with a posted evidence line each, plus
   #4927 (via #4931) and #4930 (via its own fix). One additional issue,
   #4803, was closed **by accident** (a commit-message trap, not real
@@ -1036,20 +1036,30 @@ the shell-escaped-quote case it needs to keep matching).
 
 ### Late addition
 
-A PR closing issue #4930 (camilla's park record reads stale while camilla
-is genuinely running, not actually parked — a real doctor-verdict
-precision fix mirroring outputd's sibling `REASON_...PARK_RECORD_STALE`
-pattern, one `unit_active()` guard at the call site, no new machinery)
+**#4935** (branch `claude/debt-4930-camilla-stale-park`, closes #4930)
 landed after `lane-tracker-issue.md`'s own synthesis was written — that
-tracker still lists #4930 as an open follow-up. Its PR body is complete
-(step-back, verified tests, a review pass that converged the new call
-site onto the doctor package's existing `evidence.unit_active(name)`
-idiom instead of a lower-level import), but **its PR number is not
-confirmed anywhere in the assigned source set** — the conductor's own
-scratch CI-tracking list names #4935, one entry beyond every PR
-`lane-tracker-issue.md` accounts for by number, which is consistent but
-not independently corroborated. **Next session: confirm #4930's real
-closing PR number and merge state before trusting either.**
+tracker still lists #4930 as an open follow-up, and this PR's own body was
+not among the files the synthesis drew from. Camilla's park record read as
+a hard `fail`/`REASON_CAMILLA_GRAPH_PARKED` whenever present, indistinguishable
+from a genuine standing park, even while `jasper-camilla` was actively
+running — a real doctor-verdict precision gap, not a cosmetic one. Fixed
+with one `unit_active()` guard at the `check_camilla_recover_park` call
+site, `warn`/`REASON_CAMILLA_PARK_RECORD_STALE` on the present-record
++ unit-active cell, mirroring outputd's sibling `REASON_..._PARK_RECORD_STALE`
+pattern exactly (the step-back explicitly rejected mirroring the sibling's
+full `snapshot(unit_state=...)` signature as unneeded plumbing for a
+reader with no other need for it). Investigated and left alone,
+per "don't defend hypotheticals": adding an "is camilla active" guard to
+`jasper-camilla-recover` itself, since that script only ever runs from
+`OnFailure=` after camilla's restart burst is exhausted — camilla is never
+`active` at that moment by construction, so the guard would be dead code.
+Review converged the new call site onto the doctor package's own
+`evidence.unit_active(name)` idiom (every sibling check in the package
+uses it) instead of the lower-level `service_units.unit_active(...)` the
+first cut had reached for. Confirmed merged into `origin/main` at
+`b9436321d` — 9 commits past this report's own `c364bce19` pin, none of
+them touching `docs/audits/` — via direct inspection of the merge commit
+and its own "Closes #4930." trailer, not from the assigned source set.
 
 ---
 
@@ -1319,8 +1329,10 @@ session actually needed, listed here only so it isn't lost).
 3. Read the plan page (https://claude.ai/code/artifact/90c96223-06f0-4216-a696-cf55952b9384)
    for the full five-wave plan and the 26-item decision sheet's complete
    reasoning (§8 above is the terse version).
-4. Confirm issue #4930's actual closing PR and merge state (§5's "Late
-   addition") — the assigned source set could not confirm the PR number.
+4. `origin/main` had already advanced 9 commits past this report's own
+   `c364bce19` pin by the time it was frozen — #4935 (closes #4930, §5's
+   "Late addition") among them, none touching `docs/audits/`. Start any
+   new work from current `origin/main`, not from `c364bce19`.
 5. Reopen #4803 if it is still closed (§4.1, §10) — the umbrella issue's
    real rows (R-192, R-190 ROOM/DRIVER, R-201 ObsMode, R-175's remainder,
    R-198's re-verify, R-200's other two aliases, R-197's remaining
