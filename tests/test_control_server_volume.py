@@ -106,11 +106,11 @@ def test_volume_set_native_percent(server_with_coordinator):
 def test_volume_set_rejects_active_speaker_setup_block(
     monkeypatch, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.volume as volume_mod
 
     base, fake = server_with_coordinator
     monkeypatch.setattr(
-        srv_mod,
+        volume_mod,
         "read_active_speaker_setup_status",
         lambda **_kwargs: {
             "active": True,
@@ -335,10 +335,10 @@ def _block_active_speaker_volume(monkeypatch):
     `volume_allowed=False`, which `_active_speaker_volume_block` turns into a
     block.
     """
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.volume as volume_mod
 
     monkeypatch.setattr(
-        srv_mod,
+        volume_mod,
         "read_active_speaker_setup_status",
         lambda **_kwargs: {
             "active": True,
@@ -402,8 +402,8 @@ def server_with_transport_stub(monkeypatch):
         calls.append(action)
         return {"result": "ok", "action": action}
 
-    import jasper.control.server as srv_mod
-    monkeypatch.setattr(srv_mod, "_dispatch_transport", fake_dispatch)
+    import jasper.control.handlers.volume as volume_mod
+    monkeypatch.setattr(volume_mod, "_dispatch_transport", fake_dispatch)
 
     handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -451,8 +451,8 @@ def test_transport_dispatcher_error_propagates_as_502(monkeypatch):
     async def fake_dispatch(action: str) -> dict:  # noqa: ARG001
         raise RuntimeError("simulated MPRIS unavailable")
 
-    import jasper.control.server as srv_mod
-    monkeypatch.setattr(srv_mod, "_dispatch_transport", fake_dispatch)
+    import jasper.control.handlers.volume as volume_mod
+    monkeypatch.setattr(volume_mod, "_dispatch_transport", fake_dispatch)
 
     handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -477,8 +477,8 @@ def test_transport_dispatcher_error_field_propagates_as_502(monkeypatch):
     async def fake_dispatch(action: str) -> dict:  # noqa: ARG001
         return {"error": "no playing source"}
 
-    import jasper.control.server as srv_mod
-    monkeypatch.setattr(srv_mod, "_dispatch_transport", fake_dispatch)
+    import jasper.control.handlers.volume as volume_mod
+    monkeypatch.setattr(volume_mod, "_dispatch_transport", fake_dispatch)
 
     handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -523,9 +523,8 @@ def server_with_mux_stub(monkeypatch):
             },
         }
 
-    import jasper.control.server as srv_mod
     from jasper.control.handlers import volume as volume_handlers
-    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_command)
+    monkeypatch.setattr(volume_handlers, "mux_socket_command", fake_mux_command)
 
     def fake_augment(payload: dict) -> dict:
         for source in payload.get("sources", {}).values():
@@ -841,7 +840,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
 
 
 async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.volume as volume_mod
     import jasper.control.volume_ops as volume_ops_mod
     import jasper.renderer as renderer_mod
     import jasper.tools.transport as transport_mod
@@ -872,7 +871,7 @@ async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
         fake_make_transport_dispatcher,
     )
 
-    result = await srv_mod._dispatch_transport("toggle")
+    result = await volume_mod._dispatch_transport("toggle")
 
     assert result == {"action": "toggle"}
     assert isinstance(seen["renderer"], FakeRendererClient)
