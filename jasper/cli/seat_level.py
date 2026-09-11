@@ -55,7 +55,7 @@ control at 100% before trusting any absolute SPL this prints.
 
 Usage::
 
-    jasper-seat-level --mic-serial 810-8494
+    jasper-seat-level
 
 Exit 0 only on a converged, banked reference; 1 on any refusal. Either way the
 answer is ONE JSON document on stdout — the reference reached, or
@@ -80,7 +80,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Awaitable, NamedTuple
 
 from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
@@ -134,13 +134,7 @@ def _refused(
 
 
 def _ambient_phrase(ramp: dict[str, Any]) -> str:
-    """Disclose a room floor the pass had to measure twice.
-
-    The rise gate reads ``observed - floor``, so which window supplied the floor
-    changes which readings the pass trusted. An operator reading a terminal is
-    not reading ``--json``, and a silently replaced floor is exactly the kind of
-    correction that must be stated rather than applied invisibly.
-    """
+    """Disclose a room floor the pass had to measure twice."""
     if not ramp.get("ambient_remeasured"):
         return ""
     # Leading ". " and not " ": this is APPENDED to a detail that does not end
@@ -544,23 +538,27 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     cam = primary_controller()
     meter = WiredLevelMeter(mic.pcm, channels=args.mic_channels)
     player: Any = None
-    # #2938: a cancel during process creation must reach the new handle.
-    cancel_requested = False
+    # #2938: cancellation must survive scheduling and process creation.
+    play_generation = cancelled_generation = 0
 
-    async def _play() -> None:
-        nonlocal player, cancel_requested
-        cancel_requested = False
+    def _play() -> Awaitable[None]:
+        nonlocal play_generation
+        play_generation += 1
+        return _play_generation(play_generation)
+
+    async def _play_generation(generation: int) -> None:
+        nonlocal player
         player = await exec_correction_play(
             stimulus, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        if cancel_requested:
+        if cancelled_generation >= generation:
             player.terminate()
         else:
             await player.wait()
 
     def _cancel() -> None:
-        nonlocal cancel_requested
-        cancel_requested = True
+        nonlocal cancelled_generation
+        cancelled_generation = play_generation
         if player is not None and player.returncode is None:
             player.terminate()
 
@@ -644,8 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    PRECONDITION above) -- level first, then re-run this\n"
             "\n"
             "EXAMPLE\n"
-            "  jasper-seat-level \\\n"
-            "      --calibration-file /var/lib/jasper/mic-cal/umik2-7003219.txt\n"
+            "  jasper-seat-level\n"
             "\n"
             "EXIT CODES\n"
             "  0  converged and banked; stdout carries the reference dB\n"
