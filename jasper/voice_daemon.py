@@ -1191,7 +1191,8 @@ class WakeLoop:
 
     def _resolve_barge_in_for_turn(self) -> None:
         """Decide whether in-session barge-in is active for the turn about
-        to open, and reset its per-turn run state.
+        to open. `_reset_session_input`, called earlier in
+        `_begin_turn_inner`, owns the per-turn speech-run reset.
 
         Reads the per-provider enable flag from the SSOT file (not the
         start-time ``Config``) so a wizard / operator toggle takes effect
@@ -1210,9 +1211,6 @@ class WakeLoop:
         while ``_barge_in_reference_available`` was computed from
         ``cfg.mic_device`` — a different stream — so the self-interrupt guard
         has not cleared the audio barge-in would run on."""
-        self._barge_in_run_started_at = 0.0
-        self._barge_in_run_peak = 0.0
-        self._barge_in_signalled_this_run = False
         want = read_barge_in_enabled(self._cfg.voice_provider)
         if want and self._manual_endpoint_this_turn:
             # Its own latch, not `_barge_in_no_ref_warned`: on a speaker with
