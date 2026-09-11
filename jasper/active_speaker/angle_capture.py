@@ -33,6 +33,7 @@ from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
+from .seat_level_reference import ResolvedLevel
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
 from .crossover_v2.contracts import (
@@ -94,6 +95,9 @@ __all__ = [
     "MOVER_MAX_ANGLE_DEG",
     "MOVER_MAX_ELEVATION_DEG",
     "LevelPolicy",
+    "BASE_CANDIDATE",
+    "candidate_identity",
+    "WALK_REPEATS_UNSUPPORTED_YET",
     "WALK_LEVEL_WINDOWS_UNSUPPORTED_YET",
     "WALK_SCHEMA_VERSION_UNSUPPORTED",
     "AngleStop",
@@ -216,6 +220,17 @@ def _validated_angle(angle_deg: object) -> int:
     return degrees
 
 
+BASE_CANDIDATE = "base"
+
+
+def candidate_identity(value: str, *, for_spec: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ValueError("candidate_id must be text")
+    if value not in ("", BASE_CANDIDATE):
+        return value
+    return "" if for_spec else BASE_CANDIDATE
+
+
 @dataclass(frozen=True)
 class AngleStop:
     """One stop: an angle, and what is played there.
@@ -234,7 +249,7 @@ class AngleStop:
     angle_deg: int
     regime: str
     elevation_deg: int = 0
-    candidate_id: str = ""
+    candidate_id: str = BASE_CANDIDATE
     kind: str = POSE_KIND_BEARING
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
@@ -245,6 +260,7 @@ class AngleStop:
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
         # never reaches a record or an equality check as a numpy scalar.
+        object.__setattr__(self, "candidate_id", candidate_identity(self.candidate_id, for_spec=True))
         object.__setattr__(self, "angle_deg", _validated_angle(self.angle_deg))
         object.__setattr__(
             self, "elevation_deg", _validated_angle(self.elevation_deg)
@@ -342,21 +358,35 @@ class LevelPolicy:
     """The banked anchor and the drive level held for every take."""
 
     mode: str = LEVEL_HOLD_REFERENCE
-    anchor_db_spl: float | None = None
-    reference_volume_db: float | None = None
-    mic_serial: str | None = None
+    resolved: ResolvedLevel | None = None
 
     def __post_init__(self) -> None:
         if self.mode != LEVEL_HOLD_REFERENCE:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"unsupported level mode: {self.mode!r}")
+        if self.resolved is None:
+            return
+        if not isinstance(self.resolved, ResolvedLevel):
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "resolved must be a ResolvedLevel")
         for name in ("anchor_db_spl", "reference_volume_db"):
-            value = getattr(self, name)
-            if value is not None and finite_float(value) is None:
+            if finite_float(getattr(self.resolved, name)) is None:
                 raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"{name} must be finite")
-        if self.reference_volume_db is not None and self.reference_volume_db > 0:
+        if self.resolved.reference_volume_db > 0:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "reference volume must be non-positive")
-        if self.mic_serial is not None and not isinstance(self.mic_serial, str):
+        if self.resolved.mic_serial is not None and not isinstance(self.resolved.mic_serial, str):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "mic_serial must be text")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mode": self.mode, **(asdict(self.resolved) if self.resolved is not None else {
+            f.name: None for f in fields(ResolvedLevel)
+        })}
+
+    @classmethod
+    def from_mapping(cls, doc: Mapping[str, Any]) -> LevelPolicy:
+        if set(doc) != {"mode", *(f.name for f in fields(ResolvedLevel))}:
+            raise ValueError("level must state mode and the resolved level fields")
+        values = dict(doc)
+        mode = values.pop("mode")
+        return cls(mode=mode, resolved=None if all(v is None for v in values.values()) else ResolvedLevel(**values))
 
 
 @dataclass(frozen=True)
@@ -414,7 +444,7 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "operating levels must be finite numbers")
         if len(levels) > 1:
             raise LateralWalkRefused(WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, "only one level window can play")
-        reference = self.level.reference_volume_db
+        reference = self.level.resolved.reference_volume_db if self.level.resolved is not None else None
         if levels and (levels[0] > 0 or (reference is not None and levels[0] != reference)):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "the window must hold the reference volume")
         object.__setattr__(self, "operating_levels_db", tuple(levels) or (
@@ -423,7 +453,7 @@ class AngleCaptureRequest:
         if self.spl_ceiling_db_spl is not None and (
             finite_float(self.spl_ceiling_db_spl) is None or self.spl_ceiling_db_spl <= 0
         ):
-            raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, "SPL ceiling must be finite and positive")
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "SPL ceiling must be finite and positive")
         for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -433,9 +463,9 @@ class AngleCaptureRequest:
         ):
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must be nonempty names")
         object.__setattr__(self, "candidates", tuple(self.candidates))
-        cycle = self.candidates or ("base",)
+        cycle = self.candidates or (BASE_CANDIDATE,)
         if set(cycle) != {
-            stop.candidate_id or "base" for stop in self.stops
+            candidate_identity(stop.candidate_id) for stop in self.stops
         }:
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must match the stop identities")
 
@@ -446,9 +476,10 @@ class AngleCaptureRequest:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            **asdict(self), "template": self.template.to_dict(),
+            **asdict(self), "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
-                {f.name: getattr(stop, f.name) for f in fields(stop)
+                {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else getattr(stop, f.name)
+                 for f in fields(stop)
                  if f.name in ("angle_deg", "regime", "elevation_deg", "candidate_id", "purpose")
                  or getattr(stop, f.name) != f.default}
                 for stop in self.stops
@@ -466,13 +497,33 @@ class AngleCaptureRequest:
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
         if unknown:
             raise ValueError(f"unknown request fields: {sorted(unknown)}")
+        missing = {f.name for f in fields(cls)} - set(doc)
+        if missing:
+            raise ValueError(f"request must state {', '.join(sorted(missing))}")
         values = {f.name: doc[f.name] for f in fields(cls)}
-        if not isinstance(doc.get("stops"), list) or not doc["stops"]:
+        for name in ("mover", "program"):
+            if not isinstance(values[name], str):
+                raise ValueError(f"{name} must be text")
+        if not isinstance(values["stops"], list) or not values["stops"]:
             raise ValueError("stops must be a nonempty list")
-        values["stops"] = tuple(AngleStop(**entry) for entry in doc["stops"])
-        values["template"] = MeasureSpec.from_mapping(doc["template"])
-        values["level"] = LevelPolicy(**doc["level"])
-        return cls(**values)
+        for name, read in (
+            ("stops", lambda entries: tuple(AngleStop(**entry) for entry in entries)),
+            ("template", MeasureSpec.from_mapping), ("level", LevelPolicy.from_mapping),
+        ):
+            try:
+                if name != "stops" and not isinstance(values[name], Mapping):
+                    raise ValueError("must be an object")
+                values[name] = read(values[name])
+            except LateralWalkRefused:
+                raise
+            except (TypeError, ValueError, KeyError, CrossoverV2FlowError) as exc:
+                raise ValueError(f"{name}: {exc}") from exc
+        try:
+            return cls(**values)
+        except LateralWalkRefused:
+            raise
+        except CrossoverV2FlowError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _refuse_bad_template(self) -> None:
         """The questions about a template that are the WALK's, not the spec's:
@@ -719,7 +770,9 @@ def request_for_program(
     ONE program per request, so one ``template``: a campaign wanting a second
     stimulus calls this again for that program.
     """
-    if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidates[0] in ("", "base")):
+    if program.mover is not None and program.mover != mover:
+        raise LateralWalkRefused(WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
+    if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     return AngleCaptureRequest(
         stops=tuple(
@@ -727,7 +780,7 @@ def request_for_program(
                 pose.azimuth_deg,
                 REGIME_SUMMED if candidates and program.regime != REGIME_BRANCHES else program.regime,
                 pose.elevation_deg,
-                "" if candidate == "base" else candidate,
+                candidate,
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
@@ -735,7 +788,7 @@ def request_for_program(
             )
             for pose in program.poses
             for _ in range(pose.repeats)
-            for candidate in (candidates or ("",))
+            for candidate in (candidates or (BASE_CANDIDATE,))
         ),
         mover=mover,
         template=template,
@@ -760,8 +813,8 @@ def walk_price(
     SESSION (base entries plus these captures), rounded UP to whole minutes.
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
-    takes = Counter(stop.candidate_id or "base" for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or ("base",))) * request.repeats
+    takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
+    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
     return {
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
@@ -900,6 +953,8 @@ WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 # Remove with PR 28b, level windows.
 WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
 WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
+# Remove when W1-13 hosts run_plan in the wizard.
+WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 
 #: The walk states an SPL ceiling ABOVE this box's commissioning
 #: stop, so honouring the walk would mean playing past the stop. Decided where
@@ -977,6 +1032,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LEVEL_POLICY_INVALID,
     WALK_LEVEL_WINDOWS_UNSUPPORTED_YET,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
+    WALK_REPEATS_UNSUPPORTED_YET,
     WALK_CEILING_ABOVE_STOP,
     WALK_SPL_CALIBRATION_REQUIRED,
     WALK_COMMISSIONING_STOP_UNSET,
@@ -1032,6 +1088,8 @@ def session_lateral_walk(
     """
     from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
+    if request.repeats != 1:
+        raise LateralWalkRefused(WALK_REPEATS_UNSUPPORTED_YET, "the wizard supports one take per stop")
     off_regime = sorted({
         stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER
     })
@@ -1052,18 +1110,18 @@ def session_lateral_walk(
             f"(externally_positioned={request.externally_positioned}) but this "
             f"session is externally_positioned={externally_positioned}",
         )
-    entries = base_entries + len(request.stops) * request.repeats
+    entries = base_entries + len(request.stops)
     attempts = stage1_plan_max_attempts(
         entries, include_cloud_measure=plans_cloud_group,
     )
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise LateralWalkRefused(
             WALK_OVER_CAPTURE_CAPACITY,
-            f"{base_entries} session captures + {len(request.stops) * request.repeats} takes = "
+            f"{base_entries} session captures + {len(request.stops)} stops = "
             f"{entries} entries, needing {attempts} capture blob indexes over a "
             f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
         )
-    return tuple(stop.prompt for stop in resolve_request(request) for _ in range(request.repeats))
+    return tuple(stop.prompt for stop in resolve_request(request))
 
 
 def announced_indexes(request: AngleCaptureRequest) -> tuple[int, ...]:

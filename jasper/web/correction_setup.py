@@ -693,46 +693,6 @@ def make_server(
     )
 
 
-def _restore_capture_entry() -> None:
-    """Converge an abandoned automatic capture sequence back to production.
-
-    An automatic capture sequence leaves the persisted CamillaDSP path on the
-    all-muted staged anchor between attempts; the production path is stashed
-    durably (capture_entry_anchor). This runs at both in-process lifecycle
-    exits — service start (`_claim_crossover_state_owners`, covering a
-    previous process that crashed/restarted mid-sequence) and this process's
-    own idle shutdown (`main`'s IdleShutdownTracker hook, covering the common
-    abandon: the user closes the tab, correction-web idles out minutes later).
-    Fail direction if it cannot run (CamillaDSP unreachable): the speaker
-    stays on the all-muted anchor — muted, never loud — and the stash is
-    retained for the next opportunity.
-    """
-
-    from jasper.active_speaker import web_commissioning
-
-    correction_runtime.run_async(
-        web_commissioning.restore_pending_capture_entry_config(
-            camilla_factory=correction_runtime.camilla_controller,
-        ),
-        timeout=15.0,
-    )
-
-
-def _idle_exit_restore_capture_entry() -> None:
-    """Fail-soft idle-shutdown wrapper for :func:`_restore_capture_entry`."""
-
-    try:
-        _restore_capture_entry()
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger,
-            "correction.capture_entry_restore_unavailable",
-            level=logging.WARNING,
-            boundary="idle_exit",
-            reason=type(exc).__name__,
-        )
-
-
 async def _restore_protected_neutral_program_graph() -> None:
     """Restore an owned temporary graph while its retained anchor still matches."""
 
@@ -779,10 +739,6 @@ def _claim_crossover_state_owners() -> None:
         (
             "correction.crossover_repeat_admission_unavailable",
             repeat_admission.claim_owner,
-        ),
-        (
-            "correction.capture_entry_restore_unavailable",
-            _restore_capture_entry,
         ),
     )
     for event, claim in claims:
@@ -836,13 +792,6 @@ def main(argv: list[str] | None = None) -> int:
     # swap duck needs a canonical target to release to.
     install_env_canonical_target_provider()
 
-    # The idle exit is exactly the abandoned-sequence moment (user closed the
-    # tab, no requests for the threshold AND no work in flight) — the daemon's
-    # last in-process chance to converge a capture sequence parked on the
-    # all-muted anchor back to production before the process goes away. The
-    # hook is bounded (run_async timeout) and exception-guarded by the
-    # tracker; on a deferred/failed restore the durable stash survives for the
-    # next service-start claim boundary.
     return _wizard_cli.run_wizard_cli(
         "jasper-correction-web",
         "HTTPS measurement daemon for the JTS speaker's /sound/ pages",
@@ -857,7 +806,6 @@ def main(argv: list[str] | None = None) -> int:
         start=_start,
         detail=lambda args: f"hostname={args.hostname}",
         configure=_configure_logging,
-        on_idle_exit=_idle_exit_restore_capture_entry,
     )
 
 

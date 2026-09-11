@@ -583,8 +583,7 @@ def _latest_current_summed_records(
     Returns ``(latest_in_phase_by_group, latest_pairs_by_group, stale_count)``:
 
     * ``latest_in_phase_by_group`` is what every existing consumer reads as
-      ``latest_summed_by_group`` / ``latest_summed_validations`` — the setup
-      readiness blend gate (``setup_status._usable_summed_acoustic``), the
+      ``latest_summed_by_group`` / ``latest_summed_validations`` — the
       automatic-candidate readiness check (``crossover_contract.
       automatic_candidate_readiness``), the automatic tuning tier's delay/
       polarity refinement (``baseline_profile._derive_corrections``), and the

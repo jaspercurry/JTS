@@ -612,26 +612,13 @@ def test_public_surface_present():
 
 
 def test_service_start_claims_all_crossover_state_owners(monkeypatch):
-    from jasper.active_speaker import repeat_admission, web_commissioning
+    from jasper.active_speaker import repeat_admission
 
     claims = []
     monkeypatch.setattr(
         repeat_admission, "claim_owner", lambda: claims.append("repeat")
     )
 
-    # The abandoned-sequence convergence hook: a capture sequence the previous
-    # process left on the all-muted staged anchor must be offered its
-    # production restore at this same single-owner lifecycle boundary.
-    async def restore_capture_entry(*, camilla_factory):
-        del camilla_factory
-        claims.append("capture_entry")
-        return {"status": "idle"}
-
-    monkeypatch.setattr(
-        web_commissioning,
-        "restore_pending_capture_entry_config",
-        restore_capture_entry,
-    )
     async def recover_program():
         claims.append("program")
 
@@ -640,7 +627,7 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     )
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "capture_entry", "program"]
+    assert claims == ["repeat", "program"]
 
 
 def test_program_graph_startup_recovery_is_exact_and_fail_closed(
@@ -743,45 +730,6 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
         asyncio.run(correction_setup._restore_protected_neutral_program_graph())
 
 
-def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
-    """The idle exit converges an abandoned capture sequence to production.
-
-    The common abandon is the user closing the tab mid-sequence:
-    correction-web idles out minutes later, and (being socket-activated) will
-    not run again until someone revisits a measurement page. Without this hook the
-    speaker would stay parked on the all-muted staged anchor until then.
-    """
-
-    from jasper.active_speaker import web_commissioning
-
-    calls = []
-
-    async def restore(*, camilla_factory):
-        del camilla_factory
-        calls.append("restore")
-        return {"status": "restored", "config_path": "/tmp/prod.yml"}
-
-    monkeypatch.setattr(
-        web_commissioning, "restore_pending_capture_entry_config", restore
-    )
-
-    correction_setup._idle_exit_restore_capture_entry()
-    assert calls == ["restore"]
-
-    # A failing restore is swallowed (the process is about to exit; the
-    # durable stash survives for the service-start claim boundary).
-    async def broken(*, camilla_factory):
-        del camilla_factory
-        calls.append("broken")
-        raise RuntimeError("camilla went away")
-
-    monkeypatch.setattr(
-        web_commissioning, "restore_pending_capture_entry_config", broken
-    )
-    correction_setup._idle_exit_restore_capture_entry()
-    assert calls == ["restore", "broken"]
-
-
 def test_main_configures_root_logging_at_info(wizard_harness):
     """``event=dsp.baseline_base_trim_banked`` (and every other INFO event this
     process logs) needs a root handler at INFO, or Python's ``lastResort``
@@ -804,7 +752,6 @@ def test_main_configures_root_logging_at_info(wizard_harness):
 
 
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
-    from unittest.mock import AsyncMock
     from jasper.active_speaker import repeat_admission
 
     claims = []
@@ -813,16 +760,17 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
         raise OSError("repeat state unavailable")
 
     monkeypatch.setattr(repeat_admission, "claim_owner", fail_repeat)
+
+    async def recover_program():
+        claims.append("program")
+
     monkeypatch.setattr(
-        correction_setup,
-        "_restore_capture_entry",
-        lambda: claims.append("capture_entry"),
+        correction_setup, "_restore_protected_neutral_program_graph", recover_program,
     )
-    monkeypatch.setattr(correction_setup, "_restore_protected_neutral_program_graph", AsyncMock())
 
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["capture_entry"]
+    assert claims == ["program"]
 
 
 # ---------------------------------------------------------------------------

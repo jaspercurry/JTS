@@ -124,9 +124,9 @@ def assess(
 
     adjusted = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
 
-    def quiet(code: str) -> TakeVerdict:
+    def quiet(code: str, *, charge: TakeCharge = "operator") -> TakeVerdict:
         return refuse(code, next="retake_louder" if adjusted else "fix_and_retake",
-                      charge="speaker" if gains else "operator", targets=adjusted)
+                      charge="speaker" if adjusted else charge, targets=adjusted)
 
     if evidence["frame_loss"]:
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
@@ -143,7 +143,7 @@ def assess(
         return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
     # Retire when locate can resolve the timeline without a corroborating witness.
     if anchor is not None and anchor.corroborated is False:
-        return quiet(reasons.REASON_ANCHOR_TOO_QUIET)
+        return quiet(reasons.REASON_ANCHOR_TOO_QUIET, charge="speaker" if gains else "operator")
     if analysis.mic_meter_status in {"low", "too_quiet"}:
         return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
     if not _sweep_locate_confidence_ok(analysis):

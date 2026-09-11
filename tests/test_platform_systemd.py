@@ -454,9 +454,8 @@ def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
 
     Pre-#1854 the 600 s `os._exit(0)` accidentally reaped a WEDGED background
     worker. It no longer does — a wedged CamillaDSP apply now pins the hold, so
-    the process never idle-exits, `_idle_exit_restore_capture_entry` never runs,
-    and the speaker can sit on the all-muted staged anchor until an operator
-    restarts the unit. Nothing here reaps it (see the constant's comment); what
+    the process never idle-exits. Nothing here reaps it (see the constant's
+    comment); what
     changes is that the state stops looking like routine progress in the
     journal. The bound is sized so no legitimate session reaches it — a line
     that cried wolf on every Full-tier commission would be worse than none.

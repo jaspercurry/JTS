@@ -41,7 +41,6 @@ __all__ = [
     "MeasurementGraphRefused",
     "TuningGraphScope",
     "candidate_upstream_snapshot",
-    "candidate_layer_issues",
     "compile_tuning_graph",
     "emit_measurement_graph",
     "measurement_bass_extension",
@@ -121,34 +120,20 @@ def candidate_upstream_snapshot(
     snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
     if snapshot is None:
         raise MeasurementGraphRefused("measurement_profile_unavailable", issues)
-    mismatches = candidate_layer_issues(candidate, snapshot, applied_profile=applied_profile)
-    if mismatches:
-        raise MeasurementGraphRefused(mismatches[0], candidate.fingerprint)
-    return snapshot
-
-
-def candidate_layer_issues(
-    candidate: MeasuredCrossoverCandidate,
-    snapshot: Mapping[str, Any],
-    *,
-    applied_profile: Mapping[str, Any],
-) -> tuple[str, ...]:
-    """The upstream layers an overlay would change, in dependency order."""
-    issues: list[str] = []
     preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     if _without_alignment(preset) != _without_alignment(candidate.source_preset):
-        issues.append("measurement_candidate_base_mismatch")
-    if (candidate.room_correction or candidate.bass_extension) and (
+        raise MeasurementGraphRefused("measurement_candidate_base_mismatch", candidate.fingerprint)
+    if (
         driver_corrections(candidate) != snapshot.get("corrections")
         or linearization_filters_by_role(candidate.linearization) != snapshot.get("linearization", {})
         or [dict(f) for f in candidate.blend_correction] != snapshot.get("blend_correction", [])
     ):
-        issues.append("measurement_candidate_tune_mismatch")
+        raise MeasurementGraphRefused("measurement_candidate_tune_mismatch", candidate.fingerprint)
     if candidate.bass_extension and candidate.room_correction != snapshot.get(
         "room_correction", applied_profile.get("room_correction", {}),
     ):
-        issues.append("measurement_candidate_room_mismatch")
-    return tuple(issues)
+        raise MeasurementGraphRefused("measurement_candidate_room_mismatch", candidate.fingerprint)
+    return snapshot
 
 
 def compile_tuning_graph(

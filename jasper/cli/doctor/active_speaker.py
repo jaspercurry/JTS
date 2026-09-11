@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """jasper-doctor checks — active-speaker domain: runtime/applied graph,
-sound and bass-extension profile, and room-correction authority. See ADR-0235."""
+sound and bass-extension profile. See ADR-0235."""
 from __future__ import annotations
 
 import json
@@ -57,11 +57,6 @@ REASON_APPLIED_GRAPH_MISMATCH = "applied_graph_mismatch"
 REASON_STARTUP_HOLD_NONE = "startup_hold_none"
 REASON_STARTUP_HOLD_IN_FLIGHT = "startup_hold_in_flight"
 REASON_STARTUP_HOLD_STALE = "startup_hold_stale"
-
-REASON_ROOM_AUTHORITY_NO_DECISION = "room_authority_no_decision"
-REASON_ROOM_AUTHORITY_NOT_REQUIRED = "room_authority_not_required"
-REASON_ROOM_AUTHORITY_UNBANKED = "room_authority_unbanked"
-REASON_ROOM_AUTHORITY_BLOCKED = "room_authority_blocked"
 
 REASON_SETUP_NOTICES_NONE = "setup_notices_none"
 REASON_SETUP_NOTICES_STANDING = "setup_notices_standing"
@@ -580,61 +575,6 @@ def check_active_speaker_startup_hold() -> CheckResult:
         # periods, so no signal-path code names this silence.
         speaker_silent=on_anchor,
         reason=REASON_STARTUP_HOLD_STALE,
-    )
-
-
-@doctor_check(label="room correction authority")
-def check_room_correction_authority() -> CheckResult:
-    """Room correction runs unproven — this is the line that says so.
-
-    Ruling S10 and ADR-0019: only the ABSENT denial lets the run proceed and
-    bank nothing (`ok`, the disclosure this line exists for); every other
-    denial stops room correction outright, so it warns. Never FAIL.
-    """
-
-    from ...active_speaker._common import ROOM_AUTHORITY_RECEIPT_ABSENT
-    label = "room correction authority"
-    try:
-        status = evidence.active_speaker_setup_status()
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-        return CheckResult(
-            label, "warn", f"could not read speaker setup: {exc}",
-            reason=REASON_SPEAKER_SETUP_UNREADABLE,
-        )
-    acoustic = status.get("acoustic_commissioning")
-    if not isinstance(acoustic, dict):
-        return CheckResult(
-            label, "warn", "speaker setup published no room decision",
-            reason=REASON_ROOM_AUTHORITY_NO_DECISION,
-        )
-    if acoustic.get("required") is not True:
-        return CheckResult(
-            label, "skipped", "room correction needs no speaker authority",
-            reason=REASON_ROOM_AUTHORITY_NOT_REQUIRED,
-        )
-    if acoustic.get("allowed") is True:
-        return CheckResult(
-            label, "ok",
-            f"room correction is banked under {acoustic.get('authority')}",
-        )
-    denial = str(acoustic.get("reason") or "")
-    detail = str(acoustic.get("detail") or "")
-    cause = str(acoustic.get("cause") or "")
-    if denial == ROOM_AUTHORITY_RECEIPT_ABSENT:
-        # The state every uncommissioned speaker is in, hence `ok`. It is
-        # also the only denial the receipt authority itself emits: the
-        # applied automatic profile names no measured-candidate fingerprint.
-        # See ADR-0288.
-        return CheckResult(
-            label, "ok",
-            f"room correction runs unbanked ({denial})"
-            + (f": {cause}" if cause else ""),
-            reason=REASON_ROOM_AUTHORITY_UNBANKED,
-        )
-    return CheckResult(
-        label, "warn",
-        f"room correction is blocked, not merely unbanked ({denial}): {detail}",
-        reason=REASON_ROOM_AUTHORITY_BLOCKED,
     )
 
 

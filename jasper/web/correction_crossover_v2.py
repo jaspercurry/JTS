@@ -65,6 +65,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from jasper.active_speaker import preflight, preflight_live
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
     TypeVar, cast,
@@ -1958,10 +1960,7 @@ def _take_staged_angle_walk(
         staged_angle_request_pending,
         take_staged_angle_request,
     )
-    from types import SimpleNamespace
     from jasper.active_speaker.plan_run import spl_watch
-    from jasper.active_speaker.preflight import preflight
-    from jasper.active_speaker.preflight_live import read_preflight_facts
     from jasper.active_speaker.crossover_v2.capture_plan import (
         build_v2_cloud_index_phase_map,
         position_angle_deg,
@@ -1995,10 +1994,10 @@ def _take_staged_angle_walk(
         request = take_staged_angle_request()
         if request is None:
             return None
-        facts = read_preflight_facts(
+        facts = preflight_live.read_preflight_facts(
             request, context=SimpleNamespace(preset=preset, topology=topology), device=device,
         )
-        report = preflight(request, facts)
+        report = preflight.preflight(request, facts)
         for issue in report.issues:
             if issue.blocking:
                 raise refused(issue.code, issue.detail)
@@ -2043,6 +2042,7 @@ def _take_staged_angle_walk(
             topology=topology,
             preset=preset,
             sensitivity=facts.anchor.sensitivity,
+            resolved_ceiling_db_spl=report.spl_ceiling_db_spl,
             device=device,
         )
         candidate_scopes = report.candidate_scopes
@@ -2063,7 +2063,7 @@ def _take_staged_angle_walk(
     }
     try:
         placed = stop_specs(
-            request, candidate_scopes=candidate_scopes, prompts=prompts[::request.repeats],
+            request, candidate_scopes=candidate_scopes, prompts=prompts,
         )
     except ValueError as exc:
         # Only the stop's own pose is new on those constructions; the spec's own
@@ -2077,7 +2077,7 @@ def _take_staged_angle_walk(
             specs_by_index[index] = spec
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
-        for stop in request.stops for _ in range(request.repeats)
+        for stop in request.stops
     )
 
     log_event(

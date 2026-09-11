@@ -26,10 +26,6 @@ from jasper.active_speaker.baseline_profile import (
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
     active_driver_targets,
-    load_measurement_state,
-    record_driver_measurement,
-    record_summed_test_artifact,
-    record_summed_validation,
     start_active_comparison_set,
 )
 from jasper.output_topology import (
@@ -41,7 +37,6 @@ from jasper.output_topology import (
 from tests.active_speaker_fixtures import (
     dual_apple_output_topology as _dual_apple_topology,
     mono_output_topology,
-    safe_measurement_session as _safe_session,
     standard_design_draft as _draft,
     standard_measurements as _measurements,
     valid_camilla_config as _valid_config,
@@ -342,18 +337,7 @@ def test_passive_speaker_is_ready_without_active_baseline(
     assert status["configured"] is True
     assert status["volume_allowed"] is True
     assert status["grouping_allowed"] is True
-    assert status["room_correction_allowed"] is True
-    assert status["acoustic_commissioning"]["status"] == "not_required"
-    assert status["acoustic_commissioning"]["decision_schema_version"] == 1
-    assert status["acoustic_commissioning"]["authority"] == (
-        "passive_not_required"
-    )
-    # A passive speaker has no commissioning session, but the "commissioning"
-    # block is still present with a well-defined idle shape, and its
-    # room_correction_allowed mirrors the top-level value exactly (design doc
-    # "Runtime surface").
     assert status["commissioning"]["phase"] == "idle"
-    assert status["commissioning"]["room_correction_allowed"] is True
 
 
 def test_unconfigured_speaker_is_not_passive_or_room_eligible(
@@ -377,19 +361,8 @@ def test_unconfigured_speaker_is_not_passive_or_room_eligible(
     assert status["configured"] is False
     assert status["volume_allowed"] is False
     assert status["grouping_allowed"] is False
-    assert status["room_correction_allowed"] is False
     assert status["safety_muted"] is True
     assert status["reason"] == "output_topology_unconfigured"
-    assert status["acoustic_commissioning"] == {
-        "decision_schema_version": 1,
-        "authority": None,
-        "required": True,
-        "status": "incomplete",
-        "allowed": False,
-        "reason": "output_topology_unconfigured",
-        "detail": "Choose and save a speaker layout before room correction.",
-        "setup_href": "/sound/speaker/",
-    }
 
 
 @pytest.mark.parametrize(
@@ -426,12 +399,8 @@ def test_zero_active_layout_requires_flat_dac_authority(
     assert status["configured"] is False
     assert status["volume_allowed"] is False
     assert status["grouping_allowed"] is False
-    assert status["room_correction_allowed"] is False
     assert status["safety_muted"] is True
     assert status["reason"] == "output_topology_not_ready"
-    assert status["acoustic_commissioning"]["authority"] is None
-    assert status["acoustic_commissioning"]["allowed"] is False
-    assert status["acoustic_commissioning"]["setup_href"] == "/sound/speaker/"
     issue_codes = {item["code"] for item in status["issues"]}
     assert "output_topology_not_ready" in issue_codes
     if contract_issue is not None:
@@ -498,300 +467,13 @@ def test_active_speaker_allows_volume_and_grouping_after_applied_baseline(
     assert status["grouping_allowed"] is True
     assert status["safety_muted"] is False
     assert status["reason"] is None
-    assert status["room_correction_allowed"] is False
     # Phase-derivation table (design doc "Structured events"): a profile whose
     # status is "applied" (not apply_failed, may_apply already false) with no
     # open comparison set falls through every specific branch to idle.
     assert status["commissioning"]["phase"] == "idle"
-    assert status["commissioning"]["room_correction_allowed"] is False
     # No applied_profile was resolvable in this fixture (no state on disk),
     # so there is no fingerprint to surface.
     assert status["commissioning"]["applied_profile_fingerprint"] is None
-
-
-def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    applied = _applied_acoustic_profile(config_path=config_path)
-    _write_applied_graph(topology, applied, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(
-            status="applied", config_path=config_path, measured=True
-        ),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: _acoustic_measurement_state(),
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: applied,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["configured"] is True
-    assert status["room_correction_allowed"] is True
-    assert status["acoustic_commissioning"]["status"] == "ready"
-    assert status["acoustic_commissioning"]["authority"] == (
-        "manual_applied_profile"
-    )
-    assert status["acoustic_commissioning"]["layer_a_identity"] == (
-        status["protected_profile"]["layer_a_binding"]["loaded_fingerprint"]
-    )
-    assert status["acoustic_commissioning"]["drivers"] == {
-        "required_groups": 1,
-        "usable_groups": 1,
-        "excitation_comparable": True,
-    }
-    assert status["acoustic_commissioning"]["summed"] == {
-        "required": 1,
-        "usable": 1,
-    }
-    # room_correction_allowed mirrors acoustic_commissioning.allowed exactly
-    # in the wired /state payload (design doc "Runtime surface"), and the
-    # applied candidate identity is surfaced for graph-context correlation.
-    assert status["commissioning"]["room_correction_allowed"] is True
-    assert status["commissioning"]["room_correction_allowed"] == (
-        status["acoustic_commissioning"]["allowed"]
-    )
-    assert status["commissioning"]["applied_profile_fingerprint"] == "candidate-fp"
-    # status="applied" with may_apply already false and no open comparison
-    # set falls through every specific phase branch to idle.
-    assert status["commissioning"]["phase"] == "idle"
-
-
-def test_applied_manual_snapshot_allows_room_without_phone_measurements(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    manual = _applied_acoustic_profile(
-        measured=False,
-        config_path=config_path,
-    )
-    manual["tuning_owner"] = "manual"
-    manual["recomposition_snapshot"]["tuning_owner"] = "manual"
-    _write_applied_graph(topology, manual, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=config_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: manual,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["room_correction_allowed"] is True
-    assert status["acoustic_commissioning"]["applied_profile"] == {
-        "available": True,
-        "measured_level_match_applied": False,
-        "tuning_owner": "manual",
-        "snapshot_valid": True,
-        "graph_matches_loaded": True,
-    }
-
-
-def test_manual_room_authority_allows_program_filters_on_exact_layer_a(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    protected_path = tmp_path / "active_speaker_baseline.yml"
-    current_path = tmp_path / "sound_current.yml"
-    manual = _applied_acoustic_profile(
-        measured=False,
-        config_path=protected_path,
-    )
-    _write_applied_graph(topology, manual, protected_path)
-    current = yaml.safe_load(protected_path.read_text(encoding="utf-8"))
-    current["filters"]["room_peq_smoke"] = {
-        "type": "Biquad",
-        "parameters": {"type": "Peaking", "freq": 80.0, "q": 4.0, "gain": -3.0},
-    }
-    current["pipeline"].insert(0, {
-        "type": "Filter",
-        "channels": [0, 1],
-        "names": ["room_peq_smoke"],
-    })
-    current_text = yaml.safe_dump(current, sort_keys=False)
-    current_path.write_text(current_text, encoding="utf-8")
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: manual,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(current_path),
-        active_config_text=current_text,
-    )
-
-    assert status["room_correction_allowed"] is True
-    binding = status["protected_profile"]["layer_a_binding"]
-    assert binding["status"] == "current"
-    assert binding["matches"] is True
-    assert binding["loaded_fingerprint"] == binding["expected_fingerprint"]
-
-
-@pytest.mark.parametrize("role", ["leader", "follower"])
-def test_manual_room_authority_explicitly_scopes_out_distributed_active(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    role: str,
-) -> None:
-    """Fresh grouping state scopes comment-free leader/follower readback out."""
-    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
-
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    protected_path = tmp_path / "active_speaker_baseline.yml"
-    current_path = tmp_path / "sound_current.yml"
-    manual = _applied_acoustic_profile(
-        measured=False,
-        config_path=protected_path,
-    )
-    _write_applied_graph(topology, manual, protected_path)
-    running_text = (
-        _program_bake_yaml()
-        if role == "leader"
-        else protected_path.read_text(encoding="utf-8")
-    )
-    current_path.write_text(running_text, encoding="utf-8")
-    active_raw = yaml.safe_dump(yaml.safe_load(running_text), sort_keys=False)
-    assert "# Source:" not in active_raw
-    monkeypatch.setattr(
-        "jasper.multiroom.config.load_config",
-        lambda: SimpleNamespace(enabled=True, error=None, role=role),
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: manual,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(current_path),
-        active_config_text=active_raw,
-    )
-
-    assert status["configured"] is True
-    assert status["volume_allowed"] is True
-    assert status["grouping_allowed"] is True
-    assert status["room_correction_allowed"] is False
-    acoustic = status["acoustic_commissioning"]
-    assert acoustic["authority"] is None
-    assert acoustic["layer_a_identity"] is None
-    assert acoustic["status"] == "incomplete"
-    assert acoustic["allowed"] is False
-    assert acoustic["reason"] == "active_grouped_room_correction_not_supported"
-    assert acoustic["setup_href"] == "/sound/pair/"
-    assert "Turn grouping off" in acoustic["detail"]
-    assert status["protected_profile"]["layer_a_binding"] == {
-        "status": "distributed_active_unsupported",
-        "matches": False,
-        "expected_fingerprint": None,
-        "loaded_fingerprint": None,
-        "differences": [],
-    }
-
-
-def test_manual_room_authority_blocks_loaded_layer_a_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    protected_path = tmp_path / "active_speaker_baseline.yml"
-    current_path = tmp_path / "sound_current.yml"
-    manual = _applied_acoustic_profile(
-        measured=False,
-        config_path=protected_path,
-    )
-    _write_applied_graph(topology, manual, protected_path)
-    current_path.write_text(
-        protected_path.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    current = yaml.safe_load(protected_path.read_text(encoding="utf-8"))
-    current["filters"]["as_tweeter_baseline_gain"]["parameters"]["gain"] = -9.0
-    running_text = yaml.safe_dump(current, sort_keys=False)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: manual,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(current_path),
-        active_config_text=running_text,
-    )
-
-    assert status["configured"] is True
-    assert status["volume_allowed"] is True
-    assert status["room_correction_allowed"] is False
-    assert status["acoustic_commissioning"]["authority"] is None
-    assert status["acoustic_commissioning"]["reason"] == (
-        "active_applied_profile_graph_mismatch"
-    )
-    binding = status["protected_profile"]["layer_a_binding"]
-    assert binding["status"] == "mismatch"
-    assert binding["matches"] is False
-    assert binding["loaded_fingerprint"] != binding["expected_fingerprint"]
 
 
 def test_durable_anchor_mismatch_names_the_field_and_both_values(
@@ -837,100 +519,6 @@ def test_durable_anchor_mismatch_names_the_field_and_both_values(
     assert binding["differences"] == [
         {"field": "as_woofer_delay.delay", "expected": "0.0", "loaded": "0.1286"},
     ]
-
-
-def test_manual_room_authority_blocks_unverifiable_loaded_graph(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    protected_path = tmp_path / "active_speaker_baseline.yml"
-    current_path = tmp_path / "sound_current.yml"
-    manual = _applied_acoustic_profile(
-        measured=False,
-        config_path=protected_path,
-    )
-    _write_applied_graph(topology, manual, protected_path)
-    current_path.write_text(
-        protected_path.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: manual,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(current_path),
-        active_config_text="pipeline: [\n",
-    )
-
-    assert status["configured"] is True
-    assert status["volume_allowed"] is True
-    assert status["room_correction_allowed"] is False
-    assert status["acoustic_commissioning"]["reason"] == (
-        "active_applied_profile_graph_unverifiable"
-    )
-    assert status["protected_profile"]["layer_a_binding"] == {
-        "status": "unverifiable",
-        "matches": False,
-        "expected_fingerprint": None,
-        "loaded_fingerprint": None,
-        "differences": [],
-    }
-
-
-def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_clears(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    automatic = _applied_acoustic_profile(config_path=config_path)
-    automatic["tuning_owner"] = "automatic"
-    automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
-    _write_applied_graph(topology, automatic, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=config_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: automatic,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["room_correction_allowed"] is False
-    assert status["acoustic_commissioning"]["authority"] is None
-    assert status["acoustic_commissioning"]["reason"] == (
-        _common.ROOM_AUTHORITY_RECEIPT_ABSENT
-    )
-    assert status["applied_crossover"]["valid"] is True
-    assert status["applied_crossover"]["owner"] == "automatic"
-    assert status["automatic_candidate"]["ready"] is False
 
 
 @pytest.mark.parametrize(
@@ -1183,286 +771,6 @@ def _applied_automatic_room_status(
     )
 
 
-@pytest.mark.parametrize(
-    "journey_write, expected_state_after_write",
-    [
-        pytest.param(
-            lambda _v2: None,
-            {"applied": True, "candidate": {"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT}},
-            id="apply_only",
-        ),
-        pytest.param(
-            _new_session_first_persist,
-            {"applied": False, "candidate": None},
-            id="new_session_first_persist",
-        ),
-        pytest.param(
-            _republish_door,
-            {"applied": False, "candidate": {"fingerprint": "1" * 64}},
-            id="republish",
-        ),
-        pytest.param(
-            _start_over,
-            # reset_v2_journey_state preserves `applied` when a candidate was
-            # already applied — only `candidate` clears (its own docstring).
-            {"applied": True, "candidate": None},
-            id="start_over",
-        ),
-    ],
-)
-def test_room_authority_survives_every_later_v2_journey_write(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    v2_journey: Any,
-    journey_write: Callable[[Any], None],
-    expected_state_after_write: dict[str, Any],
-) -> None:
-    """The grant reads what is PLAYING, not the per-session journey document.
-
-    ``handle_v2_apply`` is the only door onto an automatic crossover, so the
-    applied profile's ``source.measured_candidate_fingerprint`` is the
-    authority. The durable v2 state is not: every later write moves its
-    ``applied``/``candidate`` fields off what apply recorded while the same
-    graph keeps playing, and a gate reading it would revoke room correction
-    mid-listen on every one.
-    """
-    _v2_apply(v2_journey)
-    journey_write(v2_journey)
-
-    # Confirm the write actually moved the journey state as documented —
-    # otherwise a no-op write would let this guard pass for the wrong reason.
-    state = v2_journey.load_v2_state()
-    assert state["applied"] == expected_state_after_write["applied"]
-    assert state.get("candidate") == expected_state_after_write["candidate"]
-
-    status = _applied_automatic_room_status(
-        monkeypatch, tmp_path,
-        candidate_fingerprint=_APPLIED_CANDIDATE_FINGERPRINT,
-    )
-    acoustic = status["acoustic_commissioning"]
-
-    assert status["room_correction_allowed"] is True
-    assert acoustic["authority"] == (
-        setup_mod.ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
-    )
-    assert acoustic["receipt_fingerprint"] == _APPLIED_CANDIDATE_FINGERPRINT
-    assert acoustic["layer_a_identity"] == (
-        status["protected_profile"]["layer_a_binding"]["loaded_fingerprint"]
-    )
-
-
-def test_room_authority_is_absent_when_no_measured_candidate_was_applied(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    v2_journey: Any,
-) -> None:
-    """An automatic profile can also be a legacy pre-#1499 record, saved
-    before fingerprint tracking existed. It names no measured candidate, so
-    nothing may be banked — even with an applied v2 journey on the box.
-    """
-    _v2_apply(v2_journey)
-
-    acoustic = _applied_automatic_room_status(
-        monkeypatch, tmp_path, candidate_fingerprint="",
-    )["acoustic_commissioning"]
-
-    assert acoustic["allowed"] is False
-    assert acoustic["authority"] is None
-    assert acoustic["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
-    assert acoustic["receipt_fingerprint"] is None
-
-
-def test_a_manual_applied_profile_never_consults_the_room_authority_gate(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Manual authority is the applied snapshot itself (ADR-0019). Reaching
-    the automatic gate at all would make a manual profile's grant depend on
-    v2 artifacts it never had.
-    """
-
-    def _explode(_applied: Any) -> dict:
-        raise AssertionError("the automatic gate ran for a manual profile")
-
-    monkeypatch.setattr(setup_mod, "_v2_apply_room_authority", _explode)
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    manual = _applied_acoustic_profile(config_path=config_path, measured=False)
-    _write_applied_graph(topology, manual, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=config_path),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: manual,
-    )
-
-    acoustic = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )["acoustic_commissioning"]
-
-    assert acoustic["authority"] == setup_mod.ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
-    assert acoustic["allowed"] is True
-
-
-def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    applied = _applied_acoustic_profile(config_path=config_path)
-    _write_applied_graph(topology, applied, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(
-            status="applied", config_path=config_path, measured=True
-        ),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: _acoustic_measurement_state(),
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: _applied_acoustic_profile(
-            config_path=config_path,
-            with_snapshot=False,
-        ),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["configured"] is True
-    assert status["volume_allowed"] is True
-    assert status["protected_profile"] == {
-        "available": True,
-        "status": "ready",
-            "config_path": str(config_path),
-            "source_fingerprint": "source-fp",
-            "candidate_fingerprint": None,
-            "topology_current": True,
-        "provisional": False,
-        "recomposition_snapshot_available": False,
-        # Gauge fix (2026-07-24): absent from the fixture profile dict, so
-        # the "" (never evaluated) default.
-        "linearization_outcome": "",
-        # PR-L4 item 8: which of `/state`'s two baseline blocks this is. The
-        # sibling `baseline_profile` block is the /sound-page staging
-        # candidate; this one reports what the speaker is actually running.
-        "role": "applied_profile",
-        "layer_a_binding": {
-            "status": "unverifiable",
-            "matches": False,
-            "expected_fingerprint": None,
-            "loaded_fingerprint": None,
-            "differences": [],
-        },
-    }
-    assert status["room_correction_allowed"] is False
-    assert status["acoustic_commissioning"]["reason"] == (
-        "active_applied_profile_snapshot_missing"
-    )
-
-
-def test_manual_applied_snapshot_allows_room_without_summed_acoustic_evidence(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    applied = _applied_acoustic_profile(config_path=config_path)
-    _write_applied_graph(topology, applied, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(
-            status="applied",
-            config_path=config_path,
-            measured=True,
-        ),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: _acoustic_measurement_state(summed=False),
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: applied,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["volume_allowed"] is True
-    assert status["room_correction_allowed"] is True
-    assert status["acoustic_commissioning"]["reason"] is None
-    assert status["acoustic_commissioning"]["summed"]["usable"] == 0
-    assert status["acoustic_commissioning"]["setup_href"] == (
-        "/sound/speaker/crossover/"
-    )
-
-
-def test_applied_snapshot_remains_room_ready_when_mutable_driver_evidence_changes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    applied = _applied_acoustic_profile(config_path=config_path)
-    _write_applied_graph(topology, applied, config_path)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(
-            status="applied",
-            config_path=config_path,
-            measured=True,
-            incomparable=True,
-        ),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: _acoustic_measurement_state(),
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: applied,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["room_correction_allowed"] is True
-    assert status["acoustic_commissioning"]["reason"] is None
-    assert status["acoustic_commissioning"]["drivers"][
-        "excitation_comparable"
-    ] is False
-
-
 def test_active_speaker_loaded_commissioning_graph_still_blocks_controls(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -1598,14 +906,12 @@ def test_active_speaker_setup_rederives_baseline_freshness(
 
     # The missing/current measurement set is a mutable candidate. It can require
     # revalidation without invalidating the immutable profile that still owns
-    # ordinary playback and Room's Layer-A prerequisite.
+    # ordinary playback.
     assert stale["configured"] is True
     assert stale["volume_allowed"] is True
     assert stale["grouping_allowed"] is True
     assert stale["reason"] is None
     assert stale["protected_profile"]["status"] == "ready"
-    assert stale["room_correction_allowed"] is True
-    assert stale["acoustic_commissioning"]["reason"] is None
     assert stale["baseline_profile"]["revalidation"]["required"] is True
     # PR-L4 item 8: exactly the pair that cost the 2026-07-27 forensics real
     # time — a re-derived staging candidate reporting one thing beside an
@@ -1672,9 +978,8 @@ def test_unreadable_topology_fails_closed(
         issue["code"] for issue in status["issues"]
     }
     # No topology was ever readable, so commissioning degrades to its fail-soft
-    # idle default; room_correction_allowed still mirrors the top-level value.
+    # idle default.
     assert status["commissioning"]["phase"] == "idle"
-    assert status["commissioning"]["room_correction_allowed"] is False
 
 
 def test_unreadable_baseline_profile_fails_closed(
@@ -1788,7 +1093,6 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
         "applied_profile_fingerprint": None,
         "last_capture": None,
         "last_failure_code": None,
-        "room_correction_allowed": False,
         # #2412 Wave 4. `None` here is the derivation answering honestly, not a
         # placeholder: this fixture's topology is a `SimpleNamespace` with only
         # a `topology_id`, so no route resolves and there is no transport to
@@ -1897,7 +1201,7 @@ def test_state_reports_null_when_the_chooser_answers_no_device(monkeypatch) -> N
     assert result["transport"] is None
     # ...and the block still answers in full: a null transport is a reported
     # value, not a truncated payload.
-    assert len(result) == 8
+    assert len(result) == 7
 
 
 def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> None:
@@ -1905,7 +1209,7 @@ def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> 
 
     `resolve_output_layout` walks `topology.hardware` unguarded, so a topology
     object that cannot answer raises a class none of this module's sibling
-    derivations do. The block reports `null` and keeps its other seven keys
+    derivations do. The block reports `null` and keeps its other six keys
     rather than propagating.
     """
     result = setup_mod.commissioning_summary(
@@ -1913,7 +1217,7 @@ def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> 
     )
     assert result["transport"] is None
     assert result["phase"] == "idle"
-    assert len(result) == 8
+    assert len(result) == 7
 
 
 def test_commissioning_summary_measuring_with_open_comparison_set(
@@ -2066,113 +1370,6 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
 
     # Degrades to the safest phase rather than propagating the exception.
     assert result["phase"] == "idle"
-    assert result["room_correction_allowed"] is False
 
 
 # --- Overwrite-bug regression (lane E, Slice 2 paired summed evidence) ------
-
-
-def test_usable_summed_acoustic_gate_unaffected_by_later_reverse_capture(
-    tmp_path: Path,
-) -> None:
-    """setup_status._usable_summed_acoustic is the room-correction blend gate
-    -- it reads summary.latest_summed_validations, which measurement.py now
-    defines as the latest IN-PHASE record per group specifically. Before
-    that fix, latest_summed_validations kept whichever summed record was
-    captured most recently regardless of polarity, so a reverse-polarity
-    capture recorded AFTER a validated in-phase blend check -- which can
-    ALSO read validated=True/verdict='blend_ok' (a formed reverse null IS
-    the pass for a reverse capture) -- silently shadowed the in-phase
-    evidence this gate needs. This pins the fix at the real consumer, through
-    real persistence (not a hand-built measurements dict)."""
-    topology = _active_topology()
-    state_path = tmp_path / "measurements.json"
-    for role in ("woofer", "tweeter"):
-        output_index = 0 if role == "woofer" else 1
-        playback_id = f"playback-{role}"
-        record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "observed_mic_dbfs": -42.0,
-                "playback_id": playback_id,
-            },
-            safe_session=_safe_session(
-                role=role, output_index=output_index, playback_id=playback_id,
-            ),
-            state_path=state_path,
-            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
-        )
-    record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "aplay",
-                "playback_id": "summed-playback-audible",
-                "audio_emitted": True,
-                "artifact": {
-                    "wav_basename": "tone.wav",
-                    "metadata_basename": "tone.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-            },
-        },
-        state_path=state_path,
-        now="2026-06-14T12:02:30Z",
-    )
-    record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40.0,
-            "summed_test_id": "summed-playback-audible",
-            "acoustic": {
-                "verdict": "blend_ok",
-                "null_depth_db": 2.0,
-                "expect_null": False,
-                "calibrated": True,
-            },
-        },
-        state_path=state_path,
-        now="2026-06-14T12:03:00Z",
-    )
-
-    before = load_measurement_state(topology, state_path=state_path)
-    before_record = before["summary"]["latest_summed_validations"]["mono"]
-    assert setup_mod._usable_summed_acoustic(before_record) is True
-
-    # A reverse-polarity capture, taken afterward, forms the expected null
-    # (verdict=blend_ok, validated=True -- the pass case for a reverse
-    # capture, indistinguishable from an in-phase pass by outcome alone).
-    record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -55.0,
-            "summed_test_id": "summed-playback-audible",
-            "acoustic": {
-                "verdict": "blend_ok",
-                "null_depth_db": 22.0,
-                "expect_null": True,
-                "calibrated": True,
-            },
-        },
-        state_path=state_path,
-        now="2026-06-14T12:04:00Z",
-    )
-
-    after = load_measurement_state(topology, state_path=state_path)
-    after_record = after["summary"]["latest_summed_validations"]["mono"]
-    # Still the in-phase record -- the gate is unaffected by the reverse
-    # capture.
-    assert after_record["acoustic"]["expect_null"] is False
-    assert after_record["acoustic"]["null_depth_db"] == 2.0
-    assert setup_mod._usable_summed_acoustic(after_record) is True

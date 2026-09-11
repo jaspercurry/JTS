@@ -257,9 +257,6 @@ _host_state_dirs = itertools.count()
 _HOST_STATE_FILES = (
     # startup_hold: /run/jasper-active-speaker is unwritable on a test host; absent = no hold.
     ("JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER", "staged-startup-hold"),
-    # capture_entry_anchor durably stashes the prod CamillaDSP path under /var/lib/jasper;
-    # absent avoids writing (or failing to write) real host state.
-    ("JASPER_ACTIVE_SPEAKER_CAPTURE_ENTRY_STATE", "capture_entry.json"),
     # session_measurement_volume_db's reference half; absent falls back to the codified
     # MEASUREMENT_REFERENCE_VOLUME_DB.
     ("JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", "seat_level_reference.json"),
@@ -304,8 +301,7 @@ def _isolate_canonical_target_provider():
     registered once per daemon rather than passed down. A test process has no
     such boundary. Any test that enters a daemon's ``main()`` installs a real
     provider for the rest of that xdist worker —
-    ``tests/test_web_correction_setup.py``'s
-    ``test_main_wires_idle_tracker_to_capture_entry_restore`` calls
+    ``tests/test_web_correction_setup.py``'s logging test calls
     ``correction_setup.main()`` — and every later duck release answers THAT
     provider's level instead of its own fixture's. Observed as two failures
     sharing ``percent_to_db(50)`` = −25.2525 under full-suite ordering while

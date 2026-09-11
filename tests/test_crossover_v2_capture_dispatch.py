@@ -37,7 +37,7 @@ def _analysis(**changes):
 
 @pytest.mark.parametrize("phase", PHASES)
 @pytest.mark.parametrize(("changes", "code", "next", "charge"), [
-    ({"locations": ()}, refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "speaker"),
+    ({"locations": ()}, refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator"),
     ({"anchor_ambiguous": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS, "fix_and_retake", "operator"),
     ({"anchor": AnchorEvidence(corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET, "fix_and_retake", "speaker"),
     ({"locations": (_loc("sweep_w", clipped=True),)}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
@@ -47,7 +47,7 @@ def _analysis(**changes):
     ({"locations": (_loc("sweep_w", residual_samples=1200.0),)}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
     ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake", "operator"),
     ({"mic_meter_status": "clipping"}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
-    ({"mic_meter_status": "too_quiet"}, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE, "fix_and_retake", "speaker"),
+    ({"mic_meter_status": "too_quiet"}, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE, "fix_and_retake", "operator"),
 ])
 def test_integrity_verdict(phase, changes, code, next, charge):
     verdict = cd.assess(_analysis(**changes), phase=phase, gain_db=GAINS)

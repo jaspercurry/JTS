@@ -316,7 +316,11 @@ def resolve_anchor_level(
     mic_serial: str | None = None,
     facts: AnchorFacts | None = None,
 ) -> ResolvedLevel:
-    """Resolve supplied facts purely, or load the banked anchor for local callers."""
+    """Resolve supplied facts purely, or load the banked anchor for local callers.
+
+    The anchor is already calibrated SPL; MicSensitivity.db_spl_from_dbfs
+    owns the dBFS-to-SPL conversion, so this resolver does not repeat it.
+    """
     record = facts.record if facts is not None else load_seat_level_reference(state_path=state_path) or {}
     anchor = finite_float(record.get("measured_db_spl"))
     reference_volume_db = finite_float(record.get("reference_volume_db"))

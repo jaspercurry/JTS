@@ -107,12 +107,11 @@ class SlotAttempts:
     def extras_left(self) -> int:
         return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household)
 
-    def can_retry(self, charge: TakeCharge) -> bool:
-        return (self.by_speaker < MAX_AUTOMATIC_RETAKES_PER_POSITION
-                if charge == "speaker" else self.extras_left > 0)
+    def can_retry(self) -> bool:
+        return self.extras_left > 0 and self.by_speaker < MAX_AUTOMATIC_RETAKES_PER_POSITION
 
     def spend(self, charge: TakeCharge) -> None:
-        if not self.can_retry(charge):
+        if not self.can_retry():
             raise AttemptOverspendError("slot has no attempts left for this initiator")
         if charge == "speaker":
             self.by_speaker += 1
@@ -262,7 +261,7 @@ def assess_begin(
         # outran the terminal verdict :data:`SETTLE_CONDITION_NOT_RETRIABLE`,
         # which names the same code, so the two accounts agree.
         return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
-    if not ledger.can_retry(ledger.charge):
+    if not ledger.can_retry():
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
     return BeginDecision(
         ADMIT,
@@ -350,7 +349,7 @@ def settle_spent_slot(
     """
     if code is not None and code in non_retriable:
         return SETTLE_CONDITION_NOT_RETRIABLE
-    if ledger is None or ledger.can_retry(ledger.charge):
+    if ledger is None or ledger.can_retry():
         return SETTLE_RETRY_REMAINS
     return (
         SETTLE_GROUP_CLOSE_REQUIRED if is_group()

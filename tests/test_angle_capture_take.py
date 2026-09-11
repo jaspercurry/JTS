@@ -84,22 +84,10 @@ def slot(tmp_path, monkeypatch):
     )
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
-    from tests.test_active_speaker_runtime_contract import _active_topology
-    from tests.test_active_speaker_audition import _applied_profile
-    from jasper.active_speaker.measured_crossover_candidate import driver_corrections
-
     def facts(plan, **kwargs):
         candidates = {stop.candidate_id: candidate_bank.find_banked_candidate(stop.candidate_id).candidate
-                      for stop in plan.stops if stop.candidate_id}
-        topology = _active_topology("mono", "active_2_way")
-        applied = _applied_profile(topology)
-        if candidates:
-            candidate = next(iter(candidates.values()))
-            applied["recomposition_snapshot"].update(
-                preset=candidate.source_preset.to_dict(), corrections=driver_corrections(candidate),
-                linearization={}, blend_correction=[], room_correction=candidate.room_correction,
-            )
-        return ready_facts(plan, candidates=candidates, topology=topology, applied_profile=applied)
+                      for stop in plan.stops if ac.candidate_identity(stop.candidate_id) != ac.BASE_CANDIDATE}
+        return ready_facts(plan, candidates=candidates)
 
     monkeypatch.setattr(preflight_live, "read_preflight_facts", facts)
     try:
@@ -583,15 +571,17 @@ def _played_measure_spec(measure_spec, monkeypatch):
 def _banked(monkeypatch, *, room_correction=None, bass_extension=None, **alignment):
     """A banked candidate whose corner is the preset ``_take`` is handed."""
     preset = _preset()
-    monkeypatch.setattr(
-        candidate_bank, "find_banked_candidate",
-        lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
-            fingerprint=fingerprint, linearization={}, source_preset=preset,
-            role_attenuations_db={"woofer": 0.0, "tweeter": 0.0}, blend_correction=(),
-            room_correction=room_correction or {}, bass_extension=bass_extension or {},
-            alignment=SimpleNamespace(**{"delay_us": None, "delay_role": None, "polarity": None, **alignment}),
-        )),
+    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverAlignment
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+
+    candidate = MeasuredCrossoverCandidate(
+        program_id="speaker", analysis={"status": "measured"}, source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": 0.0},
+        room_correction=_room_correction() if room_correction else {},
+        bass_extension=bass_extension or {}, alignment=MeasuredCrossoverAlignment(**alignment),
     )
+    monkeypatch.setattr(candidate_bank, "find_banked_candidate",
+                        lambda fingerprint, **kw: SimpleNamespace(candidate=candidate))
     return preset
 
 
@@ -725,8 +715,8 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
     program = mp.program(program_id, coverage)
     preset = _banked(monkeypatch, room_correction={"filters": []}) if room_candidate else None
     candidate_ids = ("room-fp",) if room_candidate else ()
-    spool.stage_angle_request(ac.request_for_program(program, candidates=candidate_ids))
-    prompts, consumer, specs, _trims, claims = _take(preset=preset)
+    spool.stage_angle_request(ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=candidate_ids))
+    prompts, consumer, specs, _trims, claims = _take(_arm_shape() if program.mover == ac.MOVER_ARM else None, preset=preset)
     index_phases = _seat_index_phases(prompts)
     fakes = FakeSeams()
     records, analyses = [], []
@@ -1202,35 +1192,21 @@ def test_a_hand_edited_template_refuses_the_open_in_the_specs_own_words(slot, ca
 # --- the take opens the session, whatever the document does -------------------
 
 
-def test_a_stop_the_seam_can_no_longer_build_refuses_instead_of_escaping(
-    slot, caplog,
-):
-    """A hand-edited angle reaches the take as the seam's OWN exception.
-
-    ``take_staged_angle_request`` deliberately re-raises the seam's own
-    ``CrossoverV2FlowError`` un-wrapped for a banked stop that no longer
-    satisfies the contract, because ``_validated_angle``'s sentence beats a
-    second vocabulary. That is a third refusal class, and it reaches
-    ``prepare_v2_session`` — so it is caught here, given the slug it arrived
-    without, and re-raised as the host's own refusal rather than escaping as a
-    flow error nothing on this path claims.
-    """
+def test_an_invalid_banked_stop_refuses_as_a_malformed_request(slot, monkeypatch, caplog):
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
     path = spool.angle_request_spool_path()
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["stops"][1]["angle_deg"] = 999
     path.write_text(json.dumps(doc), encoding="utf-8")
-
-    with caplog.at_level(logging.WARNING):
-        sentence = _refused()
-
-    assert ac.WALK_STOP_NO_LONGER_VALID in sentence
-    line, = _events(caplog)
-    assert f"reason={ac.WALK_STOP_NO_LONGER_VALID}" in line
-    # The producing module's own sentence survives as the detail rather than
-    # being re-worded by a second validator.
-    assert "+999 deg" in line
-    assert "consumed=true" in line
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        _take()
+    assert isinstance(refused.value.__cause__, spool.AngleRequestRefused)
+    assert refused.value.__cause__.reason == spool.SPOOL_MALFORMED
+    event, = [json.loads(line) for line in _events(caplog)]
+    assert event["reason"] == spool.SPOOL_MALFORMED
+    assert event["consumed"] is True
+    assert event["session_continues"] is False
     assert spool.staged_angle_request_pending() is False
 
 
@@ -1358,12 +1334,33 @@ def test_arm_plan_preserves_upstream_layers_without_changing_positions(slot, pro
     assert {claim.measurement_purpose for claim in claims} == {purpose}
 
 
-def test_session_walk_plays_the_resolved_repeats(slot):
-    request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED), ac.AngleStop(20, ac.REGIME_SUMMED)), repeats=2,
-    )
+@pytest.mark.parametrize("repeats", [1, 2, 3])
+def test_wizard_repeats_require_the_plan_executor(slot, repeats):
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED), ac.AngleStop(-20, ac.REGIME_SUMMED)),
+        repeats=repeats,
+    ))
+    if repeats == 1:
+        prompts, _, specs, _, _ = _take()
+        assert [flow.position_angle_deg(prompt) for prompt in prompts] == [0, -20]
+        assert [spec.positions for index, spec in sorted(specs.items()) if index != _MEASURE_INDEX] == [(0,), (-20,)]
+    else:
+        with pytest.raises(v2host.CrossoverV2Refused) as refused:
+            _take()
+        assert isinstance(refused.value.__cause__, ac.LateralWalkRefused)
+        assert refused.value.__cause__.reason == ac.WALK_REPEATS_UNSUPPORTED_YET
+
+
+def test_taken_walk_monitor_uses_preflight_ceiling(slot, monkeypatch):
+    from jasper.active_speaker import plan_run
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+    from tests.test_preflight import ready_facts
+
+    request = replace(ac.summed_at([0]), spl_ceiling_db_spl=80)
     spool.stage_angle_request(request)
-    prompts, _consumer, specs, _trims, claims = _take()
-    assert [ac.position_angle_deg(prompt) for prompt in prompts] == [0, 0, 20, 20]
-    assert [spec.positions for index, spec in specs.items() if index != _MEASURE_INDEX] == [(0,), (0,), (20,), (20,)]
-    assert len(claims) == 4
+    monkeypatch.setattr(plan_run, "take_spl_ceiling", lambda *args, **kwargs: pytest.fail("ceiling resolved twice"))
+    taken = _take_full()
+    monitor = taken[5]
+    assert isinstance(monitor, WiredSplMonitor)
+    assert monitor.ceiling_db_spl == 80
+    assert monitor.sensitivity == ready_facts(request).anchor.sensitivity

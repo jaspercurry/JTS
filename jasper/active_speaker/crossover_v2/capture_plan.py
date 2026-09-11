@@ -1901,13 +1901,10 @@ def build_v2_verify_capture_plan(
         **advance,
     }
     if not externally_positioned:
-        # The confirm-then-tone tap, on stage 2's own begin. OMITTED for an
-        # externally positioned shape: ``entryConfirmsBeforeArming``
-        # (capture-page/js/main.js) treats a present ``confirm_title`` as "hold
-        # the tone until somebody taps", so an unattended session would park on
-        # a confirm screen and burn the runner's ``awaiting_arm`` budget. A
-        # hand-RELEASED shape keeps it, which is why this reads the advance
-        # policy rather than ``positions_gated``.
+        # A present ``confirm_title`` holds the tone until somebody taps, so an
+        # unattended session would burn the runner's ``awaiting_arm`` budget.
+        # A hand-released shape keeps the confirmation, which is why this reads
+        # the advance policy rather than ``positions_gated``.
         anchor_screen.update({
             "confirm_title": "Back on the mark, holding still?",
             "confirm_body": "Same spot, same height, pointed at the speaker.",

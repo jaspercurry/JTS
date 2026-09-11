@@ -171,6 +171,7 @@ class MeasurementProgram:
     poses: tuple[ProgramPose, ...]
     purpose: str = PURPOSE_SPEAKER
     regime: str = REGIME_PER_DRIVER
+    mover: str | None = None
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -249,9 +250,16 @@ def _load_programs(
     if not isinstance(layouts_raw, dict) or not layouts_raw:
         raise ValueError("measurement plan layouts must be a nonempty object")
     layouts: dict[str, tuple[ProgramPose, ...]] = {}
+    movers: dict[str, str] = {}
     for name, values in layouts_raw.items():
         name = _text(name, "layout name")
-        values = values.get("poses") if isinstance(values, dict) else values
+        if isinstance(values, dict):
+            unknown = set(values) - {"poses", "mover"}
+            if unknown:
+                raise ValueError(f"layout {name!r} has unknown fields: {sorted(unknown)}")
+            if "mover" in values:
+                movers[name] = _text(values["mover"], f"layout {name!r} mover")
+            values = values.get("poses")
         if not isinstance(values, list) or not values:
             raise ValueError(f"layout {name!r} must contain at least one pose")
         layouts[name] = tuple(_pose(value, name, index) for index, value in enumerate(values))
@@ -283,6 +291,7 @@ def _load_programs(
             layouts[layout],
             purpose=row.get("purpose", PURPOSE_SPEAKER),
             regime=row.get("regime", REGIME_PER_DRIVER),
+            mover=movers.get(layout),
         )
 
     defaults_raw = raw.get("default_sizes")

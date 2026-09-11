@@ -20,7 +20,7 @@ from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    RoundInputs,
+    RoundInputs, default_out as default_out,
     banked_round_of,
     recent_round_sessions,
     round_inputs,
@@ -236,29 +236,6 @@ def refused_by_name(
     if not isinstance(detail, str):
         detail = json.dumps(detail, sort_keys=True, default=str)
     return failed(code, reason, detail)
-
-
-def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
-    """Where a view lands when the operator named no ``--out``.
-
-    A BANKED round tree is the operator's own directory, so its views stay
-    beside the evidence they were computed from — including a view pointed at
-    the bundle INSIDE that tree, which is the only way the bundle-taking verbs
-    can be called: filing beside the caller there would leave every artifact
-    somewhere ``inventory`` never looks. A LIVE session bundle is the daemon's
-    (``/var/lib/jasper/active_speaker/sessions/<id>``, written by the web host
-    as its own user): defaulting inside it made the ordinary invocation —
-    grade the round I just ran — raise ``PermissionError`` for the operator
-    this door was added for (#3498). So a live round's view lands beside the
-    caller instead, named by the session it came from so two sessions graded
-    in one directory do not overwrite each other.
-    """
-    if inputs.banked:
-        return round_dir / name
-    banked_round = banked_round_of(inputs.session_dir)
-    if banked_round is not None:
-        return banked_round / name
-    return Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
 def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:

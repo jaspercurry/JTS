@@ -59,7 +59,7 @@ from jasper.active_speaker.angle_capture import (
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     AngleCaptureRequest,
-    LevelPolicy,
+    candidate_identity,
     AngleStop,
     announced_indexes,
     request_for_program,
@@ -67,7 +67,7 @@ from jasper.active_speaker.angle_capture import (
     walk_price,
     walk_template,
 )
-from jasper.active_speaker.preflight import preflight
+from jasper.active_speaker.preflight import PreflightReport, preflight
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.active_speaker.angle_capture_spool import (
     angle_request_spool_path,
@@ -280,39 +280,14 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     )
 
 
-def _level_block(level: LevelPolicy) -> dict[str, Any]:
-    """What this walk drives at, or the input that stops it being knowable.
-
-    Never a relative fallback: a receipt that printed ``+0 dB`` with no anchor
-    behind it would read as an absolute level nobody measured.
-    """
-    return {
-        "resolved": level.anchor_db_spl is not None and level.reference_volume_db is not None,
-        "anchor_db_spl": level.anchor_db_spl,
-        "reference_volume_db": level.reference_volume_db,
-        "mic_serial": level.mic_serial,
-    }
-
-
-def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
-    """The resolved walk, as one JSON-able document.
-
-    Everything here is READ off the seam -- ``resolve_request`` for the stops,
-    ``announced_indexes`` for the prelude -- so this function states nothing
-    the session would not.
-
-    ``program``, ``price``, ``level`` and ``handoff_url`` are the RECEIPT: what
-    was asked for, what it drives at, what it costs the household, and where
-    they run it. Everything else is the resolved walk.
-    """
+def _walk_payload(report: PreflightReport) -> dict[str, Any]:
+    """Add CLI prompts and navigation to the resolved report."""
+    request = report.plan
     stops = resolve_request(request)
     return {
         "program": request.program,
         "candidates": list(request.candidates),
-        "baseline_graph_scope": request.baseline_graph_scope,
-        "spl_ceiling_db_spl": request.spl_ceiling_db_spl,
-        "price": walk_price(request),
-        "level": _level_block(request.level),
+        **report.to_dict(),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
@@ -330,7 +305,7 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
                 "program_phase": stop.program_phase,
                 "prompt": stop.prompt.text,
                 "screen": dict(stop.screen),
-                "candidate_id": stop.candidate_id,
+                "candidate_id": candidate_identity(stop.candidate_id),
                 "kind": stop.prompt.kind,
                 "purpose": stop.prompt.purpose,
                 "baseline_scope": measurement_programs.baseline_scope(stop.prompt.purpose),
@@ -479,6 +454,12 @@ def _refuse(exc: Exception, *, reason: str | None = None) -> int:
     )
 
 
+def _refuse_report(report: PreflightReport) -> int:
+    issue = next(issue for issue in report.issues if issue.blocking)
+    return failed(EXIT_REFUSED, issue.code, report.to_dict(),
+                  code=issue.code, next_action=issue.next_action)
+
+
 def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """The walk's ANSWER: what was asked for, what it costs, where it is run.
 
@@ -488,6 +469,7 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """
     program, _, size = str(payload["program"]).partition("/")
     return {
+        **{key: payload[key] for key in ("issues", "schedule", "mic_moves", "live_admission")},
         "program": program,
         "size": size,
         "mover": payload["mover"],
@@ -504,9 +486,7 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
                 "purpose": stop["purpose"],
                 "baseline_scope": stop["baseline_scope"],
                 "prompt": stop["prompt"],
-                # ``None`` rather than ``""``: a walk that measures the speaker
-                # as it stands names no variant.
-                "candidate_id": stop["candidate_id"] or None,
+                "candidate_id": stop["candidate_id"],
                 # Only off the mark, so a bearing's receipt reads as it always did.
                 **({"kind": stop["kind"]} if stop["kind"] != POSE_KIND_BEARING else {}),
             }
@@ -536,11 +516,12 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     except CrossoverV2FlowError as exc:
         return _refuse(exc)
     report = preflight(request, read_preflight_facts(request))
-    payload = _walk_payload(report.plan)
+    if report.blocking:
+        return _refuse_report(report)
+    payload = _walk_payload(report)
     _print_walk(payload)
     staging = " ".join(["jasper-angle-capture", "stage", *map(shlex.quote, args.invocation[1:])])
-    answered({**_receipt(payload, next=staging), **report.to_dict()})
-    return EXIT_REFUSED if report.blocking else EXIT_OK
+    return answered(_receipt(payload, next=staging))
 
 
 def _cmd_stage(args: argparse.Namespace) -> int:
@@ -552,10 +533,9 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         return _refuse(exc)
     report = preflight(request, read_preflight_facts(request))
     if report.blocking:
-        answered(report.to_dict())
-        return EXIT_REFUSED
+        return _refuse_report(report)
     request = report.plan
-    payload = _walk_payload(request)
+    payload = _walk_payload(report)
     try:
         path = stage_angle_request(request)
     except CrossoverV2FlowError as exc:
@@ -581,7 +561,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         return _refuse(exc)
     if request is None:
         return answered({"staged": False})
-    payload = _walk_payload(request)
+    payload = _walk_payload(PreflightReport(request, (), (), walk_price(request), request.spl_ceiling_db_spl))
     _print_walk(payload)
     receipt = _receipt(payload, staged=True, out=str(angle_request_spool_path()))
     return answered({**receipt, "next": _open_round(receipt["size"], receipt["mover"])})

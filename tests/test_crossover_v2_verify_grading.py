@@ -490,7 +490,7 @@ def test_verify_clip_refuses_as_a_capture_glitch():
         program,
         integrity=_verify_capture_integrity(
             program, program.sample_rate_hz, (clipped,),
-            # No capture here, so no capture-page report to reconcile: the
+            # No capture here, so no browser report to reconcile: the
             # frame-accounting checks (#2094) stay not-evaluated and this test
             # keeps asking only about the clip.
             reconcile_capture_frames(None, received_frames=0),

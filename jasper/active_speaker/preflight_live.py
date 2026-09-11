@@ -10,8 +10,7 @@ from typing import Any
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
 
-from .angle_capture import AngleCaptureRequest
-from .baseline_profile import load_applied_baseline_profile_state
+from .angle_capture import BASE_CANDIDATE, AngleCaptureRequest, candidate_identity
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
@@ -42,14 +41,14 @@ def read_preflight_facts(
         except ValueError:
             pass
     candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
-    for name in dict.fromkeys(stop.candidate_id for stop in plan.stops if stop.candidate_id):
+    for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
+        if name == BASE_CANDIDATE:
+            continue
         try:
             candidates[name] = candidate_bank.find_banked_candidate(name).candidate
         except candidate_bank.CandidateBankRefusal as exc:
             candidates[name] = PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}")
     return PreflightFacts(
-        applied_profile=load_applied_baseline_profile_state() or {},
-        topology=context.topology if context is not None else None,
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),
         anchor=AnchorFacts(load_seat_level_reference() or {},
