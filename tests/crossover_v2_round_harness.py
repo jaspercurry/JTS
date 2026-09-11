@@ -263,9 +263,6 @@ def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     state["verify_priors"]["entry_baseline"] = None
     if previous_candidate:
         state["previous_candidate_fingerprint"] = _PREVIOUS_CANDIDATE_FINGERPRINT
-        # The pairing rule's other half: the pointer was recorded by the apply
-        # of the candidate this state grades ("fp-stage-1", the seeded
-        # published candidate), so the automatic revert is armed.
         state["previous_candidate_displaced_by"] = "fp-stage-1"
     v2host.save_v2_state(state)
     return state
@@ -278,18 +275,7 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
 
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
-    """Stand in for the two normal-path doors an adoption restore presses.
-
-    The restore is republish-then-apply through the production handlers
-    (``bind_delta_probe_rollback``); what a ROUND test needs stubbed is those
-    two doors, not a DSP transaction underneath them — the doors have their
-    own endpoint suites. Each stub REFUSES any fingerprint other than the
-    seeded prior candidate's, so a seam that resolved the wrong identity
-    turns every restore outcome into a failed one and the outcome pins say so.
-
-    Returns the counter of how many times the APPLY door — the leg that
-    changes the speaker — actually ran.
-    """
+    """Expose the operator's restore doors and count every apply attempt."""
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2_republish as republish_door
 
@@ -318,33 +304,22 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     def _apply(raw: Any, _run_async: Any, _camilla: Any, *, status: Any,
                ) -> dict[str, Any]:
         del status
+        attempts.append(1)
         expected = str(raw.get("expected_candidate_fingerprint") or "")
         if expected != _PREVIOUS_CANDIDATE_FINGERPRINT:
             raise v2host.CrossoverV2Refused(
                 "the reviewed crossover is no longer current"
             )
-        attempts.append(1)
         return {"status": "applied"}
 
     monkeypatch.setattr(republish_door, "handle_v2_republish", _republish)
     monkeypatch.setattr(v2host, "handle_v2_apply", _apply)
-    # The auto-revert reads a fresh status for the apply preflight; hand it
-    # the same fixture status the preparers were given.
     monkeypatch.setattr(correction_crossover_backend, "status_payload", _status)
     return attempts
 
 
 def _restoring_stage_2(monkeypatch) -> tuple[Any, list[int]]:
-    """A real stage 2 whose rollback seam can actually complete a restore.
-
-    ``tests/test_crossover_v2_stage_bridge.py``'s ``_stage_2`` passes
-    ``run_async=None`` / ``camilla_factory=None``, which is right for a module
-    about what crosses the bridge and wrong here: with them the rollback seam
-    raises inside the apply door, and every adoption restore would read as a
-    failed one. This binds the real seam over stubbed doors
-    (:func:`_stub_restore_doors`), and returns a counter of how many times the
-    speaker-changing leg actually ran.
-    """
+    """A real stage 2 with the operator's restore doors available."""
     attempts = _stub_restore_doors(monkeypatch)
     prepared = v2host.prepare_v2_session(
         {}, status=_status(), run_async=_bg_run_async,

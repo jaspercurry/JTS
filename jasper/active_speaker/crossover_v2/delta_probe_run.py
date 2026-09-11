@@ -321,7 +321,7 @@ def run_delta_probe(
         # the same reason: the round passed, and the shape check never ran.
         level=(
             logging.WARNING
-            if probe.rollback
+            if probe.advises_against_keep
             or probe.verdict in (
                 VERDICT_LEVEL_MISMATCH, VERDICT_FRAME_MISMATCH,
                 VERDICT_SAFETY_ONLY,
@@ -331,7 +331,7 @@ def run_delta_probe(
         session_id=session_id,
         verdict=probe.verdict,
         reason=probe.reason,
-        rollback=probe.rollback,
+        advises_against_keep=probe.advises_against_keep,
         # Both bands, because they answer different questions: the trusted one
         # is what this capture supports, the probe one is what cleared the
         # commanded floor inside it (#2521).

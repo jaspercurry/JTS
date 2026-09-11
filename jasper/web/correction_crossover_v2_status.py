@@ -30,21 +30,7 @@ from jasper.web import correction_crossover_v2 as _host
 
 
 def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | None:
-    """The measured candidate the applied graph displaced, if one is recorded.
-
-    Reads the ``previous_candidate_fingerprint`` the apply path records
-    (``observe_apply_success``, off the displaced profile's own
-    ``source.measured_candidate_fingerprint`` — the identity
-    ``baseline_profile._source_payload`` writes). A state written before the
-    field existed reads as "no previous candidate" — the way back returns at
-    the next apply, with no schema bump.
-
-    Three readers, one field: the status block below (the wizard's way-back
-    action), the host's ``_previous_candidate_known`` seam (the adoption
-    table's ``rollback_available``), and the auto-revert's target resolution
-    (``bind_delta_probe_rollback``). Sharing the read is what keeps the
-    capability answer and the action aimed at one identity.
-    """
+    """The measured candidate the applied graph displaced, if one is recorded."""
     value = (state or {}).get("previous_candidate_fingerprint")
     return value if isinstance(value, str) and value else None
 

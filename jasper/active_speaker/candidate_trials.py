@@ -13,7 +13,9 @@ from typing import Any, Mapping
 from jasper.audio_measurement.bundles import BundleError
 from jasper.json_fields import finite_float
 
+from ._common import blocker_issue
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .boost_protection import BOOST_OVER_DECLARED_BOUND, read_boost_finding
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .measured_crossover_candidate import candidate_trial_scope
 
@@ -110,4 +112,14 @@ def require_candidate_trial(
     raise CandidateBankRefusal(
         "candidate_trial_required",
         "Capture this complete candidate before applying it; no intact trial of this fingerprint was found.",
+    )
+
+
+def candidate_boost_issue(graph_fingerprint: str) -> dict[str, str] | None:
+    try:
+        finding = read_boost_finding(graph_fingerprint)
+    except CandidateBankRefusal as exc:
+        return blocker_issue(exc.code, exc.detail)
+    return None if finding is None else blocker_issue(
+        BOOST_OVER_DECLARED_BOUND, "The measured graph exceeded its declared boost.",
     )

@@ -2225,20 +2225,6 @@ def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
     return heard if isinstance(heard, bool) else None
 
 
-def _failure_rollback_anchor_available(status: Mapping[str, Any]) -> bool | None:
-    """Which ``correction_rollback_failed`` arm the record describes
-    (#2291). ``True``: a restore was attempted and did not complete, so
-    going back is a live remedy. ``False``: never one. ``None``: third
-    state, unknown. The recorded ``True`` is ANDed with the way back
-    being offerable NOW, so the sentence never names a control this
-    screen cannot mint.
-    """
-    available = _mapping(_v2(status).get("failure")).get("rollback_anchor_available")
-    if available is True and not _way_back_action(status):
-        return False
-    return available if isinstance(available, bool) else None
-
-
 def _reason_message(
     code: str, spec: ReasonSpec, status: Mapping[str, Any],
 ) -> str:
@@ -2254,7 +2240,6 @@ def _reason_message(
         code, spec,
         pilot_heard=_failure_pilot_heard(status),
         reflection_measured=_verify_gate_reflection_measured(status),
-        rollback_anchor_available=_failure_rollback_anchor_available(status),
     )
 
 

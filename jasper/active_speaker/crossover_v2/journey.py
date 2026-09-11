@@ -346,7 +346,6 @@ class CommissionJourney:
 #: The seams a stage may or may not bind, and the priors a stage may need handed
 #: to it. Slugs rather than an enum: they are journal vocabulary first.
 CAPABILITY_FINDINGS = "findings"
-CAPABILITY_ROLLBACK = "rollback"
 CAPABILITY_COMMANDED_DELTA = "commanded_delta"
 CAPABILITY_PREDICTED_SUM = "predicted_sum"
 CAPABILITY_ENTRY_BASELINE = "entry_baseline"
@@ -381,15 +380,9 @@ STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
     provides=frozenset({CAPABILITY_FINDINGS}),
 )
 
-#: Stage 2 — the post-apply verdict. Binds rollback because this is the only
-#: stage that reaches the delta probe, and rollback is automatic on the
-#: non-matched verdicts. Requires the two stage-1 curves the probe and the
-#: tracking check grade against, plus #2291's entry baseline — without it the
-#: round cannot say the speaker got better, so its absence must reach the
-#: journal rather than pass unremarked.
 STAGE_VERIFY_CAPABILITIES = V2StageCapabilities(
     stage="verify",
-    provides=frozenset({CAPABILITY_ROLLBACK}),
+    provides=frozenset(),
     requires=frozenset({
         CAPABILITY_COMMANDED_DELTA,
         CAPABILITY_PREDICTED_SUM,
