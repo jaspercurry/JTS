@@ -46,6 +46,22 @@ POSITION_GATE_TERMINAL_CODES = frozenset({
 POSITION_READY_ENDPOINT = "/sound/speaker/crossover/v2/position-ready"
 
 
+def _prompt_of(screen: dict[str, Any]) -> dict[str, str]:
+    return {name: str(screen.get(name) or "") for name in ("progress", "title", "body")}
+
+
+def _granted(
+    index: int, attempt: int, screen: dict[str, Any], batch: tuple[int, int, int],
+) -> dict[str, Any]:
+    """The entry a grant is about to record: the only fact that moves while a pose
+    batch's configs 2..N play under the first config's release."""
+    batch_start, batch_size, config = batch
+    return {
+        "index": index, "attempt": attempt, "prompt": _prompt_of(screen),
+        "batch": {"start": batch_start, "size": batch_size, "ordinal": config},
+    }
+
+
 class PositionGate:
     """Thread-safe capture admission shared by human and external movers.
 
@@ -58,6 +74,7 @@ class PositionGate:
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
         self._pending: dict[str, Any] | None = None
+        self._current: dict[str, Any] | None = None
         self._released: set[tuple[int, int]] = set()
         self._opened_at: float | None = None
         self._session_ceiling_expired = False
@@ -86,12 +103,15 @@ class PositionGate:
         now = self._clock()
         with self._lock:
             if key in self._released:
+                if self._pending is None:
+                    self._current = _granted(index, attempt, screen, (batch_start, batch_size, config))
                 return
             opened = self._opened_at
             waited = 0.0 if opened is None else now - opened
             if waited > REMOTE_POSITION_HOLD_BUDGET_S or self._session_ceiling_expired:
                 expired_hold = waited > REMOTE_POSITION_HOLD_BUDGET_S
                 self._pending = None
+                self._current = None
                 self._opened_at = None
                 self._last = None
                 log_event(
@@ -110,16 +130,15 @@ class PositionGate:
             if self._last == (index - 1, attempt - 1, batch) and self._pending is None:
                 self._released.add(key)
                 self._last = (index, attempt, batch)
+                self._current = _granted(index, attempt, screen, (batch_start, batch_size, config))
                 return
             if self._pending is None:
                 self._opened_at = now
+                self._current = None
                 self._pending = {
                     "index": index, "attempt": attempt, "degrees": target,
                     "vertical_deg": vertical, "role": role,
-                    "prompt": {
-                        name: str(screen.get(name) or "")
-                        for name in ("progress", "title", "body")
-                    },
+                    "prompt": _prompt_of(screen),
                     "hand_released": (
                         screen[POSITION_HAND_RELEASED_KEY] == "true"
                         if POSITION_HAND_RELEASED_KEY in screen else
@@ -145,9 +164,15 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
-    def pending(self) -> dict[str, Any] | None:
+    def published(self) -> dict[str, dict[str, Any] | None]:
+        """The hold awaiting a release and the entry a grant is executing.
+
+        Never both set, and read under one acquisition: read separately, a
+        runner re-entering its grant between them pairs a stale hold with a
+        fresh executing entry, a state the gate itself never holds.
+        """
         with self._lock:
-            return deepcopy(self._pending)
+            return {"pending": deepcopy(self._pending), "current": deepcopy(self._current)}
 
     def note_session_ceiling_expired(self) -> None:
         """Latch the session volume owner's ceiling finding, including after drain."""
@@ -159,6 +184,7 @@ class PositionGate:
         with self._lock:
             abandoned = self._pending
             self._pending = None
+            self._current = None
             self._opened_at = None
             self._last = None
             self._released.clear()
