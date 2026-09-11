@@ -259,7 +259,7 @@ class SeatLevelResult:
     """The outcome of one leveling pass. ``status`` is ``"converged"`` or
     ``"refused"``; a refusal always carries a ``reason`` from ``REFUSE_*`` and
     persists nothing. ``ramp`` is this pass's telemetry, read by
-    ``jasper-seat-level --json``. ``restored`` is ``None`` before anything
+    ``jasper-seat-level``. ``restored`` is ``None`` before anything
     moved, a MEASURED outcome after (the volume seam can reject a write).
     ``reachable_target_db_spl`` is :func:`reachable_target_db_spl`'s answer
     on a pass the commissioning stop ended, ``None`` elsewhere.

@@ -1300,11 +1300,7 @@ def _next_commands(
             " ".join([ORIENTATION_COMMAND, *(shlex.quote(w) for w in evidence)])
         )
     if seat_level_db is None:
-        # Absent a banked reference every measurement session rides a level
-        # nobody measured; the tool needs the mic this rig actually has.
-        commands.append(
-            shlex.join(["jasper-seat-level", "--mic-serial", "<mic serial>"])
-        )
+        commands.append("jasper-seat-level")
     return commands
 
 

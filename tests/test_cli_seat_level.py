@@ -380,7 +380,7 @@ def test_the_verb_resolves_calibration_before_running_the_ramp(
         (tmp_path / "umik2.txt").write_text(CAL_CURVE_ONLY)
     household = Mock(return_value=(None, SimpleNamespace(raw_path=cal))
                      if source != "missing" else None)
-    monkeypatch.setattr(seat_level, "resolved_household_mic", household, raising=False)
+    monkeypatch.setattr(seat_level, "resolved_household_mic", household)
     sensitivity = Mock(wraps=resolve_mic_sensitivity)
     monkeypatch.setattr(seat_level, "resolve_mic_sensitivity", sensitivity)
     ramp = AsyncMock(return_value=result)
@@ -418,30 +418,33 @@ def test_a_cancel_stops_one_tone_and_allows_the_next_to_play(
     )
     stimulus, cal = _stub_a_ramp_result(monkeypatch, tmp_path, result)
     players = []
+    cancel = None
+
+    async def _exec(*args, **kwargs):
+        player = SimpleNamespace(returncode=None, terminate=Mock())
+        first = not players
+
+        async def _wait():
+            if first and cancel_when == "playing":
+                cancel()
+            player.returncode = 0
+
+        player.wait = AsyncMock(side_effect=_wait)
+        players.append(player)
+        if first and cancel_when == "spawning":
+            cancel()
+        return player
 
     async def _fake_ramp(*, play_continuous_tone, cancel_tone, **kwargs):
-        async def _exec(*args, **kwargs):
-            player = SimpleNamespace(returncode=None, terminate=Mock())
-            first = not players
-
-            async def _wait():
-                if first and cancel_when == "playing":
-                    cancel_tone()
-                player.returncode = 0
-
-            player.wait = AsyncMock(side_effect=_wait)
-            players.append(player)
-            if first and cancel_when == "spawning":
-                cancel_tone()
-            return player
-
-        monkeypatch.setattr(
-            "jasper.audio_measurement.correction_lane.exec_correction_play", _exec
-        )
+        nonlocal cancel
+        cancel = cancel_tone
         await play_continuous_tone()
         await play_continuous_tone()
         return result
 
+    monkeypatch.setattr(
+        "jasper.audio_measurement.correction_lane.exec_correction_play", _exec
+    )
     monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
     code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
 
