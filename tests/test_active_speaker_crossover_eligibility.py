@@ -355,22 +355,6 @@ def test_completed_controller_refuses_inflight_reservation(capture_geometry):
     assert f"repeat:{capture_geometry}:mono:woofer" in result.missing
 
 
-def test_public_repeat_projection_preserves_completed_eligibility():
-    from jasper.web.correction_crossover_backend import CrossoverLevelLease
-
-    data = _evidence()
-    store = CrossoverLevelLease()
-    for target_id, entry in data["repeat_state"]["targets"].items():
-        entry["target_id"] = target_id
-        entry["inflight"] = None
-    store.set_durable_repeat_progress(data["repeat_state"])
-    data["repeat_state"] = store.repeat_snapshot()["durable"]
-
-    result = automatic_measurement_eligibility(**data)
-
-    assert result.ready is True
-
-
 @pytest.mark.parametrize("value", (None, "bad", {}, 3, True))
 def test_mapping_sequence_and_repeat_progress_reject_malformed_types(value):
     assert mapping_sequence(value) == ()

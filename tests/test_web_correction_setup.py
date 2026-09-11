@@ -962,20 +962,8 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
         v2host.set_volume_plan_for_tests(None)
 
 
-def test_crossover_reset_and_recover_volume_ignore_a_legacy_volume_safety_file(
-    monkeypatch, tmp_path,
-) -> None:
-    """CrossoverLevelLease's read side used to hydrate
-    active_speaker_crossover_volume_safety.json as an unresolved latch even
-    after its writer was deleted, so a box that had not re-run install (the
-    file's retirement is a deploy/lib/install/retirements.sh row) got
-    /crossover/reset refused forever. The lease no longer reads any such
-    file at all -- writing one here only reproduces the on-disk scenario,
-    neither route below consults it -- and /crossover/recover-volume stays
-    decided by the v2 session-volume plan alone."""
+def _write_legacy_volume_safety_file(tmp_path) -> None:
     import json
-
-    from jasper.web import correction_crossover_v2 as v2host
 
     (tmp_path / "active_speaker_crossover_volume_safety.json").write_text(
         json.dumps({
@@ -991,6 +979,20 @@ def test_crossover_reset_and_recover_volume_ignore_a_legacy_volume_safety_file(
         }),
         encoding="utf-8",
     )
+
+
+def test_crossover_reset_ignores_a_legacy_volume_safety_file(
+    monkeypatch, tmp_path,
+) -> None:
+    """The pre-v2 per-step leveler's read side used to hydrate
+    active_speaker_crossover_volume_safety.json as an unresolved latch even
+    after its writer was deleted, so a box that had not re-run install (the
+    file's retirement is a deploy/lib/install/retirements.sh row) got
+    /crossover/reset refused forever. Nothing reads that file any more --
+    writing one here only reproduces the on-disk scenario."""
+    import json
+
+    _write_legacy_volume_safety_file(tmp_path)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     monkeypatch.setattr(
         correction_handlers,
@@ -1002,6 +1004,20 @@ def test_crossover_reset_and_recover_volume_ignore_a_legacy_volume_safety_file(
 
     assert b"200" in reset_resp.split(b"\r\n", 1)[0]
     assert json.loads(reset_resp.split(b"\r\n\r\n", 1)[1])["status"] == "cleared"
+
+
+def test_recover_volume_ignores_a_legacy_volume_safety_file(
+    monkeypatch, tmp_path,
+) -> None:
+    """Same legacy file as test_crossover_reset_ignores_a_legacy_volume_safety_file,
+    the other route: /crossover/recover-volume stays decided by the v2
+    session-volume plan alone, never by the retired file."""
+    import json
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    _write_legacy_volume_safety_file(tmp_path)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
 
     v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
     try:

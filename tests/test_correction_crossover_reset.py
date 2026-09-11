@@ -52,8 +52,6 @@ def test_reset_measurement_journey_clears_journey_keeps_driver_and_applied_state
     monkeypatch, tmp_path: Path,
 ) -> None:
     _seed(monkeypatch, tmp_path)
-    fresh_lease = backend.CrossoverLevelLease()
-    monkeypatch.setattr(backend, "level_lease", lambda: fresh_lease)
 
     result = backend.reset_measurement_journey()
 
@@ -90,8 +88,6 @@ def test_reset_measurement_journey_reports_actual_outcome_not_static_intent(
     _seed(monkeypatch, tmp_path)
     # Remove one journey file before the reset so it is already absent.
     (tmp_path / _JOURNEY_ENVS["JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE"]).unlink()
-    fresh_lease = backend.CrossoverLevelLease()
-    monkeypatch.setattr(backend, "level_lease", lambda: fresh_lease)
 
     result = backend.reset_measurement_journey()
 
@@ -99,23 +95,6 @@ def test_reset_measurement_journey_reports_actual_outcome_not_static_intent(
     assert "measurements" not in result["cleared_ids"]
     assert result["missing_ids"] == ["measurements"]
     assert result["error_ids"] == []
-
-
-def test_handle_reset_maps_refusal_to_409(monkeypatch) -> None:
-    def fake_reset() -> dict:
-        raise backend.MeasurementJourneyResetRefused(
-            "a crossover measurement is still stopping; try Start over again "
-            "in a moment",
-            reason="measurement_in_progress",
-        )
-
-    monkeypatch.setattr(backend, "reset_measurement_journey", fake_reset)
-
-    payload, status = flow.handle_reset()
-
-    assert status == 409
-    assert payload["status"] == "refused"
-    assert payload["reason"] == "measurement_in_progress"
 
 
 def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
@@ -244,30 +223,6 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         assert state["session_id"] is None
         block = v2status.crossover_v2_status_block()
         assert block is not None and block["phase"] == "check"
-    finally:
-        v2.set_state_path_for_tests(None)
-
-
-def test_handle_reset_refusal_leaves_v2_state_intact(monkeypatch, tmp_path):
-    """A refused reset (volume-safety unresolved / measurement still stopping)
-    must NOT clear the v2 state — nothing was reset, so nothing is lost."""
-    from jasper.web import correction_crossover_v2 as v2
-
-    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
-    try:
-        v2.save_v2_state({"session_id": "cap_x", "accepted_phases": ["microphone_check"]})
-
-        def _refuse():
-            raise backend.MeasurementJourneyResetRefused(
-                "still stopping", reason="measurement_in_progress",
-            )
-
-        monkeypatch.setattr(backend, "reset_measurement_journey", _refuse)
-
-        payload, status = flow.handle_reset()
-
-        assert status == 409
-        assert v2.load_v2_state() is not None  # untouched on refusal
     finally:
         v2.set_state_path_for_tests(None)
 
