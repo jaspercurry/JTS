@@ -9,7 +9,7 @@ from __future__ import annotations
 # (cookbook.openai.com/examples/realtime_prompting_guide):
 #   Role & Objective → Personality & Tone → Verbosity →
 #   Tools (when to call, preambles) → Unclear audio →
-#   After a tool returns → Out of scope.
+#   After a tool returns.
 #
 # Two design principles from that guide and the official "Using
 # realtime models" docs:
