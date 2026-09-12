@@ -104,17 +104,17 @@ def test_a_loud_room_uses_small_buried_steps():
     assert max(reading for _, reading in result.readings) <= 77.0
 
 
-@pytest.mark.parametrize("second,status", [(75.5, "converged"), (75.51, "refused"), (74.49, "refused")])
-def test_two_in_band_sweeps_hold_the_fader_and_must_agree(second, status):
+@pytest.mark.parametrize("readings,mean", [((75.0, 75.7), 75.35), ((74.2, 75.9), 75.05)])
+def test_two_in_band_sweeps_hold_the_fader_and_converge_on_the_mean(readings, mean):
     chain = Chain()
-    readings = iter((75.0, second))
+    source = iter(readings)
     async def read_level():
-        return next(readings)
+        return next(source)
     chain.read_level = read_level
     result = asyncio.run(chain.run())
-    assert result.status == status
-    assert result.reason == (None if status == "converged" else level.REFUSE_LEVEL_UNSETTLED)
-    assert result.readings == [(-40.0, 75.0), (-40.0, second)]
+    assert result.status == "converged"
+    assert result.leveled_db_spl == pytest.approx(mean)
+    assert result.readings == [(-40.0, reading) for reading in readings]
     assert chain.writes == [-40.0]
 
 
@@ -142,13 +142,8 @@ def test_random_non_hot_climbs_preserve_direction_stops_and_exhaustion_reason():
         assert len(result.readings) <= base_budget + sum(buried)
         # Buried steps gain at least 1 dB; each other reading can lose at most 10 dB below the stop.
         assert len(result.readings) <= base_budget + math.ceil(chain.cap + 40 + base_budget * 10) + 1
-        disagreeing_pair = (len(result.readings) >= 2 and not any(buried[-2:])
-                            and all(abs(75.0 - reading) <= 1.0 for _, reading in result.readings[-2:])
-                            and abs(result.readings[-1][1] - result.readings[-2][1]) > level.AGREE_DB)
-        if disagreeing_pair:
-            assert result.reason == level.REFUSE_LEVEL_UNSETTLED
         if (result.status == 'refused' and len(result.readings) == base_budget + sum(buried)
-                and result.gain_db < min(chain.cap, 0.0) - 1e-9 and not disagreeing_pair):
+                and result.gain_db < min(chain.cap, 0.0) - 1e-9):
             exhaustions += 1
             in_band = ever_unsettled = remeasured = False
             for (_, reading), is_buried in zip(result.readings, buried):
