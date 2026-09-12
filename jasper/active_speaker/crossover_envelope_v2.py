@@ -568,14 +568,7 @@ def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
 def _reason_message(
     code: str, spec: ReasonSpec, status: Mapping[str, Any],
 ) -> str:
-    """This screen's sentence: the registry's copy, or its live
-    rendering. SELECTION, never composition (#1974): two codes
-    (``verify_inconclusive``, ``locate_failed`` #2085) have copy
-    depending on a fact only the record holds, so this pulls that fact
-    from ``status``; every other code renders its registry copy
-    unchanged. Applies to EVERY template — ``locate_failed`` is
-    ``fix_and_retry``, not just verify_fail.
-    """
+    """Use the registry's copy with recorded evidence (issues #1974, #2085)."""
     return reason_message(
         code, spec,
         pilot_heard=_failure_pilot_heard(status),
@@ -771,15 +764,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
 def crossover_v2_phase(
     state: Mapping[str, Any] | None, *, review_declined: bool,
 ) -> str:
-    """Where the journey this durable state describes has got to.
-
-    The persisted-state counterpart of
-    :attr:`~jasper.active_speaker.crossover_v2.journey.CommissionJourney.current_phase`,
-    which needs a live conductor. ``review_declined`` is the household's answer
-    to the review screen, read by the caller
-    (:func:`~jasper.web.correction_crossover_v2.review_declined`) because the
-    key lives beside its writer.
-    """
+    """Project the durable journey phase, including old recorded declines."""
     accepted = set(
         state.get("accepted_phases") or () if isinstance(state, Mapping) else ()
     )

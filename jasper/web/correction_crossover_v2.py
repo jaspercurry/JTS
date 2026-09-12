@@ -748,19 +748,7 @@ REVIEW_DECISION_DECLINED = "declined"
 
 
 def review_declined(state: Mapping[str, Any] | None) -> bool:
-    """Has the household declined the candidate this state currently holds?
-
-    The READER for the key :func:`observe_review_decline` writes, beside that
-    writer for the reason every other reader/writer pair in this module is:
-    the two must be impossible to drift apart on a shape.
-
-    The fingerprint comparison is the whole check. A decline names the proposal
-    it answered, so a newer measurement — which mints a new candidate — is not
-    covered by it and the review screen comes back. A decline recorded when
-    there was nothing to propose matches a state with no candidate, because
-    "there is nothing to offer, keep what you have" is a real answer to a real
-    screen.
-    """
+    """Read a legacy decline against its candidate fingerprint."""
     if not isinstance(state, Mapping):
         return False
     decision = state.get("review_decision")

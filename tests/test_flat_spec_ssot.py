@@ -2,30 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Flat-linearization plan PR-5: the spec-curve single source of truth.
-
-The failure class this module exists to prevent is the one the plan's "S0
-executed" § c documents: two spec-facing numbers for one session, derived by
-two code paths from two curves, disagreeing — and nobody able to say which is
-"the measurement". PR-5 answers that by construction: ``combine_positions``'
-power-mean spec curve, evaluated once by ``evaluate_flat_spec`` against the
-merged honesty mask, reduced once by ``spec_flatness_gauge``, and COPIED to
-every surface.
-
-Two layers, mirroring ``test_crossover_v2_cloud_pipeline.py``:
-
-* **Synthetic (always runs).** The gauge's own lifted-from-the-report
-  contract; the WIRING half of the trusted-floor clamp's contract (which
-  floor the assembler derives and publishes, and what it does to the payload
-  — the evaluator's own arithmetic is ``tests/test_flat_spec.py``'s); and the
-  frame-consistency walk — pipeline result → durable ``cloud`` block →
-  ``compact_cloud_status`` → ``/state`` → the envelope's rendered ledger line
-  — asserted byte-identical at every hop.
-* **Corpus-gated.** The same walk on the real S0 main-leg cloud, so the
-  contract is pinned against hardware data and the S0 session's own measured
-  regime — including what its own ``2.5/T`` floor costs the low band — is
-  stated with numbers rather than assumed.
-"""
+"""Flat-spec data stays identical across the pipeline, persisted state, and doctor."""
 from __future__ import annotations
 
 import json
@@ -607,20 +584,7 @@ def _durable_cloud_block(result, *, phase: str = PHASE_CLOUD_VERIFY) -> dict:
 
 
 def _walk_every_surface(result, monkeypatch) -> dict:
-    """One pipeline result → EVERY spec-facing surface's view of it.
-
-    Walks the REAL functions in the real order the host uses:
-    ``assemble_cloud_group_result`` → ``_cloud_summary``'s durable shape →
-    ``compact_cloud_status`` (`/state`) → ``build_crossover_envelope_v2``
-    (the wizard envelope + its rendered ledger line) → the shipped doctor
-    check (N-1: the doctor is a spec-facing surface too, so "every surface"
-    has to include it rather than be quietly scoped to three).
-
-    The doctor reads through ``crossover_v2_status_block`` (its own import,
-    resolved at call time), so it is reached by patching the durable-state
-    loader underneath it — the same seam PR-4's own doctor corpus test uses
-    — rather than by handing it a pre-built block.
-    """
+    """Read the pipeline result through the durable-state projection and doctor."""
     compact = compact_cloud_status(_durable_cloud_block(result))
     chart = chart_cloud_status(_durable_cloud_block(result))
     from jasper.cli.doctor import correction as doctor_correction
@@ -653,8 +617,7 @@ def _walk_every_surface(result, monkeypatch) -> dict:
 
 
 def _assert_one_number_everywhere(views: dict) -> None:
-    """The contract: gauge, ledger, spec report, doctor, and the VERIFY-phase
-    flatness block are the SAME bytes, from one construction."""
+    """The gauge, spec report, doctor, and VERIFY flatness block share one source."""
     canonical = json.dumps(views["pipeline"], sort_keys=True)
     assert json.dumps(views["state"], sort_keys=True) == canonical
 
@@ -729,22 +692,7 @@ def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number(monkeypa
 
 
 def test_the_pre_apply_cloud_never_supplies_the_post_apply_flatness_claim():
-    """``cloud_measure`` carries its own gauge (it is the same construction on
-    the same footing) but the POST-apply claim is a different claim — the same
-    pre-vs-post distinction PR-4's doctor blocker drew. A pre-apply-only
-    session must never report the uncorrected baseline as "how flat your
-    speaker is".
-
-    **Was ``…_never_supplies_the_household_flatness_line``, asserting
-    ``expert_details == []``** — one of three places (with
-    ``test_crossover_envelope_v2`` and ``test_crossover_v2_cloud_pipeline``)
-    that encoded the pre-vs-post rule as SILENCE. #1965 is what that proxy
-    cost: silence was also what the FULL tier showed on its own stage-1 review
-    screen, where the pre-apply cloud is the only measured evidence there is
-    and Express was already showing it. The rule is unchanged; it is now
-    enforced by the FRAME — these numbers lead with "Measured before tuning:"
-    and are never rendered bare the way the CLOUD-VERIFY path renders them.
-    """
+    """The pre-apply cloud keeps its measured flatness data."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     compact = compact_cloud_status(

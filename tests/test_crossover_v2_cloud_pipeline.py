@@ -1159,9 +1159,7 @@ def test_carve_outs_survive_a_registry_that_identified_nothing():
 
 
 def _project_cloud(result):
-    """Pipeline result → durable ``cloud`` block → ``compact_cloud_status``
-    → the wizard envelope. The REAL functions, in the host's own order — the
-    same walk ``tests/test_flat_spec_ssot.py`` uses for the flatness gauge."""
+    """Read the pipeline result through the durable-state projection."""
     from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
 
     compact = compact_cloud_status(
