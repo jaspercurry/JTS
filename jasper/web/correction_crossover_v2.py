@@ -2906,10 +2906,10 @@ def _previous_candidate_known() -> bool:
     from jasper.web.correction_crossover_v2_status import _offerable_previous_candidate
 
     state = load_v2_state()
-    return _previous_candidate_paired(state) and _offerable_previous_candidate(state) is not None
+    return previous_candidate_paired(state) and _offerable_previous_candidate(state) is not None
 
 
-def _previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
+def previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
     """Was the previous candidate recorded by the apply now under grade?"""
     resolved = state or {}
     displaced_by = resolved.get("previous_candidate_displaced_by")
@@ -4080,16 +4080,3 @@ def _persist_apply_blocked(
         return
     state["apply_blocked"] = dict(issue) if issue else None
     save_v2_state(state)
-
-
-def _reopen_candidate_artifact(
-    state: Mapping[str, Any] | None, evidence: Mapping[str, Any]
-) -> Mapping[str, Any]:
-    """Reopen the exact reviewed artifact through the shared candidate bank."""
-    from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-
-    fingerprint = str(((state or {}).get("candidate") or {}).get("fingerprint") or "")
-    try:
-        return find_banked_candidate(fingerprint).candidate.to_dict()
-    except CandidateBankRefusal as exc:
-        raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
