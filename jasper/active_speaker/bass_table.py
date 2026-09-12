@@ -17,16 +17,17 @@ from .bass_fit import REFERENCE_BAND_HZ, BassFitCoverageUnavailable, fit_bass_sh
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 
-LEVEL_FIELDS = (*CHANGE_FIELDS["volume"], "program_id")
+LEVEL_FIELDS = CHANGE_FIELDS["volume"]
 
 
 def level_key(basis: Mapping[str, Any], **identity: Any) -> tuple[float, float, str]:
-    volume, reference = (finite_float(basis.get(key)) for key in CHANGE_FIELDS["volume"])
-    program = basis.get("program_id")
-    missing = [key for key, value in zip(CHANGE_FIELDS["volume"], (volume, reference))
+    volume_field, reference_field, program_field = LEVEL_FIELDS
+    volume, reference = (finite_float(basis.get(key)) for key in (volume_field, reference_field))
+    program = basis.get(program_field)
+    missing = [key for key, value in zip((volume_field, reference_field), (volume, reference))
                if value is None or not -100 <= value <= 0]
     if not isinstance(program, str) or not program.strip():
-        missing.append("program_id")
+        missing.append(program_field)
     if missing:
         raise CrossoverV2Refused({**identity, "fields": missing}, code="bass_table_window_gain_missing")
     assert volume is not None and reference is not None and isinstance(program, str)

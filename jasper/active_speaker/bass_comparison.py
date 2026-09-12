@@ -18,7 +18,8 @@ from .measurement_bass import BASS_BANDS_HZ
 
 CHANGE_FIELDS = {
     "candidate": GRAPH_FIELDS,
-    "volume": ("level_db", "loudness_volume_db"),
+    # _program_id hashes segment effective_peak_dbfs, which includes the volume window.
+    "volume": ("level_db", "loudness_volume_db", "program_id"),
     "demand": ("stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_wav_sha256", "program_id"),
     "diagnostic": (),
 }

@@ -852,7 +852,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
 
 
 @pytest.mark.parametrize('change,main_delta,stimulus_delta,mismatch,field', [
-    ('candidate', 0, 0, {'program_id': 'changed-gains'}, 'program_id'), ('volume', 3, 0, {'program_id': 'changed-gains'}, 'program_id'),
+    ('candidate', 0, 0, {'program_id': 'changed-gains'}, 'program_id'), ('volume', 3, 0, {'stimulus_dbfs': -21}, 'stimulus_dbfs'),
     ('candidate', 0, 0, {'loudness_volume_db': -23}, 'loudness_volume_db'), ('candidate', 0, 0, {'level_db': -23}, 'level_db'),
     ('candidate', 0, 0, {'position_deg': 20}, 'pose_key'), ('demand', 0, 3, {'position_deg': 20}, 'pose_key'),
 ])
@@ -1082,6 +1082,22 @@ def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_run, capsys, 
     if fault == 'zero_coverage':
         assert table['levels'][-1]['code'] == 'bass_fit_common_coverage_unavailable'
         assert table['levels'][-1]['next_action'] == REASON_REGISTRY[table['levels'][-1]['code']].next_action
+
+
+def test_bass_table_accepts_program_id_per_volume_window(bass_run, capsys):
+    takes = bass_run.takes[:4]
+    program_ids = {-10: 'sweep-loud', -30: 'sweep-quiet'}
+    for take in takes:
+        take['record']['program_id'] = program_ids[take['record']['level_db']]
+    bass_run.write(takes)
+
+    assert round_views_main(bass_run.argv) == 0
+    capsys.readouterr()
+    table, = json.loads(bass_run.out.read_text())['tables']
+    assert [row['level_key'] for row in table['levels']] == [
+        {'level_db': -30, 'loudness_volume_db': -20, 'program_id': 'sweep-quiet'},
+        {'level_db': -10, 'loudness_volume_db': 0, 'program_id': 'sweep-loud'},
+    ]
 
 
 @pytest.mark.parametrize('field', ['level_db', 'loudness_volume_db', 'program_id'])
