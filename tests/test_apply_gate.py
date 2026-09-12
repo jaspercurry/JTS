@@ -81,7 +81,8 @@ def test_apply_preconditions_fail_independently(apply_facts, fault, code):
 
 
 @pytest.mark.parametrize("tracking,expected", [([0., 99.], "failed"), ([0., None], "unavailable")])
-def test_multi_take_advice_survives_speaker_evidence_reuse(apply_facts, tracking, expected):
+@pytest.mark.parametrize("persisted", [False, True])
+def test_multi_take_advice_survives_speaker_evidence_reuse(apply_facts, tracking, expected, persisted):
     from jasper.active_speaker.crossover_v2.apply_evidence import verification_disclosure
 
     candidate, _, _ = apply_facts
@@ -92,7 +93,7 @@ def test_multi_take_advice_survives_speaker_evidence_reuse(apply_facts, tracking
     advice = verification_disclosure(candidate.measured, trial, None, profile=candidate.profile)
     assert advice["realization"] == expected
     assert len(advice["takes"]) == 2
-    applied = {**candidate.profile, "trial_verification": advice}
+    applied = {**candidate.profile, **({"trial_verification": advice} if persisted else {})}
     room = copy.deepcopy(candidate.profile)
     room["recomposition_snapshot"]["room_correction"] = {"changed": True}
     reused = verification_disclosure(candidate.measured, trial, applied, profile=room)

@@ -8102,3 +8102,17 @@ def test_trial_tracking_and_spec_are_advice(monkeypatch, tmp_path, tracking, amp
     assert advice["capture_validity"] == "usable"
     assert advice["realization"] == ("failed" if tracking else "matched")
     assert advice["spec"] == ("failed" if amplitude else "passed")
+
+
+def test_retired_republish_route_cannot_change_state(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from jasper.web.correction_setup import _dispatch_crossover
+
+    _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    before = v2host.load_v2_state()
+    replies = []
+    handler = SimpleNamespace(path="/crossover/v2/republish",
+                              _send_json=lambda payload, **kwargs: replies.append((payload, kwargs["status"])))
+    _dispatch_crossover(handler)
+    assert replies == [({"ok": False, "code": "route_retired"}, 410)]
+    assert v2host.load_v2_state() == before

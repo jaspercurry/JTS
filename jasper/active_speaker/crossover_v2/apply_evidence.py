@@ -16,6 +16,7 @@ from jasper.audio_measurement.program_analysis import CaptureIntegrity, Integrit
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from .. import bundles
+from ..candidate_bank import CandidateBankRefusal, find_banked_candidate
 from ..commissioning_evidence_store import EVIDENCE_ROOT, CommissioningEvidenceStoreError
 from ..flat_spec import FlatSpecReport, evaluate_flat_spec
 from ..measured_crossover_candidate import MeasuredCrossoverCandidate
@@ -94,7 +95,20 @@ def verification_disclosure(
 ) -> dict[str, Any]:
     layers = changed_layers(profile, applied)
     previous = (applied or {}).get("trial_verification") or {}
-    reuse = bool(layers) and "speaker" not in layers and bool(previous.get("speaker_evidence"))
+    speaker_unchanged = bool(layers) and "speaker" not in layers
+    if speaker_unchanged and applied and not previous:
+        fingerprint = str((applied.get("source") or {}).get("measured_candidate_fingerprint") or "")
+        prior_trial = candidate_trial_manifest(fingerprint, applied) if fingerprint else None
+        if (prior_trial and prior_trial.get("status") == "complete" and trial_is_intact(prior_trial)
+                and prior_trial["set"]["capture_basis"]["submitted_graph_fingerprint"]
+                == str((applied.get("config") or {}).get("sha256") or "")[:16]):
+            try:
+                prior = find_banked_candidate(fingerprint)
+            except CandidateBankRefusal:
+                pass
+            else:
+                previous = verification_disclosure(prior.candidate, prior_trial, None, profile=applied)
+    reuse = speaker_unchanged and bool(previous.get("speaker_evidence"))
     takes = []
     for take, record, wav in trial_records(trial):
         raw_integrity = record.get("capture_integrity") or {}
