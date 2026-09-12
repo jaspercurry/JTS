@@ -959,9 +959,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     # Budget 0 — the ONE verify_fail row that is not retriable: a second
     # graded attempt already agreed with the first inside the instrument's
-    # repeat floor, so a third lands in the same place. For a non-retriable
-    # code ``_verify_fail_envelope`` promotes Re-measure to the primary rather
-    # than offering a "Try again" this row has ruled out.
+    # repeat floor, so a third lands in the same place. NON_RETRIABLE_CODES
+    # carries this condition into the conductor's admission rule.
     REASON_VERIFY_DETERMINISTIC_MISMATCH: ReasonSpec(
         REASON_VERIFY_DETERMINISTIC_MISMATCH, TEMPLATE_VERIFY_FAIL, 0, "",
         "JTS checked twice and measured the same difference both times, so "

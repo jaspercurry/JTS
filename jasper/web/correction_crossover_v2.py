@@ -653,14 +653,13 @@ def observe_apply_success(
     graph DISPLACED — read off the frozen ``applied_recomposition_profile``'s
     own ``source.measured_candidate_fingerprint`` by ``handle_v2_apply``. It
     is the ONLY durable pointer the way back (republish-then-apply) resolves
-    its target from: the status block publishes it, the wizard mints its
-    way-back action from it, and the round's auto-revert republishes it.
+    its target from: the status block publishes it and the round's auto-revert
+    republishes it.
     ``None`` — a first-ever apply, or a displaced profile that was not a
     measured-candidate apply — is written as such, re-stamped by every
     successful apply so the pointer can never outlive the apply it describes.
     A state written before this field existed simply has no way back until
-    the next apply records one (the same no-schema-bump posture
-    ``_record_is_fresh`` takes).
+    the next apply records one.
 
     ``expected_post_apply_offset_db`` (#1811) is the whole-band level move the
     emitted graph made and did NOT command as part of the correction's shape —

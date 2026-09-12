@@ -357,9 +357,7 @@ function captureIsActive(capture) {
   return Boolean(capture && CAPTURE_IN_FLIGHT.has(capture.status));
 }
 
-// The last action row this function actually rendered, as a stable
-// serialization of everything the row's appearance depends on (see
-// actionRowKey below). null before the first render.
+// Keep the action row stable across polls so a tap cannot lose its target.
 let lastActionRowKey = null;
 
 // A stable, order-preserving serialization of exactly what the action-row
@@ -371,15 +369,12 @@ function actionRowKey(primary, alternates) {
   return JSON.stringify({primary: primary || null, alternates, busy});
 }
 
-// Sole authority for what the action row shows given an envelope. Every
-// call-site (render, stopCapture's finally, runAction's finally) routes
-// through this so the capture-in-flight gate can't be forgotten or duplicated
-// at one of them — the 2026-07-16 two-primary-buttons bug was exactly that:
-// runAction's finally re-rendered envelope.next_action ungated, so a second
-// primary button could appear beside the "Open phone capture" capture session.
+// One gate for every render and action completion prevents competing capture controls.
 function renderActionRow(env) {
   if (!env) return;
   const captureActive = captureIsActive(env.capture);
+  // A live capture suppresses new actions unless the envelope marks them
+  // show_during_capture; the same rule applies to primary and alternate actions.
   const showPrimary = !captureActive
     || (env.next_action && env.next_action.show_during_capture);
   const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
@@ -404,6 +399,8 @@ function renderActionRow(env) {
   renderActions(primary, shownAlternates);
 }
 
+// One primary control at a time: closing's Save/Record-again actions make the
+// capture block and walkthrough yield, so they cannot compete for the next step.
 function screenOwnsLiveControl(env) {
   return Boolean(env && env.next_action && env.next_action.show_during_capture);
 }
@@ -414,7 +411,8 @@ function render(env) {
   renderApplied(env.applied);
   renderSteps(env.steps);
   renderNudges(env.nudges, env.expert_details);
-  if (env.screen === 'awaiting_plan' || env.screen === 'finished') {
+  const passive = env.screen === 'awaiting_plan' || env.screen === 'finished';
+  if (passive) {
     renderCloud(els, {});
   } else {
     renderCloud(els, env);
@@ -423,7 +421,7 @@ function render(env) {
     suppressConnectAffordance: screenOwnsLiveControl(env),
   });
   renderActionRow(env);
-  schedulePoll(captureIsActive(env.capture) || env.screen === 'awaiting_plan' ? POLL_MS : null);
+  schedulePoll(captureIsActive(env.capture) || passive ? POLL_MS : null);
 }
 
 async function stopCapture() {

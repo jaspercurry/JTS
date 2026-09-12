@@ -4591,18 +4591,7 @@ def test_candidate_summary_carries_the_linearization_disclosures(
 
 
 def test_candidate_summary_carries_whether_the_polarity_was_pinned():
-    """The web hop of the basin pin, on the REAL projection (#2607 S3, redux).
-
-    ``_candidate_review_payload`` reads this summary, and the renderer reads
-    that payload — so if the bit stops being copied HERE the household row
-    silently reverts to "Inverted (measured)" over a polarity an operator
-    pinned. The envelope-side guards use their own candidate fixture and are
-    structurally blind to this hop: a mutation run that deleted this very line
-    left the whole envelope suite green.
-
-    Absent reads False rather than missing, so the renderer's ``=== true`` has
-    a value to test on every candidate, including ones frozen before the field.
-    """
+    """Persist whether the operator pinned polarity, including pre-field candidates."""
     pinned = _linearization_summary(analysis={
         "alignment_confidence": 0.9,
         "alignment_objective": "explicit_prescription_committed",

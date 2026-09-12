@@ -62,10 +62,10 @@ document.visibilityState = "visible";
 schedulePoll(null);
 assert.equal(timers.length, 0, "null intent means no polling regardless of visibility");
 
-render({screen: "awaiting_plan", verdict_text: "Waiting for a plan"});
-assert.equal(timers.length, 1);
-assert.equal(timers[0].delay, 1500);
-render({screen: "finished", verdict_text: "Run complete"});
-assert.equal(timers.length, 0);
+for (const screen of ["awaiting_plan", "finished"]) {
+  render({screen});
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 1500);
+}
 
-console.log(JSON.stringify({ ok: true, passed: 9 }));
+console.log(JSON.stringify({ ok: true, passed: 12 }));

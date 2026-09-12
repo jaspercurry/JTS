@@ -12,6 +12,7 @@ from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
+from .crossover_v2.coordinator import series_position_from_state
 from .candidate_trials import tuning_trial_matches_candidate
 from .capture_status import CAPTURE_COMPLETE, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from .crossover_v2.journey import (
@@ -33,6 +34,12 @@ from .crossover_v2.spatial import _geometry_guidance_copy
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     ReasonSpec,
+    NON_RETRIABLE_CODES,
+    TEMPLATE_FIX_AND_RETRY,
+    TEMPLATE_HARD_STOP,
+    TEMPLATE_SESSION_RESTART,
+    TEMPLATE_SILENT_AUTO_RETRY,
+    TEMPLATE_VERIFY_FAIL,
     reason_message,
 )
 from .crossover_v2_flow import (
@@ -57,6 +64,7 @@ _STEP_LABELS = {
     "verify": "Verify",
 }
 
+# Exhaustive: an unmapped journey phase raises instead of moving the stepper backwards.
 _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
@@ -76,32 +84,6 @@ _PHASE_STEP = {
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _headroom_cost_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    """``{"db": float|None, "basis": str}`` — the correction's disclosed
-    max-level cost, inseparable from the era that stamped it (#1808).
-    ``basis`` is passed through rather than collapsed (the two peak eras
-    disagree in the direction #2758 opened); anything else, including
-    absence, is ``unknown``. ``db`` is ``None``, not ``0.0``, when missing
-    or unusable — zero is a real common answer (cut-only corrections
-    charge nothing).
-    """
-    from .linearization_fit import (
-        HEADROOM_COST_BASIS_REALIZED_PEAK,
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
-        HEADROOM_COST_BASIS_UNKNOWN,
-    )
-
-    basis = candidate.get("headroom_cost_basis")
-    known = (
-        HEADROOM_COST_BASIS_REALIZED_PEAK,
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
-    )
-    return {
-        "db": _finite(candidate.get("headroom_cost_db")),
-        "basis": str(basis) if basis in known else HEADROOM_COST_BASIS_UNKNOWN,
-    }
 
 
 def _verify_gate(status: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -343,6 +325,11 @@ def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _retake_action() -> dict[str, Any]:
+    return {"id": "crossover_v2_retake", "label": "Record the last spot again",
+            "endpoint": "/sound/speaker/crossover/v2/retake", "body": {}, "show_during_capture": True}
+
+
 def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     """The measuring session's TAIL — measured, not yet proposed (D1, B2).
     True at two moments: ``awaiting_confirm`` (pre-apply cloud walked,
@@ -396,13 +383,7 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
             "show_during_capture": True,
         } if ready else None,
-        alternate_actions=[{
-            "id": "crossover_v2_retake",
-            "label": "Record the last spot again",
-            "endpoint": "/sound/speaker/crossover/v2/retake",
-            "body": {},
-            "show_during_capture": True,
-        }] if ready else [],
+        alternate_actions=[_retake_action()] if ready else [],
         busy=running,
         status=status,
         expert_details=_flatness_details_lines(status),
@@ -508,12 +489,17 @@ def _envelope(
     expert_details: list[str] | None = None,
     advertise_capture: bool = True,
     busy: bool = False,
+    terminal_status: str | None = None,
+    round_ordinal: int | None = None,
 ) -> dict[str, Any]:
     resting = screen in {"awaiting_plan", "finished"}
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
         "flow": "v2",
         "screen": screen,
+        "terminal_status": terminal_status,
+        "round_ordinal": round_ordinal,
+        "phase": _v2(status).get("phase"),
         "active": True,
         "steps": _step_payload(active_step, _done_before(active_step)),
         "verdict_text": verdict,
@@ -583,13 +569,28 @@ def _reset_action() -> dict[str, Any]:
 
 def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
     spec = REASON_REGISTRY.get(code)
-    action = dict(spec.next_action) if spec and spec.next_action else None
+    capture = _mapping(status.get("capture"))
+    live = bool(capture) and capture.get("status") not in SESSION_ENDED_STATUSES
+    action: dict[str, Any] | None = _reset_action()
+    if spec:
+        if spec.template == TEMPLATE_SILENT_AUTO_RETRY:
+            action = None
+        elif spec.template == TEMPLATE_HARD_STOP:
+            action = dict(spec.next_action) if spec.next_action else {
+                "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/",
+            }
+        elif spec.template == TEMPLATE_SESSION_RESTART:
+            action = {**_reset_action(), "id": "restart_session"}
+        elif spec.template in {TEMPLATE_FIX_AND_RETRY, TEMPLATE_VERIFY_FAIL} and code not in NON_RETRIABLE_CODES:
+            action = _retake_action() if live else None
+    if live and action:
+        action = {**action, "show_during_capture": True}
     return _envelope(
-        screen="finished", active_step="verify",
+        screen="finished", active_step="verify", terminal_status=None if live else CAPTURE_FAILED,
         verdict=_reason_message(code, spec, status) if spec else "Measurement failed.",
-        next_action=action or _reset_action(),
-        alternate_actions=[_reset_action()] if action else [],
-        status=status, advertise_capture=False,
+        nudges=[] if live else [{"code": "run_ended", "severity": "info", "text":
+            "This run has ended. Start the next measurement with jasper-round run."}],
+        next_action=action, status=status, advertise_capture=live,
     )
 
 
@@ -659,16 +660,28 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     terminal = capture.get("status")
     run = _mapping(capture.get("run"))
     failure_code = str(run.get("fault") or _mapping(v2.get("failure")).get("code") or "")
-    if terminal in SESSION_ENDED_STATUSES:
-        if terminal == CAPTURE_FAILED:
+    durable_complete = not capture and phase in {PHASE_REVIEW, PHASE_APPLYING, PHASE_DONE}
+    if terminal in SESSION_ENDED_STATUSES or durable_complete:
+        if terminal == CAPTURE_FAILED or (durable_complete and failure_code):
             return _failure_envelope(failure_code, status)
+        ordinal = None
+        if durable_complete:
+            terminal = CAPTURE_COMPLETE
+            if phase == PHASE_DONE:
+                verdict = "Tuning confirmed."
+            else:
+                ordinal = series_position_from_state(v2).ordinal
+                verdict = f"Measurement complete (round {ordinal}); the LLM continues from here."
+        else:
+            verdict = "Measurement complete." if terminal == CAPTURE_COMPLETE else "Measurement stopped."
         return _envelope(
-            screen="finished", active_step="verify",
-            verdict="Measurement complete." if terminal == CAPTURE_COMPLETE else "Measurement stopped.",
-            next_action=_reset_action(), status=status, advertise_capture=False,
+            screen="finished", active_step="verify", terminal_status=str(terminal), round_ordinal=ordinal,
+            verdict=verdict, next_action=_reset_action(), status=status, advertise_capture=False,
         )
+    if failure_code:
+        return _failure_envelope(failure_code, status)
     if not capture:
-        return _failure_envelope(failure_code, status) if failure_code else _awaiting_plan_envelope(status)
+        return _awaiting_plan_envelope(status)
     if capture.get("join") or (phase == PHASE_CHECK and capture):
         phase = PHASE_MEASURE
     active_step = _PHASE_STEP[phase]

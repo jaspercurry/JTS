@@ -131,12 +131,57 @@ def test_setup_not_ready_blocks_before_any_capture():
     assert _step_statuses(env)["speaker_setup"] == "active"
 
 
-@pytest.mark.parametrize("phase", ["check", "measure", "verify", "closing", "review", "done"])
+@pytest.mark.parametrize("phase", ["check", "measure", "verify", "closing"])
 def test_awaiting_plan_without_a_staged_run(phase):
     env = build_crossover_envelope_v2({**_status(phase=phase), "capture": None})
     assert env["screen"] == "awaiting_plan"
     assert env["next_action"] is None
     assert env["alternate_actions"] == []
+
+
+@pytest.mark.parametrize("phase", ["review", "applying", "done"])
+@pytest.mark.parametrize("receipt, current_ordinal", [(None, 1), ({"round_ordinal": 3}, 4)])
+def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, current_ordinal):
+    env = build_crossover_envelope_v2({
+        **_status(phase=phase, round_receipt=receipt), "capture": None,
+    })
+    assert (env["screen"], env["terminal_status"], env["phase"]) == ("finished", "complete", phase)
+    assert env["round_ordinal"] == (None if phase == "done" else current_ordinal)
+    assert env["next_action"]["id"] == "reset"
+
+
+@pytest.mark.parametrize("fault, action_id, target", [
+    ("agc_behavioral_fail", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
+    ("capture_timeout", "restart_session", "/sound/speaker/crossover/reset"),
+    ("bass_fit_common_coverage_unavailable", "measure_bass_coverage", "/sound/speaker/crossover/"),
+    ("clipped", None, None),
+    ("verify_out_of_tolerance", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
+    ("verify_deterministic_mismatch", "reset", "/sound/speaker/crossover/reset"),
+])
+def test_failure_templates_preserve_their_own_actions(fault, action_id, target):
+    env = build_crossover_envelope_v2({
+        **_status(failure={"code": fault}), "capture": {"status": "awaiting_capture"},
+    })
+    action = env["next_action"] or {}
+    assert (env["screen"], env["terminal_status"]) == ("finished", None)
+    assert action.get("id") == action_id
+    assert (action.get("endpoint") or action.get("href")) == target
+    assert env["alternate_actions"] == []
+
+
+@pytest.mark.parametrize("capture_status, expected_action", [
+    ("awaiting_capture", "crossover_v2_retake"), ("failed", None), (None, None),
+])
+def test_retaking_a_failure_requires_a_live_run(capture_status, expected_action):
+    capture = {"status": capture_status} if capture_status else None
+    env = build_crossover_envelope_v2({
+        **_status(failure={"code": "agc_behavioral_fail"}), "capture": capture,
+    })
+    action = env["next_action"] or {}
+    assert action.get("id") == expected_action
+    assert env["terminal_status"] == (None if expected_action else "failed")
+    assert env["capture"] == (capture if expected_action else None)
+    assert [nudge["code"] for nudge in env["nudges"]] == ([] if expected_action else ["run_ended"])
 
 
 @pytest.mark.parametrize("terminal, fault", [
@@ -154,7 +199,8 @@ def test_finished_run_uses_the_registry_action_and_reset(terminal, fault):
     action = dict(spec.next_action) if spec and spec.next_action else None
     assert env["screen"] == "finished"
     assert env["next_action"] == (action or reset)
-    assert env["alternate_actions"] == ([reset] if action else [])
+    assert env["alternate_actions"] == []
+    assert env["terminal_status"] == terminal
     assert env["capture"] is None
     assert all(env[key] is None for key in ("candidate_review", "prediction", "cloud", "cloud_chart", "round"))
 
