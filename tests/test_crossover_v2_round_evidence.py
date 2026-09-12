@@ -583,22 +583,6 @@ def test_the_benefit_margin_is_a_literal_this_module_owns_not_a_borrowed_one():
     )
 
 
-def test_the_two_constants_agree_today_and_the_docstring_says_why():
-    """Recording the coincidence, so the fork is not mistaken for a typo.
-
-    A reader who finds two 0.5s and no explanation reasonably concludes one is
-    redundant. The equality is asserted here precisely so that the day it
-    stops holding, this test — not a puzzled reviewer — is what notices.
-    """
-    from jasper.active_speaker import attempts_loop
-
-    assert MEASURED_BENEFIT_MARGIN_DB == pytest.approx(
-        attempts_loop.material_improvement_db()
-    )
-    doc = round_evidence.__dict__["__doc__"] or ""
-    assert doc  # the module explains the split; the constant explains the fork
-    source = round_evidence.MEASURED_BENEFIT_MARGIN_DB
-    assert isinstance(source, float)
 
 
 # --------------------------------------------------------------------------- #

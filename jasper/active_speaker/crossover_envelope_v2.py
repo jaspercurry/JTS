@@ -43,27 +43,7 @@ from ..log_event import log_event
 from .frequency_display import prepare_frequency_curve
 from .angle_capture import AngleCaptureRequest, walk_price
 from .angle_capture_spool import peek_staged_angle_request
-from .attempts_loop import (
-    PROVENANCE_MODEL_GRADED,
-    PROVENANCE_REALIZED,
-    REASON_ATTEMPT_NOT_COMPARABLE,
-    REASON_AWAITING_FIRST_ATTEMPT,
-    REASON_BASELINE_ESTABLISHED,
-    REASON_BELOW_CLAIM_FLOOR,
-    REASON_BUDGET_EXHAUSTED,
-    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR,
-    REASON_FLOOR_METRIC_MISMATCH,
-    REASON_GRADED_BINS_SHRANK,
-    REASON_IMPROVEMENT_ABOVE_FLOOR,
-    REASON_IN_SPEC,
-    REASON_NO_DEVIATION_AVAILABLE,
-    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED,
-    REASON_PREDECESSOR_NOT_COMPARABLE,
-    REASON_PROVENANCE_MISMATCH,
-    REASON_REGRESSION_FROM_PREDECESSOR,
-    REASON_SITTING_MISMATCH,
-    REASON_SITTING_UNRECORDED,
-)
+
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
 from .candidate_trials import tuning_trial_matches_candidate
 from .crossover_v2.journey import (
@@ -93,7 +73,6 @@ from .crossover_v2.refusal_copy import (
     verify_inconclusive_cause,
 )
 from .crossover_v2_flow import (
-    ATTEMPT_REASON_NO_FLOOR,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLOUD_CLOSE_RUNNING,
     CrossoverV2FlowError,
@@ -1524,147 +1503,6 @@ def _calibration_reservation_nudges(status: Mapping[str, Any]) -> list[dict[str,
     }]
 
 
-def _attempt_db(value: Any) -> str | None:
-    number = _finite(value)
-    if number is None:
-        return None
-    return f"{number:.2f}".rstrip("0").rstrip(".")
-
-
-def _attempt_provenance(decision: Mapping[str, Any]) -> str | None:
-    provenance = decision.get("provenance")
-    if provenance == PROVENANCE_REALIZED:
-        return f"{PROVENANCE_REALIZED} vs {PROVENANCE_REALIZED}"
-    if provenance == PROVENANCE_MODEL_GRADED:
-        return f"{PROVENANCE_MODEL_GRADED} vs {PROVENANCE_MODEL_GRADED}"
-    return None
-
-
-def _attempt_first_sentence(decision: Mapping[str, Any]) -> str:
-    provenance = decision.get("provenance")
-    if provenance not in {PROVENANCE_REALIZED, PROVENANCE_MODEL_GRADED}:
-        return "Recorded the first tracking result without an improvement claim."
-    return (
-        f"Recorded the first {provenance} tracking result; another attempt is "
-        "needed before improvement can be judged."
-    )
-
-
-def _attempt_improved_sentence(decision: Mapping[str, Any]) -> str:
-    amount = _attempt_db(decision.get("improvement_db"))
-    provenance = _attempt_provenance(decision)
-    if amount is None or provenance is None:
-        return "The latest attempt was recorded without an improvement claim."
-    return (
-        "The latest applied result tracked its prediction "
-        f"{amount} dB more closely ({provenance})."
-    )
-
-
-def _attempt_floor_sentence(decision: Mapping[str, Any]) -> str:
-    magnitude = _attempt_db(decision.get("magnitude_db"))
-    floor = _mapping(decision.get("floor"))
-    floor_db = _attempt_db(floor.get("claim_floor_db"))
-    if magnitude is None or floor_db is None:
-        return "The instrument cannot resolve the change."
-    return (
-        "The change in prediction tracking from the previous attempt "
-        f"({magnitude} dB) is below what this instrument can distinguish "
-        f"(floor {floor_db} dB)."
-    )
-
-
-def _attempt_evidence_sentence(decision: Mapping[str, Any]) -> str:
-    return "No reliable comparison is available for the latest attempt."
-
-
-def _attempt_sitting_sentence(decision: Mapping[str, Any]) -> str:
-    """The #2081 refusal, in household terms: the microphone moved. Free
-    of ENGINE words ("floor", "scope", "sitting"); the actor is the
-    MICROPHONE, never "the phone" (#1941 R4, guarded by
-    ``tests/test_measurement_vocabulary.py``).
-    """
-    return (
-        "The previous result was measured with the microphone in a different "
-        "position, so this attempt is recorded without comparing the two."
-    )
-
-
-def _attempt_regression_sentence(decision: Mapping[str, Any]) -> str:
-    improvement = _finite(decision.get("improvement_db"))
-    provenance = _attempt_provenance(decision)
-    if improvement is None or provenance is None:
-        return "The latest attempt did not support an improvement claim."
-    amount = _attempt_db(abs(improvement))
-    return (
-        "The latest applied result tracked its prediction "
-        f"{amount} dB less closely ({provenance})."
-    )
-
-
-def _attempt_budget_sentence(decision: Mapping[str, Any]) -> str:
-    attempts = decision.get("attempts_used")
-    count = (
-        int(attempts)
-        if isinstance(attempts, int) and not isinstance(attempts, bool) else None
-    )
-    return (
-        f"Attempts recorded: {count}."
-        if count is not None
-        else "The latest attempt was recorded."
-    )
-
-
-def _attempt_converged_sentence(decision: Mapping[str, Any]) -> str:
-    return "The model predicts little further improvement."
-
-
-def _attempt_in_spec_sentence(decision: Mapping[str, Any]) -> str:
-    return "The latest result meets the target."
-
-
-# The household sentence has one writer. It dispatches on the kernel's reason
-# vocabulary and formats the kernel/store numbers; it never recomputes a
-# decision or substitutes a literal floor.
-_ATTEMPT_SENTENCE_BY_REASON = {
-    REASON_AWAITING_FIRST_ATTEMPT: _attempt_first_sentence,
-    REASON_BASELINE_ESTABLISHED: _attempt_first_sentence,
-    REASON_IMPROVEMENT_ABOVE_FLOOR: _attempt_improved_sentence,
-    REASON_BELOW_CLAIM_FLOOR: _attempt_floor_sentence,
-    REASON_ATTEMPT_NOT_COMPARABLE: _attempt_evidence_sentence,
-    REASON_PREDECESSOR_NOT_COMPARABLE: _attempt_evidence_sentence,
-    REASON_FLOOR_METRIC_MISMATCH: _attempt_evidence_sentence,
-    REASON_PROVENANCE_MISMATCH: _attempt_evidence_sentence,
-    # #2081's two refusals differ: MISMATCH is a fact about the two
-    # measurements; UNRECORDED cannot say where the older one was measured.
-    REASON_SITTING_MISMATCH: _attempt_sitting_sentence,
-    REASON_SITTING_UNRECORDED: _attempt_evidence_sentence,
-    REASON_NO_DEVIATION_AVAILABLE: _attempt_evidence_sentence,
-    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR: _attempt_evidence_sentence,
-    REASON_GRADED_BINS_SHRANK: _attempt_evidence_sentence,
-    REASON_REGRESSION_FROM_PREDECESSOR: _attempt_regression_sentence,
-    REASON_BUDGET_EXHAUSTED: _attempt_budget_sentence,
-    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED: _attempt_converged_sentence,
-    REASON_IN_SPEC: _attempt_in_spec_sentence,
-}
-
-
-def attempt_loop_verdict_sentence(status: Mapping[str, Any]) -> str:
-    """One household sentence from the session/kernel's last S3 output."""
-    attempts = _mapping(_v2(status).get("attempts_loop"))
-    decision = _mapping(attempts.get("last_decision"))
-    reason = decision.get("reason")
-    if not isinstance(reason, str):
-        return ""
-    if reason == ATTEMPT_REASON_NO_FLOOR:
-        return (
-            "No improvement claim was made because this speaker has no "
-            "adopted measurement floor."
-        )
-    renderer = _ATTEMPT_SENTENCE_BY_REASON.get(reason)
-    return renderer(decision) if renderer is not None else ""
-
-
 def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
     """The honest gauge-absent rendering for a CLOUD-VERIFY block that
     CLOSED but carries no usable flatness. Two states: the pipeline DID
@@ -2749,9 +2587,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     f"This matched its prediction, but it still misses the "
                     f"target{miss_text}."
                 )
-        attempt_sentence = attempt_loop_verdict_sentence(status)
-        if attempt_sentence:
-            done_verdict = f"{done_verdict} {attempt_sentence}"
         alternate_actions = []
         if _round_can_continue(v2):
             alternate_actions.append({

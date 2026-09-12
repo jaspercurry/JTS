@@ -40,15 +40,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         MeasuredResponse,
     )
 
-from jasper.active_speaker.attempts_loop import (
-    REASON_ATTEMPT_NOT_COMPARABLE,
-    STOP_EVIDENCE,
-    AttemptBudget,
-    AttemptRecord,
-    FloorStats,
-    LoopDecision,
-    decide_next,
-)
+from jasper.active_speaker.attempts_loop import FloorStats
+from jasper.active_speaker.crossover_v2.durable_state import AttemptRecord, MAX_ATTEMPT_HISTORY
 from jasper.active_speaker.delta_probe import DeltaProbeMap
 from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.camilla_yaml import role_polarity
@@ -245,13 +238,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
     CLOUD_CLOSE_RUNNING as CLOUD_CLOSE_RUNNING,
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
-
-# The cross-session tuning-attempt ledger's constants. Here because this module
-# applies all three and nothing else reads them: ``_assert_accountable`` chooses
-# between the two bars, ``_grade_verify_attempt`` emits the reason.
-
-#: A grading status, not a refusal: no ``REASON_REGISTRY`` entry, no copy.
-ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 
 #: dB of pooled spec residual (``flat_spec.spec_convergence_residual``), RAW
 #: pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
@@ -759,16 +745,12 @@ class CrossoverV2Session:
             }
         # Attempts belong to the commissioning journey, not to this capture session.
         self._attempt_history = list(attempt_history)[
-            -AttemptBudget().hard_cap_attempts:
+            -MAX_ATTEMPT_HISTORY:
         ]
         # #2602's series memory, resolved by the host from durable state on BOTH stages
         # since #2698, because the two readers run on different ones.
         self._series_position = series_position
-        self._attempt_floor = attempt_floor
-        self._last_attempt_decision = (
-            dict(last_attempt_decision)
-            if isinstance(last_attempt_decision, Mapping) else None
-        )
+        self._last_attempt_decision: dict[str, Any] | None = None
         self._speaker_id = str(speaker_id or "unknown")
         self._tuning_attempt_id = str(tuning_attempt_id or "")
         # Layer-1a per-role driver class (#1668 PR-C); empty matches
@@ -3668,14 +3650,7 @@ class CrossoverV2Session:
         *,
         capture_attempt: int,
     ) -> None:
-        """Hand a VERIFY record to S3 and bank an accepted new attempt once.
-
-        A rejected capture is still judged so integrity failures reach STOP_EVIDENCE
-        (#2033) but is not appended to accepted history. **Exactly-once survives a
-        failed write, which is why the seam call catches broadly** (#2386): the
-        repeat guard only sees a repeat once the attempt is appended, at the END
-        of this method.
-        """
+        """Bank accepted VERIFY evidence without scheduling another measurement."""
 
         # The identity is the APPLIED candidate's, most specific first: the tuning
         # attempt id, the built candidate's fingerprint, then a per-capture fallback.
@@ -3765,56 +3740,9 @@ class CrossoverV2Session:
                     )
                     return
 
-        prospective = [*self._attempt_history, record]
-        # The arm ORDER is a ruling (#2033): evidence refusal outranks grading
-        # preconditions. The LAST arm makes the claim about the speaker, so a future
-        # arm that cannot decide must degrade toward the first.
-        if not record.integrity.comparable:
-            decision = LoopDecision(
-                decision=STOP_EVIDENCE,
-                reason=REASON_ATTEMPT_NOT_COMPARABLE,
-                attempts_used=len(prospective),
-                budget=AttemptBudget(),
-                floor=self._attempt_floor,
-                basis_attempt_ids=(record.attempt_id,),
-                provenance=record.provenance,
-                notes=record.integrity.reasons,
-            ).to_dict()
-        elif self._attempt_floor is None:
-            decision = LoopDecision(
-                decision=None,
-                reason=ATTEMPT_REASON_NO_FLOOR,
-                attempts_used=len(prospective),
-                budget=AttemptBudget(),
-                basis_attempt_ids=(attempt_id,),
-                provenance=record.provenance,
-            ).to_dict()
-        else:
-            decision = decide_next(prospective, self._attempt_floor).to_dict()
-        self._last_attempt_decision = decision
-        floor = decision.get("floor")
-        log_event(
-            logger,
-            "correction.crossover_v2_attempt_decision",
-            session_id=self.session_id,
-            speaker_id=self._speaker_id,
-            decision=str(decision.get("decision") or "ungraded"),
-            reason=str(decision.get("reason") or ""),
-            basis=",".join(
-                str(item) for item in decision.get("basis_attempt_ids", ())
-            ),
-            floor_db=(floor.get("claim_floor_db") if isinstance(floor, Mapping) else None),
-            floor_basis=(floor.get("basis") if isinstance(floor, Mapping) else None),
-            provenance=str(decision.get("provenance") or ""),
-        )
-        # An accepted verdict does not imply a comparable record (#2082): the
-        # legacy ``capture_integrity=None`` shape is defensive-only today, but
-        # banking an incomparable record into history would make the NEXT
-        # attempt's predecessor comparison fail permanently.
-        if not verdict.accepted or not record.integrity.comparable:
-            return
+        if verdict.accepted and record.integrity.comparable:
+            self._attempt_history = [*self._attempt_history, record][-MAX_ATTEMPT_HISTORY:]
 
-        self._attempt_history = prospective[-AttemptBudget().hard_cap_attempts:]
 
     def _set_verify_outcome(
         self, outcome: str, code: str | None, gate: dict[str, Any] | None,
@@ -4181,7 +4109,6 @@ __all__ = [
     "V2FlowSeams",
     "V2RecordPublishers",
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
-    "ATTEMPT_REASON_NO_FLOOR",
     "attempt_history_from_state",
     "attempt_record_from_verify",
     "V2PlanShape",

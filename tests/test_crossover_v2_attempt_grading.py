@@ -9,10 +9,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.attempts_loop import (
-    AttemptBudget,
-    AttemptIntegrity,
-    STOP_FLOOR,
+from jasper.active_speaker.crossover_v2.durable_state import (
+    MAX_ATTEMPT_HISTORY, AttemptIntegrity,
 )
 
 from tests.crossover_v2_fixtures import (
@@ -112,7 +110,7 @@ def test_the_durable_write_still_happens_between_the_record_and_the_decision():
     # The record was already built: its id is what the store was asked about.
     assert observed[0]["attempt_id"] == "candidate-a"
     # ...and neither the projection nor the ledger had moved yet.
-    assert observed[0]["decision_at_write"] == prior
+    assert observed[0]["decision_at_write"] is None
     assert observed[0]["history_at_write"] == ()
     # Both moved afterwards, so the ordering above is a real window.
     assert c.last_attempt_decision != prior
@@ -121,25 +119,17 @@ def test_the_durable_write_still_happens_between_the_record_and_the_decision():
 
 def test_comparison_advice_does_not_limit_further_human_started_experiments():
     history = ()
-    cap = AttemptBudget().hard_cap_attempts
+    cap = MAX_ATTEMPT_HISTORY
     for attempt in range(cap + 2):
         c = _verify_only_conductor(
             FakeSeams(), tuning_attempt_id=f"candidate-{attempt}", attempt_history=history,
         )
         assert _run_phase(c, 1, 1)["accepted"] is True
-        assert c.last_attempt_decision["authority"] == "advisory"
-        if history:
-            assert c.last_attempt_decision["decision"] == STOP_FLOOR
+        assert c.last_attempt_decision is None
         history = c.attempt_history
     assert len(history) == cap
     assert history[-1].attempt_id == f"candidate-{cap + 1}"
 
-    c._attempt_floor = None
-    c._tuning_attempt_id = "without-floor"
-    assert _run_phase(c, 1, 2)["accepted"] is True
-    assert c.last_attempt_decision["authority"] == "advisory"
-    assert c.last_attempt_decision["decision"] is None
-    assert c.last_attempt_decision["reason"] == "ungraded_no_floor"
 
 
 def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypatch):

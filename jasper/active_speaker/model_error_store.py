@@ -2,38 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-speaker durable memory for the tuning loop: its floor, and its misses.
-
-Two facts, one file, one owner each:
-
-* ``floor`` — the :class:`~jasper.active_speaker.attempts_loop.FloorStats` this
-  speaker's loop grades against. Adopted once from a repeat study (or declared
-  as a policy bar) and then read, so the loop does not re-derive a threshold
-  from whatever captures happen to be lying around.
-* ``model_error`` — a bounded, newest-first history of ``realized − predicted``
-  per verify. This is the **rung-P4 seam**: the crossover flow predicts a grade
-  when it fits, and measures one when it verifies, and until now nothing kept
-  the pair. The two banked commissioning sessions in
-  ``captures/r11-loop-proof-corpus/`` are the shape of that gap — both carry a
-  fitted candidate with predictions and neither kept a VERIFY analysis, so the
-  model error they would have shown is simply gone.
-
-This module is where the I/O lives. The decision kernel next door
-(:mod:`jasper.active_speaker.attempts_loop`) imports nothing that touches a
-disk, which is what makes "the kernel is pure" a property you can check by
-reading its imports instead of a claim you have to trust. That split is the
-whole reason this is a separate file.
-
-The update API is deliberately two calls — :func:`adopt_floor` and
-:func:`record_model_error` — so the live flow can call whichever it has news
-for without assembling a whole state document. Both serialize their complete
-read-modify-write transaction on the same advisory lock; atomic replacement
-alone prevents torn JSON, but cannot prevent one process from publishing a
-stale snapshot over another process's update.
-``record_model_error`` is idempotent by its per-speaker stable observation
-identity, closing the process-crash window between this file's atomic write and
-the session journey's separate atomic write.
-"""
+"""Persist an adopted floor and bounded, idempotent VERIFY model-error history."""
 
 from __future__ import annotations
 
@@ -109,8 +78,7 @@ def _normalise_floor(raw: Any) -> dict[str, Any] | None:
     """Keep a stored floor only if it still parses as one.
 
     A half-written or hand-edited floor is dropped rather than half-trusted:
-    the loop's alternative to a floor it can read is refusing to grade, which
-    is safe, whereas a floor missing its threshold is not.
+    readers disclose a missing floor rather than using a partial value.
     """
 
     if not isinstance(raw, Mapping):
@@ -193,7 +161,7 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
 def adopt_floor(
     floor: FloorStats, *, path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Make ``floor`` the threshold this speaker's loop grades against.
+    """Make ``floor`` the threshold this speaker records for comparison.
 
     Replaces any previous floor outright rather than merging: a floor is one
     fact with one owner, and a floor assembled from two studies would belong to
