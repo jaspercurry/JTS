@@ -108,6 +108,20 @@ def _takes(document):
     return [take for group in document["sets"] for take in group["takes"]]
 
 
+@pytest.mark.parametrize(("purpose", "expected"), [("room", "room"), (None, "speaker")])
+def test_manifest_banks_resolved_measurement_purpose(purpose, expected):
+    records = FakeSeams().records
+    manifest = RunManifest("run", records)
+    stop = {"index": 1, "repeat": 1, "pose": {"kind": "bearing", "distance_m": 1.0}}
+    if purpose is not None:
+        stop["purpose"] = purpose
+    manifest.begin(stop, attempt=1, pose_index=0)
+
+    asyncio.run(manifest.bank({"take_id": "take"}))
+
+    assert records.banked[0]["measurement_purpose"] == expected
+
+
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
 @pytest.mark.parametrize("repeats", [1, 3])
 def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidates, repeats):

@@ -244,7 +244,8 @@ async def run_plan(
         "retries_per_pose": request.retries_per_pose, "level_offsets_db": list(request.level_offsets_db),
     }
     manifest.planned = [{"index": index * request.repeats + repeat, "repeat": repeat,
-                         "pose": _pose(stop), "candidate_id": stop.candidate_id}
+                         "pose": _pose(stop), "candidate_id": stop.candidate_id,
+                         "purpose": stop.purpose}
                         for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
     try:
         resolved = resolve_request(request)
@@ -276,7 +277,8 @@ async def run_plan(
     if captures is not None:
         stops = [capture.resolved(request) for capture in captures]
         manifest.planned = [{"index": index, "repeat": capture.repeat,
-                             "pose": _pose(capture.stop), "candidate_id": capture.stop.candidate_id}
+                             "pose": _pose(capture.stop), "candidate_id": capture.stop.candidate_id,
+                             "purpose": capture.stop.purpose}
                             for index, capture in enumerate(captures, 1)]
         places = [capture.stop.place for capture in captures]
     else:
