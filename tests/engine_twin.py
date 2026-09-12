@@ -45,6 +45,7 @@ importers actually used it for:
 
 from __future__ import annotations
 
+from itertools import count
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Mapping
@@ -357,6 +358,7 @@ def tuning_session(
     these, so the caller decides. :func:`open_session` is the open one.
     """
     fakes = seams if seams is not None else FakeSeams()
+    kwargs.setdefault("allocate_take_id", lambda ordinal=count(1): f"take_{next(ordinal):04d}")
     session = TuningSession(
         session_id=session_id,
         seams=fakes.seams(),

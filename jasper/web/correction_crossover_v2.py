@@ -78,10 +78,9 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     prepare_plan_captures, build_inline_session_spec,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+from jasper.web.correction_run_host import bind_level_windows, compose_plan_program
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
-from jasper.active_speaker.plan_run import spl_watch
-from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
@@ -3167,7 +3166,6 @@ def bind_production_play(
         capture_session_id=capture_session_id, cam_factory=camilla_factory,
         config_dir=resolved_config_dir, topology=topology,
         safety_profile=safety_profile, role_targets=role_targets,
-        session_volume_db=session_volume_db,
         declared_sensitivities=declared_sensitivities,
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
         bass_extension_for_spec=lambda spec: measurement_bass_extension(scope=spec.graph_scope, candidate_id=spec.candidate_id),
@@ -3775,7 +3773,7 @@ def _wired_stimulus_capture(
 def _build_wired_run(
     conductor: Any,
     *,
-    volume: "V2VolumeHooks",
+    volume: "V2VolumeHooks | None",
     stop_event: threading.Event,
     stop_lock: Any,
     position_gate: "PositionGate | None",
@@ -3854,7 +3852,7 @@ def prepare_v2_session(
 ) -> V2PreparedSession:
     """Prepare the inline run or the existing post-apply verification."""
     from jasper.active_speaker.crossover_v2.capture_plan import (
-        session_wall_clock_ceiling_s,
+        wall_clock_ceiling_s,
     )
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
@@ -4130,7 +4128,8 @@ def prepare_v2_session(
                 default_setup_calibration=default_setup_calibration_for_v2(),
             )
         assert spec is not None
-        ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
+        ceiling_s = wall_clock_ceiling_s(spec.capture_plan.capture_target * (
+            1 if verify_only else max(1, len(request.operating_levels_db))))
         rc = _mint_wired_session(device, spec)
         if not verify_only:
             rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
@@ -4161,7 +4160,6 @@ def prepare_v2_session(
                 conductor.program_for_phase(spec.program_phase) if verify_only and gain is None
                 else compose_plan_program(conductor, spec, gain)),
         )
-        session_graph = production_play.graph
         if verify_only:
             opening = open_stage(
                 STAGE_VERIFY_CAPABILITIES,
@@ -4277,41 +4275,20 @@ def prepare_v2_session(
                 ),
             )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        from jasper.active_speaker.crossover_v2.session import TuningSession
-
-        volume_claim = _session_volume_claim()
-        engine_spl_monitor, spl_note = spl_watch(
-            None if verify_only else request.spl_ceiling_db_spl,
-            topology=context.topology, preset=context.preset, device=device,
-            sensitivity=resolved_household_sensitivity(device),
-            resolved_ceiling_db_spl=None if verify_only else report.spl_ceiling_db_spl,
-        )
-        stimulus_capture = _wired_stimulus_capture(
-            device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
-        )
-        from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
         manifest = RunManifest(session_id, _record_store(evidence_store, session_id),
                                incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
-        captured_records = CapturedRecordStore(manifest, stimulus_capture)
-
-        tuning = TuningSession(
-            session_id=session_id,
-            seams=bind_v2_engine_seams(
-                session_graph=session_graph,
-                compose_stimulus=production_play.compose,
-                capture_stimulus=stimulus_capture,
-                records=captured_records,
-                volume_claim=volume_claim,
-            ),
-            measurement_level_db=context.session_volume_db,
-            level_match_trims_db=engine_level_trims,
+        from jasper.web import correction_crossover_v2 as host  # lazy: bind this host's seams
+        tuning, analyze, assessor = bind_level_windows(
+            host=host, context=context, device=device, evidence_store=evidence_store,
+            manifest=manifest, production=production_play, conductor=conductor, refs=refs,
+            trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
+            ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
+                            if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
         )
-        analyze, assessor = bind_plan_analysis(conductor, captured_records, manifest=manifest,
-                                              evidence=refs, verify_only=verify_only)
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
         if verify_only:
-            run_request = AngleCaptureRequest(stops=tuple(
+            run_request = AngleCaptureRequest(operating_levels_db=(context.session_volume_db,), stops=tuple(
                 AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
                           elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
                 for entry in spec.capture_plan.entries
@@ -4323,10 +4300,7 @@ def prepare_v2_session(
         nonlocal held
         source_run = _build_wired_run(
             conductor,
-            volume=_volume_hooks(
-                camilla_factory, context, tuning=tuning,
-                volume_claim=volume_claim,
-            ),
+            volume=None, windows=tuning,
             stop_event=stop_event,
             stop_lock=stop_lock,
             position_gate=position_gate,
@@ -4337,7 +4311,7 @@ def prepare_v2_session(
             tuning=tuning, manifest=manifest, analyze=analyze, assessor=assessor,
             request=run_request, captures=run_captures,
             candidate_scopes={} if verify_only else report.candidate_scopes,
-            spl_monitor=spl_note,
+            spl_monitor="",
         )
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc

@@ -9176,7 +9176,7 @@ def test_join_opens_resources_in_order_and_drains_to_a_shared_terminal_state(mon
                 raise SessionGraphError("graph failed")
             return await super().install(*args, **kwargs)
     graph = Graph()
-    tuning = TuningSession("joined", EngineSeams(graph, claim, FakeRecords(), FakePlay()), -18)
+    tuning = TuningSession("joined", EngineSeams(graph, claim, FakeRecords(), FakePlay()), -18, lambda: "take")
     hooks = v2host._volume_hooks(lambda: cam, SimpleNamespace(session_volume_db=-18),
                                  tuning=tuning, volume_claim=claim)
     def opened():

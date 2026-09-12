@@ -602,7 +602,6 @@ def _bind_compose(
         capture_session_id=session_id, cam_factory=cam_factory,
         config_dir=config_dir, topology=box.topology,
         safety_profile=box.safety_profile, role_targets=box.role_targets,
-        session_volume_db=box.session_volume_db,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
         bass_extension_for_spec=bass_for_spec,
@@ -761,6 +760,7 @@ async def _measure(
         )
         async with measurement_door(
             profile=measurement_profile,
+            spl_monitor=spl_monitor,
             measurement_volume_db=box.session_volume_db,
             camilla_factory=cam_factory,
             action="measuring",
@@ -808,6 +808,7 @@ async def _measure(
             )
             async with TuningSession(
                 session_id=session_id,
+                allocate_take_id=manifest.allocate_take_id,
                 seams=seams,
                 measurement_level_db=box.session_volume_db,
                 level_match_trims_db=trims,
