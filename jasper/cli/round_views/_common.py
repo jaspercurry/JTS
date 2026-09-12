@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
@@ -224,27 +225,38 @@ class SetTakes(NamedTuple):
         ids = self.selected_ids
         if requested is not None:
             if requested not in ids:
-                raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested)
+                raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested, take_ids=ids)
             return requested
-        if len(ids) != 1:
-            raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
-        return ids[0]
+        if len(ids) == 1:
+            return ids[0]
+        on_axis = [take["take_id"] for take in self.takes if take["selected"]
+                   and take["pose"].get("kind") == POSE_KIND_BEARING
+                   and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0]
+        if len(on_axis) == 1:
+            return on_axis[0]
+        raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
 
 
-def read_run_manifest(inputs: RoundInputs) -> Mapping[str, Any]:
-    directory, _ = round_artifact_dir(inputs.session_dir)
-    path = directory / RUN_MANIFEST_FILENAME if directory else inputs.session_dir / RUN_MANIFEST_FILENAME
-    if directory is None or not path.is_file():
-        raise RoundSetRefused("round_manifest_missing", path=str(path))
-    manifest = json.loads(path.read_text())
+def read_run_manifest(
+    inputs: RoundInputs, *, manifest: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    if manifest is None:
+        directory, _ = round_artifact_dir(inputs.session_dir)
+        path = directory / RUN_MANIFEST_FILENAME if directory else inputs.session_dir / RUN_MANIFEST_FILENAME
+        if directory is None or not path.is_file():
+            raise RoundSetRefused("round_manifest_missing", path=str(path))
+        manifest = json.loads(path.read_text())
+    assert manifest is not None
     if manifest.get("finalized") is not True:
-        raise RoundSetRefused("round_manifest_unfinalized", path=str(path))
+        raise RoundSetRefused("round_manifest_unfinalized", run_id=manifest.get("run_id"))
     return manifest
 
 
-def resolve_set(inputs: RoundInputs, set_id: str | None = None) -> SetTakes:
+def resolve_set(
+    inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
+) -> SetTakes:
     """Resolve the executor's set without rebuilding its identity (ADR-0299)."""
-    sets = read_run_manifest(inputs)["sets"]
+    sets = read_run_manifest(inputs, manifest=manifest)["sets"]
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
     if len(matches) != 1:
         raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])
@@ -301,6 +313,17 @@ def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
     return default_out(
         round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact, getattr(args, "set", None)
     )
+
+
+def add_set_argument(
+    parser: argparse.ArgumentParser, *, name: str = "--set", required: bool = False,
+    take: bool = False,
+) -> None:
+    parser.add_argument(name, required=required, help="set in the run manifest; optional for a one-set round")
+    if not required:
+        parser.set_defaults(optional_set_flags=(*(parser.get_default("optional_set_flags") or ()), name))
+    if take:
+        parser.add_argument(name.removesuffix("set") + "take", help=f"selected take within {name}; defaults to the unique on-axis take")
 
 
 def add_rungs_ms_argument(

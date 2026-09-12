@@ -1098,7 +1098,15 @@ def sweep_round(
     graph_fingerprint: str | None = None,
     take_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Sweep selected captures with the same gate ladder and numerical frame."""
+    """Sweep one banked round's gate and report what moved with the window.
+
+    ``at_hz`` names the bins the caller already cares about — the spec
+    verdict's worst bin, typically, which is not in general the band's own
+    deepest one. Each is read exactly as a band's worst bin is, null model
+    included, and reported under ``features``.
+
+    Raises :class:`RoundCapturesRefused` naming the missing input.
+    """
     rungs, wanted = _validated(rungs_ms, at_hz)
     captures = discover_captures(Path(round_dir), select=lambda doc: (
         (take_ids is None or document_capture_id(doc) in take_ids)

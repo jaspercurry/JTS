@@ -2,12 +2,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Grade the round's own per-set room median and optional baseline."""
+"""How flat the seat cube's median is, band by band, and how it moved.
+
+* ``room-grade <round-dir> [--baseline <round-dir>]`` — grade this round's
+  ``room_median.json`` (the seat-cube view's artifact, not this one's) against
+  flat, from the prescribable band's floor to the room ceiling and split at
+  :data:`~jasper.active_speaker.crossover_v2.room_views.ROOM_BAND_SPLITS_HZ`,
+  and — with a baseline round — the same numbers of that round's median
+  beside them. Writes ``room_grade.json`` beside the round.
+
+The median is read through the room door's own reader
+(:mod:`~jasper.active_speaker.crossover_v2.room_prescription`), so a
+document this view grades is exactly one the room door would prescribe
+against, and a document neither accepts refuses by the same name here.
+
+A regressed band is DISCLOSED, never acted on: what a band that moved the
+wrong way means for the tune is the reader's judgement, and restoring an
+incumbent is the doctrine's own path (docs/measurement-loop-doctrine.md
+section 3), not this view's.
+"""
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.room_grade import (
     RoomMedian,
@@ -28,7 +48,7 @@ from ._common import (
     _load_round,
     _view_out,
     _write,
-    answer,
+    add_set_argument, answer,
     default_out,
     refused_by_name,
     resolved_out, resolve_set, round_inputs,
@@ -44,6 +64,19 @@ def _median(path: Path) -> RoomMedian:
     return read_room_median(
         stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
     )
+
+
+def _band_line(band: Mapping[str, Any]) -> str:
+    if band["rms_db"] is None:
+        return f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: unavailable"
+    spread = "n/a" if band["spread_db"] is None else f"{band['spread_db']:.1f} dB"
+    line = (
+        f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: rms {band['rms_db']:.1f} dB "
+        f"max {band['max_db']:.1f} dB spread {spread}"
+    )
+    if band["incumbent_rms_db"] is None:
+        return line
+    return f"{line} | incumbent rms {band['incumbent_rms_db']:.1f} (Δ {band['delta_rms_db']:+.1f})"
 
 
 def _cmd_room_grade(args: argparse.Namespace) -> int:
@@ -73,6 +106,10 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
                         else bundle_graph_scopes(banked.session_dir),
         "graph_scopes_source": "selected_median" if median.evidence is not None else "round",
     }
+    # Read before filed, as close-reference does: a grade survives an --out the
+    # operator may not write.
+    for band in artifact["bands"]:
+        print(_band_line(band), file=sys.stderr)
     written = _write(artifact, args.out, _view_out(args, banked))
     regressed = artifact["regressed_bands"]
     comparison = artifact["comparison"]
@@ -116,7 +153,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help=f"{_ROUND_DIR_HELP} whose median is the incumbent; its bands are "
              "disclosed beside this round's, never acted on",
     )
-    room_grade.add_argument("--set", help="set whose room median is graded")
-    room_grade.add_argument("--baseline-set", help="set in --baseline")
+    add_set_argument(room_grade)
+    add_set_argument(room_grade, name="--baseline-set")
     room_grade.add_argument("--out", default=None, help="write the result here")
     room_grade.set_defaults(func=_cmd_room_grade)

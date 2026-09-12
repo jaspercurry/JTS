@@ -9,15 +9,13 @@ import argparse
 import json
 from pathlib import Path
 
-from jasper.active_speaker.measurement_bass import bass_view
-from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take
-from jasper.active_speaker.bass_fit import fit_bass_shape
 from jasper.active_speaker.candidate_bank import load_candidate_artifact
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
-from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer, default_out, resolve_set, round_inputs
+from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, add_set_argument, answer, default_out, resolve_set, round_inputs
 
 def _cmd_bass(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.measurement_bass import bass_view  # lazy: laptop FFT analysis
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, args.round_dir)
     selected = resolve_set(inputs, args.set)
     payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, bass_view, inputs.session_dir,
@@ -30,15 +28,15 @@ def _cmd_bass(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("bass", help="bass response, quiet-window SNR and H2/H3")
     parser.add_argument("round_dir", type=Path)
-    parser.add_argument("--set")
+    add_set_argument(parser)
     parser.add_argument("--calibration-root", type=Path, help="microphone calibration registry")
     parser.add_argument("--out")
     parser.set_defaults(func=_cmd_bass)
     compare = sub.add_parser("bass-compare", help="compare selected bass sets")
     compare.add_argument("before", type=Path)
     compare.add_argument("after", type=Path)
-    compare.add_argument("--before-set")
-    compare.add_argument("--after-set")
+    add_set_argument(compare, name="--before-set", take=True)
+    add_set_argument(compare, name="--after-set", take=True)
     compare.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
     compare.add_argument("--out")
     compare.set_defaults(func=_cmd_compare)
@@ -49,10 +47,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     fit.set_defaults(func=_cmd_fit)
 
 def _cmd_compare(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take  # lazy: laptop array analysis
 
     before, after = round_inputs(args.before), round_inputs(args.after)
-    before_id = resolve_set(before, args.before_set).take_id()
-    after_id = resolve_set(after, args.after_set).take_id()
+    before_id = resolve_set(before, args.before_set).take_id(args.before_take)
+    after_id = resolve_set(after, args.after_set).take_id(args.after_take)
     paths = [default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
              for inputs, root, set_id in ((before, args.before, args.before_set), (after, args.after, args.after_set))]
     def compare():
@@ -64,6 +63,8 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                   bands=payload["bands"], line=f"bass-compare -> {written}")
 
 def _cmd_fit(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.bass_fit import fit_bass_shape  # lazy: laptop array analysis
+    from jasper.active_speaker.bass_comparison import selected_take  # lazy: laptop array analysis
 
     def fit():
         request = json.loads(args.request.read_text())

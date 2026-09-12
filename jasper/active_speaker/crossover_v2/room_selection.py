@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Selected seat curves."""
+"""Select one compatible set of seat records before computing room views."""
 
 from __future__ import annotations
 
@@ -76,6 +76,11 @@ def select_seat_takes(
     bundle_dir: Path, *, capture_id: str | None = None,
     take_ids: tuple[str, ...] | None = None, basis: Mapping[str, Any] | None = None,
 ) -> SeatSelection:
+    """A capture id selects its whole compatible set; no selector may mix sets.
+
+    Unknown identity stays unknown. Within a set, use the newest readable
+    take per physical pose and disclose older and unusable records.
+    """
     groups: dict[str, list[tuple[Measurement, Mapping[str, Any]]]] = {}
     bases: dict[str, dict[str, Any]] = {}
     for row, record in measurement_documents(bundle_dir):
