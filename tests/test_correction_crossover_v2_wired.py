@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from tests.test_active_speaker_measurement_door import box as box
+from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
@@ -626,7 +627,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     from dataclasses import replace
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.run_manifest import RunManifest
-    from tests.engine_twin import FakeSeams as EngineSeams, tuning_session
+    from tests.engine_twin import FakeSeams as EngineSeams
     from tests.test_plan_run import _Store, _analysis, _walk, _SCOPES
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from jasper.active_speaker.crossover_v2.capture_plan import PlanCapture
@@ -641,7 +642,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
-    request = _walk([0, 20])
+    request = replace(_walk([0, 20]), operating_levels_db=(-20,))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
         for stop in request.stops) if phase else None
@@ -679,7 +680,7 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     assert manifest.takes_measured == 2
     assert len(gate.grants) == 2
     assert fakes.graph.restores == 1
-    assert box.volume_db == -37
+    assert box.volume_db == HOUSEHOLD_DB
     assert flow.published_candidates == []
     apply_route.assert_not_called()
     apply_dsp.assert_not_called()
@@ -698,7 +699,7 @@ def test_plan_host_controls_drain_the_session(monkeypatch, tmp_path, box, signal
     asyncio.run(drive())
     assert fakes.play.calls == []
     assert fakes.graph.restores == 1
-    assert box.volume_db == -37
+    assert box.volume_db == HOUSEHOLD_DB
     assert manifest.finalized
 
 
@@ -719,7 +720,7 @@ async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeyp
     signals.complete.set()
     await task
     assert manifest.reason == "complete_requested"
-    assert box.volume_db == -37
+    assert box.volume_db == HOUSEHOLD_DB
 
 
 async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monkeypatch, tmp_path, box):
@@ -745,7 +746,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     assert [call[0] for call in gate.grants] == [1, 1, 2]
     assert max(progress["budget"]["by_household"] for progress in gate.progress) == 1
     assert fakes.graph.restores == 1
-    assert box.volume_db == -37
+    assert box.volume_db == HOUSEHOLD_DB
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
@@ -822,12 +823,12 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
-    from tests.engine_twin import FakeSeams, tuning_session
+    from tests.engine_twin import FakeSeams
     from tests.test_plan_run import _Store, _walk, _SCOPES
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = _walk([0])
+    request = replace(_walk([0]), operating_levels_db=(-20,))
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
                        program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
     manifest = RunManifest("two-rungs", _Store(fakes.records))

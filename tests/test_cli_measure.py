@@ -1231,6 +1231,16 @@ def test_a_staged_walk_measures_through_the_same_loop_as_a_spec_batch(
     assert staged.staged_angle_request_pending() is False
 
 
+@pytest.mark.parametrize("levels", [(-20,), (-20, -14)])
+def test_fixed_cli_level_mismatch_is_refused_before_the_hold(speaker, staged, capsys, levels):
+    staged.stage_angle_request(replace(_one_pose_walk(), operating_levels_db=levels))
+    code = measure.main(["--request", "staged", "--volume-db", "-14"])
+    payload = json.loads(capsys.readouterr().out)
+    assert (code, payload["reason"]) == (measure.EXIT_REFUSED, "walk_level_policy_invalid")
+    assert speaker["played"] == []
+    assert speaker["cam"].loaded == []
+
+
 def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path):
     """The counts a caller reads back without re-deriving them from the takes —
     written into the bundle, so the run's own answer outlives the terminal."""

@@ -147,7 +147,8 @@ class WiredStimulusCapture:
                 PlaybackObservation(emission="completed"), wav_path=finishing.result(),
             ) from exc
 
-    async def guarded_play(self, play: Callable[[], Awaitable[None]], recorder: Any) -> None:
+    @staticmethod
+    async def guarded_play(play: Callable[[], Awaitable[None]], recorder: Any) -> None:
         if recorder.failure is not None:
             raise _capture_stopped(recorder.failure, PlaybackObservation(emission="not_started"))
         observation = PlaybackObservation()

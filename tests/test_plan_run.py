@@ -603,7 +603,7 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
             if len(records) == defer_after:
                 preemptor = await owner.acquire_level(ClaimKind.COMMISSIONING, -30)
                 if stop_on_deferred:
-                    raise CaptureStopped("stop")
+                    raise plan_run.CaptureStopped("stop")
             return answer
     def build(door, allocate):
         events.append(door.measurement_volume_db)
@@ -624,7 +624,8 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
     gate = AnsweredGate()
     try:
         result = await plan_run.run_plan(request, windows=windows, manifest=manifest, analyze=_analysis,
-                                          gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS)
+                                          gate=gate, candidate_scopes=_SCOPES,
+                                          aborts={**_ABORTS, plan_run.CaptureStopped: "user_stopped"})
         expected = [(pose, level, cid) for pose in (0, 20) for level in levels for cid in ("fp-a", "fp-b")]
         # A higher-ranked claimant stops the current window; no next window may open.
         if defer_after is not None:
@@ -647,7 +648,7 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
         assert (plan.measurement_volume_db is not None) is (defer_after is not None)
         for session in sessions:
             assert not session.is_open
-        if defer_after is not None:
+        if defer_after is not None and not stop_on_deferred:
             assert REASON_REGISTRY[result.reason].next_action
     finally:
         if preemptor is not None:

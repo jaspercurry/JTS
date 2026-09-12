@@ -335,7 +335,7 @@ async def _run(
             ledger.spend(ledger.charge)
         ledger.admitted += 1
 
-    def attempt_records() -> list[tuple[dict[str, Any], str]]:
+    def attempt_records() -> list[tuple[Mapping[str, Any], str]]:
         return manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]
 
     admit = admit or default_admit

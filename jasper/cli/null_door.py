@@ -412,10 +412,13 @@ async def _play_and_capture(
     # Armed BEFORE any audio: `start` blocks until the first real chunk lands,
     # so the pre-roll is a fact rather than a hope.
     recorder.start()
+    async def play() -> None:
+        await play_program(program, session_volume_plan=volume_plan, **seams)
+
     played = False
     try:
-        await WiredStimulusCapture(mic, work_dir, spl_monitor=spl_monitor).guarded_play(
-            lambda: play_program(program, session_volume_plan=volume_plan, **seams), recorder,
+        await WiredStimulusCapture.guarded_play(
+            play, recorder,
         )
         played = True
     finally:
@@ -618,7 +621,6 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
 async def _run(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import measurement_door
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
-    from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
     from jasper.audio_measurement.program import NullConfirmUnavailable
     from jasper.audio_measurement.wired_capture import require_wired_mic
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile

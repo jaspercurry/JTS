@@ -501,3 +501,36 @@ async def test_one_hold_renews_all_three_leases_across_two_level_windows(tmp_pat
             await wait_signalled(renewed, "leases renewed between windows")
     assert counts["resume"] == counts["gate_release"] == counts["hold_release"] == 1
     assert box.volume_db == HOUSEHOLD_DB
+
+
+@pytest.mark.parametrize("fail_body", [False, True])
+async def test_graph_is_restored_only_after_all_sessions_leave_the_hold(tmp_path, box, fail_body):
+    from jasper.active_speaker.crossover_v2.door import bind_measurement_graph, isolation_hold, level_window
+    from jasper.active_speaker.crossover_v2.session import TuningSession
+    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+    from tests.engine_twin import FakePlay, FakeRecords
+
+    graph = bind_measurement_graph(_profile(), camilla_factory=lambda: box, config_dir=tmp_path)
+    async def run():
+        async with isolation_hold(graph=graph, camilla_factory=lambda: box, action="test",
+                                  volume_state_path=tmp_path / VOLUME_STATE) as hold:
+            for level in (-20, -14):
+                monitor = WiredSplMonitor(MicSensitivity(-12, 18, "1234"), 80, 0)
+                async with level_window(level, hold=hold, spl_monitor=monitor) as door:
+                    assert door.spl_monitor is monitor
+                    async with TuningSession("test", EngineSeams(door.graph, door.claim, FakeRecords(), FakePlay()),
+                                             level, lambda: "unused"):
+                        assert len(box.loaded) == 1
+                assert len(box.loaded) == 1
+            if fail_body:
+                raise RuntimeError()
+    if fail_body:
+        with pytest.raises(RuntimeError):
+            await run()
+    else:
+        await run()
+    assert len(box.loaded) == 2
+    assert box.volume_db == HOUSEHOLD_DB
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()

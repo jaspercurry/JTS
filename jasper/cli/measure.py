@@ -724,7 +724,7 @@ async def _measure(
     if volume_db is not None:
         box = replace(box, session_volume_db=volume_db)
 
-    if request is not None and request.operating_levels_db != (box.session_volume_db,):
+    if request is not None and request.operating_levels_db and request.operating_levels_db != (box.session_volume_db,):
         from jasper.active_speaker.angle_capture import WALK_LEVEL_POLICY_INVALID  # lazy: measurement stack
         raise BoxNotMeasurable(WALK_LEVEL_POLICY_INVALID, "The fixed measurement level differs from the requested windows")
 
