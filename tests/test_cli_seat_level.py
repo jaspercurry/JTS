@@ -170,9 +170,13 @@ def box(tmp_path, monkeypatch):
             assert self.spl_monitor.loudest_half_second_db_spl == -math.inf
             assert 'graph' in state.events and state.gain <= -40.0
             state.events.append("ambient")
-            observe(self.spl_monitor, state.ambient)
             if state.room_floor:
                 observe(self.spl_monitor, 72.5, frames=1024)
+                observe(self.spl_monitor, state.ambient, frames=22976)
+                assert self.spl_monitor.max_window_db_spl == pytest.approx(72.5, abs=.1)
+                assert self.spl_monitor.loudest_half_second_db_spl == pytest.approx(61.3, abs=.1)
+            else:
+                observe(self.spl_monitor, state.ambient)
             self.failure = state.ambient_failure or self.spl_monitor.error
             if self.failure and state.ambient_start_fails:
                 raise self.failure
@@ -337,6 +341,10 @@ def test_room_floor_with_scattered_period_maxima_converges_within_budget(box):
     assert len(readings) <= reading_budget(-40, 0)
     assert box.period_maxima[:2] == [60.5, 72.5]
     assert all(abs(level - 58) <= 1 for level in box.room_levels)
+    assert box.ambient_spans == [
+        box.programs[0].total_samples / box.programs[0].sample_rate_hz,
+        box.programs[1].total_samples / box.programs[1].sample_rate_hz,
+    ]
     for (gain, level), (next_gain, _) in zip(readings, readings[1:]):
         if level < box.ambient + MIC_RESPONSE_MIN_RISE_DB:
             assert 0 < next_gain - gain <= MAX_STEP_DB

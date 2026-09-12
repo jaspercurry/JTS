@@ -320,6 +320,12 @@ def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():
     assert monitor.max_window_db_spl == pytest.approx(69.9, abs=0.1)
 
 
+def test_spl_monitor_accepts_a_one_hz_sample_clock():
+    monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
+    monitor.observe((2 ** 26).to_bytes(4, "little", signed=True), 1, 1, sample_rate_hz=1)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(69.9, abs=0.1)
+
+
 @pytest.mark.parametrize("rate,block_frames,channel", [(48000, 1024, 0), (44100, 777, 1), (48000, 31001, 1)])
 def test_spl_level_follows_the_loud_region_and_resets(rate, block_frames, channel):
     monitor = WiredSplMonitor(_Sensitivity(), 85.0, channel)

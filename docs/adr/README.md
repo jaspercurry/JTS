@@ -282,5 +282,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0305](0305-the-measurement-hold-spans-a-whole-run.md) | The measurement hold spans a whole run from the mover's join | accepted |
 | [0306](0306-one-auto-level-tool-levels-a-session-once.md) | One auto-level tool levels a session once | accepted |
 | [0307](0307-only-a-measured-excess-boost-acts.md) | Only a measured excess-boost finding acts | accepted |
-| [0308](0308-the-leveling-verb-levels-with-the-measurement-sweep.md) | The leveling verb levels with the measurement sweep | accepted |
+| [0308](0308-the-leveling-verb-levels-with-the-measurement-sweep.md) | The leveling verb levels with the measurement sweep | amended by 0309 |
 | [0309](0309-the-level-statistic-is-the-loudest-half-second.md) | The level statistic is the loudest half-second | accepted |

@@ -223,7 +223,7 @@ class WiredSplMonitor:
             self.error = WiredSplCeilingExceeded(observed, self.ceiling_db_spl)
             self.exceeded.set()
 
-        self._level_window_frames = round(LEVEL_WINDOW_S * sample_rate_hz)
+        self._level_window_frames = max(1, round(LEVEL_WINDOW_S * sample_rate_hz))
         offset = 0
         while offset < frames:
             count = min(frames - offset, self._level_window_frames - self._level_frames)
