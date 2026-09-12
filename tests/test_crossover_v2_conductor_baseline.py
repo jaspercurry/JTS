@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import types
 import numpy as np
@@ -15,7 +14,6 @@ from dataclasses import replace
 from typing import Any
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import (
-    capture_plan,
     planning,
 )
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
@@ -36,7 +34,6 @@ from jasper.active_speaker.attempts_loop import (
 )
 from jasper.active_speaker.crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
-    ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     GAIN_CAP_BACKOFF_DB,
     MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
     CrossoverV2FlowError,
@@ -45,7 +42,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     back_off_gain,
 )
 from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_DONE,
     PHASE_MEASURE,
@@ -55,8 +51,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.branch_chain import crossover_response_complex, sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
@@ -80,11 +74,9 @@ from tests.crossover_v2_fixtures import (
     _DIAG_LOGGER,
     _ENTRY_BASELINE_RESIDUAL_DB,
     _POST_APPLY_RESIDUAL_DB,
-    _alignment,
     _attempt_floor,
     _capture,
     _conductor,
-    _eligible_measure_analysis,
     _measure_analysis,
     _preset,
     _run_phase,
@@ -699,44 +691,6 @@ def test_a_pre_2081_persisted_row_restores_as_unrecorded_not_as_a_match():
 # --- happy path -----------------------------------------------------------------
 
 
-def test_happy_path_walks_check_measure_apply_verify():
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    assert c.current_phase == PHASE_CHECK
-
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is True
-    assert fakes.analyzed[0][0] == PHASE_CHECK
-    assert len(fakes.published_checks) == 1
-    assert c.current_phase == PHASE_MEASURE
-
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert verdict["candidate_fingerprint"]
-    # Two-stage commission D1 (PR-T3): the candidate is a PROPOSAL. Nothing
-    # in this payload tells anything to apply it — the ``auto_apply: True``
-    # literal that used to sit here is gone, and its absence is the pin.
-    assert "auto_apply" not in verdict
-    assert fakes.analyzed[1][0] == PHASE_MEASURE
-    assert len(fakes.published_candidates) == 1
-    candidate = fakes.published_candidates[0]
-    assert candidate.fingerprint == verdict["candidate_fingerprint"]
-    # positive delay_us ⇒ tweeter earlier ⇒ tweeter delayed (W4 sign contract).
-    assert candidate.alignment.delay_role == "tweeter"
-    assert candidate.alignment.delay_us == pytest.approx(150.0)
-    # MEASURE accepted but not applied ⇒ the host's own auto-apply is in
-    # flight (machine-paced seconds, never a human control page).
-    assert c.current_phase == PHASE_APPLYING
-
-    c.note_apply_complete()
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    assert c.applied is True
-    assert fakes.analyzed[2][0] == PHASE_VERIFY
-    assert c.verify_outcome == "pass"
-    assert c.current_phase == PHASE_DONE
-
-
 def test_a_capture_on_a_phase_without_a_consumer_is_refused_loudly():
     """A capture index mapped to a control-page phase is a wiring defect.
 
@@ -778,82 +732,6 @@ def test_an_implausible_delay_never_renders_mic_placement_advice():
     assert "low_alignment_confidence" not in REASON_REGISTRY
 
 
-def test_low_alignment_confidence_accepts_and_banks_a_reservation():
-    """The nanny burn-down, at the trust floor.
-
-    It REFUSED here and spent a retry until then. §4 names its exact
-    category as excluded — "confidence heuristics ... is provenance, not a
-    gate" — and the one live bench datum undercut it: two captures at ~0.677
-    confidence, one accepted and one refused 58 s apart, so confidence was
-    never the discriminator the reused reason code claimed it was.
-
-    Transformed rather than deleted, exactly as the ripple gate below was: the
-    threshold and its exclusive comparator are still pinned, and only the
-    consequence of crossing it changed."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program,
-        alignment=_alignment(confidence=ALIGNMENT_CONFIDENCE_TRUST_FLOOR - 0.1),
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    # No reason code at all — the structural difference from the refusal this
-    # replaces, and the same shape the ripple disclosure asserts below.
-    assert not verdict.get("code")
-    # The candidate the refusal used to prevent now exists and is published.
-    assert fakes.published_candidates
-    assert c.candidate is not None
-    # The measured value rides WITH the floor it was judged against, so a later
-    # constant change cannot retro-caption a banked reservation.
-    reservation = c.measure_alignment_reservation
-    assert reservation is not None
-    assert reservation["confidence"] == pytest.approx(
-        ALIGNMENT_CONFIDENCE_TRUST_FLOOR - 0.1
-    )
-    assert reservation["trust_floor"] == ALIGNMENT_CONFIDENCE_TRUST_FLOOR
-
-
-def test_alignment_confidence_at_the_trust_floor_banks_nothing():
-    """The floor is still an exclusive lower bound (`<`, not `<=`).
-
-    Exactly-at-floor is trusted, so it reserves nothing — the boundary the
-    refusal used to be pinned at, kept on the disclosure."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program,
-        alignment=_alignment(confidence=ALIGNMENT_CONFIDENCE_TRUST_FLOOR),
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
-    assert c.measure_alignment_reservation is None
-
-
-def test_uncalibrated_measure_accepts_and_banks_a_reservation():
-    """Audit gauntlet 5a, at the conductor: disclose, never block.
-
-    Same shape as the alignment-confidence reservation above — the capture
-    is ACCEPTED and carries an honest reservation instead of refusing, and
-    the fact is read off ``analysis.mic_calibrated`` alone, never guessed
-    from ``mic_tier`` (a resolved-but-unrecognized-model mic ALSO reports the
-    conservative "phone" tier while genuinely being calibrated — see
-    ``tests/test_correction_crossover_v2_endpoints.py``'s bare-curve case)."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(program, mic_calibrated=False)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert not verdict.get("code")
-    assert fakes.published_candidates
-    assert c.candidate is not None
-    assert c.measure_calibration_reservation is True
-
-
 def test_a_calibrated_measure_banks_no_calibration_reservation():
     """The converse — the disclosure's own "clean measurement" counterpart."""
     fakes = FakeSeams()
@@ -863,56 +741,6 @@ def test_a_calibrated_measure_banks_no_calibration_reservation():
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert c.measure_calibration_reservation is None
-
-
-def test_missing_delay_preserves_evidence_but_cannot_build_a_driver_candidate():
-    fakes = FakeSeams(measure=lambda program: replace(_measure_analysis(program), alignment=None))
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert not verdict["accepted"] and not verdict["capabilities"]["delay_estimate"]
-    assert verdict["kept_measurement"]
-    assert not fakes.published_candidates
-
-
-def test_implausible_delay_rejects_measure_even_at_high_confidence():
-    """Fix 3: a confidently-WRONG delay (high GCC confidence at the wrong
-    lag — a real hardware failure mode, not a hypothetical one) must still
-    be rejected when its magnitude falls outside the preset's declared
-    ``delay_range_ms`` search bound (``_two_way_preset``'s [0.05, 0.30] ms =
-    [50, 300] us) rather than auto-applying a physically implausible
-    correction. A delay inside that declared bound is unaffected.
-
-    **It has its own code since the confidence rung was demoted.** The two
-    shared ``low_alignment_confidence``, so this physics rejection rendered a
-    sentence about mic placement — the #2085 pathology, aimed at a household
-    whose microphone was never the problem. A physics fact and a prior are
-    different answers and now say different things."""
-    fakes = FakeSeams()
-    # High confidence (clears ALIGNMENT_CONFIDENCE_TRUST_FLOOR) but a
-    # magnitude (631 us) more than double the declared 300 us upper bound —
-    # mirrors the confidently-implausible -631 us hardware failure.
-    fakes.measure = lambda program: _measure_analysis(
-        program, alignment=_alignment(delay_us=-631.0, confidence=0.9),
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "delay_implausible"
-    assert not fakes.published_candidates
-    assert c.candidate is None
-    assert c.current_phase == PHASE_MEASURE
-
-    # A delay inside the declared bound (same high confidence) is accepted.
-    fakes2 = FakeSeams()
-    fakes2.measure = lambda program: _measure_analysis(
-        program, alignment=_alignment(delay_us=-200.0, confidence=0.9),
-    )
-    c2 = _conductor(fakes2)
-    _run_phase(c2, 1, 1)
-    verdict2 = _run_phase(c2, 2, 2)
-    assert verdict2["accepted"] is True
 
 
 # --- measurement-honesty disclosure G1: predicted-ripple reservation --------------
@@ -1338,109 +1166,6 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     assert legacy.configured_crossover_response_by_role is None
     assert legacy.configured_polarity_sign_by_role is None
     assert legacy.candidate_required_band_hz_by_role is None
-
-
-def test_an_uncomposed_protected_neutral_capture_is_refused_at_the_seam():
-    """The fitter's branch-input invariant, pinned where it actually runs.
-
-    Pinned at ``_build_measure_candidate``, NOT ``_fit_linearization``: the
-    2026-08-05 panel (correctness B1 / hearing-safety SF2) showed the guard
-    living inside the fit was swallowed three lines later by
-    ``_build_candidate``'s SF2 degrade handler, which catches ``ValueError``,
-    and the session committed a reviewable, Apply-able trims-only candidate. A
-    direct call to the private method cannot see that. It also has to refuse
-    the trims-only path: the emitter runs with region polarity OFF here and
-    §4.2 restores ``sign_c`` offline, so trim/delay/polarity would be solved in
-    a different convention from the applied graph.
-    """
-    from jasper.audio_measurement.program import build_measure_program
-    protection = {"woofer": [flow.CrossoverSection(6000.0, 4, False)],
-                  "tweeter": [flow.CrossoverSection(300.0, 4, True)]}
-    program = build_measure_program(
-        {"woofer": -11.0, "tweeter": -13.0},
-        [RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-         RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0))],
-    )
-    c = _conductor(FakeSeams(), measurement_protection_sections_by_role=protection)
-    c._measure_program = program
-    analysis = _eligible_measure_analysis(program)
-    assert analysis.configured_path_composed is False
-
-    # THE SEAM: no candidate is built, so none can be committed or applied.
-    with pytest.raises(ValueError, match="reached the fitter uncomposed"):
-        c._build_measure_candidate(analysis, None)
-    assert c.candidate is None
-
-    # …and it does NOT fire once the composition ran, nor on a legacy conductor
-    # (whose emitter puts the shoulders into the audio itself).
-    composed = dataclasses.replace(analysis, configured_path_composed=True)
-    assert c._build_candidate(composed) is not None
-    legacy = _conductor(FakeSeams())
-    legacy._measure_program = program
-    assert legacy._build_candidate(analysis) is not None
-
-
-def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
-    """#2098's pattern: one producer owns the capture-count fact.
-
-    `prepare_v2_session` runs stage 1 with `STAGE1_INCLUDES_CLOUD_MEASURE`, and
-    before this the chooser still read `shape.measure_capture_target` — the
-    cloud-inclusive 10 (Full) / 5 (Express) — plus cloud-inclusive minutes. The
-    household was told it was starting a ten-capture walk that the session then
-    did not take. Both surfaces now derive from the same flag.
-    """
-    info = flow.tier_display_info()
-    assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # DERIVED from the surviving stage-1 flag rather than hardcoded, so the
-    # chooser is pinned to whatever stage 1 actually runs and this test moves
-    # with a flag flip instead of going stale — which it has done twice now,
-    # for R17's lateral flip on and the 2026-08-18 pause back off, before the
-    # walk was retired outright. No stage-1 plan builds a lateral group any
-    # more, so that term is gone rather than held at a flag-derived 0; only
-    # #2291's entry baseline is still flag-driven, and it's on, so this is 3.
-    expected_stage1 = 2 + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    # The tiers genuinely no longer differ in stage 1 — so the numbers must not
-    # imply that they do. (The lateral walk would not change that: it is the
-    # ANCHOR's own robustness sample, not a spatial cloud, so it is the same
-    # poses at either tier.)
-    assert info["full"]["stage1_captures"] == expected_stage1
-    assert info["express"]["stage1_captures"] == expected_stage1
-    # Stage 2 is where they still differ, and the chooser copy says so.
-    # 6 since the 2026-08-24 geometry ruling put the design axis into the
-    # post-apply pose set (``CLOUD_VERIFY_POSE_PROMPTS``): VERIFY's anchor plus
-    # five prompted poses.
-    assert info["full"]["stage2_captures"] == 6
-    assert info["express"]["stage2_captures"] == 1
-    for tier, detail in info.items():
-        assert detail["capture_target"] == (
-            detail["stage1_captures"] + detail["stage2_captures"]
-        ), tier
-        # Honest minutes: a real duration, bounded by the module's OWN
-        # per-entry wall-clock ceiling for the captures this build plans, so
-        # the bound moves with the plan instead of going stale. It was a flat
-        # ``<= 10`` written for a two-capture stage 1; R17's walk makes Full's
-        # honest quote 12 min (6 before the flip), which that bound would have
-        # failed for being TRUE. The sharp anti-cloud guards are the two
-        # assertions above — the flag itself and the flag-derived stage-1
-        # count; this one only checks the promise tracks the plan rather than
-        # being a hand-written figure.
-        assert 0 < detail["estimated_minutes"] <= (
-            detail["capture_target"] * flow.WALL_CLOCK_CEILING_PER_ENTRY_S / 60.0
-        ), tier
-
-    # The degraded fallback answers with the SAME numbers, so a failure in the
-    # memoized build cannot quietly restore the cloud-inclusive figures.
-    with pytest.MonkeyPatch.context() as mp:
-        # The memo lives with ``tier_display_info`` in ``crossover_v2.capture_plan``;
-        # patching the flow's re-export would rebind a name nothing reads.
-        mp.setattr(
-            capture_plan, "_tier_display_info_cached",
-            lambda: (_ for _ in ()).throw(ValueError("forced")),
-        )
-        degraded = flow.tier_display_info()
-    for tier, detail in degraded.items():
-        assert detail["stage1_captures"] == info[tier]["stage1_captures"], tier
-        assert detail["capture_target"] == info[tier]["capture_target"], tier
 
 
 def test_measure_program_gains_back_off_from_caps():

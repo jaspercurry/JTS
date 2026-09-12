@@ -99,9 +99,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "verify_inconclusive_message",
     ),
     "spatial": (
-        "CLOUD_CLOSE_AWAITING_CONFIRM",
-        "CLOUD_CLOSE_NONE",
-        "CLOUD_CLOSE_RUNNING",
         "GEOMETRY_RETRY_POSITIONS",
     ),
     # Owned by the flow ITSELF since the ``attempt_grading`` fold: the package

@@ -571,7 +571,6 @@ def test_a_composed_walk_is_the_stops_in_order_as_poses() -> None:
         ac.per_driver_at(list(_SHIPPED_ANGLES)),
         externally_positioned=False,
         base_entries=3,
-        plans_cloud_group=False,
     )
     assert len(prompts) == len(_SHIPPED_ANGLES)
     assert [flow.position_angle_deg(p) for p in prompts] == list(_SHIPPED_ANGLES)
@@ -588,7 +587,6 @@ def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
         with pytest.raises(ac.LateralWalkRefused) as excinfo:
             ac.session_lateral_walk(
                 request, externally_positioned=False, base_entries=3,
-                plans_cloud_group=False,
             )
         assert excinfo.value.reason == ac.WALK_REGIME_UNSUPPORTED
         assert ac.REGIME_SUMMED in excinfo.value.detail
@@ -610,7 +608,6 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
                 ac.per_driver_at([7], mover=mover),
                 externally_positioned=session_positioned,
                 base_entries=3,
-                plans_cloud_group=False,
             )
         assert excinfo.value.reason == ac.WALK_MOVER_MISMATCH
     # ...and both matched pairs compose.
@@ -622,83 +619,7 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
             ac.per_driver_at([7], mover=mover),
             externally_positioned=session_positioned,
             base_entries=3,
-            plans_cloud_group=False,
         )
-
-
-@pytest.mark.parametrize("plans_cloud_group", [False, True])
-def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(
-    plans_cloud_group: bool,
-) -> None:
-    from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpecError, _validate_capture_plan
-
-    shape = flow.resolve_plan_shape(flow.TIER_FULL)
-    base_entries = len(flow.build_v2_cloud_index_phase_map(
-        plan_shape=shape,
-        include_cloud_measure=plans_cloud_group,
-        include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-    ))
-
-    def capture_takes(stops: int) -> bool:
-        plan = flow.build_v2_capture_plan(
-            _ROLES_BANDS, _FC_HZ, plan_shape=shape,
-            include_cloud_measure=plans_cloud_group,
-            include_lateral=True,
-            include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-            lateral_prompts=tuple(ac.pose_at_angle(0) for _ in range(stops)),
-        )
-        try:
-            _validate_capture_plan(plan)
-        except CaptureSpecError:
-            return False
-        return True
-
-    def gate_takes(stops: int) -> bool:
-        try:
-            ac.session_lateral_walk(
-                ac.per_driver_at([0] * stops),
-                externally_positioned=False,
-                base_entries=base_entries,
-                plans_cloud_group=plans_cloud_group,
-            )
-        except ac.LateralWalkRefused:
-            return False
-        return True
-
-    for stops in (1, 24, 33, 99, 110, 111, 120, 121, 128, 129):
-        assert gate_takes(stops) == capture_takes(stops), (
-            f"gate and plan disagree at {stops} stops "
-            f"(plans_cloud_group={plans_cloud_group})"
-        )
-    # ...and the boundary is really in range, so the loop is not vacuous.
-    assert capture_takes(1) and not capture_takes(140)
-
-
-def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
-    shape = flow.resolve_plan_shape(flow.TIER_FULL)
-    base_entries = len(flow.build_v2_cloud_index_phase_map(
-        plan_shape=shape, include_cloud_measure=True, include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-    ))
-    assert base_entries == 11
-
-    fits = ac.session_lateral_walk(
-        ac.per_driver_at([0] * 110),
-        externally_positioned=False,
-        base_entries=base_entries,
-        plans_cloud_group=True,
-    )
-    assert len(fits) == 110
-
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.session_lateral_walk(
-            ac.per_driver_at([0] * 111),
-            externally_positioned=False,
-            base_entries=base_entries,
-            plans_cloud_group=True,
-        )
-    assert excinfo.value.reason == ac.WALK_OVER_CAPTURE_CAPACITY
 
 
 def test_the_pose_record_states_the_seams_own_regime_word() -> None:
@@ -730,7 +651,6 @@ def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
     """
     prompts = ac.session_lateral_walk(
         ac.per_driver_at([0, 22]), externally_positioned=False, base_entries=3,
-        plans_cloud_group=False,
     )
     assert isinstance(prompts, tuple)
     assert [type(p) for p in prompts] == [flow.CloudPositionPrompt] * 2
@@ -1012,13 +932,13 @@ def _candidate_batch_plan():
     )
     prompts = ac.session_lateral_walk(
         request, externally_positioned=False, base_entries=2,
-        plans_cloud_group=False, supported_summed_candidates=True,
+        supported_summed_candidates=True,
     )
     return flow.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ,
         acknowledgement_binding="candidate-batch-test",
         plan_shape=dataclasses.replace(flow.resolve_plan_shape("full"), hand_released_positions=True),
-        include_lateral=True, include_cloud_measure=False,
+        include_lateral=True,
         lateral_prompts=prompts,
         lateral_candidate_ids=tuple(stop.candidate_id for stop in request.stops),
     ).capture_plan
@@ -1029,11 +949,11 @@ def test_summed_candidate_walk_requires_the_supported_execution_path(candidates)
     request = ac.request_for_program(mp.program("tournament", "express"), candidates=candidates)
     with pytest.raises(ac.LateralWalkRefused) as exc:
         ac.session_lateral_walk(
-            request, externally_positioned=False, base_entries=2, plans_cloud_group=False,
+            request, externally_positioned=False, base_entries=2,
         )
     assert exc.value.reason == ac.WALK_REGIME_UNSUPPORTED
     assert len(ac.session_lateral_walk(
-        request, externally_positioned=False, base_entries=2, plans_cloud_group=False,
+        request, externally_positioned=False, base_entries=2,
         supported_summed_candidates=True,
     )) == len(request.stops)
 
@@ -1385,7 +1305,7 @@ def test_plan_copy_survives_staging_and_reaches_the_measurement_screen(spool_slo
     plan = flow.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ, acknowledgement_binding="measurement-plan-copy-test",
         plan_shape=dataclasses.replace(flow.resolve_plan_shape(tier), hand_released_positions=mover == ac.MOVER_HUMAN),
-        include_lateral=True, include_cloud_measure=False, lateral_prompts=prompts,
+        include_lateral=True, lateral_prompts=prompts,
         lateral_candidate_ids=("",),
     ).capture_plan
     entry, = [entry for entry in plan.entries if entry.kind_label == "lateral"]
@@ -1414,7 +1334,7 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     plan = flow.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ, acknowledgement_binding="room-position-test",
         plan_shape=dataclasses.replace(flow.resolve_plan_shape("full"), hand_released_positions=True),
-        include_lateral=True, include_cloud_measure=False, lateral_prompts=prompts,
+        include_lateral=True, lateral_prompts=prompts,
         lateral_candidate_ids=tuple(s.candidate_id for s in request.stops),
     ).capture_plan
     entries = [e for e in plan.entries if e.kind_label == "lateral"]

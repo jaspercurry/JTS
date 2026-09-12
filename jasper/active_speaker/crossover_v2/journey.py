@@ -61,7 +61,6 @@ PHASE_REVIEW = "review"
 # pre-apply cloud's close has NOT produced a candidate yet — the household has
 # not confirmed, or the fit is running. Also a control-page phase with no
 # capture index.
-PHASE_CLOSING = "closing"
 PHASE_DONE = "done"
 
 # The capturing phases in CANONICAL ORDER — the ones bound to the capture

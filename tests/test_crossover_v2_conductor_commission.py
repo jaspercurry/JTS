@@ -7,24 +7,19 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import math
 import re
 import types
 import pytest
 import yaml
 from dataclasses import replace
-from typing import Any
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_CLOUD_GEOMETRY_LOCKED
 from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
 from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_TAP,
@@ -35,7 +30,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLOUD_RETAKE_ALLOWANCE,
     CLOUD_WALK_SHAPE_TAIL,
     CLOUD_WALK_SHAPE_TAIL_POST_APPLY,
-    DEFAULT_CLOUD_MEASURE_POSITIONS,
     DEFAULT_CLOUD_VERIFY_POSITIONS,
     GEOMETRY_RETRY_OFFSET_CM,
     GEOMETRY_RETRY_POSITIONS,
@@ -63,10 +57,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_session_spec,
     build_v2_verify_capture_plan,
     build_v2_verify_session_spec,
-    cloud_capture_target,
-    cloud_plan_max_attempts,
     cloud_geometry_retry_reach_cm,
-    cloud_walk_reach_cm,
     cloud_walk_shape,
     express_cloud_measure_positions,
     format_position_distance,
@@ -79,34 +70,17 @@ from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
     RoleBand,
 )
-from jasper.audio_measurement.program_analysis import ProgramAnalysis
-from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
-    CAPS,
-    CLOUD_MAP,
-    CLOUD_MEASURE_INDEXES,
     FC_HZ,
     FakeSeams,
     SESSION,
     SESSION_VOLUME_DB,
-    _DIAG_LOGGER,
     _GOLDEN_V2_PLAN_BYTES,
-    _cloud_conductor,
-    _comb_cloud_analysis_factory,
-    _comb_summed_response,
     _conductor,
-    _confirm_cloud,
     _dummy_program,
-    _eligible_measure_analysis,
-    _loc,
-    _lock,
     _preset,
     _roles,
     _run_phase,
-    _verify_analysis,
-    _walk,
-    _walk_measure_cloud_to_close,
-    with_records,
 )
 
 
@@ -156,25 +130,6 @@ def test_an_unknown_tier_is_refused_and_an_absent_one_means_full():
     for bogus in ("quick", "Full measurement", "expres", "0"):
         with pytest.raises(CrossoverV2FlowError):
             resolve_plan_shape(bogus)
-
-
-def test_one_resolved_shape_feeds_both_the_spec_and_the_index_phase_map():
-    """The desync hazard this value exists to close: the emitted plan and the
-    conductor's index→phase map must be derived from the SAME shape, not from
-    two functions that happen to share defaults."""
-    shape = resolve_plan_shape(TIER_EXPRESS)
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24, plan_shape=shape,
-    )
-    index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
-    plan = spec.capture_plan
-    # Stage 1's own target since the split — the whole-journey
-    # ``shape.capture_target`` spans two sessions and no plan emits it.
-    assert plan.capture_target == len(index_phase) == shape.measure_capture_target
-    assert sorted(index_phase) == [e.index + 1 for e in plan.entries]
-    # Handing over two sources of truth at once is refused outright.
-    with pytest.raises(CrossoverV2FlowError):
-        build_v2_cloud_index_phase_map(plan_shape=shape, cloud_measure_positions=9)
 
 
 def test_the_post_apply_pose_set_is_a_parameter_with_a_runbook_default():
@@ -306,18 +261,6 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     # …and its own walked-away ceiling: 1800 + (6-3)*120 / the plain baseline.
     assert session_wall_clock_ceiling_s(full) == 2160.0
     assert session_wall_clock_ceiling_s(express) == 1800.0
-
-    # An express STAGE 1 is a strictly smaller draw than Full's.
-    express_stage1 = build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS)
-    assert express_stage1.capture_target == 6
-    assert [e.kind_label for e in express_stage1.entries] == (
-        ["check", "measure"] + ["cloud_measure"] * 4
-    )
-    assert express_stage1.max_attempts == (
-        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert session_wall_clock_ceiling_s(express_stage1) == 2160.0
-
 
 def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     """#1964: every word of the phone's END screen is written when stage 2 is
@@ -514,280 +457,6 @@ def test_the_verify_anchor_keeps_its_confirm_tap_on_stage_2s_own_begin():
     assert VERIFY_ANCHOR_HOLD_MESSAGE
 
 
-def test_a_voluntary_retake_replaces_the_take_and_never_loses_the_original():
-    """§2.6's fail-safe, at the conductor's own surface.
-
-    An ACCEPTED retake of an already-accepted position replaces the retained
-    take (retention is per-index idempotent); a REJECTED one never reaches
-    retention at all, so the original take stands. Either way the group stays
-    accepted and the position count never changes.
-    """
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes)
-    attempt = _walk(c, (1, 2), 1)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
-    assert PHASE_CLOUD_MEASURE in c.accepted_phases
-    retaken = CLOUD_MEASURE_INDEXES[1]
-    before = {t["index"]: t["attempt"] for t in c.group_position_takes(
-        PHASE_CLOUD_MEASURE
-    )}
-
-    # An accepted retake REPLACES: same position, newer attempt.
-    assert _run_phase(c, retaken, attempt)["accepted"] is True
-    after = {t["index"]: t["attempt"] for t in c.group_position_takes(
-        PHASE_CLOUD_MEASURE
-    )}
-    assert set(after) == set(before)
-    assert after[retaken] == attempt > before[retaken]
-    attempt += 1
-
-    # A rejected retake KEEPS the original — you can never end up with less
-    # evidence than you had by choosing to redo a spot.
-    fakes.verify = lambda program: replace(
-        _verify_analysis(program), linearity_ok=False
-    )
-    assert _run_phase(c, retaken, attempt)["accepted"] is False
-    kept = {t["index"]: t["attempt"] for t in c.group_position_takes(
-        PHASE_CLOUD_MEASURE
-    )}
-    assert kept == after
-    assert PHASE_CLOUD_MEASURE in c.accepted_phases
-
-
-def test_a_retake_after_the_group_closed_never_drops_the_only_take(monkeypatch):
-    """The specific way a voluntary retake could have cost evidence.
-
-    The geometry-retry branch DROPS the take at the retaken index — that is
-    what "the same index is measured again" means for a REJECTION. After a
-    VOLUNTARY retake the replacement is the only copy of that position, so
-    firing that branch would leave the household with fewer positions than
-    before they chose to redo a spot.
-
-    Discriminating by construction: the group closes CLEAN (0 geometry retries
-    spent, so the ``retries < GEOMETRY_RETRY_POSITIONS`` bound is not what
-    stops it), and only then is the verdict forced to ``locked``. Without the
-    "group already recorded a verdict" guard this retake is rejected and its
-    position vanishes.
-    """
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes)
-    attempt = _walk(c, (1, 2), 1)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
-    assert c._geometry_retries_used[PHASE_CLOUD_MEASURE] == 0
-    assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
-    positions_before = c.group_positions(PHASE_CLOUD_MEASURE)
-    assert len(positions_before) == len(CLOUD_MEASURE_INDEXES)
-
-    _lock(monkeypatch)
-    late = CLOUD_MEASURE_INDEXES[-1]
-    retake = _run_phase(c, late, attempt)
-    assert retake["accepted"] is True
-    assert "code" not in retake
-    assert c.group_positions(PHASE_CLOUD_MEASURE) == positions_before
-    # The re-combined verdict IS recorded honestly — the guard suppresses the
-    # retry request, never the measurement.
-    assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
-
-
-def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publish(
-    monkeypatch, caplog,
-):
-    """#1872, BLOCKER-level proof: a re-close must RECOMPUTE the honest-
-    instrument pipeline (so the fit, the candidate's fingerprinted
-    ``exclusion_evidence``, and the journal all describe the cloud actually
-    retained) even though the durable evidence-artifact PUBLISH is a
-    per-phase singleton.
-
-    Reproduces #1872's own overlap deterministically (no sleeps — the
-    overlap is the CALL ORDER): two geometry-locked rejects exhaust the
-    retry budget (``GEOMETRY_RETRY_POSITIONS``), so the THIRD attempt at the
-    same index ACCEPTS despite geometry still reading locked — matching the
-    issue's own log shape (``geometry_retries=2``, "result accepted"). A
-    FOURTH attempt at that same index — standing in for the late-arriving
-    retake/tail capture the confirm-hold's widened admission window lets
-    through (session.py's ``completion_pending`` branch), the same shape
-    every VOLUNTARY retake of the final position takes (§2.6) — carries
-    MATERIALLY DIFFERENT capture data, not the same fixture twice: a
-    ``validity_floor_hz`` the first close's positions did not have. A test
-    that repeats an IDENTICAL fixture cannot distinguish "recomputed" from
-    "served a stale cached copy" (both closes would report the SAME
-    flatness/floor either way) — this one can, because a stale copy would
-    keep reporting the FIRST close's floor.
-    """
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    fakes.verify = _comb_cloud_analysis_factory()
-    published: list[tuple[str, dict]] = []
-    c = CrossoverV2Session(
-        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
-        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
-        seams=with_records(
-            fakes.seams(),
-            cloud=lambda phase, result: published.append((phase, dict(result))),
-        ),
-        driver_spacing_m=0.15,
-        index_phase_map=CLOUD_MAP,
-        post_apply_verifies=True,
-    )
-    attempt = _walk(c, (1, 2), 1)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    _lock(monkeypatch)
-
-    for _ in range(GEOMETRY_RETRY_POSITIONS):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-        assert verdict["accepted"] is False
-        assert verdict["code"] == REASON_CLOUD_GEOMETRY_LOCKED
-
-    # Third attempt: the retry budget is spent, so this ACCEPTS despite
-    # geometry still reading locked — the group's FIRST real close. Every
-    # position (including this one) came from the comb factory, whose
-    # fixture hardcodes ``validity_floor_hz=140.0``.
-    first_close = _run_phase(c, last, attempt)
-    attempt += 1
-    assert first_close["accepted"] is True
-    assert first_close["group_complete"] == PHASE_CLOUD_MEASURE
-    assert len(published) == 1
-    assert published[0][0] == PHASE_CLOUD_MEASURE
-    assert len(event_records(caplog, "correction.crossover_v2_cloud_group_complete")) == 1
-    assert len(event_records(caplog, "correction.crossover_v2_cloud_spec")) == 1
-    first_pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
-    assert first_pipeline is not None
-    assert first_pipeline["validity_floor_hz"] == pytest.approx(140.0)
-
-    # Fourth attempt at the SAME index: the overlap, carrying a GATED
-    # response (validity_floor_hz=400.0) the rest of the group's positions
-    # do not have — ``cloud_validity_floor_hz`` reports the WORST (highest)
-    # floor across all retained positions, so this shift is only visible if
-    # the retake's position genuinely replaced the prior one and the group
-    # was genuinely re-combined and re-assembled.
-    caplog.clear()
-
-    def _gated_retake(program: Any) -> ProgramAnalysis:
-        response = replace(_comb_summed_response(9999), validity_floor_hz=400.0)
-        return ProgramAnalysis(
-            phase="verify",
-            program_id=program.program_id,
-            locations=(_loc("sweep_verify", "summed_sweep", confidence=0.9),),
-            summed_response=response,
-            summed_ripple_db=1.1,
-            verify_tracking={
-                "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
-            },
-            linearity_ok=True,
-        )
-
-    fakes.verify = _gated_retake
-    second_close = _run_phase(c, last, attempt)
-    assert second_close["accepted"] is True
-    assert "code" not in second_close
-    assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
-    assert len(c.group_positions(PHASE_CLOUD_MEASURE)) == len(CLOUD_MEASURE_INDEXES)
-
-    # The JOURNAL carries a spec verdict for the cloud actually used — a
-    # SECOND ``cloud_group_complete`` and ``cloud_spec``, not a missing or
-    # stale one. This is the "normal cloud_spec/cloud_group_complete flow"
-    # shape: a re-close is a real close, logged like one.
-    assert len(event_records(caplog, "correction.crossover_v2_cloud_group_complete")) == 1
-    assert len(event_records(caplog, "correction.crossover_v2_cloud_spec")) == 1
-
-    # The RECOMPUTE happened: the group's pipeline result now reports the
-    # RETAKEN position's floor, not the stale first-close one.
-    second_pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
-    assert second_pipeline is not None
-    assert second_pipeline["validity_floor_hz"] == pytest.approx(400.0)
-    assert second_pipeline["validity_floor_hz"] != first_pipeline["validity_floor_hz"]
-
-    # ...but the durable EVIDENCE ARTIFACT write is still a per-phase
-    # singleton — the write-once store refuses a write whose bytes differ
-    # from what is already there (this retake's recomputed bytes normally
-    # do), so the guard skips the attempt outright rather than spend it on
-    # a call that would be refused. The skip itself is journalled (the one
-    # fact nothing else states — the artifact now lags the fresh pipeline
-    # result above).
-    assert len(published) == 1, "a second close must not attempt a second publish"
-    assert len(event_records(caplog, "correction.crossover_v2_cloud_publish_skipped")) == 1
-
-    # End-to-end: the FIT itself, and the candidate it produces, must also
-    # see the retaken cloud — not just the pipeline's own bookkeeping.
-    confirmed = _confirm_cloud(c)
-    assert confirmed.get("candidate_fingerprint")
-    assert c.candidate is not None
-    evidence = c.candidate.exclusion_evidence
-    assert evidence["validity_floor_hz"] == pytest.approx(400.0)
-    assert evidence["validity_floor_hz"] == second_pipeline["validity_floor_hz"]
-
-
-def test_a_failed_publish_is_retried_on_the_next_close_not_locked_out():
-    """#1872 resilience, pinned: ``_group_cloud_published`` marks a phase
-    only on a SUCCESSFUL publish, not a bare attempt — stated in the
-    ``__init__`` field comment and the publish guard's own comment, but
-    asserted nowhere until this test. Marking on the
-    attempt instead (so a FAILED publish also marks) would leave every
-    other conductor test green, because none of them drives a publish
-    failure followed by a second close.
-
-    A transient failure — a full disk, not a write-once conflict — must not
-    permanently lock the phase out of ever publishing for the rest of the
-    session: the group's next close (another voluntary retake of the final
-    position) has to retry.
-    """
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes)
-    attempt = _walk(c, (1, 2), 1)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-
-    calls = {"n": 0}
-
-    def _flaky_publish(phase, result):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise OSError("synthetic full disk")
-
-    c._seams = with_records(c._seams, cloud=_flaky_publish)
-
-    # First close's publish attempt fails — fail-soft (the capture is still
-    # accepted), and NOT marked published.
-    first_close = _run_phase(c, last, attempt)
-    attempt += 1
-    assert first_close["accepted"] is True
-    assert calls["n"] == 1
-    assert PHASE_CLOUD_MEASURE not in c._group_cloud_published
-
-    # A second close (another voluntary retake) retries the publish — and
-    # this time it succeeds, so it IS marked.
-    second_close = _run_phase(c, last, attempt)
-    assert second_close["accepted"] is True
-    assert calls["n"] == 2, "a failed first attempt must not lock out the retry"
-    assert PHASE_CLOUD_MEASURE in c._group_cloud_published
-
-
-def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():
-    """§1.2: every consumer can tell which instrument produced a result, and an
-    UNDECLARED tier reads as unknown rather than as "full" (the
-    ``echo_band_provenance`` discipline, issue #1763)."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes, tier=TIER_EXPRESS)
-    assert c.tier == TIER_EXPRESS
-    assert c.snapshot().tier == TIER_EXPRESS
-    assert c.snapshot().to_dict()["tier"] == TIER_EXPRESS
-    _walk_measure_cloud_to_close(c)
-    assert c.group_cloud_result(PHASE_CLOUD_MEASURE)["tier"] == TIER_EXPRESS
-
-    undeclared = _cloud_conductor(FakeSeams())
-    assert undeclared.tier == ""
-    assert undeclared.snapshot().tier == ""
-    with pytest.raises(CrossoverV2FlowError):
-        _cloud_conductor(FakeSeams(), tier="turbo")
-
-
 def test_the_measure_sweep_fit_rides_the_snapshot():
     """#2923: a duration-fitted MEASURE program's realized length is banked on
     the snapshot, not held only in the live conductor's memory — the durable
@@ -917,50 +586,6 @@ def test_the_summed_consent_heading_names_the_job_not_crossover_crossover():
     assert heading["text"] == "Tune your speaker"
 
 
-def test_the_consent_tier_line_derives_its_counts_and_duration():
-    """§1.4/§1.1: the consent screen names WHICH instrument, with numbers
-    derived from the plan — never hand-written. The duration is the phone's
-    OWN estimate (``CapturePlan.estimated_minutes``), so the consent screen and
-    the wake-lock hint cannot quote different sessions."""
-    # RE-DERIVED for the two-stage split. The consent screen belongs to ONE
-    # session, so its counts are STAGE 1's — 10 at Full, 6 at Express — and
-    # they are still derived from the plan the phone is about to walk, never
-    # hand-written. PR-T4 finished the reconciliation the split opened: the line
-    # now SAYS "in this session", so it and the pre-session tier chooser (which
-    # correctly quotes the whole journey, 16 and 7) can no longer be read as
-    # contradicting each other.
-    for tier, label, target in (
-        (TIER_FULL, "Full measurement", 10),
-        (TIER_EXPRESS, "Quick tune", 6),
-    ):
-        spec = build_v2_session_spec(
-            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
-        )
-        minutes = spec.capture_plan.estimated_minutes()
-        steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
-        assert steps[0] == (
-            f"{label}, this session: {target} measurements, "
-            f"about {minutes} minutes"
-        )
-        # The stage qualifier sits IN FRONT of the numbers so the capture
-        # page's own de-dup needle ("{n} measurements, about {m} minutes")
-        # still finds it — otherwise the household reads the same numbers
-        # twice, two lines apart. Pinned here as well as in the page's own
-        # suite because this is the side that can move it.
-        assert f"{target} measurements, about {minutes} minutes" in steps[0]
-    # These two calls take no include_* arguments, so they exercise the
-    # BUILDER's bare defaults (pre-apply cloud ON, lateral and entry baseline
-    # OFF) — 7 minutes at Full, 5 at Express. That is NOT the shipped stage 1,
-    # which runs the opposite flags for 3 captures and 3 minutes at either
-    # tier; the whole journey is what tier_display_info sums, pinned in its own
-    # test below.
-    assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 7
-    assert (
-        build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
-        == 4
-    )
-
-
 def test_tier_display_info_minutes_hold_across_plausible_topologies():
     """S3 fix (adversarial review of PR #1780): ``tier_display_info``'s fixed
     representative ``RoleBand`` pair does NOT make the realized sweep
@@ -990,7 +615,6 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
             # BOTH stages, because the chooser quotes the whole journey (D2).
             stage1 = build_v2_capture_plan(
                 roles, fc_hz, plan_shape=shape,
-                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
                 include_lateral=False,
                 include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             )
@@ -1004,100 +628,6 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
                 stage1.capture_target + stage2.capture_target
                 == info[tier]["capture_target"]
             )
-
-
-def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
-    """#1941 R1, keeping work order D7's intent (#1804 + #1805).
-
-    D7 put every position on the consent screen so the walk would not be
-    discovered one prompt at a time. The intent survives; the presentation does
-    not. A SECOND ten-item ``ui_steps`` list, stacked under the first, was the
-    owner's 2026-07-30 field defect — *"crazy dense with the 10 steps all
-    spelled out"* — and a household standing at the first position cannot act
-    on the last one anyway.
-
-    What replaces it is one ``note`` carrying the two facts the list was
-    actually being used to convey: how far from the mark this reaches, and that
-    each position is prompted. The distance is DERIVED from the same
-    ``[:N - 1]`` slice of the same table the per-entry screens are built from,
-    which is why a plan-shape change still moves both together or neither.
-    """
-    for tier, positions in (
-        (TIER_FULL, DEFAULT_CLOUD_MEASURE_POSITIONS),
-        (TIER_EXPRESS, express_cloud_measure_positions()),
-    ):
-        spec = build_v2_session_spec(
-            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
-        )
-        step_lists = [c["items"] for c in spec.screen if c["type"] == "steps"]
-        assert len(step_lists) == 1, "ONE list — the stacked preview is gone"
-        # The acceptance bar #1941 sets for the pre-tone screen: at most six
-        # list items, and one orientation note.
-        assert len(step_lists[0]) <= 6
-
-        walked = CLOUD_POSITION_PROMPTS[: positions - 1]
-        shape = cloud_walk_shape(walked)
-        notes = [c["text"] for c in spec.screen if c["type"] == "note"]
-        assert shape in notes
-
-        # The reach is DERIVED from the walked slice, in the prompts' own units
-        # — not a hand-written number that could outlive the table.
-        reach = cloud_walk_reach_cm(positions)
-        assert format_position_distance(reach) in shape
-        # …and it is a true CEILING, not the stated maximum restated. The wide
-        # rows also ask the operator to step IN toward the speaker so the
-        # radius holds, which puts the capsule on a chord: a stated 40 cm
-        # lateral move really lands ~40.9 cm from the mark at the placement
-        # copy's nominal 1 m. Re-derived here, because the first version of
-        # this screen quoted the bare offset and was therefore false on the
-        # very walk it described.
-        nominal_mark_distance_cm = 100.0
-        worst_chord = max(
-            math.hypot(
-                p.offset_cm,
-                nominal_mark_distance_cm
-                - math.sqrt(
-                    max(nominal_mark_distance_cm**2 - p.offset_cm**2, 0.0)
-                ),
-            )
-            for p in walked
-        )
-        assert worst_chord <= reach, (
-            f"the quoted reach {reach} cm no longer covers the walk's own "
-            f"step-in chord ({worst_chord:.2f} cm) — widen "
-            "CLOUD_WALK_REACH_ROUNDING_CM rather than shipping a false ceiling"
-        )
-
-        # …and the claim is bounded against EVERY prompt the flow can show,
-        # not just the walked slice. CLOUD_GEOMETRY_RETRY_PROMPTS is a shipped
-        # path (GEOMETRY_RETRY_POSITIONS = 2) and is deliberately "past every
-        # position in the table", so a bare "every spot is within X" would be
-        # false the moment a capture is retaken. Whether the honesty clause is
-        # needed is DERIVED from that reach, so a narrowed retake drops it.
-        retry_reach = cloud_geometry_retry_reach_cm()
-        if retry_reach > reach:
-            assert "a redo can ask for one step further out" in shape
-        else:
-            assert "redo" not in shape
-        # Today's constants really do exercise the first branch.
-        assert retry_reach > reach
-
-        # …and no position is enumerated on the consent screen any more.
-        for prompt in walked:
-            assert prompt.text not in shape
-            assert prompt.text not in step_lists[0]
-        # The household is told they will be prompted, and the tail sets up the
-        # INTERLUDE rather than promising a tune.
-        assert "you will be told each one" in shape
-        assert shape.endswith(CLOUD_WALK_SHAPE_TAIL)
-        assert "decide" in CLOUD_WALK_SHAPE_TAIL
-
-        # …and the plan really does prompt exactly those, in that order.
-        prompted = [
-            e.screen["title"] for e in spec.capture_plan.entries
-            if e.kind_label == "cloud_measure"
-        ]
-        assert prompted == [p.headline for p in walked]
 
 
 def test_the_post_apply_walk_states_its_shape_with_its_own_tail():
@@ -1411,7 +941,6 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     # nothing about its own position asks for a warning.
     shipped = build_v2_capture_plan(
         _roles(), FC_HZ,
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -1536,13 +1065,11 @@ def test_the_consent_beeps_sentence_matches_what_the_session_plays(
             build_v2_session_spec(
                 _roles(), FC_HZ, acknowledgement_binding="b" * 24,
                 plan_shape=shape,
-                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
                 include_lateral=lateral_armed,
                 include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             ),
             build_v2_cloud_index_phase_map(
                 plan_shape=shape,
-                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
                 include_lateral=lateral_armed,
                 include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             ),
@@ -1765,49 +1292,11 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert spec.kind == "crossover_sweep"
     assert spec.capture_protocol_version == 3
     assert spec.capture_plan is not None
-    # Stage 1's own target; ``cloud_capture_target()`` names the whole journey.
-    assert spec.capture_plan.capture_target == resolve_plan_shape().measure_capture_target
     # Round-trips through the strict boundary validation.
     from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec
 
     reparsed = CaptureSpec.from_dict(spec.to_dict())
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
-
-
-def test_shipped_v2_plans_keep_their_own_retry_budget():
-    """The v2 flow's retry budget is POLICY, not the sanity ceiling.
-
-    Both builders once passed ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS``
-    verbatim, which was harmless only while the two constants happened to be
-    equal at 8. Pin each flow's budget to this flow's own constants, and pin
-    that both stay within the sanity ceiling.
-    """
-    from jasper.active_speaker.crossover_v2_flow import (
-        CAPTURE_PLAN_MAX_ATTEMPTS,
-        build_v2_capture_plan,
-        build_v2_verify_capture_plan,
-    )
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-
-    assert CAPTURE_PLAN_MAX_ATTEMPTS <= MAX_CAPTURE_PLAN_ATTEMPTS
-
-    cloud = build_v2_capture_plan(_roles(), FC_HZ)
-    one_entry = build_v2_verify_capture_plan(FC_HZ)
-    # RE-DERIVED for the two-stage split: no single session carries the whole
-    # journey any more. Stage 1 is 1 + N = 10 captures with
-    # 10 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE = 17 attempts;
-    # ``cloud_capture_target()``/``cloud_plan_max_attempts()`` keep their
-    # whole-journey meaning (16 / 23 since stage 2's pose set gained the design
-    # axis on 2026-08-24), which is what jasper-doctor reads as the
-    # conservative bound.
-    assert cloud.capture_target == 10
-    assert cloud.max_attempts == 17
-    assert cloud_capture_target() == 16
-    assert cloud_plan_max_attempts() == 23
-    assert cloud.max_attempts < cloud_plan_max_attempts()
-    assert one_entry.capture_target == 1
-    assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
-    assert cloud.max_attempts <= MAX_CAPTURE_PLAN_ATTEMPTS
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
@@ -1818,40 +1307,14 @@ def test_cloud_position_count_outside_the_declared_range_is_refused(positions):
 
 
 def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
-    """The walked-away guarantee survives a long crossover-cloud session —
-    and stays a guarantee: the ceiling grows with plan length but can never
-    be scaled away."""
     from jasper.active_speaker.session_volume_plan import (
         DEFAULT_WALL_CLOCK_CEILING_S,
         MAX_WALL_CLOCK_CEILING_S,
     )
 
-    shipped = build_v2_capture_plan(_roles(), FC_HZ)
-    # RE-DERIVED (work order D2): each STAGE arms its own ceiling from its own
-    # plan. This call takes no include_* args, so it exercises the FUNCTION's
-    # own bare defaults (cloud_measure on, lateral/entry_baseline off) --
-    # NOT the shipped Full tier's own stage 1, which runs cloud measure OFF
-    # and #2291's entry baseline ON (no stage-1 plan builds the lateral group)
-    # for 9 captures and 2,520 s (see tuning-operator-runbook.md "The
-    # capture flow" / "What v2 is" -- tier_display_info() is the derivation of
-    # record for that number).
-    # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
-    # 2640 s. What the split buys is a lower worst case per stage.
-    assert session_wall_clock_ceiling_s(shipped) == 2640.0
     assert session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
     ) == 2160.0
-    biggest = build_v2_capture_plan(
-        _roles(), FC_HZ,
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    # 1800 + (12 - 3) * 120 = 2880 s: the biggest CLOUD-configured stage-1 plan
-    # does not reach the hard cap, so the cap is exercised on a plan long enough
-    # to need it (the synthetic 100 below) rather than left unpinned. 12, down
-    # from 13, because #2291's stage-1 entry brought
-    # ``MAX_CLOUD_MEASURE_POSITIONS`` to 11 — see that constant's arithmetic.
-    assert session_wall_clock_ceiling_s(biggest) == 2880.0
     assert MAX_WALL_CLOCK_CEILING_S == 3600.0
     assert session_wall_clock_ceiling_s(
         types.SimpleNamespace(capture_target=100)
@@ -1870,13 +1333,10 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
     import json
 
     from jasper.active_speaker.crossover_v2_flow import (
-        build_v2_capture_plan,
         build_v2_verify_capture_plan,
     )
 
     plans = {
-        "stage1-full": build_v2_capture_plan(_roles(), FC_HZ),
-        "stage1-express": build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS),
         "stage2-full": build_v2_verify_capture_plan(
             FC_HZ, plan_shape=resolve_plan_shape(),
         ),

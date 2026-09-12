@@ -26,7 +26,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "CloudFitEvidence",
     "LinearizationState",
-    "SpeculativeClose",
 ]
 
 
@@ -107,23 +106,3 @@ class LinearizationState:
             None if self.realized_level_match is None
             else self.realized_level_match.to_dict()
         )
-
-
-@dataclass(frozen=True)
-class SpeculativeClose:
-    """A group close that already RAN, waiting for the household to want it.
-
-    A speculative build must land here and never in ``_candidate``, which is
-    ``confirm_cloud_measure_group``'s fire-once guard: writing it there closes
-    the retake window in the instant it opens. It reaches ``_candidate`` only
-    through the household's own confirmation. ``accountability_finding`` (#1866)
-    is present only when THIS build's frame gate took the finding+proceed path.
-    """
-
-    candidate: Any
-    predicted_sum: Any
-    analysis: Any
-    cloud: CloudFitEvidence | None
-    accountability_finding: Mapping[str, Any] | None = None
-    linearization: LinearizationState = field(default_factory=LinearizationState)
-    """What THIS build's linearization produced — see :class:`LinearizationState`."""

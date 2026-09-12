@@ -116,7 +116,6 @@ def test_the_shipped_stage_1_still_plans_no_lateral_group(slot):
     """
     shipped = flow.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(),
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -239,7 +238,7 @@ def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
 
 def _seat_index_phases(prompts):
     return flow.build_v2_cloud_index_phase_map(
-        plan_shape=_hand_shape(), include_cloud_measure=False,
+        plan_shape=_hand_shape(),
         include_lateral=True, lateral_prompts=prompts,
     )
 
@@ -351,12 +350,6 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
 
 
 def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
-    """This module's own member of the two-file ``SPOOL_REFUSAL_REASONS``
-    collision with :mod:`.crossover_v2.prescription_spool` — renamed to
-    :data:`~jasper.active_speaker.angle_capture_spool.ANGLE_SPOOL_REFUSAL_REASONS`
-    so importing both modules unqualified cannot shadow one vocabulary with
-    the other. The bare name must not still be an attribute of this module.
-    """
     assert not hasattr(spool, "SPOOL_REFUSAL_REASONS")
     assert spool.ANGLE_SPOOL_REFUSAL_REASONS == frozenset({
         spool.SPOOL_MALFORMED,

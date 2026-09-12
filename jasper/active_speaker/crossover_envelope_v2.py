@@ -76,7 +76,6 @@ from .crossover_v2.journey import (
     PHASE_DONE,
     PHASE_LATERAL,
     PHASE_MEASURE,
-    PHASE_CLOSING,
     PHASE_REVIEW,
     PHASE_VERIFY,
     PRE_CLOUD_CAPTURE_PHASES,
@@ -95,7 +94,6 @@ from .crossover_v2.refusal_copy import (
 from .crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
     CLAIM_NO_PER_BRANCH_CAPTURE,
-    CLOUD_CLOSE_RUNNING,
     CrossoverV2FlowError,
     TIER_EXPRESS,
     TIER_REMOTE,
@@ -163,7 +161,6 @@ _PHASE_STEP = {
     PHASE_ENTRY_BASELINE: "measure",
     # The review interlude sits on APPLY (shares the step with
     # PHASE_APPLYING); the measuring session's tail stays on MEASURE.
-    PHASE_CLOSING: "measure",
     PHASE_REVIEW: "apply",
     PHASE_APPLYING: "apply",
     PHASE_VERIFY: "verify",
@@ -950,76 +947,6 @@ def _review_verdict(prediction: Mapping[str, Any] | None, has_candidate: bool) -
         f"{opening} The result JTS expects meets the target in every band it "
         "checks. That is worked out from the measurement, not measured — "
         "apply it and JTS will measure the speaker again to confirm."
-    )
-
-
-def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
-    """The measuring session's TAIL — measured, not yet proposed (D1, B2).
-    True at two moments: ``awaiting_confirm`` (pre-apply cloud walked,
-    group-close confirm open — household has something to do) and
-    ``running`` (confirmed, combine+fit in flight — the one screen that
-    sets ``busy``). Not the review screen. No SCREEN-LEVEL actions (all
-    are destructive of in-progress work; Stop rides the capture block). The
-    confirm belongs to the household here (#2881): mints Save/Record-again
-    against ``/v2/complete``/``/v2/retake``, both ``show_during_capture``.
-    NOT while a capture is held — a screen-level primary would suppress
-    the walkthrough rendering the hold.
-    """
-    from .arm_walk import SESSION_ENDED_STATUSES
-
-    v2 = _v2(status)
-    running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
-    capture = _mapping(status.get("capture"))
-    # Derived from durable ``cloud_close``, not the slot, so it also
-    # renders after the walk ended un-confirmed. The two moves below POST
-    # into signals the slot drops once out of an in-flight status.
-    live = bool(
-        str(capture.get("status") or "")
-        and str(capture.get("status")) not in SESSION_ENDED_STATUSES
-    )
-    held = bool(capture.get("position_pending"))
-    ready = live and not running and not held
-    if running:
-        verdict = (
-            "JTS is working out your correction from the measurements — this "
-            "takes a few seconds."
-        )
-    elif ready:
-        verdict = (
-            "All spots measured. Save this measurement, or record the last "
-            "spot again."
-        )
-    elif live:
-        # Held: the only way here with a hold open is a retake just asked for.
-        verdict = "Re-recording one spot — follow the step below."
-    else:
-        verdict = (
-            "All spots measured, but this measurement session has ended "
-            "before it was saved. Measure again to keep a round."
-        )
-    return _envelope(
-        screen="closing",
-        active_step="measure",
-        verdict=verdict,
-        next_action={
-            "id": "crossover_v2_complete",
-            "label": "Save this measurement",
-            "endpoint": "/sound/speaker/crossover/v2/complete",
-            "body": {},
-            "show_during_capture": True,
-        } if ready else None,
-        alternate_actions=[{
-            "id": "crossover_v2_retake",
-            "label": "Record the last spot again",
-            "endpoint": "/sound/speaker/crossover/v2/retake",
-            "body": {},
-            "show_during_capture": True,
-        }] if ready else [],
-        busy=running,
-        status=status,
-        # Same measured evidence the review screen leads with, readable
-        # while the fit runs, with nothing to decide about it.
-        expert_details=_flatness_details_lines(status),
     )
 
 
@@ -2586,8 +2513,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
-    elif phase == PHASE_CLOSING:
-        env = _closing_envelope(status)
     elif phase == PHASE_REVIEW:
         env = _review_envelope(status)
     elif phase == PHASE_DONE:
@@ -2930,20 +2855,6 @@ def crossover_v2_phase(
             ):
                 return PHASE_DONE
             return PHASE_VERIFY
-        # …and the measuring session's own TAIL is not the review interlude
-        # either. Accepting the final cloud position marks every stage-1 phase
-        # accepted, so this walk resolves the instant that capture lands —
-        # while the household is still holding a phone at the confirm screen
-        # (up to the runner's full between-step budget) and again while the
-        # combine + fit run. Both used to render the review screen's
-        # no-candidate copy: "JTS measured your speaker but has no correction
-        # to propose — measure again to try afresh", with a destructive
-        # "Measure again" beside it, over a measurement that was still in
-        # progress. ``cloud_close`` is what tells those moments apart from a
-        # session that genuinely ended with nothing (where it is ``""``, and
-        # the review screen's absence copy is the honest answer).
-        if str((state or {}).get("cloud_close") or ""):
-            return PHASE_CLOSING
         # …and a household who has ALREADY answered this screen does not get
         # it again (#2641). The decline changed nothing on the speaker and did
         # not delete the candidate, so the honest destination is the journey's

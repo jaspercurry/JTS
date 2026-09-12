@@ -43,7 +43,6 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     _done_nudges,
     _tier_choice_actions,
 )
-from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     CrossoverV2Refused,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
@@ -86,13 +85,11 @@ from jasper.active_speaker.crossover_v2.position_gate import (
 
 from tests._log_events import event_fields, event_records
 from tests.crossover_v2_fixtures import (
-    CLOUD_MEASURE_INDEXES,
     CLOUD_VERIFY_INDEXES,
     FC_HZ,
     STAGE2_MAP,
     VERIFY_INDEX,
     FakeSeams,
-    _cloud_conductor,
     _conductor,
     _lock,
     _run_phase,
@@ -140,7 +137,6 @@ def _stage1_of(shape):
         flow._DISPLAY_ROLES_BANDS,
         flow._DISPLAY_FC_HZ,
         plan_shape=shape,
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -237,22 +233,6 @@ def test_remotes_verify_walk_is_derived_as_fulls_minus_the_vertical():
     assert positions >= flow.MIN_CLOUD_VERIFY_POSITIONS
 
 
-def test_remotes_stage_1_n_states_the_assumption_that_makes_it_safe(monkeypatch):
-    """N4. Remote takes Full's N only because the shipped stage 1 walks the
-    LATERAL poses; the ``[:N - 1]`` prefix of the cloud table contains vertical
-    rows at that N. Flipping the flag back on must trip a NAMED refusal that
-    says what to do, not an incidental raise from the angle helper."""
-    assert flow.remote_cloud_measure_positions() == flow.DEFAULT_CLOUD_MEASURE_POSITIONS
-    # The flag and the function that reads it both live in
-    # ``crossover_v2.capture_plan``; the flow only re-exports the name.
-    monkeypatch.setattr(capture_plan, "STAGE1_INCLUDES_CLOUD_MEASURE", True)
-    with pytest.raises(CrossoverV2FlowError, match="cannot walk a pre-apply cloud"):
-        flow.remote_cloud_measure_positions()
-    # The refusal names the fix, not just the symptom.
-    with pytest.raises(CrossoverV2FlowError, match="remote_cloud_verify_positions"):
-        resolve_plan_shape(TIER_REMOTE)
-
-
 # --------------------------------------------------------------------------- #
 # the angles
 # --------------------------------------------------------------------------- #
@@ -331,7 +311,6 @@ def test_the_remote_walks_are_the_specified_bearings():
         flow._DISPLAY_ROLES_BANDS,
         flow._DISPLAY_FC_HZ,
         plan_shape=resolve_plan_shape(TIER_REMOTE),
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=True,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -693,7 +672,6 @@ def test_a_raised_stop_reaches_the_gate_and_its_button_as_a_raised_stop():
         flow._DISPLAY_ROLES_BANDS,
         flow._DISPLAY_FC_HZ,
         plan_shape=_hand_released(),
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=True,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
         lateral_prompts=(raised,),
@@ -882,39 +860,6 @@ def test_the_flow_states_the_vertical_gap_in_one_place():
     assert "vertical" in flow.REMOTE_VERTICAL_DISCLOSURE.lower()
 
 
-def test_a_geometry_locked_remote_group_refuses_instead_of_prompting(monkeypatch):
-    """S4a. Both retake rungs are out of an external positioner's reach — rung 1
-    is 75 cm off the mark, past every pose in the walk, and rung 2 adds a move
-    ABOVE mark height, the axis this tier excludes by construction. Prompting
-    anyway asked for a move that cannot be made and then recorded it as though
-    it had been.
-
-    The branch is phase-agnostic, so it is exercised here through the cloud
-    group the shared fixtures already drive.
-    """
-    fakes = FakeSeams()
-    remote = _cloud_conductor(fakes, tier=TIER_REMOTE)
-    attempt = _walk(remote, (1, 2), 1)
-    attempt = _walk(remote, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    _lock(monkeypatch)
-
-    verdict = _run_phase(remote, last, attempt)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_GEOMETRY_RETAKE_UNREACHABLE
-    # It REFUSES — it does not hand back a prompt for a pose nobody can reach.
-    assert not verdict.get("prompt")
-    # …and it recommends the instrument that can, without blocking anything.
-    message = REASON_REGISTRY[REASON_GEOMETRY_RETAKE_UNREACHABLE].message
-    assert "Full measurement" in message
-    assert "by hand" in message
-    # Nothing was spent and nothing was dropped: this is not a retry.
-    assert last in {
-        int(pid.rsplit("_", 1)[1])
-        for pid in remote.group_positions(PHASE_CLOUD_MEASURE)
-    }
-
-
 def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch, caplog):
     """S4a's predicate is the GATE, not the tier (#2879 round-2 SF2).
 
@@ -984,22 +929,6 @@ def test_the_same_stage_2_group_still_prompts_when_nothing_holds_its_begins(
     _lock(monkeypatch)
 
     verdict = _run_phase(ungated, last, attempt)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == flow.REASON_CLOUD_GEOMETRY_LOCKED
-    assert verdict["prompt"] == flow.CLOUD_GEOMETRY_RETRY_PROMPTS[0]
-
-
-def test_a_hand_walked_group_still_gets_its_wider_retake_prompt(monkeypatch):
-    """The other half of S4a: the refusal is scoped to GATED sessions, and a
-    household whose begins nothing holds is still asked to walk to 75 cm."""
-    fakes = FakeSeams()
-    walked = _cloud_conductor(fakes, tier=TIER_FULL)
-    attempt = _walk(walked, (1, 2), 1)
-    attempt = _walk(walked, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    _lock(monkeypatch)
-
-    verdict = _run_phase(walked, last, attempt)
     assert verdict["accepted"] is False
     assert verdict["code"] == flow.REASON_CLOUD_GEOMETRY_LOCKED
     assert verdict["prompt"] == flow.CLOUD_GEOMETRY_RETRY_PROMPTS[0]
@@ -1080,7 +1009,6 @@ def test_a_hand_released_stage_2_states_its_SPOTS_as_bearings():
 
     ``_positioned_prompt`` is reached by exactly one shipped builder — stage
     2's post-apply group — because stage 1's cloud group is off
-    (``STAGE1_INCLUDES_CLOUD_MEASURE``) and its lateral walk is opt-in. So a
     stage-1-only test cannot see it, and welding that read back to
     ``externally_positioned`` passed the entire suite while flipping a
     household's copy to a tape-measure instruction against a gate publishing
@@ -1186,13 +1114,6 @@ def test_the_gate_can_read_a_hand_released_plans_own_entries():
 #: matched, which is the tier's byte-identity promise as a measurement rather
 #: than as a claim.
 #:
-#: Deliberately NOT added to ``_GOLDEN_V2_PLAN_BYTES``: that table builds each
-#: plan from the BUILDER's defaults, and ``include_cloud_measure`` defaults True
-#: — which for remote's N=9 walks a vertical pose and makes
-#: ``position_angle_deg`` refuse before a digest exists. Remote is only
-#: constructible through the flags a session actually uses
-#: (:data:`STAGE1_INCLUDES_CLOUD_MEASURE`), so its digest belongs beside its own
-#: contract rather than in a table whose convention it cannot satisfy.
 _GOLDEN_REMOTE_PLAN_BYTES = {
     "stage1-remote": (
         1322,
@@ -1371,7 +1292,6 @@ def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
         # walk rather than quietly measuring through it.
         externally_positioned=_hand_released().externally_positioned,
         base_entries=3,
-        plans_cloud_group=False,
     )
     assert [position_angle_deg(p) for p in prompts] == [80, -80]
     with pytest.raises(ac.LateralWalkRefused) as caught:

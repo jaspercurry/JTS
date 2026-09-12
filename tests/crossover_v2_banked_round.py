@@ -27,9 +27,6 @@ banks ONE stage, and:
 
 * :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
   carrying both per-driver solos, the lateral walk pose(s), and the ENTRY
-  BASELINE. No cloud group (``capture_plan.STAGE1_INCLUDES_CLOUD_MEASURE`` is
-  ``False``), therefore no ``cloud_verify.json``, therefore no cloud positions
-  and no graded ``spec`` block. Its flow state banks no VERIFY curve, because
   ``verify_priors`` is rebuilt from the conductor on every persist and a
   stage-1 conductor has measured no VERIFY.
 * :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state

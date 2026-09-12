@@ -19,10 +19,6 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import admission
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
-)
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -30,10 +26,8 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 
 from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
-    CLOUD_MEASURE_INDEXES,
     FakeSeams,
     _check_analysis,
-    _cloud_conductor,
     _conductor,
     _run_phase,
 )
@@ -95,44 +89,6 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
     with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
     assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
-
-
-def test_the_spent_slot_outcome_tells_left_out_from_kept():
-    """The three group sentences, and the precedence between the first two.
-
-    Found unguarded by this slice's own mutation batch: swapping the
-    ``unresolved`` and ``retained`` reads left 330 conductor tests green. Only
-    the third sentence ("too few positions") was asserted anywhere, so a
-    position the flow gave up on and a position still covered by an earlier
-    take were interchangeable as far as the suite was concerned — two opposite
-    things to tell a household, one of which says work was lost when it was
-    not. The prose moved verbatim in this slice; the guard is what makes that
-    checkable.
-    """
-    fakes = FakeSeams()
-    c = _cloud_conductor(fakes)
-    index = CLOUD_MEASURE_INDEXES[0]
-
-    # Neither given up on nor already measured: the group has nothing here.
-    assert "too few positions" in c._spent_slot_outcome(PHASE_CLOUD_MEASURE, index)
-
-    # Measured once, so an earlier curve stands.
-    _run_phase(c, index, 1)
-    assert c._spent_slot_outcome(PHASE_CLOUD_MEASURE, index) == (
-        "JTS kept the earlier measurement for this position and "
-        "the group continued."
-    )
-
-    # Given up on WINS over the retained read — the order is the claim.
-    c._group_unresolved[PHASE_CLOUD_MEASURE][index] = flow.REASON_LOCATE_FAILED
-    assert c._spent_slot_outcome(PHASE_CLOUD_MEASURE, index) == (
-        "This position was left out and the group continued."
-    )
-
-    # A single-capture phase has no group to continue with.
-    assert c._spent_slot_outcome(PHASE_CHECK, 1) == (
-        "The measurement cannot continue because this step needs a clean read."
-    )
 
 
 def _exhausted_non_retriable(code: str):
@@ -305,13 +261,6 @@ def _spent(extras=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION):
     return admission.SlotAttempts(admitted=1 + extras, by_household=extras)
 
 
-def _settled_conductor(index):
-    """A cloud conductor whose slot for ``index`` has spent every extra."""
-    c = _cloud_conductor(FakeSeams())
-    c._slot_attempts[c._slot_of_index(index)] = _spent()
-    return c
-
-
 def test_the_declared_settle_kinds_are_the_ones_the_ladder_can_return():
     """``SETTLE_KINDS`` is a declaration, and a declaration can go stale.
 
@@ -408,70 +357,6 @@ def test_the_group_rung_does_not_count_unwalked_spots_for_a_retained_one():
     assert counted == ["walk"]
 
 
-def test_the_conductor_passes_the_group_ness_port_rather_than_resolving_it(monkeypatch):
-    """The wiring half of the port, which the two guards above cannot see.
-
-    Those assert the pure ladder does not INVOKE what it was handed; this
-    asserts the conductor hands it something to invoke. Bypassing the port —
-    ``is_group=self._journey.plan.is_group(phase)`` — passes both of them and
-    reddens only this one, because the read has then already happened by the
-    time the ladder declines to ask.
-    """
-    index = CLOUD_MEASURE_INDEXES[0]
-    c = _cloud_conductor(FakeSeams())
-    slot = c._slot_of_index(index)
-    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)  # two extras left
-
-    asked = []
-    real = c._journey.plan.is_group
-    monkeypatch.setattr(
-        type(c._journey.plan), "is_group",
-        lambda self, phase: asked.append(phase) or real(phase),
-    )
-
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
-    settled = c._resolve_spent_slot(PHASE_CLOUD_MEASURE, index, slot, verdict)
-
-    assert settled is verdict, "a slot with tries left must settle nothing"
-    assert asked == [], (
-        "the conductor resolved the group-ness of a phase whose slot still has tries"
-    )
-
-
-def test_the_conductor_passes_the_unwalked_port_rather_than_resolving_it(monkeypatch):
-    """The wiring half of the second port.
-
-    A settled position whose earlier take still stands is answered by rung 1,
-    and the journey is never walked for it. Passing ``unwalked_count`` as a
-    resolved value walks it on every settled group position — invisible to the
-    pure guard above, caught here.
-    """
-    index = CLOUD_MEASURE_INDEXES[0]
-    c = _settled_conductor(index)
-    slot = c._slot_of_index(index)
-
-    walked = []
-    real = c._journey.unresolved_in_group
-    monkeypatch.setattr(
-        type(c._journey), "unresolved_in_group",
-        lambda self, phase, *, excluding: (
-            walked.append(phase) or real(phase, excluding=excluding)
-        ),
-    )
-    # Rung 1's condition: this index already holds a retained curve.
-    monkeypatch.setattr(
-        type(c), "_retained_group_indexes", lambda self, phase: {index},
-    )
-
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
-    settled = c._resolve_spent_slot(PHASE_CLOUD_MEASURE, index, slot, verdict)
-
-    assert settled.payload["kept_earlier_take"] is True
-    assert walked == [], (
-        "the conductor walked the journey for a position rung 1 had already answered"
-    )
-
-
 def test_the_floor_rung_counts_unwalked_spots_not_the_walk_so_far():
     """Rung 2's stated rule, pinned as arithmetic rather than as prose.
 
@@ -498,104 +383,6 @@ def test_the_floor_rung_counts_unwalked_spots_not_the_walk_so_far():
     assert admission.settle_group_position(
         index=2, retained={1}, floor=3, unwalked_count=lambda: 1,
     ) == admission.SETTLE_BELOW_POSITION_FLOOR
-
-
-@pytest.mark.parametrize(
-    "half,declared",
-    [
-        ("settle_spent_slot", admission.SETTLE_SLOT_KINDS),
-        ("settle_group_position", admission.SETTLE_GROUP_KINDS),
-    ],
-)
-def test_every_settle_kind_is_handled(caplog, half, declared):
-    """The catch-all must not answer for a kind somebody did wire.
-
-    Each half is driven with the kinds IT declares, and the other half is left
-    real — patching both with one kind would feed a group answer to the rung
-    above the lock, which is a defect the fallback is *supposed* to catch.
-
-    The assertion is the JOURNAL, not the verdict: an unmapped kind also
-    produces a terminal verdict, so "some terminal happened" would pass for
-    exactly the case this exists to catch. Its siblings below prove the event
-    does fire for a kind with no arm, so this guard cannot be vacuous.
-    """
-    index = CLOUD_MEASURE_INDEXES[0]
-
-    with caplog.at_level("INFO"):
-        for kind in sorted(declared):
-            c = _settled_conductor(index)
-            verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
-            with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(flow._admission, half, lambda kind=kind, **_: kind)
-                c._resolve_spent_slot(
-                    PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
-                )
-
-    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
-    assert unmapped == [], (
-        "a declared settle kind reached a fallback instead of its own arm: "
-        f"{[r.getMessage() for r in unmapped]}"
-    )
-
-
-def test_an_unrecognised_settle_kind_ends_the_phase_rather_than_retrying(caplog):
-    """The other half, on the rungs decided before the close lock.
-
-    Reached with a kind no released ladder returns — the shape of the future
-    defect. The DIRECTION is the assertion: the verdict must be terminal, with
-    no retry affordance, because returning the capture's own rejection unchanged
-    is what puts a household in front of a button the meter will refuse.
-    """
-    index = CLOUD_MEASURE_INDEXES[0]
-    c = _settled_conductor(index)
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
-
-    with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow._admission, "settle_spent_slot",
-            lambda **_: "a_kind_from_the_future",
-        )
-        settled = c._resolve_spent_slot(
-            PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
-        )
-
-    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
-    assert [r.levelname for r in unmapped] == ["ERROR"]
-    assert settled.payload["terminal"] is True
-    assert settled.payload["terminal_outcome"] == admission.SETTLE_PHASE_CANNOT_PROCEED
-    assert "try again" not in settled.payload["reason"].lower()
-    # It did NOT degrade in the permissive direction: the capture's own
-    # retryable verdict is not what came back.
-    assert settled is not verdict
-
-
-def test_an_unrecognised_group_settle_kind_ends_the_phase_rather_than_advancing(caplog):
-    """Same direction on the rungs decided UNDER the close lock.
-
-    The group half's failure mode is different and just as bad: advancing the
-    group on an answer nobody wired would drop a position without recording why,
-    and the cloud would later combine a set it cannot account for.
-    """
-    index = CLOUD_MEASURE_INDEXES[0]
-    c = _settled_conductor(index)
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
-
-    with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow._admission, "settle_group_position",
-            lambda **_: "a_kind_from_the_future",
-        )
-        settled = c._resolve_spent_slot(
-            PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
-        )
-
-    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
-    assert [r.levelname for r in unmapped] == ["ERROR"]
-    assert settled.payload["terminal"] is True
-    assert settled.payload["terminal_outcome"] == admission.SETTLE_BELOW_POSITION_FLOOR
-    # Nothing was attributed and nothing advanced: an unwired answer must not
-    # leave a dropped position behind.
-    assert index not in c._group_unresolved[PHASE_CLOUD_MEASURE]
 
 
 def test_the_settle_kinds_are_the_journal_and_payload_words_the_phone_reads():
@@ -678,97 +465,6 @@ def test_the_condition_rung_does_not_ask_the_journey():
         code="wiring", non_retriable=frozenset({"wiring"}),
     ) == admission.SETTLE_CONDITION_NOT_RETRIABLE
     assert asked == [], "the journey was asked about a slot the condition closed"
-
-
-@pytest.mark.parametrize("code", sorted(flow.NON_RETRIABLE_CODES))
-def test_a_non_retriable_capture_verdict_rides_out_terminal(code):
-    """Every non-retriable condition ends the phase AT THE VERDICT (#2086).
-
-    The measured defect: a rejection carrying one of these codes reached the
-    phone as an ordinary retryable verdict, so the page rendered a "Try again"
-    button — and the begin behind it raised ``CaptureBeginRefused`` before any
-    audio played, ending the session. Reproduced on ``correction_model_error``
-    at a post-apply close and on ``channel_map_mismatch`` at CHECK, both with
-    ``attempts.left: 3`` printed beside the doomed button.
-
-    The whole family is driven rather than the two reproduced rows: the
-    registry decides membership, so a code that becomes non-retriable later
-    inherits the guard instead of needing one.
-    """
-    c = _cloud_conductor(FakeSeams())
-    index = CLOUD_MEASURE_INDEXES[0]
-    slot = c._slot_of_index(index)
-    # A FRESH meter: the planned take, nothing spent. This is the state the
-    # exhaustion ladder answers ``SETTLE_RETRY_REMAINS`` for.
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
-
-    settled = c._resolve_spent_slot(
-        PHASE_CLOUD_MEASURE, index, slot, flow.PhaseVerdict(False, code=code),
-    )
-
-    assert settled.payload["terminal"] is True
-    assert settled.payload["terminal_outcome"] == (
-        admission.SETTLE_CONDITION_NOT_RETRIABLE
-    )
-    # The code's OWN sentence, not the exhaustion sentence — nothing was spent,
-    # so "JTS measured this spot N times" would be a false claim about a
-    # position that was rejected on its first take.
-    assert settled.code == code
-    assert "JTS measured this spot" not in settled.to_capture_dict()["reason"]
-    assert settled.to_capture_dict()["reason"] == flow.reason_message(
-        code, flow.REASON_REGISTRY[code],
-    )
-    # Nothing was charged and no position was dropped: the condition closed the
-    # slot, the meter did not.
-    assert c._slot_attempts[slot].extras_used == 0
-    assert index not in c._group_unresolved[PHASE_CLOUD_MEASURE]
-
-
-def test_the_flow_states_the_condition_inputs_the_ladder_needs():
-    """``code``/``non_retriable`` default to "nothing observed", so a caller
-    that stops stating them silently reverts the ladder to meter-only — the
-    exact defect the rung fixes, and invisible to a pure-function test.
-
-    So the WIRING is asserted, not just the ladder: the flow must hand over this
-    capture's own code and the registry's own projection.
-    """
-    c = _cloud_conductor(FakeSeams())
-    index = CLOUD_MEASURE_INDEXES[0]
-    slot = c._slot_of_index(index)
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
-    seen: list[dict] = []
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow._admission, "settle_spent_slot",
-            lambda **kw: seen.append(kw) or admission.SETTLE_RETRY_REMAINS,
-        )
-        c._resolve_spent_slot(
-            PHASE_CLOUD_MEASURE, index, slot,
-            flow.PhaseVerdict(False, code=refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
-        )
-
-    assert seen[0]["code"] == refusal_copy.REASON_CHANNEL_MAP_MISMATCH
-    assert seen[0]["non_retriable"] is flow.NON_RETRIABLE_CODES
-
-
-def test_a_retriable_rejection_on_a_fresh_slot_still_offers_the_retry():
-    """The other direction, so the rung above cannot pass by ending everything.
-
-    A settle ladder that answered ``condition_not_retriable`` for every rejected
-    capture would satisfy every assertion in the test above while destroying the
-    bounded-retry affordance the same ruling installed.
-    """
-    c = _cloud_conductor(FakeSeams())
-    index = CLOUD_MEASURE_INDEXES[0]
-    slot = c._slot_of_index(index)
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
-
-    settled = c._resolve_spent_slot(PHASE_CLOUD_MEASURE, index, slot, verdict)
-
-    assert settled is verdict
-    assert "terminal" not in settled.payload
 
 
 @pytest.mark.parametrize(("budget", "charges"), [

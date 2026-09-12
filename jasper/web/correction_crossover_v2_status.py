@@ -111,7 +111,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "tier": (str((state or {}).get("tier") or "") or None),
         # Which sub-moment of the measuring session's tail this is, when
         # ``phase`` is ``closing`` (two-stage D1). ``""`` everywhere else.
-        "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
         # MEASURE's own verdict-time disclosures — today just G1's ripple

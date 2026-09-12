@@ -67,17 +67,13 @@ __all__ = [
     "MAX_PERSISTED_SUM_POINTS",
     "ConductorState",
     "V2ConductorSnapshot",
-    "alignment_prescription_prior_from_state",
     "attempt_history_from_state",
     "attempt_record_from_verify",
-    "blend_prescription_prior_from_state",
-    "blend_prescription_sha256_from_state",
     "build_conductor_state",
     "commanded_delta_prior_from_state",
     "declared_transfer_prior_from_state",
     "entry_baseline_prior_from_state",
     "pilot_transfer_prior_from_state",
-    "topology_prescription_prior_from_state",
     "verify_measured_curve_from_state",
 ]
 
@@ -130,13 +126,6 @@ class V2ConductorSnapshot:
     # would attach a post-apply cross-position claim to a result that never
     # measured across positions.
     tier: str = ""
-    # WHERE the pre-apply cloud's close has got to: one of
-    # :data:`CLOUD_CLOSE_NONE` / :data:`CLOUD_CLOSE_AWAITING_CONFIRM` /
-    # :data:`CLOUD_CLOSE_RUNNING`. Persisted because the wizard renders from
-    # durable state alone, where "every stage-1 phase accepted and no candidate"
-    # otherwise reads identically at the confirm screen, during the fit, and
-    # after a session that produced nothing.
-    cloud_close: str = ""
     # Attempt history is journey-scoped, not capture-session-scoped: a second
     # apply→VERIFY runs under a fresh capture session, so these records survive
     # ``hydrate``'s session rebind while CHECK/MEASURE evidence does not.
@@ -162,7 +151,6 @@ class V2ConductorSnapshot:
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
             "tier": self.tier,
-            "cloud_close": self.cloud_close,
             "attempt_history": [item.to_dict() for item in self.attempt_history],
             "last_attempt_decision": (
                 dict(self.last_attempt_decision)
@@ -549,83 +537,6 @@ def entry_baseline_prior_from_state(state: Mapping[str, Any] | None) -> Any:
     return EntryBaseline.from_dict(record)
 
 
-def alignment_prescription_prior_from_state(state: Mapping[str, Any] | None) -> Any:
-    """The stage-1 delay prescription, as the conductor's ctor takes it (#2662).
-
-    The read side of ``verify_priors.alignment_prescription``. ``None`` is "this
-    round prescribed no delay" and also covers an older or truncated record. The
-    BOUND is deliberately not re-applied here: it has one owner, the request
-    boundary.
-    """
-    from jasper.active_speaker.crossover_v2.alignment_prescription import (
-        alignment_prescription_from_mapping,
-    )
-
-    priors = (state or {}).get("verify_priors")
-    record = (
-        priors.get("alignment_prescription") if isinstance(priors, Mapping) else None
-    )
-    return alignment_prescription_from_mapping(record)
-
-
-def topology_prescription_prior_from_state(state: Mapping[str, Any] | None) -> Any:
-    """Durable state in, the ``topology_prescription`` argument out.
-
-    The grading stage re-opens its session AT this topology, so a pin that
-    failed to rehydrate would silently grade a pinned round's VERIFY against the
-    crossover the speaker used to run. The read-back is shape-only: re-applying
-    the bounds at grading time could only throw away the evidence of a round
-    that really ran.
-    """
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        topology_prescription_from_mapping,
-    )
-
-    priors = (state or {}).get("verify_priors")
-    record = (
-        priors.get("topology_prescription") if isinstance(priors, Mapping) else None
-    )
-    return topology_prescription_from_mapping(record)
-
-
-def blend_prescription_prior_from_state(state: Mapping[str, Any] | None) -> Any:
-    """The stage-1 blend prescription, as the conductor's ctor takes it.
-
-    The read side of ``verify_priors.blend_prescription``. Without this arm the
-    feature loses what it exists to bank: ``verify_priors`` is rebuilt from the
-    conductor on EVERY persist and a stage-2 conductor holds no prescription, so
-    stage 2 would write ``None`` over stage 1's record before the round receipt
-    is written.
-
-    ``None`` is "this round prescribed no blend correction" and also covers an
-    older or truncated record. The BOUND is deliberately not re-applied: it has
-    one owner, the boundary that accepted the document.
-    """
-    from jasper.active_speaker.crossover_v2.blend_prescription import (
-        blend_prescription_from_mapping,
-    )
-
-    priors = (state or {}).get("verify_priors")
-    record = (
-        priors.get("blend_prescription") if isinstance(priors, Mapping) else None
-    )
-    return blend_prescription_from_mapping(record)
-
-
-def blend_prescription_sha256_from_state(state: Mapping[str, Any] | None) -> str:
-    """The digest beside the record above, or ``""``.
-
-    Read separately because it is banked separately — see the persist's own
-    comment for why the digest cannot live inside the record it describes.
-    """
-    priors = (state or {}).get("verify_priors")
-    digest = (
-        priors.get("blend_prescription_sha256") if isinstance(priors, Mapping)
-        else None
-    )
-    return str(digest or "") if isinstance(digest, str) else ""
-
-
 def pilot_transfer_prior_from_state(
     state: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -869,9 +780,6 @@ def _candidate_summary(
         # DISPLACED value rides beside it, so a reader judging a pin sees the
         # answer it overrode. Discloses rather than blocks.
         "trims_pinned": _candidate_pinned_trims(candidate),
-        # WHERE this candidate crosses, and whether the round was PINNED there.
-        # The corner comes off the candidate; the bit comes from the session,
-        # because a corner cannot say who chose it.
         "crossover": candidate_topology(candidate),
         "crossover_pinned": bool(topology_pinned),
         "alignment": candidate.alignment.to_dict(),
@@ -1124,7 +1032,6 @@ def build_conductor_state(
         # from this file alone, and "every stage-1 phase accepted, no
         # candidate" is true at the confirm screen, during the fit, and after a
         # session that produced nothing.
-        "cloud_close": snap.cloud_close,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(getattr(snap, "measure_gain_ceiling_db", None) or {}),
@@ -1138,14 +1045,7 @@ def build_conductor_state(
         # serializes its snapshot verbatim; `/state` projects only the last
         # decision, never the full history.
         "attempts_loop": attempts_loop_state,
-        "candidate": _candidate_summary(
-            conductor.candidate,
-            # A stand-in without the property means "not pinned", which is
-            # what an ordinary round is.
-            topology_pinned=(
-                getattr(conductor, "topology_prescription_record", None) is not None
-            ),
-        ),
+        "candidate": _candidate_summary(conductor.candidate),
         "sound_design_revision": (
             getattr(conductor, "sound_design_revision", None)
             if getattr(conductor, "sound_design_revision", None) is not None
@@ -1325,38 +1225,6 @@ def build_conductor_state(
             "verify_measured": _decimate_verify_measured(
                 getattr(conductor, "verify_tracking_curve", None)
             ),
-            # Produced by the stage that MEASURES the candidate and banked by
-            # the stage that GRADES it — different sessions in different
-            # processes — so durable state is its only channel (#2662).
-            "alignment_prescription": getattr(
-                conductor, "alignment_prescription_record", None
-            ),
-            # The crossover pin, on the identical route. Stage 2 re-opens at
-            # the topology this names, so without it a pinned round's VERIFY
-            # would be graded against the incumbent corner's design target.
-            "topology_prescription": getattr(
-                conductor, "topology_prescription_record", None
-            ),
-            # Crosses for the line above's reason: stage 1 TAKES a blend
-            # prescription and stage 2 banks the receipt. ``None`` means the
-            # blend correction came from the solver, which is what an automatic
-            # round banks, so a series read back later can attribute an outcome
-            # to the class that produced it.
-            "blend_prescription": getattr(
-                conductor, "blend_prescription_record", None
-            ),
-            # …and WHICH document asked, so a later reader can find the
-            # evidence packet behind the numbers. Its own key because the record
-            # must round-trip through ``blend_prescription_from_mapping``, which
-            # REFUSES an unknown field: a digest nested inside would make the
-            # whole record unreadable.
-            "blend_prescription_sha256": str(
-                getattr(conductor, "blend_prescription_sha256", "") or ""
-            ),
-            # …and WHICH commitment the fit reached. Its own key because the
-            # prescription is the REQUEST and this is the OUTCOME: nesting one
-            # in the other would leave a round that prescribed nothing nowhere
-            # to record an objective it still has.
             "alignment_objective": getattr(
                 conductor, "measure_alignment_objective", "",
             ),

@@ -78,9 +78,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "CARVE_OUT_SOURCE_IDENTIFIED_NULL",
     "CARVE_OUT_SOURCE_POSITION_SCREEN",
-    "CLOUD_CLOSE_NONE",
-    "CLOUD_CLOSE_AWAITING_CONFIRM",
-    "CLOUD_CLOSE_RUNNING",
     "CLOUD_CURVE_MAX_JSON_POINTS",
     "GEOMETRY_RETRY_POSITIONS",
     "LATERAL_EVIDENCE_BAND_HZ",
@@ -142,10 +139,6 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 
 # Where the pre-apply cloud's close has got to. Read by the wizard through
-# durable state; see :attr:`V2ConductorSnapshot.cloud_close`.
-CLOUD_CLOSE_NONE = ""
-CLOUD_CLOSE_AWAITING_CONFIRM = "awaiting_confirm"
-CLOUD_CLOSE_RUNNING = "running"
 
 # How many wider-spread RETAKES of the group's last position the
 # geometry-locked check may ask for, once per group.

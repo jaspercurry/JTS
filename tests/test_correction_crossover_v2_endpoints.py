@@ -22,12 +22,10 @@ from tests.engine_twin import retained_take_writer
 
 import asyncio
 import contextlib
-from copy import deepcopy
 import hashlib
 import json
 import logging
 import os
-import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -39,12 +37,7 @@ import pytest
 
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.active_speaker.driver_protection import (
-    PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
-)
-from jasper.active_speaker.crossover_v2.conductor_context import (
-    V2ConductorContext,
-)
+from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -2597,41 +2590,6 @@ def test_an_unexpected_preflight_failure_fails_closed(caplog):
     assert event_records(caplog, "correction.crossover_v2_stage2_preflight_refused")
 
 
-def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
-    """The state ``closing`` must NOT swallow the absence case.
-
-    **What this actually covers, stated precisely:** durable state with every
-    stage-1 phase accepted, no candidate, and NO ``cloud_close`` — which is
-    state written before this field existed, or state whose ``cloud_close``
-    was never populated. It is genuine and correctly handled: the review
-    screen's absence copy plus "measure again" is the honest answer for a
-    session that is not in progress. It is NOT a live-conductor path — no live
-    conductor reaches all-phases-accepted with an empty ``cloud_close``,
-    because accepting the group's last index stashes the combine and the
-    property reads ``awaiting_confirm`` from that moment until a candidate
-    exists. The pin is about the READER's fallback, not about a state the
-    writer can produce."""
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "applied": False,
-    })
-    block = v2status.crossover_v2_status_block()
-    assert block["phase"] == "review"
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": block,
-    })
-    assert env["screen"] == "review"
-    assert any(a["id"] == "review_remeasure" for a in env["alternate_actions"])
-
-
 def test_the_preflight_does_not_run_without_a_candidate(caplog):
     """The cost gate (gate blocker B2's second half). The preflight is not
     cheap — six JSON reads, a profile fingerprint, a preset compile, and
@@ -2793,21 +2751,6 @@ def test_a_resolvable_context_renders_a_quiet_review_screen():
                     if n["code"] == "crossover_v2_stage2_preflight_refused"]
     finally:
         v2host.resolve_conductor_context = original
-
-
-def test_stage_plans_have_their_own_volume_ceiling():
-    from jasper.active_speaker.crossover_v2_flow import (
-        build_v2_capture_plan,
-        build_v2_verify_capture_plan,
-        session_wall_clock_ceiling_s,
-    )
-    from jasper.active_speaker.session_volume_plan import DEFAULT_WALL_CLOCK_CEILING_S
-
-    assert session_wall_clock_ceiling_s(
-        build_v2_capture_plan(_roles(), FC_HZ)
-    ) > session_wall_clock_ceiling_s(
-        build_v2_verify_capture_plan(FC_HZ)
-    ) == DEFAULT_WALL_CLOCK_CEILING_S
 
 
 # --- the apply's stage-2 openability preflight (work order D3, PR-T3 half) ---
@@ -3131,7 +3074,12 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
 
     name = "unbanked"
     request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
-    _arm_stage_1(monkeypatch)
+    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *_: None)
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
+        safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=object(),
+    ))
+    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda *_: pytest.fail("bundle opened before preflight"))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda *args, **kwargs: ready_facts(
         request,
@@ -3158,7 +3106,7 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(
         v2host, "resolve_conductor_context",
-        lambda _status: _pinnable_context(),
+        lambda _status: _inline_context(),
     )
     monkeypatch.setattr(branch_chain, "confirmed_protection_sections", _unrepresentable)
     monkeypatch.setattr(
@@ -3188,106 +3136,6 @@ def test_the_tier_rides_the_durable_state_and_state_block():
 
 
 # --- two-stage commission D4: the prediction on the wire ------------------
-
-
-def _closed_cloud_conductor():
-    """A real conductor walked to its cloud-measure close, so it carries a
-    candidate, a full-resolution ``measure_predicted_sum``, and the spec report
-    its accountability seam graded that sum with."""
-    from tests.crossover_v2_fixtures import (
-        FakeSeams,
-        _cloud_conductor,
-        _eligible_measure_analysis,
-        _walk_measure_cloud_to_close,
-    )
-
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    conductor = _cloud_conductor(fakes)
-    _walk_measure_cloud_to_close(conductor)
-    return conductor
-
-
-def test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade():
-    """D4's "one grading instrument", at the persistence seam.
-
-    The durable state carries the prediction TWICE in different resolutions —
-    the curve at ``MAX_PERSISTED_SUM_POINTS`` (a drawing) and the verdict from
-    the full-resolution tuple (the instrument). This pins that the stored
-    verdict is the conductor's own, and that re-grading the stored curve would
-    have produced something else, so the distinction is load-bearing rather
-    than notional."""
-    from jasper.active_speaker.crossover_v2_flow import spec_report_for_predicted_sum
-
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    priors = v2host.load_v2_state()["verify_priors"]
-    assert priors["predicted_spec"] == conductor.measure_predicted_spec_report
-    stored_report = dict(priors["predicted_spec"])
-    comparison = stored_report.pop("comparison")
-    assert comparison["reason"] == "predicted_in_spec"
-    assert stored_report == spec_report_for_predicted_sum(
-        conductor.measure_predicted_sum
-    ).to_dict()
-
-    # The curve that WAS persisted grades differently — which is exactly why
-    # the report is persisted instead of being recomputed from it.
-    stored_curve = priors["predicted_sum"]
-    re_graded = spec_report_for_predicted_sum((
-        np.asarray(stored_curve["freqs_hz"], dtype=float),
-        np.asarray(stored_curve["magnitude_db"], dtype=float),
-    )).to_dict()
-    assert re_graded != priors["predicted_spec"]
-
-
-def test_the_prediction_verdict_survives_a_verify_rearm_persist():
-    """The carry-forward, pinned on the shape that has broken three times.
-
-    A verify-only re-arm builds a FRESH conductor that never runs a fit, so
-    every MEASURE-owned prior has to travel to it explicitly or the first
-    "Try again" blanks it — the ``cloud`` B1 / way-back-stash W6.12 bug
-    shape. The verdict rides the same route as ``gate_window_ms``, and this is
-    what proves the route is wired at BOTH ends."""
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    stored = v2host.load_v2_state()["verify_priors"]["predicted_spec"]
-    assert stored is not None
-
-    rearmed = CrossoverV2Session(
-        session_id="cap_rearm",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=conductor._seams,
-        index_phase_map={1: PHASE_VERIFY},
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        measure_predicted_sum=conductor.measure_predicted_sum,
-        measure_predicted_spec_report=stored,
-    )
-    assert rearmed.measure_predicted_spec_report == stored
-    v2host.persist_conductor_state(rearmed, failure_code=None)
-    assert v2host.load_v2_state()["verify_priors"]["predicted_spec"] == stored
-
-
-def test_the_prediction_reaches_the_status_block_with_its_verdict():
-    """D4's projection: curve + stored verdict, beside the cloud blocks."""
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    prediction = v2status.crossover_v2_status_block()["prediction"]
-    stored = conductor.measure_predicted_spec_report
-    assert prediction["overall_within_target"] == stored["overall_within_target"]
-    assert prediction["reference_db"] == pytest.approx(stored["reference_db"])
-    # The per-band vocabulary matches the compact cloud block's, key for key,
-    # so the review screen can draw both curves in one tolerance corridor.
-    assert [set(b) for b in prediction["spec_bands"]] == [
-        {"f_lo_hz", "f_hi_hz", "within_target", "max_deviation_db", "tolerance_db"}
-    ] * len(stored["bands"])
-    assert prediction["curve"]["freqs_hz"]
 
 
 def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
@@ -3496,113 +3344,6 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["overall_within_target"] is None
     assert prediction["spec_bands"] == []
     assert prediction["reference_db"] is None
-
-
-def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog):
-    """The 4th ``prediction`` state: report present, curve absent.
-
-    The verdict is stashed BEFORE the improvement gate runs, while
-    ``_measure_predicted_sum`` is assigned only after that gate returns — so
-    while item 2 still refused, a ``correction_not_an_improvement`` refusal
-    persisted the report with ``predicted_sum`` still ``None``. That refusal is
-    gone (the nanny burn-down, doctrine deviation (c)) and no live path
-    produces the pairing from THAT cause any more, so the state is built here
-    rather than walked into. It is still worth pinning, twice over: a speaker
-    that ran a round before the burn-down has exactly these bytes on disk, and
-    any later refusal between the stash and ``commit_intervention_proposal``
-    reproduces the shape.
-
-    The rendering is what must not regress. ``overall_within_target`` is a REAL
-    ``False``, not the ``None`` that means unknown, and there is no curve to
-    draw beside it — the state a review screen is most likely to get wrong.
-
-    **The retired code is tolerated, not honoured.** ``post_apply_grade`` used
-    to read this exact literal into a ``keep_previous`` outcome; that clause
-    went with the refusal, so the same bytes now yield no outcome claim at all
-    — which is the honest reading of a not-applied round with no selector
-    evidence, and specifically not a crash or a fabricated verdict.
-    """
-    from tests.crossover_v2_fixtures import (
-        FakeSeams,
-        _cloud_conductor,
-        _eligible_measure_analysis,
-    )
-
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    conductor = _cloud_conductor(fakes)
-    # The pre-burn-down pairing, stated directly: item 2 graded the prediction
-    # and stashed the report, then refused before any curve was committed.
-    conductor._measure_predicted_spec_report = {
-        "overall_within_target": False,
-        "reference_db": 0.0,
-        "bands": [{
-            "f_lo_hz": 200.0, "f_hi_hz": 2000.0, "tolerance_db": 3.0,
-            "max_deviation_db": 4.0, "max_deviation_hz": 1000.0,
-            "rms_deviation_db": 2.0, "n_bins": 100, "n_excluded": 0,
-            "evaluable": True, "passed": False,
-        }],
-        "comparison": {
-            "reason": "correction_not_an_improvement",
-            "baseline_rms_db": 2.0, "selected_rms_db": 2.0,
-            "improvement_db": 0.0, "required_db": 0.5,
-        },
-    }
-    assert conductor.candidate is None
-    assert conductor.measure_predicted_sum is None
-    with caplog.at_level(logging.INFO, logger=v2host.__name__):
-        v2host.persist_conductor_state(
-            conductor, failure_code="correction_not_an_improvement",
-        )
-        v2host.persist_conductor_state(
-            conductor, failure_code="correction_not_an_improvement",
-        )
-        v2status.crossover_v2_status_block()
-    priors = v2host.load_v2_state()["verify_priors"]
-    assert priors["predicted_sum"] is None
-    assert priors["predicted_spec"] is not None
-
-    prediction = v2status.crossover_v2_status_block()["prediction"]
-    assert prediction["curve"] is None
-    # A graded miss, NOT an ungradeable unknown.
-    assert prediction["overall_within_target"] is False
-    assert prediction["spec_bands"]
-    assert prediction["reference_db"] is not None
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == "not_applied"
-    assert grade["graded"] is True
-    # No outcome, and therefore no classification line: the round is graded as
-    # not-applied, and there is nothing left that claims to know what it meant.
-    assert "outcome" not in grade
-    assert not event_records(caplog, "correction.crossover_v2_result_classified")
-
-
-def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
-    """D3/D4's era stamp, at the only place that can honestly write it.
-
-    A candidate this function serializes was built by THIS process, so its
-    per-fit charges are the CURRENT rule by construction. The stamp is recorded
-    here rather than inferred downstream because nothing on a persisted fit
-    distinguishes the derivations.
-
-    The value moved with #2758: the realized peak is now evaluated over the
-    whole domain, and that era can read SMALLER than a ``realized_peak`` stamp
-    for the same filters — the one direction the earlier eras never had — so it
-    needs its own name rather than riding the old one."""
-    from jasper.active_speaker.linearization_fit import (
-        HEADROOM_COST_BASIS_REALIZED_PEAK,
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
-    )
-
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    candidate = v2host.load_v2_state()["candidate"]
-    assert candidate["headroom_cost_basis"] == (
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
-    )
-    assert candidate["headroom_cost_basis"] != HEADROOM_COST_BASIS_REALIZED_PEAK
-    assert isinstance(candidate["headroom_cost_db"], float)
 
 
 def test_apply_endpoint_requires_current_candidate():
@@ -3935,13 +3676,11 @@ def _no_sweep_state(*, fc_selection=None):
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
     from jasper.active_speaker.crossover_v2_flow import (
-        STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
     stage1 = list(dict.fromkeys(build_v2_cloud_index_phase_map(
         tier="express",
-        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ).values()))
@@ -4109,7 +3848,7 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
             return SimpleNamespace(
                 session_id="cap_p04", accepted_phases=(PHASE_VERIFY,),
                 session_phases=(PHASE_VERIFY,), tier="express", applied=True,
-                gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+                gain_plan_db=None, candidate_fingerprint=None,
             )
 
     conductor = TerminalConductor("cap_p04")
@@ -4130,7 +3869,7 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     conductor.snapshot = lambda: SimpleNamespace(
         session_id="cap_malformed", accepted_phases=(PHASE_VERIFY,),
         session_phases=(PHASE_VERIFY,), tier="", applied=True,
-        gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+        gain_plan_db=None, candidate_fingerprint=None,
     )
     monkeypatch.setattr(
         v2status, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
@@ -7139,7 +6878,7 @@ class _StubConductor:
             session_id=self._session_id, accepted_phases=(),
             session_phases=self._session_phases,
             tier="", applied=self._applied, gain_plan_db=None,
-            candidate_fingerprint=None, cloud_close="",
+            candidate_fingerprint=None,
         )
 
 
@@ -8280,734 +8019,6 @@ def test_the_status_block_withholds_a_way_back_its_door_would_refuse(
     )
 
 
-# --- the request-time topology pin: ONE corner + order, for ONE round --------
-#
-# ``jasper/active_speaker/crossover_v2/topology_prescription.py`` owns the gate
-# and every bound it applies; that module's own suite owns those. What is
-# pinned HERE is the DOOR the gate is bolted to — the request boundary
-# ``prepare_v2_session`` is, and the durable read-back its verify-only
-# stage re-opens from:
-#
-#   1. the ORDER the boundary reads its two request-body prescriptions in,
-#      because the delay gate's bound is a half-period AT the corner the
-#      topology gate has just moved;
-#   2. that a pin is per-round and NEVER inherited, unlike the tier beside it;
-#   3. that the accepted record survives the persist → read-back round trip
-#      losslessly, which the grading stage re-opens its session from;
-#   4. that an inadmissible pin refuses AT THE TAP, before any side effect.
-
-
-class _StoppedAtTheTap(Exception):
-    """Cut the preparer off INSIDE the gate under test.
-
-    Raised from a patched prescription gate so a test never runs a line past
-    the fact it is about: no evidence bundle, no capture-source probe, no
-    durable write. Deliberately not ``pytest.fail`` (a ``BaseException``, which
-    a ``pytest.raises`` cannot usefully name) and deliberately not
-    ``contextlib.suppress(Exception)`` — a bare suppress would swallow a
-    genuine refusal raised BEFORE the tap and let a recorder assertion pass on
-    a preparer that never reached the gate at all.
-    """
-
-
-#: The pinned candidate. Legal for the fixture speaker's declarations below and
-#: nowhere near ``FC_HZ`` (1600.0, the corner it is commissioned at), so
-#: "the pin took effect" and "the incumbent answered" can never tie.
-_PIN_FC_HZ = 2400.0
-
-#: Order 4 is 24 dB/octave, which exactly MEETS the tweeter's declared
-#: protective minimum below. Exactness is legal in this repository's gates, so
-#: a candidate on the edge is the honest default for a fixture.
-_PIN_ORDER = 4
-
-#: The fixture speaker's own declarations, quoted once. ``_roles()`` supplies
-#: the two role bands (woofer 150-6000 Hz, tweeter 300-20000 Hz), so the gate's
-#: declared floor is 300.0 and its lower-driver ceiling is 6000.0; these two are
-#: the declarations ``_roles()`` does not carry. Those role bands are the WHOLE
-#: frequency gate since #2870 deleted the crossover search band, which is what
-#: makes 2400.0 admissible and 6500.0 — past the woofer's own declared ceiling —
-#: refusable.
-#: What the fixture tweeter's MAKER publishes, and the only slope the gate may
-#: refuse on since #2897. It is deliberately different from the 24.0 stamped on
-#: the protective high-pass below — that number is
-#: ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, a code figure, and
-#: a fixture where the two agreed could not tell which one reached the gate.
-_PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 18.0
-#: What this build DERIVES and emits as the protective high-pass. Read by the
-#: commissioning admission path against a graph this build wrote; never by the
-#: topology gate.
-_DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 24.0
-_DECLARED_WOOFER_DIAMETER_MM = 114.0
-
-_PIN_SAFETY_PROFILE = {
-    "targets": [
-        {
-            "role": "woofer",
-            "target_fingerprint": "fp-woofer",
-            "required_protection_filters": [{
-                "kind": "lowpass",
-                "cutoff_hz": 6000.0,
-                "minimum_slope_db_per_octave": 24.0,
-            }],
-        },
-        {
-            "role": "tweeter",
-            "target_fingerprint": "fp-tweeter",
-            "recommended_highpass_hz": 300.0,
-            "recommended_highpass_slope_db_per_octave":
-                _PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE,
-            "required_protection_filters": [{
-                "kind": "highpass",
-                "cutoff_hz": 300.0,
-                "minimum_slope_db_per_octave":
-                    _DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE,
-            }],
-        },
-    ],
-}
-
-
-def _topology_pin(**overrides: Any) -> dict[str, Any]:
-    """One well-formed ``topology_prescription`` request block.
-
-    Overrides change ONE field, so a test that means "this corner is
-    inadmissible" cannot accidentally also be testing a missing provenance.
-    """
-    body: dict[str, Any] = {
-        "kind": "jts_crossover_topology_prescription",
-        "artifact_schema_version": 1,
-        "fc_hz": _PIN_FC_HZ,
-        "order": _PIN_ORDER,
-        # The `arm-2.json` filename is banked history, not prose: it is a real
-        # path under a real receipts tree and is left exactly as recorded.
-        # Invariant 9's rename is forward-only for identifiers and paths.
-        "basis_artifacts": ["captures/offline-fc-search/arm-2.json"],
-        "basis_note": "candidate 2 of a pre-registered Fc/slope tournament",
-    }
-    body.update(overrides)
-    return body
-
-
-def _pinnable_context(roles_bands=None) -> V2ConductorContext:
-    """A conductor context whose DECLARATIONS admit ``_topology_pin()``.
-
-    Built directly rather than resolved from a live topology for the reason
-    ``test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle``
-    above stubs the same seam: the resolver's own wiring has its own suite
-    (``tests/test_correction_crossover_v2_conductor_context.py``), and what
-    these tests are about is what the preparer DOES with a context, not how it
-    obtains one. The real type, not a namespace, because the preparer asks it
-    for a declaration BY ROLE. ``roles_bands`` is a parameter so a test can
-    hand over the same two declarations in the other order.
-    """
-    return V2ConductorContext(
-        preset=_preset(),
-        # The corner this speaker is commissioned at — the answer a pinned
-        # round must NOT get, and the answer an unpinned one must.
-        fc_hz=FC_HZ,
-        roles_bands=tuple(_roles() if roles_bands is None else roles_bands),
-        radiating_diameter_mm_by_role={"woofer": _DECLARED_WOOFER_DIAMETER_MM},
-        safety_profile=_PIN_SAFETY_PROFILE,
-        role_targets={"woofer": "fp-woofer", "tweeter": "fp-tweeter"},
-        driver_caps_dbfs=dict(CAPS),
-        driver_sweep_duration_limits_s={"woofer": 6.0, "tweeter": 6.0},
-        session_volume_db=SESSION_VOLUME_DB,
-        driver_spacing_m=0.0,
-        driver_spacing_source="unknown",
-        topology=SimpleNamespace(topology_id="t-pin"),
-        playback_device="hw:Test",
-        role_channels={"woofer": 0, "tweeter": 1},
-        sound_design_revision=1,
-    )
-
-
-def _arm_stage_1(monkeypatch) -> None:
-    """Everything ``prepare_v2_session`` needs BEFORE its prescription gates.
-
-    The evidence store is armed to fail rather than stubbed: every test here
-    asserts about a decision the preparer takes before any bundle is opened, so
-    a bundle opening at all is the failure, not a fixture gap.
-    """
-    _ready_inline(monkeypatch)
-    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    monkeypatch.setattr(
-        v2host, "reconcile_session_volume_for_new_session", lambda *_a: None,
-    )
-    monkeypatch.setattr(
-        v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
-    )
-    monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
-        lambda *_a: pytest.fail(
-            "the evidence bundle opened before the prescription gates answered"
-        ),
-    )
-
-
-def _stage_1_prescription_taps(monkeypatch, body: Any) -> dict[str, Any]:
-    """Drive the REAL preparer and report what each prescription gate was asked.
-
-    The topology gate runs FOR REAL (recorded, not replaced), so a refusal is
-    still the production refusal. The delay gate is the stopping point: it
-    records its arguments and raises :class:`_StoppedAtTheTap`, which is what
-    makes the recorded corner evidence about the ORDER of the two reads rather
-    than about whatever a later stage happened to do with it.
-
-    Both gates are patched on the modules that OWN them, never on the web
-    module: ``prepare_v2_session`` imports each name inside its own body, so a
-    name patched on the importer is a name the preparer never looks at.
-    """
-    from jasper.active_speaker.crossover_v2 import (
-        alignment_prescription as alignment_mod,
-    )
-    from jasper.active_speaker.crossover_v2 import capture_plan as plan_mod
-    from jasper.active_speaker.crossover_v2 import (
-        topology_prescription as topology_mod,
-    )
-
-    _arm_stage_1(monkeypatch)
-    seen: dict[str, Any] = {}
-    real_shape = plan_mod.resolve_plan_shape
-    real_topology_gate = topology_mod.read_topology_prescription
-
-    def _shape(tier=None, **kwargs):
-        seen["tier"] = tier
-        return real_shape(tier, **kwargs)
-
-    def _topology(raw, **kwargs):
-        seen["topology_raw"] = raw
-        seen["topology"] = real_topology_gate(raw, **kwargs)
-        return seen["topology"]
-
-    def _alignment(raw, *, fc_hz, declared_bounds_us, way_count=None):
-        seen["alignment_raw"] = raw
-        seen["alignment_fc_hz"] = fc_hz
-        seen["alignment_bounds_us"] = declared_bounds_us
-        seen["alignment_way_count"] = way_count
-        raise _StoppedAtTheTap("the delay gate was reached")
-
-    monkeypatch.setattr(plan_mod, "resolve_plan_shape", _shape)
-    monkeypatch.setattr(topology_mod, "read_topology_prescription", _topology)
-    monkeypatch.setattr(alignment_mod, "read_alignment_prescription", _alignment)
-
-    with pytest.raises(_StoppedAtTheTap):
-        v2host.prepare_v2_session(
-            {**_inline_body(), **body}, status={}, run_async=None, camilla_factory=None,
-        )
-    return seen
-
-
-def test_a_pinned_round_bounds_its_delay_at_the_pinned_corner_not_the_incumbent(
-    monkeypatch,
-):
-    """The ordering pin, and it is the load-bearing one in this group.
-
-    ``read_alignment_prescription``'s bound is a HALF-PERIOD of the crossover
-    corner: half a cycle at 1600 Hz is 312.5 us and half a cycle at 2400 Hz is
-    208.3 us, so the two corners do not merely disagree about a label — they
-    admit different delays. A boundary that read the delay prescription first,
-    or that kept handing it ``context.fc_hz`` after the topology pin moved the
-    round, would gate a 2400 Hz candidate against the 1600 Hz lobe: a gate
-    that passes commitments the round it is gating cannot support, with the
-    candidate's own name on the receipt.
-
-    So the corner the delay gate is HANDED is asserted, at the gate, rather
-    than a later symptom of it. Both prescriptions ride the same request,
-    because "both were sent" is the premise the ordering question only exists
-    under — a body carrying one of them could not tell a correct order from an
-    accidental one.
-    """
-    seen = _stage_1_prescription_taps(monkeypatch, {
-        "topology_prescription": _topology_pin(),
-        "alignment_prescription": {"delay_us": 120.0, "basis": "offline"},
-    })
-
-    # The premise: both request blocks really reached their own gate.
-    assert seen["topology_raw"] == _topology_pin()
-    assert seen["alignment_raw"] == {"delay_us": 120.0, "basis": "offline"}
-    # The topology gate accepted the pin, so this round's corner IS 2400 Hz...
-    assert seen["topology"] is not None
-    assert seen["topology"].fc_hz == _PIN_FC_HZ
-    # ...and that is the corner the delay bound was derived from.
-    assert seen["alignment_fc_hz"] == _PIN_FC_HZ
-    # Stated as its own assertion rather than left implied by the line above:
-    # the incumbent corner is a real, reachable, DIFFERENT number, which is
-    # what makes the equality above a decision instead of a coincidence.
-    assert FC_HZ != _PIN_FC_HZ
-    assert seen["alignment_fc_hz"] != FC_HZ
-
-
-def test_a_topology_pin_is_not_inherited_from_a_prior_run(
-    monkeypatch,
-):
-    v2host.save_v2_state({
-        "session_id": "cap_lapsed_pinned_round",
-        "tier": TIER_EXPRESS,
-        "verify_priors": {"topology_prescription": _topology_pin()},
-    })
-    state = v2host.load_v2_state()
-    banked = v2host.topology_prescription_prior_from_state(state)
-    assert banked is not None and banked.fc_hz == _PIN_FC_HZ
-
-    seen = _stage_1_prescription_taps(monkeypatch, {})
-
-    assert "topology_raw" not in seen
-    assert "topology" not in seen
-    assert seen["alignment_fc_hz"] == FC_HZ
-    assert seen["tier"] is None
-
-
-def test_an_order_2_pin_is_admitted_when_the_maker_published_no_slope(
-    monkeypatch,
-) -> None:
-    """The 2026-08-23 owner ruling, end to end through the real preparer.
-
-    The confirmed target still carries a 24 dB/octave protective high-pass —
-    that is what this build EMITS — but its maker published no slope condition,
-    so there is nothing for the gate to refuse. Before #2897 the derived 24
-    reached the gate wearing the manufacturer's clothes and this pin came back
-    ``topology_slope_below_declared_requirement``.
-    """
-    unpublished = deepcopy(_PIN_SAFETY_PROFILE)
-    del unpublished["targets"][1]["recommended_highpass_slope_db_per_octave"]
-    # Patched on this module's global rather than on the context: ``_arm_stage_1``
-    # builds a fresh ``_pinnable_context()`` inside the tap helper, so a context
-    # edited out here would be thrown away before the gate ran.
-    monkeypatch.setattr(
-        sys.modules[__name__], "_PIN_SAFETY_PROFILE", unpublished,
-    )
-
-    accepted = _stage_1_prescription_taps(
-        monkeypatch, {"topology_prescription": _topology_pin(order=2)},
-    )["topology"]
-
-    assert accepted is not None
-    assert accepted.order == 2
-    assert accepted.slope_db_per_octave == 12.0
-    # No published condition, so no comparison was made…
-    assert accepted.checked_against_slope_db_per_octave is None
-    # …and the recommendation this round crossed under is on the record.
-    assert accepted.recommended_slope_db_per_octave == (
-        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-    )
-
-
-def test_a_pre_field_profile_refuses_no_slope_and_its_receipt_says_only_that(
-    monkeypatch,
-) -> None:
-    """The LEGACY cause of an empty slope slot, kept distinct from the other one.
-
-    The test above is a maker who prints no qualifier. This one is every speaker
-    already commissioned when #2897 deploys: the confirmed target predates the
-    owner pair, so it carries NEITHER field — and the consequence is stronger
-    than "this driver publishes nothing". No driver on such a profile has a
-    published slope, including one whose datasheet says 24, until the next
-    ``/sound/`` save re-derives the target. Both causes land the same behaviour
-    (no slope refusal, empty receipt slot), and the receipt cannot tell them
-    apart — which is exactly why the docstrings must not read the empty slot as
-    a datasheet fact.
-    """
-    pre_field = deepcopy(_PIN_SAFETY_PROFILE)
-    tweeter = pre_field["targets"][1]
-    del tweeter["recommended_highpass_hz"]
-    del tweeter["recommended_highpass_slope_db_per_octave"]
-    # The derived protective high-pass is untouched: a pre-field target carries
-    # the projections and nothing else, which is what makes this the real shape
-    # rather than a profile with a field surgically removed.
-    assert tweeter["required_protection_filters"][0]["minimum_slope_db_per_octave"] == (
-        _DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
-    )
-    monkeypatch.setattr(sys.modules[__name__], "_PIN_SAFETY_PROFILE", pre_field)
-
-    accepted = _stage_1_prescription_taps(
-        monkeypatch, {"topology_prescription": _topology_pin(order=2)},
-    )["topology"]
-
-    assert accepted is not None
-    assert accepted.order == 2
-    # Admitted — and the 18 the maker really publishes did NOT reach the gate,
-    # because the field that carries it is not on this profile.
-    assert accepted.checked_against_slope_db_per_octave is None
-    assert accepted.recommended_slope_db_per_octave == (
-        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-    )
-    # The same pin against the SAME maker, once a /sound/ save has put its
-    # published 18 on the record, IS refused — so the empty slot above is the
-    # profile's age and not the datasheet's silence. Undoing the patch restores
-    # the module fixture, which is that saved shape.
-    monkeypatch.undo()
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        _stage_1_prescription_taps(
-            monkeypatch, {"topology_prescription": _topology_pin(order=2)},
-        )
-    assert "published minimum of 18 dB/octave" in str(excinfo.value)
-
-
-def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
-    monkeypatch,
-):
-    """Stage 2 re-opens AT this record, so a lossy round trip is not cosmetic.
-
-    The verify-only prepare reads the pin back out of ``verify_priors`` and
-    re-points its own preset and corner from it. A record that failed to
-    rehydrate would grade a 2400 Hz round's VERIFY against the incumbent
-    corner's design target — the applied graph judged for not being the
-    crossover it deliberately replaced.
-
-    The round trip is asserted LOSSLESS (``to_dict()`` on both sides) rather
-    than merely present, because
-    ``topology_prescription_from_mapping`` REFUSES an unknown field instead of
-    ignoring it: one extra key anywhere in the banked block turns the whole
-    record into ``None``, and a "is not None" assertion would not see a gate
-    stamp quietly dropped on the way through. The record is taken from the REAL
-    request gate rather than hand-built, so the ``checked_against_*`` stamps and
-    the beaming disclosure the gate writes are all in the block being
-    round-tripped.
-    """
-    accepted = _stage_1_prescription_taps(
-        monkeypatch, {"topology_prescription": _topology_pin()},
-    )["topology"]
-    # The gate's own stamps are present, which is what makes the round trip
-    # below a demanding one rather than four fields wide.
-    assert accepted.checked_against_floor_hz == 300.0
-    assert accepted.checked_against_ceiling_hz == 6000.0
-    # The PUBLISHED condition reached the gate end to end, and the derived 24.0
-    # sitting beside it on the same profile target did not (#2897).
-    assert accepted.checked_against_slope_db_per_octave == (
-        _PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
-    )
-    assert accepted.checked_against_slope_db_per_octave != (
-        _DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
-    )
-    # The ka onset is DISCLOSED as a number, never enforced (#1675): this
-    # candidate is above it and the receipt says so rather than refusing.
-    assert accepted.beaming_ceiling_hz is not None
-    assert accepted.fc_hz > accepted.beaming_ceiling_hz
-    # …and so is the commissioning slope recommendation, on the same terms.
-    assert accepted.recommended_slope_db_per_octave == (
-        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-    )
-
-    conductor = _rearm_conductor_for_persist(
-        "cap_pinned_round", {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
-        topology_prescription=accepted,
-    )
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    state = v2host.load_v2_state()
-    assert state["verify_priors"]["topology_prescription"] == accepted.to_dict()
-    rehydrated = v2host.topology_prescription_prior_from_state(state)
-    assert rehydrated is not None
-    assert rehydrated.to_dict() == accepted.to_dict()
-    # ...and an ordinary round still banks nothing, so a reader can tell a
-    # pinned candidate from the speaker's commissioned crossover.
-    v2host.persist_conductor_state(
-        _rearm_conductor_for_persist("cap_ordinary_round", {1: PHASE_VERIFY}),
-        failure_code=None,
-    )
-    assert v2host.topology_prescription_prior_from_state(
-        v2host.load_v2_state()
-    ) is None
-
-
-def test_a_pre_envelope_alignment_record_round_trips_through_the_prior(caplog):
-    """The retrofit contract, end to end through the real wrapper.
-
-    ``verify_priors.alignment_prescription`` is carried unconditionally
-    across a deploy (``persist_conductor_state``), and #2662/#2773 shipped
-    writing it days before the version+kind envelope existed, so a live
-    speaker can already hold a record naming neither field. Built through the
-    dataclass's own ``to_dict()`` with the two envelope keys removed, not
-    hand-typed, so this is exactly the shape a prior build wrote.
-    """
-    from jasper.active_speaker.crossover_v2.alignment_prescription import (
-        AlignmentPrescription,
-    )
-
-    prescription = AlignmentPrescription(
-        delay_us=-450.0, basis_delay_us=-405.7,
-        basis_artifacts=("captures/xover-series2/landscape.json",),
-        basis_note="direct arrival gap, n=33",
-        checked_at_fc_hz=FC_HZ, lobe_us=200.0,
-    )
-    pre_envelope_record = prescription.to_dict()
-    del pre_envelope_record["kind"]
-    del pre_envelope_record["artifact_schema_version"]
-
-    v2host.save_v2_state({
-        "session_id": "cap_pre_envelope_alignment",
-        "verify_priors": {"alignment_prescription": pre_envelope_record},
-    })
-    with caplog.at_level(logging.WARNING):
-        rehydrated = v2host.alignment_prescription_prior_from_state(
-            v2host.load_v2_state()
-        )
-    assert rehydrated is not None
-    assert rehydrated.delay_us == -450.0
-    assert rehydrated.basis_delay_us == -405.7
-    # Tolerated, not merely swallowed: no "unreadable" WARNING for the legacy
-    # shape, which is what separates "read as absent" from "read as this
-    # build's own kind and version 1."
-    assert not event_records(
-        caplog, "correction.crossover_v2_alignment_prescription_unreadable"
-    )
-
-
-def test_a_pre_envelope_topology_record_round_trips_through_the_prior(caplog):
-    """The topology mirror of the test above — same retrofit, same wrapper
-    shape, same reason: ``verify_priors.topology_prescription`` predates this
-    envelope by the same three days."""
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        TopologyPrescription,
-    )
-
-    pinned = TopologyPrescription(
-        fc_hz=2400.0, order=4,
-        basis_artifacts=("armloop-first-drive-2026-08/offline-fc-search",),
-        basis_note="offline candidate search",
-        authority="operator_pinned_no_measured_ranking",
-    )
-    pre_envelope_record = pinned.to_dict()
-    del pre_envelope_record["kind"]
-    del pre_envelope_record["artifact_schema_version"]
-
-    v2host.save_v2_state({
-        "session_id": "cap_pre_envelope_topology",
-        "verify_priors": {"topology_prescription": pre_envelope_record},
-    })
-    with caplog.at_level(logging.WARNING):
-        rehydrated = v2host.topology_prescription_prior_from_state(
-            v2host.load_v2_state()
-        )
-    assert rehydrated is not None
-    assert rehydrated.fc_hz == 2400.0
-    assert rehydrated.order == 4
-    assert not event_records(
-        caplog, "correction.crossover_v2_topology_prescription_unreadable"
-    )
-
-
-def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
-    monkeypatch,
-):
-    """Fail-closed, at the untrusted-input boundary, costing nothing.
-
-    6500 Hz is past the woofer's own declared 6000 Hz ceiling and comfortably
-    inside the tweeter's band (which declares from 300 Hz), so the LOWER
-    DRIVER'S CEILING is the only bound that can refuse it — a one-reason
-    fixture, asserted on the reason CONSTANT rather than on wording no test
-    owns.
-
-    The one-reason fixture used to be 5500 Hz, refused by a declared search
-    band the two roles intersected to 1000-4000 Hz. #2870 deleted that band, so
-    5500 Hz is now admissible — both drivers' hard bands allow it — and the
-    fixture moved to the surviving damage stop rather than the deleted nanny.
-
-    "At the tap" is the half that matters operationally: an operator walking a
-    tournament must learn at the request, not after a ten-minute measurement
-    with a burned capture session behind it. So the refusal is asserted TOGETHER
-    with the absence of every side effect the preparer would otherwise leave —
-    no evidence bundle (armed to fail in ``_arm_stage_1``, and reachable from
-    here: nothing is stopping this run at an earlier tap), and no durable
-    session state.
-
-    The pin is otherwise perfectly well-formed — supported order, named
-    provenance — so a refusal can only be the corner.
-    """
-    from jasper.active_speaker.crossover_v2.fc_sweep import (
-        FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-    )
-
-    _arm_stage_1(monkeypatch)
-    assert v2host.load_v2_state() is None
-
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.prepare_v2_session(
-            {**_inline_body(), "topology_prescription": _topology_pin(fc_hz=6500.0)},
-            status={}, run_async=None, camilla_factory=None,
-        )
-
-    assert FC_REJECT_ABOVE_LOWER_DRIVER_BAND in str(excinfo.value)
-    # Never clamped to the nearest legal corner and quietly measured: the
-    # operator asked for a candidate, and a silently different candidate is
-    # worse than none because its receipt would carry the candidate's name.
-    assert "6500" in str(excinfo.value)
-    assert v2host.load_v2_state() is None
-
-
-def test_the_door_reads_its_two_declared_bands_by_role_not_by_position(
-    monkeypatch,
-):
-    """Read positionally, the reversed pair declares a 150 Hz floor and a
-    20 kHz ceiling, so both corners below would be admitted instead of refused.
-    """
-    from jasper.active_speaker.crossover_v2.fc_sweep import (
-        FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-        FC_REJECT_BELOW_DECLARED_FLOOR,
-    )
-
-    _arm_stage_1(monkeypatch)
-    woofer_first = _roles()
-    # What the resolver would emit if ``DRIVER_ROLES_BY_WAY[2]`` were reordered:
-    # the same two declarations, re-enumerated onto the program channels.
-    tweeter_first = [
-        replace(entry, channel=channel)
-        for channel, entry in enumerate(reversed(woofer_first))
-    ]
-
-    def _refusal(roles_bands, fc_hz: float) -> str:
-        monkeypatch.setattr(
-            v2host, "resolve_conductor_context",
-            lambda _status: _pinnable_context(roles_bands=roles_bands),
-        )
-        with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-            v2host.prepare_v2_session(
-                {**_inline_body(), "topology_prescription": _topology_pin(fc_hz=fc_hz)},
-                status={}, run_async=None, camilla_factory=None,
-            )
-        return excinfo.value.__cause__.reason
-
-    for fc_hz, reason in (
-        (200.0, FC_REJECT_BELOW_DECLARED_FLOOR),
-        (6500.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
-    ):
-        assert _refusal(woofer_first, fc_hz) == reason
-        assert _refusal(tweeter_first, fc_hz) == reason
-    assert v2host.load_v2_state() is None
-
-
-def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
-    """The grading stage must re-point too, and this is the half that matters.
-
-    Stage 2 GRADES the applied graph. A pinned round applied a crossover the
-    saved declaration does not name, so a stage 2 that opened at the incumbent
-    corner would hand VERIFY the wrong design target (R18's absolute claim) and
-    the wrong overlap band — the round would be graded for not being the
-    crossover it deliberately replaced, and every number would look like a
-    realization defect.
-
-    Tapped at ``apply_topology_pin`` because that call IS the re-point — the
-    one decision both stages take, owned by the module that owns the pin. The
-    rehydration test above proves the record survives the round trip; this
-    proves the record is then USED, which is a different claim and the one a
-    lossless-but-ignored record would still pass.
-    """
-    from jasper.active_speaker.crossover_v2 import (
-        topology_prescription as topology_mod,
-    )
-
-    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    monkeypatch.setattr(
-        v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
-    )
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic",
-        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
-    )
-    monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
-        lambda *_a: (SimpleNamespace(), "bundle-stage2-pin"),
-    )
-    v2host.save_v2_state({
-        "session_id": "cap_applied_pinned_round",
-        "applied": True,
-        "tier": "",
-        "verify_priors": {"topology_prescription": _topology_pin()},
-    })
-
-    seen: dict[str, Any] = {}
-    real = topology_mod.apply_topology_pin
-
-    def _apply(prescription, *, preset, fc_hz):
-        # Run the REAL helper first, so a pin it refused to move would be
-        # caught here rather than masked by the sentinel.
-        moved_preset, moved_fc = real(prescription, preset=preset, fc_hz=fc_hz)
-        region = moved_preset.crossover_regions[0]
-        seen["fc_hz"], seen["order"] = moved_fc, region.order
-        seen["region_fc_hz"] = region.fc_hz
-        raise _StoppedAtTheTap("stage 2 re-pointed at the pin")
-
-    monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
-
-    with pytest.raises(_StoppedAtTheTap):
-        v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None,
-            verify_only=True,
-        )
-
-    assert seen["fc_hz"] == _PIN_FC_HZ
-    # The PRESET moved too, not just the scalar: the graph VERIFY grades is
-    # this topology's, corner and order both.
-    assert seen["region_fc_hz"] == _PIN_FC_HZ
-    assert seen["order"] == _PIN_ORDER
-    # …and the incumbent is a different number, so this cannot pass by accident.
-    assert FC_HZ != _PIN_FC_HZ
-
-
-def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
-    """The control for the test above, and the reason its tap is honest.
-
-    An ordinary round's stage 2 must open at the speaker's own commissioned
-    corner, exactly as it always has. Without this, a stage 2 that re-cornered
-    unconditionally would still pass the pinned assertion above while quietly
-    rewriting every ordinary round's preset.
-
-    Asserted on what the helper RETURNS rather than on whether it was called:
-    ``apply_topology_pin`` is called on every round by design — it is the one
-    place absence is turned into "change nothing" — so "was it called" would be
-    a test of the wiring's shape instead of its answer.
-    """
-    from jasper.active_speaker.crossover_v2 import (
-        topology_prescription as topology_mod,
-    )
-
-    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    monkeypatch.setattr(
-        v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
-    )
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_wired_mic",
-        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
-    )
-    # A working stub, not a fail-arm: the bundle opens BEFORE the re-point in
-    # the verify-only prepare, so arming it to fail would stop this run short
-    # of the seam it is about.
-    monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
-        lambda *_a: (SimpleNamespace(), "bundle-stage2-ordinary"),
-    )
-    v2host.save_v2_state({
-        "session_id": "cap_applied_ordinary_round",
-        "applied": True,
-        "tier": "",
-        "verify_priors": {},
-    })
-
-    seen: dict[str, Any] = {}
-    real = topology_mod.apply_topology_pin
-
-    def _apply(prescription, *, preset, fc_hz):
-        moved_preset, moved_fc = real(prescription, preset=preset, fc_hz=fc_hz)
-        seen["prescription"] = prescription
-        seen["preset_unchanged"] = moved_preset is preset
-        seen["fc_hz"] = moved_fc
-        raise _StoppedAtTheTap("stage 2 resolved its topology")
-
-    monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
-
-    with pytest.raises(_StoppedAtTheTap):
-        v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None,
-            verify_only=True,
-        )
-
-    assert seen["prescription"] is None
-    # The SAME preset object back, not an equal copy: an unpinned round does
-    # not rebuild its crossover regions at all.
-    assert seen["preset_unchanged"] is True
-    assert seen["fc_hz"] == FC_HZ
-
-
 def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatch):
     """B1 at the host: the wall-clock ceiling fires on a LIVE session.
 
@@ -9063,25 +8074,6 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     assert body["code"] == "measurement_candidate_required"
     assert isinstance(body["next_action"], dict)
     assert body["next_action"]["id"] == "select_candidate"
-@pytest.mark.parametrize(("regime", "candidate", "phases"), [
-    ("per_driver", "base", ("check", "entry_baseline", "measure")),
-    ("summed", "base", ("entry_baseline", "lateral")),
-    ("summed", "candidate-a", ("lateral",)),
-])
-def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases):
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
-    from jasper.active_speaker.crossover_v2.capture_plan import prepare_plan_captures
-
-    request = AngleCaptureRequest(
-        stops=(AngleStop(20, regime, candidate_id=candidate),),
-        candidates=(candidate,), repeats=2,
-    )
-    captures = prepare_plan_captures(request, candidate_scopes={"candidate-a": "candidate"})
-    assert tuple(capture.spec.program_phase for capture in captures) == (*phases, phases[-1])
-    assert [capture.repeat for capture in captures[-2:]] == [1, 2]
-    assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
-    assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])
-
 
 def _inline_body():
     from jasper.active_speaker.angle_capture import summed_at
@@ -9094,16 +8086,35 @@ def _ready_inline(monkeypatch):
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
 
 
-def _inline_prepared(monkeypatch, tmp_path):
-    from jasper.active_speaker import preflight_live
-    from tests.test_preflight import ready_facts
+def _inline_context() -> V2ConductorContext:
+    return V2ConductorContext(
+        preset=_preset(), fc_hz=FC_HZ, roles_bands=tuple(_roles()),
+        safety_profile={"targets": [{
+            "role": role, "target_fingerprint": f"fp-{role}",
+            "required_protection_filters": [{
+                "kind": kind, "cutoff_hz": cutoff,
+                "minimum_slope_db_per_octave": 24.0,
+            }],
+        } for role, kind, cutoff in (
+            ("woofer", "lowpass", 6000.0), ("tweeter", "highpass", 300.0),
+        )]},
+        role_targets={role: f"fp-{role}" for role in CAPS},
+        driver_caps_dbfs=dict(CAPS),
+        driver_sweep_duration_limits_s={role: 6.0 for role in CAPS},
+        session_volume_db=SESSION_VOLUME_DB,
+        driver_spacing_m=0.0, driver_spacing_source="unknown",
+        topology=SimpleNamespace(topology_id="t-inline"),
+        playback_device="hw:Test", role_channels={"woofer": 0, "tweeter": 1},
+        sound_design_revision=1,
+    )
 
+
+def _inline_prepared(monkeypatch, tmp_path):
     _ready_inline(monkeypatch)
-    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _pinnable_context())
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context())
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     _, _, _, store = _retention_bundle(tmp_path, "inline")
     monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda _: (store, store.session_id))
-    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
     return v2host.prepare_v2_session(_inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
 
 

@@ -67,83 +67,29 @@ from .refusal_copy import CrossoverV2Refused
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from ..angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop
     from .measure_spec import MeasureSpec
 
 
-@dataclass(frozen=True)
-class PlanCapture:
-    stop: AngleStop
-    spec: MeasureSpec
-    repeat: int = 1
-
-    def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
-        from ..angle_capture import BASE_CANDIDATE, resolve_request  # lazy: angle_capture imports pose primitives here
-        return resolve_request(replace(request, stops=(self.stop,),
-            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
-
-
-def prepare_plan_captures(
-    request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
-) -> tuple[PlanCapture, ...]:
-    """Derive preparation and requested captures together (ADR-0297)."""
-    from ..angle_capture import (  # lazy: angle_capture imports pose primitives here
-        BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, AngleStop,
-        candidate_identity, design_axis_spec, resolve_request, stop_specs,
-    )
-
-    resolved = resolve_request(request)
-    baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
-    placed = stop_specs(request, candidate_scopes=candidate_scopes,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids)
-    captures: list[PlanCapture] = []
-    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
-        captures.append(PlanCapture(
-            AngleStop(0, REGIME_PER_DRIVER),
-            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
-        ))
-    if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
-        base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
-        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
-            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
-            headline="", detail="", regime=REGIME_SUMMED),),
-                               candidates=(), repeats=1)
-        base_spec, = stop_specs(base_request, candidate_scopes={},
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids)
-        assert base_spec is not None
-        captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
-    for offset, spec in enumerate(placed):
-        stop = request.stops[offset // request.repeats]
-        if spec is None:
-            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
-                           vertical_deg=stop.elevation_deg,
-                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
-        captures.append(PlanCapture(stop, replace(spec, program_phase=(
-            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
-        )), offset % request.repeats + 1))
-    return tuple(captures)
-
-
 def build_inline_session_spec(
-    captures: Sequence[PlanCapture], *, request: AngleCaptureRequest,
+    captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
     acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
 ) -> Any:
-    prompts = [c.resolved(request).prompt for c in captures]
+    prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
-                                 [c.stop.candidate_id for c in captures])
+                                 [candidate_id for _, _, candidate_id in captures])
     entries = []
-    for index, (capture, prompt) in enumerate(zip(captures, prompts), 1):
-        phase = capture.spec.program_phase
+    for index, (spec, prompt, _) in enumerate(captures, 1):
+        phase = spec.program_phase
         if phase == PHASE_CHECK:
             program = build_check_program(roles_bands, courtesy_prelude=True)
         elif phase == PHASE_MEASURE:
             program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
         else:
             program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
-                                           sweep_band_hz=capture.spec.sweep_band_hz or None,
-                                           sweep_s=capture.spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
-        if capture.spec.graph_scope == "candidate_branches":
+                                           sweep_band_hz=spec.sweep_band_hz or None,
+                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
+        if spec.graph_scope == "candidate_branches":
             program = build_branch_program(program, {r.role: r.channel for r in roles_bands})
         entries.append(CapturePlanEntry(
             index=index - 1, kind_label=phase,
@@ -153,7 +99,7 @@ def build_inline_session_spec(
                     POSITION_HAND_RELEASED_KEY: str(hand_released).lower(),
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
-    attempts = len(entries) + sum(1 for _ in groupby(c.stop.place for c in captures)) * retries_per_pose
+    attempts = len(entries) + sum(1 for _ in groupby(prompt.place for prompt in prompts)) * retries_per_pose
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
     plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,
@@ -898,24 +844,8 @@ def _vertical_prompt_indexes() -> list[int]:
 
 
 def remote_cloud_measure_positions() -> int:
-    """Remote's PRE-APPLY group size — Full's N, and the trip-wire that guards it.
-
-    Safe only because :data:`STAGE1_INCLUDES_CLOUD_MEASURE` is ``False``, so the
-    ``[:N - 1]`` prefix of :data:`CLOUD_POSITION_PROMPTS` — which at Full's N
-    contains vertical rows an external positioner cannot reach — is never
-    walked. The guard below refuses at the point those two facts stop agreeing.
-    """
+    """Remote's pre-apply group size."""
     positions = DEFAULT_CLOUD_MEASURE_POSITIONS
-    verticals = _vertical_prompt_indexes()
-    if STAGE1_INCLUDES_CLOUD_MEASURE and verticals and verticals[0] < positions - 1:
-        raise CrossoverV2FlowError(
-            "the remote tier cannot walk a pre-apply cloud of "
-            f"{positions} positions: prompt {verticals[0]} is a "
-            f"{POSITION_ROLE_XOVR} pose and an external positioner cannot "
-            "raise or lower the microphone. Give remote its own N (the "
-            "vertical-free prefix, as remote_cloud_verify_positions derives) "
-            "before turning STAGE1_INCLUDES_CLOUD_MEASURE on."
-        )
     return positions
 
 
@@ -1201,18 +1131,13 @@ def _shape_from_kwargs(
     )
 
 
-def stage1_plan_max_attempts(
-    capture_target: int, *, include_cloud_measure: bool,
-) -> int:
+def stage1_plan_max_attempts(capture_target: int) -> int:
     """The admission budget a stage-1 plan of ``capture_target`` entries emits.
 
-    Geometry retakes are the cloud group's lever, so they are budgeted only when
-    one is planned. Derived from the entries a plan actually emits, never from
-    the shape's cloud-only arithmetic.
+    Derived from the entries a plan actually emits.
     """
     return (
         capture_target
-        + (GEOMETRY_RETRY_POSITIONS if include_cloud_measure else 0)
         + CLOUD_RETAKE_ALLOWANCE
     )
 
@@ -1296,11 +1221,6 @@ def cloud_plan_max_attempts(
     ).max_attempts
 
 
-# One owner for "does stage 1 capture a pre-apply cloud?" (#2106). Applied at
-# the production seams so the chooser cannot advertise a walk the session does
-# not take; the builders below keep whatever a caller asks for.
-STAGE1_INCLUDES_CLOUD_MEASURE = False
-
 # #2291: stage 1 takes ONE summed sweep at the mark immediately before the
 # household applies, so the round has a "before" to grade its "after" against.
 # Without it every round's benefit verdict is ``entry_baseline_unavailable``.
@@ -1320,7 +1240,6 @@ def stage1_base_entries(plan_shape: V2PlanShape | None = None) -> int:
     """
     return len(build_v2_cloud_index_phase_map(
         plan_shape=plan_shape,
-        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ))
@@ -1341,7 +1260,6 @@ def build_v2_cloud_index_phase_map(
     tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
-    include_cloud_measure: bool = True,
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
@@ -1354,11 +1272,9 @@ def build_v2_cloud_index_phase_map(
         1                    CHECK
         2                    MEASURE            (design-axis anchor)
         3 .. L+2             LATERAL            (L prompted poses)
-        L+3 .. L+N+1         CLOUD_MEASURE      (N-1 prompted positions)
         (last)               ENTRY_BASELINE     (#2291's "before", at the mark)
 
-    The lateral walk runs BEFORE any pre-apply cloud because it replays the
-    anchor program and is its robustness sample. The entry baseline runs LAST
+    The lateral walk replays the anchor program as its robustness sample. The entry baseline runs LAST
     because #2291 asks for the summed capture *immediately before apply*; it
     prompts the household back to the mark, so it is one held-still capture.
 
@@ -1370,13 +1286,12 @@ def build_v2_cloud_index_phase_map(
     ``lateral_prompts`` is the walk's own table (L is its length); ``None`` is
     the ratified one.
     """
-    shape = _shape_from_kwargs(
+    _shape_from_kwargs(
         plan_shape,
         tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
-    n = shape.cloud_measure_positions
     lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
     nxt = 3
@@ -1384,10 +1299,6 @@ def build_v2_cloud_index_phase_map(
         for offset in range(len(lateral_table)):
             mapping[nxt + offset] = PHASE_LATERAL
         nxt += len(lateral_table)
-    if include_cloud_measure:
-        for offset in range(n - 1):
-            mapping[nxt + offset] = PHASE_CLOUD_MEASURE
-        nxt += n - 1
     if include_entry_baseline:
         mapping[nxt] = PHASE_ENTRY_BASELINE
     return mapping
@@ -1630,7 +1541,6 @@ def build_v2_capture_plan(
     tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
-    include_cloud_measure: bool = True,
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
@@ -1639,12 +1549,10 @@ def build_v2_capture_plan(
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan.
 
-    CHECK and MEASURE are required; the pre-apply cloud, the lateral walk and
+    CHECK and MEASURE are required; the lateral walk and
     the entry baseline are optional. Built from
     :func:`build_v2_cloud_index_phase_map` so prompt and phase cannot disagree.
-    When included, the pre-apply cloud ends stage 1 and holds for an explicit
-    completion signal; Apply is left to the untimed review interlude, and
-    post-apply capture is stage 2's own session.
+    Post-apply capture is stage 2's own session.
 
     Every entry's ``screen`` carries ``progress`` (the server-derived counter),
     ``title`` (one imperative instruction) and ``body`` (at most one supporting
@@ -1706,7 +1614,6 @@ def build_v2_capture_plan(
     )
     index_phase = build_v2_cloud_index_phase_map(
         plan_shape=shape,
-        include_cloud_measure=include_cloud_measure,
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
         lateral_prompts=lateral_prompts,
@@ -1807,26 +1714,6 @@ def build_v2_capture_plan(
                 ), **batch},
             )
         )
-    # The two prompted groups. ``index_phase`` is 1-based (the capture's own
-    # index space); ``CapturePlanEntry.index`` is 0-based, hence the -1.
-    cloud_measure_indexes = [
-        i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_MEASURE
-    ]
-    for offset, capture_index in enumerate(cloud_measure_indexes):
-        prompt = _positioned_prompt(CLOUD_POSITION_PROMPTS[offset], shape)
-        entries.append(
-            CapturePlanEntry(
-                index=capture_index - 1,
-                kind_label="cloud_measure",
-                duration_ms=cloud_ms,
-                screen=_cloud_entry_screen(
-                    progress=capture_progress_label(capture_index, target),
-                    title=prompt.headline,
-                    body=prompt.detail,
-                    policy=_entry_policy(shape, prompt),
-                ),
-            )
-        )
     # The "before" measurement, LAST. Its duration is the summed sweep's
     # (``verify_ms``) because it replays the VERIFY program verbatim — the
     # identity ``program_for_phase`` guarantees and the benefit comparison
@@ -1859,9 +1746,7 @@ def build_v2_capture_plan(
         )
     return CapturePlan(
         capture_target=target,
-        max_attempts=stage1_plan_max_attempts(
-            target, include_cloud_measure=include_cloud_measure,
-        ),
+        max_attempts=stage1_plan_max_attempts(target),
         schema_version=2,
         entries=tuple(entries),
     )
@@ -2210,7 +2095,6 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
         # conservative — the household really does pay two per-session set-ups.
         stage1 = build_v2_capture_plan(
             _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
-            include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
             include_lateral=False,
             include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
         )
@@ -2241,7 +2125,6 @@ def build_v2_session_spec(
     tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
-    include_cloud_measure: bool = True,
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
@@ -2249,7 +2132,7 @@ def build_v2_session_spec(
     branch_diagnostic: bool = False,
     **spec_kwargs: Any,
 ) -> Any:
-    """One stage-1 capture spec, optionally including the pre-apply cloud.
+    """One stage-1 capture spec.
 
     Rides :func:`~.sweep_spec.build_crossover_sweep_spec` with its stage-1 plan
     attached, and selects guided consent only for a plan that prompts a move —
@@ -2265,7 +2148,6 @@ def build_v2_session_spec(
     )
     plan = build_v2_capture_plan(
         roles_bands, fc_hz, plan_shape=shape,
-        include_cloud_measure=include_cloud_measure,
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
         lateral_prompts=lateral_prompts,
@@ -2277,7 +2159,7 @@ def build_v2_session_spec(
     # third term: it is one capture at the mark the household is already
     # standing at, and ``walk_shape_for`` computes a 0 cm reach for it, so
     # claiming ``walked`` would emit guided consent with no shape line under it.
-    walked = include_cloud_measure or include_lateral
+    walked = include_lateral
     return build_crossover_sweep_spec(
         driver_label="crossover",
         driver_role="summed",
@@ -2291,7 +2173,6 @@ def build_v2_session_spec(
             announced_capture_indexes(
                 build_v2_cloud_index_phase_map(
                     plan_shape=shape,
-                    include_cloud_measure=include_cloud_measure,
                     include_lateral=include_lateral,
                     include_entry_baseline=include_entry_baseline,
                     lateral_prompts=lateral_prompts,
@@ -2306,9 +2187,7 @@ def build_v2_session_spec(
         # …and how far the walk reaches: the FURTHEST of whichever groups run,
         # from the same table the per-entry screens above are built from.
         walk_shape=walk_shape_for(
-            cloud_positions=(
-                shape.cloud_measure_positions if include_cloud_measure else 0
-            ),
+            cloud_positions=0,
             lateral=include_lateral,
             lateral_prompts=lateral_prompts,
         ),

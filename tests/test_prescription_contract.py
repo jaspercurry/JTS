@@ -201,12 +201,9 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
     assert {"response_format", "driver_response_format"}.isdisjoint(packet)
     assert packet["capture_snr"]["uncertainty"] == CONTRACT_COMMAND
     assert packet["reflections"]["uncertainty"] == CONTRACT_COMMAND
-    frozen = bank / "packet.json"
-    frozen.write_text(json.dumps(packet))
     assert cli.main(["status", str(bank)]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["contracts"] == packet["contracts"]
-    assert status["frozen_packet"]["contracts"] == packet["contracts"]
 
 
 def test_packet_reader_refuses_the_previous_schema_by_name(round_bank):

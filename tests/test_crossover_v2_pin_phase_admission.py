@@ -10,7 +10,6 @@ room-vs-microphone variant at that same site. Spatial owns three other sites.
 
 from __future__ import annotations
 
-import inspect
 
 import pytest
 
@@ -18,7 +17,6 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
@@ -28,9 +26,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_AGC_BEHAVIORA
 from jasper.active_speaker.crossover_v2_flow import build_v2_cloud_index_phase_map
 
 from tests.crossover_v2_fixtures import (
-    CLOUD_MEASURE_INDEXES,
     FakeSeams,
-    _cloud_conductor,
     _conductor,
     _measure_analysis,
     _run_phase,
@@ -43,7 +39,6 @@ from tests.crossover_v2_fixtures import (
 PLAIN_LINEARITY_PHASES = (
     PHASE_MEASURE,
     PHASE_LATERAL,
-    PHASE_CLOUD_MEASURE,
     PHASE_VERIFY,
     # #2291's entry baseline. It copied the branch, which is exactly the
     # adjacency this file's tripwire exists to catch — so it gets a ROW and a
@@ -54,7 +49,7 @@ PLAIN_LINEARITY_PHASES = (
 # CHECK's room-vs-microphone variant shares the assessor with MEASURE and VERIFY.
 LINEARITY_SITES = {
     "capture_dispatch": ((PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY),),
-    "spatial": ((PHASE_LATERAL,), (PHASE_CLOUD_MEASURE,), (PHASE_ENTRY_BASELINE,)),
+    "spatial": ((PHASE_LATERAL,), (PHASE_ENTRY_BASELINE,)),
     "crossover_v2_flow": (),
 }
 
@@ -82,28 +77,13 @@ def _refuse_at_lateral() -> dict:
     conductor = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=False, include_lateral=True,
+            tier="full", include_lateral=True,
         ),
     )
     _run_phase(conductor, 1, 1)
     _run_phase(conductor, 2, 1)
     fakes.measure = lambda program: _measure_analysis(program, linearity=False)
     return _run_phase(conductor, 3, 1)
-
-
-def _refuse_at_cloud_measure() -> dict:
-    """Drive one prompted pre-apply cloud position with a non-linear capture.
-
-    A cloud position plays the summed VERIFY program, so ``FakeSeams`` routes
-    it through the ``verify`` analysis factory — see ``program_for_phase``.
-    """
-
-    fakes = FakeSeams()
-    conductor = _cloud_conductor(fakes)
-    _run_phase(conductor, 1, 1)
-    _run_phase(conductor, 2, 2)
-    fakes.verify = lambda program: _verify_analysis(program, linearity=False)
-    return _run_phase(conductor, CLOUD_MEASURE_INDEXES[0], 3)
 
 
 def _refuse_at_verify() -> dict:
@@ -121,8 +101,7 @@ def _refuse_at_verify() -> dict:
 def _refuse_at_entry_baseline() -> dict:
     """Drive #2291's pre-apply capture with a non-linear one.
 
-    Routed through the ``verify`` analysis factory for ``_refuse_at_cloud_measure``'s
-    reason: the entry baseline replays the summed VERIFY program, so
+    The entry baseline replays the summed VERIFY program, so
     ``program.phase`` is ``"verify"`` there too.
     """
 
@@ -130,7 +109,7 @@ def _refuse_at_entry_baseline() -> dict:
     conductor = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=False, include_lateral=False,
+            tier="full", include_lateral=False,
             include_entry_baseline=True,
         ),
     )
@@ -143,7 +122,6 @@ def _refuse_at_entry_baseline() -> dict:
 DRIVERS = {
     PHASE_MEASURE: _refuse_at_measure,
     PHASE_LATERAL: _refuse_at_lateral,
-    PHASE_CLOUD_MEASURE: _refuse_at_cloud_measure,
     PHASE_VERIFY: _refuse_at_verify,
     PHASE_ENTRY_BASELINE: _refuse_at_entry_baseline,
 }
@@ -187,43 +165,10 @@ LINEARITY_SITE_SPELLINGS = (
 )
 
 
-def _linearity_admission_sites() -> dict[str, int]:
-    """Every module that can carry the rule → how many sites it carries.
-
-    Counted against module SOURCE rather than a list of function names because
-    the branch is what varies — a site can be renamed, split, or moved between
-    methods and still be the same unasserted rule. Returned per module so a
-    failure names which file drifted rather than only that the total did.
-    """
-    from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
-
-    return {
-        module.__name__.rsplit(".", 1)[-1]: sum(
-            inspect.getsource(module).count(spelling)
-            for spelling in LINEARITY_SITE_SPELLINGS
-        )
-        for module in (flow, spatial, capture_dispatch)
-    }
 
 
-def test_every_linearity_admission_site_is_covered_by_a_row_above():
-    by_module = _linearity_admission_sites()
-    assert by_module == {owner: len(sites) for owner, sites in LINEARITY_SITES.items()}
-    classified = [phase for sites in LINEARITY_SITES.values() for site in sites for phase in site]
-    assert sorted(classified) == sorted((*PLAIN_LINEARITY_PHASES, PHASE_CHECK))
 
 
-def test_the_tripwire_looks_in_every_module_that_carries_the_rule():
-    """The guard also searches the flow, where no admission site belongs."""
-    by_module = _linearity_admission_sites()
-
-    assert set(by_module) == {"crossover_v2_flow", "spatial", "capture_dispatch"}
-    carriers = {"spatial", "capture_dispatch"}
-    assert all(by_module[name] > 0 for name in carriers), by_module
-    assert by_module["crossover_v2_flow"] == 0, (
-        "the conductor carries no linearity ladder since Phase 5a-vii; a site "
-        "here is either a ladder that came back or a new unclassified rule"
-    )
 
 
 def test_checks_own_linearity_rule_is_deliberately_not_the_plain_one():

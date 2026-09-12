@@ -127,7 +127,6 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             {"artifact": row["artifact"], "reason": row["repair_reason"]}
             for row in missing_rows if row["next_command"] is None
         ],
-        frozen_packet=payload["frozen_packet"],
         latest_agent_note=payload["latest_agent_note"],
         line=(
             f"inventory: {len(artifacts) - len(missing_rows)}/{len(artifacts)} "

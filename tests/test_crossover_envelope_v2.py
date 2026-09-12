@@ -60,11 +60,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
-    PHASE_LATERAL,
     PHASE_REVIEW,
-)
-from jasper.active_speaker.crossover_v2.capture_plan import (
-    DEFAULT_CLOUD_MEASURE_POSITIONS,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
@@ -2862,46 +2858,6 @@ def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block(
     assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
 
 
-def test_compact_cloud_status_reports_positions_required_from_the_tier():
-    """The Full tier's shipped defaults name what "required" means for each
-    group phase -- the household's recovery screen can now say "4 of 5"
-    instead of just "4"."""
-    compact = compact_cloud_status(
-        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}, "positions": []}},
-        tier="full",
-    )
-    entry = compact[PHASE_CLOUD_MEASURE]
-    assert entry["positions_required"] == DEFAULT_CLOUD_MEASURE_POSITIONS
-
-
-def test_compact_cloud_status_never_fabricates_a_required_count():
-    """An unresolvable tier (stale/unknown) reports ``None``, never a guess --
-    the same "never a fabricated clean reading" rule this module already
-    applies to ``excluded_interval_count``. ``PHASE_LATERAL`` is not sized by
-    a cloud plan shape at all, so it reads ``None`` even with a good tier."""
-    bad_tier = compact_cloud_status(
-        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}}}, tier="turbo",
-    )
-    assert bad_tier[PHASE_CLOUD_MEASURE]["positions_required"] is None
-
-    lateral = compact_cloud_status(
-        {PHASE_LATERAL: {"geometry": {}, "pipeline": {}}}, tier="full",
-    )
-    assert lateral[PHASE_LATERAL]["positions_required"] is None
-
-
-def test_compact_cloud_status_missing_tier_reports_required_as_none():
-    """A missing tier (a durable block written before tier tracking existed)
-    must not be read as Full -- that is :func:`normalize_tier`'s absence
-    rule for STARTING a plan, not this projection's rule for reporting one
-    that may already exist. Reporting Full's counts here would claim
-    knowledge this durable state never recorded."""
-    missing_tier = compact_cloud_status(
-        {PHASE_CLOUD_MEASURE: {"geometry": {}, "pipeline": {}}}, tier=None,
-    )
-    assert missing_tier[PHASE_CLOUD_MEASURE]["positions_required"] is None
-
-
 # --- #1857: every band discloses its own deviation, not just the pointer's ---
 
 
@@ -3010,26 +2966,6 @@ def test_the_expert_disclosure_now_names_every_band_beside_the_pointer():
     assert "250–2000 Hz +3.00 dB (1.5 dB outside the ±1.5 dB target)" in per_band
     assert "2000–8000 Hz -6.00 dB (4.0 dB outside the ±2.0 dB target)" in per_band
     assert "8000–16000 Hz -0.00 dB (within the ±2.5 dB target)" in per_band
-
-
-def test_the_pre_apply_reading_also_names_every_band():
-    """The BEFORE-TUNING branch (``_pre_apply_flatness_lines``) folds every
-    ``_flatness_lines_from_block`` line into one ``"Measured before
-    tuning: "``-prefixed sentence (the module's own framing rule — these
-    numbers must never render bare the way CLOUD-VERIFY renders them). The
-    per-band disclosure is the SAME kind of before-tuning claim as the
-    pointer it sits beside, so it folds into that SAME sentence rather than
-    appearing as a separate, unprefixed line the way carve-outs do."""
-    compact, _report, _gauge = _dark_tweeter_compact_cloud(phase=PHASE_CLOUD_MEASURE)
-    env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"},
-        cloud={PHASE_CLOUD_MEASURE: compact}, candidate=_candidate_summary(),
-    ))
-    details = env["expert_details"]
-    lead = next(line for line in details if line.startswith("Measured before tuning: "))
-    assert "250–2000 Hz +3.00 dB (1.5 dB outside the ±1.5 dB target)" in lead
-    assert "2000–8000 Hz -6.00 dB (4.0 dB outside the ±2.0 dB target)" in lead
-    assert "8000–16000 Hz -0.00 dB (within the ±2.5 dB target)" in lead
 
 
 def test_per_band_lines_uniformly_flat_shows_no_alarm():
@@ -3917,39 +3853,6 @@ def test_done_says_unmeasurable_when_the_gauge_ran_but_found_no_bins():
     ]
 
 
-@pytest.mark.parametrize("tier", (None, "full"))
-def test_cloud_measure_flatness_never_renders_as_the_speakers_flatness(tier):
-    """``cloud_measure`` is the PRE-APPLY, uncorrected baseline that exists in
-    order to be out of spec — the same distinction PR-4's doctor blocker drew.
-    Rendering it as the CURRENT state would report a correctly-corrected
-    speaker as bad forever.
-
-    **The invariant that survives #1965 is the FRAME, not the silence.** These
-    two cases used to assert ``expert_details == []``, which enforced the frame
-    by rendering nothing at all — and that is precisely what left the FULL tier
-    showing LESS measured evidence than Express on every stage-1 screen. A
-    state with no post-apply cloud now renders the same measured numbers under
-    the explicit BEFORE-TUNING lead, on every tier; what must never happen is
-    the BARE rendering the post-apply CLOUD-VERIFY path produces, which is the
-    one that reads as "how flat your speaker is now".
-
-    (The former ``…_tier_full`` sibling is the ``"full"`` parameter here. It
-    existed to confirm the B1 tier branch read the durable tier rather than its
-    absence; there is no tier branch any more — the choice is which cloud
-    exists — so the case is kept as coverage, not as its own claim.)
-    """
-    extra = {"tier": tier} if tier is not None else {}
-    env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        cloud={PHASE_CLOUD_MEASURE: _cloud_flatness_status()[PHASE_CLOUD_VERIFY]},
-        **extra,
-    ))
-    details = env["expert_details"]
-    assert details, "the measured pre-apply cloud must not be withheld (#1965)"
-    assert details[0].startswith("Measured before tuning: ")
-    assert not any(line.startswith("flatness ") for line in details)
-
-
 def test_express_done_discloses_before_tuning_flatness_from_measure_cloud():
     """B1 fix (adversarial review of PR #1780) — coordinator design
     direction: express (M=1) never closes a CLOUD-VERIFY group, so its
@@ -4807,7 +4710,6 @@ def _dead_session_status(phase: str, **v2) -> dict:
     ("measure", False),
     ("cloud_measure", False),
     ("lateral", False),
-    ("closing", False),
     # The one that files the issue: post-apply the stale state resolves to
     # PHASE_VERIFY, whose screen tells the household to go stand in front of
     # the speaker and confirm yesterday's result.
@@ -4885,10 +4787,6 @@ def test_durable_phases_are_exempt_from_the_session_clock(phase, screen):
     ("failed", "microphone_check"),
 ])
 def test_a_live_capture_outranks_the_clock(capture_status, screen):
-    """A commission's own wall-clock ceiling is 3600 s and the closing screen's
-    confirm waits on a human, so an in-flight session can idle past the
-    freshness window — and a slot the wizard still holds proves it is not
-    over."""
     status = _dead_session_status("verify", applied=True)
     status["capture"] = {"status": capture_status}
     assert build_crossover_envelope_v2(status)["screen"] == screen
@@ -5439,65 +5337,10 @@ def test_an_unresolved_preflight_still_discloses():
 
 
 @pytest.mark.parametrize("tier", ("express", "full"))
-def test_review_puts_the_measured_flatness_where_it_informs_the_decision(tier):
-    """D3.1: the pre-apply cloud IS the measured evidence on this screen, so its
-    flatness/carve-out disclosure belongs here — the same lines the RESULT
-    screen folds away, on the screen where they inform a choice rather than
-    explain a fait accompli.
-
-    **Parametrized by #1965.** This pinned ``tier="express"`` only, which is
-    exactly why the Full-tier hole survived: ``_flatness_details_lines`` read
-    ``_cloud_verify_block`` for every non-Express tier, and the post-apply
-    cloud does not exist at stage 1, so the tier the household spent the most
-    time on rendered NOTHING on its own decision screen.
-    """
-    env = build_crossover_envelope_v2(_review_status(
-        tier=tier,
-        cloud={PHASE_CLOUD_MEASURE: {
-            "flatness": {
-                "evaluable": True, "max_db": 6.2, "max_hz": 310.0,
-                "tolerance_db": 3.0, "max_band_hz": [250.0, 500.0],
-            },
-        }},
-    ))
-    assert any("flatness" in line for line in env["expert_details"])
-
-
-def test_full_review_carries_at_least_the_evidence_express_carries():
-    """#1965: the tier with MORE measurement may never show LESS measured
-    evidence on the decision screen.
-
-    Both tiers walk a pre-apply cloud, both have closed it by the time the
-    review screen renders, and neither has a post-apply cloud yet — so the
-    measured evidence available at stage 1 is the same evidence, and the two
-    screens must read the same. (Equality, not containment: the numbers come
-    from one construction — ``_flatness_lines_from_block`` — over one block,
-    so any divergence here would mean a tier branch had crept back in.)
-    """
-    cloud = {PHASE_CLOUD_MEASURE: _cloud_flatness_status()[PHASE_CLOUD_VERIFY]}
-    express = build_crossover_envelope_v2(
-        _review_status(tier="express", cloud=cloud),
-    )["expert_details"]
-    full = build_crossover_envelope_v2(
-        _review_status(tier="full", cloud=cloud),
-    )["expert_details"]
-    assert express, "fixture must produce evidence for the comparison to mean anything"
-    assert full == express
-    # (The scope clause's own suppression is pinned across all three fixed
-    # screens by ``test_the_before_tuning_scope_clause_waits_for_a_passing_check``
-    # below; this line keeps the review case beside the equality it belongs to.)
-    # …and it is still framed as the BEFORE state, on both tiers: stage 1 has
-    # applied nothing, so nothing here may read as "how flat your speaker is".
-    assert full[0].startswith("Measured before tuning: ")
-    assert not any("confirmed at the mark" in line for line in full)
-
-
-@pytest.mark.parametrize("tier", ("express", "full"))
 @pytest.mark.parametrize("v2", (
     # The three screens #1965 gave the Full tier back. None of them has a
     # PASSING post-apply check, so none may carry the clause that claims one.
     pytest.param({"phase": "review", "candidate": _candidate_summary()}, id="review"),
-    pytest.param({"phase": "closing"}, id="closing"),
     pytest.param(
         {"phase": "verify", "verify": {"outcome": "fail"},
          "failure": {"code": REASON_VERIFY_OUT_OF_TOLERANCE}},
@@ -5505,17 +5348,6 @@ def test_full_review_carries_at_least_the_evidence_express_carries():
     ),
 ))
 def test_the_before_tuning_scope_clause_waits_for_a_passing_check(v2, tier):
-    """"The applied correction targets these; the result was confirmed at the
-    mark only" is a claim about the POST-APPLY check — that one exists, and
-    that it was the single anchor sweep. #1965 made these three screens read
-    the pre-apply cloud on BOTH tiers, so the clause had to stop riding along
-    unconditionally: at review and closing nothing is applied at all, and at
-    verify_fail the check ran and FAILED.
-
-    Pinned on both tiers and all three screens because the clause was already
-    wrong on Express here before #1965 — pinning only the screen the issue
-    named would leave the other two free to regain it.
-    """
     env = build_crossover_envelope_v2(_status(
         tier=tier, cloud=_cloud_measure_flatness_status(), **v2,
     ))
