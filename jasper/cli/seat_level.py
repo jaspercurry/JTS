@@ -1,29 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator entry point for calibrated seat-SPL leveling.
-
-Answers one question on real hardware: *what main volume makes this speaker
-measure the operator's target dB SPL at the listening seat?* — and banks the
-answer as the crossover session's measurement reference
-(:mod:`jasper.active_speaker.seat_level_reference`), replacing the codified
--20 dB guess.
-
-This module is wiring only. Every decision it makes belongs to someone else:
-
-* the ramp, its guards, and the refusal codes — :mod:`jasper.active_speaker.seat_level_ramp`
-* the volume ceiling — ``session_volume_plan.unsegmented_stimulus_ceiling_db``,
-  the digital headroom THIS stimulus still has in each driver's own branch of
-  the live graph
-* those branch peaks — :mod:`jasper.active_speaker.branch_peak`, which renders
-  the stimulus through the applied CamillaDSP graph
-* the SPL ceiling — the profile's ``max_commissioning_level_db_spl``
-* the absolute level reference — the mic's own calibration file
-* the mic feed — :class:`jasper.audio_measurement.wired_level_meter.WiredLevelMeter`
-* the stimulus — generated from the drivers' own declarations
-  (:func:`default_stimulus_wav`), or an operator-named WAV, played on the
-  correction lane
+"""Level once at the session mark, bank the gain, and restore household playback.
 
 **Why the stimulus is derived, not designed here.** A settled-window SPL read
 needs a CONTINUOUS signal, and a session's own programs are silence-separated
@@ -53,21 +31,7 @@ live, on measured samples — the profile's ``max_commissioning_level_db_spl``.
 its maximum capture volume. Confirm ``amixer -c <card>`` shows the capture
 control at 100% before trusting any absolute SPL this prints.
 
-Usage::
-
-    jasper-seat-level
-
-Exit 0 only on a converged, banked reference; 1 on any refusal. Either way the
-answer is ONE JSON document on stdout — the reference reached, or
-:mod:`jasper.cli._refusal`'s ``{status, reason, detail}`` — and one sentence
-goes to stderr, carrying the ``REFUSE_*`` reason the ``event=`` line carries
-too. A refusal also publishes the window the stop abandoned: how many samples
-it saw, their min/median/max dB SPL, and the sample that tripped with its
-offset from the volume step, so a stop can be told apart from a level that rose
-and stayed without reading the journal. ``--verbose`` adds the whole per-sample
-series, one DEBUG line per window.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -79,43 +43,36 @@ import math
 import signal
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Awaitable, NamedTuple
+from typing import Any, NamedTuple
 
-from jasper.log_event import log_event
-from jasper.active_speaker.seat_level_ramp import (
-    REFUSE_INTERRUPTED,
-    interrupted_restore_outcome,
-    SeatLevelRampError,
-    SeatLevelResult,
-    run_seat_level_ramp,
-)
+from jasper.active_speaker.auto_level import SETTLE_TIMEOUT_S, START_FADER_DB, LevelResult, level_to
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.seat_level_reference import (
-    DEFAULT_TARGET_DB_SPL,
-    DEFAULT_TOLERANCE_DB,
-    SeatLevelTarget,
-    SeatLevelTargetError,
-    StimulusProvenance,
-    seat_level_reference_state_path,
+    DEFAULT_TARGET_DB_SPL, DEFAULT_TOLERANCE_DB, SeatLevelTarget, SeatLevelTargetError,
+    StimulusProvenance, seat_level_reference_state_path, write_seat_level_reference,
 )
 from jasper.active_speaker.commission_wiring import CommissionPresetResolutionError
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.session_volume_plan import (
-    SessionVolumePlanError,
-    unsegmented_stimulus_ceiling_db,
+    DEFAULT_SESSION_VOLUME_STATE_PATH, FaderVolumeDoor, SessionVolumePlan, SessionVolumePlanError, SessionVolumeOpenResult,
+    SessionVolumeRestoreResult, live_measurement_session, unsegmented_stimulus_ceiling_db,
 )
+from jasper.active_speaker.restore_wait import await_restore_task_resilient, resilient_restore
 from jasper.audio_measurement.calibration import (
-    MIC_CALIBRATION_UNAVAILABLE_DETAIL,
-    REFUSE_MIC_CALIBRATION_UNAVAILABLE,
-    resolve_mic_sensitivity,
+    MIC_CALIBRATION_UNAVAILABLE_DETAIL, REFUSE_MIC_CALIBRATION_UNAVAILABLE, resolve_mic_sensitivity,
 )
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
-
+from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplMonitor
+from jasper.audio_measurement.ramp import MAX_STEP_DB
+from jasper.env_load import bounded_env_float
+from jasper.log_event import log_event
+from jasper.measurement_window import MeasurementWindowError, measurement_window
 from ._logging import CLI_LOG_FORMAT
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 
 logger = logging.getLogger(__name__)
-
 REFUSE_MIC_ABSENT = "measurement_mic_absent"
 REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
 # The slug is unchanged on purpose: the ceiling no longer BINDS on the driver
@@ -123,47 +80,27 @@ REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
 # each driver's permitted band), and it is a stable operator-facing string.
 REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
 REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
+REFUSE_INTERRUPTED = "seat_level_interrupted"
+#: Authority tier for the generated tool-menu index
+#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
+AUTHORITY_TIER = "measured"
 
-def _refused(
-    reason: str, detail: str, *, restored: bool | None = None
-) -> tuple[SeatLevelResult, str]:
-    return (
-        SeatLevelResult(status="refused", reason=reason, restored=restored),
-        detail,
+
+def _refused(reason: str, detail: str, *, restored: bool | None = None) -> tuple[dict[str, Any], str]:
+    log_event(
+        logger,
+        "active_speaker.seat_level_result",
+        status="refused",
+        reason=reason,
+        gain_db=None,
+        leveled_db_spl=None,
+        ambient_db_spl=None,
+        readings=None,
     )
+    return {"status": "refused", "reason": reason, "restored": restored}, detail
 
 
-def _ambient_phrase(ramp: dict[str, Any]) -> str:
-    """Disclose a room floor the pass had to measure twice."""
-    if not ramp.get("ambient_remeasured"):
-        return ""
-    # Leading ". " and not " ": this is APPENDED to a detail that does not end
-    # in a period (the converged line is "reference X dB measured Y dB SPL"), so
-    # the phrase has to supply its own sentence break or the two run together.
-    return (
-        f". A climb reading landed below the {ramp['ambient_db_spl']:.1f} dB SPL "
-        "ambient window, which cannot happen while the speaker is playing, so "
-        "the tone was stopped and the room re-measured in silence: "
-        f"{ramp['ambient_remeasured_db_spl']:.1f} dB SPL, which is the floor "
-        "every rise above was measured against."
-    )
-
-
-def _restore_phrase(restored: bool | None) -> str:
-    """Say what is known about the fader, and never more than that."""
-    if restored is True:
-        return "The household volume was restored."
-    if restored is False:
-        return (
-            "The household volume was NOT restored — the speaker is parked at a "
-            "measurement level; the volume-recovery screen can drain it."
-        )
-    return "Whether the household volume was restored could not be observed."
-
-
-def stimulus_provenance(
-    path: Path, *, band_hz: tuple[float, float] | None = None
-) -> StimulusProvenance:
+def stimulus_provenance(path: Path, *, band_hz: tuple[float, float] | None=None) -> StimulusProvenance:
     """Which stimulus WAV this is, and what it measures — from ONE read.
 
     The identity and both levels come out of the same bytes, because a second
@@ -201,40 +138,23 @@ def stimulus_provenance(
     """
     import hashlib
     import io
-
     import numpy as np
     from scipy.io import wavfile
-
     raw = path.read_bytes()
     _rate, data = wavfile.read(io.BytesIO(raw))
     samples = np.asarray(data).astype(np.float64)
-    full_scale = (
-        float(np.iinfo(np.asarray(data).dtype).max)
-        if np.issubdtype(np.asarray(data).dtype, np.integer)
-        else 1.0
-    )
+    full_scale = float(np.iinfo(np.asarray(data).dtype).max) if np.issubdtype(np.asarray(data).dtype, np.integer) else 1.0
     peak = float(np.abs(samples).max()) / full_scale if samples.size else 0.0
-    if not (peak > 0.0) or not math.isfinite(peak):
-        raise ValueError(
-            f"{path} carries no signal; a silent stimulus cannot bound a volume"
-        )
+    if not peak > 0.0 or not math.isfinite(peak):
+        raise ValueError(f'{path} carries no signal; a silent stimulus cannot bound a volume')
     rms = float(np.sqrt(np.mean((samples / full_scale) ** 2)))
-    return StimulusProvenance(
-        path=str(path),
-        sha256=hashlib.sha256(raw).hexdigest(),
-        peak_dbfs=20.0 * math.log10(peak),
-        rms_dbfs=20.0 * math.log10(rms),
-        band_hz=band_hz,
-    )
-
+    return StimulusProvenance(path=str(path), sha256=hashlib.sha256(raw).hexdigest(), peak_dbfs=20.0 * math.log10(peak), rms_dbfs=20.0 * math.log10(rms), band_hz=band_hz)
 
 class _Declarations(NamedTuple):
     """One load of the topology and design draft, shared by the whole pass."""
-
     topology: Any
     draft: dict[str, Any]
     safety_profile: dict[str, Any]
-
 
 def _load_declarations(args: argparse.Namespace) -> _Declarations:
     """Load ONCE what both derivations below read.
@@ -246,21 +166,14 @@ def _load_declarations(args: argparse.Namespace) -> _Declarations:
     """
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import load_output_topology_strict
-
     topology = load_output_topology_strict(args.topology)
     draft = load_design_draft(topology=topology)
-    safety_profile = draft.get("driver_safety_profile")
+    safety_profile = draft.get('driver_safety_profile')
     if not isinstance(safety_profile, dict):
-        raise SessionVolumePlanError(
-            "the design draft carries no driver_safety_profile; commission the "
-            "drivers before leveling"
-        )
+        raise SessionVolumePlanError('the design draft carries no driver_safety_profile; commission the drivers before leveling')
     return _Declarations(topology, draft, safety_profile)
 
-
-def default_stimulus_wav(
-    declarations: _Declarations,
-) -> tuple[Path, tuple[float, float]]:
+def default_stimulus_wav(declarations: _Declarations) -> tuple[Path, tuple[float, float]]:
     """Synthesize the default stimulus, and say which band it covers.
 
     Every parameter is read off a declaration this box already carries, so
@@ -285,55 +198,22 @@ def default_stimulus_wav(
     unbanked path in somebody's home directory.
     """
     from jasper.active_speaker.branch_peak import MAX_STIMULUS_SAMPLES
-    from jasper.active_speaker.commissioning_admission import (
-        ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
-    )
-    from jasper.active_speaker.excitation_safety_plan import (
-        resolve_driver_measurement_band_hz,
-    )
+    from jasper.active_speaker.commissioning_admission import ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS
+    from jasper.active_speaker.excitation_safety_plan import resolve_driver_measurement_band_hz
     from jasper.active_speaker.measurement import active_driver_targets
     from jasper.active_speaker.speech_stimulus import DEFAULT_CACHE_DIR
-    from jasper.active_speaker.test_signal_plan import (
-        MAX_DRIVER_TEST_FREQUENCY_HZ,
-        MIN_DRIVER_TEST_FREQUENCY_HZ,
-    )
+    from jasper.active_speaker.test_signal_plan import MAX_DRIVER_TEST_FREQUENCY_HZ, MIN_DRIVER_TEST_FREQUENCY_HZ
     from jasper.audio_measurement.playback import ensure_bandlimited_noise_wav
     from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
-
-    bands = [
-        resolve_driver_measurement_band_hz(
-            declarations.safety_profile, str(target["target_fingerprint"])
-        )
-        for target in active_driver_targets(declarations.topology)
-    ]
+    bands = [resolve_driver_measurement_band_hz(declarations.safety_profile, str(target['target_fingerprint'])) for target in active_driver_targets(declarations.topology)]
     if not bands:
-        raise SessionVolumePlanError(
-            "this topology declares no active driver targets, so no stimulus "
-            "band can be derived; name one with --stimulus-wav"
-        )
-    f_lo = max(MIN_DRIVER_TEST_FREQUENCY_HZ, min(lo for lo, _hi in bands))
-    f_hi = min(
-        MAX_DRIVER_TEST_FREQUENCY_HZ,
-        PROGRAM_SAMPLE_RATE_HZ / 2.0 - 1.0,
-        max(hi for _lo, hi in bands),
-    )
+        raise SessionVolumePlanError('this topology declares no active driver targets, so no stimulus band can be derived; name one with --stimulus-wav')
+    f_lo = max(MIN_DRIVER_TEST_FREQUENCY_HZ, min((lo for lo, _hi in bands)))
+    f_hi = min(MAX_DRIVER_TEST_FREQUENCY_HZ, PROGRAM_SAMPLE_RATE_HZ / 2.0 - 1.0, max((hi for _lo, hi in bands)))
     band = (float(f_lo), float(f_hi))
-    return (
-        ensure_bandlimited_noise_wav(
-            f_lo_hz=band[0],
-            f_hi_hz=band[1],
-            duration_s=MAX_STIMULUS_SAMPLES / PROGRAM_SAMPLE_RATE_HZ,
-            dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
-            sample_rate=PROGRAM_SAMPLE_RATE_HZ,
-            cache_dir=DEFAULT_CACHE_DIR,
-        ),
-        band,
-    )
+    return (ensure_bandlimited_noise_wav(f_lo_hz=band[0], f_hi_hz=band[1], duration_s=MAX_STIMULUS_SAMPLES / PROGRAM_SAMPLE_RATE_HZ, dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS, sample_rate=PROGRAM_SAMPLE_RATE_HZ, cache_dir=DEFAULT_CACHE_DIR), band)
 
-
-def _applied_branch_peaks(
-    stimulus: Path, targets: list[dict[str, Any]]
-) -> dict[str, float] | None:
+def _applied_branch_peaks(stimulus: Path, targets: list[dict[str, Any]]) -> dict[str, float] | None:
     """Each driver's branch true peak for THIS stimulus through the LIVE graph.
 
     ``None`` whenever the render cannot be exact, which the ceiling derivation
@@ -348,37 +228,21 @@ def _applied_branch_peaks(
     second answer to "which config is live".
     """
     import yaml
-
-    from jasper.active_speaker.branch_peak import (
-        BranchPeakError,
-        branch_peaks_for_targets,
-    )
+    from jasper.active_speaker.branch_peak import BranchPeakError, branch_peaks_for_targets
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
-
     try:
         config_path = read_camilla_statefile_config_path()
         if not config_path:
-            raise BranchPeakError("no CamillaDSP statefile names an applied config")
-        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+            raise BranchPeakError('no CamillaDSP statefile names an applied config')
+        config = yaml.safe_load(Path(config_path).read_text(encoding='utf-8'))
         peaks = branch_peaks_for_targets(config, stimulus, targets)
     except (BranchPeakError, OSError, ValueError, KeyError, yaml.YAMLError) as exc:
-        log_event(
-            logger,
-            "active_speaker.seat_level_branch_peaks_unavailable",
-            detail=str(exc),
-        )
+        log_event(logger, 'active_speaker.seat_level_branch_peaks_unavailable', detail=str(exc))
         return None
-    log_event(
-        logger,
-        "active_speaker.seat_level_branch_peaks",
-        peaks=" ".join(f"{key}={value:.2f}" for key, value in sorted(peaks.items())),
-    )
+    log_event(logger, 'active_speaker.seat_level_branch_peaks', peaks=' '.join((f'{key}={value:.2f}' for key, value in sorted(peaks.items()))))
     return peaks
 
-
-def _derive_bounds(
-    stimulus: Path, levels: StimulusProvenance, declarations: _Declarations
-) -> tuple[float, float]:
+def _derive_bounds(stimulus: Path, levels: StimulusProvenance, declarations: _Declarations) -> tuple[float, float]:
     """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``.
 
     ``levels`` is measured once by the caller rather than read again here (the
@@ -387,14 +251,11 @@ def _derive_bounds(
     same reason.
     """
     from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-    from jasper.active_speaker.design_draft import (
-        declared_effective_driver_sensitivities,
-    )
+    from jasper.active_speaker.design_draft import declared_effective_driver_sensitivities
     from jasper.active_speaker.measurement import active_driver_targets
-
     topology, draft, safety_profile = declarations
     targets = active_driver_targets(topology)
-    fingerprints = [str(target["target_fingerprint"]) for target in targets]
+    fingerprints = [str(target['target_fingerprint']) for target in targets]
     # The PAD-FOLDED sensitivities, not the naked datasheet ones. An L-pad'd
     # tweeter's acoustic output is quieter than its bare rating by exactly the
     # pad, and the derived HF ceiling is a sensitivity DELTA against the woofer
@@ -403,41 +264,20 @@ def _derive_bounds(
     # ``declared_driver_sensitivities``' own docstring names for
     # excitation-ceiling derivation and session-volume planning (#1665), and the
     # one the crossover-v2 flow already passes.
-    ceiling_db = unsegmented_stimulus_ceiling_db(
-        safety_profile,
-        fingerprints,
-        stimulus_peak_dbfs=levels.peak_dbfs,
-        declared_sensitivities=declared_effective_driver_sensitivities(draft),
-        branch_peaks_dbfs=_applied_branch_peaks(stimulus, targets),
-    )
-    return ceiling_db, commissioning_spl_ceiling_db(topology)
-
+    ceiling_db = unsegmented_stimulus_ceiling_db(safety_profile, fingerprints, stimulus_peak_dbfs=levels.peak_dbfs, declared_sensitivities=declared_effective_driver_sensitivities(draft), branch_peaks_dbfs=_applied_branch_peaks(stimulus, targets))
+    return (ceiling_db, commissioning_spl_ceiling_db(topology))
 
 class _OperatorStopped(Exception):
-    """SIGINT arrived while the pass was running, and the pass has torn down.
-
-    Carries the pass's MEASURED restore outcome (``None`` when the pass never
-    got far enough to have one), so the refusal this becomes can state the
-    volume rather than assume it.
-    """
-
-    def __init__(self, restored: bool | None) -> None:
-        super().__init__("stopped by the operator")
-        self.restored = restored
+    """SIGINT arrived while the pass was running, and the pass has torn down."""
+    pass
 
 
-async def _stoppable(pass_coro: Any) -> SeatLevelResult:
+async def _stoppable(pass_coro: Any) -> LevelResult:
     """Run the leveling pass with SIGINT wired to its own cancellation.
 
     Stopping must be possible at ANY moment, and it must stop the stimulus and
     give the household its volume back — which is the pass's own teardown, not
-    a second one here. So SIGINT cancels the task and the pass's shielded
-    ``run_teardown`` does the work; this only turns the cancellation into an
-    honest refusal. Without the handler the only stop is Python's default
-    KeyboardInterrupt, which unwinds through the same ``finally`` blocks but
-    gives the operator no named outcome — and on a loop that is not the main
-    thread's, no handler can be installed at all, so the default is left in
-    place rather than pretended at.
+    a second one here.
     """
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(pass_coro)
@@ -447,7 +287,6 @@ async def _stoppable(pass_coro: Any) -> SeatLevelResult:
         nonlocal stopped
         stopped = True
         task.cancel()
-
     handled = True
     try:
         loop.add_signal_handler(signal.SIGINT, _stop)
@@ -455,25 +294,23 @@ async def _stoppable(pass_coro: Any) -> SeatLevelResult:
         handled = False
     try:
         return await task
-    except asyncio.CancelledError as exc:
+    except asyncio.CancelledError:
         if stopped:
-            raise _OperatorStopped(interrupted_restore_outcome(exc)) from None
+            raise _OperatorStopped() from None
         raise
-    except KeyboardInterrupt as exc:
+    except KeyboardInterrupt:
         # Reached only when no handler could be installed (a loop that is not
         # the main thread's): the interpreter raises inside the running
         # coroutine, so the pass's teardown has already run and stamped it.
-        raise _OperatorStopped(interrupted_restore_outcome(exc)) from None
+        raise _OperatorStopped() from None
     finally:
         if handled:
             with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
                 loop.remove_signal_handler(signal.SIGINT)
 
-
-async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
+async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     from jasper.audio_measurement.correction_lane import exec_correction_play
     from jasper.audio_measurement.wired_capture import (
-        WiredCaptureError,
         resolve_wired_mic,
     )
     from jasper.audio_measurement.wired_level_meter import WiredLevelMeter
@@ -533,91 +370,106 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         return _refused(REFUSE_TARGET_REJECTED, str(exc))
 
     cam = primary_controller()
-    meter = WiredLevelMeter(mic.pcm, channels=args.mic_channels)
+    monitor = WiredSplMonitor(sensitivity, spl_ceiling, 0)
+    meter = WiredLevelMeter(mic.pcm, channels=args.mic_channels, spl_monitor=monitor)
     player: Any = None
+
     # #2938: cancellation must survive scheduling and process creation.
-    play_generation = cancelled_generation = 0
+    async def _play() -> None:
+        async def spawn() -> None:
+            nonlocal player
+            player = await exec_correction_play(
+                stimulus, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        await await_restore_task_resilient(asyncio.create_task(spawn()))
 
-    def _play() -> Awaitable[None]:
-        nonlocal play_generation
-        play_generation += 1
-        return _play_generation(play_generation)
-
-    async def _play_generation(generation: int) -> None:
+    async def _cancel() -> None:
         nonlocal player
-        player = await exec_correction_play(
-            stimulus, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        if cancelled_generation >= generation:
-            player.terminate()
-        else:
-            await player.wait()
-
-    def _cancel() -> None:
-        nonlocal cancelled_generation
-        cancelled_generation = play_generation
         if player is not None and player.returncode is None:
             player.terminate()
+            try:
+                await asyncio.wait_for(player.wait(), timeout=2.0)
+            except TimeoutError:
+                player.kill()
+                await player.wait()
+        player = None
 
     async def _samples() -> list[Any]:
+        if monitor.error is not None:
+            raise monitor.error
+        if player is not None and player.returncode is not None:
+            if player.returncode != 0:
+                raise WiredCaptureError("Leveling stimulus failed")
+            await _play()
         return meter.drain()
 
-    try:
-        meter.start()
-    except WiredCaptureError as exc:
-        return _refused(REFUSE_MIC_ABSENT, str(exc))
-    try:
-        result = await _stoppable(
-            run_seat_level_ramp(
-                target=target,
-                sensitivity=sensitivity,
-                max_main_volume_db=ceiling_db,
-                spl_ceiling_db_spl=spl_ceiling,
-                get_main_volume_db=cam.get_volume_db,
-                set_main_volume_db=cam.set_volume_db,
-                play_continuous_tone=_play,
-                cancel_tone=_cancel,
-                next_samples=_samples,
-                # Disclosure, not a bound: WHICH signal is being played and
-                # what it measures, so `spl_target_unreachable` can show its
-                # own arithmetic instead of reading as a nanny, and so the
-                # banked reference names the stimulus half of its definition.
-                stimulus=provenance,
-            )
-        )
-    except _OperatorStopped as stop:
-        return _refused(
-            REFUSE_INTERRUPTED,
-            "stopped by the operator; the stimulus was cut and nothing was "
-            f"banked. {_restore_phrase(stop.restored)}",
-            restored=stop.restored,
-        )
-    except SeatLevelRampError as exc:
-        # The refusal code is the first token of the message (the window/ceiling
-        # validators format it that way) so the operator sees the same
-        # vocabulary a refusal terminal produces.
-        return _refused(str(exc).split(":", 1)[0], str(exc))
-    finally:
-        _cancel()
-        meter.stop()
-    detail = (
-        f"reference {result.reference_volume_db:.2f} dB measured "
-        f"{result.measured_db_spl:.1f} dB SPL"
-        if result.converged
-        else (result.detail or "nothing was banked")
-    )
-    # The refusal's own window summary already rides ``result.detail`` (the ramp
-    # writes it there so one sentence serves every reader). The re-measured
-    # floor is a ramp fact rather than a refusal fact, so it is appended here
-    # and reaches a converged run's line too -- which is the run that most needs
-    # it, since the second silent window is what its readings were judged
-    # against.
-    return result, detail + _ambient_phrase(result.ramp)
+    busy = live_measurement_session(action="leveling the seat SPL")
+    if busy is not None:
+        return _refused("measurement_session_already_live", busy)
+    plan = SessionVolumePlan(state_path=DEFAULT_SESSION_VOLUME_STATE_PATH)
+    door = FaderVolumeDoor(cam.set_volume_db, cam.get_volume_db)
+    restored: bool | None = None
+    result: LevelResult | None = None
 
+    async def _restore() -> None:
+        nonlocal restored
+        outcome = await plan.close(door, reason="seat_level_complete")
+        restored = outcome in (SessionVolumeRestoreResult.EXACT_RESTORED,
+                               SessionVolumeRestoreResult.ALREADY_RESOLVED)
 
-#: Authority tier for the generated tool-menu index
-#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
-AUTHORITY_TIER = "measured"
+    async def _pass() -> LevelResult:
+        async with measurement_window(gate_owner="seat-level"):
+            try:
+                async with asyncio.timeout(SETTLE_TIMEOUT_S):
+                    current = await cam.get_volume_db()
+                if current is None or not math.isfinite(current):
+                    return LevelResult("refused", "volume_latch_unconfirmed")
+                start = min(current, START_FADER_DB, ceiling_db, 0.0)
+                settle_s = bounded_env_float("JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S", SETTLE_TIMEOUT_S, lo=2.0, hi=30.0)
+                watchdog_s = (math.ceil((min(ceiling_db, 0.0) - start) / MAX_STEP_DB) + 7) * settle_s
+                plan.set_wall_clock_ceiling_s(watchdog_s + 60.0)
+                opened = await plan.open(start, door)
+                if opened is not SessionVolumeOpenResult.OPENED:
+                    return LevelResult("refused", "volume_latch_unconfirmed")
+                async with asyncio.timeout(watchdog_s):
+                    await asyncio.to_thread(meter.start)
+                    return await level_to(
+                        target.target_db_spl, tolerance_db=target.tolerance_db,
+                        stop_db_spl=spl_ceiling, max_main_volume_db=ceiling_db, sensitivity=sensitivity,
+                        get_main_volume_db=cam.get_volume_db, set_main_volume_db=cam.set_volume_db,
+                        play=_play, stop_playback=_cancel, next_samples=_samples,
+                    )
+            finally:
+                try:
+                    await resilient_restore(_cancel())
+                finally:
+                    try:
+                        await resilient_restore(_restore())
+                    finally:
+                        await asyncio.to_thread(meter.stop)
+
+    try:
+        result = await _stoppable(_pass())
+    except TimeoutError:
+        return _refused("seat_level_watchdog_expired", "Leveling timed out", restored=restored)
+    except _OperatorStopped:
+        return _refused(REFUSE_INTERRUPTED, "Stopped by the operator", restored=restored)
+    except (WiredCaptureError, MeasurementWindowError, SessionVolumePlanError, OSError, ValueError) as exc:
+        return _refused(getattr(exc, "code", "ramp_error"), str(exc), restored=restored)
+    log_event(logger, "active_speaker.seat_level_result", status=result.status, reason=result.reason,
+              gain_db=result.gain_db, leveled_db_spl=result.leveled_db_spl,
+              ambient_db_spl=result.ambient_db_spl, readings=len(result.readings))
+    payload = {**asdict(result), "restored": restored,
+               "reference_volume_db": result.gain_db, "measured_db_spl": result.leveled_db_spl}
+    if result.status == "converged":
+        assert result.gain_db is not None and result.leveled_db_spl is not None
+        write_seat_level_reference(reference_volume_db=result.gain_db, measured_db_spl=result.leveled_db_spl,
+            target=target, sensitivity=sensitivity.to_dict(), max_main_volume_db=ceiling_db, stimulus=provenance)
+        detail = f"reference {result.gain_db:.2f} dB measured {result.leveled_db_spl:.1f} dB SPL"
+    else:
+        reason_spec = REASON_REGISTRY.get(str(result.reason))
+        detail = reason_spec.message if reason_spec is not None else str(result.reason)
+    return payload, detail
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -646,8 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     SPL reached and where it was banked\n"
             "  1  refused -- {status, reason, detail} on stdout under the\n"
             "     reason (interrupted, or the ramp's own refusal\n"
-            "     vocabulary), with the window the stop abandoned and the\n"
-            "     whole ramp telemetry under detail; one sentence on stderr\n"
+            "     vocabulary). Readings are included in the result.\n"
             "  2  usage error (argparse)"
         ),
     )
@@ -690,12 +541,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="also log every settle window's per-sample dB SPL series (one "
-        "DEBUG line per window) — the evidence that separates a one-sample "
-        "excursion from a level that rose and stayed",
+        help="enable debug logging",
     )
     return parser
-
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
@@ -712,47 +560,21 @@ def main(argv: list[str] | None = None) -> int:
     # ``--verbose`` raises that floor to DEBUG rather than reaching for
     # ``_logging.configure_verbose_logging``, whose no-flag floor is WARNING --
     # the level that would discard the receipt above.
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format=CLI_LOG_FORMAT,
-    )
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=CLI_LOG_FORMAT)
     try:
         result, detail = asyncio.run(_run(args))
-    except KeyboardInterrupt as exc:
+    except KeyboardInterrupt:
         # The last-resort path: the interrupt escaped ``_stoppable`` entirely,
         # so the pass may never have opened the latch. Report only what the
         # exception actually carries -- claiming a restore here is the
         # dishonesty this field exists to prevent.
-        restored = interrupted_restore_outcome(exc)
-        result = SeatLevelResult(
-            status="refused", reason=REFUSE_INTERRUPTED, restored=restored
-        )
-        detail = (
-            "stopped by the operator; the stimulus was cut and nothing was "
-            f"banked. {_restore_phrase(restored)}"
-        )
-    if not result.converged:
-        # Everything the old document carried, under the one key a refusal
-        # publishes: the window the stop abandoned is in ``ramp``, and the
-        # sentence that names it is ``detail``.
-        carried = result.to_dict()
-        del carried["status"], carried["reason"]
-        return failed(EXIT_REFUSED, str(result.reason), {**carried, "detail": detail})
+        result, detail = _refused(REFUSE_INTERRUPTED, "Stopped by the operator")
+    if result["status"] != "converged":
+        reason = result.pop("reason")
+        result.pop("status")
+        return failed(EXIT_REFUSED, reason, {**result, "detail": detail})
     print(f"converged: {detail}", file=sys.stderr)
-    print(
-        json.dumps(
-            {
-                "reference_volume_db": result.reference_volume_db,
-                "measured_db_spl": result.measured_db_spl,
-                "restored": result.restored,
-                "ramp": result.ramp,
-                "detail": detail,
-                "out": str(seat_level_reference_state_path()),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    print(json.dumps({**result, "detail": detail, "out": str(seat_level_reference_state_path())}, indent=2))
     return EXIT_OK
 
 

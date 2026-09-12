@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
+from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.log_event import log_event
 
 from ..boost_protection import BOOST_OVER_DECLARED_BOUND
@@ -125,7 +126,7 @@ REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 # ``crossover_v2.program_transaction.StimulusCaptureStopped``). Its own code,
 # not ``internal_error``: the household can act on this by lowering the level,
 # which is not true of a genuine host fault. Terminal.
-REASON_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
+REASON_SPL_CEILING_EXCEEDED = SPL_CEILING_EXCEEDED
 
 REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
 REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH = "measurement_candidate_speaker_mismatch"
@@ -428,6 +429,13 @@ def _retriable_reason(
 # The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    **{code: ReasonSpec(code, TEMPLATE_FIX_AND_RETRY, 0, "", message)
+       for code, message in (
+           ("level_unreachable", "The target level is unreachable at this gain. Check the amplifier and microphone."),
+           ("level_ambient_too_high", "The room is too loud to level. Reduce the ambient noise and try again."),
+           ("spl_level_unsettled", "The microphone level did not settle. Try again."),
+           ("mic_not_observing", "The microphone did not hear the speaker. Check its position and connection."),
+       )},
     "bass_fit_common_coverage_unavailable": ReasonSpec(
         "bass_fit_common_coverage_unavailable", TEMPLATE_HARD_STOP, 0, "", "The bass takes have no shared usable frequency range.",
         next_action={"id": "measure_bass_coverage", "label": "Measure both graphs over the target band", "href": "/sound/speaker/crossover/"},

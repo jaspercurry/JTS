@@ -25,6 +25,7 @@ from jasper.audio_measurement.wired_capture import (
     START_TIMEOUT_S,
     CapturePcm,
     WiredCaptureError,
+    WiredSplMonitor,
     open_alsa_capture_pcm,
 )
 
@@ -55,7 +56,7 @@ class WiredLevelMeter:
     ``agc_frozen=True`` is a statement of fact, not a default: an ALSA capture
     has no browser gain control in the path, so the kernel's empirical AGC-slope
     machinery stays off -- which is precisely why a wired ramp needs
-    :func:`jasper.active_speaker.seat_level_ramp.mic_is_not_observing` for its
+    :func:`jasper.active_speaker.auto_level.mic_is_not_observing` for its
     "is the mic responding at all" evidence.
 
     Level per chunk is the MAX across channels: a UMIK enumerating as stereo
@@ -75,11 +76,13 @@ class WiredLevelMeter:
         channels: int = 1,
         period_frames: int = 2048,
         pcm_factory: Callable[[], CapturePcm] | None = None,
+        spl_monitor: WiredSplMonitor | None = None,
     ) -> None:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive")
         if channels <= 0:
             raise ValueError("channels must be positive")
+        self._spl_monitor = spl_monitor
         self._device = device
         self._sample_rate_hz = int(sample_rate_hz)
         self._channels = int(channels)
@@ -145,6 +148,10 @@ class WiredLevelMeter:
                     continue
                 consecutive_failures = 0
                 try:
+                    if self._spl_monitor is not None:
+                        self._spl_monitor.observe(data, length, self._channels)
+                        if self._spl_monitor.error is not None:
+                            raise self._spl_monitor.error
                     rms_dbfs, peak_dbfs, clip = self._measure(data, length)
                 except ValueError as exc:
                     # A short read that is not a whole number of frames: the

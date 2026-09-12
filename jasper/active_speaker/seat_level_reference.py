@@ -12,7 +12,7 @@ that guess becomes an observation.
 
 Ownership, deliberately narrow:
 
-* **one writer** — :mod:`jasper.active_speaker.seat_level_ramp`, after a
+* **one writer** — :mod:`jasper.cli.seat_level`, after a
   closed-loop ramp measured a calibrated seat SPL inside the requested band;
 * **one reader** — ``session_volume_plan.measurement_reference_volume_db``;
 * **absent is normal.** A box that has never run the leveling step, or whose
@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
+from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
 
@@ -50,13 +51,8 @@ SEAT_LEVEL_REFERENCE_KIND = "jts_active_speaker_seat_level_reference"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_seat_level_reference.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE"
 
-# The operator's representative listening level for a measurement session:
-# 75-80 dB SPL at the seat (owner ruling, 2026-08-19), expressed as a midpoint
-# plus a symmetric tolerance because that is the shape a settle-based ramp
-# window needs. Defaults only — every run may state its own, and the preset's
-# ``max_commissioning_level_db_spl`` bounds whatever it states.
-DEFAULT_TARGET_DB_SPL = 77.5
-DEFAULT_TOLERANCE_DB = 2.5
+DEFAULT_TARGET_DB_SPL = 75.0
+DEFAULT_TOLERANCE_DB = 1.0
 
 
 class SeatLevelTargetError(ValueError):
@@ -133,7 +129,7 @@ class SeatLevelTarget:
             raise SeatLevelTargetError("seat-SPL tolerance must be positive")
         if not math.isfinite(ceiling_db_spl):
             raise SeatLevelTargetError("commissioning SPL ceiling must be finite")
-        if self.high_db_spl > ceiling_db_spl:
+        if self.high_db_spl > ceiling_db_spl - MAX_STEP_DB - CEILING_MARGIN_DB:
             raise SeatLevelTargetError(
                 f"seat-SPL band top {self.high_db_spl:g} dB SPL exceeds the "
                 f"profile's commissioning ceiling {ceiling_db_spl:g} dB SPL"

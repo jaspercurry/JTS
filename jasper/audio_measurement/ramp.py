@@ -14,6 +14,10 @@ from typing import Any
 # independent of the dynamic cap. Mirrors camilla.py::_coerce_main_volume_db,
 # duplicated here as defense-in-depth. Do not raise.
 HARD_CEILING_DBFS = 0.0
+SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
+# Bounds one step's overshoot on a non-linear chain: 75 + 6 stays below the 85 stop.
+MAX_STEP_DB = 6.0
+CEILING_MARGIN_DB = 3.0
 
 
 def capped_gap_step_db(

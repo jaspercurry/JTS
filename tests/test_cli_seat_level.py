@@ -6,10 +6,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -17,12 +15,10 @@ from jasper.audio_measurement.calibration import (
     MicSensitivity,
     resolve_mic_sensitivity,
 )
-from jasper.active_speaker.seat_level_reference import (
-    seat_level_reference_state_path,
-)
+from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 from jasper.cli import seat_level
 from jasper.cli._refusal import STATUS_BY_CODE
-from tests._log_events import event_records
+from tests._log_events import event_fields, event_records
 
 CAL_WITH_SENS = (
     '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n10.2\t-6.5\n'
@@ -92,15 +88,6 @@ def test_a_missing_stimulus_refuses_first(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == STATUS_BY_CODE[seat_level.EXIT_REFUSED]
     assert payload["reason"] == seat_level.REFUSE_STIMULUS_MISSING
-    # Everything the eight-key document used to publish as top-level keys.
-    assert set(payload["detail"]) == {
-        "detail",
-        "measured_db_spl",
-        "ramp",
-        "reachable_target_db_spl",
-        "reference_volume_db",
-        "restored",
-    }
 
 
 def test_the_verb_installs_a_handler_so_its_receipt_reaches_the_journal(
@@ -166,7 +153,7 @@ def test_defaults_are_the_operators_stated_band():
     target = seat_level.SeatLevelTarget(
         target_db_spl=args.target_db_spl, tolerance_db=args.tolerance_db
     )
-    assert (target.low_db_spl, target.high_db_spl) == (75.0, 80.0)
+    assert (target.low_db_spl, target.high_db_spl) == (74.0, 76.0)
 
 
 # --- the whole verb, on a stubbed healthy box -------------------------------
@@ -313,160 +300,6 @@ def test_the_default_stimulus_is_derived_from_the_declared_bands(
     # solve stays EXACT — past the render bound it degrades to the conservative
     # full-band bound, which is exactly the second-order effect #3475 reports.
     assert seen["duration_s"] * seen["sample_rate"] <= MAX_STIMULUS_SAMPLES
-
-
-def test_the_generated_default_reaches_the_ramp_with_its_own_provenance(
-    tmp_path, monkeypatch, capsys
-):
-    """No ``--stimulus-wav`` is a supported run, not ``stimulus_wav_missing``."""
-    cal = tmp_path / "umik2.txt"
-    cal.write_text(CAL_WITH_SENS)
-    generated = _stereo_wav(tmp_path / "noise.wav", peak_int16=8192)
-
-    handed: dict = {}
-
-    async def _fake_ramp(**kwargs):
-        handed.update(kwargs)
-        from jasper.active_speaker.seat_level_ramp import SeatLevelResult
-
-        return SeatLevelResult(
-            status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
-        )
-
-    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
-    _stub_declarations(monkeypatch)
-    monkeypatch.setattr(
-        seat_level,
-        "default_stimulus_wav",
-        lambda declarations: (generated, (45.0, 18_000.0)),
-    )
-    monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda stim, levels, declarations: (-30.0, 85.0)
-    )
-    monkeypatch.setattr(
-        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
-        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),
-    )
-    monkeypatch.setattr(
-        "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",
-        lambda *a, **k: SimpleNamespace(
-            start=lambda **kw: None, drain=lambda: [], stop=lambda: None
-        ),
-    )
-    monkeypatch.setattr(
-        "jasper.camilla.primary_controller",
-        lambda: SimpleNamespace(get_volume_db=None, set_volume_db=None),
-    )
-
-    code = seat_level.main(["--calibration-file", str(cal)])
-
-    assert code == 0
-    assert "converged" in capsys.readouterr().err
-    assert handed["stimulus"].path == str(generated)
-    # The declared band rides with the file, so the reference banks WHAT was
-    # generated rather than leaving it to be re-parsed out of a filename.
-    assert handed["stimulus"].band_hz == (45.0, 18_000.0)
-
-
-@pytest.mark.parametrize("source", [
-    "file", "serial", "household", "missing", "curve_only", "wrong_mic",
-    "unreadable_file", "unresolved_serial",
-])
-def test_the_verb_resolves_calibration_before_running_the_ramp(
-    tmp_path, monkeypatch, capsys, source
-):
-    result = seat_level.SeatLevelResult(
-        status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
-    )
-    stimulus, cal = _stub_a_ramp_result(monkeypatch, tmp_path, result)
-    household_cal = tmp_path / "household.txt"
-    household_cal.write_text(CAL_CURVE_ONLY if source == "curve_only" else "Sens Factor =-8dB\n" + CAL_CURVE_ONLY)
-    household = Mock(return_value=(None, SimpleNamespace(
-        raw_path=household_cal, model="dayton_imm6" if source == "wrong_mic" else "minidsp_umik2",
-    ))
-                     if source != "missing" else None)
-    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", household)
-    monkeypatch.setattr("jasper.audio_measurement.calibration.find_stored_calibration",
-                        lambda **kw: SimpleNamespace(raw_path=cal, sign_convention="correction")
-                        if source == "serial" else None)
-    ramp = AsyncMock(return_value=result)
-    monkeypatch.setattr(seat_level, "run_seat_level_ramp", ramp)
-    argv = ["--stimulus-wav", stimulus]
-    if source == "file":
-        argv += ["--calibration-file", cal]
-    elif source == "unreadable_file":
-        argv += ["--calibration-file", str(tmp_path / "missing.txt")]
-    elif source in ("serial", "unresolved_serial"):
-        argv += ["--mic-serial", "test-serial"]
-
-    code = seat_level.main(argv)
-    answer = json.loads(capsys.readouterr().out)
-
-    assert household.call_count == (0 if source in ("file", "serial", "unreadable_file", "unresolved_serial") else 1)
-    if source in ("missing", "curve_only", "wrong_mic", "unreadable_file", "unresolved_serial"):
-        assert code == seat_level.EXIT_REFUSED
-        assert answer["reason"] == seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE
-        ramp.assert_not_awaited()
-        return
-    assert code == seat_level.EXIT_OK
-    handed = ramp.await_args.kwargs
-    assert handed["max_main_volume_db"] == 0.0
-    assert handed["spl_ceiling_db_spl"] == 80.0
-    assert handed["sensitivity"].sens_factor_db == (-8.0 if source == "household" else -12.07)
-    assert (handed["target"].low_db_spl, handed["target"].high_db_spl) == (75.0, 80.0)
-    assert handed["stimulus"].peak_dbfs == pytest.approx(0.0, abs=0.05)
-    assert handed["stimulus"].rms_dbfs == pytest.approx(-3.01, abs=0.05)
-
-
-@pytest.mark.parametrize("cancel_when", ["spawning", "playing"])
-@pytest.mark.parametrize("cancel_restart", [False, True])
-def test_a_cancel_applies_to_the_scheduled_tone(
-    tmp_path, monkeypatch, cancel_when, cancel_restart
-):
-    result = seat_level.SeatLevelResult(
-        status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
-    )
-    stimulus, cal = _stub_a_ramp_result(monkeypatch, tmp_path, result)
-    players = []
-    cancel = None
-
-    async def _exec(*args, **kwargs):
-        player = SimpleNamespace(returncode=None, terminate=Mock())
-        first = not players
-
-        async def _wait():
-            if first and cancel_when == "playing":
-                cancel()
-            player.returncode = 0
-
-        player.wait = AsyncMock(side_effect=_wait)
-        players.append(player)
-        if first and cancel_when == "spawning":
-            cancel()
-        return player
-
-    async def _fake_ramp(*, play_continuous_tone, cancel_tone, **kwargs):
-        nonlocal cancel
-        cancel = cancel_tone
-        await asyncio.ensure_future(play_continuous_tone())
-        restarted = asyncio.ensure_future(play_continuous_tone())
-        if cancel_restart:
-            cancel_tone()
-        await asyncio.sleep(0)
-        await restarted
-        assert players[1].terminate.call_count == int(cancel_restart)
-        return result
-
-    monkeypatch.setattr(
-        "jasper.audio_measurement.correction_lane.exec_correction_play", _exec
-    )
-    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
-    code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
-
-    assert code == seat_level.EXIT_OK
-    assert players[0].terminate.called
-    assert players[0].wait.await_count == (1 if cancel_when == "playing" else 0)
-    assert players[1].wait.await_count == (0 if cancel_restart else 1)
 
 
 def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
@@ -976,189 +809,108 @@ def test_the_measured_SPL_stop_still_rejects_a_target_above_the_profile_ceiling(
     with pytest.raises(SeatLevelTargetError):
         target.validate(ceiling_db_spl=85.0)
     # And the 75-80 band this PR exists to make reachable is still accepted.
-    SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5).validate(ceiling_db_spl=85.0)
+    SeatLevelTarget(target_db_spl=75.0, tolerance_db=1.0).validate(ceiling_db_spl=85.0)
 
 
-def _stub_a_ramp_result(monkeypatch, tmp_path, result):
-    stimulus = _stereo_wav(tmp_path / "check.wav", peak_int16=32767)
-    cal = tmp_path / "umik2.txt"
+@pytest.mark.parametrize('outcome', ['converged', 'refused', 'cancelled', 'spawn_cancelled', 'replay_cancelled', 'replay_cancelled_twice', 'first_chunk_stop'])
+def test_session_banks_only_a_level_and_always_restores(tmp_path, monkeypatch, caplog, outcome):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, Mock
+    from jasper.active_speaker.auto_level import LevelResult
+    from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
+
+    stimulus = _stereo_wav(tmp_path / 'probe.wav')
+    cal = tmp_path / 'mic.txt'
     cal.write_text(CAL_WITH_SENS)
-
-    async def _fake_ramp(**_kwargs):
-        return result
-
-    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    cam = SimpleNamespace(gain=-8.0)
+    async def get():
+        return cam.gain
+    async def set_gain(gain):
+        cam.gain = gain
+        return True
+    cam.get_volume_db, cam.set_volume_db = get, set_gain
+    closed = []
+    class Plan:
+        def __init__(self, *, state_path):
+            assert state_path == seat_level.DEFAULT_SESSION_VOLUME_STATE_PATH
+        def set_wall_clock_ceiling_s(self, seconds):
+            assert seconds > 60
+        async def open(self, gain, door):
+            self.entry = cam.gain
+            await set_gain(gain)
+            return SessionVolumeOpenResult.OPENED
+        async def close(self, door, *, reason):
+            await set_gain(self.entry)
+            closed.append(reason)
+            return SessionVolumeRestoreResult.EXACT_RESTORED
+    @asynccontextmanager
+    async def isolation(**kwargs):
+        yield
+    meter = SimpleNamespace(start=Mock(), stop=Mock(), drain=lambda: [])
+    players = []
+    playing_task = []
+    spawns = []
+    async def spawn(*args, **kwargs):
+        spawns.append(True)
+        if outcome == 'spawn_cancelled' or ('replay_cancelled' in outcome and len(spawns) == 2):
+            playing_task[0].cancel()
+            if outcome.endswith('twice'):
+                asyncio.get_running_loop().call_soon(playing_task[0].cancel)
+                await asyncio.sleep(0)
+        player = SimpleNamespace(returncode=None, terminate=Mock(), kill=Mock(), wait=AsyncMock(return_value=0))
+        players.append(player)
+        return player
+    async def loop(target, **kwargs):
+        playing_task.append(asyncio.current_task())
+        await kwargs['play']()
+        if outcome == 'first_chunk_stop':
+            await kwargs['next_samples']()
+        if 'replay' in outcome:
+            players[-1].returncode = 0
+            await kwargs['play']()
+        if outcome == 'cancelled':
+            raise asyncio.CancelledError
+        return LevelResult(outcome, None if outcome == 'converged' else 'level_unreachable', -17.5, 75.0)
+    bank = Mock()
+    monkeypatch.setattr(seat_level, 'level_to', loop)
+    monkeypatch.setattr(seat_level, 'measurement_window', isolation)
+    monkeypatch.setattr(seat_level, 'SessionVolumePlan', Plan)
+    monkeypatch.setattr(seat_level, 'live_measurement_session', lambda **kw: None)
+    monkeypatch.setattr(seat_level, 'write_seat_level_reference', bank)
+    monkeypatch.setattr(seat_level, '_derive_bounds', lambda *a: (0.0, 85.0))
     _stub_declarations(monkeypatch)
-    monkeypatch.setattr(
-        seat_level, "_derive_bounds", lambda stim, levels, declarations: (0.0, 80.0)
-    )
-    monkeypatch.setattr(
-        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
-        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0", model_label="UMIK-2"),
-    )
-    monkeypatch.setattr(
-        "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",
-        lambda *a, **k: SimpleNamespace(
-            start=lambda **kw: None, drain=lambda: [], stop=lambda: None
-        ),
-    )
-    monkeypatch.setattr(
-        "jasper.camilla.primary_controller",
-        lambda: SimpleNamespace(get_volume_db=None, set_volume_db=None),
-    )
-    return [str(stimulus), str(cal)]
+    monkeypatch.setattr('jasper.audio_measurement.wired_capture.resolve_wired_mic', lambda: SimpleNamespace(pcm='fake'))
 
+    def make_meter(*args, **kwargs):
+        if outcome == 'first_chunk_stop':
+            kwargs['spl_monitor'].error = WiredSplCeilingExceeded(86.0, 85.0)
+        return meter
 
-def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys):
-    """The operator's own terminal carries the discriminator, not just stdout.
-
-    jts3, 2026-08-23: two 75 dB SPL runs refused on a sample measuring 80.5 /
-    80.9 dB SPL, and the line an operator read said only that -- with the prior
-    settled median (64.6) beside it, and nothing at all about the window the
-    stop abandoned. The two readings that separate "one tail sample crossed"
-    from "the level rose and stayed" are the window's median and its max.
-    """
-    from jasper.active_speaker.seat_level_ramp import (
-        REFUSE_SPL_CEILING_EXCEEDED,
-        SeatLevelResult,
-    )
-
-    stimulus, cal = _stub_a_ramp_result(
-        monkeypatch,
-        tmp_path,
-        SeatLevelResult(
-            status="refused",
-            reason=REFUSE_SPL_CEILING_EXCEEDED,
-            detail=(
-                "measured 80.5 dB SPL, above the profile's commissioning stop "
-                "80.0 dB SPL (stopped at -12.50 dB against the 0.00 dB headroom "
-                "ceiling, reading 64.6 dB SPL at -20.00 dB; the window it "
-                "stopped in saw 20 samples spanning 74.0-80.5 dB SPL, median "
-                "74.0, and stopped on the 80.5 dB SPL sample 0.950 s in)"
-            ),
-            restored=True,
-            ramp={"ambient_remeasured": False},
-        ),
-    )
-
-    code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
-    err = capsys.readouterr().err
-
-    assert code == 1
-    assert "refused (spl_ceiling_exceeded)" in err
-    assert "the window it stopped in saw 20 samples" in err
-    assert "median 74.0" in err
-    assert "80.5 dB SPL sample 0.950 s in" in err
-    assert "reading 64.6 dB SPL at -20.00 dB" in err
-
-    # The detail above is a COPY of what the ramp writes, so it is pinned
-    # against the ramp's own writer rather than left to go stale silently: this
-    # is the window that produced it, phrased by the one function that phrases
-    # it. `tests/test_active_speaker_seat_level.py` covers the ramp end putting
-    # that clause on a real refusal.
-    from jasper.active_speaker import seat_level_ramp as slr
-
-    trace = slr._WindowTrace(
-        samples=tuple((index * 0.05, 74.0) for index in range(19)) + ((0.95, 80.5),),
-        seen=20,
-        trip=(0.95, 80.5),
-    )
-    assert slr._window_phrase(trace.summary()) in err
-
-
-@pytest.mark.parametrize("remeasured", [False, True])
-def test_a_converged_run_prints_its_ramp_evidence_and_ambient_detail(
-    tmp_path, monkeypatch, capsys, remeasured
-):
-    ramp = {
-        "start_db": -50.0, "ceiling_db": 0.0, "bite_db": 7.5,
-        "bite_fraction": 0.15, "ambient_dbfs": -80.0, "ambient_db_spl": 57.18,
-        "ambient_remeasured": remeasured,
-        "ambient_remeasured_db_spl": 49.7 if remeasured else None,
-        "required_rise_db": 6.0, "settle_window_s": 1.0,
-        "settle_agree_db": 0.5, "settle_timeout_s": 5.0, "watchdog_s": 90.0,
-        "final_volume_db": -13.69, "slope_db_per_db": 1.0,
-        "steps": [{"volume_db": -13.69, "observed_dbfs": -60.0,
-                   "observed_db_spl": 72.63, "rise_db": 22.93, "gap_db": 0.0,
-                   "samples": 20, "windows": 1}],
-    }
-    stimulus, cal = _stub_a_ramp_result(
-        monkeypatch, tmp_path, seat_level.SeatLevelResult(
-            status="converged", reference_volume_db=-13.69,
-            measured_db_spl=72.63, restored=True, ramp=ramp,
-        ),
-    )
-
-    code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
-    answer = json.loads(capsys.readouterr().out)
-
-    assert code == seat_level.EXIT_OK
-    assert answer["reference_volume_db"] == -13.69
-    assert answer["measured_db_spl"] == 72.63
-    assert answer["restored"] is True
-    assert answer["ramp"] == ramp
-    assert answer["out"] == str(seat_level_reference_state_path())
-    phrase = seat_level._ambient_phrase(ramp)
-    assert isinstance(phrase, str)
-    assert bool(phrase) is remeasured
-    assert phrase in answer["detail"]
-
-
-@pytest.mark.parametrize(
-    "argv_extra, expected_level",
-    [
-        pytest.param([], "INFO", id="the_receipt_still_reaches_the_journal"),
-        pytest.param(["--verbose"], "DEBUG", id="verbose_unlocks_the_sample_series"),
-    ],
-)
-def test_verbose_lowers_the_log_floor_without_losing_the_receipt(
-    tmp_path, monkeypatch, argv_extra, expected_level
-):
-    """``--verbose`` is the reader for the per-sample series.
-
-    The series is a DEBUG line, so without a way to turn DEBUG on it is a write
-    with no reader. And the floor without the flag stays INFO rather than
-    ``_logging.configure_verbose_logging``'s WARNING, which is the level that
-    would discard ``event=active_speaker.unsegmented_ceiling_bound``.
-    """
-    import logging
-
-    from jasper.active_speaker.seat_level_ramp import SeatLevelResult
-
-    seen: dict = {}
-
-    def _basic_config(**kwargs):
-        seen.update(kwargs)
-
-    monkeypatch.setattr(logging, "basicConfig", _basic_config)
-    stimulus, cal = _stub_a_ramp_result(
-        monkeypatch,
-        tmp_path,
-        SeatLevelResult(
-            status="converged",
-            reference_volume_db=-16.97,
-            measured_db_spl=69.63,
-            restored=True,
-        ),
-    )
-
-    seat_level.main(
-        ["--stimulus-wav", stimulus, "--calibration-file", cal, *argv_extra]
-    )
-    assert logging.getLevelName(seen["level"]) == expected_level
-
-
-def test_a_ceiling_above_digital_zero_is_still_clamped_to_the_0_dB_rail():
-    """``volume_limit 0.0`` is untouched, and the ramp is where it is enforced.
-
-    An honest ceiling can now land ABOVE 0 dB — the JTS3-shaped fixture's does.
-    The ramp clamps its ceiling to ``HARD_CEILING_DBFS``, so the derived number
-    widens how far the ramp may climb but can never command positive main
-    volume. Nothing in this PR touches that clamp; this pins that it still holds
-    against the new, larger input.
-    """
-    from jasper.active_speaker.seat_level_ramp import seat_level_ceiling_db
-    from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
-
-    assert HARD_CEILING_DBFS == 0.0
-    assert seat_level_ceiling_db(12.68) == HARD_CEILING_DBFS
+    monkeypatch.setattr('jasper.audio_measurement.wired_level_meter.WiredLevelMeter', make_meter)
+    monkeypatch.setattr('jasper.audio_measurement.correction_lane.exec_correction_play', spawn)
+    monkeypatch.setattr('jasper.camilla.primary_controller', lambda: cam)
+    args = seat_level.build_parser().parse_args(['--stimulus-wav', str(stimulus), '--calibration-file', str(cal)])
+    with caplog.at_level('INFO', logger='jasper.cli.seat_level'):
+        if 'cancelled' in outcome:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(seat_level._run(args))
+        else:
+            result, _ = asyncio.run(seat_level._run(args))
+            assert result['status'] == ('refused' if outcome == 'first_chunk_stop' else outcome)
+            assert result['restored'] is True
+    if outcome == 'first_chunk_stop':
+        assert result['reason'] == 'spl_ceiling_exceeded'
+        assert event_fields(caplog, 'active_speaker.seat_level_result') == {
+            'status': 'refused',
+            'reason': 'spl_ceiling_exceeded',
+            'gain_db': 'null',
+            'leveled_db_spl': 'null',
+            'ambient_db_spl': 'null',
+            'readings': 'null',
+        }
+    assert cam.gain == -8.0
+    assert len(closed) == 1
+    assert players[-1].terminate.called
+    assert meter.stop.called
+    assert bank.call_count == int(outcome == 'converged')

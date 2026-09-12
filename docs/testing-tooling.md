@@ -1085,115 +1085,26 @@ Coverage: `tests/test_active_speaker_driver_base_trim.py`,
 
 ---
 
-## Seat-SPL leveling
+## Seat SPL leveling
 
-`jasper-seat-level` ([`jasper/cli/seat_level.py`](../jasper/cli/seat_level.py))
-answers, on real hardware: **what main volume makes this speaker measure a
-stated dB SPL at the listening seat?** It rolls the volume up from a quiet floor
-while a calibrated measurement mic watches, stops inside the requested band, and
-banks the volume as the crossover session's measurement reference.
+Run `jasper-seat-level` once with the calibrated microphone at the session's
+first mark. It targets 75 ± 1 dB SPL, banks the gain, and restores household
+playback. Keep the gain for subsequent rounds so a DSP change's loudness effect
+remains visible. Confirm the microphone's capture control is at 100%, where
+its calibration sensitivity was measured.
 
-```sh
-# the ordinary run: stimulus synthesized from the drivers' declared measurement
-# bands, converge on 75-80 dB SPL and bank the result
-jasper-seat-level --mic-serial 810-8494
+The stimulus is band-limited white noise over the active drivers' declared
+measurement bands. The loop reads the ambient floor in silence, then steps
+from fresh microphone readings. Each upward step is at most 6 dB. Each settled
+reading requires two half-second windows agreeing within 0.5 dB; two agreeing
+readings in the target band complete the pass. The existing `JASPER_SEAT_LEVEL_*`
+settings set the minimum rise, window agreement and settle timeout. Every sample
+is checked against the commissioning stop, before a window median is taken.
 
-# explicit stimulus, band, calibration file
-jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
-    --target-db-spl 72 --tolerance-db 2
-
-# instrumented: every window's per-sample dB SPL series, one DEBUG line per window
-jasper-seat-level --mic-serial 810-8494 --verbose
-```
-
-- **Absolute SPL comes from the mic's own calibration file** — the `Sens Factor`
-  header line, as `dB SPL = dBFS − sens_factor + 94`. **The precondition is
-  yours to check**: that figure is quoted at the mic's MAXIMUM capture volume,
-  so confirm `amixer -c <card>` shows the capture control at 100% first. No
-  calibration means no absolute level and the verb refuses.
-- **The ceiling is mic-independent**: `unsegmented_stimulus_ceiling_db`, digital
-  full scale solved for main volume against the ACTUAL stimulus bytes, so a
-  mis-calibrated microphone cannot move it. Given the applied graph as well,
-  [`branch_peak.py`](../jasper/active_speaker/branch_peak.py) renders the
-  stimulus through it and the first branch to reach full scale binds; it
-  **refuses rather than approximates**, and every refusal falls back to the
-  full-band bound, so an unmodelled graph makes the speaker quieter, never
-  louder. **Declared per-driver caps do not bound it and have not since
-  2026-08-23** — they are DISCLOSED on
-  `event=active_speaker.unsegmented_ceiling_bound` (which also names
-  `bound=per_branch` or `bound=full_band`). That field still clamps each
-  driver's composed segment level: see
-  [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) §4 item 3,
-  where old `deviation (h)` citations also resolve.
-- **A reading is settled when the instrument says so, not when a timer says
-  so.** Each reading takes half-second windows until two consecutive medians
-  agree within `JASPER_SEAT_LEVEL_SETTLED_AGREE_DB` (0.5 dB); the later is the
-  reading. A level that never agrees inside
-  `JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S` (8 s) refuses `spl_level_unsettled`
-  rather than banking the last number seen, and a window with no finite sample
-  is `mic_feed_lost` after **ONE** window, so a dead feed never waits that out.
-  The reference itself is banked only when two consecutive READINGS agree — the
-  same rule one level up, because the banked volume outlives the pass.
-- **What agreement does not buy — the residual.** What is bounded is a RATE,
-  never the remaining distance, so `residual ≈ (agree_db / MIC_WINDOW_S) × τ` —
-  about **1 dB per second of τ**, and **unbounded in τ**. Measured on one
-  reading: τ = 0.81 s reads 0.28 dB under, τ = 3 s reads 2.11 under, τ = 5 s
-  reads 4.16 under. A low `windows` count is **not** evidence of stillness and
-  reads most reassuring where the error is largest — read it as this chain's
-  answer time, never as confidence. Raising the timeout converts an honest
-  refusal into a silent under-read.
-- **The room is measured before the tone, in silence**, and a climb reading
-  below that floor triggers one fade-out / re-measure / fade-in, at most once
-  per pass, published as `ramp.ambient_remeasured*`. **What silence does not
-  buy**: room lulls autocorrelate over seconds, so a lull spanning both windows
-  still banks — a large negative `remeasured_delta_db` is that shape in one grep.
-- **How it climbs**: the remaining gap IS the step, saturated upward by one
-  BITE = `BITE_FRACTION` (0.15) of this run's own span (`ceiling − start`) — a
-  fraction, not a number of dB, because an unknown amplifier changes WHERE
-  inside the span the speaker becomes audible, never how wide the span is. So
-  any chain is swept in at most 7 bites, downward moves are uncapped, and no
-  sample is discarded for being quiet. Audible time is bounded structurally at
-  11 readings, so at most about **11 × `settle_timeout_s`** plus the fade legs.
-- **Exit codes**: `0` converged and banked — stdout carries the reference
-  volume, the measured SPL, whether the household volume came back, and where
-  the reference was banked; `1` any refusal, as `{status, reason, detail}` with
-  the whole ramp telemetry under `detail`. Every refusal
-  restores the household volume, banks nothing, and names itself — the mic ones
-  (`mic_calibration_unavailable`, `measurement_mic_absent`, `mic_not_observing`,
-  `mic_feed_lost`, `mic_clipping`), the target ones
-  (`seat_spl_target_rejected`, `spl_target_uncapturable`,
-  `spl_target_unreachable`, `spl_level_unconverged`, `spl_level_unsettled`),
-  `spl_ceiling_exceeded` (one measured SAMPLE crossed
-  `max_commissioning_level_db_spl`, not a settled reading), and the setup ones
-  (`stimulus_wav_missing`, `measurement_session_already_live`,
-  `driver_cap_ceiling_underivable`, `volume_ceiling_below_ramp_start`,
-  `seat_level_watchdog_expired`, `seat_level_interrupted`,
-  `measurement_isolation_unavailable`).
-- **A refusal publishes the window it stopped in** — or the **fade leg**;
-  `ramp.stopped_window` carries the sample count, min/median/max dB SPL and the
-  tripping sample's offset. Read the median against the max: far below is ONE
-  excursion on a settled level, at the max is a level that rose and stayed.
-
-**Read the journal, not the code**: `event=active_speaker.seat_level_*` carries
-`_start` (band, both ceilings, ambient, bite, settle contract, amixer
-precondition), `_reading` (one per bite, including `windows`),
-`_bank_unconfirmed`, `_converged`, `_refused` (slug, volume, ceiling, any
-`stopped_window_*` and the `prior_*` reading to read them against),
-`_ambient_remeasured`, `_window_samples` (DEBUG, behind `--verbose` — the
-per-sample record exists nowhere else), `_restore_failed` and
-`_teardown_abandoned`.
-
-**What it does not do**: it designs no stimulus of its own judgment and opens no
-measurement session. It writes one document to
-`/var/lib/jasper/active_speaker_seat_level_reference.json`, read by the next
-session as `measurement_reference_volume_db`; **absent is normal**, and
-`jasper-doctor`'s `seat-SPL measurement reference` line reports which state that
-file is in. One deploy-time knob, bounded and falling back to its default on a
-bad value: `JASPER_SEAT_LEVEL_MIN_RISE_DB` (default 6). Coverage:
-`tests/test_active_speaker_seat_level.py`, `tests/test_cli_seat_level.py`,
-`tests/test_active_speaker_branch_peak.py`, `tests/test_wired_level_meter.py`,
-`tests/test_active_speaker_session_volume_plan.py`,
-`tests/test_doctor_correction.py`.
+The result reports the reading trail and the measured restore outcome. A
+refusal banks nothing. The digital fader clamp and the independent SPL watch
+remain active. Tests: `test_auto_level.py`, `test_cli_seat_level.py`,
+`test_wired_level_meter.py`, `test_active_speaker_session_volume_plan.py`.
 
 ---
 
