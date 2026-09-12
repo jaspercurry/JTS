@@ -9063,25 +9063,6 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     assert body["code"] == "measurement_candidate_required"
     assert isinstance(body["next_action"], dict)
     assert body["next_action"]["id"] == "select_candidate"
-@pytest.mark.parametrize(("regime", "candidate", "phases"), [
-    ("per_driver", "base", ("check", "entry_baseline", "measure")),
-    ("summed", "base", ("entry_baseline", "lateral")),
-    ("summed", "candidate-a", ("lateral",)),
-])
-def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases):
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
-    from jasper.active_speaker.crossover_v2.capture_plan import prepare_plan_captures
-
-    request = AngleCaptureRequest(
-        stops=(AngleStop(20, regime, candidate_id=candidate),),
-        candidates=(candidate,), repeats=2,
-    )
-    captures = prepare_plan_captures(request, candidate_scopes={"candidate-a": "candidate"})
-    assert tuple(capture.spec.program_phase for capture in captures) == (*phases, phases[-1])
-    assert [capture.repeat for capture in captures[-2:]] == [1, 2]
-    assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
-    assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])
-
 
 def _inline_body():
     from jasper.active_speaker.angle_capture import summed_at

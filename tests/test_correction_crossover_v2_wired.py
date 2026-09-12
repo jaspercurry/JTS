@@ -669,7 +669,7 @@ def _plan_host(monkeypatch, *, gate=None, signals=None, phase=None):
     from tests.engine_twin import FakeSeams as EngineSeams, tuning_session
     from tests.test_plan_run import _Store, _analysis, _walk, _SCOPES
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
-    from jasper.active_speaker.crossover_v2.capture_plan import PlanCapture
+    from jasper.active_speaker.plan_run import PlanCapture
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
     fakes, flow = EngineSeams(), FlowSeams()
@@ -854,7 +854,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
 async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch):
     from dataclasses import replace
     from jasper.active_speaker import plan_run
-    from jasper.active_speaker.crossover_v2.capture_plan import PlanCapture
+    from jasper.active_speaker.plan_run import PlanCapture
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program

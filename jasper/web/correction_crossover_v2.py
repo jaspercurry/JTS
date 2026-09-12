@@ -74,13 +74,12 @@ from typing import (
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    PlanCapture, POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY,
-    prepare_plan_captures, build_inline_session_spec,
+    POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
-from jasper.active_speaker.plan_run import spl_watch
+from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures, spl_watch
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.atomic_io import atomic_write_text
@@ -4107,7 +4106,8 @@ def prepare_v2_session(
     position_gate = PositionGate() if not verify_only or (plan_shape and plan_shape.positions_gated) else None
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
-        captures, request=request, roles_bands=context.roles_bands, fc_hz=session_fc_hz,
+        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        roles_bands=context.roles_bands, fc_hz=session_fc_hz,
         acknowledgement_binding=acknowledgement_binding,
         retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
         default_setup_calibration=default_setup_calibration_for_v2(),
