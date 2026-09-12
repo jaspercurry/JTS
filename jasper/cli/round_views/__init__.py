@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return failed(EXIT_REFUSED, REASON_REFUSED, str(exc))
 
 
-def run_bookkeeping(view: str, target: Path) -> dict[str, Any]:
+def run_bookkeeping(view: str, target: Path, *flags: str) -> dict[str, Any]:
     parser = build_parser()
     verbs = next(action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction))
     if view not in verbs:
@@ -172,7 +172,7 @@ def run_bookkeeping(view: str, target: Path) -> dict[str, Any]:
     output = io.StringIO()
     with redirect_stdout(output), redirect_stderr(io.StringIO()):
         try:
-            code = main([view, str(target)])
+            code = main([view, str(target), *flags])
         except SystemExit:
             return {"view": view, "status": "unavailable", "reason": "inputs_required"}
     answer = json.loads(output.getvalue())
