@@ -60,6 +60,8 @@ when the ring was removed, and no reader on these paths opens one.
 
 from __future__ import annotations
 
+from tests.run_manifest_fixture import write_manifest
+
 import asyncio
 import json
 import math
@@ -370,6 +372,7 @@ def bank_measure_round(
     (round_dir / "state.json").write_text(
         json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
     )
+    write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
 
@@ -422,6 +425,7 @@ def bank_verify_round(
             (VERIFY_GRID_HZ, measured, np.zeros_like(measured))
         ),
     )))
+    write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
 
@@ -484,6 +488,7 @@ def bank_seat_round(
     (round_dir / "state.json").write_text(
         json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
     )
+    write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
 

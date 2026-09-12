@@ -161,5 +161,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help=f"primary analysis window (default {DEFAULT_GATE_MS:g})",
     )
     add_rungs_ms_argument(classify, flag="--gates-ms", repeatable=True)
-    classify.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    classify.add_argument("--out", default=None, help="write the result here")
     classify.set_defaults(func=_cmd_classify_features)

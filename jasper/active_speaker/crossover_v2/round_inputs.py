@@ -59,6 +59,7 @@ APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 STATEFILE_FILENAME = "camilla-statefile.yml"
+ROOM_ARTIFACT = "room.json"
 
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 
@@ -231,7 +232,12 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
     return [bundle for _started_at, bundle in sorted(sessions.values(), reverse=True)][:max(0, limit)]
 
 
-def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
+def set_artifact_name(name: str, set_id: str | None = None) -> str:
+    path = Path(name)
+    return f"{path.stem}-{set_id[:12]}{path.suffix}" if set_id else name
+
+
+def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | None = None) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
     A BANKED round tree is the operator's own directory, so its views stay
@@ -246,19 +252,17 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     caller instead, named by the session it came from so two sessions graded
     in one directory do not overwrite each other.
     """
+    name = set_artifact_name(name, set_id)
     root = round_dir if inputs.banked else banked_round_of(inputs.session_dir)
     return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
 def contract_sources(session_dir: Path) -> dict[str, Any]:
-    """Read candidate and room evidence; callers supply their receipt and context."""
     artifact_dir, reason = round_artifact_dir(session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
     inputs = round_inputs(session_dir)
-    paths = {
-        "candidate": artifact_dir / "candidate.json",
-        **{key: default_out(inputs, session_dir, f"{key}.json")
-           for key in ("room_median", "room_persistence", "room_ceiling")},
-    }
-    return {name: _read_json_mapping(path) or {} for name, path in paths.items()}
+    room = _read_json_mapping(default_out(inputs, session_dir, ROOM_ARTIFACT)) or {}
+    return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
+            **{f"room_{section}": room.get(section, {})
+               for section in ("median", "persistence", "ceiling")}}

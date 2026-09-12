@@ -169,6 +169,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     frequency.add_argument("--analyze-wavs", action="store_true", help="analyze captured Room/bass WAVs on this computer (laptop recommended)")
     frequency.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry for the captures’ recorded calibration IDs")
     frequency.add_argument("--reference-db", type=float, help="display reference from a same-level full-band baseline; requires --analyze-wavs")
-    frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    frequency.add_argument("--out", default=None, help="write the result here")
     add_image_args(frequency)
     frequency.set_defaults(func=_cmd_frequency)

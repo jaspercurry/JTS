@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 import math
 import wave
@@ -49,7 +49,8 @@ def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float, bass
             "scope": "Digital graph output only. Compare identical stimulus windows and channels; acoustic and driver effects are not included."}
 
 
-def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float]) -> dict:
+def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
+                  bands: Sequence[tuple[float, float]] = BASS_BANDS_HZ) -> dict:
     if manifest.get("schema") != "jts_dsp_replay/1" or sha256_file(raw) != manifest["render"]["output_sha256"]:
         raise ValueError("dsp_replay_output_identity_mismatch")
     start, stop = window_s
@@ -60,10 +61,10 @@ def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float]) -
     first, last = round(start * rate), round(stop * rate)
     if first < 0 or last > len(data) or last - first < 8:
         raise ValueError("dsp_replay_window_unavailable")
-    bands = [(f"{lo:g}-{hi:g}", lo, hi) for lo, hi in BASS_BANDS_HZ]
+    named_bands = [(f"{lo:g}-{hi:g}", lo, hi) for lo, hi in bands]
     return {"schema": "jts_dsp_levels/1", "output_sha256": manifest["render"]["output_sha256"],
             "graph_sha256": manifest["graph_sha256"], "stimulus_sha256": manifest["stimulus_sha256"],
             "main_db": manifest["main_db"], "bass_reference_db": manifest["bass_reference_db"],
             "window_s": [first / rate, last / rate], "window": "rectangular",
-            "channels": [{"channel": channel, "bands": band_levels_dbfs(data[first:last, channel], rate, bands, window="rectangular")}
+            "channels": [{"channel": channel, "bands": band_levels_dbfs(data[first:last, channel], rate, named_bands, window="rectangular")}
                          for channel in range(channels)]}

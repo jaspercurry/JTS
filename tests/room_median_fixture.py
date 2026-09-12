@@ -94,7 +94,6 @@ def room_median_document(
 
 
 def write_room_median(round_dir: Path, **kwargs: Any) -> Path:
-    """That document where a view of a BANKED round reads it: beside the round."""
-    path = Path(round_dir) / ARTIFACT_BY_VIEW["room-median"].artifact
-    path.write_text(json.dumps(room_median_document(**kwargs)))
+    path = Path(round_dir) / ARTIFACT_BY_VIEW["room"].artifact
+    path.write_text(json.dumps({"median": room_median_document(**kwargs)}))
     return path

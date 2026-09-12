@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis import (
@@ -30,7 +30,7 @@ from jasper.log_event import log_event
 from ..branch_chain import CrossoverSection, branch_headroom_db, sections_by_role
 from ..linearization_fit import linearization_filters_by_role
 from .candidates import CloudFitEvidence, LinearizationState
-from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP
+from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP, detached_json
 from .driver_prescription import (
     LINEARIZATION_CANDIDATE_FIELD,
     DriverPrescription,
@@ -41,7 +41,7 @@ from .intervention import (
     driver_response_by_role,
     request_from_analysis,
 )
-from .plan_assembly import LinearizationPlan, compose_linearized_prediction
+from .plan_assembly import LinearizationPlan, TrimDecision, compose_linearized_prediction
 from .journey import PHASE_CLOUD_MEASURE, PHASE_MEASURE
 
 #: Reached for in exactly one place, :func:`build_candidate`'s journal guard.
@@ -162,13 +162,10 @@ def applied_profile_delay_us(
     return delay_us if math.isfinite(delay_us) else None
 
 
-def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
-    """Compact JSON-safe evidence core for the measured candidate fingerprint.
-
-    The W4 candidate freezes ``analysis`` as exact JSON data, so only the
-    scalar verdicts travel — never the numpy response arrays. Enough to identify
-    the exact measurement that authorized the candidate (§5.6/§5.8).
-    """
+def analysis_json(
+    analysis: ProgramAnalysis, trim: TrimDecision | None = None,
+) -> dict[str, Any]:
+    """Scalar evidence for the measured candidate fingerprint (ADR-0237)."""
     drift = analysis.drift
     align = analysis.alignment
     cand = analysis.candidate
@@ -183,9 +180,15 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
             round(float(align.seed_delay_us), 3)
             if align and align.seed_delay_us is not None else None
         ),
+        "drift_us": (
+            round(float(align.delay_us - align.seed_delay_us), 3)
+            if align and align.seed_delay_us is not None else None
+        ),
+        "trim_decision": detached_json({
+            **asdict(trim), "strategy": trim.strategy.value,
+            "outcome": trim.outcome, "committed_side": trim.committed_side,
+        }) if trim is not None else None,
         "polarity": align.polarity if align else None,
-        # The committed polarity above is a SELECTION, not correlation's own
-        # answer (#2598), so what chose it is frozen beside it.
         "alignment_objective": cand.alignment_objective if cand else None,
         "seed_polarity": (
             None if cand is None or cand.seed_polarity_sign is None
@@ -194,13 +197,7 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
         "polarity_agrees_with_sum": (
             align.polarity_agrees_with_sum if align else None
         ),
-        # Whether anything MEASURED the polarity at all — the two fields above
-        # cannot answer that between them, and the household row words an
-        # operator's instruction differently from a measured result.
         "polarity_pinned": bool(cand.polarity_pinned) if cand else False,
-        # The mode this names is magnitude-flat and time-wrong, so an on-axis
-        # VERIFY cannot contradict it: the receipt is the only place a later
-        # reader can find it (#2607 S2).
         "left_anchor_lobe": bool(cand.left_anchor_lobe) if cand else None,
         "alignment_confidence": round(float(align.confidence), 4) if align else None,
         "alignment_confidence_source": align.confidence_source if align else None,
@@ -588,22 +585,17 @@ def build_candidate(
                 ),
             )
 
-    # The trim DECISION the applied profile remembers, read whole off the
-    # decision that made it — ``committed_side`` is that dataclass's own
-    # derivation, not a second one here. ``state`` is only the gate: a pin
-    # clears its strategy, and this block drops with it.
+    evidence = analysis_json(analysis, None if fit_plan is None else fit_plan.trim)
     trim_decision: Mapping[str, Any] = {}
-    decision = None if fit_plan is None else fit_plan.trim
+    decision = evidence["trim_decision"]
     if state.trim_strategy is not None and decision is not None:
         trim_decision = {
-            "strategy": decision.strategy.value,
-            "committed_side": decision.committed_side,
-            "anchor_drift_db": round(float(decision.anchor_drift_db), 3),
+            key: decision[key] for key in ("strategy", "committed_side", "anchor_drift_db")
         }
 
     return MeasuredCrossoverCandidate(
         program_id=analysis.program_id,
-        analysis=analysis_json(analysis),
+        analysis=evidence,
         source_preset=source_preset,
         role_attenuations_db=role_attenuations_db,
         alignment=alignment,

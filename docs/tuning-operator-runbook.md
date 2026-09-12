@@ -152,7 +152,7 @@ or reading its numbers alone does not complete visual inspection.
 
 ```
 jasper-round-views frequency <before-take.json> <after-take.json> --image /tmp/before-after.png
-jasper-round-views windows <round-dir> --capture-id <exact-take-id> --rungs-ms 2 4 7 12 --image /tmp/windows.png
+jasper-round-views sweep <round-dir> --scope take --set <set-id> --take <exact-take-id> --rungs-ms 2 4 7 12 --image /tmp/windows.png
 ```
 
 Image rendering runs on the laptop with the optional `plots` install extra.
@@ -168,15 +168,16 @@ the evidence that could separate them. End with one useful next experiment,
 or explain why the measured result is enough. Do not prescribe EQ from a dip
 alone or treat a score as proof of the cause.
 
-`windows` reads one exact WAV/program binding and shows its impulse beside
-alternative windows. The existing gate-sweep calculation owns its grid,
+`sweep --scope take` reads one exact WAV/program binding and shows its impulse beside
+alternative windows. The round sweep calculation owns its grid,
 smoothing, taper, and common reference. It does not replace the saved verdict.
 Raw impulse diagnostics have no microphone correction; preprocessing states
 clock correction and timing coordinates. Longer windows admit more room.
 Window resolution alone does not prove a reflection-free result.
 
-For pose statistics, use `gate-sweep --candidate <fp> --graph <played-fp>`.
-Mixed candidate/graph records are refused, even at the same pose. Use exact
+For pose statistics, use `sweep <round-dir> --scope round --candidate <fp> --graph <played-fp>`.
+The round scope reads every banked summed capture; `--set` limits it to one
+manifest set. Mixed candidate/graph records are refused, even at the same pose. Use exact
 take window overlays when only one recording should answer the question.
 
 ## Optional complete-tune branch check
@@ -201,7 +202,8 @@ The existing `--regime both` remains the neutral per-driver/summed pair.
 
 The retained take carries all three complex curves, raw impulses, exact
 candidate/graph/WAV/program identities, and clock/gate facts. View it with
-`frequency <take.json> --image /tmp/branches.png`. Use `windows` on that exact
+`frequency <take.json> --image /tmp/branches.png`. Use
+`sweep <round-dir> --scope take --set <set-id> --take <take-id>` on that exact
 take with `--role woofer`, `tweeter`, or `summed` to inspect window sensitivity.
 Do not align each impulse to its own peak before comparing driver phase.
 
@@ -212,14 +214,14 @@ because a moving feature may come from the room or placement; then a candidate
 trial, because a forecast becomes evidence only when the changed sum is
 measured. Skip evidence already answered by a valid compatible take.
 
-Run `jasper-round-views forward-model <round-dir> --capture-id <id>` without a
+Run `jasper-round-views forward-model <round-dir> --set <set-id> --take <id>` without a
 candidate to check whether woofer plus tweeter reconstructs the same take's
 measured sum under one common window; `--window-ms` selects a disclosed
 alternative. This closure checks the model. Before a useful changed-candidate
 trial, save the forecast separately:
 
 ```
-jasper-round-views forward-model <round-dir> --capture-id <id> \
+jasper-round-views forward-model <round-dir> --set <set-id> --take <id> \
   --candidate-json <full-candidate> --out forecast.json
 ```
 
@@ -233,9 +235,9 @@ the target branches and sum. Compare its exact sum without overwriting the
 forecast:
 
 ```
-jasper-round-views forward-model <round-dir> --capture-id <id> \
+jasper-round-views forward-model <round-dir> --set <set-id> --take <id> \
   --candidate-json <full-candidate> --measured-round <trial-round> \
-  --measured-capture-id <trial-id> \
+  --measured-set <trial-set-id> --measured-take <trial-id> \
   --expected-prediction-fingerprint <forecast.summary.prediction_fingerprint> \
   --out comparison.json
 ```
@@ -276,32 +278,26 @@ higher-frequency deficits need separate speaker-informed evidence. In order:
    states each place from the head centre at ear height.
 3. `jasper-round bank <session-dir>`: records carry the measurement purpose,
    actual pose and gating result. Room analysis retains reflections.
-4. `jasper-round-views room-ceiling <round-dir>`: the applied candidate's
-   trusted floor, clamped; with no readable profile the default is used and
-   disclosed.
-5. `jasper-round-views room-median <round-dir>`: median, spread and
-   per-position deviation below the ceiling; `room_median.json` is the input
-   the room candidate reads. When several measurement sets are present, use
-   `--capture-id <take-id>` to select the set containing that capture. Repeat
-   takes count once per physical pose. The result names its source records,
-   missing identity fields and unusable takes; it uses only shared measured
-   frequency coverage. Use `--out <path>` to retain each candidate separately.
-6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
-   hold across the cloud, and at what fraction of positions. Use the same
-   `--capture-id` selection as the median.
-7. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
+4. `jasper-round-views room <round-dir> --set <set-id>` writes the set's
+   `room.json` artifact with a set suffix. It includes ceiling and provenance,
+   median, spread, position deviations, persistence with boost admission,
+   cut and boost limits, the incumbent room identity, and the boundary prior.
+   Missing geometry has a reason code. Repeats count once per pose, and curves
+   use only shared measured coverage. The manifest owns the set selection.
+5. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
    judges a room prescription (`kind: jts_room_prescription`) against
-   `room_median.json`; `compose --base <applied fingerprint>
+   the room document's median; `compose --base <applied fingerprint>
    --room-prescription <doc> --room-median <path>` banks the room candidate;
    stage the same `jasper-angle-capture plan --program room
    --candidates <fingerprint>` walk, then open and bank a new round. Each seat
    capture plays the room candidate through the accepted speaker tune.
-8. `jasper-round-views room-grade <round-dir> [--baseline <round-dir>]`: the
-   re-measured cloud's median against flat, band by band, with the incumbent
-   round's numbers beside it. Comparisons use shared frequency coverage and
+6. `jasper-round-views room-grade <round-dir> --set <candidate-set>
+   [--incumbent <set-id>]`: grade the room document against the incumbent set
+   from the same run, or an explicit set. An unknown or ambiguous incumbent
+   is disclosed. Comparisons use shared frequency coverage and
    disclose their level alignment and capture compatibility. A regressed band
    is a disclosure; restore follows the same adoption path.
-9. Save the chosen measured candidate through `jasper-round apply
+7. Save the chosen measured candidate through `jasper-round apply
    --expected-fingerprint <fingerprint>`; inspect the saved stack and its evidence links.
    Confirm that Speaker filters and alignment remain as accepted. Use
    [Evidence and recovery](#evidence-and-recovery) to resume or restore.
@@ -341,7 +337,7 @@ Room peaks in Room before fitting extension.
    round through the same placement/start flow as Room.
 2. Run `bass` and `bass-compare` below. Inspect frequency plots, noise,
    harmonics and repeat variation before deciding which bands need more data.
-   `bass-fit` suggests a bounded native shape from matched measured changes.
+   `bass-fit-table` suggests a bounded native shape from matched measured changes.
 3. Compose against the accepted Room candidate with `--bass-extension-json`
    and linked `--observation-ref` evidence. Trial useful changes with short
    focused sweeps and small input steps. Hold volume fixed while varying
@@ -357,29 +353,30 @@ Room peaks in Room before fitting extension.
 
 ### Bass analysis tools
 
-`jasper-round-views bass <round-dir> --calibration-root <copied-registry>`
-replays retained summed captures on the laptop. It writes `bass_view.json`
+`jasper-round-views bass <round-dir> --set <set-id> --calibration-root <copied-registry>`
+replays retained summed captures on the laptop. It writes `bass_view-<set-id>.json`
 with exact take references, frequency curves, H2/H3, and quiet-window noise
 estimates. Use only frequency bins qualified in both takes for comparisons.
 Missing harmonic coverage, absolute SPL context, or actual DSP drive stays
 unknown. These received measurements do not establish a driver output limit.
 
-Compare exact takes with `jasper-round-views bass-compare <before-bass-view>
-<after-bass-view> --before-take <id> --after-take <id> --change candidate`.
+Compare sets with `jasper-round-views bass-compare <before-round>
+<after-round> --before-set <id> --after-set <id> --change candidate`.
+The unique on-axis take is the default; `--before-take` and `--after-take`
+select another retained take within each set.
 Use `--change demand` for a fixed-volume stimulus change, or `volume` for
 fixed-stimulus volume tests. The result separates requested input change,
 measured output change, and combined compression, including intended DSP
 action. `diagnostic` permits changed setup with that difference disclosed;
 it does not identify an isolated room response. Missing context stays visible.
 
-`bass-fit <request.json> --descriptor-out <descriptor.json>` fits one measured
-native bass shape to an explicit target. The request names a banked `candidate`
-JSON path, a `target` with `freqs_hz` and relative `magnitude_db`, and `pairs`.
-Each pair has `before` and `after` objects with a bass `view` path and exact
-`take_id`. Paths are relative to the request. Before must play `room_tune`;
-after must play the named candidate at the same level, stimulus and pose.
-Use full-band baseline captures: the default reference band is 300–1000 Hz
-(`reference_band_hz` can state another measured band).
+`bass-fit-table <round-dir> --run <run-id> --candidate <candidate.json>
+--target <target.json> --tolerance-db <db>` fits each recorded operating level.
+The target contains `freqs_hz` and relative `magnitude_db`; repeat `--candidate`
+for each candidate in the run. Pairs come from the manifest at matching levels
+and poses. Use full-band baseline captures: `--reference-band-hz` defaults to
+300–1000 Hz. The table discloses the recorded Main, Aux1 and program identity,
+and the native loudness boost at each Aux1 setting.
 
 The result compares off, the fitted boost, and the measured boost. It uses
 one-third-octave smoothing and equal position weights; repeats report variation.
@@ -396,6 +393,8 @@ binary and shared file renderer, retaining the entire graph and both faders.
 On the Pi, run it through `scripts/pi-run-diagnostic.sh`; it opens no audio
 device. Copy the manifest and `output.f64le` to the laptop, then run
 `dsp-levels <dsp_replay.json> --raw <output.f64le> --window-s <start> <stop>`.
+It writes `dsp_levels.json` beside the render manifest and prints a compact
+JSON answer. `--out <path>` selects another artifact path; `--out -` is retired.
 Compare the same channels and stimulus windows across renders. These are
 digital band levels, not microphone SPL or isolated driver compression.
 
@@ -454,12 +453,12 @@ does not keep raising the level or discard the earlier evidence.
 | Level offset or response shape? | `frozen` band `level_deviation_db` and `max_ripple_db` |
 | Does it hold off axis? | `directivity`, `agreement`, `co-metrics` over summed poses |
 | Does delay/polarity explain the crossover feature? | `delay-landscape`, `jasper-null`, `delay-confirm`; inspect branch levels |
-| Does a feature survive gate/pose changes? | `classify-features`, `gate-sweep`, `close-reference` |
-| Is a low-end feature what the walls alone predict? | `boundary-prior`; advisory, from declared wall distances |
+| Does a feature survive gate/pose changes? | `classify-features`, `sweep --scope round`, `close-reference` |
+| Is a low-end feature what the walls alone predict? | `room --set`; boundary section from declared wall distances |
 | Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |
 | How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |
 | Which part of a prescription did cloud evidence constrain? | `cloud-binding` |
-| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade [--baseline]` |
+| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade --set [--incumbent]` |
 | Can the same-take branches reconstruct its sum, or what does a full candidate predict? | `forward-model`; select exact captures and treat prediction as unmeasured |
 | Show a curve or compare two takes? | `frequency <A> [<B>]` |
 
@@ -481,10 +480,10 @@ Capture emits sound; apply persists a tune.
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|windows\|spec-sweep\|gate-sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|bass\|bass-compare\|bass-fit\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
-| `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances, which only the jasper-round-views boundary-prior model reads. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
+| `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances for jasper-round-views room. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
 <!-- END GENERATED TOOL MENU -->
 
 Regenerate with `PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu.py`;

@@ -260,16 +260,18 @@ default disclosed when no applied floor is readable
 Above it the speaker stage has authority and the room layer does nothing.
 Below it speaker, room and bass are read together on the cube.
 
-Three views read a banked seat-cube round:
+`jasper-round-views room --set <set-id>` writes one `room.json` document:
 
-- `room-ceiling`: where the room layer stops, and which source set it.
-- `room-median`: per frequency the median across positions (the trend), the
+- `ceiling`: where the room layer stops, and which source set it.
+- `median`: per frequency the median across positions (the trend), the
   spread (population sigma, the confidence) and each position's deviation,
   20 Hz to the ceiling.
-- `room-persistence`: the peaks and dips each position shows against its own
+- `persistence`: the peaks and dips each position shows against its own
   local level, clustered across the cube with the fraction of positions that
   carry each at an agreeing depth. A feature most positions share is the
   room's; one position's is that seat's.
+- `limits`, `incumbent`, and `boundary`: correction bounds, the applied room
+  set, and the boundary prior when room geometry is declared.
 
 Deliberately not done here: nothing above the ceiling is graded or corrected
 from the cube; the median is a trend, never a per-position target; a dip is not

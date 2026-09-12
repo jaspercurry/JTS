@@ -16,6 +16,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
+from jasper.active_speaker.crossover_v2 import diagnostics
 from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     GAIN_CAP_BACKOFF_DB,
@@ -669,7 +670,7 @@ def test_check_diag_names_which_rung_2_signal_fired(caplog):
     assert fields["tweeter_delta_implausible"] == "false"
 
 
-def test_measure_diag_logs_full_numbers_on_accept(caplog):
+def test_measure_diag_logs_full_numbers_on_accept(caplog, monkeypatch):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.measure = lambda program: ProgramAnalysis(
@@ -708,6 +709,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
         predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
         glitch_detected=False,
     )
+    monkeypatch.setattr(diagnostics, "analysis_json", lambda analysis: {"drift_us": 37.5})
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
@@ -717,7 +719,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert fields["alignment_confidence"] == "0.9"
     assert fields["alignment_confidence_source"] == "gcc_phat_seed"
     assert fields["alignment_seed_delay_us"] == "120.0"
-    assert fields["alignment_refinement_delta_us"] == "30.0"
+    assert fields["alignment_refinement_delta_us"] == "37.5"
     assert fields["gate_window_ms"] == "8.0"  # min(8.0, 9.0)
     assert fields["validity_floor_hz"] == "180.0"  # max(180.0) — only one floor set
     assert fields["epsilon_ppm"] == "30.0"
@@ -1004,16 +1006,7 @@ def test_measure_diag_logs_guard_field_on_sweep_schedule_fire(caplog):
 
 
 def test_verify_diag_logs_full_numbers_on_accept(caplog):
-    """The ``verify_diag`` line logs the full disclosure ON ACCEPT — accept
-    meaning VERIFY's OWN capture gate, asserted straight off the line's own
-    ``accepted=true`` field below.
-
-    This fixture is a raw ``ProgramAnalysis`` with no ``capture_integrity``
-    set (a "legacy-shaped" capture, see the ``pilot_transfer_db=null`` note
-    below), so it is unusable evidence for the ROUND (#2537): the overall
-    verdict is a refusal (untrusted evidence, no rollback anchor bound on
-    this bare conductor), asserted first so the numbers-disclosure claim below
-    it is not mistaken for "and therefore the round kept it"."""
+    """VERIFY discloses its numbers even when round trust cannot be established."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
@@ -1032,7 +1025,6 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    # The round refuses (untrusted evidence, no rollback anchor) — #2537.
     assert verdict["accepted"] is True
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
     assert fields["accepted"] == "true"

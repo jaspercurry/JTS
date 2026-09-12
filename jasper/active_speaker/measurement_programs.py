@@ -60,14 +60,22 @@ def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
 
 
 def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
-    """Resolve purpose and validate the capture mode supported by the runner."""
 
+    """Resolve purpose and validate the capture mode supported by the runner."""
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
     if resolved != PURPOSE_SPEAKER and regime != REGIME_SUMMED:
         raise ValueError(f"{resolved} measurements require the summed regime")
     return resolved
+
+
+def bookkeeping_views(program: str) -> tuple[str, ...]:
+    return {
+        PURPOSE_SPEAKER: ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat"),
+        PURPOSE_ROOM: ("room", "room-grade"),
+        PURPOSE_BASS: ("bass", "bass-compare"),
+    }.get(program, ())
 
 
 def baseline_scope(purpose: str | None) -> str:
