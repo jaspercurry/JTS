@@ -177,7 +177,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
         "--kind", "baseline", "--specs", str(tmp / "absent-specs.json"),
     ],
     "jasper.cli.crossover_prescriber": lambda tmp, mp: [
-        "packet", str(tmp / "absent-round"),
+        "contract", "--round", str(tmp / "absent-round"),
     ],
     "jasper.cli.round": lambda tmp, mp: [
         "run", "--poses", "not-a-layout",

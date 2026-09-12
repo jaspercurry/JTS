@@ -22,10 +22,11 @@ from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
-    BASE_CANDIDATE,
+    BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED,
     WALK_CEILING_ABOVE_STOP, WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED,
-    AngleCaptureRequest, LateralWalkRefused, resolve_request, stop_specs,
+    AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
+    candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
@@ -33,14 +34,16 @@ from .crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
 )
 from .crossover_v2.capture_dispatch import assess
-from .crossover_v2.capture_plan import PlanCapture, pose_batch_screens, position_screen_keys
+from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
+from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
+from .measurement_programs import POSE_KIND_BEARING
 from .run_manifest import RunManifest
 
 logger = logging.getLogger(__name__)
@@ -129,6 +132,53 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
     two runs of one walk fingerprint alike, and an edited stop does not.
     """
     return json_fingerprint(request.to_dict())
+
+
+@dataclass(frozen=True)
+class PlanCapture:
+    stop: AngleStop
+    spec: MeasureSpec
+    repeat: int = 1
+
+    def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
+        return resolve_request(replace(request, stops=(self.stop,),
+            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
+
+
+def prepare_plan_captures(
+    request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
+) -> tuple[PlanCapture, ...]:
+    """Derive preparation and requested captures together (ADR-0297)."""
+    resolved = resolve_request(request)
+    baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
+    placed = stop_specs(request, candidate_scopes=candidate_scopes,
+                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids)
+    captures: list[PlanCapture] = []
+    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
+        captures.append(PlanCapture(
+            AngleStop(0, REGIME_PER_DRIVER),
+            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
+        ))
+    if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
+        base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
+        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
+            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
+            headline="", detail="", regime=REGIME_SUMMED),),
+                               candidates=(), repeats=1)
+        base_spec, = stop_specs(base_request, candidate_scopes={},
+                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids)
+        assert base_spec is not None
+        captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
+    for offset, spec in enumerate(placed):
+        stop = request.stops[offset // request.repeats]
+        if spec is None:
+            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
+                           vertical_deg=stop.elevation_deg,
+                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
+        captures.append(PlanCapture(stop, replace(spec, program_phase=(
+            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
+        )), offset % request.repeats + 1))
+    return tuple(captures)
 
 
 def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:

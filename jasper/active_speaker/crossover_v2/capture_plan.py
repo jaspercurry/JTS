@@ -55,83 +55,29 @@ from .refusal_copy import CrossoverV2Refused
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from ..angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop
     from .measure_spec import MeasureSpec
 
 
-@dataclass(frozen=True)
-class PlanCapture:
-    stop: AngleStop
-    spec: MeasureSpec
-    repeat: int = 1
-
-    def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
-        from ..angle_capture import BASE_CANDIDATE, resolve_request  # lazy: angle_capture imports pose primitives here
-        return resolve_request(replace(request, stops=(self.stop,),
-            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
-
-
-def prepare_plan_captures(
-    request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
-) -> tuple[PlanCapture, ...]:
-    """Derive preparation and requested captures together (ADR-0297)."""
-    from ..angle_capture import (  # lazy: angle_capture imports pose primitives here
-        BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, AngleStop,
-        candidate_identity, design_axis_spec, resolve_request, stop_specs,
-    )
-
-    resolved = resolve_request(request)
-    baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
-    placed = stop_specs(request, candidate_scopes=candidate_scopes,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids)
-    captures: list[PlanCapture] = []
-    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
-        captures.append(PlanCapture(
-            AngleStop(0, REGIME_PER_DRIVER),
-            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
-        ))
-    if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
-        base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
-        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
-            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
-            headline="", detail="", regime=REGIME_SUMMED),),
-                               candidates=(), repeats=1)
-        base_spec, = stop_specs(base_request, candidate_scopes={},
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids)
-        assert base_spec is not None
-        captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
-    for offset, spec in enumerate(placed):
-        stop = request.stops[offset // request.repeats]
-        if spec is None:
-            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
-                           vertical_deg=stop.elevation_deg,
-                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
-        captures.append(PlanCapture(stop, replace(spec, program_phase=(
-            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
-        )), offset % request.repeats + 1))
-    return tuple(captures)
-
-
 def build_inline_session_spec(
-    captures: Sequence[PlanCapture], *, request: AngleCaptureRequest,
+    captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
     acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
 ) -> Any:
-    prompts = [c.resolved(request).prompt for c in captures]
+    prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
-                                 [c.stop.candidate_id for c in captures])
+                                 [candidate_id for _, _, candidate_id in captures])
     entries = []
-    for index, (capture, prompt) in enumerate(zip(captures, prompts), 1):
-        phase = capture.spec.program_phase
+    for index, (spec, prompt, _) in enumerate(captures, 1):
+        phase = spec.program_phase
         if phase == PHASE_CHECK:
             program = build_check_program(roles_bands, courtesy_prelude=True)
         elif phase == PHASE_MEASURE:
             program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
         else:
             program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
-                                           sweep_band_hz=capture.spec.sweep_band_hz or None,
-                                           sweep_s=capture.spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
-        if capture.spec.graph_scope == "candidate_branches":
+                                           sweep_band_hz=spec.sweep_band_hz or None,
+                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
+        if spec.graph_scope == "candidate_branches":
             program = build_branch_program(program, {r.role: r.channel for r in roles_bands})
         entries.append(CapturePlanEntry(
             index=index - 1, kind_label=phase,
@@ -141,7 +87,7 @@ def build_inline_session_spec(
                     POSITION_HAND_RELEASED_KEY: str(hand_released).lower(),
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
-    attempts = len(entries) + sum(1 for _ in groupby(c.stop.place for c in captures)) * retries_per_pose
+    attempts = len(entries) + sum(1 for _ in groupby(prompt.place for prompt in prompts)) * retries_per_pose
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
     plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,

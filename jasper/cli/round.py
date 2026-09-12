@@ -15,7 +15,11 @@ from jasper.active_speaker.wizard_client import (
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, read_identity, speaker_url
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed
+
+from ._refusal import (
+    EXIT_OK as EXIT_OK,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
+)
 
 PROG = "jasper-round"
 REPUBLISH_PATH = "/sound/speaker/crossover/v2/republish"

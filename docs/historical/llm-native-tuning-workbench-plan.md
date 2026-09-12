@@ -217,8 +217,7 @@ existing owner.
 > ([`crossover_v2/evidence_packet.py`](../../jasper/active_speaker/crossover_v2/evidence_packet.py)),
 > `propose` reads a correction back through a strict gate, `stage`
 > (2026-08-19) leaves an accepted correction where the next crossover round
-> takes it
-> ([`crossover_v2/prescription_spool.py`](../../jasper/active_speaker/crossover_v2/prescription_spool.py)),
+> takes it (the spool has since been retired),
 > and `status` (2026-08-21) reports declared / banked / staged / applied state
 > through those same builders without writing anything.
 > It follows this section's CLI conventions and the laptop-agent-as-SSH-client

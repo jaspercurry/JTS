@@ -49,7 +49,7 @@ from .journey import (
 from .record_index import Measurement, bundle_measurements
 from .round_inputs import (
     STATE_SESSION_UNKNOWN,
-    state_matches_capture, contract_sources,
+    state_matches_capture, contract_sources, RoundInputs,
     CrossoverEvidencePacketError, NO_ROUND_ARTIFACTS_REASON,
     recent_round_sessions, round_artifact_dir,
 )
@@ -57,7 +57,6 @@ from .round_inputs import (
 # resolving it through the module on every call is what keeps that ownership
 # real rather than a copy taken once at import.
 from . import position_cycle
-from . import handoff_doors as doors
 from .prescription_contract import (
     CONTRACT_COMMAND, contract_digests, prescription_contracts, snr_shape,
 )
@@ -2218,14 +2217,13 @@ def _not_evaluated(
         })
     if no_crossover:
         entries.append({"field": "crossover_region.band_hz", "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY})
-        entries.append({"field": "request_time_prescriptions.alignment", "reason": doors.ALIGNMENT_NO_CROSSOVER_REGION})
-        entries.append({"field": "request_time_prescriptions.topology", "reason": doors.TOPOLOGY_NO_CROSSOVER_REGION})
     return entries
 
 
 def build_crossover_evidence_packet(
     session_dir: Path,
     *,
+    round_context: RoundInputs | None = None,
     state_path: Path | None = None,
     driver_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
@@ -2495,12 +2493,9 @@ def build_crossover_evidence_packet(
             no_crossover=no_crossover,
         ),
         "contracts": contract_digests(prescription_contracts(**{
-            **contract_sources(session_dir), "draft": _mapping(draft_raw),
+            **contract_sources(round_context or session_dir), "draft": _mapping(draft_raw),
             "receipt": receipt, "applied_profile": applied_profile or {},
         })),
-        # …and the doors this one does NOT open: the other two arrive as
-        # session-open request-body keys, not something ``stage`` can act on.
-        "request_time_prescriptions": doors.request_time_prescriptions(no_crossover, _absence),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet
