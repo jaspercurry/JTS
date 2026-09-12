@@ -687,12 +687,41 @@ def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
 
 
 def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
-    return _conductor(
+    return _stage2_conductor(
         fakes,
         index_phase_map={1: PHASE_VERIFY},
+        **kwargs,
+    )
+
+
+def _stage2_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
+    return _conductor(
+        fakes,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         applied=True,
         **kwargs,
+    )
+
+
+def _stage2_after_measure(fakes: FakeSeams) -> CrossoverV2Session:
+    stage1 = _conductor(fakes)
+    _run_phase(stage1, 1, 1)
+    _run_phase(stage1, 2, 2)
+    snapshot = stage1.snapshot()
+    return _stage2_conductor(
+        fakes,
+        index_phase_map={3: PHASE_VERIFY},
+        gain_plan_db=snapshot.gain_plan_db,
+        measure_gain_ceiling_db=snapshot.measure_gain_ceiling_db,
+        measure_predicted_sum=stage1.measure_predicted_sum,
+        measure_predicted_spec_report=stage1.measure_predicted_spec_report,
+        measure_commanded_delta=stage1.measure_commanded_delta,
+        measure_declared_transfer=stage1.measure_declared_transfer,
+        measure_proposal_fingerprint=stage1.measure_proposal_fingerprint,
+        measure_entry_baseline=stage1.measure_entry_baseline,
+        measure_alignment_objective=stage1.measure_alignment_objective,
+        measure_gate_window_ms=stage1.measure_gate_window_ms,
+        attempt_history=snapshot.attempt_history,
     )
 
 
@@ -787,11 +816,7 @@ def _spliced_verify(program, **kwargs):
 
 
 def _verify_to_apply(fakes):
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-    return c
+    return _stage2_after_measure(fakes)
 
 
 def _rearm_conductor(fakes, **kwargs):
@@ -1678,33 +1703,6 @@ def _gate_residuals(conductor) -> tuple[float, float]:
         spec_convergence_residual(before).rms_db,
         spec_convergence_residual(after).rms_db,
     )
-
-
-def _probed_conductor(fakes: FakeSeams, *, entry_error_db=0.0):
-    """A conductor walked to the point where VERIFY is the next capture.
-
-    Uses the ELIGIBLE measure fixture because a probe needs something to have
-    been commanded: an ineligible session emits no linearization filters, so
-    relative to the raw crossover it commands nothing this probe can grade
-    (pinned by ``test_the_commanded_delta_is_none_for_a_trims_only_candidate``).
-
-    **The pre-apply anchor is STATED, not inherited** — ``entry_error_db``, the
-    model-vs-measurement disagreement this session went in with, defaulting to
-    the exactly-anchored 0.0. #2533 made the residual a change measured against
-    that capture and three tests started saying so by hand; series-2 D1 made the
-    two directional safety findings a change against it too, per bin, so every
-    probe fixture needs it. Without it the walk's entry capture is an unrelated
-    synthetic response and its anchor is a −4.5 dB phantom that no test intends
-    and none states — which is a fixture measuring itself. Pass a value (or a
-    callable of frequency) to state a different one deliberately.
-    """
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-    _anchor_entry_baseline(c, entry_error_db)
-    return c
 
 
 def _tracking_curve(c, error_db):

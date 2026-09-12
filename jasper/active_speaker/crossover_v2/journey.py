@@ -221,9 +221,9 @@ def pending_capture_phase(phases: Iterable[str], accepted: AbstractSet[str], *, 
 class CommissionJourney:
     """One round's position in its :class:`JourneyPlan`.
 
-    Two transitions only — a capture is accepted (:meth:`accept`) or the apply
-    is observed (:meth:`mark_applied`) — and everything else is derived from
-    those plus the frozen plan.
+    Applied state is supplied when the host constructs a stage-2 session. A
+    capture acceptance or observed restore can then move the journey, and
+    everything else is derived from those values plus the frozen plan.
 
     There is no illegal-transition guard, and that is a decision: the capture
     drives indexes in order and re-accepting a settled position is how a
@@ -266,10 +266,6 @@ class CommissionJourney:
         self._group_accepted[phase].add(index)
         if self._group_accepted[phase] >= set(self.plan.group_indexes[phase]):
             self._accepted.add(phase)
-
-    def mark_applied(self) -> None:
-        """The apply has been observed — arms the soft-held VERIFY (§5.2)."""
-        self._applied = True
 
     def mark_restored(self) -> None:
         """The applied graph has been put back — disarms the VERIFY hold (#2616).

@@ -58,6 +58,7 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _roles,
     _run_phase,
+    _stage2_after_measure,
     _verify_analysis,
     _walk,
 )
@@ -204,10 +205,7 @@ def test_non_special_reasons_keep_their_diagnosis_on_the_final_extra(
 def test_verify_inconclusive_keeps_its_measured_reflection_at_exhaustion():
     """#2095 evidence and #2097 terminal action stay on the same capture."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
     fakes.verify = lambda program: _verify_analysis(
         program,
         max_db=0.5,

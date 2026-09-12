@@ -84,12 +84,12 @@ from tests._log_events import event_fields
 from tests.crossover_v2_fixtures import (
     _DIAG_LOGGER,
     FakeSeams,
-    _conductor,
     _gate_block,
     _loc,
     _rearm_conductor,
     _run_phase,
     _spliced_verify,
+    _stage2_after_measure,
     _verify_analysis,
     _verify_to_apply,
 )
@@ -101,10 +101,7 @@ def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
     to None on an early-return verdict (gate comparability) so no stale numbers
     leak into a later attempt's disclosure."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
     _run_phase(c, 3, 3)
@@ -301,10 +298,7 @@ def test_verify_diag_discloses_integrity_on_pass_and_on_refusal(caplog):
 
 def test_the_verify_outcome_always_carries_the_code_that_produced_it():
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     cases = [
         (lambda program: _verify_analysis(program, max_db=2.4),
@@ -325,10 +319,7 @@ def test_the_verify_outcome_always_carries_the_code_that_produced_it():
 def test_an_inconclusive_capture_reads_its_gate_record_once(monkeypatch):
     """The gate record is derived once per consume, then read, never rebuilt."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     calls = []
     real = flow._declared_first_bounce_s
@@ -351,10 +342,7 @@ def test_a_level_shift_records_its_own_code_not_the_gates():
     same household sentence, which blamed a room reflection — on a verdict
     where no reflection and no window are involved at all."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0, max_db=5.0,
@@ -381,10 +369,7 @@ def test_the_verify_gate_record_is_gate_disclosures_own_sentence():
     from jasper.audio_measurement import gate_disclosure
 
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(
         program, max_db=0.5, gate_ms=5.0, floor_source=gating.FLOOR_SEARCH_BOUND,
@@ -592,10 +577,7 @@ def test_the_verify_gate_is_recorded_whatever_the_outcome(
     is exactly when nobody would otherwise ask how much of the response the
     comparison could see."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(
         program, floor_source=floor_source, **verify_kwargs,
@@ -627,10 +609,7 @@ def test_an_early_return_retry_cannot_repair_the_gate_onto_a_stale_verdict():
     ceiling-capped early return) is the same bug in the other direction.
     """
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     # Attempt 1 concludes: gate-comparability inconclusive, window capped.
     fakes.verify = lambda program: _verify_analysis(
@@ -659,10 +638,7 @@ def test_an_ungated_capture_records_no_gate_at_all():
     """Absent stays absent (the #1987 rule): a response carrying no gating
     block yields no record, so no screen can print a gate that never ran."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     def ungated(program):
         analysis = _verify_analysis(program)
@@ -690,10 +666,7 @@ def test_an_ungated_capture_records_no_gate_at_all():
 
 def test_verify_payload_carries_tracking_only_no_flatness_claim():
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = _verify_analysis
     verdict = _run_phase(c, 3, 3)
@@ -714,10 +687,7 @@ def test_conductor_exposes_no_per_capture_flatness_evidence():
     (``group_cloud_result``), never from a per-VERIFY-attempt stash that a
     verify-only re-arm would silently re-derive from one position."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = _verify_analysis
     assert _run_phase(c, 3, 3)["accepted"] is True
@@ -777,10 +747,7 @@ def test_the_g3_pilot_transfer_gate_fires_only_above_its_ceiling(
     transfer stepped away from the reference cannot honestly be graded, however
     clean its tracking looks."""
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     index = 3
     if reference is not None:
@@ -803,10 +770,7 @@ def test_the_g3_pilot_transfer_gate_fires_only_above_its_ceiling(
 
 def test_verify_pilot_level_shift_baseline_does_not_rebaseline():
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0, max_db=5.0,
