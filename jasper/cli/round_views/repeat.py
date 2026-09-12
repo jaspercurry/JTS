@@ -20,7 +20,7 @@ from jasper.json_fields import finite_float
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as _REPEAT_FLOOR_DEFAULT_PATH,
     SHIPPED_POOL_METRIC,
-    derive_repeat_floor, load_repeat_floor, pairwise_abs_deltas, repeat_pair,
+    derive_repeat_floor, load_repeat_floor, repeat_pair,
     stopping_thresholds,
     write_repeat_floor,
 )
@@ -73,7 +73,7 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
         reference = load_repeat_floor(state_path=inputs.repeat_floor_path) if inputs.repeat_floor_path else None
         payload = {"set_id": selected.set_id, "take_ids": [take["take_id"] for take in takes],
                    "roles": {role: {metric: {"values": values, "median": percentile(values, 50),
-                             "spread": percentile(pairwise_abs_deltas(values), 95), "n": len(values)}
+                             "spread": floor["metrics"][f"{role}_{metric}"][f"pairwise_abs_delta_p95_{units[f'{role}_{metric}']}"], "n": len(values)}
                              for metric, values in metrics.items()} for role, metrics in roles.items()},
                    "floor": floor, "pair_take_ids": [take["take_id"] for take in takes[:2]],
                    "pair_floor": str(inputs.repeat_floor_path) if reference else None, **repeat_pair(roles, reference)}
