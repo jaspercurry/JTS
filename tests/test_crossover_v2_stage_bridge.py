@@ -430,7 +430,6 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
         return run or _run
 
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda purpose: "baseline-test")
     monkeypatch.setattr(v2host, "_mint_wired_session", _fake_mint)
     monkeypatch.setattr(v2host, "_build_wired_run", _fake_runner)
 
