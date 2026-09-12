@@ -97,7 +97,7 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
     entry.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    entry.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    entry.add_argument("--out", default=None, help="write the result here")
     entry.set_defaults(func=_cmd_entry)
 
     frozen = sub.add_parser("frozen", help="grade a round shipped and frozen to a baseline's reference")
@@ -109,5 +109,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "target_dir", metavar="<target-round-dir>",
         help=f"{_ROUND_DIR_HELP} to grade",
     )
-    frozen.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    frozen.add_argument("--out", default=None, help="write the result here")
     frozen.set_defaults(func=_cmd_frozen)

@@ -15,8 +15,7 @@ import pytest
 from jasper.active_speaker.crossover_v2 import room_views
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
-from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
-from jasper.active_speaker.crossover_v2.room_selection import REFUSE_ROOM_SELECTION
+from tests.run_manifest_fixture import write_manifest
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import (
@@ -29,7 +28,6 @@ from jasper.cli import round_views
 from jasper.cli.round_views import room
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round
 
-#: Away from every feature below, where the ladder alone sets the numbers.
 _QUIET_HZ = 200.0
 
 
@@ -110,79 +108,6 @@ def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, caps
     assert (by_kind["dip"]["n_present"], by_kind["dip"]["presence_fraction"]) == (7, 1.0)
     assert by_kind["peak"]["n_present"] == 3
     assert by_kind["peak"]["presence_fraction"] == pytest.approx(3 / 7)
-
-
-@pytest.mark.parametrize("changed", [
-    {"candidate_id": "second"},
-    {"graph_fingerprint": "other-applied"},
-    {"provenance": {"graph": {"fingerprint": "other-played"}}},
-    {"graph_scope": "room"},
-    {"side": "right"},
-    {"capture_setup": {"calibration": {"calibration_id": "other-mic"}}},
-    {"capture_calibration": {"applied": True, "calibration_id": "same-mic", "curve_fingerprint": "changed-curve"}},
-    {"capture_device": {"card": "other-card"}},
-    {"provenance": {"stimulus": {"wav_sha256": "other-program"}}},
-    {"level_db": -35.0},
-    {"stimulus_dbfs": -20.0},
-    {"program": {"program_id": "changed-gains"}}, {"loudness_volume_db": -23.0}, {"program_id": "stamped"}, {"program_id": None},
-])
-def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, capsys, changed):
-    round_dir = bank_seat_round(tmp_path)
-    root = round_inputs(round_dir).session_dir
-    captures = []
-    for row, original in list(measurement_documents(root)):
-        if original.get("pose_kind") != "seat":
-            continue
-        path = take_artifact_path(root, row.path)
-        original.update(candidate_id="first", graph_scope="candidate", program={"program_id": "program"}, loudness_volume_db=-30.0)
-        original["curves"][0]["band_hz"] = [50.0, 200.0]
-        path.write_text(json.dumps(original))
-        second = json.loads(json.dumps(original))
-        second.update(changed)
-        second["pose_id"] += "_second"
-        second["take_id"] += "_second"
-        second["curves"][0]["magnitude_db"] = [-20.0] * len(SEAT_GRID_HZ)
-        path.with_stem(path.stem + "_second").write_text(json.dumps(second))
-        captures.append((original, second))
-    original, second = captures[0]
-    repeat = dict(original, pose_id="another_stop", take_id="repeated_pose", attempt=10)
-    path.with_stem("repeated_pose").write_text(json.dumps(repeat))
-    invalid = dict(repeat, take_id="bad_repeat", attempt=11, curves=[])
-    path.with_stem("bad_repeat").write_text(json.dumps(invalid))
-
-    assert round_views.main(["room-median", str(round_dir)]) == round_views.EXIT_REFUSED
-    refused = json.loads(capsys.readouterr().out)
-    assert refused["reason"] == REFUSE_ROOM_SELECTION
-    assert not (round_dir / "room_median.json").exists()
-
-    for record, level in [(original, -30.0), (second, -20.0)]:
-        out = tmp_path / (record["take_id"] + ".json")
-        answer = _run(capsys, [
-            "room-median", str(round_dir), "--capture-id", record["take_id"], "--out", str(out),
-        ])
-        doc = json.loads(out.read_text())
-        assert answer["n_positions"] == doc["n_positions"] == 7
-        assert len({p["pose_key"] for p in doc["positions"]}) == 7
-        assert doc["coverage_hz"] == [50.0, 200.0]
-        assert min(doc["freqs_hz"]) >= 50.0 and max(doc["freqs_hz"]) <= 200.0
-        assert np.allclose(doc["median_db"], level)
-        median = read_room_median(doc)
-        assert median.band_hz == (50.0, 200.0)
-        assert median.evidence == doc["evidence"]
-        expected_program = changed["program_id"] if record is second and "program_id" in changed else record["program"]["program_id"]
-        assert [median.evidence["basis"][key] for key in ("program_id", "loudness_volume_db")] == [expected_program, record["loudness_volume_db"]]
-        persistence = _run(capsys, [
-            "room-persistence", str(round_dir), "--capture-id", record["take_id"],
-        ])
-        assert persistence["n_positions"] == 7
-        assert persistence["evidence"] == doc["evidence"]
-        grade = _run(capsys, ["room-grade", str(round_dir), "--room-median", str(out)])
-        assert grade["evidence"] == doc["evidence"]
-        assert grade["graph_scopes"] == [record["graph_scope"]]
-        if record is original:
-            assert "repeated_pose" in doc["evidence"]["take_ids"]
-            assert original["take_id"] in doc["evidence"]["superseded_take_ids"]
-            assert [r["take_id"] for r in doc["evidence"]["omitted_takes"]] == ["bad_repeat"]
 
 
 def test_the_answers_summarize_without_the_curves(tmp_path: Path, capsys) -> None:
@@ -285,9 +210,10 @@ def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_
                       mark_distance_m=1.0, measurement_purpose="room" if index < 3 else "speaker")
         record.pop("seat_offset_m")
         take_artifact_path(root, row.path).write_text(json.dumps(record))
+    write_manifest(round_dir, program="room")
     _run(capsys, ["room-median", str(round_dir)])
     result = json.loads((round_dir / "room_median.json").read_text())
     assert result["n_positions"] == 3
     assert result["window"] == "ungated"
-    assert result["evidence"]["basis"]["pose_kind"] == "bearing"
+    assert "pose_kind" not in result["evidence"]["basis"]
     assert len(set(result["evidence"]["pose_keys"])) == 3

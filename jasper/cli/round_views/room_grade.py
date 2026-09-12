@@ -48,10 +48,10 @@ from ._common import (
     _load_round,
     _view_out,
     _write,
-    answer,
+    add_set_argument, answer,
     default_out,
     refused_by_name,
-    resolved_out,
+    resolved_out, resolve_set, round_inputs,
 )
 
 
@@ -81,14 +81,12 @@ def _band_line(band: Mapping[str, Any]) -> str:
 
 def _cmd_room_grade(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
-    candidate_path = Path(args.room_median) if args.room_median else default_out(
-        banked.inputs, banked.round_dir, ROOM_MEDIAN_ARTIFACT
-    )
-    incumbent_path = (
-        Path(args.baseline_room_median) if args.baseline_room_median
-        else resolved_out(Path(args.baseline), ROOM_MEDIAN_ARTIFACT) if args.baseline
-        else None
-    )
+    resolve_set(banked.inputs, args.set)
+    candidate_path = default_out(banked.inputs, banked.round_dir, ROOM_MEDIAN_ARTIFACT, args.set)
+    incumbent_path = None
+    if args.baseline:
+        resolve_set(round_inputs(Path(args.baseline)), args.baseline_set)
+        incumbent_path = resolved_out(Path(args.baseline), ROOM_MEDIAN_ARTIFACT, args.baseline_set)
     try:
         median = _median(candidate_path)
         incumbent = None if incumbent_path is None else _median(incumbent_path)
@@ -155,14 +153,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help=f"{_ROUND_DIR_HELP} whose median is the incumbent; its bands are "
              "disclosed beside this round's, never acted on",
     )
-    room_grade.add_argument(
-        "--room-median", default=None, metavar="PATH",
-        help=f"read this round's median here instead of beside the round "
-             f"({ROOM_MEDIAN_ARTIFACT})",
-    )
-    room_grade.add_argument(
-        "--baseline-room-median", default=None, metavar="PATH",
-        help="read the incumbent median here instead of beside --baseline",
-    )
-    room_grade.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    add_set_argument(room_grade)
+    add_set_argument(room_grade, name="--baseline-set")
+    room_grade.add_argument("--out", default=None, help="write the result here")
     room_grade.set_defaults(func=_cmd_room_grade)

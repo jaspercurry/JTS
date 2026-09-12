@@ -47,9 +47,9 @@ from ._common import (
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
-    answer,
+    add_set_argument, answer,
     default_out,
-    refused_by_name,
+    refused_by_name, resolve_set,
 )
 
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
@@ -66,11 +66,12 @@ def _inputs(args: argparse.Namespace) -> RoundInputs:
 
 
 def _out(args: argparse.Namespace, inputs: RoundInputs) -> Path:
-    return default_out(inputs, Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact)
+    return default_out(inputs, Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact, args.set)
 
 
 def _cmd_room_ceiling(args: argparse.Namespace) -> int:
     inputs = _inputs(args)
+    resolve_set(inputs, args.set)
     ceiling = room_ceiling(inputs.applied_profile_path)
     doc = ceiling.to_dict()
     written = _write(doc, args.out, _out(args, inputs))
@@ -96,8 +97,10 @@ def _seat_view(
 ) -> int:
     """One view over the round's seat takes below its ceiling, written and answered."""
     inputs = _inputs(args)
+    selected = resolve_set(inputs, args.set)
     try:
-        selection = select_seat_takes(inputs.session_dir, capture_id=args.capture_id)
+        selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
+                                      basis=selected.capture_basis)
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     takes = selection.takes
@@ -194,7 +197,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "--applied-profile", default=None, metavar="PATH",
             help="read the ceiling from this applied profile instead of the round's own",
         )
-        if name != "room-ceiling":
-            parser.add_argument("--capture-id", help="select the compatible seat set containing this take")
-        parser.add_argument("--out", default=None, help="write the result here (- for stdout)")
+        add_set_argument(parser)
+        parser.add_argument("--out", default=None, help="write the result here")
         parser.set_defaults(func=func)

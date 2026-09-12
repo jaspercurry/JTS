@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import wave
 
+from jasper.cli._report import output_path
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer
@@ -48,7 +49,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     levels.add_argument("manifest", type=Path)
     levels.add_argument("--raw", type=Path, required=True, help="copied output.f64le")
     levels.add_argument("--window-s", type=float, nargs=2, required=True, metavar=("START", "STOP"))
-    levels.add_argument("--out")
+    levels.add_argument("--out", type=output_path, help="artifact path; stdout (-) is retired (D14)")
     levels.set_defaults(func=_cmd_levels)
 
 

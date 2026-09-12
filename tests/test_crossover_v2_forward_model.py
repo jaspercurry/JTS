@@ -53,10 +53,8 @@ from jasper.cli.round_views import (
     main as cli_main,
 )
 
-from tests.crossover_v2_banked_round import (
-    bank_measure_round,
-)
 from tests.crossover_v2_fixtures import bank_capture_round
+from tests.run_manifest_fixture import write_manifest, manifest_set
 from tests.test_audio_measurement_program_analysis import (
     SR,
     _band_impulse,
@@ -198,97 +196,22 @@ def diagnostic_round(tmp_path: Path) -> Path:
             },
         })
         path.write_text(json.dumps(document))
+    write_manifest(root, groups=[manifest_set(
+        [(str(path.relative_to(root / "bundle/b0")), json.loads(path.read_text()))], set_id=name)
+        for name in physical for path in [root / "bundle/b0/summed" / f"summed_{name}.json"]])
     return root
 
 
-def test_inventory_discovers_one_exact_diagnostic_and_runs_its_command(
-    diagnostic_round: Path, capsys,
-) -> None:
-    summed = diagnostic_round / "bundle" / "b0" / "summed"
-    for capture_id in ("new-level", "new-shape"):
-        path = summed / f"summed_{capture_id}.json"
-        document = json.loads(path.read_text())
-        document.pop("branch_diagnostic")
-        path.write_text(json.dumps(document))
-
-    assert cli_main(["inventory", str(diagnostic_round), "--out", "-"]) == 0
-    rows = {
-        row["artifact"]: row
-        for row in json.loads(capsys.readouterr().out)["artifacts"]
-    }
-    forward = rows["forward_model.json"]
-    command = shlex.split(forward["next_command"])
-    assert command == [
-        "jasper-round-views", "forward-model", str(diagnostic_round),
-        "--capture-id", "old",
-    ]
-    assert forward["required_inputs"] == []
-    assert cli_main(command[1:]) == 0
-    assert (diagnostic_round / "forward_model.json").is_file()
-
-
-def test_inventory_requires_a_capture_id_when_diagnostic_choice_is_ambiguous(
-    diagnostic_round: Path, capsys,
-) -> None:
-    assert cli_main(["inventory", str(diagnostic_round), "--out", "-"]) == 0
-    rows = {
-        row["artifact"]: row
-        for row in json.loads(capsys.readouterr().out)["artifacts"]
-    }
-    forward = rows["forward_model.json"]
-
-    assert shlex.split(forward["next_command"])[-2:] == [
-        "--capture-id", "<capture-id>",
-    ]
-    assert forward["producer_needs_more_than_this_round"] is True
-    assert forward["required_inputs"] == ["<capture-id>"]
-
-
-@pytest.mark.parametrize("complete_supersedes", [False, True])
-def test_inventory_uses_only_the_latest_real_solo_basis(
-    tmp_path: Path, capsys, complete_supersedes: bool,
-) -> None:
-    round_dir = bank_measure_round(tmp_path)
-    if complete_supersedes:
-        bundle = next((round_dir / "bundle").iterdir())
-        artifacts = bundle / EVIDENCE_ROOT / "artifacts"
-        source = next(
-            path for path in artifacts.glob("**/*.json")
-            if json.loads(path.read_text()).get("phase") == PHASE_MEASURE
-        )
-        document = json.loads(source.read_text())
-        document["phase_composition"] = "complete_tune_measured"
-        (source.parent / "zzz-complete-tune.json").write_text(json.dumps(document))
-
-    assert cli_main(["inventory", str(round_dir), "--out", "-"]) == 0
-    rows = {
-        row["artifact"]: row
-        for row in json.loads(capsys.readouterr().out)["artifacts"]
-    }
-    forward = rows["forward_model.json"]
-    assert forward["next_command"] is None
-    assert forward["required_inputs"] == ["<capture-id>"]
-    assert forward["repair_reason"] == "forward_model_basis_missing"
-
-
-def test_inventory_survives_unreadable_diagnostic_metadata(
-    diagnostic_round: Path, capsys,
-) -> None:
-    broken = (
-        diagnostic_round / "bundle" / "b0" / "summed" / "summed_old.json"
-    )
+def test_inventory_resolves_sets_without_reading_diagnostic_metadata(diagnostic_round, capsys):
+    broken = diagnostic_round / "bundle/b0/summed/summed_old.json"
     broken.write_text("{")
-
-    assert cli_main(["inventory", str(diagnostic_round), "--out", "-"]) == 0
-    rows = {
-        row["artifact"]: row
-        for row in json.loads(capsys.readouterr().out)["artifacts"]
-    }
-    forward = rows["forward_model.json"]
-
-    assert forward["next_command"] is None
-    assert forward["required_inputs"] == ["<capture-id>"]
-    assert forward["repair_reason"] == "round_capture_unreadable"
+    assert cli_main(["inventory", str(diagnostic_round)]) == 0
+    payload = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
+    rows = [row for row in payload["artifacts"] if row["view"] == "forward-model"]
+    assert {row["set_id"] for row in rows} == {"old", "new-level", "new-shape"}
+    for row in rows:
+        assert row["required_inputs"] == []
+        assert shlex.split(row["next_command"])[-2:] == ["--set", row["set_id"]]
 
 
 def _bind_candidate_take(
@@ -380,7 +303,7 @@ def test_a_diagnostic_reads_each_record_and_hashes_each_audio_file_once(
         document = json.loads(record.read_text())
         document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
                         wav_sha256=round_captures.sha256_file(wav))
-        record = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/banked/positions/old.json"
+        record = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/old.json"
         record.parent.mkdir(parents=True)
         record.write_text(json.dumps(document))
     reads, hashes = Counter(), Counter()
@@ -562,8 +485,9 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
     assert np.percentile(magnitude_error_db[crossover], 95) < 0.2
 
 
+@pytest.mark.parametrize("override", [False, True])
 def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exists(
-    diagnostic_round: Path, tmp_path: Path, tuning_profile,
+    diagnostic_round: Path, tmp_path: Path, tuning_profile, override: bool,
 ) -> None:
     source = _trial_candidate(tuning_profile, trim=-3.0, gain=-2.0)
     target = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
@@ -573,16 +497,33 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     target_path.write_text(json.dumps(target.to_dict()))
     _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
     _bind_candidate_take(diagnostic_round, "new-shape", target, tuning_profile)
+    bundle = diagnostic_round / "bundle/b0"
+    groups = []
+    for name in ("old", "new-shape"):
+        path = bundle / "summed" / f"summed_{name}.json"
+        document = json.loads(path.read_text())
+        extra = dict(document, take_id=f"{name}-off", position_id=f"{name}-off", position_deg=15.0,
+                     wav_path=f"summed/summed_{name}-off.wav")
+        extra_path = path.with_stem(f"summed_{name}-off")
+        extra_path.write_text(json.dumps(extra))
+        shutil.copyfile(path.with_suffix(".wav"), extra_path.with_suffix(".wav"))
+        groups.append(manifest_set([(str(path.relative_to(bundle)), document),
+                                    (str(extra_path.relative_to(bundle)), extra)], set_id=name))
+    write_manifest(diagnostic_round, groups=groups)
+    source_id, measured_id = ("old-off", "new-shape-off") if override else ("old", "new-shape")
     command = [
         "forward-model", str(diagnostic_round),
-        "--capture-id", "old",
+        "--set", "old",
         "--candidate-json", str(target_path),
         "--basis-candidate-json", str(source_path),
         "--window-ms", "7",
     ]
 
+    if override:
+        command += ["--take", source_id]
     assert cli_main(command) == 0
-    forecast = json.loads((diagnostic_round / "forward_model.json").read_text())
+    forecast = json.loads((diagnostic_round / "forward_model-old.json").read_text())
+    assert forecast["summary"]["basis"]["capture_id"] == source_id
     assert forecast["summary"]["candidate_id"] == target.fingerprint
     assert forecast["summary"]["comparison_kind"] == "unmeasured_forecast"
     assert forecast["summary"]["acceptance"]["status"] == ACCEPTANCE_NOT_RUN
@@ -595,21 +536,22 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     relocated = tmp_path / "relocated"
     shutil.copytree(diagnostic_round, relocated)
     bundle = relocated / "bundle" / "b0"
-    source_record = bundle / "summed" / "summed_old.json"
+    source_record = bundle / "summed" / f"summed_{source_id}.json"
     document = json.loads(source_record.read_text())
-    document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
+    document.update(kind=POSITION_EVIDENCE_KIND, wav_path=f"summed/summed_{source_id}.wav",
                     wav_sha256=round_captures.sha256_file(source_record.with_suffix(".wav")))
-    canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/banked/positions/source.json"
-    canonical.parent.mkdir(parents=True)
+    canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/source.json"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_text(json.dumps(document))
     source_record.unlink()
     command[1] = str(relocated)
     assert cli_main(command + [
         "--measured-round", str(diagnostic_round),
-        "--measured-capture-id", "new-shape",
+        "--measured-set", "new-shape",
+        *(["--measured-take", measured_id] if override else []),
         "--expected-prediction-fingerprint", fingerprint,
     ]) == 0
-    judged = json.loads((relocated / "forward_model.json").read_text())
+    judged = json.loads((relocated / "forward_model-old.json").read_text())
     assert judged["summary"]["basis"]["record_path"] != forecast["summary"]["basis"]["record_path"]
     assert judged["summary"]["prediction_fingerprint"] == fingerprint
     assert judged["summary"]["forecast_binding"] == {
@@ -618,7 +560,7 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     }
     assert judged["summary"]["comparison_kind"] == "changed_candidate"
     assert judged["summary"]["acceptance"]["status"] == ACCEPTANCE_JUDGED
-    assert judged["summary"]["measured"]["capture_id"] == "new-shape"
+    assert judged["summary"]["measured"]["capture_id"] == measured_id
     assert judged["predicted_minus_measured"]["compared_points"] > 0
 
 
@@ -647,7 +589,7 @@ def test_the_cli_refuses_candidate_prediction_without_exact_source_proof(
 
     command = [
         "forward-model", str(diagnostic_round),
-        "--capture-id", "old",
+        "--set", "old",
         "--candidate-json", str(target_path),
         "--basis-candidate-json", str(source_path),
         "--window-ms", "7",
@@ -656,7 +598,7 @@ def test_the_cli_refuses_candidate_prediction_without_exact_source_proof(
         _bind_candidate_take(diagnostic_round, "new-shape", target, tuning_profile)
         command += [
             "--measured-round", str(diagnostic_round),
-            "--measured-capture-id", "new-shape",
+            "--measured-set", "new-shape",
             "--expected-prediction-fingerprint", "0" * 64,
         ]
     code = cli_main(command)
@@ -689,7 +631,7 @@ def test_an_unreadable_named_candidate_is_a_source_failure(
         path.write_text(json.dumps(candidate))
 
     code = cli_main([
-        "forward-model", str(diagnostic_round), "--capture-id", "old",
+        "forward-model", str(diagnostic_round), "--set", "old",
         "--candidate-json", str(path),
     ])
     failure = json.loads(capsys.readouterr().out)
@@ -713,9 +655,9 @@ def test_a_same_candidate_repeat_refuses_a_changed_played_graph(
 
     code = cli_main([
         "forward-model", str(diagnostic_round),
-        "--capture-id", "old",
+        "--set", "old",
         "--measured-round", str(diagnostic_round),
-        "--measured-capture-id", "new-level",
+        "--measured-set", "new-level",
         "--window-ms", "7",
     ])
     refusal = json.loads(capsys.readouterr().out)
@@ -782,10 +724,10 @@ def test_a_measured_curve_that_is_not_a_curve_refuses() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("flags", [[], ["--residual-delay-us", "100"], ["--polarity-sign", "-1"], ["--phase", "measure"], ["--position-deg", "0"]])
+@pytest.mark.parametrize("flags", [["--capture-id", "take"], ["--measured-capture-id", "take"], ["--residual-delay-us", "100"], ["--polarity-sign", "-1"], ["--phase", "measure"], ["--position-deg", "0"]])
 def test_forward_model_requires_exact_capture_and_rejects_legacy_flags(flags):
     with pytest.raises(SystemExit) as caught:
-        build_parser().parse_args(["forward-model", "round", *(["--capture-id", "take"] if flags else []), *flags])
+        build_parser().parse_args(["forward-model", "round", "--set", "old", *flags])
     assert caught.value.code == 2
 
 @pytest.mark.parametrize("example", [0, 1])
@@ -796,8 +738,8 @@ def test_acceptance_examples_run_exact_captures(diagnostic_round, tuning_profile
     source = _trial_candidate(tuning_profile)
     _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
     candidate.write_text(json.dumps(source.to_dict()))
-    substitutions = {"<basis-round>": str(diagnostic_round), "<basis-take>": "old",
+    substitutions = {"<basis-round>": str(diagnostic_round), "<basis-set>": "old",
                      "<candidate.json>": str(candidate), "<basis-candidate.json>": str(candidate), "<candidate-round>": str(diagnostic_round),
-                     "<candidate-take>": "old"}
+                     "<candidate-set>": "old"}
     argv = [substitutions.get(token, token) for token in shlex.split(command)[1:]]
     assert cli_main(argv) == 0

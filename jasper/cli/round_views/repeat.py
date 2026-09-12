@@ -73,13 +73,6 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
     )
 
 
-def _record_path(value: str) -> Path:
-    """``--out`` for a verb that publishes a file: ``-`` is not a path."""
-    if value == "-":
-        raise argparse.ArgumentTypeError("repeat-floor publishes a file; '-' is not a path")
-    return Path(value)
-
-
 #: ``--install``'s destination is a 0770 StateDirectory owned by the daemon's
 #: user, so the login account cannot write it unaided.
 _INSTALL_SUDO_HINT = f" — run it with sudo -n /opt/jasper/.venv/bin/{PROG} ..."
@@ -129,7 +122,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "round_dirs", nargs="+", metavar=_ROUND_DIR_METAVAR,
         help=f"two or more of: {_ROUND_DIR_HELP}",
     )
-    repeat.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    repeat.add_argument("--out", default=None, help="write the result here")
     repeat.set_defaults(func=_cmd_repeat)
 
     repeat_floor = sub.add_parser(
@@ -148,7 +141,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         ),
     )
     repeat_floor.add_argument(
-        "--out", default=None, type=_record_path,
+        "--out", default=None, type=Path,
         help=(
             "also write the record here, e.g. beside a banked round as "
             "repeat-floor.json; at least one of --install/--out is required"

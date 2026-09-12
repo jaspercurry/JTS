@@ -16,9 +16,7 @@ belongs to the daemon (:func:`default_out`).
 
 Every subcommand prints its ANSWER as one JSON document on stdout and its one
 human line on stderr (:func:`._common.answer`, ADR-0237); ``--out PATH``
-files the artifact elsewhere, ``-`` putting the whole artifact on stdout
-instead — which the two ``delay-`` verbs and ``repeat-floor``, whose record
-its owning module publishes, do not take. On failure the exit code names the
+files the artifact elsewhere. On failure the exit code names the
 STAGE that failed and it publishes the shared failure record; ``--help``'s
 EXIT CODES block and docs/tuning-operator-runbook.md's "Exit codes" state the
 numbers and the record's shape, so neither is repeated here.
@@ -35,6 +33,7 @@ from typing import Sequence
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HarmonicEvidenceRefused,
 )
+from jasper.cli._report import output_path
 from jasper.cli._refusal import (
     EXIT_OK,
     EXIT_REFUSED,
@@ -69,6 +68,7 @@ from ._common import (
     ARTIFACT_BY_VIEW,
     AUTHORITY_TIER,
     PROG,
+    RoundSetRefused,
     REASON_REFUSED,
     REASON_UNREADABLE,
     REASON_UNWRITABLE,
@@ -124,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
             "EXAMPLES\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"
             "  jasper-round-views frozen captures/.../baseline captures/.../round-3\n"
-            "  jasper-round-views spec-sweep captures/.../session-1/round-3\n"
+            "  jasper-round-views sweep captures/.../session-1/round-3 --scope verdict\n"
             "\n"
             "OPTIONAL MODEL-ERROR FLOOR (Python)\n"
             "  jasper.active_speaker.model_error_store.adopt_floor(floor, path=...)\n"
@@ -153,6 +153,14 @@ def build_parser() -> argparse.ArgumentParser:
     for family in _FAMILIES:
         family.add_parser(sub)
 
+    for child in sub.choices.values():
+        child.allow_abbrev = False
+        for action in child._actions:
+            if "--out" in action.option_strings:
+                action.type = output_path
+    sub.choices["inventory"].set_defaults(set_flags_by_view={
+        name: child.get_default("optional_set_flags") or () for name, child in sub.choices.items()
+    })
     return parser
 
 
@@ -161,6 +169,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
+    except RoundSetRefused as refusal:
+        return failed(EXIT_REFUSED, refusal.reason, refusal.detail)
     except StageFailed as staged:
         return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged))
     except HarmonicEvidenceRefused as refusal:

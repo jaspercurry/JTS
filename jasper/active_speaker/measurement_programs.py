@@ -70,6 +70,14 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     return resolved
 
 
+def bookkeeping_views(program: str) -> tuple[str, ...]:
+    return {
+        PURPOSE_SPEAKER: ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat"),
+        PURPOSE_ROOM: ("room-median", "room-persistence", "room-grade"),
+        PURPOSE_BASS: ("bass", "bass-compare"),
+    }.get(program, ())
+
+
 def baseline_scope(purpose: str | None) -> str:
     if _validated_purpose(purpose) == PURPOSE_BASS:
         return "room"

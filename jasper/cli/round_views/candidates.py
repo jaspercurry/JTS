@@ -81,5 +81,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     candidates.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
     )
-    candidates.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    candidates.add_argument("--out", default=None, help="write the result here")
     candidates.set_defaults(func=_cmd_candidates)
