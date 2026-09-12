@@ -81,6 +81,9 @@ def _two_path_ir(delay_samples: int, r: float, *, seed: int) -> np.ndarray:
 
 
 def _locked_cloud(n: int = 6) -> list[PositionCapture]:
+    """A position-invariant two-path cloud — the same shape
+    ``test_crossover_v2_cloud_pipeline.py`` builds, so the two modules
+    exercise one pipeline on one fixture family."""
     freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
     captures = []
     for k in range(n):

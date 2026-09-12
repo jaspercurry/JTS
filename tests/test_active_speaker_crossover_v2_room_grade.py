@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Room grades and comparison disclosures from the shared median fixture."""
+
 from __future__ import annotations
 
 import json
@@ -50,6 +52,9 @@ OTHER_CEILING_HZ = 260.0
 
 
 def _low_band_rms_db(mode_db: float = MODE_DB, dip_db: float = DIP_DB) -> float:
+    """The RMS the fixture's own numbers give for the lowest band: ripple on
+    every rung but the mode's and the dip's. The two bands above hold ripple
+    alone, whose RMS is that ripple."""
     n_bins = BAND_BINS[0]
     return float(np.sqrt(
         ((n_bins - 2) * RIPPLE_DB[0] ** 2 + mode_db**2 + dip_db**2) / n_bins
@@ -61,6 +66,8 @@ def test_the_ceiling_tops_the_last_band():
 
 
 def test_a_bin_sitting_on_a_split_is_counted_once_by_the_band_above_it():
+    """The masks are half-open below a split and closed at the ceiling. No
+    1/12-octave grid lands on 60 or 120 Hz, so pin the seam on one that does."""
     grid = np.array([20.0, 60.0, 90.0, 120.0, 200.0, CEILING_HZ])
     masks = [mask for _, _, mask in band_masks(grid, CEILING_HZ)]
 
@@ -108,6 +115,7 @@ def test_the_grade_is_the_fixture_arithmetic_below_the_ceiling():
 def test_a_band_that_moved_the_wrong_way_is_disclosed_both_ways(
     candidate, incumbent, regressed_lo_hz
 ):
+    """A disclosure, never a verdict: the grade names the band and stops."""
     graded = grade_room_median(
         read_room_median(room_median_document(**candidate)),
         incumbent=read_room_median(room_median_document(**incumbent)),
@@ -134,12 +142,14 @@ def test_an_incumbent_with_another_ceiling_is_graded_on_this_rounds_bands():
 
     assert [(row["lo_hz"], row["hi_hz"]) for row in artifact["bands"]] == list(BAND_EDGES_HZ)
     assert artifact["incumbent"]["ceiling_hz"] == OTHER_CEILING_HZ
+    # The top band on the incumbent's OWN grid stops at its ceiling, not this round's.
     top = incumbent.median_db[incumbent.freqs_hz >= BAND_EDGES_HZ[2][0]]
     assert artifact["bands"][2]["incumbent_rms_db"] == pytest.approx(float(np.sqrt(np.mean(top ** 2))))
     assert incumbent.freqs_hz[-1] <= OTHER_CEILING_HZ < CEILING_HZ
 
 
 def test_comparison_uses_only_common_frequency_support():
+    """A peak outside the trial's support cannot masquerade as improvement."""
     baseline_grid = np.asarray(room_median_document()["freqs_hz"])
     response = 6.0 * np.exp(-0.5 * (np.log2(baseline_grid / 145.0) / 0.18) ** 2)
     keep = baseline_grid >= 200.39
@@ -298,6 +308,9 @@ def test_legacy_unknown_basis_is_disclosed_without_blocking_comparison():
 
 
 def _grid_cropped_below(document: dict[str, Any], hi_hz: float) -> dict[str, Any]:
+    """``document`` with its grid cropped below ``hi_hz``. The door checks that a
+    median's grid stays inside the room band, not that it spans it, so this is
+    still a median it reads."""
     keep = [index for index, freq in enumerate(document["freqs_hz"]) if freq < hi_hz]
 
     def cropped(values: Sequence[float]) -> list[float]:
@@ -317,6 +330,8 @@ def _grid_cropped_below(document: dict[str, Any], hi_hz: float) -> dict[str, Any
 
 
 def test_a_band_the_incumbent_never_measured_grades_as_unknown():
+    """Zero bins is no evidence, not a flat incumbent: the band it cannot see
+    reads null rather than grading this round's own RMS as a regression."""
     graded = grade_room_median(
         read_room_median(room_median_document()),
         incumbent=read_room_median(
@@ -335,6 +350,7 @@ def test_a_band_the_incumbent_never_measured_grades_as_unknown():
     assert top["delta_rms_db"] is None
     assert top["regressed"] is None
     assert BAND_EDGES_HZ[2][0] not in artifact["regressed_bands"]
+    # The bands its grid does cover are graded as usual.
     assert [row["incumbent_n_bins"] for row in artifact["bands"][:2]] == list(
         BAND_BINS[:2]
     )
@@ -355,6 +371,8 @@ def test_the_view_grades_the_median_beside_the_round(tmp_path, capsys):
     assert answer["regressed_bands"] == []
     assert answer["incumbent"] is None
     assert [row["n_bins"] for row in answer["bands"]] == list(BAND_BINS)
+    # No take on this round carries a scope, and that is a disclosure of
+    # nothing rather than a missing key.
     assert answer["graph_scopes"] == []
     assert artifact["graph_scopes"] == []
 
@@ -401,6 +419,11 @@ def test_the_view_keeps_response_grades_when_spread_is_unknown(
 
 
 def _stamp_graph_scopes(round_dir: Path, scopes: Sequence[str]) -> None:
+    """Give this round's takes a graph scope, cycling through ``scopes``.
+
+    The take file is what ``bundle_measurements`` reads, and the spatial
+    writers this fixture goes through stamp no scope of their own.
+    """
     bundle, = (round_dir / "bundle").iterdir()
     artifacts = bundle / EVIDENCE_ROOT / "artifacts"
     for index, row in enumerate(bundle_measurements(bundle)):

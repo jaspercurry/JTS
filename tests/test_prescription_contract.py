@@ -58,12 +58,22 @@ def round_bank(tmp_path):
     median = _room_median()
     (bank / "room.json").write_text(json.dumps({
         "median": median,
-        "ceiling": {"ceiling_hz": median["ceiling_hz"], "ceiling_source": median["ceiling_source"],
-                    "trusted_floor_hz": median["ceiling_hz"]},
+        "ceiling": {"hz": median["ceiling_hz"], "provenance": {
+            "ceiling_hz": median["ceiling_hz"], "ceiling_source": median["ceiling_source"],
+            "trusted_floor_hz": median["ceiling_hz"],
+        }},
         "persistence": {"ceiling_hz": median["ceiling_hz"], "n_positions": median["n_positions"],
                         "features": [{"kind": "dip", "centre_hz": f} for f in (45.0, 90.0)]},
     }))
     return bank, session
+
+
+def test_room_contract_preserves_the_document_ceiling_provenance(round_bank):
+    bank, _ = round_bank
+    ceiling = json.loads((bank / "room.json").read_text())["ceiling"]
+    provenance = _contracts(*round_bank)["room"]["bounds"]["ceiling_provenance"]
+    assert provenance == ceiling
+    assert provenance["hz"] == provenance["provenance"]["trusted_floor_hz"]
 
 
 def _contracts(bank: Path, session: Path):

@@ -3468,6 +3468,8 @@ class CrossoverV2Session:
             ),
         )
         self._group_cloud_result[phase] = result
+        # #2609 SF5 / §4.2: what the ROUND needs and the serialized result does not
+        # carry. Recorded for both phases; only ``PHASE_CLOUD_VERIFY``'s are read.
         floor_hz = cloud_trusted_floor_hz(
             _spatial.cloud_validity_floor_hz(positions)
         )

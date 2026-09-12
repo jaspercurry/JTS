@@ -61,6 +61,7 @@ def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
 
 def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
 
+    """Resolve purpose and validate the capture mode supported by the runner."""
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")

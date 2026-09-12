@@ -132,7 +132,6 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
     ["forward-model", "round", "--capture-id", "take"],
     ["forward-model", "round", "--measured-capture-id", "take"],
     ["room", "round", "--capture-id", "take"],
-    ["room-persistence", "round", "--capture-id", "take"],
     ["room-grade", "round", "--room-median", "median.json"],
     ["room-grade", "round", "--baseline-room-median", "median.json"],
     ["bass-compare", "before", "after", "--change", "candidate", "--before-take", "take"],

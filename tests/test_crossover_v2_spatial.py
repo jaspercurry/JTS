@@ -58,6 +58,12 @@ from jasper.audio_measurement.program_analysis import (
 
 
 def _screens(**overrides) -> spatial.CaptureScreens:
+    """A take that passes every screen, minus whatever the caller breaks.
+
+    Every ladder test below starts from a CLEAN capture and breaks exactly one
+    thing, which is what makes each assertion about that one rung rather than
+    about whichever rung happens to fire first in a soup of failures.
+    """
     base = {
         "stimulus_located": True,
         "pilot_snr_ok": True,

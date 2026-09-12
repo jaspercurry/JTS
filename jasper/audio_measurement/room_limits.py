@@ -2,7 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room correction limits and the trusted evidence floor (ADR-0256)."""
+"""Every code-computed limit on a Layer-3 room candidate, as pure numpy.
+
+Three families, one owner: the per-frequency cut depth the cross-position
+spread supports; the taper that returns the correction to flat below the
+ceiling (`See ADR-0256` rules 1-2 — the ceiling is the applied tune's trusted
+floor and arrives here as an argument, never derived); and the evidence a
+proposed low-frequency BOOST must show before it is admitted
+(`See docs/room-correction-regime-plan.md` D5: spatial persistence, a modally
+plausible shape, bounded headroom). A preference tilt is Layer 4 and is never
+measured, so no target curve lives here.
+
+Nothing here reads a file, knows what a candidate is, or decides policy: a
+caller supplies the median, the spread and the ceiling, and gets arrays and
+findings back.
+"""
 
 from __future__ import annotations
 
@@ -85,7 +99,23 @@ ROOM_MAX_FILTERS_PER_SIDE: int = 8
 
 
 def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
-    """Convert the validity floor (1/T) to the trusted floor (2.5/T)."""
+    """The group's TRUSTED floor (``2.5/T``) from its validity floor (``1/T``)
+    — the number the flat spec is graded above (#2551).
+
+    ``1/T`` is where a reflection-free window of ``T`` has one full cycle of
+    resolution; ``2.5/T`` is where the gated magnitude is actually trustworthy.
+    The E4 gate-stability sweep is why the distinction is not academic: the
+    1-4 kHz band moved 2.1 dB across 3/5/7/10 ms gates purely because part of it
+    sat below the shorter windows' trusted floor, while everything above held to
+    <=0.006 dB (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
+
+    Derived rather than plumbed: the multiplier is monotonic, so the trusted
+    floor of the group's worst validity floor is the worst of the positions'
+    trusted floors, and no caller passing one floor can forget the other.
+
+    ``None`` in, ``None`` out, likewise for a non-finite or non-positive floor,
+    which is "no floor was established" and never "a floor of zero".
+    """
     if validity_floor_hz is None:
         return None
     floor = float(validity_floor_hz)
@@ -193,6 +223,7 @@ class BoostAdmission:
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-safe record of the finding."""
         return dataclasses.asdict(self)
 
 

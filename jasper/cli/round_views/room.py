@@ -50,6 +50,7 @@ def _cmd_room(args: argparse.Namespace) -> int:
         args.command, out=written, set_id=selected.set_id, ceiling_hz=median["ceiling_hz"],
         n_positions=median["n_positions"], spatial_support=median["spatial_support"],
         coverage_hz=median["coverage_hz"], features=len(features), incumbent=payload["incumbent"],
+        incumbent_reason=payload["incumbent_reason"],
         line=f"room: {median['n_positions']} positions, {len(features)} features -> {written}",
     )
 

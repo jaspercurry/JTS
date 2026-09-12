@@ -66,8 +66,8 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         **grade.to_dict(),
         "room": str(candidate_path),
         "set_id": selected.set_id, "incumbent_set_id": incumbent_id,
-        "incumbent_reason": "" if incumbent_id else (candidate.get("incumbent") or {}).get(
-            "reason", "room_incumbent_set_unavailable"),
+        "incumbent_reason": "" if incumbent_id else candidate.get(
+            "incumbent_reason", "room_incumbent_set_unavailable"),
         "evidence": median.evidence,
         "incumbent_evidence": None if incumbent is None else incumbent.evidence,
         "graph_scopes": ([scope] if scope else []) if median.evidence is not None

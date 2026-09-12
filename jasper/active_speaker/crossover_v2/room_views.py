@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.room_boundary import (
     CEILING_SOURCE_APPLIED,
     CEILING_SOURCE_FALLBACK,
@@ -102,7 +103,12 @@ def room_ceiling(applied_profile_path: Path | None) -> Ceiling:
     profile that is missing, unreadable, or carries no floor falls back to the
     default and says why.
     """
-    profile, reason = applied_profile_source(applied_profile_path)
+    return _profile_ceiling(*applied_profile_source(applied_profile_path), applied_profile_path)
+
+
+def _profile_ceiling(
+    profile: Mapping[str, Any] | None, reason: str, applied_profile_path: Path | None,
+) -> Ceiling:
     evidence = (profile or {}).get("exclusion_evidence")
     raw = evidence.get("validity_floor_hz") if isinstance(evidence, Mapping) else None
     raw_hz = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else None
@@ -286,7 +292,9 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
     }
 
 
-def incumbent_room(profile: Mapping[str, Any] | None, manifest: Mapping[str, Any]) -> dict[str, Any]:
+def incumbent_room(
+    profile: Mapping[str, Any] | None, manifest: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
     profile = profile or {}
     snapshot = profile.get("recomposition_snapshot") or {}
     correction = snapshot.get("room_correction", profile.get("room_correction")) or {}
@@ -298,13 +306,17 @@ def incumbent_room(profile: Mapping[str, Any] | None, manifest: Mapping[str, Any
         or (not row["capture_basis"].get("candidate_id")
             and row["capture_basis"].get("graph_scope") in scopes)
     )]
+    if len(matches) != 1:
+        return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {
         "round_id": basis.get("round_id"), ROOM_MEDIAN_FIELD: basis.get(ROOM_MEDIAN_FIELD),
-        "set_id": matches[0] if len(matches) == 1 else None,
-        "reason": "" if len(matches) == 1 else (
-            "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
-        ),
-    }
+        "set_id": matches[0],
+    }, ""
+
+
+def room_median_sha256(median: Mapping[str, Any]) -> str:
+    """Bind the measured median independently of the document's current incumbent."""
+    return json_fingerprint(median, field_name="room median")
 
 
 def room_document(
@@ -312,7 +324,8 @@ def room_document(
     applied_profile_path: Path | None, geometry_path: Path | None,
     manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
-    ceiling = room_ceiling(applied_profile_path)
+    profile, reason = applied_profile_source(applied_profile_path)
+    ceiling = _profile_ceiling(profile, reason, applied_profile_path)
     median = {**room_median(takes, ceiling), "set_id": set_id, "evidence": dict(evidence)}
     value = read_room_median(median)
     persistence = room_persistence(takes, ceiling)
@@ -324,16 +337,18 @@ def room_document(
     geometry = load_declared_geometry(geometry_path) if geometry_path is not None else None
     walls = {key: distance for key, field in WALL_FIELD_BY_KEY.items()
              if geometry is not None and (distance := getattr(geometry, field)) is not None}
-    profile, _ = applied_profile_source(applied_profile_path)
+    incumbent, incumbent_reason = incumbent_room(profile, manifest)
     return {
         "ceiling": {"hz": ceiling.ceiling_hz, "provenance": ceiling.to_dict()},
         "median": median,
+        ROOM_MEDIAN_FIELD: room_median_sha256(median),
         "persistence": persistence,
         "limits": {
             "cut_floor_db": cut_floor_db(value.spread_db, value.freqs_hz, value.ceiling_hz).tolist(),
             "boost_cap_db": boost_cap_db(value.freqs_hz, value.ceiling_hz).tolist(),
         },
-        "incumbent": incumbent_room(profile, manifest),
+        "incumbent": incumbent,
+        "incumbent_reason": incumbent_reason,
         "boundary": {"advisory": True, **boundary_prior(value.freqs_hz, walls=walls)} if walls else None,
         "boundary_reason": "" if walls else ("walls_undeclared" if geometry else "geometry_undeclared"),
     }

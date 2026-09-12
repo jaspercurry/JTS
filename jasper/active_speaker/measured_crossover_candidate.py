@@ -421,7 +421,7 @@ class MeasuredCrossoverCandidate:
 
     ``room_correction`` is the modal-band PEQ set: ``{"sides": {side: [{freq,
     q, gain}, ...]}, "ceiling_hz", "ceiling_source", "basis", "boost_db_total",
-    "level_cost_db"}``, where ``basis`` is the round and ``room_median.json``
+    "level_cost_db"}``, where ``basis`` is the round and ``room.json`` median-section
     digest the set was prescribed from. The room prescription door is its only
     writer; :func:`_validated_room_correction` re-checks it here against the
     room layer's limits. Per-side sets are DATA today — the emitter takes one
