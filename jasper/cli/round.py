@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from jasper.active_speaker.wizard_client import (
-    CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST, REASON_NO_FINGERPRINT,
+    CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, read_identity, speaker_url
@@ -22,7 +22,6 @@ from ._refusal import (
 )
 
 PROG = "jasper-round"
-REPUBLISH_PATH = "/sound/speaker/crossover/v2/republish"
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
 AUTHORITY_TIER = "mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads)"
@@ -130,18 +129,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
-    result = apply_by_fingerprint(client, args.expected_fingerprint)
-    if result["refused_by"] == "client" and result["reason"] != REASON_NO_FINGERPRINT:
-        http, payload = client.post_json(
-            REPUBLISH_PATH, {"fingerprint": args.expected_fingerprint.strip()},
-        )
-        if http != 200 or not isinstance(payload, dict) or payload.get("status") != "republished":
-            return _wizard_failure(
-                EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
-                REASON_ANSWER_LOST if http == 0 else "candidate_not_republished",
-                {"http": http}, payload,
-            )
-        result = apply_by_fingerprint(client, args.expected_fingerprint)
+    result = apply_by_fingerprint(client, args.fingerprint)
     fingerprint = str(result["candidate_fingerprint"])
     if result["status"] == "applied":
         return _answer(
@@ -208,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.set_defaults(func=function)
     apply = sub.add_parser("apply", help="apply the named banked candidate")
     _connection_args(apply)
-    apply.add_argument("--expected-fingerprint", required=True)
+    apply.add_argument("fingerprint", help="banked candidate fingerprint")
     apply.set_defaults(func=_cmd_apply)
     return parser
 
