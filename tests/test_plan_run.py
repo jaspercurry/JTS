@@ -564,8 +564,9 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
 
 
 @pytest.mark.parametrize("levels", [(-20,), (-20, -14), (-20, -20)])
+@pytest.mark.parametrize("stop_on_deferred", [False, True])
 @pytest.mark.parametrize("defer_after", [None, 2, 4])
-async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path, box, monkeypatch, levels, defer_after):
+async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path, box, monkeypatch, levels, defer_after, stop_on_deferred):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
     from jasper import measurement_window as coordinator
@@ -601,10 +602,12 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
             answer = await super().run(**kwargs)
             if len(records) == defer_after:
                 preemptor = await owner.acquire_level(ClaimKind.COMMISSIONING, -30)
+                if stop_on_deferred:
+                    raise CaptureStopped("stop")
             return answer
-    def build(door, monitor, allocate):
+    def build(door, allocate):
         events.append(door.measurement_volume_db)
-        watches.append(monitor)
+        watches.append(door.spl_monitor)
         capture = SimpleNamespace(take_answer=lambda: None,
                                   read_loudness_volume_db=box.get_loudness_volume_db)
         session = TuningSession("run", EngineSeams(door.graph, door.claim,
@@ -626,6 +629,7 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
         # A higher-ranked claimant stops the current window; no next window may open.
         if defer_after is not None:
             expected = expected[:((defer_after + 1) // 2) * 2]
+        assert graph.restores == 1
         assert records == expected
         assert events == ["hold", *[level for _pose, level, cid in expected if cid == "fp-a"], "release"]
         assert len({id(session) for session in sessions}) == len(sessions)
@@ -637,7 +641,9 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
         assert set(ids) == {take["take_id"] for take in result.takes if take["artifacts"]["record_id"]}
         assert all(take["level"]["level_db"] == take["level"]["loudness_volume_db"] for take in result.takes)
         assert result.status == ("partial" if defer_after is not None else "complete")
-        assert result.reason == ("volume_restore_deferred" if defer_after is not None else "")
+        assert result.reason == (("user_stopped" if stop_on_deferred else "volume_restore_deferred") if defer_after is not None else "")
+        if defer_after is not None:
+            assert windows.last_window.restore_result.value == "deferred"
         assert (plan.measurement_volume_db is not None) is (defer_after is not None)
         for session in sessions:
             assert not session.is_open

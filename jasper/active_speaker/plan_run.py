@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from jasper.log_event import log_event
-from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.program import ExcitationProgram
@@ -27,7 +26,7 @@ from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from .angle_capture import (
     BASE_CANDIDATE,
     WALK_CEILING_ABOVE_STOP, WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
-    WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED,
+    WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, LateralWalkRefused, resolve_request, stop_specs,
 )
 from .angle_capture_spool import angle_request_document
@@ -152,7 +151,7 @@ def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
 @dataclass
 class LevelWindows:
     hold: AbstractAsyncContextManager[IsolationHold]
-    build_session: Callable[[OpenMeasurementDoor, WiredSplMonitor, Callable[[], str]], TuningSession]
+    build_session: Callable[[OpenMeasurementDoor, Callable[[], str]], TuningSession]
     topology: Any
     preset: Any
     sensitivity: Any
@@ -248,7 +247,7 @@ async def run_plan(
         places = [request.stops[offset // request.repeats].place for offset in range(len(specs))]
     levels = request.operating_levels_db or ((session.measurement_level_db,) if session else ())
     if not levels or (windows is None and (session is None or levels != (session.measurement_level_db,))):
-        raise ValueError("The plan needs a session factory for its level windows")
+        raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a session factory for its level windows")
     expanded = []
     planned: list[dict[str, Any]] = []
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
@@ -262,10 +261,6 @@ async def run_plan(
                 if spec is not None:
                     expanded.append((spec, stop, pose_index, level, stops[offset]))
     manifest.planned = planned
-    if len(planned) > MAX_CAPTURE_PLAN_ATTEMPTS:
-        manifest.reason, manifest.finalized = "walk_over_capture_capacity", True
-        await manifest.persist()
-        return manifest
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
                                  [row[4].prompt for row in expanded], [row[4].candidate_id for row in expanded])
     work: list[_Work] = []
@@ -339,6 +334,9 @@ async def _run(
         if ledger.charge != "none":
             ledger.spend(ledger.charge)
         ledger.admitted += 1
+
+    def attempt_records() -> list[tuple[dict[str, Any], str]]:
+        return manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]
 
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
@@ -425,8 +423,7 @@ async def _run(
                     )
                     door = await inner.enter_async_context(level_window(item.level_db, hold=hold, spl_monitor=monitor))
                     windows.last_window = door
-                    assert monitor is not None
-                    session = windows.build_session(door, monitor, manifest.allocate_take_id)
+                    session = windows.build_session(door, manifest.allocate_take_id)
                     windows.current = session
                     await inner.enter_async_context(session)
                     active_window = window_key
@@ -441,7 +438,7 @@ async def _run(
                 outcome = await measure(session, spec) if measure else await session.measure(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
-                records = manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]
+                records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
                     if record_id:
                         try:
@@ -500,7 +497,7 @@ async def _run(
                 fault = manifest.reason if manifest.reason in REASON_REGISTRY else REASON_INTERNAL_ERROR
                 already_banked = {take["artifacts"]["record_id"] for take in manifest.takes}
                 ended = clock()
-                for record, record_id in manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]:
+                for record, record_id in attempt_records():
                     if record_id and record_id in already_banked:
                         continue
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
@@ -514,7 +511,8 @@ async def _run(
                         manifest.wall_s.append(0.0)
                     manifest.wall_s[item.pose_index] += clock() - take_started
     except (MeasurementDoorRefused, LateralWalkRefused) as exc:
-        manifest.reason, manifest.detail = exc.reason, exc.detail
+        if not manifest.reason:
+            manifest.reason, manifest.detail = exc.reason, exc.detail
     except BaseException:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
         manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
         raise
@@ -523,7 +521,8 @@ async def _run(
             try:
                 await resilient_restore(inner.__aexit__(*sys.exc_info()))
             except MeasurementDoorRefused as exc:
-                manifest.reason, manifest.detail = exc.reason, exc.detail
+                if not manifest.reason:
+                    manifest.reason, manifest.detail = exc.reason, exc.detail
             except BaseException:  # noqa: BLE001 - preserve cleanup failures after finalizing
                 manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
                 raise

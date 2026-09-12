@@ -27,8 +27,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   deaths into the flow's reason vocabulary. It is reached LAZILY. This host
   stays the single writer of the persisted failure state those reasons land in
   (``status["crossover_v2"]["failure"]`` — ``capture_timeout``,
-  ``user_stopped``, …), and of the walked-away volume guarantee the provider
-  drives through ``V2VolumeHooks``.
+  ``user_stopped``, …). ``door.isolation_hold`` and ``door.level_window`` own the volume give-back.
 
 Session binding (§5.6): the durable state is keyed to the capture session id. A
 new ``/v2/session`` POST hydrates through
@@ -1103,23 +1102,6 @@ def _refuse_without_a_volume_owner(where: str) -> "CrossoverV2Refused":
         REASON_REGISTRY[REASON_INTERNAL_ERROR].message,
         code=REASON_INTERNAL_ERROR,
     )
-
-
-def _session_volume_claim() -> Any:
-    """This session's ONE fader claim, or ``None`` when no owner is installed.
-
-    Minted at the composition root and injected into the two things that hold
-    it — the engine's volume seam and the plan's door — because they are one
-    claim, not two. ``None`` is the no-owner registration defect, and the
-    binder turns it into the household refusal above.
-    """
-    from jasper.active_speaker.crossover_v2.volume_claim import (
-        MeasurementVolumeClaim,
-    )
-    from jasper.volume_owner import volume_owner
-
-    owner = volume_owner()
-    return None if owner is None else MeasurementVolumeClaim(owner)
 
 
 def _volume_door(
@@ -3174,15 +3156,6 @@ def bind_production_play(
     return ProductionPlay(graph=session_graph, compose=compose)
 
 
-@dataclass(frozen=True)
-class V2VolumeHooks:
-    """The session-volume lifecycle the runner drives (§5.5)."""
-
-    open: Callable[[], Any]      # async
-    close: Callable[[], Any]     # async
-    abandon: Callable[[], Any]   # async
-
-
 # The key :func:`attach_stage2_preflight` writes onto ``status["crossover_v2"]``
 # and :func:`~jasper.active_speaker.crossover_envelope_v2._stage2_preflight`
 # reads. Spelled once, here, because the writer and the reader live in
@@ -3287,73 +3260,6 @@ class V2PreparedSession:
     request_retake: Callable[[], None] | None = None
     join_spec: Any = None
     session_id: str = ""
-
-
-def _volume_hooks(
-    camilla_factory: Any,
-    context: V2ConductorContext,
-    *,
-    tuning: Any,
-    volume_claim: Any = None,
-) -> V2VolumeHooks:
-    plan = session_volume_plan()
-    # THE SAME CLAIM the engine session holds, not a second one. The plan's
-    # door establishes through it and ``TuningSession.open`` takes the session
-    # slot through it; two ``MeasurementVolumeClaim`` objects over one owner
-    # would collide on the owner's same-kind rule, and that rule is there for
-    # OTHER holders — level-match, autolevel, the balance guard — not for a
-    # session arguing with itself.
-    door = _volume_door(camilla_factory, claim=volume_claim, reason="session")
-
-    async def _open() -> Any:
-        opened = await plan.open(context.session_volume_db, door)
-        if str(getattr(opened, "value", opened)) != "opened":
-            return opened
-
-        async def _give_back_the_level() -> None:
-            try:
-                await plan.abandon(door, reason="session_open_failed")
-            finally:
-                await release_session_measurement_pause()
-
-        session_open = False
-        try:
-            await acquire_session_measurement_pause()
-            await tuning.open()
-            session_open = True
-        finally:
-            if not session_open:
-                giving_back = asyncio.ensure_future(_give_back_the_level())
-                try:
-                    await asyncio.shield(giving_back)
-                except asyncio.CancelledError:
-                    while not giving_back.done():
-                        try:
-                            await asyncio.shield(giving_back)
-                        except asyncio.CancelledError:
-                            continue
-                        except (OSError, RuntimeError, TimeoutError, ValueError):
-                            break
-                    raise
-        return opened
-
-    async def _drain(operation: Any) -> Any:
-        try:
-            try:
-                await tuning.close()
-            finally:
-                result = await operation(door)
-        finally:
-            await release_session_measurement_pause()
-        return result
-
-    async def _close() -> Any:
-        return await _drain(plan.close)
-
-    async def _abandon() -> Any:
-        return await _drain(plan.abandon)
-
-    return V2VolumeHooks(open=_open, close=_close, abandon=_abandon)
 
 
 # --------------------------------------------------------------------------- #
@@ -3773,7 +3679,6 @@ def _wired_stimulus_capture(
 def _build_wired_run(
     conductor: Any,
     *,
-    volume: "V2VolumeHooks | None",
     stop_event: threading.Event,
     stop_lock: Any,
     position_gate: "PositionGate | None",
@@ -3792,7 +3697,6 @@ def _build_wired_run(
 
     return wired.build_v2_wired_run_and_consume(
         conductor,
-        volume=volume,
         stop_event=stop_event,
         stop_lock=stop_lock,
         ceiling_s=ceiling_s,
@@ -4300,7 +4204,7 @@ def prepare_v2_session(
         nonlocal held
         source_run = _build_wired_run(
             conductor,
-            volume=None, windows=tuning,
+            windows=tuning,
             stop_event=stop_event,
             stop_lock=stop_lock,
             position_gate=position_gate,
@@ -4308,10 +4212,9 @@ def prepare_v2_session(
             ceiling_s=ceiling_s,
             complete_event=complete_event,
             retake_event=retake_event,
-            tuning=tuning, manifest=manifest, analyze=analyze, assessor=assessor,
+            manifest=manifest, analyze=analyze, assessor=assessor,
             request=run_request, captures=run_captures,
             candidate_scopes={} if verify_only else report.candidate_scopes,
-            spl_monitor="",
         )
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc

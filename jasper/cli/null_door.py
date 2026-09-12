@@ -87,11 +87,13 @@ def _mid_run_failures() -> dict[type[BaseException], str]:
     built from the same classes the reason lookup scans.
     """
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+    from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
     from jasper.measurement_window import MeasurementWindowError
 
     return {
+        StimulusCaptureStopped: REFUSE_CAPTURE_FAILED,
         SessionGraphError: REFUSE_GRAPH_LOST,
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
         SessionVolumePlanError: REFUSE_VOLUME_LOST,
@@ -355,7 +357,7 @@ def _publish_program(program: Any, work_dir: Path, relpath: str) -> Any:
 
 async def _play_and_capture(
     context: Any, volume_plan: Any, program: Any, mic: Any, artifact: Any,
-    work_dir: Path, *, graph_yaml: str,
+    work_dir: Path, *, graph_yaml: str, spl_monitor: Any,
 ) -> Any:
     """Admit, play through the installed graph, and capture.
 
@@ -371,6 +373,7 @@ async def _play_and_capture(
         bind_program_playback_seams,
     )
     from jasper.active_speaker.program_playback import play_program
+    from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
     from jasper.audio_measurement.wired_capture import (
@@ -404,12 +407,16 @@ async def _play_and_capture(
             program_s + WIRED_PRE_PLAY_ALLOWANCE_S + WIRED_POST_ROLL_S
         ),
     )
+    spl_monitor.reset()
+    recorder.spl_monitor = spl_monitor
     # Armed BEFORE any audio: `start` blocks until the first real chunk lands,
     # so the pre-roll is a fact rather than a hope.
     recorder.start()
     played = False
     try:
-        await play_program(program, session_volume_plan=volume_plan, **seams)
+        await WiredStimulusCapture(mic, work_dir, spl_monitor=spl_monitor).guarded_play(
+            lambda: play_program(program, session_volume_plan=volume_plan, **seams), recorder,
+        )
         played = True
     finally:
         # Any escape must release the live ALSA device. A flag in `finally`
@@ -611,6 +618,7 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
 async def _run(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import measurement_door
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+    from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
     from jasper.audio_measurement.program import NullConfirmUnavailable
     from jasper.audio_measurement.wired_capture import require_wired_mic
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
@@ -701,6 +709,13 @@ async def _run(args: argparse.Namespace) -> int:
     # missing mic from costing the household a fader claim and a graph swap
     # first. `WiredMicMissing` is a `WiredCaptureError`, which `main` renders.
     mic = require_wired_mic()
+    from jasper.active_speaker.angle_capture import LateralWalkRefused  # lazy: measurement stack
+    from jasper.cli.measurement_watch import measurement_spl_watch  # lazy: measurement stack
+
+    try:
+        monitor, _ = measurement_spl_watch(None, topology=context.topology, preset=context.preset, device=mic)
+    except LateralWalkRefused as exc:
+        raise NullDoorRefused(exc.reason, exc.detail) from exc
 
     try:
         async with measurement_door(
@@ -712,6 +727,7 @@ async def _run(args: argparse.Namespace) -> int:
                 protection_sections_by_role=_protection_sections(context),
             ),
             measurement_volume_db=context.session_volume_db,
+            spl_monitor=monitor,
             camilla_factory=primary_controller,
             action="confirming a reverse null",
             gate_owner=DOOR_GATE_OWNER,
@@ -737,7 +753,7 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                     answer = await _play_and_capture(
                         context, door.plan, program, mic, artifact, work_dir,
-                        graph_yaml=door.graph.installed_graph_yaml(),
+                        graph_yaml=door.graph.installed_graph_yaml(), spl_monitor=door.spl_monitor,
                     )
                     capture_relpath = programs_dir / f"capture_{index:02d}.wav"
                     mic_wav = work_dir / capture_relpath

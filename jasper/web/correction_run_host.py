@@ -114,9 +114,9 @@ def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: 
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, verify_only=verify_only)
 
-    def build(door: Any, monitor: Any, allocate_take_id: Any) -> TuningSession:
+    def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(
-            device, evidence_store, spl_monitor=monitor,
+            device, evidence_store, spl_monitor=door.spl_monitor,
             read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
         )
         records.capture = capture

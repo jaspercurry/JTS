@@ -23,7 +23,7 @@ from ..measurement_emit import (
 from ..restore_wait import resilient_restore
 from ..session_volume_plan import SessionVolumeRestoreResult
 from .measure_spec import CANDIDATE_SCOPES
-from .refusal_copy import REASON_VOLUME_RESTORE_DEFERRED
+from .refusal_copy import REASON_MEASURE_SPL_CALIBRATION_REQUIRED, REASON_VOLUME_RESTORE_DEFERRED
 
 logger = logging.getLogger(__name__)
 REFUSE_SESSION_LIVE = "measurement_door_session_live"
@@ -35,6 +35,19 @@ class MeasurementDoorRefused(RuntimeError):
     def __init__(self, reason: str, detail: str) -> None:
         self.reason, self.detail = reason, detail
         super().__init__(f"{reason}: {detail}")
+
+
+@dataclass
+class _HeldGraph:
+    """Sessions borrow the graph; only the isolation hold restores it (ADR-0305)."""
+
+    inner: Any
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def restore(self) -> None:
+        pass
 
 
 @dataclass
@@ -55,6 +68,7 @@ class OpenMeasurementDoor:
     measurement_volume_db: float
     measurement_loudness_volume_db: float
     graph_fingerprint: str
+    spl_monitor: WiredSplMonitor
     entry_scope_fingerprint: str = ""
     restore_result: SessionVolumeRestoreResult | None = None
 
@@ -81,9 +95,24 @@ async def isolation_hold(
     if wall_clock_ceiling_s is not None:
         plan.set_wall_clock_ceiling_s(wall_clock_ceiling_s)
     # The coordinator renews all three leases across windows and poses (ADR-0305).
+    # The window wraps the open, because the latch's first write is a fader
+    # write like any other.
     async with measurement_window(gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner):
         await plan.enforce_ceiling(volume_door)
-        yield IsolationHold(graph, claim, plan, volume_door, camilla_factory())
+        body_error: BaseException | None = None
+        try:
+            yield IsolationHold(_HeldGraph(graph), claim, plan, volume_door, camilla_factory())
+        except BaseException as exc:  # noqa: BLE001 - preserve cancellation through cleanup
+            body_error = exc
+            raise
+        finally:
+            try:
+                await resilient_restore(graph.restore())
+            except BaseException as exc:  # noqa: BLE001 - keep the original failure
+                if body_error is None:
+                    raise
+                if body_error.__context__ is None:
+                    body_error.__context__ = exc
 
 
 @asynccontextmanager
@@ -93,7 +122,7 @@ async def level_window(
     from ..session_volume_plan import SessionVolumeOpenResult, SessionVolumePlanError  # lazy: live plan binding
 
     if spl_monitor is None:
-        raise MeasurementDoorRefused("measure_spl_calibration_required", "A level window needs an SPL watch")
+        raise MeasurementDoorRefused(REASON_MEASURE_SPL_CALIBRATION_REQUIRED, "A level window needs an SPL watch")
     if hold.window_open:
         raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, "A level window is already open")
     hold.window_open = True
@@ -129,7 +158,7 @@ async def level_window(
         held_loudness = await set_loudness(level_db)
         fingerprint = await graph.install()
         opened_door = OpenMeasurementDoor(graph, claim, plan, level_db, held_loudness,
-                                         fingerprint, graph.entry_scope_fingerprint)
+                                         fingerprint, spl_monitor, graph.entry_scope_fingerprint)
         log_event(logger, "active_speaker.measurement_door", action="open",
                   fingerprint=fingerprint, measurement_volume_db=level_db,
                   measurement_loudness_volume_db=held_loudness)
@@ -138,9 +167,17 @@ async def level_window(
         body_error = raised
         raise
     finally:
+        # ``plan.open`` is INSIDE this guard: it persists its durable
+        # ``active`` intent before the first volume mutation, so a
+        # cancellation landing in that gap would otherwise leave a record no
+        # later process drains, and every operator door would read a live
+        # measurement for the whole wall-clock ceiling. A ``finally`` on a
+        # flag rather than an ``except``, because a ``CancelledError`` is not
+        # an ``Exception``. SHIELDED: a cancel inside the give-back would
+        # strand the fader at measurement level with nothing latched.
         try:
             result = await resilient_restore(_give_back(
-                graph, claim, plan, hold.volume_door,
+                claim, plan, hold.volume_door,
                 reason="measurement_door_closed" if volume_open else "measurement_door_open_failed",
                 body_error=body_error, restore_loudness=restore_loudness,
             ))
@@ -174,9 +211,14 @@ async def measurement_door(
 
 
 async def _give_back(
-    graph: Any, claim: Any, plan: Any, volume_door: Any, *, reason: str,
+    claim: Any, plan: Any, volume_door: Any, *, reason: str,
     restore_loudness: Callable[[], Awaitable[None]], body_error: BaseException | None = None,
 ) -> SessionVolumeRestoreResult | None:
+    """Restore the loudness reference and Main claim inside the graph hold.
+
+    Every step runs even when an earlier one raises. A cleanup failure is
+    attached to the body error, so the original cause remains visible.
+    """
     first: BaseException | None = None
     result: SessionVolumeRestoreResult | None = None
 
@@ -185,7 +227,7 @@ async def _give_back(
         result = await plan.close(volume_door, reason=reason)
 
     # Restore every slot even after a failure; keep the original failure (ADR-0179).
-    for step in (graph.restore, restore_loudness, claim.release, close_plan):
+    for step in (restore_loudness, claim.release, close_plan):
         try:
             await step()
         except BaseException as failure:  # noqa: BLE001 - cleanup must survive cancellation

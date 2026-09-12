@@ -33,7 +33,6 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
 from jasper.log_event import log_event
 from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
-from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY, PHASE_CLOUD_VERIFY
 from jasper.web._common import refusal_envelope
 
 logger = logging.getLogger(__name__)
@@ -106,10 +105,10 @@ def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
 
 
 def build_v2_wired_run_and_consume(
-    conductor: Any, *, volume: Any, stop_event: threading.Event, stop_lock: Any,
+    conductor: Any, *, stop_event: threading.Event, stop_lock: Any,
     ceiling_s: float, complete_event: threading.Event, retake_event: threading.Event,
-    tuning: Any, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
-    candidate_scopes: Mapping[str, str], spl_monitor: str, windows: plan_run.LevelWindows | None = None,
+    windows: plan_run.LevelWindows, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
+    candidate_scopes: Mapping[str, str],
     position_gate: Any = None, evidence_refs: Mapping[str, Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> Callable[[Any], Awaitable[Any]]:
@@ -128,15 +127,6 @@ def build_v2_wired_run_and_consume(
             conductor.authorize_begin(manifest.planned[index - 1].get("capture_index", index),
                                       attempt, entry, executor_ledger=ledger)
 
-        async def measure(session: Any, spec: Any) -> Any:
-            measured: list[Any] = []
-            async def body() -> None:
-                measured.append(await session.measure(spec))
-            await host._play_under_session_pause(body)
-            if spec.program_phase in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
-                await session.restore_graph()
-            return measured[0]
-
         def publish_failure(exc: BaseException) -> str:
             envelope = refusal_envelope(exc)
             code = envelope["code"] or "internal_error"
@@ -150,71 +140,29 @@ def build_v2_wired_run_and_consume(
             return str(code)
 
         try:
-            if volume is not None:
-                opened = await volume.open()
-                if opened is not None and str(getattr(opened, "value", opened)) != "opened":
-                    raise CrossoverV2Refused("The measurement volume did not open", code="measurement_volume_drift")
-            result = await plan_run.run_plan(
-                request, session=tuning if windows is None else None, windows=windows, manifest=manifest, analyze=analyze, assessor=assessor, measure=measure,
-                gate=position_gate, candidate_scopes=candidate_scopes, captures=captures,
-                signals=signals, admit=admit, aborts={CaptureStopped: "user_stopped"},
-                spl_monitor=spl_monitor, gain_ceiling_db=conductor._measure_gain_ceiling_db,
-            )
-            if windows is not None and windows.last_window is not None:
-                restore = windows.last_window.restore_result
+            try:
+                result = await plan_run.run_plan(
+                    request, windows=windows, manifest=manifest, analyze=analyze, assessor=assessor,
+                    gate=position_gate, candidate_scopes=candidate_scopes, captures=captures,
+                    signals=signals, admit=admit, aborts={CaptureStopped: "user_stopped"},
+                    gain_ceiling_db=conductor._measure_gain_ceiling_db,
+                )
+            finally:
+                restore = windows.last_window.restore_result if windows.last_window else None
                 host._persist_execution_result(session_id, volume_restore=restore.value if restore else "failed")
             if result.reason and result.reason != "complete_requested":
                 if result.reason == "user_stopped" or result.cancelled:
                     raise CaptureStopped("capture stopped")
                 raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
-        except BaseException as exc:  # noqa: BLE001 - drain the held resources on every exit
-            try:
-                code = publish_failure(exc)
-                host._persist_terminal_failure(conductor, code)
-            finally:
-                if volume is not None:
-                    await _abandon_best_effort(session_id, volume)
+        except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
+            code = publish_failure(exc)
+            host._persist_terminal_failure(conductor, code)
             raise
         else:
             try:
-                try:
-                    host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
-                finally:
-                    if volume is not None:
-                        await _drain_volume(session_id, volume.close, "volume_close")
-            except BaseException as exc:  # noqa: BLE001 - publish faults after the drain too
+                host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
+            except BaseException as exc:  # noqa: BLE001 - publish persistence faults
                 publish_failure(exc)
                 raise
 
     return run
-
-
-async def _abandon_best_effort(session_id: str, volume: Any) -> None:
-    await _drain_volume(session_id, volume.abandon, "volume_abandon")
-
-
-async def _drain_volume(session_id: str, operation: Any, component: str) -> None:
-    from jasper.web import correction_crossover_v2 as _host  # lazy: host binds this runner
-    from jasper.active_speaker.session_volume_plan import (
-        SessionVolumePlanError, SessionVolumeRestoreResult,
-    )
-
-    status = "failed"
-    try:
-        result = await operation()
-        status = str(getattr(result, "value", result)) if result is not None else "unknown"
-        if result == SessionVolumeRestoreResult.FAILED:
-            raise SessionVolumePlanError("session volume restore did not confirm")
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger, f"correction.crossover_v2_{component}_failed",
-            level=logging.CRITICAL, session_id=session_id, component=component,
-            error_type=type(exc).__name__,
-        )
-        raise
-    finally:
-        _host._persist_execution_result(session_id, volume_restore=status)
-    log_event(
-        logger, "correction.crossover_v2_volume_cleanup",
-        session_id=session_id, component=component, outcome=status,
-    )

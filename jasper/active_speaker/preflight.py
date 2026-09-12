@@ -13,6 +13,7 @@ from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
 from .angle_capture import (
+    WALK_OVER_CAPTURE_CAPACITY,
     BASE_CANDIDATE, AngleCaptureRequest, LevelPolicy, LateralWalkRefused,
     REGIME_BRANCHES, candidate_identity, walk_price,
 )
@@ -23,7 +24,7 @@ from .measured_crossover_candidate import (
     compile_candidate_config, prove_candidate_config,
 )
 from .plan_run import take_spl_ceiling
-from .seat_level_reference import AnchorFacts, LevelUnresolved, resolve_anchor_level
+from .seat_level_reference import LEVEL_OVER_CEILING, AnchorFacts, LevelUnresolved, resolve_anchor_level
 
 # Rechecked at participation; a dry run reserves none of these resources.
 LIVE_ADMISSION = (
@@ -115,7 +116,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         valid_shape = False
     captures = len(plan.stops) * plan.repeats * max(1, len(plan.operating_levels_db)) if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
-        add("walk_over_capture_capacity", f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
+        add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
 
     scopes: dict[str, str] = {}
@@ -166,7 +167,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                         try:
                             take_spl_ceiling(predicted, commissioning_stop_db_spl=ceiling)
                         except LateralWalkRefused:
-                            add("level_over_ceiling", f"Window {operating_db:g} dB predicts {predicted:g} dB SPL above {ceiling:g}")
+                            add(LEVEL_OVER_CEILING, f"Window {operating_db:g} dB predicts {predicted:g} dB SPL above {ceiling:g}")
             except (LevelUnresolved, LateralWalkRefused) as exc:
                 add(exc.reason, exc.detail)
 

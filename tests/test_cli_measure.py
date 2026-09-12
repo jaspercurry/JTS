@@ -370,7 +370,7 @@ def speaker(tmp_path, monkeypatch):
         lambda **kw: SimpleNamespace(model_key="minidsp_umik2", model_label="UMIK-2"),
     )
     monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
-    monkeypatch.setattr(measure, "resolved_household_sensitivity", lambda device: MicSensitivity(-12, 18, "1234"))
+    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity", lambda device: MicSensitivity(-12, 18, "1234"))
     monkeypatch.setattr("jasper.audio_measurement.calibration.resolve_mic_sensitivity",
                         lambda **kw: MicSensitivity(-12, 18, "1234"))
     monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
@@ -1097,7 +1097,7 @@ def test_batch_volume_override_is_watched_banked_and_restored_or_refused(
     speaker, monkeypatch, tmp_path, capsys, source, volume, reason,
 ):
     from jasper.audio_measurement.household_mic import resolved_household_sensitivity
-    monkeypatch.setattr(measure, "resolved_household_sensitivity", resolved_household_sensitivity)
+    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity", resolved_household_sensitivity)
     cal = tmp_path / "mic.txt"
     cal.write_text("20 0\n20000 0\n" if source.startswith("curve_only") else "Sens Factor =-12.07dB, AGain =18dB\n20 0\n20000 0\n")
     record = SimpleNamespace(raw_path=cal, sign_convention="correction",
@@ -1356,7 +1356,7 @@ def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
     from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
     monkeypatch.setattr(
-        measure, "resolved_household_sensitivity", lambda device: SimpleNamespace(),
+        "jasper.cli.measurement_watch.resolved_household_sensitivity", lambda device: SimpleNamespace(),
     )
     monkeypatch.setattr(
         "jasper.active_speaker.plan_run.SUPPORTED_MODELS",

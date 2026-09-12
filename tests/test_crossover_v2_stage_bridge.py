@@ -1856,9 +1856,9 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
     def bind(**kwargs):
         windows, analyze, assessor = real_bind(**kwargs)
         level = kwargs["context"].session_volume_db
-        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, level, "graph")
         monitor = WiredSplMonitor(MicSensitivity(-12, 18, "1234"), windows.ceiling_db_spl, 0)
-        captured["tuning"] = windows.build_session(door, monitor, kwargs["manifest"].allocate_take_id)
+        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, level, "graph", monitor)
+        captured["tuning"] = windows.build_session(door, kwargs["manifest"].allocate_take_id)
         return windows, analyze, assessor
     monkeypatch.setattr(v2host, "bind_level_windows", bind)
     captured["conductor"], _state = _stage_1(monkeypatch)
