@@ -248,13 +248,6 @@ def test_unresolved_in_group_excludes_the_position_being_decided():
     assert journey.unresolved_in_group(PHASE_ENTRY_BASELINE, excluding=7) == ()
 
 
-def test_mark_applied_is_the_only_way_applied_becomes_true():
-    journey = _journey()
-    assert journey.applied is False
-    journey.mark_applied()
-    assert journey.applied is True
-
-
 def test_a_journey_can_be_constructed_already_part_way_through():
     """Stage 2 is built with CHECK/MEASURE accepted and the apply observed."""
 
@@ -292,14 +285,6 @@ def test_measure_accepted_and_verify_pending_and_unapplied_is_the_interlude():
     journey.accept(PHASE_CHECK, 1)
     journey.accept(PHASE_MEASURE, 2)
     assert journey.current_phase == PHASE_REVIEW
-
-
-def test_the_interlude_ends_the_moment_the_apply_is_observed():
-    journey = _journey(THREE_ENTRY_MAP)
-    journey.accept(PHASE_CHECK, 1)
-    journey.accept(PHASE_MEASURE, 2)
-    journey.mark_applied()
-    assert journey.current_phase == PHASE_VERIFY
 
 
 def test_the_interlude_needs_measure_accepted_not_merely_verify_pending():
@@ -515,21 +500,18 @@ def test_the_conductors_phase_readers_move_when_the_journey_moves():
 
     conductor._journey.accept(PHASE_MEASURE, 2)
     assert conductor.current_phase == PHASE_REVIEW
-    conductor.note_apply_complete()
-    assert conductor.applied is True
-    assert conductor.current_phase == PHASE_VERIFY
 
 
 def test_the_snapshot_reads_the_journey_and_not_a_constructor_echo():
-    conductor = _conductor(index_phase_map=dict(STAGE1_MAP))
-    conductor._journey.accept(PHASE_MEASURE, 2)
-    conductor._journey.accept(PHASE_CHECK, 1)
+    conductor = _conductor(
+        index_phase_map=dict(VERIFY_ONLY_MAP),
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
     snapshot = conductor.snapshot()
     assert snapshot.accepted_phases == (PHASE_CHECK, PHASE_MEASURE)
     assert snapshot.session_phases == conductor.session_phases
-    assert snapshot.applied is False
-    conductor.note_apply_complete()
-    assert conductor.snapshot().applied is True
+    assert snapshot.applied is True
 
 
 def test_session_phases_and_post_apply_verifies_are_public_reads():
@@ -957,41 +939,11 @@ def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():
     )
 
 
-def test_mark_restored_is_mark_applieds_inverse():
-    """#2616 — the flag can go back, so the journey can own it in both
-    directions."""
-    journey = _journey()
-    journey.mark_applied()
+def test_mark_restored_clears_constructed_applied_state():
+    journey = _journey(applied=True)
     assert journey.applied is True
     journey.mark_restored()
     assert journey.applied is False
-
-
-def test_applied_cannot_go_false_to_true_without_a_fresh_apply():
-    """Only ``mark_applied`` sets it, and a restore does not un-set itself.
-
-    The defect #2616 fixes was a SECOND owner writing the flag back: the
-    durable state's restore cleared it, and the next conductor persist
-    re-asserted it from a snapshot taken before the restore. This pins the half
-    that lives here — nothing but a fresh apply raises the flag, so once the
-    journey is told about a restore, only a real apply can undo that.
-    """
-    journey = _journey()
-    journey.mark_applied()
-    journey.mark_restored()
-    assert journey.applied is False
-
-    # Every other transition this object has, exercised against a restored
-    # journey: none of them may raise the flag.
-    for phase, index in ((PHASE_CHECK, 1), (PHASE_MEASURE, 2)):
-        journey.accept(phase, index)
-        assert journey.applied is False
-    journey.mark_restored()
-    assert journey.applied is False
-
-    # ...and the one transition that may, does.
-    journey.mark_applied()
-    assert journey.applied is True
 
 
 def test_restoring_a_journey_that_never_applied_is_a_no_op():
@@ -1004,9 +956,9 @@ def test_restoring_a_journey_that_never_applied_is_a_no_op():
 def test_the_restore_re_opens_the_review_interlude():
     """The derivation ``applied`` feeds moves back with it.
 
-    ``mark_applied`` collapses the PHASE_REVIEW interlude into VERIFY; its
-    inverse has to re-open it, or the flag would be reversible while the screen
-    the household sees would not.
+    Stage-2 construction collapses the PHASE_REVIEW interlude into VERIFY.
+    Restore has to re-open it, or the flag would be reversible while the
+    screen the household sees would not.
     """
     journey = _journey(
         VERIFY_ONLY_MAP, accepted_phases=(PHASE_CHECK, PHASE_MEASURE),

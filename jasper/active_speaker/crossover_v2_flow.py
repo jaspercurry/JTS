@@ -1439,14 +1439,6 @@ class CrossoverV2Session:
 
     # --- lifecycle -----------------------------------------------------------
 
-    def note_apply_complete(self) -> None:
-        """The apply-complete host event — arms the soft-held VERIFY (§5.2)."""
-        self._journey.mark_applied()
-        log_event(
-            logger, "correction.crossover_v2_apply_complete",
-            session_id=self.session_id,
-        )
-
     def note_restore_observed(self) -> None:
         """The restore-observed host event — disarms the VERIFY hold (#2616)."""
         self._journey.mark_restored()

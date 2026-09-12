@@ -52,6 +52,7 @@ from tests.crossover_v2_fixtures import (
     _run_phase,
     _snr_analysis,
     _snr_pilot,
+    _stage2_after_measure,
     _verify_analysis,
     with_records,
 )
@@ -502,10 +503,7 @@ def test_verify_low_pilot_snr_routes_to_level_collapse_not_agc():
     recording-chain evidence (``pilot_transfer_step_db``) was null.
     """
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
     fakes.verify = lambda program: _verify_analysis(program, pilot_snr_ok=False)
     verdict = _run_phase(c, 3, 3)
     assert verdict["code"] == "pilot_level_collapse"
@@ -526,10 +524,7 @@ def test_verify_low_pilot_snr_does_not_seed_the_g3_transfer_baseline():
     ``_pilot_transfer_by_role``'s docstring).
     """
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_snr_ok=False, pilot_hi_dbfs=-45.0,
     )
@@ -597,10 +592,7 @@ def test_verify_gate_comparability_precedes_pilot_transfer(gate_ms, code):
 
 def test_verify_out_of_tolerance_and_inconclusive():
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
     verdict = _run_phase(c, 3, 3)

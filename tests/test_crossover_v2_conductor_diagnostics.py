@@ -60,6 +60,7 @@ from tests.crossover_v2_fixtures import (
     _profiled_conductor,
     _resp_with_repeats,
     _run_phase,
+    _stage2_after_measure,
     _verify_analysis,
 )
 
@@ -1090,10 +1091,7 @@ def test_verify_diag_logs_guard_field_and_pilot_transfer_on_level_shift_fire(cap
     guard=pilot_level_shift."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0, max_db=5.0,
@@ -1127,10 +1125,7 @@ def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(ca
     runs unconditionally) to misreport as if it were computed this attempt."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
+    c = _stage2_after_measure(fakes)
 
     # Attempt 1 (N-1): establishes the baseline (independently out of
     # tolerance, so a retry is admitted).

@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_AGC_BEHAVIORAL_FAIL
 from tests.crossover_v2_fixtures import (
-    FakeSeams, _check_analysis, _conductor, _measure_analysis, _run_phase, _verify_analysis,
+    FakeSeams, _check_analysis, _conductor, _measure_analysis, _run_phase, _stage2_conductor, _verify_analysis,
 )
 
 LINEARITY_SITES = {
@@ -41,16 +41,16 @@ DRIVERS = {
 
 
 def _refuse_at(phase):
-    phases = (PHASE_CHECK,) if phase == PHASE_CHECK else (
-        (PHASE_CHECK, PHASE_MEASURE) if phase == PHASE_MEASURE
-        else (PHASE_CHECK, PHASE_MEASURE, phase)
+    phases = (phase,) if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else (
+        (PHASE_CHECK,) if phase == PHASE_CHECK else
+        (PHASE_CHECK, PHASE_MEASURE) if phase == PHASE_MEASURE else
+        (PHASE_CHECK, PHASE_MEASURE, phase)
     )
     fakes = FakeSeams()
-    conductor = _conductor(fakes, index_phase_map=dict(enumerate(phases, 1)))
+    build = _stage2_conductor if len(phases) == 1 and phase != PHASE_CHECK else _conductor
+    conductor = build(fakes, index_phase_map=dict(enumerate(phases, 1)))
     for index in range(1, len(phases)):
         _run_phase(conductor, index, 1)
-    if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY):
-        conductor.note_apply_complete()
     seam, analysis = DRIVERS[phase]
     setattr(fakes, seam, lambda program: analysis(program, linearity=False))
     return _run_phase(conductor, len(phases), 1)
