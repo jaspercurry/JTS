@@ -4927,11 +4927,12 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     )
     assert issues == []
     assert emitted is not None
+    from jasper.active_speaker.branch_chain import confirmed_protection_sections
     verify_graph = compile_tuning_graph(MeasurementGraphProfile(
         ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
         topology, {"woofer": 0, "tweeter": 1}, applied["recomposition_snapshot"]["playback_device"],
-        applied_profile=applied,
-    ), scope="speaker_tune")
+         protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    ), candidate=candidate)
     requirement = safety["targets"][0]["required_protection_filters"][0]
     for text in (config_text, emitted, verify_graph):
         assert protection_requirement_present(
@@ -5017,10 +5018,7 @@ async def test_apply_binds_complete_measured_bass_graph(monkeypatch, tmp_path, m
 
 
 @pytest.mark.parametrize("change", ["speaker", "room"])
-async def test_bass_apply_refuses_changed_saved_upstream_inside_writer_lock(monkeypatch, tmp_path, change):
-    from contextlib import asynccontextmanager
-    from jasper.active_speaker import measurement_emit
-
+async def test_bass_apply_uses_its_own_graph_after_saved_upstream_changes(monkeypatch, tmp_path, change):
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
@@ -5052,38 +5050,13 @@ async def test_bass_apply_refuses_changed_saved_upstream_inside_writer_lock(monk
     changed = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
                                            measured_candidate=updated)
     assert changed["status"] == "applied", changed
-    saved = kwargs["state_path"].read_bytes()
-    lock_held = False
-    real_lock = baseline_profile_mod.dsp_writer_lock
-    real_upstream = measurement_emit.candidate_upstream_snapshot
-
-    @asynccontextmanager
-    async def observed_lock(config_dir, *, source):
-        nonlocal lock_held
-        async with real_lock(config_dir, source=source):
-            lock_held = True
-            try:
-                yield
-            finally:
-                lock_held = False
-
-    def checked_upstream(*args, **call_kwargs):
-        assert lock_held
-        return real_upstream(*args, **call_kwargs)
-
-    monkeypatch.setattr(baseline_profile_mod, "dsp_writer_lock", observed_lock)
-    monkeypatch.setattr(measurement_emit, "candidate_upstream_snapshot", checked_upstream)
     result = await apply_baseline_profile(
         topology, **kwargs, load_config=load_config, measured_candidate=bass,
         expected_tuning_graph_fingerprint=captured,
     )
-    assert result["status"] == "blocked"
-    assert {issue["code"] for issue in result["issues"]} >= {
-        "measurement_candidate_tune_mismatch" if change == "speaker"
-        else "measurement_candidate_room_mismatch",
-    }
-    assert kwargs["state_path"].read_bytes() == saved
-    assert len(loaded) == 2
+    assert result["status"] == "applied"
+    assert len(loaded) == 3
+    assert result["profile"]["source"]["measured_candidate_fingerprint"] == bass.fingerprint
 
 
 

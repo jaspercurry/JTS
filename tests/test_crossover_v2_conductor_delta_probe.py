@@ -18,26 +18,15 @@ from jasper.active_speaker.crossover_v2 import (
     intervention as iv,
 )
 from jasper.active_speaker.delta_probe import (
-    DELTA_PROBE_ROLLBACK_VERDICTS,
-    DELTA_PROBE_VERDICTS,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
-    VERDICT_MODEL_ERROR,
-    VERDICT_SAFETY_ONLY,
-    VERDICT_UNAVAILABLE,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_MEASURE,
     PHASE_VERIFY,
-)
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    DELTA_PROBE_REASON_BY_VERDICT,
-    REASON_CORRECTION_ROLLBACK_FAILED,
-    REASON_CORRECTION_UNSAFE_RESULT,
-    REASON_REGISTRY,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.audio_measurement.program_analysis import (
@@ -384,8 +373,8 @@ def test_delta_probe_verifies_the_correction_and_accepts_a_matching_one():
     assert c.verify_outcome == "pass"
     assert c.delta_probe is not None
     assert c.delta_probe.verdict == VERDICT_MATCHED
-    assert c.delta_probe.rollback is False
-    assert c.delta_probe.to_dict()["rollback"] is False
+    assert c.delta_probe.advises_against_keep is False
+    assert c.delta_probe.to_dict()["advises_against_keep"] is False
 
 
 def test_delta_probe_removes_the_applys_declared_level_move(caplog):
@@ -417,7 +406,7 @@ def test_delta_probe_removes_the_applys_declared_level_move(caplog):
     assert c.delta_probe.expected_offset_db == 0.0
     assert c.delta_probe.residual_offset_db == pytest.approx(-22.458, abs=1e-6)
     assert c.delta_probe.entry_anchor_offset_db == pytest.approx(0.0, abs=1e-6)
-    assert c.delta_probe.rollback is False
+    assert c.delta_probe.advises_against_keep is False
 
     fakes2 = FakeSeams()
     c2 = _probed_conductor(fakes2)
@@ -442,7 +431,7 @@ def test_delta_probe_removes_the_applys_declared_level_move(caplog):
 def test_a_level_mismatch_is_persisted_and_logged_at_warning(caplog):
     """#1811 SF1: a non-rollback finding must leave a trace, on both surfaces.
 
-    ``level_mismatch`` is not in ``DELTA_PROBE_ROLLBACK_VERDICTS`` by design,
+    ``level_mismatch`` is not in ``DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`` by design,
     so nothing escalates on it and the session passes — and until this landed the ONLY evidence was an INFO journal line
     nobody greps. It now rides WARNING (the level a reader sweeping a
     "successful" session actually sees) and is persisted so ``/state``, the
@@ -488,111 +477,6 @@ def test_delta_probe_offset_seam_that_misbehaves_is_nothing_known():
         assert c.delta_probe.verdict == VERDICT_MATCHED
 
 
-def test_delta_probe_model_error_rolls_back_automatically_and_refuses(caplog):
-    """The load-bearing behaviour: a realized-vs-commanded map that does not
-    match is undone BEFORE the household is told, so the copy ("the previous
-    sound has been put back") is already true when they read it.
-
-    **Which SENTENCE they read moved, and the move is the routing working.**
-    The probe's own seam refused under the probe's class and consulted nothing
-    else. The round consults every axis, and this fixture's ±5 dB tilt trips
-    the SAFETY axis too — a commanded boost realized above its declared bound —
-    which the table checks before quality. So the graph comes off under the
-    stronger true sentence rather than the shape one. The unsafe-result code is
-    not a demotion of the finding: the probe's own verdict is still
-    ``model_error`` and still on the record, one assertion below.
-    """
-    # The COORDINATOR's logger, at INFO: a SUCCESSFUL restore is not an error,
-    # and the line moved there with the decision.
-    caplog.set_level(
-        logging.INFO, logger="jasper.active_speaker.crossover_v2.coordinator",
-    )
-    calls: list[str] = []
-    fakes = FakeSeams()
-    c = _probed_conductor(fakes, rollback=lambda reason: calls.append(reason) or True)
-    # A wide tilt across the commanded band: the shape is wrong, not the scale.
-    fakes.verify = lambda program: dataclasses.replace(
-        _verify_analysis(program),
-        verify_tracking_curve=_tracking_curve(
-            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
-        ),
-    )
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_UNSAFE_RESULT
-    assert c.delta_probe.verdict == VERDICT_MODEL_ERROR
-    # The rollback ran, exactly once, and it ran with the cause the round
-    # decided on rather than a second copy of it.
-    from jasper.active_speaker.crossover_v2.verification import (
-        SAFETY_BOOST_OVER_DECLARED_BOUND,
-    )
-
-    assert calls == [SAFETY_BOOST_OVER_DECLARED_BOUND]
-    fields = event_fields(caplog, "correction.crossover_v2_round_restore")
-    assert fields["restored"] == "true"
-    # The refusal names itself to the host (the same contract PR-L4 relies on).
-    assert c.last_failure_code == REASON_CORRECTION_UNSAFE_RESULT
-
-
-def test_delta_probe_refuses_honestly_when_no_rollback_seam_is_bound(caplog):
-    """The verdict is real whether or not this process can act on it — but the
-    COPY has to match what happened to the speaker.
-
-    A conductor with no rollback binding still refuses, and refuses under
-    ``correction_rollback_failed``, whose copy says the correction is STILL
-    APPLIED and names Undo. The three verdict-specific codes all promise "the
-    previous sound has been put back", and a household listening to a
-    correction while being told it was reverted is a false statement about
-    their speaker (adversarial review S4)."""
-    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    c = _probed_conductor(fakes)
-    assert c._seams.rollback is None
-    fakes.verify = lambda program: dataclasses.replace(
-        _verify_analysis(program),
-        verify_tracking_curve=_tracking_curve(
-            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
-        ),
-    )
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
-    # The finding itself is still recorded and still specific.
-    assert c.delta_probe.verdict == VERDICT_MODEL_ERROR
-    # LOUD on the journal, from the one owner that now decides it. The table
-    # knows before it tries that there is no anchor, so it does not attempt a
-    # restore it cannot make — and says so, which is what keeps the STILL
-    # APPLIED sentence below true.
-    fields = event_fields(caplog, "correction.crossover_v2_round_recovery_required")
-    assert fields["rollback_anchor_available"] == "false"
-    message = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
-    assert "STILL APPLIED" in message
-    assert "put back" not in message.replace("put the previous sound back", "")
-
-
-def test_delta_probe_survives_a_rollback_seam_that_raises():
-    """A rollback that could not run must not swallow the verdict that asked
-    for it."""
-    fakes = FakeSeams()
-
-    def _boom(_reason):
-        raise RuntimeError("camilla is unreachable")
-
-    c = _probed_conductor(fakes, rollback=_boom)
-    fakes.verify = lambda program: dataclasses.replace(
-        _verify_analysis(program),
-        verify_tracking_curve=_tracking_curve(
-            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
-        ),
-    )
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    # …and it refuses HONESTLY: the restore did not happen, so the copy must
-    # not say it did.
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
-    assert c.delta_probe.verdict == VERDICT_MODEL_ERROR
-
-
 def test_delta_probe_without_a_tracking_curve_is_unavailable_not_a_rollback():
     """No post-apply comparison, no verdict — and an absent measurement is not
     evidence of a bad correction. Rolling back on it would revert every session
@@ -627,7 +511,7 @@ def test_delta_probe_grades_the_bands_the_captures_gate_trusts(caplog):
     )
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is True
-    assert c.delta_probe.rollback is False
+    assert c.delta_probe.advises_against_keep is False
     assert c.delta_probe.requested_band_hz == (300.0, trusted_hi_hz)
     assert c.delta_probe.probe_band_hz[1] <= trusted_hi_hz
     # The band is on the journal line too, beside the band it actually graded —
@@ -682,7 +566,7 @@ def test_a_frame_carrying_capture_is_disclosed_rather_than_rolled_back(caplog):
     assert verdict["accepted"] is True
     assert c.verify_outcome == "pass"
     assert c.delta_probe.verdict == VERDICT_FRAME_MISMATCH
-    assert c.delta_probe.rollback is False
+    assert c.delta_probe.advises_against_keep is False
     fields = event_fields(caplog, "correction.crossover_v2_delta_probe")
     assert fields["frame_removed"] == "true"
     assert fields["frame_tilt_db_per_octave"] == "-0.9"
@@ -1072,64 +956,6 @@ def test_the_headroom_charge_is_paid_for_a_driver_only_boost():
     # 0.0 and would satisfy the equality above by itself).
     for role in boosted_roles:
         assert c.candidate.linearization[role]["headroom_cost_db"] > 0.0
-
-
-def test_every_non_matched_verdict_reaches_a_household_surface():
-    """A new NON-MATCHED verdict cannot ship without reaching the household.
-
-    This guard used to assert equality with the ROLLBACK set, which enforced
-    the stated intent only for as long as the two sets were the same thing.
-    ``level_mismatch`` (#1811) is the first non-matched verdict that is
-    deliberately not a rollback, so it slipped through an equality check while
-    rendering as a clean pass. The guard now walks the non-matched set: a
-    verdict either has a refusal code with real copy, or is named here with
-    the surface it does reach instead.
-    """
-    non_matched = set(DELTA_PROBE_VERDICTS) - {VERDICT_MATCHED, VERDICT_UNAVAILABLE}
-    # Verdicts that reach the household WITHOUT a refusal. Adding one here is
-    # a claim that must be true — each entry names the surface, and that
-    # surface has its own test.
-    surfaced_without_refusal = {
-        # Persisted as ``verify.delta_probe`` by ``persist_conductor_state``
-        # and rendered as the done screen's caveat nudge — see
-        # ``test_a_level_mismatch_caveats_the_pass_screen`` in
-        # tests/test_crossover_envelope_v2.py.
-        VERDICT_LEVEL_MISMATCH,
-        # The tilt-carrying sibling of the one above (#2521), on the same
-        # surface and by the same route — see
-        # ``test_a_frame_mismatch_caveats_the_pass_screen`` in
-        # tests/test_crossover_envelope_v2.py.
-        VERDICT_FRAME_MISMATCH,
-        # The shape check did not RUN (#2614) — an alternative-Fc round has no
-        # like-for-like previous graph, so there is no change axis to grade
-        # against. Not a finding about the speaker, so not a refusal; it
-        # reaches the household on the same done-screen caveat by the same
-        # route — see ``test_a_safety_only_probe_caveats_the_pass_screen`` in
-        # tests/test_crossover_envelope_v2.py.
-        VERDICT_SAFETY_ONLY,
-    }
-    assert set(DELTA_PROBE_REASON_BY_VERDICT) == non_matched - surfaced_without_refusal
-    assert set(DELTA_PROBE_REASON_BY_VERDICT) == set(DELTA_PROBE_ROLLBACK_VERDICTS)
-    for code in DELTA_PROBE_REASON_BY_VERDICT.values():
-        spec = REASON_REGISTRY[code]
-        assert spec.template == "hard_stop"
-        assert spec.retry_budget == 0
-        assert len(spec.message) > 40
-        # The correction is already undone, so the copy has to say so.
-        assert "put back" in spec.message
-
-
-def test_delta_probe_reason_copy_names_no_hardware_noun():
-    """Mirrors the null-classification copy rule: the household is told what
-    happened and what to do, never given a hardware diagnosis this measurement
-    cannot support."""
-    # "driver details in speaker setup" is a UI location and appears in
-    # PR-L4's own copy — what is banned is naming a PART as the cause, which
-    # is a diagnosis this measurement cannot support.
-    banned = ("tweeter", "woofer", "amplifier", "horn", "capacitor", "resistor")
-    for code in DELTA_PROBE_REASON_BY_VERDICT.values():
-        message = REASON_REGISTRY[code].message.lower()
-        assert not any(word in message for word in banned), code
 
 
 def test_the_commanded_delta_is_none_when_a_side_is_missing():

@@ -4,9 +4,8 @@
 > (production CamillaDSP v4.1.3, config `sound_current.yml`) by
 > orchestrated agents; raw structured results in the session
 > transcript. Spike 4 and the ears-on transition listen remain with
-> the operator. Consumed by
-> [`docs/HANDOFF-bass-extension-plan.md`](../../HANDOFF-bass-extension-plan.md)
-> §12/§14 and the wave-3/5 prompt gates.
+> the operator. [ADR-0304](../../adr/0304-the-bass-level-axis-is-fixed-level-windows.md)
+> carries the current JTS3 research bounds; this report retains the spike facts.
 
 ## Verdicts
 

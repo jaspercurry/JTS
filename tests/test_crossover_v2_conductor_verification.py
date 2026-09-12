@@ -22,10 +22,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_CORRECTION_MODEL_ERROR,
-    REASON_CORRECTION_ROLLBACK_FAILED,
-)
+
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     CLAIM_FAIL,
@@ -138,21 +135,6 @@ def test_measure_priors_carry_no_ambient_when_check_never_ran():
 
 
 def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
-    """#1966 — ``gate_window_ms`` alone cannot say whether anything was gated.
-
-    A window that stops at a found reflection and a window CAPPED at the
-    search ceiling because none was found print the same number. Across the
-    whole 2026-07-30 corpus every capture was the second state, and the record
-    could not say so: the gate computes ``floor_source`` and every v2 consumer
-    dropped it.
-
-    This fixture carries no ``capture_integrity`` (a raw ``ProgramAnalysis``),
-    so the ROUND refuses it as untrusted evidence with no rollback anchor
-    bound (#2537) — asserted first so the disclosure claim below is not read
-    as "and so the round kept it". The ``verify_diag`` line's own numbers are
-    unaffected by what the round later decides: it is written at VERIFY's own
-    capture-gate step, before the round grades anything.
-    """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
@@ -177,8 +159,7 @@ def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
     assert fields["verify_gate_window_ms"] == "8.0"
@@ -331,21 +312,6 @@ def test_measure_diag_names_the_binding_gate_and_its_floor_source(caplog):
 
 
 def test_verify_pass_states_the_band_it_graded():
-    """#1868 — "Verified." must say over what.
-
-    The graded band is not the nominal Fc±1 octave: ``overlap_band_hz`` clamps
-    its lower edge up to the tweeter's real sweep floor and ``_analyze_verify``
-    clamps it again to the capture's validity floor. It used to ride the
-    ``evidence`` block, which the host persists only on a NON-pass outcome — so
-    the one screen that says the result is good was the one screen that never
-    said what was checked.
-
-    This fixture carries no ``capture_integrity``, so the ROUND refuses it as
-    untrusted evidence with no rollback anchor bound (#2537) — asserted first.
-    VERIFY's OWN pass/band bookkeeping (``verify_outcome``,
-    ``verify_graded_band_hz``) is written at the capture-gate step, ahead of
-    round grading, and is unaffected by the round's later refusal.
-    """
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
         phase="verify", program_id=program.program_id,
@@ -363,27 +329,13 @@ def test_verify_pass_states_the_band_it_graded():
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     assert c.verify_outcome == "pass"
     assert c.verify_graded_band_hz == [2000.0, 4000.0]
 
 
 def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
-    """Rung P1 — "Verified." must say how much of the agreement was frame.
-
-    VERIFY differences an on-axis MODEL against an in-room MEASUREMENT. On the
-    2026-07-29 corpus a single −0.79 dB/octave tilt between those two frames
-    accounted for 84 % of the flow's apparent prediction error, so a pass with
-    the frame unstated invites exactly the reading the panel had to correct.
-    Surfaced on a PASS for the same reason the graded band is (#1868): the
-    passing screen is the one that would otherwise overclaim.
-
-    This fixture carries no ``capture_integrity``, so the ROUND refuses it as
-    untrusted evidence with no rollback anchor bound (#2537) — asserted first,
-    same reasoning as the graded-band test above.
-    """
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
         phase="verify", program_id=program.program_id,
@@ -398,8 +350,7 @@ def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     assert c.verify_outcome == "pass"
     assert c.verify_frame == {
@@ -422,16 +373,6 @@ def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
 
 
 def test_an_unfitted_frame_is_disclosed_as_absent_never_as_agreement():
-    """A comparison whose frame could not be measured says nothing, rather than
-    reporting a flat frame — absence and "the frames matched" are different
-    claims and must not collapse into one.
-
-    This fixture carries no ``capture_integrity``, so the ROUND refuses it as
-    untrusted evidence with no rollback anchor bound (#2537) — asserted first,
-    same reasoning as the two frame/band tests above. ``verify_frame`` is
-    written at VERIFY's own capture-gate step and is unaffected by the round's
-    later refusal.
-    """
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
         phase="verify", program_id=program.program_id,
@@ -449,8 +390,7 @@ def test_an_unfitted_frame_is_disclosed_as_absent_never_as_agreement():
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
 
     assert c.verify_frame is None
 
@@ -913,36 +853,6 @@ def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
     assert verify_absolute_tolerance_db([17_000.0, 20_000.0]) is None
     assert verify_absolute_tolerance_db([1000.0]) is None
 
-
-def test_the_delta_probe_still_refuses_first_so_its_rollback_is_never_displaced():
-    """R18 is purely additive to the refusal order (resilience review finding).
-
-    A probe-class refusal carries an AUTOMATIC remedy — the graph comes off.
-    Gating ahead of it would let a capture that fails this claim AND warrants a
-    rollback get neither.
-
-    Injected at ``_grade_round_once``: since the fifth-principle routing the
-    probe reports and the ROUND decides, so "the probe's refusal" reaches this
-    ordering as the round's. The subject is unchanged — R18's absolute claim
-    must not displace it.
-    """
-    fakes = FakeSeams()
-    c = _verify_to_apply(fakes)
-    fakes.verify = lambda program: _verify_analysis(
-        program, max_db=0.069, verify_absolute=_absolute(3.98),
-    )
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow.CrossoverV2Session, "_grade_round_once",
-            lambda self, verdict: flow.PhaseVerdict(
-                False, REASON_CORRECTION_MODEL_ERROR,
-            ),
-        )
-        verdict = _run_phase(c, 3, 3)
-    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
-    # The claim was still GRADED and still says it failed — the ordering
-    # decides which refusal is reported, never whether the claim was made.
-    assert c.verify_claims["absolute"]["status"] == CLAIM_FAIL
 
 
 def test_the_crossover_region_claim_is_not_the_cloud_flatness_gauge():

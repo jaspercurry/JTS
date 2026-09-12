@@ -578,12 +578,6 @@ def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
     assert result.reason
 
 
-
-
-
-
-
-
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
     round_dir = _make_round_dir(
         tmp_path, "r1",

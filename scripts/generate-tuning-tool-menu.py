@@ -8,7 +8,7 @@
 metadata, and splice it into docs/tuning-operator-runbook.md between the
 generated-content markers.
 
-ADR-0204 / tuning-master-plan.md ticket 6.4: per-tool detail lives in each
+ADR-0204: per-tool detail lives in each
 CLI's own ``--help``; this table is only the index, one row per tool, so
 drift between the runbook and a tool's real prog/description/exit-code
 surface is structurally impossible -- the table is a *rendering* of the

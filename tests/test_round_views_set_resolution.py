@@ -218,7 +218,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         if original.get("pose_kind") != "seat":
             continue
         path = take_artifact_path(root, row.path)
-        original.update(candidate_id="first", graph_scope="speaker_tune", program={"program_id": "program"}, loudness_volume_db=-30.0)
+        original.update(candidate_id="first", graph_scope="candidate", program={"program_id": "program"}, loudness_volume_db=-30.0)
         original["curves"][0]["band_hz"] = [50.0, 200.0]
         path.write_text(json.dumps(original))
         second = json.loads(json.dumps(original))

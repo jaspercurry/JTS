@@ -634,7 +634,7 @@ def _drive(
 ) -> list[str]:
     """Use the shared composer and playback owner; replace hardware and admission."""
     from jasper import dsp_apply
-    from jasper.active_speaker import program_admission, program_playback
+    from jasper.active_speaker import measurement_emit, program_admission, program_playback
     from jasper.active_speaker.crossover_v2 import door
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.audio_measurement import program as program_mod
@@ -650,6 +650,7 @@ def _drive(
         return SimpleNamespace(ok=True)
 
     monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
+    monkeypatch.setattr(measurement_emit, "measurement_bass_extension", lambda **kw: {})
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _Window(cam))
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
@@ -681,7 +682,8 @@ def _drive(
     async def run():
         prepared = await playback.compose(spec=MeasureSpec(
             kind="verify" if phase == PHASE_VERIFY else "candidate",
-            graph_scope="speaker_tune" if phase == PHASE_VERIFY else "drivers",
+            graph_scope="candidate" if phase == PHASE_VERIFY else "drivers",
+            candidate_id="baseline" if phase == PHASE_VERIFY else "",
             program_phase=phase,
         ))
         await program_playback.play_program(

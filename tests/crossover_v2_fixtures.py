@@ -467,24 +467,9 @@ class FakeSeams:
     # failure (owner ruling, 2026-07-20) — empty string while pending/never
     # attempted, a REASON_REGISTRY code once the auto-apply gives up.
     apply_failed_code: str = ""
-    # PR-L5: the delta probe's automatic-rollback seam. ``None`` (the default)
-    # is the honest "no binding" case the conductor must still refuse under.
-    rollback: Any = None
-    # #2291's state half of "can this host restore" — a prior candidate is
-    # recorded — beside ``rollback``'s process fact. Production binds it
-    # UNCONDITIONALLY on both stages (``bind_v2_stage_seams``), so a fixture
-    # that binds ``rollback`` and leaves this unbound is not modelling any
-    # real speaker: the round would route to ``recovery_required`` on a host
-    # whose way back works.
-    #
-    # It matters here since the fifth-principle routing. A delta-probe rollback
-    # class used to restore from the probe's own seam, which asked only whether
-    # ``rollback`` was bound; it now restores through the adoption table, which
-    # correctly asks both halves. Defaulted to follow ``rollback`` so every
-    # existing fixture keeps modelling the host it meant to.
     rollback_available: Any = None
     # #1866: every level-frame finding the conductor banks, in order. Bound by
-    # default (unlike ``rollback``) because "no findings seam" is the degraded
+    # default because "no findings seam" is the degraded
     # case here, not the normal one — a test that wants it unbound replaces
     # ``seams().records`` with ``findings=None``.
     banked_findings: list = field(default_factory=list)
@@ -541,15 +526,7 @@ class FakeSeams:
             ),
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
-            rollback=self.rollback,
-            # Follows ``rollback`` unless a test says otherwise — see the
-            # field's own note for why an unbound anchor beside a bound
-            # rollback models no real host.
-            rollback_available=(
-                self.rollback_available
-                if self.rollback_available is not None
-                else (None if self.rollback is None else (lambda: True))
-            ),
+            rollback_available=self.rollback_available,
             applied_boosts=lambda: self.applied_boosts,
             applied_profile=self.applied_profile,
         )
@@ -1808,7 +1785,7 @@ def _gate_residuals(conductor) -> tuple[float, float]:
     )
 
 
-def _probed_conductor(fakes: FakeSeams, *, rollback=None, entry_error_db=0.0):
+def _probed_conductor(fakes: FakeSeams, *, entry_error_db=0.0):
     """A conductor walked to the point where VERIFY is the next capture.
 
     Uses the ELIGIBLE measure fixture because a probe needs something to have
@@ -1826,7 +1803,6 @@ def _probed_conductor(fakes: FakeSeams, *, rollback=None, entry_error_db=0.0):
     and none states — which is a fixture measuring itself. Pass a value (or a
     callable of frequency) to state a different one deliberately.
     """
-    fakes.rollback = rollback
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)

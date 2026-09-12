@@ -17,13 +17,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
-from jasper.active_speaker.delta_probe import (
-    VERDICT_LEVEL_DEPENDENT_SHORTFALL,
-    VERDICT_MODEL_ERROR,
-    VERDICT_SPATIALLY_COSTLY,
-)
 from jasper.log_event import log_event
 
+from ..boost_protection import BOOST_OVER_DECLARED_BOUND
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -130,22 +126,13 @@ REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 # which is not true of a genuine host fault. Terminal.
 REASON_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
 
+REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
+REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH = "measurement_candidate_speaker_mismatch"
 REASON_MEASUREMENT_CANDIDATE_REQUIRED = "measurement_candidate_required"
 REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
-REASON_MEASUREMENT_CANDIDATE_NO_BASS = "measurement_candidate_no_bass"
-REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH = "measurement_candidate_base_mismatch"
-REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH = "measurement_candidate_tune_mismatch"
-REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH = "measurement_candidate_room_mismatch"
-REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE = "measurement_candidate_bass_scope"
-REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE = "measurement_candidate_room_scope"
-REASON_MEASUREMENT_CANDIDATE_NO_ROOM = "measurement_candidate_no_room"
 REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
-REASON_MEASUREMENT_PROFILE_UNAVAILABLE = "measurement_profile_unavailable"
-REASON_MEASUREMENT_GRAPH_UNAVAILABLE = "measurement_graph_unavailable"
-REASON_MEASUREMENT_BASE_MISMATCH = "measurement_base_mismatch"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
 REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
-REASON_MEASUREMENT_CORRECTIONS_INVALID = "measurement_corrections_invalid"
 REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
@@ -236,50 +223,6 @@ REASON_GEOMETRY_RETAKE_UNREACHABLE = "geometry_retake_unreachable"
 # ``GEOMETRY_RETRY_POSITIONS`` times, then proceeds with the verdict recorded
 # rather than blocking on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
-# Delta-probe verdicts. These fire AFTER the apply — what the post-apply sweep
-# found — so each rolls the correction back before it names itself. Every
-# reader tolerates a persisted literal with no registry row
-# (``_failure_history_note`` in ``crossover_envelope_v2`` reads with ``.get``).
-#
-# The correction did not do what its own filters said it would: a chain defect,
-# the shelf realized at a Q the fit never modelled being the archetype.
-REASON_CORRECTION_MODEL_ERROR = "correction_model_error"
-# The correction's shape landed but its depth did not — the driver delivered
-# materially less level than it was asked for. A compression diagnostic.
-REASON_CORRECTION_LEVEL_SHORTFALL = "correction_level_shortfall"
-# The correction tracked at the measuring spot and made the room LESS even
-# everywhere else: it fitted one position's interference rather than the
-# speaker. The remedy is placement, not a different filter.
-REASON_CORRECTION_SPATIALLY_COSTLY = "correction_spatially_costly"
-# The probe found a defect AND the automatic rollback could not run (no
-# rollback binding, a refused restore, or a seam that raised). The correction
-# is therefore STILL APPLIED and the copy has to say so.
-REASON_CORRECTION_ROLLBACK_FAILED = "correction_rollback_failed"
-# The correction was applied, MEASURED at the same mark with the same program,
-# and the speaker is measurably worse than it was before — so it came back off.
-# Distinct from the three delta-probe codes, which say the graph did not do
-# what its own filters commanded: here the graph did exactly what it was told
-# and the room liked it less.
-REASON_CORRECTION_MEASURED_REGRESSION = "correction_measured_regression"
-# The fail-closed boost: the benefit could not be measured and the applied
-# intervention puts energy INTO a driver. An unverified cut can wait for a
-# household to decide; an unverified boost cannot, so it comes off.
-REASON_CORRECTION_UNPROVEN_BOOST = "correction_unproven_boost"
-# The safety row: the post-apply sweep measured the applied graph putting out
-# MORE than it declared — a commanded boost realized above its bound, an
-# uncommanded level shift in the LOUD direction, or a capture that clipped — so
-# it came off. The only cause on this list about output rather than accuracy.
-#
-# ONE row rather than three hazard-specific ones: the action is identical in
-# all three cases and the specific hazard is on the round's own record (the
-# safety verdict's reason, in the receipt's ``round_axes`` and the journal).
-REASON_CORRECTION_UNSAFE_RESULT = "correction_unsafe_result"
-# The untrusted row, for an intervention that puts no energy in. Its boosted
-# sibling is REASON_CORRECTION_UNPROVEN_BOOST, whose copy leans on "and it
-# turns some parts up" — false for a cut-only correction.
-REASON_CORRECTION_UNVERIFIABLE_RESULT = "correction_unverifiable_result"
-
-
 class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
 
@@ -299,70 +242,6 @@ class CrossoverV2Refused(ValueError):
     def __init__(self, *args: Any, code: str = "") -> None:
         super().__init__(*args)
         self.code = code
-
-
-def round_restore_reason(cause: str) -> str:
-    """Adoption cause → the code a SUCCESSFUL round restore surfaces.
-
-    The three SAFETY causes share :data:`REASON_CORRECTION_UNSAFE_RESULT`; the
-    four EVIDENCE-TRUST causes share
-    :data:`REASON_CORRECTION_UNVERIFIABLE_RESULT` unless the applied
-    intervention was boosted, in which case ``decide_adoption`` has already
-    substituted ``ADOPTION_UNPROVEN_BOOST``; a measured regression keeps its
-    own. A delta-probe rollback class carries its verdict in a composite cause
-    (``delta_probe_rollback_class:<verdict>``) and keeps the probe's own
-    sentence through :data:`DELTA_PROBE_REASON_BY_VERDICT`.
-
-    Anything unlisted falls back to the unverifiable code — the weakest true
-    statement available for "the round asked for a restore". The mapping is
-    exhaustive and pinned by a test, so the fallback is a floor.
-
-    A function with a lazy import rather than a module-level dict, because
-    :mod:`~jasper.active_speaker.crossover_v2.verification` reaches
-    :mod:`~jasper.active_speaker.flat_spec`.
-    """
-    from jasper.active_speaker.crossover_v2.verification import (
-        ADOPTION_MEASURED_REGRESSION,
-        ADOPTION_PROBE_ROLLBACK_CLASS,
-        ADOPTION_UNPROVEN_BOOST,
-        CAPTURE_INTEGRITY_FAILED,
-        CAPTURE_INTEGRITY_UNAVAILABLE,
-        REALIZATION_NO_COMPARATOR,
-        REALIZATION_NO_TRACKING,
-        SAFETY_BOOST_OVER_DECLARED_BOUND,
-        SAFETY_CLIPPED_CAPTURE,
-        SAFETY_UNCOMMANDED_LEVEL_LOUDER,
-    )
-
-    prefix, _, probe_verdict = cause.partition(":")
-    if prefix == ADOPTION_PROBE_ROLLBACK_CLASS and probe_verdict:
-        return DELTA_PROBE_REASON_BY_VERDICT.get(
-            probe_verdict, REASON_CORRECTION_UNVERIFIABLE_RESULT,
-        )
-
-    return {
-        ADOPTION_MEASURED_REGRESSION: REASON_CORRECTION_MEASURED_REGRESSION,
-        ADOPTION_UNPROVEN_BOOST: REASON_CORRECTION_UNPROVEN_BOOST,
-        SAFETY_BOOST_OVER_DECLARED_BOUND: REASON_CORRECTION_UNSAFE_RESULT,
-        SAFETY_UNCOMMANDED_LEVEL_LOUDER: REASON_CORRECTION_UNSAFE_RESULT,
-        SAFETY_CLIPPED_CAPTURE: REASON_CORRECTION_UNSAFE_RESULT,
-        CAPTURE_INTEGRITY_FAILED: REASON_CORRECTION_UNVERIFIABLE_RESULT,
-        CAPTURE_INTEGRITY_UNAVAILABLE: REASON_CORRECTION_UNVERIFIABLE_RESULT,
-        REALIZATION_NO_TRACKING: REASON_CORRECTION_UNVERIFIABLE_RESULT,
-        REALIZATION_NO_COMPARATOR: REASON_CORRECTION_UNVERIFIABLE_RESULT,
-    }.get(cause, REASON_CORRECTION_UNVERIFIABLE_RESULT)
-
-
-#: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
-#: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test
-#: written against the NON-MATCHED set: a non-matched verdict that is not here
-#: must prove it reaches a household some other way, never merely by being
-#: absent from a rollback list.
-DELTA_PROBE_REASON_BY_VERDICT: Mapping[str, str] = {
-    VERDICT_MODEL_ERROR: REASON_CORRECTION_MODEL_ERROR,
-    VERDICT_LEVEL_DEPENDENT_SHORTFALL: REASON_CORRECTION_LEVEL_SHORTFALL,
-    VERDICT_SPATIALLY_COSTLY: REASON_CORRECTION_SPATIALLY_COSTLY,
-}
 
 
 def verify_inconclusive_cause(
@@ -817,6 +696,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         },
     ),
     # Measurement graph and walk refusals (tracking issue #4942).
+    REASON_MEASUREMENT_BASELINE_UNAVAILABLE: ReasonSpec(
+        REASON_MEASUREMENT_BASELINE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not build this program's baseline. Review the saved speaker setup before measuring.",
+        next_action={"id": "speaker_setup", "label": "Review speaker setup", "href": "/sound/speaker/"},
+    ),
+    REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH: ReasonSpec(
+        REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        "The selected tuning uses a different speaker setup. Select a tuning for this speaker.",
+        next_action={"id": "speaker_setup", "label": "Review speaker outputs", "href": "/sound/speaker/"},
+    ),
     REASON_MEASUREMENT_CANDIDATE_REQUIRED: ReasonSpec(
         REASON_MEASUREMENT_CANDIDATE_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
         'This measurement needs a saved tuning to test. Select the tuning, then measure again.',
@@ -829,75 +718,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": 'select_candidate', "label": 'Select a valid tuning',
                      "href": '/sound/speaker/crossover/'},
     ),
-    REASON_MEASUREMENT_CANDIDATE_NO_BASS: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_NO_BASS, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning has no bass extension to test. Select a tuning with bass extension.',
-        next_action={"id": 'select_bass_candidate', "label": 'Select a bass tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_BASE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning uses a different speaker setup. Select a tuning made for this setup.',
-        next_action={"id": 'match_candidate_base', "label": 'Match the speaker setup',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_TUNE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning was built on a different speaker tuning. Apply that speaker tuning '
-        'before this measurement.',
-        next_action={"id": 'apply_matching_speaker_tune', "label": 'Apply the matching speaker tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_ROOM_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The bass tuning was built on room tuning that is not applied. Apply the room tuning it '
-        'was built on, then measure again.',
-        next_action={"id": 'apply_matching_room_layer', "label": 'Apply the matching room tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_BASS_SCOPE, TEMPLATE_HARD_STOP, 0, "",
-        'This tuning includes bass extension. Select a bass measurement to test all of it.',
-        next_action={"id": 'select_bass_scope', "label": 'Select a bass measurement',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_ROOM_SCOPE, TEMPLATE_HARD_STOP, 0, "",
-        'This tuning includes room correction. Select a room measurement to test all of it.',
-        next_action={"id": 'select_room_scope', "label": 'Select a room measurement',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_CANDIDATE_NO_ROOM: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_NO_ROOM, TEMPLATE_HARD_STOP, 0, "",
-        'The selected tuning has no room correction to test. Select a tuning with room correction.',
-        next_action={"id": 'select_room_candidate', "label": 'Select a room tuning',
-                     "href": '/sound/speaker/crossover/'},
-    ),
     REASON_MEASUREMENT_SCOPE_INVALID: ReasonSpec(
         REASON_MEASUREMENT_SCOPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
         'JTS cannot measure the selected tuning layer. Select a supported measurement layer.',
         next_action={"id": 'select_measurement_scope', "label": 'Select a measurement layer',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_MEASUREMENT_PROFILE_UNAVAILABLE: ReasonSpec(
-        REASON_MEASUREMENT_PROFILE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
-        'JTS cannot use the saved speaker setup for this measurement. Check the speaker setup and '
-        'save it again.',
-        next_action={"id": 'speaker_setup', "label": 'Review speaker setup',
-                     "href": '/sound/speaker/'},
-    ),
-    REASON_MEASUREMENT_GRAPH_UNAVAILABLE: ReasonSpec(
-        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
-        'JTS could not prepare the sound path for this measurement. Check the saved speaker setup '
-        'before measuring again.',
-        next_action={"id": 'speaker_setup', "label": 'Review speaker setup',
-                     "href": '/sound/speaker/'},
-    ),
-    REASON_MEASUREMENT_BASE_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_BASE_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
-        'The saved tuning and the declared speaker setup do not match. Apply a tuning for the '
-        'current setup.',
-        next_action={"id": 'match_applied_base', "label": 'Match the saved speaker setup',
                      "href": '/sound/speaker/crossover/'},
     ),
     REASON_MEASUREMENT_FILTERS_INVALID: ReasonSpec(
@@ -913,13 +737,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'output assignments in speaker setup.',
         next_action={"id": 'speaker_setup', "label": 'Review speaker outputs',
                      "href": '/sound/speaker/'},
-    ),
-    REASON_MEASUREMENT_CORRECTIONS_INVALID: ReasonSpec(
-        REASON_MEASUREMENT_CORRECTIONS_INVALID, TEMPLATE_HARD_STOP, 0, "",
-        'The saved driver tuning has missing or invalid values. Repair the driver tuning before '
-        'measuring again.',
-        next_action={"id": 'repair_driver_tuning', "label": 'Repair the driver tuning',
-                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_REGIME_UNSUPPORTED: ReasonSpec(
         REASON_WALK_REGIME_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
@@ -1132,6 +949,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "the sweep.",
         ),
     ),
+    BOOST_OVER_DECLARED_BOUND: ReasonSpec(
+        BOOST_OVER_DECLARED_BOUND, TEMPLATE_HARD_STOP, 0, "",
+        "The measured boost exceeded its bound. Check the restore result before applying another tuning.",
+    ),
     REASON_APPLY_FAILED: _retriable_reason(
         REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
@@ -1190,81 +1011,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Take this one from further out and we will use it instead.",
         ),
     ),
-    # The delta-probe rollbacks: all three TEMPLATE_HARD_STOP with no retry
-    # budget, because the correction has already been undone and "try again"
-    # would re-run the same measurement into the same defect. Each names what
-    # was restored FIRST, then the one thing that would change the outcome. No
-    # hardware nouns, matching the null-classification copy rule.
-    REASON_CORRECTION_MODEL_ERROR: ReasonSpec(
-        REASON_CORRECTION_MODEL_ERROR, TEMPLATE_HARD_STOP, 0, "",
-        "JTS checked the tuning against what your speaker actually did, and "
-        "they did not match — so the previous sound has been put back. This "
-        "usually means something in the chain is not behaving as described; "
-        "re-check the driver details in speaker setup, then measure again.",
-    ),
-    REASON_CORRECTION_LEVEL_SHORTFALL: ReasonSpec(
-        REASON_CORRECTION_LEVEL_SHORTFALL, TEMPLATE_HARD_STOP, 0, "",
-        "Your speaker delivered noticeably less than the tuning asked it for, "
-        "so the previous sound has been put back. Try measuring again at a "
-        "lower listening volume.",
-    ),
-    REASON_CORRECTION_SPATIALLY_COSTLY: ReasonSpec(
-        REASON_CORRECTION_SPATIALLY_COSTLY, TEMPLATE_HARD_STOP, 0, "",
-        "The tuning helped at the measuring spot but made the sound less even "
-        "elsewhere in the room, so the previous sound has been put back. "
-        "Moving the speaker away from nearby walls and surfaces, then "
-        "measuring again, is what changes this.",
-    ),
-    # Renders only when the restore actually ran; the failed-restore row below
-    # is what renders when it did not. The remedy differs from its neighbours
-    # because the finding does: nothing misbehaved, so there is no chain to
-    # re-check and no level to drop.
-    REASON_CORRECTION_MEASURED_REGRESSION: ReasonSpec(
-        REASON_CORRECTION_MEASURED_REGRESSION, TEMPLATE_HARD_STOP, 0, "",
-        "JTS measured your speaker before and after the tuning, and it "
-        "sat further from flat afterwards — so the previous sound has been put back. "
-        "Nothing is broken; this room and this speaker position did not suit "
-        "the tuning. Moving the speaker a little, or measuring from your usual "
-        "listening spot, is what changes this.",
-    ),
-    # The one row here that reports a NON-finding: it says what could not be
-    # established before what was done about it.
-    REASON_CORRECTION_UNPROVEN_BOOST: ReasonSpec(
-        REASON_CORRECTION_UNPROVEN_BOOST, TEMPLATE_HARD_STOP, 0, "",
-        "JTS could not measure whether this tuning improved your speaker, and "
-        "it turns some parts up rather than only down — so the previous sound "
-        "has been put back rather than leaving an unproven change driving your "
-        "speaker harder. Measuring again, from your usual listening spot, is "
-        "what settles it.",
-    ),
-    REASON_CORRECTION_UNSAFE_RESULT: ReasonSpec(
-        REASON_CORRECTION_UNSAFE_RESULT, TEMPLATE_HARD_STOP, 0, "",
-        "JTS checked what your speaker actually did with this tuning and "
-        "measured more output than the tuning declared, so the previous sound "
-        "has been put back rather than leaving it playing. Measuring again, "
-        "from your usual listening spot, is what settles it.",
-    ),
-    REASON_CORRECTION_UNVERIFIABLE_RESULT: ReasonSpec(
-        REASON_CORRECTION_UNVERIFIABLE_RESULT, TEMPLATE_HARD_STOP, 0, "",
-        "JTS could not complete the check that confirms a new tuning, so the "
-        "previous sound has been put back rather than leaving a change nobody "
-        "has measured on your speaker. Measuring again, from your usual "
-        "listening spot, is what settles it.",
-    ),
-    # The five rows above all promise "the previous sound has been put back",
-    # which is only true when the rollback actually ran. When it did not, THIS
-    # row renders instead — same finding, opposite state of the speaker.
-    #
-    # ONE row rather than three verdict-specific ones: the route out is the
-    # same in all three cases, and the specific finding is on the verdict
-    # itself (``delta_probe.verdict``, in the payload and the journal).
-    REASON_CORRECTION_ROLLBACK_FAILED: ReasonSpec(
-        REASON_CORRECTION_ROLLBACK_FAILED, TEMPLATE_HARD_STOP, 0, "",
-        "JTS checked the tuning against what your speaker actually did, and "
-        "they did not match — but it could not put the previous sound back on "
-        "its own, so the new tuning is STILL APPLIED. Go back to the previous "
-        "tuning, or measure again.",
-    ),
     REASON_ANCHOR_TOO_QUIET: _retriable_reason(
         REASON_ANCHOR_TOO_QUIET, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
@@ -1322,43 +1068,12 @@ def _screen_refusal_code(kind: str) -> str:
     return REASON_LOCATE_FAILED
 
 
-def correction_rollback_failed_message(rollback_anchor_available: bool | None) -> str:
-    """``correction_rollback_failed``'s sentence, branched on the anchor.
-
-    * ``True``/``None`` — a restore was attempted and did not complete: there
-      IS a stored previous sound, so going back to it is a real remedy.
-    * ``False`` — no stored previous sound; this arm names the two levers that
-      remain instead of a way back that does not exist.
-
-    The ``False`` arm states no CAUSE. What it reports is "no prior candidate
-    fingerprint is recorded", which is every first-ever apply but also any
-    prior profile that was not a measured-candidate apply.
-
-    ``None`` takes the way-back arm: an unestablished fact must not invent the
-    more alarming claim about a speaker that may have a good anchor.
-    """
-    if rollback_anchor_available is False:
-        return (
-            "The new tuning is still applied, and JTS has no previous sound it "
-            "can safely put back on this speaker. You can measure again to try "
-            "for a better result, or clear the tuning from the Sound page to "
-            "return to the standard setup."
-        )
-    return (
-        "JTS checked the tuning against what your speaker actually did, and "
-        "they did not match — but it could not put the previous sound back, "
-        "so the newer tuning is STILL APPLIED. Go back to the previous "
-        "tuning, or measure again."
-    )
-
-
 def reason_message(
     code: str,
     spec: ReasonSpec,
     *,
     pilot_heard: bool | None = None,
     reflection_measured: bool | None = None,
-    rollback_anchor_available: bool | None = None,
 ) -> str:
     """The household sentence for ``code``, given what the capture measured.
 
@@ -1386,10 +1101,6 @@ def reason_message(
         message = locate_failed_message(pilot_heard)
     elif code == REASON_VERIFY_INCONCLUSIVE:
         message = verify_inconclusive_message(reflection_measured)
-    elif code == REASON_CORRECTION_ROLLBACK_FAILED:
-        # Answered on the round's RECORDED anchor: re-deciding it here on a
-        # live fact would give one failure two accounts.
-        message = correction_rollback_failed_message(rollback_anchor_available)
     else:
         # ``or spec.banner`` for the silent-auto-retry codes, whose household
         # text IS the banner and whose ``message`` is empty by construction.
