@@ -714,7 +714,7 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )
     ids = [action["id"] for action in env["alternate_actions"]]
-    assert "republish_previous" in ids
+    assert "apply_previous" in ids
     # The retry the screen offers posts the verify route, which is exactly the
     # route the pre-flight guards — so the 400-body action is what keeps this
     # combination from being a loop.

@@ -164,25 +164,6 @@ def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any
     )
 
 
-def _handle_crossover_v2_republish(
-    handler: BaseHTTPRequestHandler,
-) -> dict[str, Any]:
-    """POST /crossover/v2/republish: re-publish a banked candidate by fingerprint.
-
-    Touches no DSP and holds no capture — it replaces the durable session
-    document around the published-candidate slot (host-owned apply keys
-    carried forward) and moves no graph — so unlike its apply sibling it
-    needs neither ``run_async`` nor ``camilla_controller`` nor the stage-2
-    ``status_payload()``. The apply door still runs every gate it always did,
-    on the next request.
-    """
-    raw = correction_runtime.read_json_body(handler)
-
-    from . import correction_crossover_v2_republish as republish
-
-    return republish.handle_v2_republish(raw)
-
-
 def _handle_crossover_v2_decline(
     handler: BaseHTTPRequestHandler,
 ) -> tuple[dict[str, Any], HTTPStatus]:

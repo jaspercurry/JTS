@@ -482,6 +482,15 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "", "The selected run does not match this manifest.",
         next_action={"id": "select_bass_run", "label": "Select the run recorded in this manifest", "href": "/sound/speaker/crossover/"},
     ),
+    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
+                       next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
+       for code, action, label in (
+           ("candidate_trial_required", "trial_candidate", "Complete a trial of this candidate."),
+           ("candidate_trial_evidence_invalid", "repeat_trial", "Repeat the damaged trial set."),
+           ("candidate_fingerprint_mismatch", "select_candidate", "Select the banked candidate fingerprint."),
+           ("candidate_trial_graph_mismatch", "repeat_trial", "Trial the current compiled graph."),
+           ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
+       )},
     "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
     "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
     "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),

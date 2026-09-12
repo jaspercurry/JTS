@@ -1741,20 +1741,15 @@ def _entry_envelope(
     )
 
 
-# The banked-candidate way back: republish the candidate live before the
-# last apply, through the ORDINARY path (republish -> review -> apply).
-# One tap restores the SLOT, not the graph. A list so call sites can
-# splice it (empty when no candidate is banked); a factory, not a shared
-# constant, because the action carries a mutable ``body``.
 def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
     fingerprint = _v2(status).get("previous_candidate_fingerprint")
     if not isinstance(fingerprint, str) or not fingerprint:
         return []
     return [{
-        "id": "republish_previous",
+        "id": "apply_previous",
         "label": "Go back to the previous tuning",
-        "endpoint": "/sound/speaker/crossover/v2/republish",
-        "body": {"fingerprint": fingerprint},
+        "endpoint": "/sound/speaker/crossover/v2/apply",
+        "body": {"expected_candidate_fingerprint": fingerprint},
         "show_during_capture": True,
     }]
 

@@ -209,6 +209,10 @@ def _dispatch_crossover(handler: _Handler) -> None:
             )
         return
 
+    if path == "/crossover/v2/republish":
+        handler._send_json({"ok": False, "code": "route_retired"}, status=HTTPStatus.GONE)
+        return
+
     if path == "/crossover/v2/position-ready":
         # A release that names the wrong (or no) pending capture is a
         # CONFLICT, not a malformed request: the driver's view of the
@@ -339,22 +343,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
             handler._send_json(refusal_envelope(e), status=500)
         return
 
-    if path == "/crossover/v2/republish":
-        try:
-            # No payload-derived status: every refusal is a
-            # CrossoverV2Refused (a ValueError -> 400 below), and a
-            # success only moves a pointer, so there is no third
-            # "blocked" outcome to classify like apply/restore have.
-            handler._send_json(correction_handlers._handle_crossover_v2_republish(handler))
-        except ValueError as e:
-            handler._send_json(
-                refusal_envelope(e),
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except (OSError, RuntimeError, TypeError) as e:
-            logger.exception("%s failed", path)
-            handler._send_json(refusal_envelope(e), status=500)
-        return
 
     if path == "/crossover/v2/decline":
         try:
@@ -624,12 +612,12 @@ _POST_ROUTES = {
     # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
     "/crossover/v2/session": _dispatch_crossover,
     "/crossover/v2/verify": _dispatch_crossover,
+    "/crossover/v2/republish": _dispatch_crossover,
     "/crossover/v2/apply": _dispatch_crossover,
     # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
     # so the apply door above can reach it by fingerprint. The apply slot is
     # single-valued and every measure session overwrites it; this is the lookup
     # it never had.
-    "/crossover/v2/republish": _dispatch_crossover,
     # The review screen's "Keep current sound", which #2641 found inert.
     "/crossover/v2/decline": _dispatch_crossover,
     # A GATED session's position release — the report that the microphone has

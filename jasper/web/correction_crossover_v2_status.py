@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
-from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.log_event import log_event
+
+from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.web import correction_crossover_v2 as _host
 
 
@@ -36,37 +37,16 @@ def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | No
 
 
 def _offerable_previous_candidate(state: Mapping[str, Any] | None) -> str | None:
-    """The way-back fingerprint, published only when its door would admit it.
-
-    :func:`_previous_candidate_fingerprint`'s value, gated on
-    :func:`~jasper.web.correction_crossover_v2_republish.republish_preflight`
-    — the republish door's own read-only admission — so no screen advertises
-    a "Go back to the previous tuning" the door then refuses (a pruned bank,
-    a corrupted artifact, a corner the declaration no longer carries a
-    revision for). Deliberately NOT gated on the automatic revert's pairing:
-    that gates only the AUTO path, and the button is the household's.
-
-    Fails CLOSED on an unexpected preflight error — a button that cannot be
-    vouched for is withheld, with the cause in the journal — because the
-    alternative is the advertised-then-refused drift this gate exists to
-    remove.
-    """
-    from jasper.web import correction_crossover_v2_republish as republish_door
+    """The displaced candidate, when its banked artifact still resolves."""
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 
     fingerprint = _previous_candidate_fingerprint(state)
-    if fingerprint is None:
-        return None
-    try:
-        admitted = republish_door.republish_preflight(fingerprint) is None
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        log_event(
-            _host.logger,
-            "correction.crossover_v2_way_back_preflight_failed",
-            level=logging.WARNING,
-            exc_info=True,
-        )
-        return None
-    return fingerprint if admitted else None
+    if fingerprint:
+        try:
+            return find_banked_candidate(fingerprint).fingerprint
+        except CandidateBankRefusal:
+            pass
+    return None
 
 
 def crossover_v2_status_block() -> dict[str, Any] | None:
@@ -134,15 +114,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
-        # The banked-candidate way back: the fingerprint of the measured
-        # candidate the applied graph displaced, or ``None`` (a first-ever
-        # apply, a prior profile that was not a measured-candidate apply, or
-        # a pointer the republish door would refuse). The envelope mints a
-        # /crossover/v2/republish action from it; publishing it only when
-        # the door's own read-only admission passes is what keeps the button
-        # and the door one answer (#2291's non-drift rule). The door still
-        # re-runs the admission on POST — the bank can change between the
-        # answer and the action.
         "previous_candidate_fingerprint": _offerable_previous_candidate(state),
         "session_id": session_id,
         # Minimal live-loop observability: no attempt curves/history on the
@@ -173,6 +144,10 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+
+    applied = load_applied_baseline_profile_state() or {}
+    block["trial_verification"] = applied.get("trial_verification")
     block["post_apply_grade"] = _host._post_apply_grade(block)
     return block
 

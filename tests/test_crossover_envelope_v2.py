@@ -2320,7 +2320,7 @@ def test_verify_fail_one_default_screen():
     # escape hatch W6.10 gave the review screen's Apply. "Try again" starts a
     # brand new capture session, so it deliberately does NOT carry the flag.
     way_back = next(
-        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
+        a for a in env["alternate_actions"] if a["id"] == "apply_previous"
     )
     remeasure = next(
         a for a in env["alternate_actions"] if a["id"] == "verify_remeasure"
@@ -3875,9 +3875,9 @@ def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     assert env["screen"] == "verify_fail"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_AGC_BEHAVIORAL_FAIL].message
     way_back = next(
-        a for a in env["alternate_actions"] if a["id"] == "republish_previous"
+        a for a in env["alternate_actions"] if a["id"] == "apply_previous"
     )
-    assert way_back["endpoint"] == "/sound/speaker/crossover/v2/republish"
+    assert way_back["endpoint"] == "/sound/speaker/crossover/v2/apply"
 
 
 def test_check_phase_agc_failure_still_renders_its_normal_template():
@@ -3908,7 +3908,7 @@ def test_verify_phase_unknown_code_renders_verify_fail_too():
     ))
     assert env["screen"] == "verify_fail"
     ids = [a["id"] for a in env["alternate_actions"]]
-    assert "republish_previous" in ids
+    assert "apply_previous" in ids
 
 
 def test_applied_true_forces_verify_fail_regardless_of_phase():
@@ -3931,7 +3931,7 @@ def test_applied_true_forces_verify_fail_regardless_of_phase():
     assert env["screen"] == "verify_fail"
     assert "already applied" in env["verdict_text"].lower()
     ids = [a["id"] for a in env["alternate_actions"]]
-    assert "republish_previous" in ids
+    assert "apply_previous" in ids
 
 
 def test_applied_false_with_verify_phase_does_not_force_verify_fail():
@@ -4122,9 +4122,9 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
     env = build_crossover_envelope_v2(status)
     assert env["screen"] == screen
     offered = [a for a in (env["next_action"], *env["alternate_actions"]) if a]
-    way_back = [a for a in offered if a["id"] == "republish_previous"]
+    way_back = [a for a in offered if a["id"] == "apply_previous"]
     assert len(way_back) == 1
-    assert way_back[0]["endpoint"] == "/sound/speaker/crossover/v2/republish"
+    assert way_back[0]["endpoint"] == "/sound/speaker/crossover/v2/apply"
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
     # Survives the JS capture-in-flight gate (W6.12): a get-me-out affordance
     # must stay visible while a failed capture is still winding down.
@@ -4151,7 +4151,7 @@ def test_no_way_back_is_minted_without_a_prior_candidate_fingerprint(screen_stat
     could only refuse, so the action must not appear at all."""
     env = build_crossover_envelope_v2(screen_status)
     assert not any(
-        a["id"] == "republish_previous" for a in env["alternate_actions"]
+        a["id"] == "apply_previous" for a in env["alternate_actions"]
     )
 
 
@@ -4185,9 +4185,9 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     assert [a for a in aged["alternate_actions"]
             if a not in clean["alternate_actions"]] == [
         {
-            "id": "republish_previous",
+            "id": "apply_previous",
             "label": "Go back to the previous tuning",
-            "endpoint": "/sound/speaker/crossover/v2/republish",
+            "endpoint": "/sound/speaker/crossover/v2/apply",
             "body": {"fingerprint": _WAY_BACK_FP},
             "show_during_capture": True,
         },
@@ -4203,7 +4203,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
         previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     way_back = [
-        a for a in first["alternate_actions"] if a["id"] == "republish_previous"
+        a for a in first["alternate_actions"] if a["id"] == "apply_previous"
     ][0]
     way_back["body"]["poisoned"] = True
 
@@ -4212,7 +4212,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
         previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     assert [a for a in second["alternate_actions"]
-            if a["id"] == "republish_previous"][0]["body"] == {
+            if a["id"] == "apply_previous"][0]["body"] == {
         "fingerprint": _WAY_BACK_FP,
     }
     # The live verify-fail screen shares the same factory, so it is covered
@@ -4223,7 +4223,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
         failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
     ))
     assert [a for a in live["alternate_actions"]
-            if a["id"] == "republish_previous"][0]["body"] == {
+            if a["id"] == "apply_previous"][0]["body"] == {
         "fingerprint": _WAY_BACK_FP,
     }
 

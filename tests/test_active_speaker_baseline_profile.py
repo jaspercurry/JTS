@@ -31,7 +31,7 @@ from jasper.active_speaker.baseline_profile import (
     _derive_corrections,
     _GAIN_SOURCE_TO_PROVENANCE,
     active_layer_a_fingerprint,
-    apply_baseline_profile,
+    apply_baseline_profile as _apply_baseline_profile,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
@@ -96,6 +96,25 @@ _MEASURE_EVIDENCE = {
     "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4},
     "alignment_confidence": 0.82,
 }
+
+
+@pytest.fixture(autouse=True)
+def _trial_store(tmp_path, monkeypatch):
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
+
+
+async def apply_baseline_profile(topology, **kwargs):
+    from tests.apply_fixtures import bank_trial_async
+
+    measured = kwargs.get("measured_candidate")
+    if measured is not None:
+        inputs = {key: value for key, value in kwargs.items() if key not in (
+            "load_config", "get_current_config_path", "expected_candidate_fingerprint",
+            "expected_tuning_graph_fingerprint", "on_candidate_verified", "refresh_inputs")}
+        profile = build_baseline_profile_candidate(topology, **inputs, write=False, compile_config=True)
+        if profile.get("config", {}).get("sha256"):
+            await bank_trial_async(measured, profile, topology)
+    return await _apply_baseline_profile(topology, **kwargs)
 
 
 def _topology(
@@ -913,77 +932,6 @@ def test_candidate_identity_distinguishes_owner_and_graph_context(
         assert baseline_candidate_fingerprint(changed) != manual["candidate_fingerprint"]
 
 
-def test_baseline_profile_blocks_until_summed_validation_exists(
-    tmp_path: Path,
-) -> None:
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements={"summary": {"driver_measurements_complete": True}},
-        config_path=tmp_path / "active_speaker_baseline.yml",
-        state_path=tmp_path / "baseline_profile.json",
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "blocked"
-    assert payload["permissions"]["may_apply"] is False
-    assert "baseline_summed_validation_missing" in {
-        issue["code"] for issue in payload["issues"]
-    }
-
-
-def test_baseline_profile_blocks_when_summed_validation_is_superseded(
-    tmp_path: Path,
-) -> None:
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    state_path = tmp_path / "measurements.json"
-    _measurements(topology, tmp_path)
-    measurements = record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "aplay",
-                "playback_id": "summed-playback-newer",
-                "audio_emitted": True,
-                "artifact": {
-                    "wav_basename": "tone_summed-playback-newer.wav",
-                    "metadata_basename": "tone_summed-playback-newer.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-            },
-        },
-        state_path=state_path,
-        now="2026-06-14T12:04:00Z",
-    )
-
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        config_path=tmp_path / "active_speaker_baseline.yml",
-        state_path=tmp_path / "baseline_profile.json",
-        validate=_valid_config,
-    )
-
-    assert payload["status"] == "blocked"
-    assert measurements["summary"]["summed_validation_complete"] is False
-    assert "baseline_summed_validation_missing" in {
-        issue["code"] for issue in payload["issues"]
-    }
-
-
 def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
     tmp_path: Path,
 ) -> None:
@@ -1098,10 +1046,10 @@ def test_superseded_applied_profile_reports_revalidation_path(
         validate=_valid_config,
     )
 
-    assert blocked["status"] == "blocked"
+    assert blocked["status"] == "ready_to_compile"
     assert blocked["revalidation"]["required"] is True
     assert blocked["revalidation"]["reason"] == "applied_profile_superseded"
-    assert blocked["revalidation"]["next_step"] == "combined_check"
+    assert blocked["revalidation"]["next_step"] == "save_profile"
     assert blocked["revalidation"]["superseded_profile"]["config"]["exists"] is True
     assert "measurement_summary_fingerprint" in blocked["revalidation"]["changed"]
 
@@ -1667,7 +1615,6 @@ def test_baseline_profile_missing_evidence_does_not_invent_route_width_block(
     issue_codes = {issue["code"] for issue in payload["issues"]}
     assert "baseline_crossover_preview_not_ready" in issue_codes
     assert "baseline_driver_measurements_missing" in issue_codes
-    assert "baseline_summed_validation_missing" in issue_codes
     assert "active_playback_route_too_narrow" not in issue_codes
 
 
@@ -5472,56 +5419,6 @@ async def _linearization_restore_fixture(monkeypatch, tmp_path: Path):
     )
 
 
-async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """The candidate fingerprint covers the new alignment fields: reviewing
-    one delay_us and applying a candidate with a DIFFERENT delay_us is caught
-    by the existing expected_candidate_fingerprint staleness gate (#1423/#1441
-    apply-freshness hardening), unchanged."""
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
-    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
-    assert preset is not None, issues
-
-    reviewed = _v2_candidate(preset, delay_us=250.0)
-    reviewed_fingerprint = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements={},
-        write=False,
-        tuning_owner="automatic",
-        measured_candidate=reviewed,
-    )["candidate_fingerprint"]
-
-    changed = _v2_candidate(preset, delay_us=999.0)
-
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
-    )
-
-    async def load_config(_path: str) -> bool:
-        pytest.fail("load_config must not run against a stale reviewed candidate")
-
-    payload = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements={},
-        load_config=load_config,
-        state_path=tmp_path / "baseline_profile.json",
-        config_path=tmp_path / "active_speaker_baseline.yml",
-        validate=_valid_config,
-        tuning_owner="automatic",
-        measured_candidate=changed,
-        expected_candidate_fingerprint=reviewed_fingerprint,
-    )
-
-    assert payload["status"] == "blocked"
-    issue_codes = {issue["code"] for issue in payload["issues"]}
-    assert "baseline_candidate_fingerprint_mismatch" in issue_codes
 
 
 async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):

@@ -85,7 +85,7 @@ from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprin
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
-    has_tuning_layers, tuning_trial_matches_candidate,
+    tuning_trial_matches_candidate,
     tuning_trial_reference,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
@@ -504,106 +504,15 @@ def _record_live_model_error(**observation: Any) -> bool:
 
 
 def reset_v2_journey_state() -> None:
-    """Start-over's v2 clear (W6.10, gate-amended for the way back).
-
-    Clears the measurement-JOURNEY fields (session binding, accepted phases,
-    candidate, verify, failure, gain plan, priors, evidence) so the envelope
-    serves the clean start screen — but when a candidate is APPLIED, preserves
-    ``applied`` + ``previous_candidate_fingerprint``: the ONLY durable pointer
-    the way back (republish-then-apply) resolves its target from. A full
-    :func:`clear_v2_state` here would drop it, leaving the applied graph
-    playing with no way back. Not applied ⇒ full clear, as before — except that
-    the clear carries the ordinal-sequence epoch when one has been set, because
-    ``applied`` is not the same question as "is a measured graph playing" and a
-    reset marker any later path can erase is not a disclosure. See the two
-    branches for the whole argument.
-    """
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        ROUND_ORDINAL_EPOCH_STATE_KEY,
-        round_ordinal_epoch_from_state,
-    )
-
+    """Clear the journey while retaining the playing graph's way back."""
     state = load_v2_state()
-    if state is None:
-        return
-    epoch = round_ordinal_epoch_from_state(state)
-    if not state.get("applied"):
-        # **The clear CARRIES the epoch.** ``applied`` is not "is a measured
-        # graph playing" — the republish door sets it ``False`` while the graph
-        # it published keeps playing, and says so — so this branch is reachable
-        # on a speaker that has already been tuned AND already had its ordinal
-        # sequence reset. Unlinking the file there would destroy the marker and
-        # the next round would read "round 1, epoch 0": a fresh box, on a
-        # speaker that is anything but.
-        #
-        # A reset marker that any later path can erase is not a disclosure, so
-        # once set it survives every clear. ``epoch == 0`` still unlinks
-        # outright — there is nothing to carry, and a box that has never been
-        # reset must keep leaving no file at all.
-        #
-        # NOT routed through the receipt-dropping branch below instead: that
-        # branch writes ``applied: True``, which on this path would claim an
-        # apply this session never made — trading a lost disclosure for a false
-        # one. The clean-start shape is written here verbatim so every reader
-        # sees the same falsy journey fields a full clear leaves.
-        if not epoch:
-            clear_v2_state()
-            return
-        save_v2_state({
-            ROUND_ORDINAL_EPOCH_STATE_KEY: epoch,
-            "session_id": None,
-            "accepted_phases": [],
-            "applied": False,
-            "gain_plan_db": None,
-            "candidate": None,
-            "verify": None,
-            "failure": None,
-            "apply_blocked": None,
-            "verify_priors": None,
-            "evidence": None,
-        })
-        log_event(
-            logger,
-            "correction.crossover_v2_journey_reset_kept_epoch",
-            round_ordinal_epoch=epoch,
-        )
+    if not state or not state.get("applied"):
+        clear_v2_state()
         return
     previous_candidate = state.get("previous_candidate_fingerprint")
     displaced_by = state.get("previous_candidate_displaced_by")
     attempts_loop = state.get("attempts_loop")
-    # This branch drops ``round_receipt`` — the ordinal sequence's only memory
-    # — while the applied graph keeps playing, so the next round is round 1
-    # again on a speaker that has already been tuned. That is the SAME reset
-    # the republish door performs, so it takes the same epoch marker: one that
-    # counted only one of the two doors would make "epoch 0" mean "never reset"
-    # on one path and "reset by the other door" on the other.
-    #
-    # **Incremented only when there was a receipt to drop.** ``applied`` can be
-    # ``True`` with no round ever graded (an apply whose VERIFY never landed),
-    # and repeated Start-Over taps there would inflate the epoch — disclosing
-    # resets that never happened, which is the same dishonesty as hiding one.
-    dropped_receipt = state.get("round_receipt")
-    reset_from = (
-        dropped_receipt.get("round_ordinal")
-        if isinstance(dropped_receipt, Mapping)
-        else None
-    )
-    reset_round_ordinal_from = (
-        reset_from
-        if isinstance(reset_from, int) and not isinstance(reset_from, bool)
-        else None
-    )
-    if dropped_receipt is not None:
-        epoch += 1
-        log_event(
-            logger,
-            "correction.crossover_v2_journey_reset_advanced_epoch",
-            round_ordinal_epoch=epoch,
-            reset_round_ordinal_from=reset_round_ordinal_from,
-        )
-
     save_v2_state({
-        ROUND_ORDINAL_EPOCH_STATE_KEY: epoch,
         "session_id": None,
         "accepted_phases": [],
         "applied": True,
@@ -645,34 +554,12 @@ def observe_apply_success(
     previous_candidate_fingerprint: str | None = None,
     expected_post_apply_offset_db: float = 0.0,
     tuning_trial: Mapping[str, Any] | None = None,
+    selected_candidate: Mapping[str, Any] | None = None,
 ) -> None:
-    """Mark the v2 candidate applied — the apply-complete event that arms the
-    soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
-
-    ``previous_candidate_fingerprint`` is the measured candidate the applied
-    graph DISPLACED — read off the frozen ``applied_recomposition_profile``'s
-    own ``source.measured_candidate_fingerprint`` by ``handle_v2_apply``. It
-    is the ONLY durable pointer the way back (republish-then-apply) resolves
-    its target from: the status block publishes it, the wizard mints its
-    way-back action from it, and the round's auto-revert republishes it.
-    ``None`` — a first-ever apply, or a displaced profile that was not a
-    measured-candidate apply — is written as such, re-stamped by every
-    successful apply so the pointer can never outlive the apply it describes.
-    A state written before this field existed simply has no way back until
-    the next apply records one (the same no-schema-bump posture
-    ``_record_is_fresh`` takes).
-
-    ``expected_post_apply_offset_db`` (#1811) is the whole-band level move the
-    emitted graph made and did NOT command as part of the correction's shape —
-    the pre-split headroom charged for the correction's own boost. Persisted
-    alongside ``applied`` because the delta probe runs one capture later, in a
-    different thread, and reads it back off this state; ``0.0`` means "nothing
-    known", never "nothing moved" (the probe's ``residual_offset_db`` is what
-    tells those two apart).
-    """
-    state = load_v2_state()
-    if state is None:
-        return
+    """Persist the completed apply and its displaced candidate together."""
+    state = load_v2_state() or {}
+    if selected_candidate is not None:
+        state["candidate"] = dict(selected_candidate)
     candidate = state.get("candidate")
     stored = (
         str(candidate.get("fingerprint") or "")
@@ -3236,17 +3123,10 @@ def _active_graph_fingerprint() -> str:
 
 
 def _previous_candidate_known() -> bool:
-    """Can the operator republish the previous candidate for this apply?"""
-    from jasper.web import correction_crossover_v2_republish as republish_door
-    from jasper.web import correction_crossover_v2_status as v2_status
+    from jasper.web.correction_crossover_v2_status import _offerable_previous_candidate
 
     state = load_v2_state()
-    fingerprint = v2_status._previous_candidate_fingerprint(state)
-    if fingerprint is None:
-        return False
-    if not _previous_candidate_paired(state):
-        return False
-    return republish_door.republish_preflight(fingerprint) is None
+    return _previous_candidate_paired(state) and _offerable_previous_candidate(state) is not None
 
 
 def _previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
@@ -4166,37 +4046,7 @@ def handle_v2_apply(
     *,
     status: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """POST /crossover/v2/apply — apply the reviewed measured candidate.
-
-    **This is the ONLY path that applies a measured crossover, and it runs only
-    on an explicit household POST** (two-stage commission work order D1). Until
-    PR-T3 the capture runner also called it, automatically, off the pre-apply
-    cloud's close.
-
-    Reopens the published candidate artifact through
-    ``MeasuredCrossoverCandidate.from_mapping`` (the tamper check), gates on
-    the reviewed ``expected_candidate_fingerprint``, runs the stage-2
-    openability preflight (:func:`_assert_stage_2_can_open` — ``status`` is
-    keyword-only and REQUIRED so no caller can quietly skip it), and rides the
-    EXISTING atomic apply-with-rollback transaction —
-    ``apply_baseline_profile(measured_candidate=...)`` (the W4 seam) — then
-    marks the durable v2 state applied.
-
-    W6 run-6 Blocker M: the seam's own freshness guard
-    (``apply_baseline_profile``'s ``expected_candidate_fingerprint``) compares
-    against ``baseline_candidate_fingerprint`` — the COMPOSED baseline
-    candidate's own identity — never the MEASURED candidate's fingerprint
-    this endpoint reviews with the household. Forwarding the measured
-    fingerprint straight through made every apply refuse
-    ``baseline_candidate_fingerprint_mismatch``, unconditionally. This host
-    translates between the two vocabularies: it composes the baseline
-    candidate read-only first (``build_baseline_profile_candidate(...,
-    write=False)`` — the exact builder the seam itself uses), asserts that
-    composition is still bound to the reviewed MEASURED candidate (preserving
-    the review-freshness guarantee at the measured-candidate level), then
-    passes the COMPOSED candidate's own ``candidate_fingerprint`` through to
-    the seam.
-    """
+    """Apply one named banked trial through the locked DSP transaction."""
     from jasper.active_speaker.baseline_profile import (
         applied_program_level_delta_db,
         apply_baseline_profile,
@@ -4207,75 +4057,35 @@ def handle_v2_apply(
         assert_crossover_honours_declared_floor,
         change_from_record,
         change_to_record,
-        declaration_change_for_candidate,
+        declaration_change_for_candidate, manual_settings_for_crossover,
     )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview, load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-        MeasuredCrossoverCandidateError,
-    )
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
+    from jasper.active_speaker.crossover_v2.apply_gate import ApplyGraph, apply_preconditions
+    from jasper.active_speaker.crossover_v2.apply_evidence import candidate_trial_manifest
     from jasper.active_speaker.measurement import load_measurement_state
     from jasper.output_topology import load_output_topology
     from jasper.web.sound_setup import apply_measured_crossover_geometry
 
-    expected = str(raw.get("expected_candidate_fingerprint") or "")
-    if not expected:
-        raise CrossoverV2Refused("expected_candidate_fingerprint is required")
-    state = load_v2_state()
-    review_session_id = str((state or {}).get("session_id") or "")
-    candidate_ref = (state or {}).get("candidate")
-    evidence = (state or {}).get("evidence") or {}
-    if not isinstance(candidate_ref, Mapping) or not candidate_ref.get("fingerprint"):
-        raise CrossoverV2Refused(
-            "no measured crossover candidate is ready to apply; measure first"
-        )
-    if str(candidate_ref["fingerprint"]) != expected:
-        raise CrossoverV2Refused(
-            "the reviewed crossover is no longer current; review the newest "
-            "measurement before applying"
-        )
-    candidate_payload = raw.get("candidate")
-    if not isinstance(candidate_payload, Mapping):
-        # Endpoint contract: the wizard posts only the fingerprint; the host
-        # reopens the artifact from the evidence bundle recorded at publish.
-        candidate_payload = _reopen_candidate_artifact(state, evidence)
+    expected = str(raw.get("expected_candidate_fingerprint") or "").strip()
     try:
-        candidate = MeasuredCrossoverCandidate.from_mapping(candidate_payload)
-    except MeasuredCrossoverCandidateError as exc:
-        raise CrossoverV2Refused(str(exc)) from exc
-    if candidate.fingerprint != expected:
-        raise CrossoverV2Refused(
-            "the persisted candidate does not match the reviewed fingerprint"
-        )
-    from jasper.active_speaker.candidate_bank import CandidateBankRefusal
-    from jasper.active_speaker.candidate_trials import require_candidate_trial
-
-    tuning_apply = has_tuning_layers(candidate)
+        banked = find_banked_candidate(expected)
+    except CandidateBankRefusal as exc:
+        raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
+    candidate = banked.candidate
+    state = load_v2_state() or {}
+    current = (state.get("candidate") or {}).get("fingerprint") == expected
+    review_session_id = str(state.get("session_id") or "") if current else ""
+    if not current:
+        state = {}
     applied_tuning_trial = None
-    if not tuning_apply:
-        try:
-            require_candidate_trial(candidate)
-        except CandidateBankRefusal as exc:
-            raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
     topology = load_output_topology()
-    # WHAT THIS APPLY ASKS ``/sound`` TO DECLARE — derived from the candidate
-    # that is about to be applied, never from a persisted record that merely
-    # claims something about it. ``crossover_declaration`` carries the full
-    # argument; the short version is that the candidate is the artifact the
-    # graph is emitted from, so keying the declaration write on it is what makes
-    # the two agree by construction rather than by cross-check. ``None`` is the
-    # ordinary answer — the candidate was measured at exactly the crossover
-    # Sound declares — and it keeps this path byte-identical to what it did
-    # before this seam existed.
     pre_draft = load_design_draft(topology=topology)
     accepted_revision = (state or {}).get("accepted_sound_revision")
     saved_already = (
         isinstance(accepted_revision, int) and not isinstance(accepted_revision, bool)
     )
-    # On a retry the declaration ALREADY carries the candidate's crossover, so
-    # the live draft can no longer say what that accept displaced: the record
-    # written beside ``accepted_sound_revision`` is the only surviving inverse.
     change = (
         change_from_record((state or {}).get("accepted_sound_declaration_change"))
         if saved_already
@@ -4285,16 +4095,9 @@ def handle_v2_apply(
     if accepted_revision is not None and (not saved_already or change is None):
         raise CrossoverV2Refused(
             "the saved Sound revision is invalid; review a fresh measurement")
-    # Names the slope only when the slope is what moved (``_crossover_label``):
-    # every refusal below tells the household what is now sitting in Sound, and
-    # on a slope-only accept a sentence naming only the frequency would name the
-    # one number that did NOT change.
     selected_label = (
         _crossover_label(change.selected, change.changes_slope) if change else "")
     selected_fc_hz = change.selected.fc_hz if change else None
-    # Same predicate this path has always branched on — "did this apply write
-    # the Sound declaration" — now read off the change itself rather than off a
-    # persisted recommendation. Every downstream use is unchanged.
     alternative = change is not None
 
     def _saved_not_applied(exc: BaseException) -> CrossoverV2Refused:
@@ -4319,28 +4122,6 @@ def handle_v2_apply(
             "replaced before DSP apply; open the fresh Review")
 
     if change is not None:
-        # HEARING-SAFETY BOUNDARY, and it runs BEFORE the durable declaration
-        # write on purpose. The L0 emit gate refuses this same condition, but it
-        # can only refuse once the declaration already carries the crossover
-        # (``baseline_profile``'s staleness guard requires that ordering) — so an
-        # emit-time refusal alone would leave ``/sound`` declaring a corner the
-        # speaker is not playing and cannot be made to play. Refusing here means
-        # a refused apply displaces nothing at all. See
-        # ``crossover_declaration.assert_crossover_honours_declared_floor``.
-        #
-        # Scoped to THIS arm on purpose, and the resulting asymmetry is
-        # disclosed rather than closed. An as-declared apply (``change is
-        # None``) on a speaker whose declaration is ALREADY below the floor has
-        # no write to run ahead of; it falls through to the L0 emit gate, whose
-        # ``ActiveSpeakerConfigError`` the compose below re-raises RAW. Both
-        # refuse — but only one names itself. Converting that re-raise would
-        # make this function the owner of how EVERY L0 gate reads here (the
-        # unprotected-tweeter gate included), which is #2736's residual to
-        # widen with tests per gate, not this path's to take in passing. The
-        # two are also different situations: this arm refuses a change the
-        # household can still decline, that one describes a graph the speaker
-        # is already playing, whose remedy is the fleet check rather than
-        # "do not do this apply".
         try:
             assert_crossover_honours_declared_floor(candidate.source_preset)
         except CrossoverBelowDeclaredFloor as exc:
@@ -4348,19 +4129,46 @@ def handle_v2_apply(
                       level=logging.ERROR, reason=exc.reason,
                       selected_fc_hz=selected_fc_hz)
             raise CrossoverV2Refused(str(exc)) from exc
+    draft = pre_draft
+    if change is not None:
+        draft = {**pre_draft, "manual_settings": manual_settings_for_crossover(
+            pre_draft, change.between_roles, change.selected)}
+    preview = build_crossover_preview(draft) if change else load_crossover_preview(current_design_draft=draft)
+    try:
+        measurements = load_measurement_state(topology)
+        reviewed_baseline = build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            write=False,
+            compile_config=True,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        if saved_already:
+            raise _saved_not_applied(exc) from exc
+        raise
+    if not (reviewed_baseline.get("config") or {}).get("sha256"):
+        return {"status": "blocked", "profile": reviewed_baseline, "apply": None, "issues": reviewed_baseline.get("issues", [])}
+    manifest = candidate_trial_manifest(expected, reviewed_baseline)
+    issues = apply_preconditions(
+        ApplyGraph(reviewed_baseline, topology, candidate, expected), banked, manifest,
+        reviewed_baseline.get("applied_recomposition_profile"),
+    )
+    if issues:
+        raise CrossoverV2Refused(issues[0].detail, code=issues[0].code)
+    assert manifest is not None
+    trial_graph = manifest["set"]["capture_basis"]["submitted_graph_fingerprint"]
+    record_id = manifest["set"]["takes"][0]["artifacts"]["record_id"]
+    applied_tuning_trial = tuning_trial_reference(candidate, {
+        "candidate_id": expected, "graph_scope": "candidate", "graph_fingerprint": trial_graph,
+        "record_path": str(Path(manifest["bundle"]) / "evidence/v1/artifacts" / record_id),
+    })
+    if change is not None:
         if not saved_already:
-            # Ordered BEFORE the durable declaration write for the reason the
-            # hearing-safety gate above orders itself the same way: a refused
-            # apply must displace nothing, or ``/sound`` declares a crossover
-            # the speaker is not playing and every retry re-refuses. The D3
-            # assert below stays at commit position (freshness); a retry
-            # (Sound already saved) skips this arm and keeps its "saved in
-            # Sound but was not applied" framing there. Raw on purpose:
-            # ``_before_dsp`` would relabel a pre-write refusal as
-            # saved-not-applied, which is false on this side of the write.
-            if not tuning_apply:
-                _assert_stage_2_can_open(status)
-            measured_revision = (state or {}).get("sound_design_revision")
+            measured_revision = (state or {}).get("sound_design_revision", pre_draft.get("revision"))
             if (isinstance(measured_revision, bool)
                     or not isinstance(measured_revision, int)):
                 raise CrossoverV2Refused(
@@ -4380,99 +4188,24 @@ def handle_v2_apply(
             if (
                 isinstance(accepted_revision, bool)
                 or not isinstance(accepted_revision, int)
-                or not _update_current_review(
+                or current and not _update_current_review(
                     review_session_id, expected, None,
-                    # The change lands in the SAME state write as the revision
-                    # that save produced, for the reason the retry read above
-                    # gives: once the declaration carries the candidate's
-                    # crossover, what it displaced is no longer derivable
-                    # from anything live, and a retry still needs that inverse
-                    # to rebuild its change.
                     {"accepted_sound_revision": accepted_revision,
                      "accepted_sound_declaration_change": change_to_record(change)},
                 )
             ):
                 raise _review_replaced()
-        # durable=True: this branch just accepted a measured crossover onto the
-        # Sound declaration (apply_measured_crossover_geometry above), so the
-        # preview regenerated from it is part of the same crossover-accept
-        # seam and gets the same power-loss-durable write.
         preview = _before_dsp(lambda: ensure_crossover_preview_ready(durable=True))
         draft = _before_dsp(lambda: load_design_draft(topology=topology))
     else:
         draft = pre_draft
         preview = load_crossover_preview(current_design_draft=draft)
 
-    # Blocker M translation: compose read-only (the seam's own build_candidate
-    # closure re-derives this identically under its writer lock, so this is a
-    # deterministic recompose, not a second opinion) and confirm the
-    # composition is still bound to the reviewed measured candidate before
-    # asking the seam to apply anything.
-    try:
-        measurements = load_measurement_state(topology)
-        reviewed_baseline = build_baseline_profile_candidate(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            write=False,
-            compile_config=tuning_apply,
-            tuning_owner="automatic",
-            measured_candidate=candidate,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        if alternative:
-            raise _saved_not_applied(exc) from exc
-        raise
-    reviewed_measured_fingerprint = str(
-        (reviewed_baseline.get("source") or {}).get("measured_candidate_fingerprint")
-        or ""
-    )
-    if reviewed_measured_fingerprint != expected:
-        raise CrossoverV2Refused(
-            "the reviewed crossover is no longer current; review the newest "
-            "measurement before applying"
-        )
-    baseline_expected_fingerprint = str(
-        reviewed_baseline.get("candidate_fingerprint") or ""
-    )
-    if tuning_apply:
-        compiled_graph = str((reviewed_baseline.get("config") or {}).get("sha256") or "")
-        if not compiled_graph:
-            # A blocked compose carries no graph digest, and a blank digest
-            # asks the trial gate for a capture no take can match -- which
-            # reads at the household as "capture this candidate first" even
-            # when an intact trial is banked. Name what blocked the compile.
-            blocker = _blocking_apply_issue(reviewed_baseline) or {}
-            raise CrossoverV2Refused(
-                str(blocker.get("message") or "")
-                or "the active profile for this tuning could not be compiled",
-                code=str(blocker.get("id") or "") or "baseline_graph_not_compiled",
-            )
-        try:
-            trial = require_candidate_trial(
-                candidate, expected_graph_fingerprint=compiled_graph[:16],
-            )
-            applied_tuning_trial = tuning_trial_reference(candidate, trial)
-        except CandidateBankRefusal as exc:
-            raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
-    # The pre-candidate applied profile, if any (``None`` on the speaker's
-    # first-ever apply). ``build_baseline_profile_candidate`` freezes it here
-    # as ``applied_recomposition_profile`` before the actual apply below
-    # commits and pops that field off the new applied SSOT — this is the ONLY
-    # moment it survives to read the way back's pointer and the #1811 offset
-    # from.
     pre_apply_profile = reviewed_baseline.get("applied_recomposition_profile")
     if not isinstance(pre_apply_profile, Mapping):
         pre_apply_profile = None
 
-    # LAST, immediately before the transaction commits (D3). After the
-    # freshness gates, so a stale candidate still gets its own specific
-    # refusal rather than this one.
-    if not tuning_apply:
-        _before_dsp(lambda: _assert_stage_2_can_open(status))
-
-    if alternative and not _update_current_review(
+    if alternative and current and not _update_current_review(
         review_session_id, expected, accepted_revision, {},
     ):
         raise _review_replaced()
@@ -4484,7 +4217,7 @@ def handle_v2_apply(
                 "measurement before applying")
 
     review_identity = (
-        (review_session_id, expected, accepted_revision) if alternative else None
+        (review_session_id, expected, accepted_revision) if alternative and current else None
     )
 
     def _unknown_result(error_type: str) -> CrossoverV2Refused:
@@ -4513,11 +4246,7 @@ def handle_v2_apply(
                 best_effort=False
             ),
             tuning_owner="automatic",
-            expected_candidate_fingerprint=baseline_expected_fingerprint,
-            expected_tuning_graph_fingerprint=(
-                applied_tuning_trial["graph_fingerprint"]
-                if applied_tuning_trial is not None else None
-            ),
+            expected_tuning_graph_fingerprint=trial_graph,
             measured_candidate=candidate,
         ))
     except Exception as exc:  # noqa: BLE001 - DSP result may be ambiguous
@@ -4525,36 +4254,16 @@ def handle_v2_apply(
             raise _unknown_result(type(exc).__name__) from exc
         raise
     if payload.get("status") == "applied":
-        # #1811 — the apply boundary. The graph that just went live absorbs its
-        # correction's boost as a pre-split common attenuation, so the same
-        # commanded volume now drives the speaker measurably quieter (−7.9 dB
-        # broadband on the session that surfaced this). That attenuation is the
-        # excitation-safety property — it is what keeps a boosted band at or
-        # under unity — so it is NOT compensated at the main volume. What it
-        # needs is to be DECLARED, because the post-apply analysis compares the
-        # capture against a prediction that carries no such term.
-        #
-        # Handed to ``observe_apply_success``, which persists it in the SAME
-        # state write as the ``applied`` flag. That is the ordering guarantee
-        # this needs: ``applied`` is what releases VERIFY's deferred hold, so
-        # the flag can never become visible without the offset beside it, and
-        # the conductor's probe seam reads a complete record the moment VERIFY
-        # lands one capture later.
         offset_db = applied_program_level_delta_db(
             pre_apply_profile, payload.get("profile"),
         )
         payload["expected_post_apply_offset_db"] = round(offset_db, 3)
         with _state_lock:
-            if _update_current_review(
-                review_session_id, expected,
-                accepted_revision if alternative else None, {},
-                allow_applied=True,
+            if not current or _update_current_review(
+                review_session_id, expected, accepted_revision if alternative else None, {}, allow_applied=True,
             ):
                 observe_apply_success(
                     expected,
-                    # The identity of the measured candidate this apply
-                    # DISPLACED — the way back's pointer, read off the frozen
-                    # profile's own source record.
                     previous_candidate_fingerprint=str(
                         ((pre_apply_profile or {}).get("source") or {}).get(
                             "measured_candidate_fingerprint"
@@ -4564,15 +4273,10 @@ def handle_v2_apply(
                     or None,
                     expected_post_apply_offset_db=offset_db,
                     tuning_trial=applied_tuning_trial,
+                    selected_candidate=_candidate_summary(candidate, topology_pinned=True),
                 )
     issue = None
     if payload.get("status") in {"blocked", "apply_failed"}:
-        # Finding N: name the blocker compactly (not buried in the full
-        # composed profile) and persist it so the failure screen can surface
-        # it instead of the household seeing a generic message with no
-        # specific cause. This endpoint is the flow's ONE apply path since
-        # PR-T3 removed auto-apply, so it is also the only writer of this
-        # blocking issue — the SSOT claim survives its original reason.
         issue = _blocking_apply_issue(payload)
         if (alternative and payload.get("status") == "apply_failed"
                 and not _dsp_apply_is_known_inactive(payload)):

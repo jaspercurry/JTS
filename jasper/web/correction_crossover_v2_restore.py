@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The excess-boost stop restores through the normal republish and apply doors."""
+"""The excess-boost stop restores through the normal apply door."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.boost_protection import config_graph_fingerprint
 from jasper.web import correction_crossover_v2 as host
 from jasper.web import correction_crossover_backend as backend
-from jasper.web import correction_crossover_v2_republish as republish
 from jasper.web import correction_crossover_v2_status as status
 
 
@@ -41,7 +40,6 @@ def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], 
                 outcome["status"] = "previous_profile_unavailable"
             else:
                 try:
-                    republish.handle_v2_republish({"fingerprint": previous})
                     result = host.handle_v2_apply(
                         {"expected_candidate_fingerprint": previous}, run_async, camilla_factory,
                         status=backend.status_payload(),

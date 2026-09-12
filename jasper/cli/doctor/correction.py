@@ -587,17 +587,14 @@ def _crossover_v2_status_block() -> dict | None:
 
 
 def _applied_grade_finding(block: dict) -> tuple[str, str]:
-    """Was the applied crossover-v2 correction (if any) ever graded after it
-    landed? Returns ``(detail, reason)`` for
-    :func:`check_crossover_v2_cloud_pipeline` to fold in — the cloud spec
-    verdict alone cannot see a missing grade, since it only warns on a
-    FAILING one.
-
-    Reads ``post_apply_grade`` and re-derives nothing: the grade has one owner
-    (``crossover_v2_status_block``), and every surface — `/state`, the wizard,
-    this check — reads it. Express-tier sessions omit the post-apply position
-    group, so the VERIFY outcome carries them and either half satisfies this.
-    """
+    """Disclose the applied trial's four independent quality dimensions."""
+    advice = block.get("trial_verification")
+    if isinstance(advice, dict):
+        dimensions = ", ".join(f"{key}={advice.get(key, 'unavailable')}" for key in
+                               ("capture_validity", "realization", "benefit", "spec"))
+        layers = ",".join(advice.get("layers_changed", [])) or "none"
+        reused = "; speaker trial reused" if advice.get("speaker_evidence_reused") else ""
+        return f"applied trial: {dimensions}; layers_changed={layers}{reused}", ""
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
         GRADE_GRADED,
@@ -612,15 +609,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
     )
     grade = block.get("post_apply_grade")
     grade = grade if isinstance(grade, dict) else {}
-    # `.get` with a default rather than a lookup: a durable state written by a
-    # future build could carry a state name this one has never heard of, and
-    # inventing a warning about it would be worse than saying what it said.
     state = str(grade.get("state") or "")
-    # ``capture`` qualifies the outcome at every site: ``state`` is the union of
-    # the instruments, ``verify_outcome`` is capture and tracking health alone,
-    # and the two may honestly disagree (a failed crossover-region claim caps a
-    # capture whose own outcome is ``pass``). ``result`` is absent whenever the
-    # producer recorded no result evidence — never a fabricated code.
     verify_text = (
         f"capture verify={grade.get('verify_outcome') or 'n/a'}"
         + (f", result={grade.get('outcome')}" if grade.get("outcome") else "")
@@ -628,12 +617,9 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
     if state == GRADE_NOT_APPLIED:
         return "no applied measured crossover", ""
     if state == GRADE_TUNING_TRIAL_MEASURED:
-        return "applied from its measured tuning trial; speaker VERIFY not run", ""
+        return "applied from its measured tuning trial; speaker trial advice unavailable", ""
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
-        # A non-empty word this build does not recognize is a later build's
-        # vocabulary. The empty string is a durable state written before
-        # ``spatial`` existed and keeps the fallthrough below.
         if spatial and spatial not in {
             GRADE_SPATIAL_ABSENT,
             GRADE_SPATIAL_PASSED,
@@ -650,9 +636,6 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
         if spatial == GRADE_SPATIAL_FAILED:
             worst = grade.get("spatial_worst_db")
             at = grade.get("spatial_worst_hz")
-            # The number rides the verdict from the same gauge the cloud line
-            # prints, so "the grade failed" and "by how much" cannot drift.
-            # Absent when the gauge recorded none — never a fabricated 0.
             worst_text = ""
             if isinstance(worst, (int, float)):
                 where = f" @ {at:.0f}Hz" if isinstance(at, (int, float)) else ""
@@ -695,8 +678,8 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
             return detail, REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE
         return detail, REASON_APPLIED_GRADE_VERIFY_FAILED
     return (
-        "applied but never graded: no post-apply check completed for this "
-        "correction — re-verify at /sound/speaker/crossover/ to confirm it, or undo",
+        "applied trial advice is unavailable for this "
+        "correction; a new trial can provide quality advice",
         REASON_APPLIED_GRADE_NEVER_GRADED,
     )
 
