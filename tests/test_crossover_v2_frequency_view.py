@@ -20,7 +20,7 @@ import pytest
 
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
-from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
@@ -900,7 +900,7 @@ def bass_fit_pairs(monkeypatch):
         'record_path': 'off.json',
         'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
                    'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20,
-                   'loudness_volume_db': -10, 'program_id': 'sweep', 'phase': PHASE_LATERAL},
+                   'loudness_volume_db': -10, 'program_id': 'sweep'},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
         'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),
         'fundamental_qualified': ((grid < 90) | (grid > 110)).tolist(), 'harmonics': {},
