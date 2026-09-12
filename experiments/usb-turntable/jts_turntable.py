@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import errno
+import fcntl
 import json
 import math
 import re
@@ -64,6 +66,8 @@ THROTTLED_RE = re.compile(r"\s*throttled=(0x[0-9a-fA-F]+)\s*")
 AUTOSTOP_PORT_RE = re.compile(r"/dev/ttyUSB\d+")
 EXPERIMENT_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
+PORT_LOCK_PATH = Path("/run/lock/jasper-turntable.lock")
+PORT_LOCK_FALLBACK_PATH = Path("/tmp/jasper-turntable.lock")
 
 # Commands that get one whole-operation retry, against a FRESH controller
 # session, on the vendored transport's exact ProtocolError base class
@@ -89,6 +93,24 @@ VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
 RETRYABLE_COMMANDS = frozenset({"offset", "probe", "position"})
 
 _T = TypeVar("_T")
+
+
+def _acquire_port_lock() -> tuple[Any | None, Path]:
+    path = PORT_LOCK_PATH
+    try:
+        handle = path.open("a+")
+    except OSError as exc:
+        if exc.errno not in {errno.EACCES, errno.ENOENT, errno.EROFS}:
+            raise
+        path = PORT_LOCK_FALLBACK_PATH
+        handle = path.open("a+")
+    try:
+        # A 2026 manual offset raced an automated stop and interleaved both readers.
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None, path
+    return handle, path
 
 
 @dataclass(frozen=True)
@@ -797,7 +819,18 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = build_parser().parse_args(argv)
+    lock_handle = None
     try:
+        if args.command not in {"detect", "power"}:
+            lock_handle, lock_path = _acquire_port_lock()
+            if lock_handle is None:
+                _emit(
+                    {"ok": False, "error": "another jts_turntable invocation holds the port",
+                     "error_type": "PortBusy", "code": "port_busy",
+                     "lock_path": str(lock_path)},
+                    compact=args.json,
+                )
+                return 1
         return run(args, api=api, run_command=run_command, sleep=sleep)
     except _RetryExhausted as exc:
         # Both attempts of a retryable operation failed (see
@@ -824,6 +857,9 @@ def main(
             compact=args.json,
         )
         return 1
+    finally:
+        if lock_handle is not None:
+            lock_handle.close()
 
 
 if __name__ == "__main__":

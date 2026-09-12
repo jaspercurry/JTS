@@ -211,6 +211,28 @@ def parse_json_lines(capsys) -> list[dict]:
     return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
 
+def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
+    turntable, monkeypatch, tmp_path, capsys
+) -> None:
+    lock_path = tmp_path / "turntable.lock"
+    monkeypatch.setattr(turntable, "PORT_LOCK_PATH", lock_path)
+    api, factory, controller = fake_api(turntable)
+    second_result = []
+
+    def nested_stop():
+        controller.calls.append(("stop",))
+        second_result.append(turntable.main(["--json", "stop"], api=api))
+        return controller.operation_result
+
+    controller.stop = nested_stop
+    assert turntable.main(["--json", "stop"], api=api) == 0
+    assert second_result == [1]
+    busy = next(row for row in parse_json_lines(capsys) if row.get("code") == "port_busy")
+    assert busy["ok"] is False
+    assert busy["lock_path"] == str(lock_path)
+    assert factory.open_calls == [{"port": None}]
+
+
 def test_vendored_snapshot_provenance_is_current() -> None:
     manifest = json.loads((VENDOR / "UPSTREAM.json").read_text())
     assert manifest == {

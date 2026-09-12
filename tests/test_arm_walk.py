@@ -38,6 +38,7 @@ from jasper.active_speaker import arm_walk as aw
 from jasper.active_speaker import wizard_client as wc
 from jasper.cli import _refusal as refusal
 from jasper.cli import angle_capture as cli
+from tests._log_events import event_fields
 
 ROOT = Path(__file__).resolve().parents[1]
 TURNTABLE_SCRIPT = ROOT / "experiments" / "usb-turntable" / "jts_turntable.py"
@@ -767,6 +768,28 @@ def test_a_failed_stop_never_sends_a_position(payload, code):
     assert not mover.power().clean
 
 
+def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog):
+    responses = iter([
+        _Proc(json.dumps({"ok": True, "power": {"status": {
+            "available": True, "current_flags": [], "history_flags": [],
+            "raw": "0x0"}}})),
+        _Proc('{"ok": false}', 3, "setup detail\nprotocol frame broke\n"),
+    ])
+
+    trail = _RecordingTrail()
+    mover = aw.TurntableMover(attest_rig_clear=True, run=lambda *_, **__: next(responses))
+    walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
+    assert walk._serve(aw.Pending(1, 1, 7, "onax")) == aw.EXIT_MOVE_FAILED
+
+    expected = {"subcommand": "stop", "exit_code": 3,
+                "stderr_tail": "protocol frame broke"}
+    failed = trail.error("move_failed")
+    assert {key: failed[key] for key in expected} == expected
+    assert event_fields(caplog, "arm_walk.vendor_tool_failed") == {
+        key: str(value) for key, value in expected.items()
+    }
+
+
 def test_an_adapter_that_cannot_be_launched_is_a_failed_move():
     def boom(argv, **_):
         raise OSError("no such file")
@@ -1337,7 +1360,7 @@ class _RecordingTrail(aw.Trail):
 
 
 class _Proc:
-    def __init__(self, stdout: str, returncode: int = 0) -> None:
+    def __init__(self, stdout: str, returncode: int = 0, stderr: str = "") -> None:
         self.stdout = stdout
-        self.stderr = ""
+        self.stderr = stderr
         self.returncode = returncode

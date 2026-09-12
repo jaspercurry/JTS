@@ -322,6 +322,8 @@ class TurntableMover:
     timeout_s: float = 300.0
     python: str = field(default_factory=lambda: sys.executable)
     run: Callable[..., Any] = subprocess.run
+    move_failure: Mapping[str, Any] = field(init=False, default_factory=dict)
+    _stderr_tail: str = field(init=False, default="")
 
     def _invoke(self, subcommand: str, *rest: str) -> tuple[int, Mapping[str, Any]]:
         if subcommand not in _TOOL_SUBCOMMANDS:
@@ -332,6 +334,7 @@ class TurntableMover:
                 argv, capture_output=True, text=True, timeout=self.timeout_s
             )
         except (OSError, subprocess.SubprocessError) as exc:
+            self._stderr_tail = ""
             return 1, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         try:
             payload = json.loads(str(getattr(proc, "stdout", "") or ""))
@@ -339,6 +342,8 @@ class TurntableMover:
             payload = {"ok": False, "error": "adapter did not answer JSON"}
         if not isinstance(payload, Mapping):
             payload = {"ok": False, "error": "adapter did not answer an object"}
+        stderr = str(getattr(proc, "stderr", "") or "").rstrip()
+        self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
         return int(getattr(proc, "returncode", 1)), payload
 
     def power(self) -> PowerVerdict:
@@ -351,8 +356,10 @@ class TurntableMover:
             # constructible and confirmations must never be forged by default.
             raise ArmWalkRefused("moving needs an explicit rig-clear attestation")
         # The vendor stop request is the movement handshake, not a brake.
+        self.move_failure = {}
         code, payload = self._invoke("stop")
         if code or not payload.get("ok"):
+            self._record_move_failure("stop", code)
             return False
         code, payload = self._invoke(
             "position",
@@ -360,7 +367,23 @@ class TurntableMover:
             "--confirm-rig-clear",
             "--confirm-zero-valid",
         )
-        return code == 0 and bool(payload.get("ok"))
+        if code or not payload.get("ok"):
+            self._record_move_failure("position", code)
+            return False
+        return True
+
+    def _record_move_failure(self, subcommand: str, code: int) -> None:
+        self.move_failure = {
+            "subcommand": subcommand,
+            "exit_code": code,
+            "stderr_tail": self._stderr_tail,
+        }
+        log_event(
+            logger,
+            "arm_walk.vendor_tool_failed",
+            level=logging.ERROR,
+            **self.move_failure,
+        )
 
     def offset_deg(self) -> float | None:
         _, payload = self._invoke("offset")
@@ -654,7 +677,8 @@ class ArmWalk:
             return EXIT_POWER_VOID
         if not self._mover.move_to(pending.degrees):
             self._trail.emit("move_failed", level=logging.ERROR,
-                             index=pending.index, degrees=pending.degrees)
+                             index=pending.index, degrees=pending.degrees,
+                             **getattr(self._mover, "move_failure", {}))
             return EXIT_MOVE_FAILED
         moved_at = self._clock()
         self._trail.emit("moved", index=pending.index, degrees=pending.degrees,
@@ -772,7 +796,8 @@ class ArmWalk:
         if offset is None:
             self._trail.emit("parked", level=logging.ERROR, ok=False,
                              moved=moved, offset_deg="unreadable",
-                             detail="park could not be verified -- check the rig")
+                             detail="park could not be verified -- check the rig",
+                             **({} if moved else getattr(self._mover, "move_failure", {})))
             return
         # MAGNITUDE only: the command sign is the truth and the readback's is
         # negated upstream, so consuming the sign here would invent a disagreement.
@@ -785,6 +810,7 @@ class ArmWalk:
             offset_deg=round(offset, 3),
             tolerance_deg=PARK_TOLERANCE_DEG,
             releases=len(self._releases),
+            **({} if moved else getattr(self._mover, "move_failure", {})),
         )
 
     # -- what the operator reads at the end --------------------------------- #
