@@ -86,7 +86,6 @@ def test_the_shipped_stage_1_still_plans_no_lateral_group():
     """
     shipped = flow.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(),
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -148,7 +147,7 @@ def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
 
 def _seat_index_phases(prompts):
     return flow.build_v2_cloud_index_phase_map(
-        plan_shape=_hand_shape(), include_cloud_measure=False,
+        plan_shape=_hand_shape(),
         include_lateral=True, lateral_prompts=prompts,
     )
 

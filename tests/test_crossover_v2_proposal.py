@@ -38,7 +38,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.plan_assembly import LinearizationPlan
 from jasper.active_speaker.crossover_v2.proposal import (
     PROPOSAL_CREATED_EVENT,
-    PROPOSAL_REFUSED_EVENT,
     build_intervention_proposal,
     plan_intervention_proposal,
     trim_strategy_for_outcome,
@@ -341,26 +340,6 @@ def test_a_candidate_with_no_crossover_has_no_context_and_says_which():
     assert issubclass(NoCrossoverSectionsError, CrossoverV2ContractError)
 
 
-def test_the_planning_form_refuses_instead_of_raising(caplog):
-    """A commit mid-flight must not die because forensics could not assemble.
-
-    :meth:`commit_intervention_proposal` performs irreversible acts for a
-    candidate the household already confirmed. Assembly failure costs the round
-    its proposal IDENTITY — the receipt then names the candidate under an
-    explicit kind — and never the candidate itself.
-    """
-    with caplog.at_level(
-        logging.WARNING, logger="jasper.active_speaker.crossover_v2.proposal"
-    ):
-        result = plan_intervention_proposal(_NoSections(), session_id="cap_1")
-
-    assert isinstance(result, PlanRefusal)
-    assert result.reason == "no_crossover_sections"
-    assert result.detail
-    messages = [record.getMessage() for record in caplog.records]
-    assert any(f"event={PROPOSAL_REFUSED_EVENT}" in message for message in messages)
-
-
 def test_the_refusal_reason_travels_by_TYPE_not_by_the_exceptions_prose():
     """#2307 gate note N5, kept alive now the classifier is back.
 
@@ -449,126 +428,10 @@ def _session():
     return session, seams
 
 
-def test_the_commit_seam_stashes_the_proposal_and_its_durable_identity():
-    """What the seam has to leave behind for the receipt to find it.
-
-    The session-scoped payload and the durable fingerprint are separate on
-    purpose: the fingerprint is what crosses ``verify_priors`` to the stage
-    that writes the receipt, and it must be the one the proposal really had.
-    """
-    session, seams = _session()
-    candidate = _candidate(linearization_outcome="fitted")
-
-    session.commit_intervention_proposal(
-        candidate,
-        predicted_sum=None,
-        commanded_delta=None,
-        accountability_finding=None,
-        realized_branch_level={"difference_db": -1.6},
-    )
-
-    proposal = session.last_intervention_proposal
-    assert isinstance(proposal, InterventionProposal)
-    assert session.measure_proposal_fingerprint == proposal.fingerprint
-    assert proposal.realized_branch_level["difference_db"] == pytest.approx(-1.6)
-    assert proposal.candidate_fingerprint == candidate.fingerprint
-    # It is the PROPOSAL's identity, not the candidate's, or the receipt would
-    # be back where it started.
-    assert session.measure_proposal_fingerprint != candidate.fingerprint
-    assert seams.published_candidates == [candidate]
-
-
-def test_an_unassemblable_candidate_costs_the_round_its_proposal_not_its_commit():
-    """"Assembly cannot fail this commit" — the docstring's promise, tested.
-
-    The seam runs on the capture thread for a candidate the household has already
-    confirmed, and ``publish_candidate`` is irreversible. A contract violation
-    while gathering forensics must not be the thing that stops a measurement
-    that would otherwise have succeeded.
-
-    ``_NoSections`` raises ``NoCrossoverSectionsError`` — a ``ValueError``, and
-    so is every other assembly failure worth surviving: ``json_fingerprint``'s
-    ``EvidenceIdentityError`` and the whole ``CrossoverV2ContractError`` family
-    both subclass it, which is why the refusal arm's exception tuple really does
-    cover the realistic set rather than one example of it.
-    """
-    session, seams = _session()
-    candidate = _NoSections()
-
-    session.commit_intervention_proposal(
-        candidate,
-        predicted_sum=None,
-        commanded_delta=None,
-        accountability_finding=None,
-    )
-
-    # The commit completed, whole.
-    assert seams.published_candidates == [candidate]
-    assert session._candidate is candidate
-    # The proposal did not, and the session says so rather than inventing one.
-    assert isinstance(session.last_intervention_proposal, PlanRefusal)
-    assert session.last_intervention_proposal.reason == "no_crossover_sections"
-    assert session.measure_proposal_fingerprint == "", (
-        "an empty identity is what routes the receipt to its candidate"
-    )
-
-
 #: The verdict both routes must carry from their own evidence onto the
 #: proposal. Distinctive so an assertion cannot pass on a coincidence, and
 #: non-empty so a severed accessor collapses it to ``{}`` and reddens.
 _REALIZED = {"difference_db": -1.63, "matched": True}
-
-
-def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
-    """WIRING, not contract: the configured-Fc route's accessor is real.
-
-    ``test_the_realized_level_verdict_is_what_5c_iii_removed_and_this_restores``
-    hand-supplies the value, so it pins the CONTRACT and would stay green if
-    :meth:`_commit_measure_candidate` stopped reading
-    ``built.linearization.realized_branch_level`` altogether. The value now
-    sits inside a write-once digest, so a dropped accessor would silently
-    change what ``proposal_fingerprint`` covers — the exact failure class this
-    PR closes. This drives the real call site instead.
-    """
-    from jasper.active_speaker.crossover_v2.candidates import SpeculativeClose
-    from types import SimpleNamespace
-
-    session, seams = _session()
-    candidate = _candidate(linearization_outcome="fitted")
-    built = SpeculativeClose(
-        candidate=candidate,
-        predicted_sum=None,
-        # The three fields the commit reads off an analysis. ``driver_responses``
-        # and ``alignment`` joined ``predicted_sum`` with #2611's commanded axis,
-        # which models the graph an apply replaces on this capture's own branch
-        # pair; a real ``ProgramAnalysis`` always carries both (they are declared
-        # fields with defaults), so naming them here keeps the stand-in the same
-        # shape as the thing it stands in for.
-        analysis=SimpleNamespace(
-            predicted_sum=None, driver_responses=(), alignment=None,
-        ),
-        cloud=None,
-        accountability_finding=None,
-        linearization=LinearizationState(
-            outcome="fitted",
-            realized_level_match=_FakeRealizedMatch(_REALIZED),
-            trim_strategy=TrimStrategy.RESOLVED_COMMITTED,
-            anchor_drift_db=1.25,
-        ),
-    )
-
-    session._commit_measure_candidate(built)
-
-    assert seams.published_candidates == [candidate], "the real commit ran"
-    proposal = session.last_intervention_proposal
-    assert isinstance(proposal, InterventionProposal)
-    assert dict(proposal.realized_branch_level) == _REALIZED, (
-        "the walk must read the verdict off its OWN build's linearization state"
-    )
-    assert proposal.trim_strategy is TrimStrategy.RESOLVED_COMMITTED, (
-        "the committed pair travels the same seam; deriving it from the "
-        "candidate's outcome string would say COMMITTED_PAIR_UNRECORDED"
-    )
 
 
 def test_a_proposal_fingerprint_and_a_candidate_fingerprint_are_the_same_shape():

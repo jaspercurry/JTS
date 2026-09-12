@@ -62,10 +62,7 @@ from jasper.active_speaker.linearization_fit import (
     _boost_exclusion_verdicts,
 )
 from jasper.audio_measurement.interference_nulls import (
-    CLASSIFICATION_POSITION_DEPENDENT,
     CLASSIFICATION_POSITION_INVARIANT,
-    REASON_NO_CORROBORATING_ARRIVALS,
-    classify_dip_position_variance,
     identify_interference_nulls,
 )
 from jasper.audio_measurement.spatial_combine import combine_positions
@@ -74,8 +71,7 @@ from jasper.audio_measurement.spatial_combine import combine_positions
 # `test_interference_nulls` grades the null registry with. Imported rather than
 # copied so the suite has one construction of each, not two that agree by
 # inspection — and so a change to either builder reaches these scenarios.
-from tests.crossover_v2_fixtures import FakeSeams, _cloud_conductor
-from tests.test_interference_nulls import _cloud, _notched_cloud, _tau_us
+from tests.test_interference_nulls import _cloud, _tau_us
 
 # 15 samples at 48 kHz. Chosen because its comb (odd multiples of 1/2tau)
 # straddles the registry's gating floor: rungs at 1600 Hz — BELOW the floor,
@@ -242,120 +238,6 @@ def test_an_attributed_comb_excludes_and_the_aimed_boost_is_the_one_dropped():
 # The pair: one decision, two truths. Below the floor the gate cannot tell
 # them apart, and that is issue #1967's residual with ground truth attached.
 # --------------------------------------------------------------------------- #
-
-
-def test_a_driver_property_dip_keeps_its_boost_and_that_is_correct():
-    """INJECTED TRUTH: a dip that is a property of the driver — one notch, at
-    the same frequency at every position, and NO reflection anywhere in the
-    fixture (``ir=None``, so there is no arrival to attribute).
-
-    CORRECT DECISION: offer nothing for exclusion, so the boost stands. The
-    registry refuses attribution BY NAME rather than guessing, and the
-    cross-position check finds no contradiction, so the fit keeps a correction
-    that a listener would actually hear.
-    """
-    combined = combine_positions(_notched_cloud([1800.0] * N_POSITIONS))
-
-    report = identify_interference_nulls(combined, band_hz=HF_BAND_HZ)
-    assert report.reason == REASON_NO_CORROBORATING_ARRIVALS
-    assert report.nulls == ()
-
-    conductor = _cloud_conductor(FakeSeams())
-    offered = conductor._boost_excluded_bands_hz(
-        combined,
-        {"validity_floor_hz": BLIND_SPAN_HZ[0], "null_registry": {
-            "classification": report.classification, "reason": report.reason,
-        }},
-    )
-
-    assert offered == ()
-
-
-def test_the_same_decision_is_reached_for_an_injected_comb_and_that_is_the_residual():
-    """INJECTED TRUTH: the opposite of the test above — a real source-fixed
-    interference comb, ``tau`` and ``r`` known, with a rung sitting BELOW the
-    registry's gating floor. Boosting that rung corrects nothing.
-
-    CURRENT DECISION: identical to the driver-property case — nothing offered,
-    boost permitted. This documents residual #1967 and is deliberately NOT an
-    xfail: it asserts what the merged code does today, so that when the
-    follow-up lands (the post-apply "did this help" arm, #1868) this test
-    flips to asserting the new behaviour and the change is visible in a diff.
-
-    What makes it sharp rather than merely unfortunate: the evidence to tell
-    the two cases apart is IN THIS SAME CLOUD. The identical reflection is
-    attributed above the floor — recovered ``tau`` within 1 % of the injected
-    value — so the flow has, at the moment it decides, a corroborated arrival
-    that predicts a rung exactly where the sub-floor dip sits. The gate is not
-    short of evidence; it is short of a path from that evidence to this
-    decision, because ``classify_dip_position_variance`` is ladder-free by
-    construction and ``position_invariant`` is not a licence either way.
-    """
-    combined = _source_fixed_cloud()
-    sub_floor_rung_hz = _comb_rung_hz(0)
-    assert BLIND_SPAN_HZ[0] < sub_floor_rung_hz < ECHO_BAND_HF_REGIME_FLOOR_HZ
-
-    # The same reflection IS attributed above the floor.
-    hf = identify_interference_nulls(combined, band_hz=HF_BAND_HZ)
-    assert hf.classification == CLASSIFICATION_POSITION_INVARIANT
-    assert hf.tau_ladder_us == pytest.approx(
-        SOURCE_FIXED_TAU_US, rel=TAU_TOLERANCE_FRACTION
-    )
-
-    # Below it, the ladder-free check sees the rung and reads it invariant —
-    # true, and not a reason to withhold, which is the module's own rule.
-    variance = classify_dip_position_variance(combined, band_hz=BLIND_SPAN_HZ)
-    assert variance.reason == ""
-    assert [d.classification for d in variance.dips] == [
-        CLASSIFICATION_POSITION_INVARIANT
-    ]
-    assert variance.dips[0].f_center_hz == pytest.approx(sub_floor_rung_hz, rel=0.02)
-    assert variance.dips[0].positions_present == N_POSITIONS
-
-    conductor = _cloud_conductor(FakeSeams())
-    offered = conductor._boost_excluded_bands_hz(
-        combined,
-        {"validity_floor_hz": BLIND_SPAN_HZ[0], "null_registry": {
-            "classification": hf.classification, "reason": hf.reason,
-        }},
-    )
-
-    # Same answer as the driver-property cloud, from the opposite truth.
-    assert offered == ()
-
-
-def test_the_bound_acts_when_the_positions_actually_contradict_each_other():
-    """The control that keeps the pair above from being vacuous.
-
-    INJECTED TRUTH: no single feature — five positions notch at one frequency
-    and three at another, so the combined curve's dips are not a property of
-    what the speaker radiates.
-
-    CORRECT DECISION: offer both, below the floor, so the fit's lift stage can
-    refuse a boost aimed at either. Without this the two ``offered == ()``
-    assertions above would hold for a bound that never fires at all.
-    """
-    combined = combine_positions(
-        _notched_cloud([1800.0] * 5 + [2400.0] * 3)
-    )
-
-    variance = classify_dip_position_variance(combined, band_hz=BLIND_SPAN_HZ)
-    assert [d.classification for d in variance.dips] == [
-        CLASSIFICATION_POSITION_DEPENDENT, CLASSIFICATION_POSITION_DEPENDENT,
-    ]
-
-    conductor = _cloud_conductor(FakeSeams())
-    offered = conductor._boost_excluded_bands_hz(
-        combined,
-        {"validity_floor_hz": BLIND_SPAN_HZ[0], "null_registry": {}},
-    )
-
-    assert len(offered) == 2
-    # Everything offered sits in the span the registry could not adjudicate.
-    assert all(
-        BLIND_SPAN_HZ[0] <= lo < hi <= ECHO_BAND_HF_REGIME_FLOOR_HZ
-        for lo, hi in offered
-    ), offered
 
 
 # --------------------------------------------------------------------------- #

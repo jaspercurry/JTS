@@ -52,7 +52,6 @@ def _load_turntable():
     spec.loader.exec_module(module)
     return module
 
-
 # --------------------------------------------------------------------------- #
 # fakes -- the three seams
 # --------------------------------------------------------------------------- #
@@ -117,14 +116,11 @@ class FakeSession:
     """
 
     def __init__(self, polls, *, release=(200, '{"ok": true}'),
-                 complete=(200, '{"ok": true}'),
                  cancel=(200, '{"ok": true}')) -> None:
         self._queue = list(polls)
         self._release = release
-        self._complete = complete
         self._cancel = cancel
         self.released: list[int] = []
-        self.completes = 0
         self.cancels = 0
 
     def poll(self) -> aw.Poll:
@@ -135,10 +131,6 @@ class FakeSession:
         if len(self._queue) > 1:
             self._queue.pop(0)
         return self._release
-
-    def complete(self) -> tuple[int, str]:
-        self.completes += 1
-        return self._complete
 
     def cancel(self) -> tuple[int, str]:
         self.cancels += 1
@@ -165,8 +157,7 @@ def _own_signals():
 
 
 def _pending(index: int, degrees: int, attempt: int = 1) -> aw.Poll:
-    return aw.Poll(aw.Pending(index, attempt, degrees, "onax"), True, None)
-
+    return aw.Poll(aw.Pending(index, attempt, degrees, "onax"), True, mover=ac.MOVER_ARM)
 
 _QUIET = aw.Poll(None, False, None)
 _IN_FLIGHT_QUIET = aw.Poll(None, True, None)
@@ -204,9 +195,6 @@ class LiveThen:
     def release(self, index: int, attempt: int) -> tuple[int, str]:  # pragma: no cover
         raise AssertionError("nothing is ever pending in this double")
 
-    def complete(self) -> tuple[int, str]:  # pragma: no cover
-        raise AssertionError("this double never completes a stage")
-
     def cancel(self) -> tuple[int, str]:
         # A terminal session must never reach this (#2912 gap 4 follow-up):
         # counted, not asserted-never-called, so a test can pin the zero.
@@ -225,7 +213,6 @@ def _walk(mover, session, *, clock=None, trail=None, **cfg):
         trail=trail,
         clock=clock.now, sleep=clock.sleep,
     )
-
 
 # --------------------------------------------------------------------------- #
 # the bounds SSOT
@@ -259,7 +246,6 @@ def test_the_geometry_ceiling_still_refuses_both_movers():
     for mover in ac.MOVERS:
         with pytest.raises(ac.CrossoverV2FlowError):
             ac.per_driver_at([ac.MAX_ANGLE_DEG + 1], mover=mover)
-
 
 # --------------------------------------------------------------------------- #
 # power is read before every WALK move
@@ -342,7 +328,6 @@ def test_an_unreadable_power_reading_fails_closed():
     assert not verdict.clean and "vcgencmd" in verdict.detail
     assert not aw.parse_power({}).clean
 
-
 # --------------------------------------------------------------------------- #
 # the envelope clamp
 # --------------------------------------------------------------------------- #
@@ -358,12 +343,6 @@ def test_a_pending_outside_the_envelope_is_refused_before_any_move():
     refused = trail.error("move_refused")
     assert refused["reason"] == "envelope"
     assert refused["envelope_deg"] == aw.ARM_ENVELOPE_DEG
-
-
-def test_the_configured_expectations_are_clamped_too():
-    with pytest.raises(aw.ArmWalkRefused, match="45"):
-        aw.WalkConfig(expect_angles=(7, 60))
-
 
 # --------------------------------------------------------------------------- #
 # park, on every exit path
@@ -653,7 +632,6 @@ def test_the_park_runs_once():
     walk._park()
     assert mover.moves == [0]
 
-
 # --------------------------------------------------------------------------- #
 # set-zero is unreachable
 # --------------------------------------------------------------------------- #
@@ -710,13 +688,13 @@ def test_a_whole_walk_emits_only_the_allowed_verbs():
         return _Proc(json.dumps(payload))
 
     mover = aw.TurntableMover(attest_rig_clear=True, run=fake_run)
-    session = FakeSession([_pending(1, 22), _QUIET])
+    session = FakeSession([_pending(1, 22), _pending(2, -7), _COMPLETE])
     assert _walk(mover, session, idle_ceiling_s=10.0).run() == aw.EXIT_OK
-    verbs = {argv[3] for argv in recorded}
-    assert verbs <= aw._TOOL_SUBCOMMANDS
+    verbs = [argv[3] for argv in recorded]
+    assert [v for v in verbs if v in {"stop", "position"}] == ["stop", "position"] * 3
+    assert set(verbs) <= aw._TOOL_SUBCOMMANDS
     flat = " ".join(" ".join(argv) for argv in recorded)
     assert "set-zero" not in flat and "--confirm-redefine-zero" not in flat
-
 
 # --------------------------------------------------------------------------- #
 # the attestation
@@ -731,7 +709,7 @@ def test_the_attestation_becomes_both_adapter_confirmations():
         return _Proc(json.dumps({"ok": True, "result": {}}))
 
     assert aw.TurntableMover(attest_rig_clear=True, run=fake_run).move_to(-22)
-    argv = recorded[0]
+    argv = recorded[1]
     assert argv[3:5] == ["position", "-22"]
     assert "--confirm-rig-clear" in argv and "--confirm-zero-valid" in argv
 
@@ -755,10 +733,10 @@ def test_every_emitted_argv_is_one_the_adapter_actually_accepts():
 
     parser = _load_turntable().build_parser()
     parsed = [parser.parse_args(argv[2:]) for argv in recorded]
-    assert [p.command for p in parsed] == ["position", "power", "offset"]
+    assert [p.command for p in parsed] == ["stop", "position", "power", "offset"]
     assert all(p.json for p in parsed)
-    assert parsed[0].degrees == -22.0
-    assert parsed[0].confirm_rig_clear and parsed[0].confirm_zero_valid
+    assert parsed[1].degrees == -22.0
+    assert parsed[1].confirm_rig_clear and parsed[1].confirm_zero_valid
 
 
 def test_without_the_attestation_nothing_moves():
@@ -774,10 +752,17 @@ def test_serve_requires_the_attestation():
         cli.build_parser().parse_args(["serve", "--hostname", "jts3.local"])
 
 
-def test_an_adapter_that_does_not_answer_json_is_a_failed_move():
-    mover = aw.TurntableMover(attest_rig_clear=True,
-                              run=lambda argv, **_: _Proc("not json", 1))
+@pytest.mark.parametrize("payload,code", [("not json", 1), ('{"ok": false}', 0), ('{"ok": true}', 1)])
+def test_a_failed_stop_never_sends_a_position(payload, code):
+    verbs = []
+
+    def run(argv, **_):
+        verbs.append(argv[3])
+        return _Proc(payload, code)
+
+    mover = aw.TurntableMover(attest_rig_clear=True, run=run)
     assert mover.move_to(7) is False
+    assert verbs == ["stop"]
     assert mover.offset_deg() is None
     assert not mover.power().clean
 
@@ -789,7 +774,6 @@ def test_an_adapter_that_cannot_be_launched_is_a_failed_move():
     mover = aw.TurntableMover(attest_rig_clear=True, run=boom)
     assert mover.move_to(7) is False
     assert not mover.power().clean
-
 
 # --------------------------------------------------------------------------- #
 # the settle floor
@@ -824,7 +808,6 @@ def test_the_settle_actually_taken_is_what_the_trail_states():
     assert _walk(FakeMover(), session, trail=trail, settle_s=12.0,
                  idle_ceiling_s=10.0).run() == aw.EXIT_OK
     assert trail.one("released")["settled_s"] == 12.0
-
 
 # --------------------------------------------------------------------------- #
 # the loop's own exits
@@ -910,7 +893,6 @@ def test_a_retake_of_the_same_index_re_gates():
     assert _walk(FakeMover(), session, idle_ceiling_s=10.0).run() == aw.EXIT_OK
     assert session.released == [4, 4]
 
-
 # --------------------------------------------------------------------------- #
 # a walk ends when its session does
 # --------------------------------------------------------------------------- #
@@ -982,48 +964,18 @@ def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
             self._polls += 1
             # Two polls of the previous round's block, then this walk's own
             # session opens and asks for a position.
-            return residue if self._polls <= 2 else _pending(1, 7)
+            return residue if self._polls <= 2 else _COMPLETE if self.released else _pending(1, 7)
 
         def release(self, index: int, attempt: int) -> tuple[int, str]:
             self.released.append(index)
-            return 200, '{"ok": true}'
-
-        def complete(self) -> tuple[int, str]:
             return 200, '{"ok": true}'
 
         def cancel(self) -> tuple[int, str]:
             return 200, '{"ok": true}'
 
     session = ResidueThenLive()
-    # ``--complete-after`` only so the walk has an end; what is under test is
-    # that it reached the position at all instead of ending on the residue.
-    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0, complete_after=1)
+    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0)
     assert walk.run() == aw.EXIT_OK
-    assert session.released == [1]
-
-
-def test_a_session_that_finished_without_the_stated_angles_still_fails():
-    """The end-of-session arm hands the last word to ``_final_code``."""
-    session = FakeSession([_pending(1, 7), _COMPLETE])
-    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0,
-                 expect_angles=(7, -7))
-    assert walk.run() == aw.EXIT_WALK_NOT_TAKEN
-
-
-def test_ending_on_the_sessions_own_close_never_posts_a_second_one():
-    """The two closes are exclusive, and neither can double-fire.
-
-    ``--complete-after`` is how a WALK closes a wired stage's held set, and it
-    returns the moment its POST is accepted. A session that closed ITSELF needs
-    no second close -- the slot dropped the completion signal with the gate, so
-    a POST could only 409 -- and the terminal block repeats to every later poll,
-    so reading it more than once has to stay a no-op. Here the walk is still
-    four releases short of its ``--complete-after`` when the session ends.
-    """
-    session = FakeSession([_pending(1, 7), _COMPLETE])
-    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0, complete_after=5)
-    assert walk.run() == aw.EXIT_OK
-    assert session.completes == 0
     assert session.released == [1]
 
 
@@ -1040,55 +992,14 @@ def test_a_failed_move_stops_the_walk():
     (0, "URLError: connection refused"),
 ])
 def test_a_release_the_session_did_not_accept_stops_the_walk(status, body):
-    """No capture began, so nothing may be counted as measured.
-
-    Left ungated, a 409 (the gate moved on), a 403 (bad CSRF pair), a 400, or a
-    POST that never arrived would each mark the position served, satisfy
-    ``--expect-angles``, advance ``--complete-after``, and exit 0 on a walk that
-    measured nothing.
-    """
     trail = _RecordingTrail()
     session = FakeSession([_pending(4, 22), _QUIET], release=(status, body))
-    walk = _walk(FakeMover(), session, trail=trail, expect_angles=(22,))
+    walk = _walk(FakeMover(), session, trail=trail)
     assert walk.run() == aw.EXIT_RELEASE_REJECTED
     rejected = trail.error("release_rejected")
     assert rejected["http"] == status and rejected["index"] == 4
     assert not [row for row in trail.rows if row["event"] == "released"]
     assert walk.summary() == "no positions were released"
-
-
-def test_a_rejected_release_never_satisfies_an_expectation():
-    """The stated angle stays unserved, so the run cannot end 0 either way."""
-    session = FakeSession([_pending(1, 7), _QUIET], release=(409, "conflict"))
-    walk = _walk(FakeMover(), session, expect_angles=(7,))
-    assert walk.run() == aw.EXIT_RELEASE_REJECTED
-
-
-def test_a_rejected_release_never_advances_the_wired_completion():
-    session = FakeSession([_pending(1, 7), _QUIET], release=(403, "forbidden"))
-    assert _walk(FakeMover(), session,
-                 complete_after=1).run() == aw.EXIT_RELEASE_REJECTED
-    assert session.completes == 0
-
-
-def test_complete_after_closes_the_wired_stage():
-    session = FakeSession([_pending(1, 7), _pending(2, -7), _QUIET])
-    assert _walk(FakeMover(), session, complete_after=2).run() == aw.EXIT_OK
-    assert session.completes == 1 and session.released == [1, 2]
-    # #2912 gap 4 follow-up: a clean completion already ended the box's own
-    # capture -- the park must not cancel a session that is no longer there.
-    assert session.cancels == 0
-
-
-def test_a_complete_that_is_not_accepted_is_left_for_triage():
-    session = FakeSession([_pending(1, 7), _QUIET], complete=(409, "no session"))
-    assert _walk(FakeMover(), session,
-                 complete_after=1).run() == aw.EXIT_COMPLETE_FAILED
-
-
-def test_complete_after_must_count_at_least_one_release():
-    with pytest.raises(aw.ArmWalkRefused):
-        aw.WalkConfig(complete_after=0)
 
 
 def test_every_exit_code_is_distinct_and_named():
@@ -1097,28 +1008,6 @@ def test_every_exit_code_is_distinct_and_named():
     assert len(codes) == len(set(codes))
     assert set(codes) == set(aw.EXIT_NAMES)
 
-
-# --------------------------------------------------------------------------- #
-# the walk-taken checks
-# --------------------------------------------------------------------------- #
-
-
-def test_a_stated_walk_that_never_arrives_is_a_named_failure():
-    """A session that refused the staged walk runs its ordinary, all-0 shape."""
-    session = FakeSession([_pending(1, 0), _pending(2, 0), _QUIET])
-    trail = _RecordingTrail()
-    walk = _walk(FakeMover(), session, trail=trail, idle_ceiling_s=10.0,
-                 expect_angles=(7, -7))
-    assert walk.run() == aw.EXIT_WALK_NOT_TAKEN
-    assert trail.error("walk_not_taken")["missing_angles"] == "+7,-7"
-
-
-def test_a_stated_walk_that_arrives_is_a_success():
-    session = FakeSession([_pending(1, 0), _pending(2, 7), _pending(3, -7), _QUIET])
-    walk = _walk(FakeMover(), session, idle_ceiling_s=10.0, expect_angles=(7, -7))
-    assert walk.run() == aw.EXIT_OK
-
-
 # --------------------------------------------------------------------------- #
 # reading the envelope
 # --------------------------------------------------------------------------- #
@@ -1126,7 +1015,7 @@ def test_a_stated_walk_that_arrives_is_a_success():
 
 def test_a_pending_is_read_off_the_capture_block():
     poll = aw.poll_from_status({"capture": {"status": "running", "position_pending": {
-        "index": 3, "attempt": 2, "degrees": -22, "role": "offax"}}})
+        "index": 3, "attempt": 2, "degrees": -22, "role": "offax", "mover": "arm"}}})
     assert poll.pending == aw.Pending(3, 2, -22, "offax")
     assert poll.in_flight and poll.failed_error is None
 
@@ -1141,32 +1030,26 @@ def test_a_hold_that_cannot_be_parsed_is_never_moved_for(pending):
 
 def _held(**extra):
     return {"capture": {"status": "running", "position_pending": {
-        "index": 1, "attempt": 1, "degrees": 22, "role": "onax", **extra}}}
+        "index": 1, "attempt": 1, "degrees": 22, "role": "onax", "mover": "arm", **extra}}}
 
 
-def test_a_hold_a_person_will_release_is_never_the_arms_to_take():
-    """The arm's half of the check the browser already makes on this flag.
-
-    Nothing stops a `serve` running beside a browser-paced round: its pre-flight
-    asks only whether A walk is staged, never whose. Without this the turntable
-    turns, and releases the hold, while a household is standing at the
-    microphone. Run at the SHIPPED clocks, because the outcome has to be the
-    named refusal rather than the stuck alarm those defaults would reach first.
-    """
-    mover = FakeMover()
-    trail = _RecordingTrail()
-    walk = _walk(mover, FakeSession([aw.poll_from_status(_held(hand_released=True))]),
-                 trail=trail, idle_ceiling_s=aw.DEFAULT_IDLE_CEILING_S,
-                 stuck_alarm_s=aw.DEFAULT_STUCK_ALARM_S)
-
-    assert walk.run() == aw.EXIT_REFUSED
-    assert mover.moves == [0]  # the park, and no walk move
-    assert trail.one("hand_released")
-    # The arm's OWN holds are unaffected, whether or not they state the flag.
-    for capture in (_held(), _held(hand_released=False)):
-        poll = aw.poll_from_status(capture)
-        assert poll.pending == aw.Pending(1, 1, 22, "onax")
-        assert poll.hand_released is False
+@pytest.mark.parametrize("kind", ["position_pending", "join"])
+@pytest.mark.parametrize("mover_kind", ["arm", "human", "confirmed"])
+def test_the_arm_serves_only_its_mover(kind, mover_kind):
+    capture = _held(mover=mover_kind)["capture"]
+    capture[kind] = capture.pop("position_pending")
+    poll = aw.poll_from_status({"capture": capture})
+    assert poll.mover == mover_kind
+    mover, trail = FakeMover(), _RecordingTrail()
+    session = FakeSession([poll, _COMPLETE])
+    code = _walk(mover, session, trail=trail).run()
+    if mover_kind == "arm":
+        assert code == aw.EXIT_OK and mover.moves == [22, 0]
+        assert session.released == [1]
+    else:
+        assert code == aw.EXIT_REFUSED and mover.moves == [0]
+        assert session.released == [] and poll.pending is None
+        assert trail.one("mover_mismatch")["mover"] == mover_kind
 
 
 def test_a_failed_capture_carries_its_own_error():
@@ -1207,7 +1090,6 @@ def test_anything_not_terminal_reads_as_in_flight(status):
     waiting. Ending early strands a round; one more poll costs one poll."""
     poll = aw.poll_from_status({"capture": {"status": status}})
     assert poll.in_flight and not poll.ended
-
 
 # --------------------------------------------------------------------------- #
 # the HTTP session
@@ -1282,7 +1164,7 @@ def test_a_release_carries_the_double_submit_token_and_the_index():
     assert post.get_header("X-csrf-token") == "tok123"
     assert json.loads(post.data.decode()) == {"index": 4, "attempt": 7}
     # The token is minted once and reused, not re-fetched per POST.
-    session.complete()
+    session.release(5, 8)
     assert sum(1 for r in opener.requests
                if r.full_url.endswith(wc.CSRF_PAGE_PATH)) == 1
 
@@ -1301,7 +1183,7 @@ def test_a_failed_first_mint_is_retried_rather_than_cached_forever():
     # …and once a REAL token is in hand it is cached, not re-fetched.
     minted_before = sum(1 for r in opener.requests
                         if r.full_url.endswith(wc.CSRF_PAGE_PATH))
-    session.complete()
+    session.release(5, 8)
     assert sum(1 for r in opener.requests
                if r.full_url.endswith(wc.CSRF_PAGE_PATH)) == minted_before
 
@@ -1319,13 +1201,11 @@ def test_the_endpoints_are_the_products_own():
 
     assert aw.POSITION_READY_PATH == POSITION_READY_ENDPOINT
     assert wc.STATUS_PATH == "/sound/speaker/crossover/status"
-    assert aw.COMPLETE_PATH == "/sound/speaker/crossover/v2/complete"
 
 
 def test_a_status_read_that_is_not_json_is_unreadable_not_finished():
     session, _ = _loopback({wc.STATUS_PATH: "<html>nope"})
     assert session.poll().in_flight is True
-
 
 # --------------------------------------------------------------------------- #
 # the trail
@@ -1370,7 +1250,6 @@ def test_the_summary_names_every_release():
     assert _walk(FakeMover(), FakeSession([_QUIET]),
                  idle_ceiling_s=10.0).summary() == "no positions were released"
 
-
 # --------------------------------------------------------------------------- #
 # the CLI
 # --------------------------------------------------------------------------- #
@@ -1385,23 +1264,6 @@ def test_serve_refuses_a_settle_under_the_floor(capsys):
     out = capsys.readouterr()
     assert "floor" in out.err
     assert json.loads(out.out)["reason"] == "walk_refused"
-
-
-@pytest.mark.parametrize("raw,expected", [
-    ("7,-7,22,-22", (7, -7, 22, -22)),
-    ("0", (0,)),
-    (" 7 , -7 ", (7, -7)),
-    ("", ()),
-])
-def test_serve_parses_whole_degrees(raw, expected):
-    assert cli._expect_angles(raw) == expected
-
-
-@pytest.mark.parametrize("raw", ["7.5", "0.4", "seven"])
-def test_serve_never_rounds_an_angle(raw):
-    with pytest.raises(Exception):
-        cli._expect_angles(raw)
-
 
 #: Every verdict ``run`` can RETURN. The parked trio leaves through the signal
 #: handler's own ``sys.exit`` instead, so it never reaches the mapping below.
@@ -1437,7 +1299,6 @@ def test_a_clean_walk_leaves_as_the_shared_ok(monkeypatch, capsys):
 def test_the_retired_console_script_is_gone():
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "jasper-arm-walk" not in text
-
 
 # --------------------------------------------------------------------------- #
 # helpers used above

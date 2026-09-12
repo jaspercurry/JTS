@@ -10,7 +10,6 @@ import hashlib
 import json
 import logging
 import math
-import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -34,7 +33,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
 )
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
@@ -73,7 +71,7 @@ def _lateral_conductor(fakes: FakeSeams, **kwargs):
     return _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            include_cloud_measure=False, include_lateral=True,
+            include_lateral=True,
         ),
         **kwargs,
     )
@@ -151,7 +149,6 @@ def _stage1(**flags):
 
 def _shipped_flags():
     return dict(
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -253,32 +250,6 @@ def test_a_walk_still_builds_r17s_shape_byte_for_byte():
     assert any("of the mark" in note for note in notes)
 
 
-def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure():
-    """A session built WITHOUT the walk keeps MEASURE as the last capture
-    before the apply.
-
-    ``include_lateral=False`` is written out rather than read off a flag.
-    Pinning the SHAPE rather than the flag is what kept this test answering the
-    same question through every state of the stage-1 arming it outlived.
-    """
-    fakes = FakeSeams()
-    c = _conductor(
-        fakes,
-        index_phase_map=build_v2_cloud_index_phase_map(
-
-            include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-            include_lateral=False,
-        ),
-    )
-    assert PHASE_LATERAL not in c.session_phases
-    _run_phase(c, 1, 1)
-    accepted = _run_phase(c, 2, 1)
-    assert "candidate_fingerprint" in accepted
-    assert c.candidate is not None
-    assert c.lateral_poses == ()
-    assert c.lateral_mark_return_drift_db() is None
-
-
 def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     """The third guard of the completeness claim — it fails if a SURFACE was
     missed rather than a rule broken. Driven end to end: a real conductor's
@@ -306,6 +277,7 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
 
     env = build_crossover_envelope_v2({
         "active": True,
+        "capture": {"status": "awaiting_capture"},
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {"phase": phase},
     })
@@ -323,26 +295,6 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     assert steps["microphone_check"] == "done"
     assert steps["measure"] == "active"
 
-    # …and the REJECTION screens, where a missing ``_PHASE_STEP`` entry ACTUALLY
-    # bites: they read the precomputed ``active_step``, not the phase branch's
-    # own, and silent-auto-retry uses it as the SCREEN — so a glitched pose
-    # would send the household back to step 1 over one bad sweep. Every code is
-    # one ``_consume_lateral_pose`` can return.
-    for code in (
-        REASON_DRIFT_BASELINES_DISAGREE,   # silent auto-retry: screen == step
-        REASON_LOCATE_FAILED, REASON_PILOT_LEVEL_COLLAPSE,
-        REASON_CLIPPED, REASON_AGC_BEHAVIORAL_FAIL,
-    ):
-        failed = build_crossover_envelope_v2({
-            "active": True, "setup": {"active": True, "status": "ready"},
-            "crossover_v2": {
-                "phase": phase, "failure": {"code": code, "at": time.time()},
-            },
-        })
-        failed_steps = {s["id"]: s["status"] for s in failed["steps"]}
-        assert failed_steps["measure"] == "active", code
-        assert failed_steps["microphone_check"] == "done", code
-        assert failed["screen"] != "microphone_check", code
 
 
 # --- the capture plan ---------------------------------------------------------
@@ -351,7 +303,7 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
 def test_stage_1_walks_the_poses_with_the_anchors_own_program_duration():
     plan = build_v2_capture_plan(
         _roles(), FC_HZ,
-        include_cloud_measure=False, include_lateral=True,
+        include_lateral=True,
     )
     kinds = [entry.kind_label for entry in plan.entries]
     assert kinds == ["check", "measure"] + ["lateral"] * LATERAL_COUNT
@@ -369,54 +321,24 @@ def test_stage_1_walks_the_poses_with_the_anchors_own_program_duration():
 
 
 def test_the_index_phase_map_and_the_emitted_entries_agree():
-    for include_cloud in (False, True):
-        mapping = build_v2_cloud_index_phase_map(
-            include_cloud_measure=include_cloud, include_lateral=True,
-        )
-        plan = build_v2_capture_plan(
-            _roles(), FC_HZ,
-            include_cloud_measure=include_cloud, include_lateral=True,
-        )
-        assert len(mapping) == plan.capture_target
-        assert [mapping[e.index + 1] for e in plan.entries] == [
-            {"check": PHASE_CHECK, "measure": PHASE_MEASURE,
-             "lateral": PHASE_LATERAL,
-             "cloud_measure": flow.PHASE_CLOUD_MEASURE}[e.kind_label]
-            for e in plan.entries
-        ]
-        # The walk sits between the anchor and any pre-apply cloud.
-        lateral_indexes = [i for i, p in mapping.items() if p == PHASE_LATERAL]
-        assert lateral_indexes == list(range(3, 3 + LATERAL_COUNT))
+    mapping = build_v2_cloud_index_phase_map(include_lateral=True)
+    plan = build_v2_capture_plan(_roles(), FC_HZ, include_lateral=True)
+    assert len(mapping) == plan.capture_target
+    assert [mapping[e.index + 1] for e in plan.entries] == [
+        {"check": PHASE_CHECK, "measure": PHASE_MEASURE, "lateral": PHASE_LATERAL}[e.kind_label]
+        for e in plan.entries
+    ]
+    lateral_indexes = [i for i, phase in mapping.items() if phase == PHASE_LATERAL]
+    assert lateral_indexes == list(range(3, 3 + LATERAL_COUNT))
 
 
-def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
-    """The ``max_attempts`` derivation moved from the shape's cloud arithmetic
-    to the plan's own entries. It must reproduce both shipped values exactly."""
+def test_the_retry_budget_grows_with_lateral_entries():
     shape = resolve_plan_shape()
-    with_cloud = build_v2_capture_plan(
-        _roles(), FC_HZ, plan_shape=shape, include_cloud_measure=True,
-    )
-    assert with_cloud.max_attempts == shape.measure_max_attempts
-    without = build_v2_capture_plan(
-        _roles(), FC_HZ, plan_shape=shape, include_cloud_measure=False,
-    )
-    assert without.max_attempts == (
-        without.capture_target + flow.CLOUD_RETAKE_ALLOWANCE
-    )
-    # And the walk grows the budget with itself rather than borrowing. Both
-    # shapes, because the cloud-OFF one is satisfied by the OLD derivation too
-    # (its ``target`` already counted the poses); only the cloud-ON one
-    # distinguishes them, and that is the case the change exists for — a plan
-    # whose entries exceed ``shape.measure_capture_target``.
-    for include_cloud, baseline in ((False, without), (True, with_cloud)):
-        walked = build_v2_capture_plan(
-            _roles(), FC_HZ, plan_shape=shape,
-            include_cloud_measure=include_cloud, include_lateral=True,
-        )
-        assert walked.capture_target == baseline.capture_target + LATERAL_COUNT
-        assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
-
-
+    baseline = build_v2_capture_plan(_roles(), FC_HZ, plan_shape=shape)
+    assert baseline.max_attempts == baseline.capture_target + flow.CLOUD_RETAKE_ALLOWANCE
+    walked = build_v2_capture_plan(_roles(), FC_HZ, plan_shape=shape, include_lateral=True)
+    assert walked.capture_target == baseline.capture_target + LATERAL_COUNT
+    assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
 
 
 # --- priors: the pose evidence stays NEUTRAL ----------------------------------
@@ -479,41 +401,6 @@ def test_a_pose_replays_the_anchors_own_program_object():
 
 
 # --- retained evidence --------------------------------------------------------
-
-
-@pytest.mark.parametrize("has_sum", [True, False])
-@pytest.mark.parametrize("candidate_id", ["baseline-fp", "candidate-a"])
-def test_summed_pose_retains_only_its_measured_sum(has_sum, candidate_id):
-    from jasper.active_speaker.crossover_v2.spatial import TakeClaim
-    from tests.crossover_v2_fixtures import _verify_analysis
-
-    fakes = FakeSeams()
-    records = []
-    fakes.verify = lambda program: replace(
-        _verify_analysis(program),
-        **({} if has_sum else {"summed_response": None}),
-    )
-    c = _lateral_conductor(
-        fakes, lateral_claims=(TakeClaim(candidate_id=candidate_id),) * LATERAL_COUNT,
-        measure_specs_by_index={
-            index: MeasureSpec(
-                kind="candidate", graph_scope="candidate",
-                candidate_id=candidate_id,
-            )
-            for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1)
-        },
-    )
-    c._seams = replace(c._seams, bank_take=bank_into(records, phase=PHASE_LATERAL))
-    verdict = _walk(c, through=FIRST_LATERAL_INDEX)[-1]
-    assert verdict["accepted"] is has_sum
-    assert c.program_for_phase(PHASE_LATERAL) is c.program_for_phase(flow.PHASE_CLOUD_MEASURE)
-    assert fakes.apply_done is False
-    if has_sum:
-        assert len(records) == 1
-        assert records[0]["candidate_id"] == candidate_id
-        assert [curve["role"] for curve in records[0]["curves"]] == ["summed"]
-    else:
-        assert records == []
 
 
 def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity():
@@ -590,43 +477,6 @@ def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
         assert curve.band_hz == honest[curve.role]
 
 
-def test_the_anchor_solution_is_held_fixed_across_the_walk():
-    """§4.4's load-bearing rule as BEHAVIOUR, not shape. Every pose here reports
-    a wildly different alignment; if any were allowed to re-solve, the applied
-    trim/delay/polarity would move.
-    """
-    # The reference: the same session with no walk at all, whose candidate is
-    # built from the anchor alone. Re-derived, never hand-written, so this
-    # cannot drift from what the fitter actually produces.
-    reference = _conductor(
-        FakeSeams(), index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE},
-    )
-    _run_phase(reference, 1, 1)
-    _run_phase(reference, 2, 1)
-    expected = reference.candidate
-    assert expected is not None
-
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX - 1)
-
-    def elsewhere(program):
-        return _measure_analysis(
-            program,
-            alignment=_alignment(delay_us=-900.0, polarity="inverted"),
-        )
-
-    fakes.measure = elsewhere
-    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
-        assert _run_phase(c, index, 1)["accepted"] is True
-    assert len(c.lateral_poses) == LATERAL_COUNT
-
-    walked = c.candidate
-    assert walked is not None
-    assert walked.alignment == expected.alignment
-    assert walked.role_attenuations_db == expected.role_attenuations_db
-    assert walked.fingerprint == expected.fingerprint
-    assert walked.alignment.polarity != "inverted"
 
 
 
@@ -686,74 +536,13 @@ def test_a_pose_that_yielded_one_branch_is_not_evidence():
     assert result["code"] == REASON_LOCATE_FAILED
 
 
-def test_an_unmeasurable_pose_is_dropped_and_the_walk_continues():
-    """§4.4: side evidence owns robustness, not the target — so its position
-    floor is ZERO. A cloud below its floor ends the session; a pose does not,
-    because the coefficients are the anchor's and are already in hand."""
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX - 1)
-    fakes.measure = lambda program: _measure_analysis(program, locate_confidence=0.0)
-    last = None
-    for attempt in range(1, 2 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION):
-        last = _run_phase(c, FIRST_LATERAL_INDEX, attempt)
-    assert last is not None and last["accepted"] is True
-    assert last["unresolved"]["index"] == FIRST_LATERAL_INDEX
-    assert "terminal" not in last
-    assert c._group_position_floor(PHASE_LATERAL) == 0
-    assert c._group_position_floor(flow.PHASE_CLOUD_MEASURE) == (
-        spatial.MIN_RESOLVED_CLOUD_POSITIONS
-    )
-    # The rest of the walk still runs and the session still produces a
-    # candidate at its close.
-    fakes.measure = _measure_analysis
-    for index in range(FIRST_LATERAL_INDEX + 1, LAST_LATERAL_INDEX + 1):
-        closing = _run_phase(c, index, 1)
-    assert closing["accepted"] is True
-    assert c.candidate is not None
-    assert len(c.lateral_poses) == LATERAL_COUNT - 1
-
-
 # --- the candidate is built at the anchor -------------------------------------
 
 
-def test_the_candidate_is_built_at_the_anchor_even_under_a_walk():
-    """MEASURE is the last capture the proposal depends on, walk or no walk.
-
-    The walk deferred the build while its close adjudicated a corner; the poses
-    are evidence for the offline forward model now, and their close publishes
-    nothing, so deferring would only age the proposal the household reviews.
-    """
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    anchor = _walk(c, through=FIRST_LATERAL_INDEX - 1)[-1]
-    assert "candidate_fingerprint" in anchor
-    assert c.candidate is not None
-    assert len(fakes.published_candidates) == 1
 
 
-def test_a_dropped_final_pose_still_closes_the_walk():
-    """The anchor's coefficients were never the poses' to withhold."""
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=LAST_LATERAL_INDEX - 1)
-    fakes.measure = lambda program: _measure_analysis(program, locate_confidence=0.0)
-    last = None
-    for attempt in range(1, 2 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION):
-        last = _run_phase(c, LAST_LATERAL_INDEX, attempt)
-    assert last is not None and last["accepted"] is True
-    assert c.candidate is not None
 
 
-def test_a_pre_r16_session_still_builds_its_candidate_at_measure():
-    """No lateral group ⇒ MEASURE is still the last capture before the apply,
-    byte-for-byte the pre-R16 flow."""
-    fakes = FakeSeams()
-    c = _conductor(fakes, index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE})
-    _run_phase(c, 1, 1)
-    accepted = _run_phase(c, 2, 1)
-    assert "candidate_fingerprint" in accepted
-    assert c.candidate is not None
 
 
 # --- the return-to-mark bracket -----------------------------------------------
@@ -950,7 +739,6 @@ def _angle_prompts(angles=(0, 7, -7, 22, -22)):
         ac.per_driver_at(list(angles)),
         externally_positioned=False,
         base_entries=3,
-        plans_cloud_group=False,
     )
 
 
@@ -960,7 +748,7 @@ def _evidence_conductor(fakes: FakeSeams, *, prompts=None, **kwargs):
     return _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            include_cloud_measure=False, include_lateral=True,
+            include_lateral=True,
             lateral_prompts=prompts,
         ),
         lateral_consumer=journey.LATERAL_CONSUMER_FORWARD_MODEL,
@@ -1041,30 +829,6 @@ def test_a_settled_last_pose_closes_the_walk_too():
     assert verdict.payload == {"left_out": True}
 
 
-def test_measure_publishes_immediately_under_a_walk():
-    """The deferral's stated reason was "the walk is the fit's input", and that
-    is false of a walk feeding an offline model. So MEASURE takes the no-walk
-    branch and publishes right there — otherwise the household would wait on a
-    candidate the close never publishes.
-    """
-    prompts = _angle_prompts()
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 1)
-
-    assert c.candidate is not None
-    assert fakes.published_candidates, "MEASURE must publish its own candidate"
-    # ...and it consumed the analysis rather than holding it for a close that
-    # reads nothing (the deferring branch's tens-of-megabytes retention).
-    assert c._measure_analysis is None
-    # The ratified table's walk answers the same way — the fit timing is not a
-    # property of which poses the walk runs.
-    ratified = _lateral_conductor(FakeSeams())
-    _run_phase(ratified, 1, 1)
-    _run_phase(ratified, 2, 1)
-    assert ratified.candidate is not None
-    assert ratified._measure_analysis is None
 
 
 def test_an_evidence_pose_banks_the_stated_prompt_not_the_ratified_table():
@@ -1180,7 +944,7 @@ def test_a_raised_pose_banks_the_elevation_the_operator_was_SENT_to():
             ),
             mover=ac.MOVER_HUMAN,
         ),
-        externally_positioned=False, base_entries=3, plans_cloud_group=False,
+        externally_positioned=False, base_entries=3,
     )
     retained: list = []
     fakes = FakeSeams()

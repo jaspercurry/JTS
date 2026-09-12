@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
+from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST, REASON_NO_FINGERPRINT,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -195,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--level", type=float, help="reference volume in dB; must match the banked level")
     run.add_argument("--ceiling", "--ceiling-db-spl", dest="ceiling", type=float, help="SPL ceiling in dB SPL")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
-    run.add_argument("--mover", choices=("human", "arm", "confirmed"))
+    run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="print preflight; play nothing")
     run.set_defaults(func=_cmd_run)

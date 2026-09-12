@@ -945,8 +945,6 @@ _LEVEL_FRAME_RECORD = {
 def _publish_candidate_artifact(store: CommissioningEvidenceStore) -> None:
     """The artifact the level-frame finding cites, as the real seam leaves it.
 
-    The finding is minted immediately after ``publish_candidate`` in
-    ``_commit_measure_candidate``, so a test of the findings seam has to stand
     the same thing up: a citation into a bundle that does not hold the
     artifact is exactly the failure ``read_finding_set`` exists to catch.
     """

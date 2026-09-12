@@ -118,8 +118,6 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b"/assets/correction/js/crossover/main.js" in resp
     assert b'id="crossover-verdict"' in resp
     assert b'id="crossover-steps"' in resp
-    assert b'id="crossover-review"' in resp
-    assert b'id="crossover-review-body"' in resp
     assert b'id="crossover-action"' in resp
     assert b'id="mic-support"' not in resp
 
@@ -241,10 +239,6 @@ def test_known_post_routes_reach_csrf_guard():
         # It writes durable state, so it is CSRF-guarded like every other
         # mutating route even though it touches no DSP.
         "/crossover/v2/republish",
-        # The review screen's "Keep current sound" (#2641) — a decision the
-        # household takes, so CSRF-guarded like every other mutating route
-        # even though it changes nothing on the speaker.
-        "/crossover/v2/decline",
         # A gated session's position release — an external driver's POST, or a
         # person's on a hand-walked wired round, and CSRF-guarded exactly like
         # every other mutating route here.

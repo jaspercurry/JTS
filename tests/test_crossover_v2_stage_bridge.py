@@ -822,62 +822,6 @@ def test_a_bridge_key_crosses_with_its_values_and_never_invents_them(
     assert list(values) == persisted["delta_db"]
 
 
-def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
-    monkeypatch,
-):
-    """The objective reaches the session from the candidate's frozen evidence.
-
-    ``planning.analysis_json`` already puts ``alignment_objective`` on the
-    candidate, so the commit seam reads the SAME answer the candidate's
-    fingerprint covers rather than a second reading of a live analysis. If it
-    read nothing, every round receipt would report ``committed: None`` and the
-    candidate-ran question would be permanently unanswerable.
-    """
-    from tests.crossover_v2_fixtures import with_records
-
-    conductor, _state = _stage_1(monkeypatch)
-    assert conductor.measure_alignment_objective == ""
-
-    # The commit seam's LAST act is publishing the candidate to the evidence
-    # store, which this harness does not stand up. Stubbed so the test exercises
-    # the session-state write it is about; the ordering the seam guarantees
-    # (every attribute write completes before the first side effect) is
-    # ``test_crossover_v2_conductor``'s to pin, not this file's.
-    conductor._seams = with_records(
-        conductor._seams, candidate=lambda _candidate: None,
-    )
-    # A REAL candidate, not a stub: the point is that the objective is read off
-    # the frozen ``analysis`` evidence ``planning.analysis_json`` writes, so a
-    # stub carrying only that key would prove the read and not the route.
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-    )
-    from jasper.active_speaker.profile import ActiveSpeakerPreset
-
-    from tests.test_active_speaker_profile import _two_way_preset
-
-    conductor.commit_intervention_proposal(
-        MeasuredCrossoverCandidate(
-            program_id="prog-abc123",
-            analysis={
-                "alignment_objective": "explicit_prescription_committed",
-                "delay_us": -450.0,
-            },
-            source_preset=ActiveSpeakerPreset.from_mapping(_two_way_preset("mono")),
-            role_attenuations_db={"woofer": 0.0, "tweeter": -3.5},
-        ),
-        predicted_sum=None,
-        commanded_delta=None,
-        accountability_finding=None,
-    )
-    assert conductor.measure_alignment_objective == "explicit_prescription_committed"
-
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (v2host.load_v2_state() or {})["verify_priors"]["alignment_objective"] == (
-        "explicit_prescription_committed"
-    )
-
-
 def test_stage_2_rehydrates_the_commanded_delta_and_the_delta_probe_runs(monkeypatch):
     """The read half: stage 2 gets the axis, and the probe reaches a verdict.
 
@@ -1279,7 +1223,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "attempts_loop",
     "candidate",
     "cloud",
-    "cloud_close",
     "evidence",
     "expected_post_apply_offset_db",
     "failure",
