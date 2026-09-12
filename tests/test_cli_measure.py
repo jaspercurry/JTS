@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
     ProgramForStimulus, StimulusCaptureStopped,
 )
 from jasper.audio_measurement.playback import PlaybackObservation
-from jasper.audio_measurement.calibration import resolve_mic_sensitivity
+from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_KIND
@@ -369,14 +369,10 @@ def speaker(tmp_path, monkeypatch):
         "jasper.audio_measurement.wired_capture.resolve_wired_mic",
         lambda **kw: SimpleNamespace(model_key="minidsp_umik2", model_label="UMIK-2"),
     )
-    # This speaker's microphone is a stand-in, so it carries no calibration a
-    # run could scale dB SPL by. Stated, not inherited from whatever the
-    # developer's own box has stored.
     monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_mic", lambda: None)
-    monkeypatch.setattr(
-        "jasper.audio_measurement.calibration.resolve_mic_sensitivity",
-        lambda **kw: None,
-    )
+    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity", lambda device: MicSensitivity(-12, 18, "1234"))
+    monkeypatch.setattr("jasper.audio_measurement.calibration.resolve_mic_sensitivity",
+                        lambda **kw: MicSensitivity(-12, 18, "1234"))
     monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1100,6 +1096,8 @@ def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, av
 def test_batch_volume_override_is_watched_banked_and_restored_or_refused(
     speaker, monkeypatch, tmp_path, capsys, source, volume, reason,
 ):
+    from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity", resolved_household_sensitivity)
     cal = tmp_path / "mic.txt"
     cal.write_text("20 0\n20000 0\n" if source.startswith("curve_only") else "Sens Factor =-12.07dB, AGain =18dB\n20 0\n20000 0\n")
     record = SimpleNamespace(raw_path=cal, sign_convention="correction",
@@ -1233,6 +1231,16 @@ def test_a_staged_walk_measures_through_the_same_loop_as_a_spec_batch(
     assert staged.staged_angle_request_pending() is False
 
 
+@pytest.mark.parametrize("levels", [(-20,), (-20, -14)])
+def test_fixed_cli_level_mismatch_is_refused_before_the_hold(speaker, staged, capsys, levels):
+    staged.stage_angle_request(replace(_one_pose_walk(), operating_levels_db=levels))
+    code = measure.main(["--request", "staged", "--volume-db", "-14"])
+    payload = json.loads(capsys.readouterr().out)
+    assert (code, payload["reason"]) == (measure.EXIT_REFUSED, "walk_level_policy_invalid")
+    assert speaker["played"] == []
+    assert speaker["cam"].loaded == []
+
+
 def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path):
     """The counts a caller reads back without re-deriving them from the takes —
     written into the bundle, so the run's own answer outlives the terminal."""
@@ -1253,9 +1261,7 @@ def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path
     assert document["status"] == "complete"
     assert document["honoured"]["takes_measured"] == payload["n_takes"] == 2
     assert [group["capture_basis"]["candidate_id"] for group in document["sets"]] == ["a", "b"]
-    # No calibration on this speaker's stand-in microphone, so the run says what
-    # did NOT watch its level rather than claiming a bound nothing measured.
-    assert payload["spl_monitor"] == plan_run.SPL_MONITOR_UNAVAILABLE
+    assert payload["spl_monitor"] == plan_run.spl_monitor_note(85)
 
 
 @pytest.mark.parametrize(
@@ -1360,7 +1366,7 @@ def test_a_calibrated_box_watches_the_stop_it_declares(monkeypatch):
     from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
     monkeypatch.setattr(
-        measure, "resolved_household_sensitivity", lambda device: SimpleNamespace(),
+        "jasper.cli.measurement_watch.resolved_household_sensitivity", lambda device: SimpleNamespace(),
     )
     monkeypatch.setattr(
         "jasper.active_speaker.plan_run.SUPPORTED_MODELS",
