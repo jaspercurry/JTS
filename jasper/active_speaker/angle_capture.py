@@ -37,7 +37,7 @@ from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
-from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
+from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
@@ -677,6 +677,7 @@ def stop_specs(
                 else MEASURE_KIND_CANDIDATE
             ),
             positions=(stop.angle_deg,),
+            sweep_band_hz=request.template.sweep_band_hz or room_sweep_band_hz((prompt,)) or (),
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
             candidate_id=stop.candidate_id or baseline_ids.get(stop.purpose or "speaker", ""),

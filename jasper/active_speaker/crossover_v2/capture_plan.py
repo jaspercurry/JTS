@@ -21,11 +21,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
-from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_VERIFY_SWEEP_S,
+    SUMMED_SWEEP_BAND_HZ,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -1256,10 +1256,10 @@ def _cloud_entry_screen(
 
 
 def room_sweep_band_hz(
-    roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
+    prompts: Sequence[CloudPositionPrompt],
 ) -> tuple[float, float] | None:
     if any(gate_exemption(resolved_measurement_purpose(p.purpose, p.kind)) for p in prompts):
-        return ROOM_FLOOR_HZ, measurement_band_hz(roles)[1]
+        return SUMMED_SWEEP_BAND_HZ
     return None
 
 
@@ -1315,7 +1315,7 @@ def build_v2_capture_plan(
     # is the verify program's even though stage 1 runs no VERIFY phase, and it
     # is the announced one because its program object is stage 2's anchor.
     band_hz = measurement_band_hz(roles)
-    summed_band = room_sweep_band_hz(roles, lateral_prompts or ())
+    summed_band = room_sweep_band_hz(lateral_prompts or ())
     verify = build_verify_program(
         fc_hz,
         measurement_band_hz=band_hz,

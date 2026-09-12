@@ -118,6 +118,9 @@ DEFAULT_VERIFY_SWEEP_S = 6.0
 DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = 20_000.0
+# The in-room fit needs the whole audible band (Bank AES-134).
+# This belongs to the per-speaker profile; see the measurement-profile tracking issue.
+SUMMED_SWEEP_BAND_HZ = (20.0, 20000.0)
 
 # Run-up past each crossover shoulder (null-confirm); 1.25x (~1/3 octave)
 # keeps both Fc/2, 2*Fc read points off the edge bin.
