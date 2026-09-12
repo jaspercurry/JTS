@@ -233,6 +233,16 @@ def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
     assert factory.open_calls == [{"port": None}]
 
 
+def test_fallback_lock_path_is_visible_in_json(turntable, monkeypatch, tmp_path, capsys):
+    fallback = tmp_path / "fallback.lock"
+    monkeypatch.setattr(turntable, "PORT_LOCK_PATH", tmp_path / "missing" / "lock")
+    monkeypatch.setattr(turntable, "PORT_LOCK_FALLBACK_PATH", fallback)
+    api, _factory, _controller = fake_api(turntable)
+
+    assert turntable.main(["--json", "stop"], api=api) == 0
+    assert parse_output(capsys)["lock_path"] == str(fallback)
+
+
 def test_vendored_snapshot_provenance_is_current() -> None:
     manifest = json.loads((VENDOR / "UPSTREAM.json").read_text())
     assert manifest == {
@@ -1700,6 +1710,7 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert "/bin/sh" not in unit
     assert "TimeoutStartSec=90s" in unit
     assert "DeviceAllow=/dev/%I rw" in unit
+    assert "ReadWritePaths=/run/lock" in unit
     assert "jasper-turntable-autostop@.service" in units_install
     assert "99-jasper-turntable-autostop.rules" in units_install
     assert '"${REPO_DIR}/experiments/usb-turntable"' in runtime_install

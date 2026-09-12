@@ -773,7 +773,7 @@ def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog):
         _Proc(json.dumps({"ok": True, "power": {"status": {
             "available": True, "current_flags": [], "history_flags": [],
             "raw": "0x0"}}})),
-        _Proc('{"ok": false}', 3, "setup detail\nprotocol frame broke\n"),
+        _Proc('{"ok": false, "error": "protocol frame broke"}', 3),
     ])
 
     trail = _RecordingTrail()

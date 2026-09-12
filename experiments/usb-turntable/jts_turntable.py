@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -68,6 +69,7 @@ EXPERIMENT_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
 PORT_LOCK_PATH = Path("/run/lock/jasper-turntable.lock")
 PORT_LOCK_FALLBACK_PATH = Path("/tmp/jasper-turntable.lock")
+_JSON_LOCK_PATH: ContextVar[Path | None] = ContextVar("lock_path", default=None)
 
 # Commands that get one whole-operation retry, against a FRESH controller
 # session, on the vendored transport's exact ProtocolError base class
@@ -238,6 +240,8 @@ def _jsonable(value: Any) -> Any:
 
 
 def _emit(payload: Mapping[str, Any], *, compact: bool) -> None:
+    if lock_path := _JSON_LOCK_PATH.get():
+        payload = {**payload, "lock_path": str(lock_path)}
     print(json.dumps(_jsonable(payload), sort_keys=True, indent=None if compact else 2))
 
 
@@ -820,6 +824,7 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     lock_handle = None
+    lock_path_token = _JSON_LOCK_PATH.set(None)
     try:
         if args.command not in {"detect", "power"}:
             lock_handle, lock_path = _acquire_port_lock()
@@ -831,6 +836,8 @@ def main(
                     compact=args.json,
                 )
                 return 1
+            if lock_path == PORT_LOCK_FALLBACK_PATH:
+                _JSON_LOCK_PATH.set(lock_path)
         return run(args, api=api, run_command=run_command, sleep=sleep)
     except _RetryExhausted as exc:
         # Both attempts of a retryable operation failed (see
@@ -858,6 +865,7 @@ def main(
         )
         return 1
     finally:
+        _JSON_LOCK_PATH.reset(lock_path_token)
         if lock_handle is not None:
             lock_handle.close()
 

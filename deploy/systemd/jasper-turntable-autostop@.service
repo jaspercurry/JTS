@@ -26,6 +26,7 @@ DevicePolicy=closed
 DeviceAllow=/dev/%I rw
 NoNewPrivileges=true
 ProtectSystem=strict
+ReadWritePaths=/run/lock
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true

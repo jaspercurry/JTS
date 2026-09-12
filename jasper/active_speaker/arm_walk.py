@@ -359,7 +359,7 @@ class TurntableMover:
         self.move_failure = {}
         code, payload = self._invoke("stop")
         if code or not payload.get("ok"):
-            self._record_move_failure("stop", code)
+            self._record_move_failure("stop", code, payload)
             return False
         code, payload = self._invoke(
             "position",
@@ -368,15 +368,17 @@ class TurntableMover:
             "--confirm-zero-valid",
         )
         if code or not payload.get("ok"):
-            self._record_move_failure("position", code)
+            self._record_move_failure("position", code, payload)
             return False
         return True
 
-    def _record_move_failure(self, subcommand: str, code: int) -> None:
+    def _record_move_failure(
+        self, subcommand: str, code: int, payload: Mapping[str, Any]
+    ) -> None:
         self.move_failure = {
             "subcommand": subcommand,
             "exit_code": code,
-            "stderr_tail": self._stderr_tail,
+            "stderr_tail": self._stderr_tail or str(payload.get("error", ""))[-200:],
         }
         log_event(
             logger,
