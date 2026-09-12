@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
     REPORT_KEY_FRAMES,
@@ -165,7 +166,7 @@ class WiredMicMissing(WiredCaptureError):
 
 
 class WiredSplCeilingExceeded(WiredCaptureError):
-    code = "spl_ceiling_exceeded"
+    code = SPL_CEILING_EXCEEDED
 
     def __init__(self, observed_db_spl: float, ceiling_db_spl: float) -> None:
         self.observed_db_spl = float(observed_db_spl)

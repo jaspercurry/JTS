@@ -219,7 +219,7 @@ def test_capture_preset_explicit_arm_passes_its_presets_stop_through(
 
 
 def test_ruled_75_db_seat_frame_validates_under_the_ruled_stop() -> None:
-    """The frame the ruling exists to let converge: 75 dB SPL, band 72.5-77.5.
+    """The frame the ruling exists to let converge: 75 dB SPL, band 74.0-76.0.
 
     Under the old 80.0 stop the band itself was already legal; what tripped
     was the measured post-step transient, which the ramp compares against the
@@ -227,5 +227,5 @@ def test_ruled_75_db_seat_frame_validates_under_the_ruled_stop() -> None:
     """
     target = SeatLevelTarget(target_db_spl=75.0, tolerance_db=DEFAULT_TOLERANCE_DB)
 
-    assert (target.low_db_spl, target.high_db_spl) == (72.5, 77.5)
+    assert (target.low_db_spl, target.high_db_spl) == (74.0, 76.0)
     target.validate(ceiling_db_spl=RULED_STOP_DB_SPL)

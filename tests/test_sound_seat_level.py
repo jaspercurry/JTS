@@ -18,33 +18,34 @@ import io
 import stat
 import textwrap
 import time
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+from jasper.active_speaker.auto_level import LevelResult
 from jasper.cli._refusal import EXIT_REFUSED, failed
 from jasper.web import sound_seat_level as seat_level
 
 
 def _real_refusal_stdout(*, reason: str, sentence: str) -> str:
-    """The exact stdout ``jasper-seat-level`` prints for a refusal, built from
-    the real ``SeatLevelResult``/``_refusal.failed`` machinery
-    ``jasper/cli/seat_level.py``'s ``main()`` uses (its
-    ``if not result.converged:`` branch), not a hand-rolled shape.
+    """The CLI's LevelResult fields plus ``detail``, wrapped by ``failed()``.
 
-    The document nests the sentence and telemetry two levels down --
-    ``{"status", "reason", "detail": {..., "detail": sentence}}`` -- because
-    ``main()`` passes ``{**SeatLevelResult.to_dict(), "detail": sentence}``
-    as ``failed()``'s ``detail`` argument, and ``failed()`` wraps that under
-    the outer document's own ``detail`` key. A previous flat
-    ``{"status","reason","detail": sentence}`` stub here masked the [object
+    The sentence is nested under ``detail.detail``. A previous flat
+    ``{"status","reason","detail": sentence}`` stub masked the [object
     Object] bug this fixture exists to catch (#2761 review M1).
     """
-    result = SeatLevelResult(status="refused", reason=reason)
-    carried = result.to_dict()
-    del carried["status"], carried["reason"]
+    carried = {
+        key: value
+        for key, value in {
+            **asdict(LevelResult("refused", reason)),
+            "reference_volume_db": -17.5,
+            "measured_db_spl": 77.4,
+            "restored": True,
+        }.items()
+        if key not in {"status", "reason"}
+    }
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
         failed(EXIT_REFUSED, reason, {**carried, "detail": sentence})

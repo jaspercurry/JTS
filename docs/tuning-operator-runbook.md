@@ -68,7 +68,9 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `fingerprint_required` | Supply a candidate fingerprint. | Supply a candidate fingerprint | `hard_stop` |
 | `geometry_retake_unreachable` | The room needs the microphone measured from a wider spot, and from above the mark, than this measurement can ask for. Run a Full measurement that prompts each spot on screen, and walk those spots by hand, to finish tuning this speaker. |  | `session_restart` |
 | `internal_error` | Something went wrong on the speaker during that measurement. Try again. |  | `fix_and_retry` |
+| `level_ambient_too_high` | The room is too loud to level. Reduce the ambient noise and try again. |  | `fix_and_retry` |
 | `level_over_ceiling` | Measure a seat level below the commissioning stop. | Measure a seat level below the commissioning stop | `hard_stop` |
+| `level_unreachable` | The target level is unreachable at this gain. Check the amplifier and microphone. |  | `fix_and_retry` |
 | `locate_failed` | Couldn't hear the speaker clearly. Check the volume and the microphone, then try again. | Check the volume and the microphone, then try again. | `fix_and_retry` |
 | `measure_box_not_ready` | Finish the protected speaker setup. | Finish the protected speaker setup | `hard_stop` |
 | `measure_gain_adjusted` | The driver needs a clearer timing measurement. JTS will keep this take and measure once more at a higher test level. | JTS will keep this take and measure once more at a higher test level. | `silent_auto_retry` |
@@ -84,6 +86,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `measurement_scope_invalid` | JTS cannot measure the selected tuning layer. Select a supported measurement layer. | Select a measurement layer | `hard_stop` |
 | `measurement_targets_missing` | JTS does not have a measurement target for every driver this speaker declares, so it cannot measure them. Finish speaker setup so each driver is assigned to an output, then measure again. | Finish speaker setup | `hard_stop` |
 | `measurement_volume_drift` | JTS could not confirm the speaker was at the level it set for measuring, so it stopped rather than record a measurement it cannot trust. Try measuring again; if it keeps happening, restart the speaker from the system page. |  | `hard_stop` |
+| `mic_not_observing` | The microphone did not hear the speaker. Check its position and connection. |  | `fix_and_retry` |
 | `noisy_room_linearity` | The room got loud during that measurement — quiet it and try again. | quiet it and try again. | `fix_and_retry` |
 | `not_found` | Select a candidate from the bank. | Select a candidate from the bank | `hard_stop` |
 | `pilot_level_collapse` | The test tones didn't rise clearly above the room — it was too loud, or the speaker too quiet, for this check. Quiet the room or move the microphone closer, then try again. | Quiet the room or move the microphone closer, then try again. | `fix_and_retry` |
@@ -107,6 +110,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `sound_design_revision_unavailable` | Measure the current Sound design. | Measure the current Sound design. | `hard_stop` |
 | `speaker_shape_unsupported` | JTS can measure a single full-range speaker or a two-way active crossover, and this speaker is neither. There is nothing to retry — check the drivers declared in speaker setup. | Open speaker setup | `hard_stop` |
 | `spl_ceiling_exceeded` | The measurement stopped because the microphone heard the speaker louder than the ceiling for this session. Lower the level and measure again. |  | `hard_stop` |
+| `spl_level_unsettled` | The microphone level did not settle. Try again. |  | `fix_and_retry` |
 | `user_stopped` | You stopped the measurement. Start over from this page when you're ready. |  | `session_restart` |
 | `verify_crossover_region` | The two drivers didn't blend as designed where they hand over. Re-measure to fit it again. | Re-measure to fit it again. | `verify_fail` |
 | `verify_inconclusive` | The check was inconclusive — this measurement had less usable sound to compare than the tuning did. Re-verify to try again. | Re-verify to try again. | `verify_fail` |

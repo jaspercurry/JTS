@@ -63,8 +63,8 @@ def _flatten_cli_document(
 ) -> tuple[str | None, str, float | None]:
     """One ``jasper-seat-level`` stdout document, flattened for the card.
 
-    A refusal nests its sentence and telemetry two levels down: ``main()``
-    passes ``{**SeatLevelResult.to_dict(), "detail": <sentence>}`` as the
+    A refusal nests its level fields and sentence two levels down: ``main()``
+    passes the ``LevelResult`` fields plus a ``detail`` sentence as the
     ``detail`` argument to :func:`jasper.cli._refusal.failed`, which wraps
     that under the outer document's own ``detail`` key (``jasper/cli/
     seat_level.py``, ``jasper/cli/_refusal.py``) -- so the sentence lives at

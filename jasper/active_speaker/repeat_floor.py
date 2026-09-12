@@ -15,7 +15,7 @@ from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float
 
 from .attempts_loop import FloorStats, percentile
-from .seat_level_reference import _utc_now
+from jasper.json_fields import utc_now_iso as _utc_now
 
 SCHEMA_VERSION = 1
 REPEAT_FLOOR_KIND = "jts_active_speaker_repeat_floor"
