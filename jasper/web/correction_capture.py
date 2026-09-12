@@ -94,13 +94,14 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
     another flow's waiting state.
     """
     capture = _get_capture_slot()
-    if capture is None:
-        with _session_lock:
-            pending = _pending_capture
-        if pending is not None and pending[0].label.startswith(kind_prefix):
-            return _pending_payload(pending[0])
-        return None
-    if not str(capture.get("kind") or "").startswith(kind_prefix):
+    with _session_lock:
+        pending = _pending_capture
+    if pending is not None and pending[0].label.startswith(kind_prefix) and (
+        capture is None or capture.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES
+        or not str(capture.get("kind") or "").startswith(kind_prefix)
+    ):
+        return _pending_payload(pending[0])
+    if capture is None or not str(capture.get("kind") or "").startswith(kind_prefix):
         return None
     # A gated session's live position hold AND the entry its last grant is
     # executing, merged in here rather than pushed into the slot by the gate:
@@ -216,14 +217,18 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
 
     global _capture_slot, _pending_capture
     with _session_lock:
-        if _pending_capture is not None and _pending_capture[0].label.startswith(kind_prefix):
+        capture = _capture_slot
+        active_matches = (
+            capture is not None and capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
+            and str(capture.get("kind") or "").startswith(kind_prefix)
+        )
+        if not active_matches and _pending_capture is not None and _pending_capture[0].label.startswith(kind_prefix):
             kind, _ = _pending_capture
             _pending_capture = None
             stopped = {"status": "stopped", "kind": kind.label}
-            if not _capture_slot or _capture_slot.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+            if not capture or capture.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
                 _capture_slot = stopped
             return stopped
-        capture = _capture_slot
         if capture is None or capture.get("status") not in _CAPTURE_STOPPABLE_STATUSES:
             raise ValueError("no matching capture is running")
         if not str(capture.get("kind") or "").startswith(kind_prefix):
@@ -302,6 +307,9 @@ def _join_capture(index: int, attempt: int) -> dict[str, Any] | None:
     with _session_lock:
         pending = _pending_capture
         if pending is None:
+            return None
+        if (_capture_slot and _capture_slot.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
+                and str(_capture_slot.get("kind") or "").startswith("crossover_v2:")):
             return None
         if (index, attempt) != (1, 1):
             raise ValueError("The first placement must name index 1 and attempt 1")

@@ -2034,8 +2034,6 @@ def persist_conductor_state(
         failure_refusals=failure_refusals,
     )
     session_id = built.state["session_id"]
-    if prior.get("session_id") == session_id and "plan" in prior:
-        built.state["plan"] = prior["plan"]
     # Read BEFORE the write: this is the grade the household is currently
     # looking at, and ``crossover_v2_status_block`` reads the state file.
     prior_grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
@@ -4165,8 +4163,7 @@ def prepare_v2_session(
         default_setup_calibration=default_setup_calibration_for_v2(),
     )
     if not verify_only:
-        save_v2_state({"session_id": capture_session_id, "plan": request.to_dict(),
-                       "phase": captures[0].spec.program_phase, "accepted_phases": [], "applied": False}, durable=True)
+        evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
 
     held: _HeldSession | None = None
 

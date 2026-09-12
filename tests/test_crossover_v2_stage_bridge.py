@@ -681,8 +681,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
         {"bands": []},
     )
 
-    (relpath, payload), = store.published
-    assert relpath == f"crossover_v2/{_MINTED_CAPTURE_SESSION_ID}/check.json"
+    payload = dict(store.published)[f"crossover_v2/{_MINTED_CAPTURE_SESSION_ID}/check.json"]
     assert payload["gain_plan_db"] == {"woofer": -11.0}
 
 
@@ -1655,7 +1654,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # crosses for the way-back pointer's reason: it describes the graph
     # currently on the speaker, which outlives the session that wrote it.
     "round_receipt",
-    "plan",
     "schema_version",
     "session_id",
     "session_phases",
@@ -1683,7 +1681,7 @@ def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
     _seed_applied_stage_1_state()
     _conductor2, stage_2_state = _stage_2(monkeypatch)
 
-    assert set(stage_2_state) == _PERSISTED_TOP_LEVEL_KEYS - {"plan"}
+    assert set(stage_2_state) == _PERSISTED_TOP_LEVEL_KEYS
 
 
 # --------------------------------------------------------------------------- #

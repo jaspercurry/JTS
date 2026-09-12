@@ -9331,7 +9331,7 @@ def _inline_prepared(monkeypatch, tmp_path):
     _, _, _, store = _retention_bundle(tmp_path, "inline")
     monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda _: (store, store.session_id))
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
-    return v2host.prepare_v2_session(_inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None)
+    return v2host.prepare_v2_session(_inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
 
 
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
@@ -9342,7 +9342,8 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: pytest.fail("live mic admission before join"))
     monkeypatch.setattr(v2host, "_session_volume_claim", lambda: pytest.fail("claim before join"))
-    prepared = _inline_prepared(monkeypatch, tmp_path)
+    before = v2host.load_v2_state()
+    prepared, store = _inline_prepared(monkeypatch, tmp_path)
     kind = correction_capture.CaptureKind(
         label=prepared.label, open=prepared.open, run_and_consume=prepared.run_and_consume,
         position_gate=prepared.position_gate, session_id=prepared.session_id,
@@ -9355,7 +9356,9 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert correction_capture._get_capture_slot() is None
     assert prepared.position_gate.published() == {"pending": None, "current": None}
     assert not v2host.session_measurement_pause_held()
-    assert v2host.load_v2_state()["plan"]["stops"] == _inline_body()["plan"]["stops"]
+    plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
+    assert plan["stops"] == _inline_body()["plan"]["stops"]
+    assert v2host.load_v2_state() == before
 
 
 @pytest.mark.parametrize("graph_fails", [False, True])
@@ -9455,7 +9458,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     from tests.test_preflight import ready_facts
     from jasper.active_speaker.angle_capture import AngleCaptureRequest
 
-    prepared = _inline_prepared(monkeypatch, tmp_path)
+    prepared, store = _inline_prepared(monkeypatch, tmp_path)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
     v2host.set_volume_plan_for_tests(SessionVolumePlan())
@@ -9470,5 +9473,28 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     opened = prepared.open()
     assert opened.pi_session.session_id == prepared.session_id
     assert not bound["tuning"].is_open
-    assert bound["request"].to_dict() == v2host.load_v2_state()["plan"]
+    assert bound["request"].to_dict() == store.reopen_json_artifact(
+        store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert bound["conductor"]._candidate is None
+
+
+def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
+    from jasper.web import correction_capture as capture
+    from jasper.active_speaker.crossover_v2.position_gate import PositionGate
+    from jasper.platform.systemd import no_hold
+
+    monkeypatch.setattr(capture, "_capture_slot", None)
+    monkeypatch.setattr(capture, "_pending_capture", None)
+    stopped = []
+    assert capture._begin_capture_slot("crossover_v2:session", request_stop=lambda: stopped.append(True))
+    kind = capture.CaptureKind("crossover_v2:session", lambda: None, lambda _: None,
+        position_gate=PositionGate(), session_id="pending", join_entry=SimpleNamespace(screen={"position_deg": "0"}))
+    capture._stage_capture(kind, idle_hold=no_hold)
+    assert capture._get_capture_slot_for("crossover_v2:")["status"] == "starting"
+    assert capture._join_capture(2, 1) is None
+    assert capture._request_capture_stop("crossover_v2:")["status"] == "stopping"
+    assert stopped == [True]
+    capture._set_capture_slot({"kind": kind.label, "status": "complete"})
+    assert capture._get_capture_slot_for("crossover_v2:")["session_id"] == "pending"
+    assert capture._request_capture_stop("crossover_v2:")["status"] == "stopped"
+    assert capture._pending_capture is None

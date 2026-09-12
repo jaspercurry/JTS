@@ -481,7 +481,7 @@ def session_open(monkeypatch, tmp_path):
 
     def _evidence_store(topo):
         calls["evidence_store"].append(topo)
-        return object(), "sess-fake"
+        return SimpleNamespace(publish_json_artifact=lambda *a: None), "sess-fake"
 
     def _open_capture(*args, **kwargs):
         calls["open_capture"].append(args)

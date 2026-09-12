@@ -26,6 +26,8 @@ whatever attribute the test author set on it.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import logging
 from typing import Any
 
@@ -790,7 +792,7 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
         v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
     )
     monkeypatch.setattr(
-        v2host, "open_v2_evidence_store", lambda topology: (object(), "sess-fake")
+        v2host, "open_v2_evidence_store", lambda topology: (SimpleNamespace(publish_json_artifact=lambda *a: None), "sess-fake")
     )
 
     prepared = v2host.prepare_v2_session(
