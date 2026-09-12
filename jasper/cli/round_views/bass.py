@@ -15,7 +15,7 @@ from jasper.active_speaker.measurement_bass import bass_view
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed, stage
 
 from ._bass_inputs import compare_sets, fit_run
-from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer, default_out, resolve_set, round_inputs
+from ._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_TOOL_ERRORS, _write, answer, default_out, resolve_set, round_inputs
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -31,9 +31,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             parser.add_argument("--calibration-root", type=Path)
         elif name == "bass-compare":
             parser.add_argument("--set", action="append", help="before, then after; supply twice")
-            parser.add_argument("after", nargs="?", type=Path)
-            parser.add_argument("--before-set")
-            parser.add_argument("--after-set")
             parser.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
         else:
             parser.add_argument("--run", required=True, help="run ID recorded in this round's manifest")
@@ -55,7 +52,7 @@ def _cmd(args: argparse.Namespace) -> int:
             payload["takes"] = [take for take in payload["takes"] if take["record"]["take_id"] in selected.selected_ids]
             summary: dict[str, Any] = {"takes": len(payload["takes"])}
         elif args.command == "bass-compare":
-            payload, destination = compare_sets(args)
+            payload, destination = compare_sets(inputs, args)
             summary = {key: payload[key] for key in ("available", "context", "bands")}
         else:
             payload = fit_run(inputs, args)
@@ -66,5 +63,9 @@ def _cmd(args: argparse.Namespace) -> int:
         message, action = refusal_copy_for(refusal.code)
         return failed(EXIT_REFUSED, refusal.code, refusal.args[0] if refusal.args else message,
                       code=refusal.code, next_action=action)
+    except RoundSetRefused:
+        raise
+    except _ROUND_TOOL_ERRORS as exc:
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     written = _write(payload, args.out, destination)
     return answer(args.command, out=written, **summary, line=f"{args.command} -> {written}")

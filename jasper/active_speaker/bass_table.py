@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db, validate_dynamic_bass_descriptor
 from jasper.json_fields import finite_float
 
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
@@ -43,22 +43,28 @@ def fit_bass_table(
         raise CrossoverV2Refused(code="bass_table_tolerance_invalid")
     if not pairs:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
-    settings = DynamicBassDescriptor(**dict(descriptor))
-    first = bass_capture_context(pairs[0][0])
+    try:
+        descriptor = validate_dynamic_bass_descriptor(descriptor)
+    except ValueError as exc:
+        raise CrossoverV2Refused({"candidate_id": candidate_id}, code="bass_fit_candidate_unreadable") from exc
+    settings = DynamicBassDescriptor(**descriptor)
+    first: dict[str, Any] = {}
     interventions = (*CHANGE_FIELDS["volume"], "pose_key")
-    required = tuple(key for key in first if key not in interventions)
     groups: dict[tuple[float, float, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = defaultdict(list)
     contexts = []
     for before, after in pairs:
         for take in (before, after):
             if take.get("diagnostics", {}).get("integrity_failed"):
                 raise CrossoverV2Refused({"record_path": take["record_path"]}, code="bass_table_capture_integrity_failed")
-            level_key(bass_capture_context(take), record_path=take["record_path"])
         context = bass_capture_context(before)
-        comparison = compare_capture_basis(context, first, interventions=interventions, required=required)
+        key = level_key(context, record_path=before["record_path"])
+        level_key(bass_capture_context(after), record_path=after["record_path"])
+        first = first or context
+        comparison = compare_capture_basis(context, first, interventions=interventions,
+                                           required=tuple(key for key in first if key not in interventions))
         if comparison["incompatible_fields"]:
             raise CrossoverV2Refused(comparison, code="bass_table_capture_context_changed")
-        groups[level_key(context)].append((before, after))
+        groups[key].append((before, after))
         contexts.append(comparison)
     levels = []
     for key, group in sorted(groups.items()):

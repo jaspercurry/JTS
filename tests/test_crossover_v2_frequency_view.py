@@ -1066,7 +1066,7 @@ def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_run, capsys, 
     assert [row['outcome'] for row in table['levels']] == [
         'target_met', 'target_not_met', 'target_met' if fault == 'measured_pass' else
         'insufficient_evidence' if fault else 'measurement_required']
-    assert table['levels'][0]['fit']['choices'][-1]['max_abs_error_db'] == 0
+    assert next(choice for choice in table['levels'][0]['fit']['choices'] if choice['scale'] == 1.0)['max_abs_error_db'] == 0
     if fault == 'measured_pass':
         assert table['levels'][-1]['fit']['selected_scale'] == pytest.approx(.6)
     if fault == 'zero_coverage':
@@ -1157,3 +1157,61 @@ def test_bass_fit_verb_is_retired():
     with pytest.raises(SystemExit) as caught:
         build_parser().parse_args(['bass-fit', 'request.json'])
     assert caught.value.code == 2
+
+
+@pytest.mark.parametrize('verb', ['bass-compare', 'bass-fit-table'])
+@pytest.mark.parametrize('fault', ['missing', 'json', 'schema'])
+def test_bass_file_errors_keep_the_unreadable_exit(bass_run, capsys, verb, fault):
+    bass_run.write()
+    path = bass_run.out.parent / 'bass_view-set-0.json'
+    if fault == 'missing':
+        path.unlink()
+    else:
+        path.write_text('{broken' if fault == 'json' else json.dumps({'schema': 'wrong', 'takes': []}))
+    argv = (bass_run.argv if verb == 'bass-fit-table' else
+            [verb, str(path.parent), '--set', 'set-0', '--set', 'set-1', '--change', 'candidate'])
+    assert round_views_main(argv) == EXIT_UNREADABLE
+    answer = json.loads(capsys.readouterr().out)
+    assert answer['status'] == 'unreadable'
+    assert answer['reason'] == 'round_views_unreadable_round'
+
+
+@pytest.mark.parametrize('fault', ['extra', 'missing', 'range'])
+def test_bass_table_refuses_invalid_descriptors_by_code(bass_run, capsys, fault):
+    bass_run.write()
+    if fault == 'extra':
+        bass_run.descriptor['unknown'] = 1
+    elif fault == 'missing':
+        del bass_run.descriptor['low_boost_db']
+    else:
+        bass_run.descriptor['low_boost_db'] = -1
+    assert round_views_main(bass_run.argv) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert answer['code'] == 'bass_fit_candidate_unreadable'
+    assert answer['next_action'] == REASON_REGISTRY[answer['code']].next_action
+
+
+@pytest.mark.parametrize('sets', [[], ['set-0'], ['set-0', 'set-0', 'set-0']])
+def test_bass_compare_requires_two_explicit_sets(bass_run, capsys, sets):
+    bass_run.write(bass_run.takes[:1])
+    argv = ['bass-compare', str(bass_run.out.parent), '--change', 'candidate']
+    assert round_views_main(argv + [arg for set_id in sets for arg in ('--set', set_id)]) == 1
+    assert json.loads(capsys.readouterr().out)['code'] == 'bass_fit_pairs_unavailable'
+
+
+@pytest.mark.parametrize('verb', ['bass-compare', 'bass-fit-table'])
+def test_bass_verbs_read_one_manifest_snapshot(bass_run, monkeypatch, capsys, verb):
+    bass_run.write()
+    read_text, reads = Path.read_text, []
+
+    def read(path, *args, **kwargs):
+        if path.name == 'run_manifest.json':
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', read)
+    argv = (bass_run.argv if verb == 'bass-fit-table' else
+            [verb, str(bass_run.out.parent), '--set', 'set-0', '--set', 'set-1', '--change', 'candidate'])
+    assert round_views_main(argv) == 0
+    capsys.readouterr()
+    assert len(reads) == 1

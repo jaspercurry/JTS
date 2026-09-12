@@ -17,21 +17,23 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.measurement_programs import PURPOSE_BASS, baseline_scope
 
-from ._common import ARTIFACT_BY_VIEW, RoundInputs, default_out, read_run_manifest, resolve_set, round_inputs
+from ._common import ARTIFACT_BY_VIEW, RoundInputs, RoundSetRefused, SetTakes, default_out, read_run_manifest
 
 
-def compare_sets(args) -> tuple[dict[str, Any], Path]:
-    roots = (args.round_dir, args.after or args.round_dir)
-    set_ids = args.set or (args.before_set, args.after_set)
+def compare_sets(inputs: RoundInputs, args) -> tuple[dict[str, Any], Path]:
+    set_ids = args.set or ()
     if len(set_ids) != 2:
         raise CrossoverV2Refused(code="bass_fit_pairs_unavailable")
-    inputs = [round_inputs(root) for root in roots]
-    take_ids = [resolve_set(source, set_id).take_id() for source, set_id in zip(inputs, set_ids)]
-    paths = [default_out(source, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
-             for source, root, set_id in zip(inputs, roots, set_ids)]
+    sets = {row["set_id"]: SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
+            for row in read_run_manifest(inputs)["sets"]}
+    for set_id in set_ids:
+        if set_id not in sets:
+            raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=list(sets))
+    take_ids = [sets[set_id].take_id() for set_id in set_ids]
+    paths = [default_out(inputs, args.round_dir, ARTIFACT_BY_VIEW["bass"].artifact, set_id) for set_id in set_ids]
     takes = [selected_take(json.loads(path.read_text()), take_id) for path, take_id in zip(paths, take_ids)]
     return ({**compare_bass_takes(*takes, change=args.change), "source_views": list(map(str, paths))},
-            default_out(inputs[-1], roots[-1], ARTIFACT_BY_VIEW["bass-compare"].artifact, set_ids[-1]))
+            default_out(inputs, args.round_dir, ARTIFACT_BY_VIEW["bass-compare"].artifact, set_ids[-1]))
 
 
 def fit_run(inputs: RoundInputs, args) -> dict[str, Any]:
@@ -47,7 +49,7 @@ def fit_run(inputs: RoundInputs, args) -> dict[str, Any]:
     baseline: dict[tuple, list[dict]] = defaultdict(list)
     candidates: dict[str, dict[tuple, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for row in manifest["sets"]:
-        selected = resolve_set(inputs, row["set_id"])
+        selected = SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
         basis = selected.capture_basis
         level = level_key(basis, set_id=selected.set_id)
         path = default_out(inputs, args.round_dir, ARTIFACT_BY_VIEW["bass"].artifact, selected.set_id)

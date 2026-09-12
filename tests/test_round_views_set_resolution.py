@@ -134,8 +134,8 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
     ["room-persistence", "round", "--capture-id", "take"],
     ["room-grade", "round", "--room-median", "median.json"],
     ["room-grade", "round", "--baseline-room-median", "median.json"],
-    ["bass-compare", "before", "after", "--change", "candidate", "--before-take", "take"],
-    ["bass-compare", "before", "after", "--change", "candidate", "--after-take", "take"],
+    ["bass-compare", "round", "--change", "candidate", "--before-take", "take"],
+    ["bass-compare", "round", "--change", "candidate", "--after-take", "take"],
 ])
 def test_retired_verbs_and_selectors_are_unknown(argv):
     with pytest.raises(SystemExit) as exc:
@@ -185,7 +185,7 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
         views.append(view)
         paths.append(path)
     expected = compare_bass_takes(*(selected_take(view, group["takes"][0]["take_id"]) for view, group in zip(views, groups)), change="diagnostic")
-    assert main(["bass-compare", str(root), str(root), "--before-set", "bass-0", "--after-set", "bass-1", "--change", "diagnostic"]) == 0
+    assert main(["bass-compare", str(root), "--set", "bass-0", "--set", "bass-1", "--change", "diagnostic"]) == 0
     answer, actual = artifact_answer(capsys)
     assert actual == {**expected, "source_views": list(map(str, paths))}
     assert Path(answer["out"]).name == "bass_comparison-bass-1.json"
@@ -281,7 +281,7 @@ def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys, view):
     root, manifest = two_sets
     first, second = (group["set_id"] for group in manifest["sets"])
     argv = ([view, str(root), "--set", first] if view == "forward-model" else
-            [view, str(root), str(root), "--before-set", first, "--after-set", second, "--change", "candidate"])
+            [view, str(root), "--set", first, "--set", second, "--change", "candidate"])
     assert main(argv) == 1
     answer = json.loads(capsys.readouterr().out)
     assert answer["reason"] == "round_take_selection_required"
