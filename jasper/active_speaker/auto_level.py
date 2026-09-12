@@ -208,12 +208,11 @@ async def level_to(
             max_rise = max(max_rise, observed - result.ambient_db_spl)
             gap = target_db_spl - observed
             if not last_buried and not last_settled and abs(gap) <= tolerance_db:
-                in_band = 0
                 unsettled_in_band += 1
                 if unsettled_in_band >= 2:
                     raise _Refused(REFUSE_LEVEL_UNSETTLED)
-                continue
-            unsettled_in_band = 0
+            else:
+                unsettled_in_band = 0
             if not last_settled:
                 in_band = 0
                 if gain == cap:
@@ -223,7 +222,7 @@ async def level_to(
                     step_db = magnitude if gap >= 0 else -magnitude
                     await write(gain + step_db)
                 continue
-            in_band = in_band + 1 if abs(observed - target_db_spl) <= tolerance_db and observed - result.ambient_db_spl >= min_rise else 0
+            in_band = in_band + 1 if abs(gap) <= tolerance_db and observed - result.ambient_db_spl >= min_rise else 0
             if in_band >= 2 and abs(observed - result.readings[-2][1]) <= agree_db:
                 result.status, result.leveled_db_spl = "converged", observed
                 return result

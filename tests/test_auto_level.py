@@ -112,18 +112,26 @@ def test_a_loud_room_uses_small_buried_steps(monkeypatch):
     assert max(reading for _, reading in result.readings) <= 77.0
 
 
-def test_an_unsettled_reading_above_target_steps_down(monkeypatch):
+def test_an_in_band_unsettled_reading_nudges_once_then_refuses(monkeypatch):
     chain = Chain(monkeypatch, unstable=True, offset=85.0)
     result = asyncio.run(chain.run())
     first_in_band = next(i for i, (_, reading) in enumerate(result.readings) if abs(reading - 75.0) <= 1.0)
     first_in_band_gain = result.readings[first_in_band][0]
     assert result.reason == level.REFUSE_LEVEL_UNSETTLED
     assert len(result.readings) - first_in_band <= 4
-    assert max(chain.writes) <= first_in_band_gain
+    assert max(chain.writes) <= first_in_band_gain + 1.0
     for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
         if reading > 75.0:
             assert next_gain <= gain
     assert chain.peak_observed < 75.0 + level.MAX_STEP_DB
+
+
+def test_a_noisy_loud_room_can_nudge_clear_of_the_floor(monkeypatch):
+    chain = Chain(monkeypatch, ambient=66.83, slope=1.786, offset=91.40,
+                  jitter=(0.699, 0.1186), jitter_floor_margin=2.0)
+    result = asyncio.run(chain.run())
+    assert result.status == 'converged'
+    assert abs(result.leveled_db_spl - 75.0) <= 1.0
 
 
 def test_random_non_hot_unsettled_climbs_never_step_up_when_high(monkeypatch):
