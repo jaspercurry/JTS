@@ -503,15 +503,19 @@ def test_the_conductors_phase_readers_move_when_the_journey_moves():
 
 
 def test_the_snapshot_reads_the_journey_and_not_a_constructor_echo():
-    conductor = _conductor(
-        index_phase_map=dict(VERIFY_ONLY_MAP),
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-    )
+    conductor = _conductor(index_phase_map=dict(STAGE1_MAP))
+    conductor._journey.accept(PHASE_MEASURE, 2)
+    snapshot = conductor.snapshot()
+    assert snapshot.accepted_phases == (PHASE_MEASURE,)
+
+    conductor._journey.accept(PHASE_CHECK, 1)
     snapshot = conductor.snapshot()
     assert snapshot.accepted_phases == (PHASE_CHECK, PHASE_MEASURE)
     assert snapshot.session_phases == conductor.session_phases
-    assert snapshot.applied is True
+    assert snapshot.applied is False
+
+    applied = _conductor(index_phase_map=dict(VERIFY_ONLY_MAP), applied=True)
+    assert applied.snapshot().applied is True
 
 
 def test_session_phases_and_post_apply_verifies_are_public_reads():
