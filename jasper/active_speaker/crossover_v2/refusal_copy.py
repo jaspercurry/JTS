@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What the household is told when a round refuses, and the verdict that says it.
-
-The one module here that owns household-facing copy rather than a decision:
-the codes, the templates, the :data:`REASON_REGISTRY` binding a code to its
-sentence and retry budget, the selectors that pick between two sentences for
-one code, and :class:`PhaseVerdict`. Spatial screens still use
-:data:`SCREEN_KIND_REASONS`; the per-take assessor returns registry codes directly.
-"""
+"""Refusal codes, templates, retry budgets and operator copy."""
 
 from __future__ import annotations
 
@@ -67,6 +60,7 @@ REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_CLIPPED = "clipped"
 REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
+REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
@@ -145,7 +139,6 @@ REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
 REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
-REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
@@ -435,6 +428,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("level_ambient_too_high", "The room is too loud to level. Reduce the ambient noise and try again."),
            ("spl_level_unsettled", "The microphone level did not settle. Try again."),
            ("mic_not_observing", "The microphone did not hear the speaker. Check its position and connection."),
+           ("mic_feed_lost", "The microphone stopped sending samples. Check its connection and try again."),
+           ("mic_clipping", "The microphone clipped. Check the microphone and lower the level."),
+           ("volume_latch_unconfirmed", "The amplifier gain could not be confirmed. Check the audio connection."),
+           ("spl_target_uncapturable", "The microphone cannot measure the requested level. Use a suitable microphone."),
+           ("seat_level_watchdog_expired", "Leveling timed out. Check the audio connection and try again."),
        )},
     "bass_fit_common_coverage_unavailable": ReasonSpec(
         "bass_fit_common_coverage_unavailable", TEMPLATE_HARD_STOP, 0, "", "The bass takes have no shared usable frequency range.",
@@ -468,8 +466,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "bass_table_tolerance_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target tolerance is invalid.",
         next_action={"id": "correct_bass_tolerance", "label": "Supply a positive tolerance in dB", "href": "/sound/speaker/crossover/"},
     ),
-    "bass_table_operating_level_missing": ReasonSpec(
-        "bass_table_operating_level_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete operating level.",
+    "bass_table_window_gain_missing": ReasonSpec(
+        "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete resolved window gain.",
         next_action={"id": "measure_bass_level", "label": "Record Main, Aux1 and program identity on each take", "href": "/sound/speaker/crossover/"},
     ),
     "bass_table_capture_integrity_failed": ReasonSpec(
@@ -520,12 +518,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": "speaker_setup", "label": "Finish the protected speaker setup", "href": "/sound/speaker/crossover/"},
     ),
     "seat_anchor_unusable": ReasonSpec(
-        "seat_anchor_unusable", TEMPLATE_HARD_STOP, 0, "", "Measure the seat level with the current microphone.",
-        next_action={"id": "measure_seat_level", "label": "Measure the seat level with the current microphone", "href": "/sound/speaker/crossover/"},
-    ),
-    "level_over_ceiling": ReasonSpec(
-        "level_over_ceiling", TEMPLATE_HARD_STOP, 0, "", "Measure a seat level below the commissioning stop.",
-        next_action={"id": "lower_seat_level", "label": "Measure a seat level below the commissioning stop", "href": "/sound/speaker/crossover/"},
+        "seat_anchor_unusable", TEMPLATE_HARD_STOP, 0, "", "Run jasper-seat-level with the current microphone, then measure.",
+        next_action={"id": "measure_seat_level", "label": "Run jasper-seat-level with the current microphone, then measure", "href": "/sound/speaker/crossover/"},
     ),
     "not_found": ReasonSpec(
         "not_found", TEMPLATE_HARD_STOP, 0, "", "Select a candidate from the bank.",
@@ -613,6 +607,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             strip_before_join=".",
         ),
         auto_retry=True,
+    ),
+    REASON_LEVEL_DRIFT_AT_SESSION_GAIN: _retriable_reason(
+        REASON_LEVEL_DRIFT_AT_SESSION_GAIN, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy("The microphone read a different level at the same gain — something changed in the room.",
+                            "Retake."),
     ),
     REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(
         REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
@@ -864,13 +863,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": "review_plan", "label": "Review measurement settings",
                      "href": "/sound/speaker/crossover/"},
     ),
-    REASON_WALK_CEILING_ABOVE_STOP: ReasonSpec(
-        REASON_WALK_CEILING_ABOVE_STOP, TEMPLATE_HARD_STOP, 0, "",
-        "The requested sound level limit is above this speaker's stop level. Lower the requested "
-        'limit to the stop level or below.',
-        next_action={"id": 'lower_walk_ceiling', "label": 'Lower the requested sound level limit',
-                     "href": '/sound/speaker/crossover/'},
-    ),
     REASON_MEASURE_SPL_CALIBRATION_REQUIRED: ReasonSpec(
         REASON_MEASURE_SPL_CALIBRATION_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
         'JTS needs microphone calibration to check the sound level during this measurement. '
@@ -958,7 +950,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_SPL_CEILING_EXCEEDED: ReasonSpec(
         REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
         "The measurement stopped because the microphone heard the speaker "
-        "louder than the ceiling for this session. Lower the level and "
+        "louder than the commissioning stop. Lower the level and "
         "measure again.",
     ),
     "capture_slot_busy": ReasonSpec(

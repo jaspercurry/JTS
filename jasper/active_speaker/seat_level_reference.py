@@ -2,36 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The measured seat-SPL reference volume, and whether it is still usable.
-
-:mod:`jasper.active_speaker.session_volume_plan` derives the crossover
-session's fixed measurement volume as ``min(reference, max(driver caps))``.
-The caps half is measured hardware truth; the reference half was a codified
-guess (``MEASUREMENT_REFERENCE_VOLUME_DB = -20.0``). This module is where
-that guess becomes an observation.
-
-Ownership, deliberately narrow:
-
-* **one writer** — :mod:`jasper.cli.seat_level`, after a
-  closed-loop ramp measured a calibrated seat SPL inside the requested band;
-* **one reader** — ``session_volume_plan.measurement_reference_volume_db``;
-* **absent is normal.** A box that has never run the leveling step, or whose
-  statefile is unreadable/implausible, resolves to the codified ``-20.0``
-  default. Nothing regresses by not having run it.
-
-The target BAND is not stored here and is not a property of the speaker: it is
-what the operator wants tonight's session to sound like, passed per run and
-bounded by the preset's ``max_commissioning_level_db_spl`` safety ceiling. Only
-the *result* is durable — the volume, and the
-:class:`StimulusProvenance` it was measured against, which is the other half of
-what that volume means.
-"""
+"""The banked session gain and its microphone identity."""
 
 from __future__ import annotations
 
 import json
 import math
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
@@ -46,7 +24,7 @@ from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SEAT_LEVEL_REFERENCE_KIND = "jts_active_speaker_seat_level_reference"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_seat_level_reference.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE"
@@ -61,21 +39,7 @@ class SeatLevelTargetError(ValueError):
 
 @dataclass(frozen=True)
 class StimulusProvenance:
-    """WHICH signal a reference volume was measured against, and at what level.
-
-    The other half of the reference's definition. A reference is the volume
-    that produced a target SPL *for a given stimulus*, and
-    ``dB SPL = stimulus dBFS + chain gain + volume`` — so with the stimulus
-    term unrecorded, two references taken against different WAVs differ by a
-    number no consumer can see, and every comparison of them (drift detection,
-    doctor lines, an LLM reasoning about the rig) mis-attributes that
-    difference to the hardware.
-
-    ``sha256`` is the identity a path alone cannot carry: the same path can be
-    a different file on the next session. ``band_hz`` is the DECLARED band a
-    generated stimulus was synthesized over, and ``None`` for an
-    operator-named WAV whose band nobody declared — never a measured estimate.
-    """
+    """The exact leveling signal; sweep statistics are not comparable to noise."""
 
     path: str
     sha256: str
@@ -156,13 +120,7 @@ _state_path = seat_level_reference_state_path
 def load_seat_level_reference(
     *, state_path: str | Path | None = None
 ) -> dict[str, Any] | None:
-    """Return the persisted reference record, or ``None`` when there is none.
-
-    Absent-tolerant and never raises: an unreadable, malformed, wrong-kind, or
-    wrong-schema file is indistinguishable from no file at all, because the
-    consumer's fallback (the codified default) is the conservative answer in
-    every one of those cases.
-    """
+    """Read the current schema; old sessions require a new leveling pass."""
     path = _state_path(state_path)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -180,16 +138,7 @@ def load_seat_level_reference(
 def seat_level_reference_volume_db(
     *, state_path: str | Path | None = None
 ) -> float | None:
-    """The measured reference volume in dB, or ``None`` to use the default.
-
-    Fail-safe on every doubt. A value is returned only when it is finite,
-    non-positive (main volume is attenuation), and strictly above the emergency
-    attenuation floor — the same envelope
-    ``session_measurement_volume_db`` already enforces on its own result. Any
-    other stored value resolves to ``None``, so a corrupt or hostile statefile
-    can only make the session QUIETER (back to the codified default), never
-    louder.
-    """
+    """Return a valid session gain; absent or old records require leveling."""
     record = load_seat_level_reference(state_path=state_path)
     if record is None:
         return None
@@ -230,10 +179,12 @@ def write_seat_level_reference(
             f"({EMERGENCY_MEASUREMENT_VOLUME_DB:g}, 0.0] dB envelope"
         )
     path = _state_path(state_path)
+    leveled_at = _utc_now()
     payload = {
+        "session_id": uuid.uuid4().hex, "leveled_at": leveled_at,
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": SEAT_LEVEL_REFERENCE_KIND,
-        "updated_at": _utc_now(),
+        "updated_at": leveled_at,
         "state_path": str(path),
         "reference_volume_db": round(float(reference_volume_db), 3),
         "measured_db_spl": round(float(measured_db_spl), 2),
@@ -254,8 +205,6 @@ def write_seat_level_reference(
 #: refusal's ``reason`` comes from. There is no relative fallback: a number
 #: that looks absolute and was guessed is worse than no number.
 ANCHOR_UNUSABLE = "seat_anchor_unusable"
-LEVEL_OVER_CEILING = "level_over_ceiling"
-PRESET_UNAVAILABLE = "preset_unavailable"
 
 #: Two sens factors this close are one number in two float reprs, not two
 #: calibrations. A real recalibration moves the figure by whole tenths.
@@ -283,19 +232,14 @@ class ResolvedLevel:
     anchor_db_spl: float
     reference_volume_db: float
     mic_serial: str | None
+    session_id: str = ""
+    leveled_at: str = ""
+    target_db_spl: float = DEFAULT_TARGET_DB_SPL
 
-
-def _ceiling_db_spl() -> float:
-    """The commissioning SPL ceiling, resolved as ``jasper-seat-level`` does."""
-
-    from jasper.output_topology import load_output_topology_strict
-
-    from .commission_wiring import commissioning_spl_ceiling_db
-
-    try:
-        return commissioning_spl_ceiling_db(load_output_topology_strict())
-    except (OSError, ValueError, KeyError, AttributeError) as exc:
-        raise LevelUnresolved(PRESET_UNAVAILABLE, str(exc)) from exc
+    def session(self) -> dict[str, Any]:
+        return {"session_id": self.session_id, "gain_db": self.reference_volume_db,
+                "leveled_db_spl": self.anchor_db_spl, "target_db_spl": self.target_db_spl,
+                "leveled_at": self.leveled_at}
 
 
 @dataclass(frozen=True)
@@ -307,7 +251,6 @@ class AnchorFacts:
 def resolve_anchor_level(
     *,
     state_path: str | Path | None = None,
-    ceiling_db_spl: float | None = None,
     calibration_file: str | Path | None = None,
     mic_serial: str | None = None,
     facts: AnchorFacts | None = None,
@@ -320,7 +263,11 @@ def resolve_anchor_level(
     record = facts.record if facts is not None else load_seat_level_reference(state_path=state_path) or {}
     anchor = finite_float(record.get("measured_db_spl"))
     reference_volume_db = finite_float(record.get("reference_volume_db"))
-    if anchor is None or reference_volume_db is None:
+    target = finite_float((record.get("target") or {}).get("target_db_spl"))
+    if (record.get("artifact_schema_version") != SCHEMA_VERSION
+            or not record.get("session_id") or not record.get("leveled_at")
+            or anchor is None or reference_volume_db is None or target is None
+            or not EMERGENCY_MEASUREMENT_VOLUME_DB < reference_volume_db <= 0.0):
         raise LevelUnresolved(
             ANCHOR_UNUSABLE,
             "no seat-level reference is banked, so there is no anchor to "
@@ -349,7 +296,7 @@ def resolve_anchor_level(
             "the calibration store, or re-run jasper-seat-level with the mic "
             "you will measure with",
         )
-    if facts is not None and banked_serial and sensitivity.serial != banked_serial:
+    if banked_serial and sensitivity.serial != banked_serial:
         raise LevelUnresolved(ANCHOR_UNUSABLE, "The anchor and current calibration name different microphones")
     banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
     if (
@@ -367,15 +314,9 @@ def resolve_anchor_level(
             "calibration you will measure with",
         )
 
-    ceiling = _ceiling_db_spl() if ceiling_db_spl is None else float(ceiling_db_spl)
-    if anchor > ceiling:
-        raise LevelUnresolved(
-            LEVEL_OVER_CEILING,
-            f"the banked anchor is {anchor:g} dB SPL, above the preset's "
-            f"commissioning ceiling of {ceiling:g} dB SPL",
-        )
     return ResolvedLevel(
         anchor_db_spl=anchor,
         reference_volume_db=reference_volume_db,
-        mic_serial=sensitivity.serial,
+        mic_serial=sensitivity.serial, session_id=str(record["session_id"]),
+        leveled_at=str(record["leveled_at"]), target_db_spl=target,
     )

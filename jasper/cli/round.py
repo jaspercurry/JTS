@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from jasper.json_fields import age_seconds, parse_utc_iso
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -102,7 +103,10 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "status_unavailable", {"http": http}, payload)
-    return answered(payload)
+    session = (payload.get("level") or {}).get("session")
+    stamp = parse_utc_iso(session["leveled_at"]) if session else None
+    return answered(payload, (f"session level {session['leveled_db_spl']:.1f} dB SPL at gain {session['gain_db']:.1f} dB, "
+                              f"leveled {age_seconds(stamp) / 3600:.1f}h ago, reused") if session and stamp is not None else "")
 
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
@@ -181,8 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
     poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
     run.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
-    run.add_argument("--level", type=float, help="reference volume in dB; must match the banked level")
-    run.add_argument("--ceiling", "--ceiling-db-spl", dest="ceiling", type=float, help="SPL ceiling in dB SPL")
+    run.add_argument("--level-offsets-db", help="comma-separated non-positive offsets from the session gain (default 0)")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v3 plan document; used without plan-building flags")

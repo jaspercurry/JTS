@@ -135,7 +135,7 @@ def test_skipped_per_driver_work_is_disclosed_without_an_extra_grant():
     gate = AnsweredGate()
     result, _ = asyncio.run(_run_gated(request, gate=gate))
     assert result.status == "partial"
-    assert (result.stops_planned, result.takes_measured, result.takes_skipped) == (3, 2, 1)
+    assert (len(result.planned), result.takes_measured, len(result.not_measured)) == (3, 2, 1)
     assert gate.grants == [(1, 1)]
     assert result.not_measured[0]["reason"] == ac.WALK_NOTHING_PLAYABLE
 
@@ -334,7 +334,7 @@ def test_done_requires_every_stimulus_at_the_last_stop(monkeypatch, accepted):
     result, fakes = asyncio.run(_run_gated(request, analyze=analyze, signals=signals))
     assert len(fakes.banked) == 2
     assert result.status == ("complete" if accepted else "partial")
-    assert len(result.not_measured) == (0 if accepted else 1)
+    assert result.takes_skipped == (0 if accepted else 1)
 
 
 @pytest.mark.parametrize("action", ["accept", "retake_same", "stop", "complete", "cancel"])
@@ -361,43 +361,6 @@ def test_run_never_applies_a_tune(monkeypatch, action):
     result, _ = asyncio.run(_run_gated(_walk([0]), analyze=analyze, signals=signals))
     assert result.status in {"complete", "partial", "cancelled"}
     apply.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("stated", "expected"), [(None, 85.0), (80.0, 80.0), (85.0, 85.0)],
-    ids=["none-takes-the-stop", "under-the-stop", "at-the-stop"],
-)
-def test_a_run_plays_under_the_commissioning_stop_by_default(
-    stated: float | None, expected: float,
-) -> None:
-    """A run stating no ceiling is not asking to be unbounded: the box's own
-    commissioning stop is what bounds it."""
-    assert plan_run.take_spl_ceiling(
-        stated, commissioning_stop_db_spl=85.0,
-    ) == expected
-
-
-def test_a_ceiling_above_the_commissioning_stop_is_refused_not_clamped() -> None:
-    """The number was typed; clamping it would let an operator believe a louder
-    measurement had been allowed."""
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        plan_run.take_spl_ceiling(90.0, commissioning_stop_db_spl=85.0)
-
-    assert refused.value.reason == ac.WALK_CEILING_ABOVE_STOP
-
-
-@pytest.mark.parametrize(
-    ("ceiling", "note"),
-    [(None, plan_run.SPL_MONITOR_UNAVAILABLE), (85.0, "ceiling_85_db_spl")],
-    ids=["no-calibration", "watched"],
-)
-def test_the_run_discloses_what_watched_its_level(
-    ceiling: float | None, note: str,
-) -> None:
-    """A box that cannot turn a recording into dB SPL says so rather than
-    claiming a bound nothing measured."""
-    assert plan_run.spl_monitor_note(ceiling) == note
-
 
 
 def test_request_fingerprint_tracks_the_stated_plan():
@@ -502,7 +465,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
         for index, degrees in enumerate([0, 10, 20], 1):
             manifest.begin({"index": index, "repeat": 1, "pose": {"deg": degrees}}, attempt=1, pose_index=index - 1)
             await manifest.append({**record, "take_id": manifest.allocate_take_id(), **(changed if index == 2 else {})}, f"record-{index}",
-                                  TakeVerdict(True), complete=True, started_s=index, ended_s=index + 1)
+                                  TakeVerdict(True), complete=True, started_s=index, ended_s=index + 1, level_observation={})
     asyncio.run(append())
     groups = manifest.to_dict()["sets"]
     assert len(groups) == (2 if changed else 1)
@@ -517,7 +480,7 @@ def test_manifest_names_emitted_role_levels_and_usable_bands():
         {"kind": "sweep", "role": "woofer", "gain_db": -18},
         {"kind": "sweep", "role": "tweeter", "gain_db": -24},
     ]}, "curves": [{"role": "woofer", "band_hz": [20, 2000], "validity_floor_hz": 100}]}
-    asyncio.run(manifest.append(record, "record", TakeVerdict(True), complete=True, started_s=0, ended_s=1))
+    asyncio.run(manifest.append(record, "record", TakeVerdict(True), complete=True, started_s=0, ended_s=1, level_observation={}))
     groups = manifest.to_dict()["sets"]
     assert {group["capture_basis"]["role"] for group in groups} == {"woofer", "tweeter"}
     assert {group["capture_basis"]["role"]: group["takes"][0]["level"]["stimulus_dbfs"]
@@ -617,9 +580,9 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
     windows = plan_run.LevelWindows(
         isolation_hold(graph=graph, camilla_factory=lambda: box, action="test", plan=plan,
                        volume_state_path=state_path), build, None, None,
-        MicSensitivity(-12, 18, "1234"), SimpleNamespace(model_key="minidsp_umik2"), 80,
+        MicSensitivity(-12, 18, "1234"), SimpleNamespace(model_key="minidsp_umik2"), 85, gain_db=-14,
     )
-    request = replace(_walk([0, 20], ("fp-a", "fp-b")), operating_levels_db=levels, spl_ceiling_db_spl=80)
+    request = replace(_walk([0, 20], ("fp-a", "fp-b")), level_offsets_db=tuple(level + 14 for level in levels))
     gate = AnsweredGate()
     try:
         result = await plan_run.run_plan(request, windows=windows, manifest=manifest, analyze=_analysis,
@@ -634,7 +597,7 @@ async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path
         assert events == ["hold", *[level for _pose, level, cid in expected if cid == "fp-a"], "release"]
         assert len({id(session) for session in sessions}) == len(sessions)
         assert len({id(watch) for watch in watches}) == len(sessions)
-        assert {watch.ceiling_db_spl for watch in watches} == {80}
+        assert {watch.ceiling_db_spl for watch in watches} == {85}
         assert len(gate.grants) == len({pose for pose, _level, _cid in expected})
         ids = [record["take_id"] for record in manifest.records.records.banked]
         assert ids == [f"run_take_{i:04d}" for i in range(1, len(ids) + 1)]
@@ -669,9 +632,9 @@ async def test_no_window_can_open_without_a_resolved_ceiling_and_watch(tmp_path,
         isolation_hold(graph=graph, camilla_factory=lambda: box, action="test",
                        volume_state_path=tmp_path / "volume.json"), build, None, None,
         MicSensitivity(-12, 18, "1234") if sensitivity else None,
-        SimpleNamespace(model_key="minidsp_umik2"), ceiling,
+        SimpleNamespace(model_key="minidsp_umik2"), ceiling, gain_db=-14,
     )
-    result = await plan_run.run_plan(replace(_walk([0]), operating_levels_db=(-20, -14)),
+    result = await plan_run.run_plan(replace(_walk([0]), level_offsets_db=(-20, -14)),
                                       windows=windows, manifest=manifest, analyze=_analysis,
                                       candidate_scopes=_SCOPES, aborts=_ABORTS)
     assert (result.status, result.reason, result.takes_measured) == ("partial", reason, 0)
@@ -694,3 +657,19 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, ph
     assert [capture.repeat for capture in captures[-2:]] == [1, 2]
     assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
     assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])
+
+
+async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
+    manifest = RunManifest("run", _Store(FakeSeams().records), level={"session": {"session_id": "leveled"}})
+    cases = [(0, -20, 70, True, None), (0, -20, 72, True, 2), (0, -20, 90, False, 19),
+             (20, -20, 76, True, 5), (0, -20, 72, True, 1), (0, -30, 60, True, None)]
+    for index, (pose, gain, observed, accepted, delta) in enumerate(cases):
+        manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}}, attempt=1, pose_index=index)
+        record = {"take_id": str(index), "level_db": gain,
+                  "capture_integrity": {"spl": {"max_window_db_spl": observed}}}
+        await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,
+                              level_observation=plan_run.level_drift_verdict(**manifest.level_observation(record)).evidence)
+        row = next(take for take in manifest.takes if take["take_id"] == str(index))
+        assert row["level"]["max_window_db_spl"] == observed
+        assert row["level"]["level_delta_db"] == delta
+    assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"

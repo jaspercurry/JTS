@@ -23,8 +23,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
-from .plan_run import take_spl_ceiling
-from .seat_level_reference import LEVEL_OVER_CEILING, AnchorFacts, LevelUnresolved, resolve_anchor_level
+from .seat_level_reference import AnchorFacts, LevelUnresolved, resolve_anchor_level
 
 # Rechecked at participation; a dry run reserves none of these resources.
 LIVE_ADMISSION = (
@@ -65,7 +64,7 @@ class PreflightFacts:
 class ScheduledCapture:
     index: int
     pose: tuple[Any, ...]
-    level_window_db: float | None
+    offset_db: float
     candidate_id: str
     repeat: int
     graph_scope: str | None
@@ -114,7 +113,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
     except CrossoverV2FlowError as exc:
         add(getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
         valid_shape = False
-    captures = len(plan.stops) * plan.repeats * max(1, len(plan.operating_levels_db)) if valid_shape else 0
+    captures = len(plan.stops) * plan.repeats * max(1, len(plan.level_offsets_db)) if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
@@ -150,29 +149,20 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
     if stop is None or stop <= 0:
         add("walk_commissioning_stop_unset", "The commissioning stop cannot be resolved")
     else:
-        try:
-            ceiling = take_spl_ceiling(plan.spl_ceiling_db_spl, commissioning_stop_db_spl=stop)
-        except LateralWalkRefused as exc:
-            add(exc.reason, exc.detail)
+        ceiling = stop
         if facts.anchor.sensitivity is not None:
             try:
-                anchor = resolve_anchor_level(facts=facts.anchor, ceiling_db_spl=stop)
+                anchor = resolve_anchor_level(facts=facts.anchor)
                 level = LevelPolicy(resolved=anchor)
                 if plan.level.resolved is not None and plan.level != level:
                     raise LevelUnresolved("seat_anchor_unusable", "The carried anchor differs from the banked anchor")
                 plan = replace(plan, level=level)
-                for operating_db in plan.operating_levels_db:
-                    predicted = anchor.anchor_db_spl + operating_db - anchor.reference_volume_db
-                    if ceiling is not None:
-                        try:
-                            take_spl_ceiling(predicted, commissioning_stop_db_spl=ceiling)
-                        except LateralWalkRefused:
-                            add(LEVEL_OVER_CEILING, f"Window {operating_db:g} dB predicts {predicted:g} dB SPL above {ceiling:g}")
             except (LevelUnresolved, LateralWalkRefused) as exc:
                 add(exc.reason, exc.detail)
 
     schedule = tuple(
-        ScheduledCapture(index + 1, pose.place, level, candidate_identity(pose.candidate_id), repeat,
+        ScheduledCapture(index + 1, pose.place,
+                         level, candidate_identity(pose.candidate_id), repeat,
                          ("candidate_branches" if pose.regime == REGIME_BRANCHES else
                           scopes.get(pose.candidate_id) if pose.candidate_id else
                           "candidate" if pose.plays_summed else "drivers"), pose.regime)
@@ -180,7 +170,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
             (pose, level, repeat)
             for _place, group in groupby(plan.stops, key=lambda pose: pose.place)
             for poses in (tuple(group),)
-            for level in (plan.operating_levels_db or (None,))
+            for level in plan.level_offsets_db
             for pose in poses
             for repeat in range(1, plan.repeats + 1)
         )

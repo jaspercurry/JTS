@@ -2,7 +2,7 @@
 
 ## Entry contract
 
-Register the wired microphone with `jasper-mic-calibration`; set its capture control to 100%, and confirm its serial and calibration. Set each plan's SPL ceiling. It cannot exceed the 85 dB SPL commissioning stop, and driver limits can lower it. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
+Register the wired microphone with `jasper-mic-calibration`; set its capture control to 100%, and confirm its serial and calibration. Run `jasper-seat-level` once at the mark with the current microphone. Each run holds that session gain; `--level-offsets-db` selects non-positive offsets. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
 
 ## The loop
 
@@ -15,15 +15,15 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## Speaker
 
-`speaker/mark` takes two measurements at the design mark. A derived level check and driver caps can lower the plan's SPL ceiling. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
+`speaker/mark` takes two measurements at the design mark. Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
 
 ## Room
 
-`room/cloud` uses the default 11-pose `seat/cloud`, summed and ungated through the accepted Speaker layer with Room and bass off. The plan's SPL ceiling still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
+`room/cloud` uses the default 11-pose `seat/cloud`, summed and ungated through the accepted Speaker layer with Room and bass off. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
 
 ## Bass
 
-`bass/cloud` uses the same 11 poses, through accepted Speaker and Room with bass off. The plan's SPL ceiling binds every fixed-level window. Trial baseline and bass candidate in one run. Use `bass-fit-table`; never apply between the paired captures.
+`bass/cloud` uses the same 11 poses, through accepted Speaker and Room with bass off. Each window holds the session gain plus its offset. Trial baseline and bass candidate in one run. Use `bass-fit-table`; never apply between the paired captures.
 
 ## Evidence and recovery
 
@@ -49,8 +49,8 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `bass_fit_run_mismatch` | The selected run does not match this manifest. | Select the run recorded in this manifest | `hard_stop` |
 | `bass_table_capture_context_changed` | The bass levels were captured under different conditions. | Measure all levels with the same stimulus and setup | `hard_stop` |
 | `bass_table_capture_integrity_failed` | A bass capture failed its integrity check. | Repeat the failed capture | `hard_stop` |
-| `bass_table_operating_level_missing` | The bass capture lacks a complete operating level. | Record Main, Aux1 and program identity on each take | `hard_stop` |
 | `bass_table_tolerance_invalid` | The bass target tolerance is invalid. | Supply a positive tolerance in dB | `hard_stop` |
+| `bass_table_window_gain_missing` | The bass capture lacks a complete resolved window gain. | Record Main, Aux1 and program identity on each take | `hard_stop` |
 | `bass_target_invalid` | The bass target curve is invalid. | Supply an ordered target curve from 20 to 200 Hz | `hard_stop` |
 | `boost_over_declared_bound` | The measured boost exceeded its bound. Check the restore result before applying another tuning. |  | `hard_stop` |
 | `candidate_trial_evidence_invalid` | Repeat the damaged trial set. | Repeat the damaged trial set. | `hard_stop` |
@@ -69,7 +69,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `geometry_retake_unreachable` | The room needs the microphone measured from a wider spot, and from above the mark, than this measurement can ask for. Run a Full measurement that prompts each spot on screen, and walk those spots by hand, to finish tuning this speaker. |  | `session_restart` |
 | `internal_error` | Something went wrong on the speaker during that measurement. Try again. |  | `fix_and_retry` |
 | `level_ambient_too_high` | The room is too loud to level. Reduce the ambient noise and try again. |  | `fix_and_retry` |
-| `level_over_ceiling` | Measure a seat level below the commissioning stop. | Measure a seat level below the commissioning stop | `hard_stop` |
+| `level_drift_at_session_gain` | The microphone read a different level at the same gain — something changed in the room. Retake. | Retake. | `fix_and_retry` |
 | `level_unreachable` | The target level is unreachable at this gain. Check the amplifier and microphone. |  | `fix_and_retry` |
 | `locate_failed` | Couldn't hear the speaker clearly. Check the volume and the microphone, then try again. | Check the volume and the microphone, then try again. | `fix_and_retry` |
 | `measure_box_not_ready` | Finish the protected speaker setup. | Finish the protected speaker setup | `hard_stop` |
@@ -86,6 +86,8 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `measurement_scope_invalid` | JTS cannot measure the selected tuning layer. Select a supported measurement layer. | Select a measurement layer | `hard_stop` |
 | `measurement_targets_missing` | JTS does not have a measurement target for every driver this speaker declares, so it cannot measure them. Finish speaker setup so each driver is assigned to an output, then measure again. | Finish speaker setup | `hard_stop` |
 | `measurement_volume_drift` | JTS could not confirm the speaker was at the level it set for measuring, so it stopped rather than record a measurement it cannot trust. Try measuring again; if it keeps happening, restart the speaker from the system page. |  | `hard_stop` |
+| `mic_clipping` | The microphone clipped. Check the microphone and lower the level. |  | `fix_and_retry` |
+| `mic_feed_lost` | The microphone stopped sending samples. Check its connection and try again. |  | `fix_and_retry` |
 | `mic_not_observing` | The microphone did not hear the speaker. Check its position and connection. |  | `fix_and_retry` |
 | `noisy_room_linearity` | The room got loud during that measurement — quiet it and try again. | quiet it and try again. | `fix_and_retry` |
 | `not_found` | Select a candidate from the bank. | Select a candidate from the bank | `hard_stop` |
@@ -104,22 +106,24 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `round_set_unknown` | Select a set listed in the run manifest. |  | `hard_stop` |
 | `round_take_selection_required` | Select a retained take from this set with the take selector. |  | `hard_stop` |
 | `round_take_unknown` | Select a retained take from this set. |  | `hard_stop` |
-| `seat_anchor_unusable` | Measure the seat level with the current microphone. | Measure the seat level with the current microphone | `hard_stop` |
+| `seat_anchor_unusable` | Run jasper-seat-level with the current microphone, then measure. | Run jasper-seat-level with the current microphone, then measure | `hard_stop` |
+| `seat_level_watchdog_expired` | Leveling timed out. Check the audio connection and try again. |  | `fix_and_retry` |
 | `session_ceiling_expired` | The whole measurement ran out of time while it was still waiting for the microphone to reach a position. Start over from this page once the microphone can be moved through the walk more quickly. |  | `session_restart` |
 | `snr_floor` | The room is too loud right now, or the microphone is too far away. Quiet the room or move the microphone closer, then try again. | Quiet the room or move the microphone closer, then try again. | `fix_and_retry` |
 | `sound_design_revision_unavailable` | Measure the current Sound design. | Measure the current Sound design. | `hard_stop` |
 | `speaker_shape_unsupported` | JTS can measure a single full-range speaker or a two-way active crossover, and this speaker is neither. There is nothing to retry — check the drivers declared in speaker setup. | Open speaker setup | `hard_stop` |
-| `spl_ceiling_exceeded` | The measurement stopped because the microphone heard the speaker louder than the ceiling for this session. Lower the level and measure again. |  | `hard_stop` |
+| `spl_ceiling_exceeded` | The measurement stopped because the microphone heard the speaker louder than the commissioning stop. Lower the level and measure again. |  | `hard_stop` |
 | `spl_level_unsettled` | The microphone level did not settle. Try again. |  | `fix_and_retry` |
+| `spl_target_uncapturable` | The microphone cannot measure the requested level. Use a suitable microphone. |  | `fix_and_retry` |
 | `user_stopped` | You stopped the measurement. Start over from this page when you're ready. |  | `session_restart` |
 | `verify_crossover_region` | The two drivers didn't blend as designed where they hand over. Re-measure to fit it again. | Re-measure to fit it again. | `verify_fail` |
 | `verify_inconclusive` | The check was inconclusive — this measurement had less usable sound to compare than the tuning did. Re-verify to try again. | Re-verify to try again. | `verify_fail` |
 | `verify_level_shift` | The microphone's levels changed between measurements, so this check couldn't settle. Try again — if it repeats, re-measure. | Try again — if it repeats, re-measure. | `verify_fail` |
 | `verify_out_of_tolerance` | The result didn't quite match the prediction. Try again. | Try again. | `verify_fail` |
+| `volume_latch_unconfirmed` | The amplifier gain could not be confirmed. Check the audio connection. |  | `fix_and_retry` |
 | `volume_restore_deferred` | Measurement stopped because another volume claim is active. | Start a new measurement after playback settles | `hard_stop` |
 | `volume_unresolved` | JTS could not confirm the listening volume was restored. Recover the safe volume before continuing. |  | `volume_recovery` |
 | `walk_candidate_not_measurable` | A summed tuning test must use that tuning's own levels and alignment. Remove the separate level or alignment overrides. | Use the tuning's own settings | `hard_stop` |
-| `walk_ceiling_above_stop` | The requested sound level limit is above this speaker's stop level. Lower the requested limit to the stop level or below. | Lower the requested sound level limit | `hard_stop` |
 | `walk_commissioning_stop_unset` | This speaker has no sound level stop set for measurements. Set the stop level in speaker setup before measuring. | Set the measurement stop level | `hard_stop` |
 | `walk_delay_not_accepted` | The selected driver and delay settings do not match. Correct the delay settings before starting. | Correct the delay settings | `hard_stop` |
 | `walk_lateral_group_already_planned` | This session already has a plan for these positions. Start a new session for the new plan. | Start a new session | `hard_stop` |

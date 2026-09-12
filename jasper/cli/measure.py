@@ -50,8 +50,6 @@ REFUSE_SPEC_INVALID = "measure_spec_invalid"
 REFUSE_BOX_NOT_READY = "measure_box_not_ready"
 #: No measurement microphone answered, so nothing would record the stimulus.
 REFUSE_NO_MIC = "measure_no_wired_mic"
-REFUSE_SPL_CEILINGS_MIXED = "measure_spl_ceilings_mixed"
-REFUSE_VOLUME_REQUIRES_SPL_WATCH = "measure_volume_requires_spl_watch"
 #: ``--level-matched`` on a box whose banked evidence names no trims. Refused
 #: at open, where an operator can still act on it.
 REFUSE_NO_LEVEL_EVIDENCE = "measure_no_level_match_evidence"
@@ -428,7 +426,6 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
         "vertical_deg": args.vertical_deg,
         "regime": args.regime,
         "graph_scope": args.graph_scope,
-        "spl_ceiling_db_spl": args.spl_ceiling_db_spl,
     }
     specs = []
     for index, entry in enumerate(document):
@@ -458,8 +455,6 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
             )
         _require_candidate_id(spec, where=f"spec {index}")
         specs.append(spec)
-    if len({spec.spl_ceiling_db_spl for spec in specs}) > 1:
-        raise MeasureFlagError(REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling")
     return tuple(specs)
 
 
@@ -543,28 +538,22 @@ def _bind_compose(
 
 
 def _spl_monitor(
-    stated: float | None,
     *,
     box: BoxDeclaration,
     device: Any,
     mic_serial: str | None,
     volume_db: float | None,
-) -> tuple[Any, str]:
+) -> tuple[Any, str, Any]:
     from jasper.active_speaker.angle_capture import LateralWalkRefused  # lazy: measurement stack import cost
-    from jasper.cli.measurement_watch import measurement_spl_watch  # lazy: measurement stack import cost
+    from jasper.active_speaker.plan_run import measurement_spl_watch  # lazy: measurement stack import cost
 
     try:
-        monitor, note = measurement_spl_watch(
-            stated, topology=box.topology, preset=box.preset, device=device, mic_serial=mic_serial,
+        monitor, note, level = measurement_spl_watch(
+            topology=box.topology, preset=box.preset, device=device, mic_serial=mic_serial,
         )
     except LateralWalkRefused as exc:
         raise BoxNotMeasurable(exc.reason, exc.detail) from exc
-    if volume_db is not None and monitor is None:
-        raise BoxNotMeasurable(
-            REFUSE_VOLUME_REQUIRES_SPL_WATCH,
-            "--volume-db requires a resolvable microphone sensitivity for the live SPL watch",
-        )
-    return monitor, note
+    return monitor, note, level
 
 
 def _wired_setup_reference() -> Mapping[str, Any] | None:
@@ -644,11 +633,12 @@ async def _measure(
     except WiredMicMissing as exc:
         # The kernel owns the sentence; this door owns only its exit code.
         raise BoxNotMeasurable(REFUSE_NO_MIC, str(exc)) from exc
-    spl_monitor, spl_note = _spl_monitor(
-        specs[0].spl_ceiling_db_spl,
+    spl_monitor, spl_note, level = _spl_monitor(
         box=box, device=device, mic_serial=mic_serial, volume_db=volume_db,
     )
     if volume_db is not None:
+        if volume_db > box.session_volume_db:
+            raise BoxNotMeasurable("measurement_volume_invalid", "The take gain must not exceed the banked session gain or driver cap")
         box = replace(box, session_volume_db=volume_db)
 
     session_id = f"measure-{secrets.token_hex(4)}"
@@ -690,7 +680,7 @@ async def _measure(
                 expected_session_id=str(info["session_id"]),
             )
             manifest = RunManifest(session_id, BankedRecordStore(store, session_id),
-                                   incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
+                                   incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()), level={"session": level.session()})
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
                 setup_reference=_wired_setup_reference,
@@ -1046,7 +1036,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, default="")
-    parser.add_argument("--volume-db", type=float, help="temporary Main and bass reference level; defaults to the saved measurement level")
+    parser.add_argument("--volume-db", type=float, help="temporary gain at or below the saved session gain and driver cap")
     parser.add_argument("--graph-scope", choices=[scope for scope in GRAPH_SCOPES if scope != "candidate_branches"], default=GRAPH_SCOPE_DRIVERS)
     parser.add_argument(
         # ``append`` rather than a plain value so a SECOND one is visible here

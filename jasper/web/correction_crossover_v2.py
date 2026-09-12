@@ -3384,7 +3384,6 @@ def prepare_v2_session(
             raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
         request = report.plan
         assert request.level.resolved is not None
-        context = dataclasses.replace(context, session_volume_db=request.level.resolved.reference_volume_db)
         captures = prepare_plan_captures(request, candidate_scopes=report.candidate_scopes)
         try:
             protection_sections = confirmed_protection_sections(
@@ -3396,6 +3395,13 @@ def prepare_v2_session(
             ) from exc
 
     wired_device = _resolve_prepare_wired_mic() if verify_only else None
+    if verify_only:
+        session_plan = AngleCaptureRequest(stops=(AngleStop(0, REGIME_SUMMED),))
+        report = preflight.preflight(session_plan, preflight_live.read_preflight_facts(
+            session_plan, context=context, device=wired_device))
+        if report.blocking:
+            issue = next(issue for issue in report.issues if issue.blocking)
+            raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
     plan_shape = _hand_released_plan_shape(plan_shape)
     engine_measure_specs: dict[int, Any] = {}
     engine_level_trims: dict[str, float] = {}
@@ -3488,7 +3494,7 @@ def prepare_v2_session(
             )
         assert spec is not None
         ceiling_s = wall_clock_ceiling_s(spec.capture_plan.capture_target * (
-            1 if verify_only else max(1, len(request.operating_levels_db))))
+            1 if verify_only else max(1, len(request.level_offsets_db))))
         rc = _mint_wired_session(device, spec)
         if not verify_only:
             rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
@@ -3623,7 +3629,7 @@ def prepare_v2_session(
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
         if verify_only:
-            run_request = AngleCaptureRequest(operating_levels_db=(context.session_volume_db,), stops=tuple(
+            run_request = AngleCaptureRequest(level=report.plan.level, stops=tuple(
                 AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
                           elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
                 for entry in spec.capture_plan.entries

@@ -712,10 +712,12 @@ async def _run(args: argparse.Namespace) -> int:
     # first. `WiredMicMissing` is a `WiredCaptureError`, which `main` renders.
     mic = require_wired_mic()
     from jasper.active_speaker.angle_capture import LateralWalkRefused  # lazy: measurement stack
-    from jasper.cli.measurement_watch import measurement_spl_watch  # lazy: measurement stack
+    from jasper.active_speaker.plan_run import spl_watch  # lazy: measurement stack
+    from jasper.audio_measurement.household_mic import resolved_household_sensitivity  # lazy: measurement stack
 
     try:
-        monitor, _ = measurement_spl_watch(None, topology=context.topology, preset=context.preset, device=mic)
+        monitor, _ = spl_watch(topology=context.topology, preset=context.preset, device=mic,
+                               sensitivity=resolved_household_sensitivity(mic))
     except LateralWalkRefused as exc:
         raise NullDoorRefused(exc.reason, exc.detail) from exc
 

@@ -32,12 +32,41 @@ if TYPE_CHECKING:
     from jasper.audio_measurement.program import ExcitationProgram
 
 # Clip retries lower stimulus gain, never the admitted hardware ceiling.
+SAME_POSE_DRIFT_DB = 2.0
+ACROSS_POSE_DRIFT_DB = 6.0
 CLIP_RETRY_BACKOFF_DB = 3.0
 # dB, recorder transfer stability; see ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 
+def level_drift_verdict(
+    *, max_window_db_spl: float | None, level_reference_db_spl: float | None, same_pose: bool,
+) -> TakeVerdict:
+    delta = (max_window_db_spl - level_reference_db_spl
+             if max_window_db_spl is not None and level_reference_db_spl is not None else None)
+    drifted = delta is not None and abs(delta) > (SAME_POSE_DRIFT_DB if same_pose else ACROSS_POSE_DRIFT_DB)
+    return TakeVerdict(not drifted, fault=reasons.REASON_LEVEL_DRIFT_AT_SESSION_GAIN if drifted else None,
+                       next="retake_same" if drifted else "accept", charge="none",
+                       evidence={key: value for key, value in
+                                 (("max_window_db_spl", max_window_db_spl), ("level_delta_db", delta))
+                                 if value is not None})
+
+
 def assess(
+    analysis: ProgramAnalysis, *, level_verdict: TakeVerdict | None = None,
+    prior_verdict: TakeVerdict | None = None, **kwargs: Any,
+) -> TakeVerdict:
+    verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
+    if level_verdict is None:
+        return verdict
+    verdict = replace(verdict, evidence={**verdict.evidence, **level_verdict.evidence})
+    if verdict.ok and verdict.next == "accept" and not level_verdict.ok:
+        return replace(verdict, ok=False, fault=level_verdict.fault, next=level_verdict.next,
+                       charge=level_verdict.charge, capabilities={key: False for key in verdict.capabilities})
+    return verdict
+
+
+def _assess_recording(
     analysis: ProgramAnalysis, *, phase: str,
     priors: MeasurementPriors | None = None,
     program: ExcitationProgram | None = None,
@@ -46,7 +75,6 @@ def assess(
     pilot_transfer_prior: Mapping[str, float] | None = None,
     measure_gate_window_ms: float | None = None,
 ) -> TakeVerdict:
-    """Assess one recording without a session, player or mutable retry state."""
     if phase not in {"check", "measure", "verify"}:
         raise ValueError(f"unsupported assessment phase: {phase}")
     priors = priors or MeasurementPriors()

@@ -11,6 +11,7 @@ from jasper.active_speaker.candidate_bank import find_banked_candidate, Candidat
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.capture_dispatch import level_drift_verdict
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.active_speaker.run_manifest import RunManifest
@@ -46,7 +47,8 @@ async def bank_trial_async(candidate, profile, topology, *, record_fields=None, 
         manifest.begin({**stop, "index": index}, attempt=1, pose_index=index)
         take = {**record, **values, "take_id": f"trial_{index:02}"}
         record_id = await store.bank(take)
-        await manifest.append(take, record_id, TakeVerdict(True), complete=True, started_s=0., ended_s=1.)
+        await manifest.append(take, record_id, TakeVerdict(True), complete=True, started_s=0., ended_s=1.,
+                              level_observation=level_drift_verdict(**manifest.level_observation(take)).evidence)
     manifest.finalized = True
     await manifest.persist()
     return bundle, manifest

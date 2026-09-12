@@ -25,7 +25,7 @@ from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
     BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED,
-    WALK_CEILING_ABOVE_STOP, WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
+    WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
@@ -35,7 +35,7 @@ from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
 )
-from .crossover_v2.capture_dispatch import assess
+from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
@@ -51,8 +51,11 @@ from .restore_wait import resilient_restore
 from .measurement_programs import POSE_KIND_BEARING
 from .run_manifest import RunManifest
 
+from jasper.audio_measurement.calibration import resolve_mic_sensitivity
+from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from .seat_level_reference import AnchorFacts, LevelUnresolved, ResolvedLevel, load_seat_level_reference, resolve_anchor_level
+
 logger = logging.getLogger(__name__)
-SPL_MONITOR_UNAVAILABLE = "unavailable_no_calibration"
 _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
 Analyze = Callable[[Mapping[str, Any], str], ProgramAnalysis]
 
@@ -66,67 +69,48 @@ class RunSignals:
     stop: Event = field(default_factory=Event)
 
 
-def take_spl_ceiling(
-    stated_db_spl: float | None, *, commissioning_stop_db_spl: float,
-) -> float:
-    """The ceiling a run's monitor watches, in dB SPL at the microphone.
-
-    A run that states none plays under the box's own commissioning stop, which
-    is where the bound belongs: an operator asking for no ceiling is not asking
-    to be unbounded. A run stating one ABOVE the stop is refused rather than
-    silently clamped -- the number was typed, and clamping it would let an
-    operator believe a louder measurement had been allowed.
-    """
-    stop = float(commissioning_stop_db_spl)
-    if stated_db_spl is None:
-        return stop
-    stated = float(stated_db_spl)
-    if stated > stop:
-        raise LateralWalkRefused(
-            WALK_CEILING_ABOVE_STOP,
-            f"the run states an SPL ceiling of {stated:g} dB SPL, above this "
-            f"box's commissioning stop of {stop:g} dB SPL",
-        )
-    return stated
-
-
-def spl_monitor_note(ceiling_db_spl: float | None) -> str:
-    """One run's SPL disclosure: the ceiling a monitor watched, or why none did."""
-    if ceiling_db_spl is None:
-        return SPL_MONITOR_UNAVAILABLE
+def spl_monitor_note(ceiling_db_spl: float) -> str:
+    """The commissioning stop watched for the run."""
     return f"ceiling_{float(ceiling_db_spl):g}_db_spl"
 
 
 def spl_watch(
-    stated_db_spl: float | None,
     *,
     topology: Any,
     preset: Any,
     sensitivity: Any | None,
     device: Any,
     resolved_ceiling_db_spl: float | None = None,
-) -> tuple[WiredSplMonitor | None, str]:
-    """Build the monitor from a preflight bound, or resolve it for a local caller.
-
-    Without calibration, an unstated ceiling is disclosed as unmonitored;
-    a stated ceiling must be enforceable. Preflight callers carry their proof.
-    """
+) -> tuple[WiredSplMonitor, str]:
+    """Require a calibrated watch at the commissioning stop."""
     ceiling = resolved_ceiling_db_spl
     if ceiling is None:
         try:
             stop = commissioning_spl_ceiling_db(topology, preset=preset)
         except ValueError as exc:
             raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
-        ceiling = take_spl_ceiling(stated_db_spl, commissioning_stop_db_spl=stop)
+        ceiling = stop
     if sensitivity is None:
-        if stated_db_spl is None:
-            return None, SPL_MONITOR_UNAVAILABLE
         raise LateralWalkRefused(
             WALK_SPL_CALIBRATION_REQUIRED,
             "an SPL ceiling requires a resolvable microphone sensitivity",
         )
     channel = int(SUPPORTED_MODELS[device.model_key].get("capture_channel", 0))
     return WiredSplMonitor(sensitivity, ceiling, channel), spl_monitor_note(ceiling)
+
+
+def measurement_spl_watch(
+    *, topology: Any, preset: Any, device: Any,
+    mic_serial: str | None = None,
+) -> tuple[WiredSplMonitor, str, ResolvedLevel]:
+    sensitivity = (resolve_mic_sensitivity(mic_serial=mic_serial) if mic_serial
+                   else resolved_household_sensitivity(device))
+    monitor, note = spl_watch(topology=topology, preset=preset, sensitivity=sensitivity, device=device)
+    try:
+        level = resolve_anchor_level(facts=AnchorFacts(load_seat_level_reference() or {}, sensitivity))
+    except LevelUnresolved as exc:
+        raise LateralWalkRefused(exc.reason, exc.detail) from exc
+    return monitor, note, level
 
 
 def request_fingerprint(request: AngleCaptureRequest) -> str:
@@ -206,6 +190,7 @@ class LevelWindows:
     sensitivity: Any
     device: Any
     ceiling_db_spl: float | None
+    gain_db: float | None = None
     current: TuningSession | None = None
     last_window: OpenMeasurementDoor | None = None
 
@@ -235,7 +220,7 @@ async def run_plan(
     windows: LevelWindows | None = None,
     analyze: Analyze, gate: PositionGate | None = None,
     candidate_scopes: Mapping[str, str], aborts: Mapping[type[BaseException], str],
-    signals: RunSignals | None = None, spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
+    signals: RunSignals | None = None, spl_monitor: str = "",
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
     captures: Sequence[PlanCapture] | None = None,
@@ -251,9 +236,9 @@ async def run_plan(
     manifest.baseline_graph = request.baseline_graph_scope
     manifest.asked = {
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
-        "candidates": list(request.candidates or ("base",)), "ceiling": request.spl_ceiling_db_spl,
+        "candidates": list(request.candidates or ("base",)),
         "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
-        "retries_per_pose": request.retries_per_pose, "operating_levels_db": list(request.operating_levels_db),
+        "retries_per_pose": request.retries_per_pose, "level_offsets_db": list(request.level_offsets_db),
     }
     manifest.planned = [{"index": index * request.repeats + repeat, "repeat": repeat,
                          "pose": _pose(stop), "candidate_id": stop.candidate_id}
@@ -294,7 +279,12 @@ async def run_plan(
     else:
         stops = [resolved[offset // request.repeats] for offset in range(len(specs))]
         places = [request.stops[offset // request.repeats].place for offset in range(len(specs))]
-    levels = request.operating_levels_db or ((session.measurement_level_db,) if session else ())
+    anchor = request.level.resolved
+    if anchor is not None:
+        manifest.level = {"session": anchor.session()}
+    gain = (windows.gain_db if windows is not None and windows.gain_db is not None else
+            anchor.reference_volume_db if anchor is not None else session.measurement_level_db if session else None)
+    levels = tuple(gain + offset for offset in request.level_offsets_db) if gain is not None else ()
     if not levels or (windows is None and (session is None or levels != (session.measurement_level_db,))):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a session factory for its level windows")
     expanded = []
@@ -305,7 +295,8 @@ async def run_plan(
             for offset, spec in rows:
                 stop = {**manifest.planned[offset], "index": len(planned) + 1,
                         "capture_index": manifest.planned[offset]["index"],
-                        "level_window_db": level, "level_window_index": level_index}
+                        "level_window_db": level, "offset_db": request.level_offsets_db[level_index],
+                        "level_window_index": level_index}
                 planned.append(stop)
                 if spec is not None:
                     expanded.append((spec, stop, pose_index, level, stops[offset]))
@@ -320,7 +311,7 @@ async def run_plan(
                                     "title": resolved_stop.prompt.headline, "body": resolved_stop.prompt.detail,
                                     **position_screen_keys(resolved_stop.prompt), **screens.get(index + 1, {})})
             work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry, level))
-    return await _run(work, session=session, windows=windows, stated_ceiling=request.spl_ceiling_db_spl,
+    return await _run(work, session=session, windows=windows,
                       manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
                       clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
@@ -329,7 +320,7 @@ async def run_plan(
 async def run_specs(
     specs: Sequence[MeasureSpec], *, session: TuningSession, manifest: RunManifest,
     analyze: Analyze, aborts: Mapping[type[BaseException], str],
-    signals: RunSignals | None = None, spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
+    signals: RunSignals | None = None, spl_monitor: str = "",
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
 ) -> RunManifest:
@@ -339,7 +330,7 @@ async def run_specs(
                                 elevation_deg=specs[0].vertical_deg, distance_m=None,
                                 place=None, seat_offset_m=None))
     manifest.asked = {"poses": [pose], "candidates": [s.candidate_id or "base" for s in specs],
-                      "ceiling": specs[0].spl_ceiling_db_spl, "mover": "fixed",
+                      "mover": "fixed",
                       "level": {"reference_volume_db": session.measurement_level_db}, "repeats": 1}
     manifest.planned = [{"index": i, "repeat": 1, "pose": pose, "candidate_id": spec.candidate_id}
                         for i, spec in enumerate(specs, 1)]
@@ -372,7 +363,7 @@ async def _grant(gate: PositionGate | None, index: int, attempt: int, entry: Any
 
 async def _run(
     work: Sequence[_Work], *, session: TuningSession | None, manifest: RunManifest, analyze: Analyze,
-    windows: LevelWindows | None = None, stated_ceiling: float | None = None,
+    windows: LevelWindows | None = None,
     gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
     retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
@@ -386,6 +377,14 @@ async def _run(
 
     def attempt_records() -> list[tuple[Mapping[str, Any], str]]:
         return manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]
+
+    level_observations: dict[str, TakeVerdict] = {}
+
+    def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
+        take_id = str(record["take_id"])
+        if take_id not in level_observations:
+            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
+        return level_observations[take_id]
 
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
@@ -444,7 +443,7 @@ async def _run(
             spec = playing[offset]
             attempt = attempts[offset] + 1
             progress = {"pose": item.pose_index + 1, "poses": len(ledgers),
-                        "config": item.config, "configs": item.size, "attempt": attempt,
+                        "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
                         "budget": ledger.to_payload()}
             entry = item.entry
@@ -466,7 +465,7 @@ async def _run(
                 if windows is not None and active_window is None:
                     assert hold is not None and item.level_db is not None
                     monitor, manifest.spl_monitor = spl_watch(
-                        stated_ceiling, topology=windows.topology, preset=windows.preset,
+                        topology=windows.topology, preset=windows.preset,
                         sensitivity=windows.sensitivity, device=windows.device,
                         resolved_ceiling_db_spl=windows.ceiling_db_spl,
                     )
@@ -489,12 +488,13 @@ async def _run(
                 verdict = None
                 records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
+                    level_verdict = observe_level(record)
                     if record_id:
                         try:
                             analysis = await asyncio.to_thread(analyze, record, record_id)
                             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
-                            assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
-                                              program=program, gain_ceiling_db=gain_ceiling_db)
+                            assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
+                                              program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict)
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
@@ -512,7 +512,8 @@ async def _run(
                                            next="stop" if assessed.next == "accept" else assessed.next,
                                            evidence={**assessed.evidence, "incident": incident})
                     await manifest.append(record, record_id, assessed, complete=outcome.complete,
-                                          started_s=take_started - started, ended_s=clock() - started, ordinal=ordinal)
+                                          started_s=take_started - started, ended_s=clock() - started,
+                                          level_observation=level_verdict.evidence, ordinal=ordinal)
                     if verdict is None or (verdict.next != "stop" and assessed.next != "accept"):
                         verdict = assessed
                 assert verdict is not None
@@ -553,7 +554,7 @@ async def _run(
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
                                           started_s=(take_started if take_started is not None else ended) - started,
-                                          ended_s=ended - started)
+                                          ended_s=ended - started, level_observation=observe_level(record).evidence)
                 break
             finally:
                 if take_started is not None:
@@ -587,7 +588,7 @@ async def _run(
             if gate:
                 gate.abandon_hold()
                 gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,
-                              "takes": manifest.takes_measured, "not_measured": manifest.takes_skipped,
+                              "level": manifest.level, "takes": manifest.takes_measured, "not_measured": manifest.takes_skipped,
                               "fault": manifest.reason or (verdict.fault if verdict else None),
                               "next_action": "accept" if manifest.status == "complete" else "stop"})
             log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,

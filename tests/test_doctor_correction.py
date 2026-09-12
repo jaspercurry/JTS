@@ -834,11 +834,9 @@ def _bank(path, **overrides):
     return write_seat_level_reference(**payload)
 
 
-def test_seat_level_reference_absent_is_ok_not_a_warning(tmp_path):
-    # A box that never ran the leveling step is healthy: the session falls back
-    # to the codified reference and measures exactly as it always did.
+def test_seat_level_reference_absent_requires_leveling(tmp_path):
     result = correction._classify_seat_level_reference(tmp_path / "absent.json")
-    assert result.status == "ok"
+    assert result.status == "warn"
     assert result.reason == correction.REASON_SEAT_LEVEL_NOT_MEASURED
 
 
@@ -873,7 +871,7 @@ def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_
     path = tmp_path / "ref.json"
     _bank(path)
     raw = json.loads(path.read_text())
-    raw["updated_at"] = "not-a-date"
+    raw["leveled_at"] = "not-a-date"
     path.write_text(json.dumps(raw))
     result = correction._classify_seat_level_reference(path)
     assert result.status == "ok"

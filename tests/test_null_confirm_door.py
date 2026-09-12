@@ -20,6 +20,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.usefixtures("banked_session_level")
 from tests.test_active_speaker_measurement_door import box as box
 
 from jasper.active_speaker.program_admission import (
@@ -732,8 +734,8 @@ def test_a_missing_microphone_exits_as_json_not_a_traceback(tmp_path, monkeypatc
     JSON; this matches it.
     """
     from jasper.audio_measurement.calibration import MicSensitivity
-    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity",
-                        lambda _: MicSensitivity(-12, 18, "1234"))
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
+                        lambda _: MicSensitivity(-12, 18, "different-mic"))
     monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
@@ -788,8 +790,8 @@ def _hardware_free_walk(
     door is the caller's, because how it ends is what each test is about.
     """
     from jasper.audio_measurement.calibration import MicSensitivity
-    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity",
-                        lambda _: MicSensitivity(-12, 18, "1234"))
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
+                        lambda _: MicSensitivity(-12, 18, "different-mic"))
     monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)

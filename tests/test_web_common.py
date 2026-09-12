@@ -947,7 +947,7 @@ def test_close_awaitable_releases_an_unsubmitted_coroutine():
     assert closed == [True]
 
 
-@pytest.mark.parametrize("code", [None, "unknown_refusal", "walk_ceiling_above_stop"])
+@pytest.mark.parametrize("code", [None, "unknown_refusal", "seat_anchor_unusable"])
 @pytest.mark.parametrize("explicit", [False, True])
 def test_refusal_envelope_preserves_codes_and_classifies_at_most_once(code, explicit, monkeypatch):
     from jasper.web import correction_crossover_v2 as host
@@ -970,7 +970,7 @@ def test_refusal_envelope_preserves_codes_and_classifies_at_most_once(code, expl
     assert body["code"] == code
     assert set(body) == {"ok", "code", "next_action", "error"}
     assert isinstance(body["error"], str)
-    if code == "walk_ceiling_above_stop":
-        assert body["next_action"]["id"] == "lower_walk_ceiling"
+    if code == "seat_anchor_unusable":
+        assert body["next_action"]["id"] == "measure_seat_level"
     else:
         assert body["next_action"] is None

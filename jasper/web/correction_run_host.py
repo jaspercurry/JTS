@@ -15,7 +15,7 @@ from jasper.audio_measurement.household_mic import resolved_household_sensitivit
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
-from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
+from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict, PhaseVerdict
 from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
@@ -25,7 +25,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     answers: dict[str, Any] = {}
     index = attempt = 0
     phase = ""
-    verdict: Any = None
+    answer: Any = None
 
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         answers[record["take_id"]] = capture
@@ -37,7 +37,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     records.enrich, records.after_bank = enrich, after_bank
 
     def analyze(record: Any, record_id: str) -> Any:
-        nonlocal index, attempt, phase, verdict
+        nonlocal index, attempt, phase, answer
         answer = answers.pop(record_id)
         index, attempt = record.get("capture_index", record["index"]), record["attempt"]
         phase = conductor._phase_of_index(index)
@@ -48,31 +48,33 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             ExcitationProgram.from_dict(record["program"]), answer, priors,
             conductor._capture_geometry(phase, index), phase=phase,
         )
-        # Legacy grading crosses the loop bridge, so it must stay in the analyzer's worker.
-        verdict = None
-        if phase == PHASE_CHECK:
-            verdict = conductor._check_verdict(analysis)
-        elif verify_only:
-            verdict = (conductor._consume_verify(index, attempt, analysis, answer, phase=phase)
-                       if phase == PHASE_VERIFY else
-                       conductor._consume_cloud_position(PHASE_CLOUD_VERIFY, index, attempt, analysis, answer))
         calibration = evidence.get("calibration", {}).get(phase, {})
         manifest.calibration = {"id": calibration.get("calibration_id"),
                                 "curve_fingerprint": calibration.get("curve_fingerprint")}
         return analysis
 
     def assessor(analysis: Any, **kwargs: Any) -> TakeVerdict:
-        if verdict is None:
-            assessed = assess(analysis, **kwargs)
-            if phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
-                conductor._rearm_measure_after_transient(assessed)
-            return assessed
-        if verdict.accepted:
-            conductor._note_accepted(phase, index)
-        return TakeVerdict(verdict.accepted, fault=verdict.code, evidence=verdict.evidence,
+        # Legacy grading crosses the loop bridge; the executor runs this in its worker.
+        level_verdict = kwargs.get("level_verdict")
+        verdict = None
+        if level_verdict is not None and not level_verdict.ok:
+            verdict = PhaseVerdict.from_take(level_verdict)
+        elif phase == PHASE_CHECK:
+            verdict = conductor._check_verdict(analysis)
+        elif verify_only:
+            verdict = (conductor._consume_verify(index, attempt, analysis, answer, phase=phase)
+                       if phase == PHASE_VERIFY else
+                       conductor._consume_cloud_position(PHASE_CLOUD_VERIFY, index, attempt, analysis, answer))
+        prior = None if verdict is None else TakeVerdict(verdict.accepted, fault=verdict.code, evidence=verdict.evidence,
                            capabilities=verdict.capabilities, next=verdict.next or (
                                "accept" if verdict.accepted else "fix_and_retake"),
                            next_gain_db=verdict.next_gain_db, charge=verdict.charge)
+        assessed = assess(analysis, prior_verdict=prior, **kwargs)
+        if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
+            conductor._rearm_measure_after_transient(assessed)
+        elif verdict is not None and assessed.ok:
+            conductor._note_accepted(phase, index)
+        return assessed
 
     return analyze, assessor
 
@@ -131,5 +133,5 @@ def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: 
     return LevelWindows(
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
                        action="measuring", plan=host.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
-        build, context.topology, context.preset, resolved_household_sensitivity(device), device, ceiling_db_spl,
+        build, context.topology, context.preset, resolved_household_sensitivity(device), device, ceiling_db_spl, gain_db=context.session_volume_db,
     ), analyze, assessor

@@ -33,6 +33,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("banked_session_level")
+
 from jasper.active_speaker import commission_wiring, design_draft
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import driver_safety as driver_safety_mod

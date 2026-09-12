@@ -41,12 +41,8 @@ per-step lease does not:
   A per-step lease never needed this because it re-set the volume every step.
   The re-proof stays as the tripwire that would catch the next such writer.
 
-The fixed measurement volume is not hard-coded: :func:`session_measurement_volume_db`
-DERIVES it as ``min`` of two halves — a REFERENCE level (measured by the
-seat-SPL leveling step when a box has run it, else the codified default) and the
-active drivers' excitation CEILING — and the SAME value feeds both the program
-composer's downstream gain and program admission — one definition path (SSOT),
-so caps are enforced regardless of its value.
+The session gain is banked by jasper-seat-level and bounded by the loudest
+active driver's cap. Composition and admission consume that same fader.
 """
 
 from __future__ import annotations
@@ -67,7 +63,7 @@ from jasper.log_event import log_event
 
 from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
-from .seat_level_reference import seat_level_reference_volume_db
+from .seat_level_reference import ANCHOR_UNUSABLE, LevelUnresolved, seat_level_reference_volume_db
 from .volume_latch import (
     EMERGENCY_MEASUREMENT_VOLUME_DB,
     GetMainVolumeDb,
@@ -93,14 +89,6 @@ DEFAULT_WALL_CLOCK_CEILING_S = 1800.0
 # widen the walked-away window; nothing may remove the bound. One hour is the
 # outer edge of a plausible guided measurement.
 MAX_WALL_CLOCK_CEILING_S = 3600.0
-
-# The codified measurement reference level: the fixed session volume when no
-# driver cap binds below it AND no measured reference has been banked. -20 dB
-# gives the least-sensitive driver a usable acoustic measurement level while
-# leaving 20 dB of digital+DSP margin under the 0 dB ceiling. A design input,
-# not a hardware-measured one, which is why a box that has run the seat-SPL
-# leveling step replaces it with that step's measured volume.
-MEASUREMENT_REFERENCE_VOLUME_DB = -20.0
 
 _DEFAULT_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_crossover_session_volume.json"
@@ -158,13 +146,11 @@ class RestoreOutcome(str, Enum):
 def measurement_reference_volume_db(
     *, reference_state_path: str | Path | None = None
 ) -> float:
-    """The reference half of the session volume: measured if banked, else -20.
-
-    Absent, unreadable, or implausible state resolves to
-    :data:`MEASUREMENT_REFERENCE_VOLUME_DB`.
-    """
+    """The session's banked gain, never an estimated listening level."""
     measured = seat_level_reference_volume_db(state_path=reference_state_path)
-    return MEASUREMENT_REFERENCE_VOLUME_DB if measured is None else measured
+    if measured is None:
+        raise LevelUnresolved(ANCHOR_UNUSABLE, "Run jasper-seat-level with the current microphone, then measure")
+    return measured
 
 
 def _driver_caps_dbfs(
