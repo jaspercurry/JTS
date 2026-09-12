@@ -356,20 +356,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
             handler._send_json(refusal_envelope(e), status=500)
         return
 
-    if path == "/crossover/v2/decline":
-        try:
-            payload, status = correction_handlers._handle_crossover_v2_decline(handler)
-            handler._send_json(payload, status=int(status))
-        except ValueError as e:
-            handler._send_json(
-                refusal_envelope(e),
-                status=HTTPStatus.BAD_REQUEST,
-            )
-        except (OSError, RuntimeError, TypeError) as e:
-            logger.exception("%s failed", path)
-            handler._send_json(refusal_envelope(e), status=500)
-        return
-
     try:
         if path == "/crossover/recover-volume":
             # The v2 session plan is the only source of an unresolved (or
@@ -630,8 +616,6 @@ _POST_ROUTES = {
     # single-valued and every measure session overwrites it; this is the lookup
     # it never had.
     "/crossover/v2/republish": _dispatch_crossover,
-    # The review screen's "Keep current sound", which #2641 found inert.
-    "/crossover/v2/decline": _dispatch_crossover,
     # A GATED session's position release — the report that the microphone has
     # reached the angle the envelope named, from an EXTERNAL driver on the
     # remote tier or from the person holding the tape on a hand-walked wired

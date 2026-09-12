@@ -14,8 +14,6 @@ const els = {
   startOver: document.getElementById('crossover-start-over'),
   steps: document.getElementById('crossover-steps'),
   nudges: document.getElementById('crossover-nudges'),
-  review: document.getElementById('crossover-review'),
-  reviewBody: document.getElementById('crossover-review-body'),
   cloud: document.getElementById('crossover-cloud'),
   cloudEyebrow: document.getElementById('crossover-cloud-eyebrow'),
   cloudTitle: document.getElementById('crossover-cloud-title'),
@@ -135,29 +133,13 @@ function renderApplied(applied) {
   els.applied.className = isApplied ? 'badge badge--ok' : 'badge badge--idle';
 }
 
-function renderNudges(nudges, expertDetails, findings) {
+function renderNudges(nudges, expertDetails) {
   const rows = (Array.isArray(nudges) ? nudges : []).map((nudge) =>
     el('p', {
       class: `wizard-nudge ${nudge.severity === 'warn' ? 'warn' : 'info'}`,
       text: nudge.text || '',
     }),
   );
-  // What the measurement LEARNED about this speaker
-  // (crossover_envelope_v2._finding_notes — WO-1's read half). Quiet `info`
-  // register, one line each, because a finding is something to know rather
-  // than a problem to solve — the same styling the aged-resume history note
-  // uses. Below the nudges (which are about THIS screen's state) and above
-  // the expert numbers (which are folded away). The server composes the
-  // sentence, dates it when it is not today's, and sends nothing at all when
-  // nothing was banked, so there is no empty-state to render here.
-  (Array.isArray(findings) ? findings : []).forEach((finding) => {
-    const text = finding && finding.text ? String(finding.text) : '';
-    if (text) rows.push(el('p', {class: 'wizard-nudge info', text}));
-  });
-  // Optional collapsed expert numbers (the verify_fail screen's tracking
-  // evidence — crossover_envelope_v2._verify_expert_details, #1605). Reuses the
-  // same <details> disclosure style as the candidate provenance so the primary
-  // copy stays short with the numbers folded away.
   const details = Array.isArray(expertDetails) ? expertDetails : [];
   if (details.length) {
     rows.push(el('details', {class: 'candidate-provenance'}, [
@@ -168,424 +150,13 @@ function renderNudges(nudges, expertDetails, findings) {
   els.nudges.replaceChildren(...rows);
 }
 
-// Gauge fix (2026-07-24): plain-language text for
-// crossover_envelope_v2._candidate_review_payload's "linearization_outcome"
-// enum (the values LinearizationState.outcome can hold). Mirrors the existing
-// polarity enum-to-text mapping just above in this file; an
-// unrecognized/empty value renders nothing (e.g. "" means linearization was
-// never evaluated this attempt) — which is why a new Python outcome has to be
-// added here too, or the round goes quiet on this screen.
-const LINEARIZATION_OUTCOME_TEXT = {
-  fitted: 'driver linearization: fitted',
-  fitted_single_branch:
-    'driver linearization: fitted (one full-range branch, no inter-driver trim)',
-  trim_rejected:
-    'driver linearization: filters fitted, re-solved trim rejected (used the measured trim)',
-  ineligible_mic_tier: 'driver linearization: skipped — needs a reference-tier mic',
-  ineligible_repeats: 'driver linearization: skipped — not enough repeat measurements',
-  fit_failed: 'driver linearization: skipped — fit engine error',
-};
-
-// The one octave-band reason code this module reads (#2638): the fit engine's
-// verdict that an octave sits outside the driver's own radiating band, where
-// the per-octave residual is the crossover's rolloff rather than anything the
-// driver did. The vocabulary is Python's
-// (jasper.active_speaker.linearization_envelope.ReasonCode.OUT_OF_BAND); a
-// browser module cannot import it, so this literal is a second copy — and
-// tests/test_crossover_envelope_v2.py compares the two, exactly as it already
-// does for the declared-polarity objective list. Renderer use is at the
-// octave rows in renderCandidateReview().
-const OCTAVE_REASON_OUT_OF_BAND = 'envelope_out_of_band';
-
-// Audit item 4i: the second reason code this module reads, and the same
-// second-copy-pinned-by-test contract as the one above
-// (jasper.active_speaker.linearization_envelope.ReasonCode.LIMITED_BY_CLASS_PRIOR).
-// An undeclared driver_class resolves to the "unknown" class prior — the most
-// conservative row in _CLASS_PRIOR_FULL_TO_HZ — and banked this code with no
-// household surface ever naming the /sound/speaker/ field that lifts it. Gated
-// on driver_class === 'unknown' at the render site below, never on the reason
-// code alone: the same code fires for an ALREADY-declared class's own real
-// prior, where redeclaring it is not an action the household has left to take.
-const OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR = 'envelope_limited_by_class_prior';
-
-// The remedy pointer for an undeclared-class-prior band — the established
-// remedy/next-action shape ({id, label, href}) refusal_copy.py's safety-limits
-// deep-link rows use (REASON_PROGRAM_PROFILE_MISSING /
-// _NOT_CONFIRMED), not a new one. No fragment: unlike
-// "#confirm-safety-limits", /sound/speaker/ renders no anchor for driver_class,
-// so a deep link would land on nothing — the bare page, which opens on its
-// own first unfinished step, IS the action, the same "no fragment" contract
-// REASON_PROGRAM_PROFILE_MISSING uses for the identical reason. The
-// Technical details paragraph is plain text with no links today, so only
-// `href` reaches the screen below — `id`/`label` are kept anyway because the
-// task is to MIRROR the shape, not a subset of it.
-const CLASS_PRIOR_REMEDY = {
-  id: 'declare_driver_class',
-  label: "Declare this driver's technology class",
-  href: '/sound/speaker/',
-};
-
-// #2051: the third reason code this module reads, same second-copy-pinned-
-// by-test contract as the two above
-// (jasper.active_speaker.linearization_envelope.ReasonCode.LIMITED_BY_MIC_TIER).
-// mic_trust_limit() tapers the correction envelope to zero above the
-// declared mic tier's trusted range by design -- O9's "free half": those top
-// octaves are deliberately left uncorrected, not a deficit, and until now no
-// surface said so. One sentence per row, not per-band, same shape as the
-// class-prior sentence below.
-const OCTAVE_REASON_LIMITED_BY_MIC_TIER = 'envelope_limited_by_mic_tier';
-
-// The measured-crossover candidate the household reviews before applying
-// (crossover_envelope_v2._candidate_review_payload — trims / delay / polarity,
-// derived from the conductor's _candidate_summary). W6.10 blocker #2: the prior
-// renderer expected a retained_crossover_regions/drivers shape the conductor
-// never builds, so #crossover-review-body rendered empty; this consumes exactly
-// the shape the envelope now sends.
-function renderCandidateReview(review) {
-  const trims = review && Array.isArray(review.trims) ? review.trims : [];
-  const hasDelay = Boolean(review && review.delay);
-  const hasPolarity = Boolean(review && review.polarity);
-  const visible = Boolean(review && (trims.length || hasDelay || hasPolarity));
-  els.review.hidden = !visible;
-  if (!visible) {
-    els.reviewBody.replaceChildren();
-    return;
-  }
-
-  // WHERE the alignment came from, not just what it is (#2607 S3, extended to
-  // the DELAY row by #2617). The measurement can decline to decide either half:
-  // when the capture's SNR is below the law an alignment decision is held to,
-  // the flow commits the polarity the PRESET declares and a delay this capture
-  // did not supply — the one the speaker already plays, or none. The page must
-  // not call either "measured", the one word a household reads as "we checked".
-  //
-  // A SET, not one string: that refusal has four commitments, differing in the
-  // DELAY they commit and agreeing exactly here. The fourth (#2662) commits an
-  // explicit bench PRESCRIPTION, which the refusal does not touch because it
-  // never came from this capture — and its polarity is the declaration too,
-  // so it words the same way UNLESS that round also pinned the polarity, which
-  // the `polarityPinned` bit below takes ahead of this list. Mirrors
-  // `program_analysis.ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`; a browser module
-  // cannot import a Python constant, so `tests/test_crossover_envelope_v2.py`
-  // fails when the two lists disagree and
-  // `tests/js/crossover_polarity_provenance_test.mjs` covers every member here.
-  const declaredByDesign = [
-    'declared_committed_after_low_snr',
-    'applied_alignment_held_after_low_snr',
-    'no_delay_committed_after_unreadable_apply',
-    'explicit_prescription_held_after_low_snr',
-  ].includes(review.alignment_objective);
-
-  // The OTHER way a polarity is not a measured result: the round PINNED it.
-  // A separate bit and not a fifth member of the list above, because the
-  // objective cannot carry this — a pinned round commits the very same
-  // `explicit_prescription_committed` an unpinned prescription does — and
-  // because that list is also read for commitments whose ANCHOR is withdrawn,
-  // which a pinned round's is not. Nor can it be inferred from
-  // `polarity_agrees_with_sum === null`: a seed-committed arm reports null too,
-  // and ITS polarity is a measurement (the correlation's).
-  //
-  // Checked BEFORE `declaredByDesign` because the two overlap on exactly one
-  // arm — a pinned prescription on a capture the SNR verdict refused — and
-  // there the pin is what actually shipped, so "as designed" would name the
-  // wrong author. Python owns the bit (`CrossoverCandidate.polarity_pinned` →
-  // `analysis_json` → `_candidate_summary` → `_candidate_review_payload`);
-  // `tests/js/crossover_polarity_provenance_test.mjs` drives this renderer with
-  // a pinned payload, and `tests/test_crossover_envelope_v2.py` pins the
-  // round-trip that carries it here.
-  const polarityPinned = review.polarity_pinned === true;
-
-  // The SAME rule one level up: a crossover an operator pinned is not a corner
-  // this round measured, and no shipped path ranks one topology against
-  // another, so it must never be worded as a result. Python owns the bit
-  // (`CrossoverV2Session._topology_prescription` → `_candidate_summary` →
-  // `_candidate_review_payload`); `tests/test_crossover_envelope_v2.py` pins
-  // the round-trip that carries it here, and
-  // `tests/js/crossover_topology_provenance_test.mjs` drives this renderer
-  // with a pinned payload.
-  const crossoverPinned = review.crossover_pinned === true;
-  const crossover = review.crossover;
-  const hasCrossover = crossover && typeof crossover.fc_hz === 'number';
-
-  const rows = [];
-  if (hasCrossover) {
-    // First, because it is the topology every row below sits inside: the
-    // trims, the delay and the polarity are all decisions made AT this corner.
-    const slope = typeof crossover.slope_db_per_octave === 'number'
-      ? `, ${Number(crossover.slope_db_per_octave).toFixed(0)} dB/octave`
-      : '';
-    rows.push(el('div', {class: 'measurement-row'}, [
-      el('div', {}, [
-        el('p', {class: 'measurement-row__title', text: 'Crossover'}),
-        el('p', {
-          class: 'measurement-row__meta',
-          text: `${Number(crossover.fc_hz).toFixed(0)} Hz${slope}` +
-            (crossoverPinned ? ' (pinned for this round)' : ''),
-        }),
-      ]),
-    ]));
-  }
-  trims.forEach((trim) => {
-    // The SAME rule as the two rows above, one per driver: a level this round
-    // was told to hold is not a level it measured. Python owns the bit
-    // (`DriverPrescription.pinned_trim_db` → `_candidate_summary` →
-    // `_candidate_review_payload`);
-    // `tests/js/crossover_trim_provenance_test.mjs` drives this renderer with a
-    // pinned payload, and `tests/test_crossover_envelope_v2.py` pins the
-    // round-trip that carries it here.
-    const trimPinned = trim.pinned === true;
-    rows.push(el('div', {class: 'measurement-row'}, [
-      el('div', {}, [
-        el('p', {class: 'measurement-row__title', text: `${trim.role} level`}),
-        el('p', {
-          class: 'measurement-row__meta',
-          text: `${Number(trim.attenuation_db).toFixed(1)} dB` +
-            (trimPinned ? ' (pinned for this round)' : ''),
-        }),
-      ]),
-    ]));
-  });
-  if (hasDelay) {
-    rows.push(el('div', {class: 'measurement-row'}, [
-      el('div', {}, [
-        el('p', {class: 'measurement-row__title', text: 'Alignment delay'}),
-        el('p', {
-          class: 'measurement-row__meta',
-          text: `${Number(review.delay.delay_ms).toFixed(3)} ms on the ` +
-            `${review.delay.role}` +
-            (declaredByDesign ? ' — kept as set, not measured this time' : ''),
-        }),
-      ]),
-    ]));
-  }
-  if (hasPolarity) {
-    const polarityBase = review.polarity === 'invert' ? 'Inverted' : 'Kept as set';
-    const polarityText = polarityPinned
-      ? `${polarityBase} (pinned for this round)`
-      : declaredByDesign
-        ? 'As designed — this measurement could not check it'
-        : review.polarity === 'invert'
-          ? 'Inverted (measured)'
-          : 'Kept as set';
-    rows.push(el('div', {class: 'measurement-row'}, [
-      el('div', {}, [
-        el('p', {class: 'measurement-row__title', text: 'Polarity'}),
-        el('p', {class: 'measurement-row__meta', text: polarityText}),
-      ]),
-    ]));
-  }
-  // Alignment confidence, predicted ripple, and the candidate fingerprint are
-  // support/provenance detail, not primary copy a household member needs to
-  // judge the candidate — collapse them behind a disclosure so the
-  // plain-language rows stay first (also reused, unchanged, on the RESULT
-  // screen's own expert disclosure).
-  const details = [];
-  if (typeof review.confidence === 'number') {
-    details.push(`alignment confidence ${review.confidence.toFixed(2)}`);
-  }
-  if (typeof review.ripple_db === 'number') {
-    details.push(`predicted ripple ${review.ripple_db.toFixed(1)} dB`);
-  }
-  if (review.fingerprint) details.push(`candidate ${review.fingerprint}`);
-  // "This correction costs N dB of maximum level" (PR-L5), reaching a screen
-  // for the first time (two-stage commission D3.2). Read from the `{db, basis}`
-  // COMPOUND and nothing else: the same disclosure also exists as sibling
-  // `headroom_cost_db` + `headroom_cost_basis` scalars on
-  // /state.crossover_v2.candidate, and the never-render-bare property is a
-  // property of THIS payload, not of that one.
-  //
-  // The basis is inseparable from the number. The charge's derivation changed
-  // under #1808 and the stamp is deliberately not re-derived on load, so a
-  // candidate persisted before that amendment discloses ~22.5 dB where the
-  // same correction now costs ~5 — an order of magnitude, on the one screen
-  // whose purpose is honesty. An `unknown` basis therefore gets a sentence
-  // saying so rather than a figure presented as current.
-  //
-  // A SET, not an equality, and that is what #2758 taught: the widened
-  // evaluation grid minted `realized_peak_full_domain`, and an equality
-  // against the one older name would have told the household that every FRESH
-  // correction was "measured a way JTS no longer uses". Both realized-peak
-  // eras are a measured charge for the emitted chain and read plainly here;
-  // only the sum-of-positives era (which reaches this payload as `unknown`)
-  // gets the caveat. A NEW era must be added here deliberately — which is the
-  // point of listing them.
-  const headroom = review.headroom_cost;
-  const MEASURED_HEADROOM_BASES = ['realized_peak', 'realized_peak_full_domain'];
-  if (headroom && typeof headroom.db === 'number') {
-    details.push(
-      MEASURED_HEADROOM_BASES.includes(headroom.basis)
-        ? `costs ${headroom.db.toFixed(1)} dB of maximum volume`
-        : `costs ${headroom.db.toFixed(1)} dB of maximum volume, measured a ` +
-          'way JTS no longer uses — re-measure for a current figure',
-    );
-  }
-  // Gauge fix (2026-07-24): the linearization run/skip outcome — the
-  // failure mode this kills is linearization silently not running while
-  // every other screen looks the same.
-  const outcomeText = LINEARIZATION_OUTCOME_TEXT[review.linearization_outcome];
-  if (outcomeText) details.push(outcomeText);
-  // Gauge fix (2026-07-24): per-role top-octave residuals (achieved minus fit
-  // target, dB) — the number that says "the top octave is 9 dB down and
-  // nothing corrected it." Uncorrected regions show their natural response
-  // here, never a pass/fail.
-  //
-  // Relabelled by the flat-linearization plan's PR-5: these are per-driver
-  // FIT DIAGNOSTICS from the single design-axis capture, not the spec
-  // measurement. The spec claim on this same screen comes from the spatial
-  // cloud (the "flatness ..." expert lines, built server-side by
-  // crossover_envelope_v2._flatness_details_lines). The earlier wording
-  // "measured vs fit target" led with "measured", which reads as the
-  // measurement — the frame the two constructions must not share.
-  //
-  // #2638: an octave past the driver's own band is NOT a deficit and its
-  // number is not a performance figure. The residual runs to 20 kHz, so
-  // where the crossover target dives at 24 dB/oct against a measurement
-  // floor that stays put, the subtraction returns a large POSITIVE number —
-  // "+23.0 dB" on a healthy 2026-08-16 candidate whose largest filter gain
-  // anywhere was +2.5 dB, which read on this very line as a runaway boost.
-  // So those octaves are NAMED and not numbered: nothing is hidden, and no
-  // stopband arithmetic is presented as passband performance. The verdict is
-  // the fit engine's (server-side `reason`), never re-derived here from the
-  // frequency — this module knows one code, and Python pins that literal
-  // against the ReasonCode enum
-  // (tests/test_crossover_envelope_v2.py::
-  //  test_the_browser_and_python_agree_on_the_out_of_band_octave_code).
-  // Every other reason code describes a band the driver DOES radiate, where
-  // the number is a real residual, and renders unchanged — except
-  // LIMITED_BY_CLASS_PRIOR on an undeclared class, which gains one remedy
-  // sentence alongside its (unchanged) number; see below.
-  const octaveRows = Array.isArray(review.linearization_octaves) ?
-    review.linearization_octaves : [];
-  const octaveLabel = (band) => `${Math.round(Number(band.hz) / 1000)}k`;
-  octaveRows.forEach((row) => {
-    const bands = Array.isArray(row && row.bands) ? row.bands : [];
-    if (!bands.length) return;
-    const radiated = bands.filter(
-      (band) => band.reason !== OCTAVE_REASON_OUT_OF_BAND);
-    const outOfBand = bands.filter(
-      (band) => band.reason === OCTAVE_REASON_OUT_OF_BAND);
-    if (radiated.length) {
-      const parts = radiated.map((band) =>
-        `${octaveLabel(band)} ${Number(band.delta_db).toFixed(1)} dB`);
-      details.push(
-        `${row.role} fit residual vs target (design-axis capture, not the ` +
-        `spatial measurement): ${parts.join(', ')}`);
-    }
-    if (outOfBand.length) {
-      details.push(
-        `${row.role} ${outOfBand.map(octaveLabel).join(', ')}: outside this ` +
-        'driver’s band — not corrected');
-    }
-    // Audit item 4i: an undeclared driver_class capped correction on this
-    // row. Gated on driver_class === 'unknown', never on the reason code
-    // alone — the same code fires for an ALREADY-declared class's own real
-    // prior, where naming /sound/speaker/ again would be a false remedy. One
-    // sentence, not per-band: the row already named which octaves and their
-    // numbers above.
-    const classPriorLimited = bands.some(
-      (band) => band.reason === OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR);
-    if (classPriorLimited && row.driver_class === 'unknown') {
-      details.push(
-        `${row.role}: this driver's technology class is not declared, so ` +
-        'correction above this range is capped conservatively — declare it ' +
-        `at ${CLASS_PRIOR_REMEDY.href} for a less conservative limit`);
-    }
-    // #2051: mic-tier-limited top octaves render unchanged (a real,
-    // measured residual within the driver's own band) plus one disclosure
-    // sentence — the free half of O9 the household was never told about.
-    const micTierLimited = bands.some(
-      (band) => band.reason === OCTAVE_REASON_LIMITED_BY_MIC_TIER);
-    if (micTierLimited) {
-      details.push(
-        `${row.role}: correction above this range is left uncorrected by ` +
-        'design — your declared microphone tier is not trusted that high');
-    }
-  });
-  if (details.length) {
-    rows.push(el('details', {class: 'candidate-provenance'}, [
-      el('summary', {text: 'Technical details'}),
-      el('p', {class: 'measurement-row__meta', text: `${details.join('; ')}.`}),
-    ]));
-  }
-  els.reviewBody.replaceChildren(
-    el('div', {class: 'measurement-list'}, rows),
-  );
-}
-
-// Wraps a rendered action `control` (button/link/form) in the shared
-// `.measurement-row` title/meta shape when the action carries a
-// `description` — a one-line claim, so far only the microphone_check
-// screen's tier chooser (flow-simplification PR-U3, crossover_envelope_v2.py's
-// `_tier_choice_actions`). Every other action on every other screen (Try
-// again, Re-measure, Continue, ...) has no `description` and this
-// returns `control` untouched — no other screen's markup changes.
-//
-// S2 fix (adversarial review of PR #1780): the row's own title already
-// carries the tier's full name, so the control need not repeat it — a
-// "Quick tune" title above a "Quick tune" button read as a duplicated
-// label. Shortening the control to "Start" removes the duplication without
-// losing information (the title + one-line description say everything the
-// control's own text would have).
-//
-// The badge sits in its own `.measurement-row__head` flex row with the
-// title (gap 0.6rem), mirroring wake_setup.py's `.wake-row__head` convention
-// (deploy/assets/wake/wake.css) rather than the earlier zero-gap inline
-// child. Reuses the existing `.measurement-row`/`.measurement-row__title`/
-// `.measurement-row__meta` classes (the candidate-review rows already use
-// them) and the shared `.badge` pill (app.css) for "Recommended"; only
-// `.measurement-row__head` (crossover.css) is new, scoped to this page like
-// its other single-page visuals.
-function wrapChoice(action, control) {
-  if (!action.description) return control;
-  control.textContent = 'Start';
-  const head = el('div', {class: 'measurement-row__head'}, [
-    el('p', {class: 'measurement-row__title', text: action.label || 'Continue'}),
-    ...(action.recommended
-      ? [el('span', {class: 'badge badge--ok', text: 'Recommended'})] : []),
-  ]);
-  return el('div', {class: 'measurement-row'}, [
-    el('div', {}, [
-      head,
-      el('p', {class: 'measurement-row__meta', text: action.description}),
-    ]),
-    control,
-  ]);
-}
-
 function renderActions(primary, alternates = []) {
   els.action.replaceChildren();
   const actions = [primary, ...(Array.isArray(alternates) ? alternates : [])]
     .filter(Boolean);
-  // S1 fix (adversarial review of PR #1780): choice cards (tier-chooser
-  // actions, carrying `description`) collect separately from plain actions
-  // and render inside a dedicated `.tier-choices` grid — one column, equal
-  // width, flush-left at every breakpoint — rather than `#crossover-action`'s
-  // own `flex; justify-content: flex-end` row, which sized each card to its
-  // own content and right-aligned them, so the shorter (often the
-  // Recommended) card rendered narrower and visibly indented next to the
-  // other. Every other screen's plain actions are unaffected: with no
-  // `description` present, `choices` stays empty and this collapses to the
-  // original per-action append.
-  const choices = [];
   actions.forEach((action, index) => {
-    // Choice cards are equal-weight peers — the household picks ONE of two
-    // legitimate options, not a primary path plus a subordinate escape
-    // hatch — so both render as `btn--primary` and the Recommended badge is
-    // the ONLY visual differentiator (S1). Every other action keeps the
-    // existing first-action-is-primary convention.
-    const className = action.description
-      ? 'btn btn--primary'
-      : (index === 0 ? 'btn btn--primary' : 'btn btn--ghost');
+    const className = index === 0 ? 'btn btn--primary' : 'btn btn--ghost';
     let control;
-    // `endpoint` WINS over `href` when an action carries both (#2641). An
-    // action that can be performed is a button; `href` is then only a
-    // presentation hint naming where the household ends up, for a client that
-    // cannot POST. This branch used to test `href` FIRST, which is what made
-    // "Keep current sound" a link: the server minted a decision, the client
-    // rendered a navigation, and the click reloaded the page back onto the
-    // same decision screen forever. Reversing the order is also what makes
-    // "every minted action is machine-actionable" true for THIS driver, not
-    // only for the ones that read the envelope directly.
     if (action.href && !action.endpoint) {
       control = el('a', {
         class: className,
@@ -645,15 +216,8 @@ function renderActions(primary, alternates = []) {
         control = form;
       }
     }
-    if (action.description) {
-      choices.push(wrapChoice(action, control));
-    } else {
-      els.action.append(control);
-    }
+    els.action.append(control);
   });
-  if (choices.length) {
-    els.action.append(el('div', {class: 'tier-choices'}, choices));
-  }
 }
 
 // The prompt the walk is standing on, kept across the poll that follows a
@@ -756,10 +320,6 @@ function renderWalk(capture, {active, yielded}) {
   }
 }
 
-// `suppressConnectAffordance` keeps the capture ACTIVE (so polling continues
-// and Stop stays wired) but yields the walkthrough to the screen that owns the
-// live control — used on the review screen, where a second live prompt beside
-// the Apply button would be a misleading second primary (W6.10 blocker #2).
 function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
   const active = capture && CAPTURE_IN_FLIGHT.has(capture.status);
   const stoppable = capture && CAPTURE_STOPPABLE.has(capture.status);
@@ -797,9 +357,7 @@ function captureIsActive(capture) {
   return Boolean(capture && CAPTURE_IN_FLIGHT.has(capture.status));
 }
 
-// The last action row this function actually rendered, as a stable
-// serialization of everything the row's appearance depends on (see
-// actionRowKey below). null before the first render.
+// Keep the action row stable across polls so a tap cannot lose its target.
 let lastActionRowKey = null;
 
 // A stable, order-preserving serialization of exactly what the action-row
@@ -811,28 +369,15 @@ function actionRowKey(primary, alternates) {
   return JSON.stringify({primary: primary || null, alternates, busy});
 }
 
-// Sole authority for what the action row shows given an envelope. Every
-// call-site (render, stopCapture's finally, runAction's finally) routes
-// through this so the capture-in-flight gate can't be forgotten or duplicated
-// at one of them — the 2026-07-16 two-primary-buttons bug was exactly that:
-// runAction's finally re-rendered envelope.next_action ungated, so a second
-// primary button could appear beside the "Open phone capture" capture session.
+// One gate for every render and action completion prevents competing capture controls.
 function renderActionRow(env) {
   if (!env) return;
   const captureActive = captureIsActive(env.capture);
-  // The capture gate suppresses a next_action beside a live phone link so a
-  // second capture can't be started (the 2026-07-16 two-primary-buttons bug).
-  // The review screen's Apply is the exception: it is the PRIMARY action while
-  // the just-ended stage-1 capture is still winding down, so the envelope marks
-  // it show_during_capture and it renders through (W6.10 blocker #2).
+  // A live capture suppresses new actions unless the envelope marks them
+  // show_during_capture; the same rule applies to primary and alternate actions.
   const showPrimary = !captureActive
     || (env.next_action && env.next_action.show_during_capture);
   const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
-  // Only alternates the envelope explicitly marks show_during_capture survive
-  // the gate — e.g. the verify_fail screen's "Go back to the previous
-  // tuning" / Re-measure "get me out of this" affordances must stay visible
-  // even while a capture session is live.
-  // Every other alternate stays hidden while a capture is in flight.
   const shownAlternates = captureActive
     ? alternates.filter((action) => action && action.show_during_capture)
     : alternates;
@@ -854,11 +399,8 @@ function renderActionRow(env) {
   renderActions(primary, shownAlternates);
 }
 
-// Whether the SCREEN has minted a primary the household is meant to press
-// while the session is still in flight — the review screen's Apply, and the
-// closing screen's Save / Record-again on a wired round. One primary at a
-// time: when this is true the capture block stops advertising a connect link
-// and the walkthrough stands down, so the two never compete.
+// One primary control at a time: closing's Save/Record-again actions make the
+// capture block and walkthrough yield, so they cannot compete for the next step.
 function screenOwnsLiveControl(env) {
   return Boolean(env && env.next_action && env.next_action.show_during_capture);
 }
@@ -868,14 +410,18 @@ function render(env) {
   els.verdict.textContent = env.verdict_text || '';
   renderApplied(env.applied);
   renderSteps(env.steps);
-  renderNudges(env.nudges, env.expert_details, env.findings);
-  renderCandidateReview(env.candidate_review);
-  renderCloud(els, env);
+  renderNudges(env.nudges, env.expert_details);
+  const passive = env.screen === 'awaiting_plan' || env.screen === 'finished';
+  if (passive) {
+    renderCloud(els, {});
+  } else {
+    renderCloud(els, env);
+  }
   renderCapture(env.capture, {
     suppressConnectAffordance: screenOwnsLiveControl(env),
   });
   renderActionRow(env);
-  schedulePoll(captureIsActive(env.capture) ? POLL_MS : null);
+  schedulePoll(captureIsActive(env.capture) || passive ? POLL_MS : null);
 }
 
 async function stopCapture() {
@@ -977,32 +523,12 @@ async function runAction(action, button) {
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
-    const issues = error && error.body && Array.isArray(error.body.issues)
-      ? error.body.issues : [];
-    const candidateChanged = error && error.status === 409 && issues.some(
-      (issue) => issue && issue.code === 'baseline_candidate_fingerprint_mismatch'
-    );
-    // The refusal's own resolution control, when the server named one (a
-    // session-open pre-flight refusal — the one class of failure that can never
-    // reach the envelope's decision screen; see setStatus).
     const refusalAction = error && error.body && error.body.next_action
       ? error.body.next_action : null;
-    if (candidateChanged) {
-      setStatus('The crossover candidate changed. Refreshing the review…', 'bad');
-    } else {
-      setStatus(failureMessage, 'bad', refusalAction);
-    }
-    // A failed mutation may still have advanced durable authority: candidate
-    // apply can restore exactly or retain the graph pending finalization. Keep
-    // the failure visible, but always replace stale actions with the server's
-    // one current state.
+    setStatus(failureMessage, 'bad', refusalAction);
     try {
       await refresh();
-      if (candidateChanged) {
-        setStatus('Active speaker review refreshed. Review the current candidate.', '');
-      } else {
-        setStatus(failureMessage, 'bad', refusalAction);
-      }
+      setStatus(failureMessage, 'bad', refusalAction);
     } catch (refreshError) {
       const refreshMessage = refreshError && refreshError.message
         ? refreshError.message : String(refreshError);
