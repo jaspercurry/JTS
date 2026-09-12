@@ -14,6 +14,8 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
+from jasper.active_speaker.branch_chain import beaming_onset_hz
+from .conductor_context import _resolve_radiating_diameter_by_role
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
     resolve_driver_measurement_band_hz,
@@ -119,11 +121,13 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     delay = None
     if preset is not None:
         delay = alignment.alignment_delay_search_bounds_us(preset)
+    diameter = _resolve_radiating_diameter_by_role(draft).get("woofer")
     topology_bounds: dict[str, Any] = {
         "supported_orders": sorted(topology.SUPPORTED_LR_ORDERS),
         "fc_hz": None, "minimum_slope_db_per_octave": None,
         "fc_rejection_rule": "fc_sweep._fc_rejection",
         "beaming_is_a_refusal": False,
+        "beaming_ceiling_hz": beaming_onset_hz(diameter) if diameter is not None else None,
     }
     raw_targets = safety.get("targets")
     targets = {t.get("role"): t for t in (raw_targets if isinstance(raw_targets, list) else [])

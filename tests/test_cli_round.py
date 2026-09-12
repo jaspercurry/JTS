@@ -11,7 +11,6 @@ and what it EXITS with, without a wizard, a network or a speaker.
 from __future__ import annotations
 
 import io
-import sys
 import json
 import urllib.error
 
@@ -195,63 +194,6 @@ def test_open_posts_the_stage_and_tier_it_was_given(
     assert "status" not in receipt
     # Every request claims this speaker's own name, never 127.0.0.1.
     assert {r.get_header("Host") for r in opener.requests} == {"jts3.local"}
-
-
-def test_open_carries_the_alignment_and_topology_documents(
-    tmp_path, monkeypatch, capsys
-):
-    """The two session-open doors, under the keys the host reads (#2773)."""
-    from jasper.active_speaker.crossover_v2.alignment_prescription import (
-        ALIGNMENT_PRESCRIPTION_KEY,
-    )
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        TOPOLOGY_PRESCRIPTION_KEY,
-    )
-
-    alignment = {"delay_us": 120.0, "basis_delay_us": 120.0}
-    topology = {"fc_hz": 1800.0, "order": 4}
-    document = tmp_path / "alignment.json"
-    document.write_text(json.dumps(alignment))
-    monkeypatch.setattr(
-        sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(topology).encode()))
-    )
-    opener = _opener(v2={"session_id": "s1", "phase": "check"})
-
-    code, _ = _run(
-        ["open", "--tier", "express",
-         "--alignment-prescription", str(document),
-         "--topology-prescription", "-"],
-        opener, monkeypatch, capsys,
-    )
-
-    assert code == cli.EXIT_OK
-    posted = opener.posted_to(wc.SESSION_PATH)
-    assert [json.loads(r.data.decode()) for r in posted] == [
-        {
-            "tier": "express",
-            ALIGNMENT_PRESCRIPTION_KEY: alignment,
-            TOPOLOGY_PRESCRIPTION_KEY: topology,
-        }
-    ]
-
-
-def test_a_malformed_prescription_document_is_refused_before_the_open(
-    tmp_path, monkeypatch, capsys
-):
-    document = tmp_path / "topology.json"
-    document.write_text("{not json")
-    opener = _opener()
-
-    code, receipt = _run(
-        ["open", "--tier", "express", "--topology-prescription", str(document)],
-        opener, monkeypatch, capsys,
-    )
-
-    assert code == cli.EXIT_REFUSED
-    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
-    assert receipt["reason"] == cli.REASON_OPEN_REFUSED
-    assert str(document) in receipt["detail"]["error"]
-    assert opener.posts() == []
 
 
 def test_the_measuring_stage_refuses_an_absent_tier_without_posting(

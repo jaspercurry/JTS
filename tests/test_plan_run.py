@@ -539,7 +539,6 @@ def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
 @pytest.mark.parametrize("prepared", [True, False])
 def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepared):
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
-    from jasper.active_speaker.crossover_v2.capture_plan import prepare_plan_captures
     calls = []
     def baselines(purposes):
         calls.append(tuple(purposes))
@@ -549,7 +548,7 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids", baselines)
     monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
     request = replace(_walk([0, 20, -20], ("base",)), repeats=2)
-    captures = prepare_plan_captures(request, candidate_scopes={}) if prepared else None
+    captures = plan_run.prepare_plan_captures(request, candidate_scopes={}) if prepared else None
     assert calls == []
     result, fakes = asyncio.run(_run_gated(request, captures=captures))
     assert len(calls) == 1
@@ -678,3 +677,20 @@ async def test_no_window_can_open_without_a_resolved_ceiling_and_watch(tmp_path,
     assert (result.status, result.reason, result.takes_measured) == ("partial", reason, 0)
     build.assert_not_called()
     assert not graph.installs
+
+
+@pytest.mark.parametrize(("regime", "candidate", "phases"), [
+    ("per_driver", "base", ("check", "entry_baseline", "measure")),
+    ("summed", "base", ("entry_baseline", "lateral")),
+    ("summed", "candidate-a", ("lateral",)),
+])
+def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases):
+    request = ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(20, regime, candidate_id=candidate),),
+        candidates=(candidate,), repeats=2,
+    )
+    captures = plan_run.prepare_plan_captures(request, candidate_scopes={"candidate-a": "candidate"})
+    assert tuple(capture.spec.program_phase for capture in captures) == (*phases, phases[-1])
+    assert [capture.repeat for capture in captures[-2:]] == [1, 2]
+    assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
+    assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])

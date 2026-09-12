@@ -257,12 +257,15 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | N
     return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
-def contract_sources(session_dir: Path) -> dict[str, Any]:
+def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
+    inputs = round_ if isinstance(round_, RoundInputs) else round_inputs(round_)
+    session_dir = inputs.session_dir
     artifact_dir, reason = round_artifact_dir(session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
-    inputs = round_inputs(session_dir)
-    room = _read_json_mapping(default_out(inputs, session_dir, ROOM_ARTIFACT)) or {}
+    room = _read_json_mapping(default_out(
+        inputs, banked_round_of(session_dir) or session_dir, ROOM_ARTIFACT, set_id,
+    )) or {}
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
             **{f"room_{section}": room.get(section, {})
                for section in ("median", "persistence", "ceiling")}}
