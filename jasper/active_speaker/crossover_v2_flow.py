@@ -1746,6 +1746,7 @@ class CrossoverV2Session:
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
+            retry_charge=executor_ledger.charge if executor_ledger is not None else "operator",
         )
         if executor_ledger is not None and attempt > 1 and executor_ledger.can_retry(executor_ledger.charge):
             executor_ledger.spend(executor_ledger.charge)

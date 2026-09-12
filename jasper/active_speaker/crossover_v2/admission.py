@@ -220,6 +220,7 @@ def assess_begin(
     last_reason: str | None,
     non_retriable: Container[str],
     default_code: str,
+    retry_charge: TakeCharge = "operator",
 ) -> BeginDecision:
     """Admit (or refuse) one phone ``begin_capture`` (§5.7).
 
@@ -240,7 +241,7 @@ def assess_begin(
         # outran the terminal verdict :data:`SETTLE_CONDITION_NOT_RETRIABLE`,
         # which names the same code, so the two accounts agree.
         return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
-    if not ledger.can_retry(ledger.charge):
+    if not ledger.can_retry(retry_charge):
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
     return BeginDecision(
         ADMIT,
