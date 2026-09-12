@@ -62,6 +62,8 @@ from jasper.active_speaker.crossover_v2.position_gate import (
     POSITION_HOLD_CODE,
     POSITION_HOLD_EXPIRED_CODE,
     POSITION_READY_ENDPOINT,
+    RETAKE_ENDPOINT,
+    COMPLETE_ENDPOINT,
     POSITION_TARGET_MISSING_CODE,
     REMOTE_POSITION_HOLD_BUDGET_S,
     SESSION_CEILING_EXPIRED_CODE,
@@ -418,12 +420,11 @@ def test_pending_and_join_actions_belong_to_the_mover(mover, policy):
     pending = gate.published()["pending"]
     assert invitation == {**pending, "actions": pending["actions"][:1]}
     assert pending["mover"] == mover
-    assert pending["hand_released"] is (mover != ac.MOVER_ARM)
     assert [(a["id"], a["endpoint"], a["body"]) for a in pending["actions"]] == ([
         ("position_ready", POSITION_READY_ENDPOINT,
          {"index": 1, "attempt": 1, "degrees": 0, "vertical_deg": 0}),
-        ("retake", "/sound/speaker/crossover/v2/retake", {}),
-        ("done", "/sound/speaker/crossover/v2/complete", {}),
+        ("retake", RETAKE_ENDPOINT, {}),
+        ("done", COMPLETE_ENDPOINT, {}),
     ] if mover == ac.MOVER_HUMAN else [])
 
 

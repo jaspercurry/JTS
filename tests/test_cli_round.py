@@ -7,17 +7,33 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 import urllib.error
 
 import pytest
 
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.movers import MOVERS
 from jasper.cli import round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
+
+
+def test_round_parser_does_not_import_numpy():
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import json, sys\n"
+            "from jasper.cli import round as cli\n"
+            "imported = 'numpy' in sys.modules\n"
+            "cli.build_parser()\n"
+            "print(json.dumps([imported, 'numpy' in sys.modules]))\n"
+        )], capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert json.loads(result.stdout) == [False, False]
 
 
 class _FakeResponse:
@@ -272,7 +288,7 @@ def _run_opener(capture):
 
 
 @pytest.mark.parametrize("joining", [True, False])
-@pytest.mark.parametrize("mover", ["confirmed", "human", "arm"])
+@pytest.mark.parametrize("mover", MOVERS)
 def test_placed_releases_only_confirmed_holds(joining, mover, monkeypatch, capsys):
     from jasper.active_speaker.crossover_v2.position_gate import POSITION_READY_ENDPOINT
     opener = _run_opener({"status": "awaiting_join" if joining else "running",

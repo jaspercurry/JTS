@@ -34,6 +34,7 @@ from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
+from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
@@ -141,12 +142,6 @@ __all__ = [
     "session_lateral_walk",
 ]
 
-
-MOVER_ARM = "arm"
-MOVER_HUMAN = "human"
-MOVER_CONFIRMED = "confirmed"
-
-MOVERS = (MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED)
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
 REQUEST_SCHEMA_VERSION = 3

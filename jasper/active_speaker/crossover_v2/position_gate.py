@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from jasper.log_event import log_event
 
+from ..movers import MOVER_HUMAN
 from .capture_plan import (
     POSITION_BATCH_CONFIG_KEY,
     POSITION_BATCH_SIZE_KEY,
@@ -47,6 +48,8 @@ POSITION_GATE_TERMINAL_CODES = frozenset({
     POSITION_HOLD_EXPIRED_CODE, POSITION_TARGET_MISSING_CODE, SESSION_CEILING_EXPIRED_CODE,
 })
 POSITION_READY_ENDPOINT = "/sound/speaker/crossover/v2/position-ready"
+RETAKE_ENDPOINT = "/sound/speaker/crossover/v2/retake"
+COMPLETE_ENDPOINT = "/sound/speaker/crossover/v2/complete"
 
 
 def _prompt_of(screen: dict[str, Any]) -> dict[str, str]:
@@ -67,7 +70,7 @@ def _granted(
 
 class PositionGate:
 
-    def __init__(self, *, mover: str = "human", clock: Callable[[], float] | None = None) -> None:
+    def __init__(self, *, mover: str = MOVER_HUMAN, clock: Callable[[], float] | None = None) -> None:
         self._mover = mover
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
@@ -153,7 +156,7 @@ class PositionGate:
         return {
             "index": index, "attempt": attempt, "degrees": target, "vertical_deg": vertical,
             "role": str(screen.get(POSITION_ROLE_KEY) or ""), "prompt": _prompt_of(screen),
-            "mover": self._mover, "hand_released": self._mover != "arm",
+            "mover": self._mover,
             "actions": [
                 {"id": "position_ready",
                  "label": ("Microphone is on the design axis (0°)" if target == 0
@@ -161,9 +164,9 @@ class PositionGate:
                  "endpoint": POSITION_READY_ENDPOINT,
                  "body": {"index": index, "attempt": attempt, "degrees": target,
                           "vertical_deg": vertical}},
-                {"id": "retake", "label": "Retake", "endpoint": "/sound/speaker/crossover/v2/retake", "body": {}},
-                {"id": "done", "label": "Done", "endpoint": "/sound/speaker/crossover/v2/complete", "body": {}},
-            ] if self._mover == "human" else [],
+                {"id": "retake", "label": "Retake", "endpoint": RETAKE_ENDPOINT, "body": {}},
+                {"id": "done", "label": "Done", "endpoint": COMPLETE_ENDPOINT, "body": {}},
+            ] if self._mover == MOVER_HUMAN else [],
         }
 
     def invitation(self, entry: Any) -> dict[str, Any]:

@@ -998,7 +998,7 @@ sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
 | power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `power_void`. The PARK's own move is deliberately not re-checked (the walk is often parking *because* of a power sign); it still passes the adapter's own preflight |
 | ±45° clamp | belt-and-braces over the adapter's refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
 | park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream |
-| `set-zero` is unreachable | `power`, `position` and `offset` are the complete verb set |
+| `set-zero` is unreachable | `power`, `stop`, `position` and `offset` are the complete verb set |
 | the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED |
 
 **The stall NAME is the contract, not a number.** `serve` exits the shared
