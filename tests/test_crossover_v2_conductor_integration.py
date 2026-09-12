@@ -832,9 +832,9 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_disclosed_by_the_level_che
     # commits the anchored pair, and lets item 1 grade it — is unchanged. Item 1
     # refused when that note was written; deviation (i) changed what item 1 does
     # with the pair, not what this guard does.)
-    fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
-    assert fields["drift_db"] == "9.8"
-    assert fields["committed"] == "anchored"
+    decision = c.candidate.analysis["trim_decision"]
+    assert decision["anchor_drift_db"] == pytest.approx(9.8)
+    assert decision["committed_side"] == "anchored"
     # …and item 1's own realized-level check DISCLOSES the 20 dB it sees.
     fields = event_fields(caplog, "correction.crossover_v2_level_match_finding")
     assert fields["tolerance_db"] == "3.0"
@@ -884,10 +884,7 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
     assert committed["tweeter"] == pytest.approx(captured["seed_trim_db"])
     assert committed != dict(_FIXTURE_RAW_TRIM_DB)
     fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
-    assert "anchored_trim_db" in fields
-    assert "fallback_trim_db" in fields
-    # PR-L4 item 9: the rejection names WHY this pair won, in levels.
-    assert fields["committed"] == "anchored"
+    assert c.candidate.analysis["trim_decision"]["committed_side"] == "anchored"
     assert "anchored_level_error_db" in fields
     assert "resolved_level_error_db" in fields
     # linearization itself still gets reported — only the trim falls back.
@@ -977,8 +974,9 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
     # still disclosed, which is what makes the rejection auditable rather than
     # merely stated.
     fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
-    assert fields["committed"] == "anchored"
-    assert fields["strategy"] == "anchored_committed_after_sanity_drift"
+    decision = c.candidate.analysis["trim_decision"]
+    assert decision["committed_side"] == "anchored"
+    assert decision["strategy"] == "anchored_committed_after_sanity_drift"
     assert fields["anchored_level_error_db"] == "2.5"
     assert fields["resolved_level_error_db"] == "0.2"
     # **The swept drift table this fixture's verdicts come from** (R10a, #1817),

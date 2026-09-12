@@ -44,6 +44,7 @@ from jasper.active_speaker.crossover_v2.intervention import (
     measure_validity_floor_hz as _measure_validity_floor_hz,
 )
 from jasper.active_speaker.crossover_v2.planning import (
+    analysis_json,
     alignment_to_candidate_fields,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -407,10 +408,7 @@ def _log_measure_diag(
             round(float(align.seed_delay_us), 3)
             if align and align.seed_delay_us is not None else None
         ),
-        alignment_refinement_delta_us=(
-            round(float(align.delay_us - align.seed_delay_us), 3)
-            if align and align.seed_delay_us is not None else None
-        ),
+        alignment_refinement_delta_us=analysis_json(analysis)["drift_us"],
         gate_window_ms=gate_window_ms,
         gate_floor_source=gate_floor_source,
         validity_floor_hz=_measure_validity_floor_hz(analysis),

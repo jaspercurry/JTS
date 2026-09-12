@@ -324,7 +324,7 @@ Room peaks in Room before fitting extension.
    round through the same placement/start flow as Room.
 2. Run `bass` and `bass-compare` below. Inspect frequency plots, noise,
    harmonics and repeat variation before deciding which bands need more data.
-   `bass-fit` suggests a bounded native shape from matched measured changes.
+   `bass-fit-table` suggests a bounded native shape from matched measured changes.
 3. Put the bass descriptor in the document's `bass` section and name its base.
    Trial the composed candidate with short
    focused sweeps and small input steps. Hold volume fixed while varying
@@ -340,8 +340,8 @@ Room peaks in Room before fitting extension.
 
 ### Bass analysis tools
 
-`jasper-round-views bass <round-dir> --calibration-root <copied-registry>`
-replays retained summed captures on the laptop. It writes `bass_view.json`
+`jasper-round-views bass <round-dir> --set <set-id> --calibration-root <copied-registry>`
+replays retained summed captures on the laptop. It writes `bass_view-<set-id>.json`
 with exact take references, frequency curves, H2/H3, and quiet-window noise
 estimates. Use only frequency bins qualified in both takes for comparisons.
 Missing harmonic coverage, absolute SPL context, or actual DSP drive stays
@@ -357,14 +357,13 @@ measured output change, and combined compression, including intended DSP
 action. `diagnostic` permits changed setup with that difference disclosed;
 it does not identify an isolated room response. Missing context stays visible.
 
-`bass-fit <request.json> --descriptor-out <descriptor.json>` fits one measured
-native bass shape to an explicit target. The request names a banked `candidate`
-JSON path, a `target` with `freqs_hz` and relative `magnitude_db`, and `pairs`.
-Each pair has `before` and `after` objects with a bass `view` path and exact
-`take_id`. Paths are relative to the request. Before must play `room_tune`;
-after must play the named candidate at the same level, stimulus and pose.
-Use full-band baseline captures: the default reference band is 300–1000 Hz
-(`reference_band_hz` can state another measured band).
+`bass-fit-table <round-dir> --run <run-id> --candidate <candidate.json>
+--target <target.json> --tolerance-db <db>` fits each recorded operating level.
+The target contains `freqs_hz` and relative `magnitude_db`; repeat `--candidate`
+for each candidate in the run. Pairs come from the manifest at matching levels
+and poses. Use full-band baseline captures: `--reference-band-hz` defaults to
+300–1000 Hz. The table discloses the recorded Main, Aux1 and program identity,
+and the native loudness boost at each Aux1 setting.
 
 The result compares off, the fitted boost, and the measured boost. It uses
 one-third-octave smoothing and equal position weights; repeats report variation.
@@ -467,7 +466,7 @@ Capture emits sound; apply persists a tune.
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances for jasper-round-views room. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |

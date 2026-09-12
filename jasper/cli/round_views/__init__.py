@@ -60,8 +60,7 @@ from . import (
     repeat,
     room,
     room_grade,
-    seats,
-    sweeps,
+    seats, speaker_fit, sweeps,
 )
 from ._common import (
     ARTIFACT_BY_VIEW,
@@ -101,7 +100,7 @@ __all__ = [
 _FAMILIES = (
     grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
     frequency, distortion, dsp_replay, classify_features, findings, close_reference,
-    delay, room, room_grade, bass, inventory,
+    delay, room, room_grade, bass, inventory, speaker_fit,
 )
 
 

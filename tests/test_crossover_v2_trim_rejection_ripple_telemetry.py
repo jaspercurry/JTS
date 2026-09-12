@@ -2,37 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The trim rejection's ripple pair, made commensurable (#2541).
-
-**The defect this module pins.** ``decide_trim`` branches on drift in dB of
-gain; ripple is telemetry, and the comment at the rejection site says the
-ripple fields exist so live evidence can tell "legitimate flatter optimum
-rejected" from "garbage correctly caught" before anyone widens the guard.
-The event could not do that: it sat ``resolved_ripple_db`` (LINEARIZED
-branches, REJECTED trim) beside ``raw_predicted_ripple_db`` (RAW branches,
-MEASURE trim). Two variables moved at once, so the gap read as flatness thrown
-away when most of it was the linearization itself — which ships under this
-outcome either way. ``anchored_ripple_db`` is the missing third number: the
-same linearized branches over the same band at the trim that actually SHIPS,
-so the first two differ in exactly one variable.
-
-**The fixture is synthetic and hardware-agnostic.** It is
-``tests/crossover_v2_fixtures.py``'s analytic branch pair (a tilt, an in-band
-dip, an overlap-band bump around a 1600 Hz corner) — no banked jts3 numbers,
-and no assertion here hardcodes a ripple value. Every expected number is
-RE-DERIVED from the curves the planner actually handed the scan, which is what
-makes these assertions sensitive to the wiring rather than to the fixture.
-
-**Why the scan is stubbed.** The guard only fires past
-``LINEARIZATION_TRIM_SANITY_MARGIN_DB``, and this fixture's real ripple
-optimum sits comfortably inside it (deliberately — see ``_fixture_branch_db``,
-which added the tilt so a genuine interior optimum exists). So the scan is
-replaced by one that returns a trim a known distance BELOW the anchor, in the
-incident's own direction, and reports the honest ripple at that trim through
-the production helper. The scan's own use of that helper is pinned separately
-and unstubbed, so nothing about "both numbers share one owner" rests on the
-stub.
-"""
+"""The anchored journal ripple and rejected decision ripple share one frame."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -196,14 +166,7 @@ def _rejected_plan(monkeypatch):
 
 
 def test_the_rejection_logs_the_ripple_at_the_trim_that_actually_ships(monkeypatch):
-    """``anchored_ripple_db`` is the linearized pair's ripple at the ANCHOR.
-
-    Not at the rejected trim, and not the raw pre-fit number — the two values
-    already in the event, and the two a mis-wiring would most plausibly log.
-    The expectation is re-derived from the branches the planner handed the
-    scan, so this fails on any change of curve family, band, statistic, or
-    trim.
-    """
+    """The anchor ripple uses the same branches and band as the scan."""
     plan, call = _rejected_plan(monkeypatch)
     fields = _rejection_fields(plan)
     anchored_t = float(plan.trim.anchored_db["tweeter"])
@@ -218,23 +181,20 @@ def test_the_rejection_logs_the_ripple_at_the_trim_that_actually_ships(monkeypat
     )
     # …and the three numbers are pairwise distinct on this fixture, so none of
     # the assertions above could pass by coincidence.
-    assert fields["resolved_ripple_db"] == pytest.approx(
-        round(call.ripple_at(resolved_t), 3)
+    assert plan.trim.ripple_db == pytest.approx(
+        call.ripple_at(resolved_t)
     )
     assert fields["raw_predicted_ripple_db"] == pytest.approx(
         RAW_PREDICTED_RIPPLE_SENTINEL_DB
     )
     trio = (
         fields["anchored_ripple_db"],
-        fields["resolved_ripple_db"],
+        plan.trim.ripple_db,
         fields["raw_predicted_ripple_db"],
     )
     assert len(set(trio)) == 3, trio
 
-    # The question the pair now answers, asserted as the reading it enables:
-    # on this fixture the rejected optimum is WORSE, so the guard threw away
-    # nothing — "garbage correctly caught", legible from the event alone.
-    assert fields["resolved_ripple_db"] > fields["anchored_ripple_db"]
+    assert plan.trim.ripple_db > fields["anchored_ripple_db"]
 
 
 def test_the_two_linearized_ripples_differ_in_exactly_one_variable(monkeypatch):
