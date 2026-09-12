@@ -587,16 +587,19 @@ def _crossover_v2_status_block() -> dict | None:
 
 
 def _applied_grade_finding(block: dict) -> tuple[str, str]:
-    """Was the applied crossover-v2 correction (if any) ever graded after it
-    landed? Returns ``(detail, reason)`` for
-    :func:`check_crossover_v2_cloud_pipeline` to fold in — the cloud spec
-    verdict alone cannot see a missing grade, since it only warns on a
-    FAILING one.
-
-    Reads ``post_apply_grade`` and re-derives nothing: the grade has one owner
-    (``crossover_v2_status_block``), and every surface — `/state`, the wizard,
-    this check — reads it. The run's asked poses determine the required scope.
-    """
+    """Read trial advice and plan-derived coverage from the status owners."""
+    grade = block.get("post_apply_grade")
+    grade = grade if isinstance(grade, dict) else {}
+    advice = block.get("trial_verification")
+    if isinstance(advice, dict):
+        dimensions = ", ".join(f"{key}={advice.get(key, 'unavailable')}" for key in
+                               ("capture_validity", "realization", "benefit", "spec"))
+        layers = ",".join(advice.get("layers_changed", [])) or "none"
+        reused = "; speaker trial reused" if advice.get("speaker_evidence_reused") else ""
+        return (f"applied trial: {dimensions}; layers_changed={layers}{reused}",
+                REASON_APPLIED_GRADE_VERIFY_FAILED if any(advice.get(key) == value for key, value in
+                (("capture_validity", "unusable"), ("realization", "failed"), ("benefit", "regressed"), ("spec", "failed")))
+                else grade.get("reason", ""))
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
         GRADE_GRADED,
@@ -609,8 +612,6 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
         GRADE_SPATIAL_PASSED,
         GRADE_SPATIAL_UNMEASURABLE,
     )
-    grade = block.get("post_apply_grade")
-    grade = grade if isinstance(grade, dict) else {}
     # `.get` with a default rather than a lookup: a durable state written by a
     # future build could carry a state name this one has never heard of, and
     # inventing a warning about it would be worse than saying what it said.
@@ -627,7 +628,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
     if state == GRADE_NOT_APPLIED:
         return "no applied measured crossover", ""
     if state == GRADE_TUNING_TRIAL_MEASURED:
-        return "applied from its measured tuning trial; speaker VERIFY not run", ""
+        return "applied from its measured tuning trial; speaker trial advice unavailable", ""
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
         # A non-empty word this build does not recognize is a later build's
@@ -694,7 +695,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
             return detail, REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE
         return detail, REASON_APPLIED_GRADE_VERIFY_FAILED
     return (
-        "applied but never graded: no post-apply check completed for this "
+        "applied but trial advice unavailable: no post-apply check completed for this "
         "correction — re-verify at /sound/speaker/crossover/ to confirm it, or undo",
         REASON_APPLIED_GRADE_NEVER_GRADED,
     )
@@ -731,6 +732,8 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
             if status == "warn"
             else (grade_reason or cloud_reason)
         )
+        if grade_reason == REASON_APPLIED_GRADE_VERIFY_FAILED:
+            status = "warn"
         return CheckResult(label, status, f"{cloud_detail}; {grade_detail}", reason=reason)
 
     cloud = block.get("cloud")

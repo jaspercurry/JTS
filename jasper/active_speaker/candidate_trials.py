@@ -7,16 +7,12 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.audio_measurement.bundles import BundleError
-from jasper.json_fields import finite_float
 
 from ._common import blocker_issue
-from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .candidate_bank import CandidateBankRefusal
 from .boost_protection import BOOST_OVER_DECLARED_BOUND, read_boost_finding
-from .commissioning_evidence_store import CommissioningEvidenceStoreError
 
 
 def has_tuning_layers(candidate: Any) -> bool:
@@ -66,49 +62,21 @@ def tuning_trial_matches_candidate(reference: Any, candidate_fingerprint: Any) -
 
 
 def require_candidate_trial(
-    candidate: Any,
-    *,
-    root: Path | None = None,
-    expected_graph_fingerprint: str | None = None,
-) -> dict[str, Any] | None:
-    """Require a captured full graph for authored candidates; legacy fits need no new proof.
-
-    The digest identifies the installed graph, not a fresh rebuild.
-    """
+    candidate: Any, *, manifest: Mapping[str, Any] | None,
+) -> None:
+    """Require this candidate's summed set in a completed run (ADR-0301)."""
+    trial = manifest or {}
+    group = trial.get("set") or {}
+    basis = group.get("capture_basis") or {}
     if (
-        candidate.analysis.get("measurement_status") != "unmeasured"
-        and not has_tuning_layers(candidate)
+        trial.get("status") != "complete"
+        or basis.get("candidate_id") != candidate.fingerprint
+        or basis.get("graph_scope") != "candidate"
+        or basis.get("role") != "summed"
+        or re.fullmatch(r"[0-9a-f]{16}", str(basis.get("submitted_graph_fingerprint") or "")) is None
+        or not group.get("takes")
     ):
-        return None
-    from .commissioning_evidence_store import EVIDENCE_ROOT  # lazy: apply-only evidence reader
-    from .crossover_v2.record_index import bundle_measurements, reopen_measurement_capture  # lazy: pulls the tuning engine
-    from .crossover_v2.round_inputs import iter_round_sessions  # lazy: pulls the tuning engine
-
-    source = find_banked_candidate(candidate.fingerprint, root=root).path.parents[5]
-    for bundle in iter_round_sessions(source):
-        for row in bundle_measurements(bundle, candidate_id=candidate.fingerprint):
-            path = bundle / EVIDENCE_ROOT / "artifacts" / row.path
-            try:
-                record, wav = reopen_measurement_capture(bundle, path)
-                if (
-                    wav is None
-                    or record.get("candidate_id") != candidate.fingerprint
-                    or record.get("graph_scope") != "candidate"
-                    or record.get("incident") != ""
-                    or finite_float(record.get("level_db")) is None
-                    or re.fullmatch(r"[0-9a-f]{16}", str(record.get("graph_fingerprint") or "")) is None
-                    or expected_graph_fingerprint is not None
-                    and record.get("graph_fingerprint") != expected_graph_fingerprint
-                ):
-                    continue
-            except (OSError, ValueError, TypeError, AttributeError, KeyError,
-                    BundleError, CommissioningEvidenceStoreError):
-                continue
-            return {**record, "record_path": str(path)}
-    raise CandidateBankRefusal(
-        "candidate_trial_required",
-        "Capture this complete candidate before applying it; no intact trial of this fingerprint was found.",
-    )
+        raise CandidateBankRefusal("candidate_trial_required", "Complete a trial run of this candidate.")
 
 
 def candidate_boost_issue(graph_fingerprint: str) -> dict[str, str] | None:

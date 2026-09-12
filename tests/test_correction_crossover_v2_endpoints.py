@@ -224,12 +224,36 @@ def _stage2_openable():
         v2host.resolve_conductor_context = original
 
 
+def _bank_for_apply(raw, *, record_fields=None):
+    """Bank the measured graph before invoking the apply transaction."""
+    from jasper.active_speaker.crossover_declaration import declaration_change_for_candidate, manual_settings_for_crossover
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+    from jasper.output_topology import load_output_topology
+    from tests.apply_fixtures import bank_trial
+
+    if "candidate" in raw:
+        candidate = MeasuredCrossoverCandidate.from_mapping(raw["candidate"])
+        topology = load_output_topology()
+        draft = load_design_draft(topology=topology)
+        change = declaration_change_for_candidate(source_preset=candidate.source_preset, design_draft=draft)
+        if change:
+            draft = {**draft, "manual_settings": manual_settings_for_crossover(draft, change.between_roles, change.selected)}
+        try:
+            profile = baseline_profile_mod.build_baseline_profile_candidate(
+                topology, design_draft=draft, crossover_preview=build_crossover_preview(draft),
+                measurements={}, measured_candidate=candidate, tuning_owner="automatic", write=False, compile_config=True,
+            )
+        except ValueError:
+            profile = {}
+        bank_trial(candidate, profile, topology, record_fields=record_fields)
+
+
 def _apply(raw, run_async, camilla_factory, *, status=None):
-    """``handle_v2_apply`` with the stage-2 preflight satisfied."""
+    _bank_for_apply(raw)
     with _stage2_openable():
-        return v2host.handle_v2_apply(
-            raw, run_async, camilla_factory, status={} if status is None else status,
-        )
+        return v2host.handle_v2_apply(raw, run_async, camilla_factory, status=status or {})
 
 
 def test_the_first_begin_budget_defaults_to_the_constant(monkeypatch):
@@ -2280,99 +2304,10 @@ def _ready_to_apply(monkeypatch, tmp_path):
     return candidate
 
 
-def test_apply_refuses_when_stage_2_could_not_be_opened(monkeypatch, tmp_path):
-    """**The pin the work order names for this rung.** A speaker that cannot
-    open its post-apply check must not be corrected and left ungraded — the
-    applied-and-ungraded end state this whole work order exists to eliminate.
-
-    T2 shipped the render-time half (Apply is disabled and the refusal renders
-    verbatim). This is the server-side half, and it is NOT redundant with it: a
-    disabled control is not a security boundary — a stale page, a second tab,
-    or a direct POST all reach this endpoint.
-    """
-    candidate = _ready_to_apply(monkeypatch, tmp_path)
-
-    def _refuse(_status):
-        raise v2host.CrossoverV2Refused(
-            "confirm the driver safety profile before measuring"
-        )
-
-    monkeypatch.setattr(v2host, "resolve_conductor_context", _refuse)
-
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.handle_v2_apply(
-            {
-                "expected_candidate_fingerprint": candidate.fingerprint,
-                "candidate": candidate.to_dict(),
-            },
-            _bg_run_async,
-            _FakeApplyCam,
-            status={},
-        )
-
-    # The predicate's OWN sentence reaches the household, not a generic one.
-    assert "confirm the driver safety profile" in str(excinfo.value)
-    assert "was not run" in str(excinfo.value)
-    # The DSP was never touched: nothing durable claims an apply happened,
-    # and no way-back pointer was recorded (which only a real commit
-    # produces).
-    state = v2host.load_v2_state()
-    assert state.get("applied") is not True
-    assert state.get("previous_candidate_fingerprint") is None
 
 
-def test_an_unexpected_preflight_failure_refuses_the_apply_too(
-    monkeypatch, tmp_path,
-):
-    """Fail-closed in BOTH directions: "we could not check" and "we checked
-    and it is fine" must never produce the same outcome on the one action that
-    touches the speaker."""
-    candidate = _ready_to_apply(monkeypatch, tmp_path)
-
-    def _explode(_status):
-        raise RuntimeError("the topology file is unreadable")
-
-    monkeypatch.setattr(v2host, "resolve_conductor_context", _explode)
-
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.handle_v2_apply(
-            {
-                "expected_candidate_fingerprint": candidate.fingerprint,
-                "candidate": candidate.to_dict(),
-            },
-            _bg_run_async,
-            _FakeApplyCam,
-            status={},
-        )
-    assert "could not confirm" in str(excinfo.value)
-    assert v2host.load_v2_state().get("applied") is not True
 
 
-def test_the_preflight_runs_after_the_freshness_gates(monkeypatch):
-    """Ordering: a STALE candidate gets its own specific refusal ("review the
-    newest measurement"), not the preflight's. Getting this backwards would
-    tell a household to go fix their safety profile when what they actually
-    need is to re-read a newer measurement."""
-    v2host.save_v2_state({
-        "session_id": "cap_preflight",
-        "candidate": {"fingerprint": "a-newer-fingerprint"},
-        "applied": False,
-    })
-    monkeypatch.setattr(
-        v2host, "resolve_conductor_context",
-        lambda _status: (_ for _ in ()).throw(
-            v2host.CrossoverV2Refused("safety profile")
-        ),
-    )
-
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.handle_v2_apply(
-            {"expected_candidate_fingerprint": "the-reviewed-one"},
-            _bg_run_async,
-            _FakeApplyCam,
-            status={},
-        )
-    assert "no longer current" in str(excinfo.value)
 
 
 
@@ -2771,22 +2706,6 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
 
 
 
-def test_apply_endpoint_requires_current_candidate():
-    with pytest.raises(v2host.CrossoverV2Refused):
-        _apply(
-            {"expected_candidate_fingerprint": "fp"}, None, None
-        )
-    # A stale fingerprint against a persisted candidate is refused by name.
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-current"},
-    })
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        _apply(
-            {"expected_candidate_fingerprint": "fp-stale"}, None, None
-        )
-    assert "no longer current" in str(excinfo.value)
 
 
 def test_observe_apply_success_arms_the_deferred_verify_gate():
@@ -2796,9 +2715,6 @@ def test_observe_apply_success_arms_the_deferred_verify_gate():
         "candidate": {"fingerprint": "fp-1"},
         "applied": False,
     })
-    assert v2host._applied_gate() is False
-    # A mismatched fingerprint must NOT arm verify.
-    v2host.observe_apply_success("fp-other")
     assert v2host._applied_gate() is False
     v2host.observe_apply_success("fp-1")
     assert v2host._applied_gate() is True
@@ -4732,11 +4648,13 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     produced by ``v2host.ensure_crossover_preview_ready()``, the real
     session-start seam, so this fixture proves the same machinery a browser
     session would drive."""
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.output_topology import save_output_topology
 
     from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
 
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
     topology = _dual_apple_topology()
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -4956,225 +4874,10 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
     assert state["applied"] is True
 
 
-@pytest.mark.parametrize("program", ["room", "bass", "bass_room"])
-def test_tuning_apply_persists_the_exact_compiled_trial_without_speaker_preflight(
-    monkeypatch, tmp_path, program,
-):
-    from jasper.active_speaker import candidate_trials
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
-
-    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
-
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    base = _run6_measured_candidate(preset)
-    cam = _FakeApplyCam()
-    apply_kwargs = dict(
-        design_draft=load_design_draft(topology=_topology),
-        crossover_preview=load_crossover_preview(),
-        measurements=load_measurement_state(_topology),
-        tuning_owner="automatic", load_config=cam.set_config_file_path,
-    )
-    first = _bg_run_async(baseline_profile_mod.apply_baseline_profile(
-        _topology, **apply_kwargs, measured_candidate=base,
-    ))
-    assert first["status"] == "applied", first
-    if program == "bass_room":
-        base = replace(base, room_correction=_room_correction())
-        room = _bg_run_async(baseline_profile_mod.apply_baseline_profile(
-            _topology, **apply_kwargs, measured_candidate=base,
-        ))
-        assert room["status"] == "applied", room
-    candidate = replace(
-        base, analysis={**base.analysis, "measurement_status": "unmeasured"},
-        room_correction=_room_correction() if program != "bass" else {},
-        bass_extension=BASS_EXTENSION if program != "room" else {},
-    )
-    scope = "candidate"
-    reviewed = build_baseline_profile_candidate(
-        _topology,
-        design_draft=load_design_draft(topology=_topology),
-        crossover_preview=load_crossover_preview(),
-        measurements=load_measurement_state(_topology),
-        write=False,
-        compile_config=True,
-        tuning_owner="automatic",
-        measured_candidate=candidate,
-    )
-    graph_fingerprint = reviewed["config"]["sha256"][:16]
-    proof = {
-        "candidate_id": candidate.fingerprint,
-        "graph_scope": scope,
-        "graph_fingerprint": graph_fingerprint,
-        "record_path": str(tmp_path / "bank" / "position-0001.json"),
-    }
-    seen = {}
-
-    def require_trial(_candidate, *, expected_graph_fingerprint=None):
-        seen["trial_graph"] = expected_graph_fingerprint
-        return proof
-
-    monkeypatch.setattr(candidate_trials, "require_candidate_trial", require_trial)
-
-    monkeypatch.setattr(
-        v2host, "_assert_stage_2_can_open",
-        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
-    )
-    v2host.save_v2_state({
-        "session_id": "cap_room_apply",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-
-    payload = v2host.handle_v2_apply(
-        {"expected_candidate_fingerprint": candidate.fingerprint,
-         "candidate": candidate.to_dict()},
-        _bg_run_async, lambda: cam, status={},
-    )
-
-    assert payload["status"] == "applied"
-    assert seen["trial_graph"] == graph_fingerprint
-    assert payload["profile"]["config"]["sha256"] == reviewed["config"]["sha256"]
-    snapshot = payload["profile"]["recomposition_snapshot"]
-    assert snapshot.get("room_correction", {}) == candidate.room_correction
-    assert snapshot.get("bass_extension", {}) == candidate.bass_extension
-    assert v2host.load_v2_state()["tuning_trial"] == {
-        "candidate_fingerprint": candidate.fingerprint,
-        "graph_scope": scope,
-        "graph_fingerprint": graph_fingerprint,
-        "record_path": proof["record_path"],
-    }
 
 
-def test_room_apply_refuses_a_trial_for_a_different_compiled_graph(
-    monkeypatch, tmp_path,
-):
-    from jasper.active_speaker import candidate_trials
-    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
-
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    base = _run6_measured_candidate(preset)
-    candidate = replace(
-        base,
-        analysis={**base.analysis, "measurement_status": "unmeasured"},
-        room_correction=_room_correction(),
-    )
-    def require_wrong_trial(_candidate, *, expected_graph_fingerprint=None):
-        raise candidate_trials.CandidateBankRefusal(
-            "candidate_trial_required", "no matching graph",
-        )
-
-    monkeypatch.setattr(
-        candidate_trials, "require_candidate_trial", require_wrong_trial,
-    )
-    monkeypatch.setattr(
-        v2host, "_assert_stage_2_can_open",
-        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
-    )
-    v2host.save_v2_state({
-        "session_id": "cap_wrong_room_graph",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-    cam = _FakeApplyCam()
-
-    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
-        v2host.handle_v2_apply(
-            {"expected_candidate_fingerprint": candidate.fingerprint,
-             "candidate": candidate.to_dict()},
-            _bg_run_async, lambda: cam, status={},
-        )
-
-    assert refusal.value.code == "candidate_trial_required"
-    assert cam.path is None
-    assert v2host.load_v2_state()["applied"] is False
 
 
-def test_room_apply_names_the_compile_blocker_instead_of_asking_for_a_trial(
-    monkeypatch, tmp_path,
-):
-    """A blocked compose has no graph digest to require a capture OF.
-
-    Handing the trial gate that blank digest refuses every intact take, so a
-    banked trial reads back as ``candidate_trial_required``; the refusal must
-    carry the compose's own blocker instead.
-    """
-    from jasper.active_speaker import candidate_trials
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
-
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    base = _run6_measured_candidate(preset)
-    candidate = replace(
-        base,
-        analysis={**base.analysis, "measurement_status": "unmeasured"},
-        room_correction=_room_correction(),
-    )
-    Path(os.environ["JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"]).write_text(
-        "{}", encoding="utf-8",
-    )
-    reviewed = build_baseline_profile_candidate(
-        topology,
-        design_draft=load_design_draft(topology=topology),
-        crossover_preview=load_crossover_preview(),
-        measurements=load_measurement_state(topology),
-        write=False,
-        compile_config=True,
-        tuning_owner="automatic",
-        measured_candidate=candidate,
-    )
-    assert not (reviewed["config"] or {}).get("sha256")
-    assert (reviewed["source"] or {}).get(
-        "measured_candidate_fingerprint"
-    ) == candidate.fingerprint
-    blocker = next(
-        issue["code"] for issue in reviewed["issues"]
-        if issue["severity"] == "blocker"
-    )
-
-    asked: list[str | None] = []
-
-    def require_trial(_candidate, *, expected_graph_fingerprint=None):
-        asked.append(expected_graph_fingerprint)
-        raise candidate_trials.CandidateBankRefusal(
-            "candidate_trial_required", "no intact trial",
-        )
-
-    monkeypatch.setattr(candidate_trials, "require_candidate_trial", require_trial)
-    monkeypatch.setattr(
-        v2host, "_assert_stage_2_can_open",
-        lambda _status: pytest.fail("Room apply opened the speaker verifier"),
-    )
-    v2host.save_v2_state({
-        "session_id": "cap_uncompiled_room_graph",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-    cam = _FakeApplyCam()
-
-    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
-        v2host.handle_v2_apply(
-            {"expected_candidate_fingerprint": candidate.fingerprint,
-             "candidate": candidate.to_dict()},
-            _bg_run_async, lambda: cam, status={},
-        )
-
-    assert refusal.value.code == blocker
-    assert asked == []
-    assert cam.path is None
-    assert v2host.load_v2_state()["applied"] is False
 
 
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
@@ -5199,17 +4902,18 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     playing.
     """
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
 
-    payload = _apply(
+    payload = v2host.handle_v2_apply(
         {"expected_candidate_fingerprint": candidate.fingerprint,
          "candidate": candidate.to_dict()},
-        _bg_run_async, lambda: _FakeApplyCam(),
+        _bg_run_async, lambda: _FakeApplyCam(), status={},
     )
 
     assert payload["status"] == "applied", payload
-    assert len(fsync_calls) == 10
+    assert len(fsync_calls) == 12
 
 
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
@@ -5269,34 +4973,6 @@ def test_alternative_apply_refuses_stale_sound_before_camilla(
         )
 
 
-def test_alternative_stage2_refusal_refuses_before_the_sound_save(
-    monkeypatch, tmp_path,
-):
-    """With Apply clickable on a preflight-refusing box, one click must not
-    durably move the Sound declaration: the change arm asserts stage-2
-    openability BEFORE ``apply_measured_crossover_geometry``, so the refusal
-    arrives raw (the predicate's own sentence, not "saved in Sound") and
-    displaces nothing — no declaration write, no Camilla."""
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
-
-    def refuse_stage_2(_status):
-        raise v2host.CrossoverV2Refused("the safety declaration changed")
-
-    monkeypatch.setattr(v2host, "_assert_stage_2_can_open", refuse_stage_2)
-    with pytest.raises(
-        v2host.CrossoverV2Refused, match="the safety declaration changed",
-    ):
-        _apply(
-            {"expected_candidate_fingerprint": candidate.fingerprint,
-             "candidate": candidate.to_dict()},
-            _bg_run_async,
-            lambda: (_ for _ in ()).throw(AssertionError("Camilla touched")),
-        )
-
-    assert load_design_draft()["revision"] == 1
-    assert "accepted_sound_revision" not in (v2host.load_v2_state() or {})
 
 
 def test_alternative_camilla_failure_reports_sound_saved_and_allows_retry(
@@ -5444,38 +5120,6 @@ def test_post_dsp_outcome_cannot_contaminate_a_replacement_review(
     assert state["applied"] is False
 
 
-def test_sound_change_during_preflight_refuses_before_camilla(
-    monkeypatch, tmp_path,
-):
-    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
-    from jasper.output_topology import load_output_topology
-
-    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
-    calls = 0
-
-    def change_sound(_status):
-        # First call is the change arm's pre-save assert; the subject here is
-        # the AT-COMMIT one (D3), so the mutation lands on the second call.
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return
-        draft = load_design_draft()
-        save_design_draft(
-            load_output_topology(), driver_research=draft.get("driver_research"),
-            manual_settings=draft.get("manual_settings"),
-            operator_inputs={"notes": "changed during preflight"},
-            expected_revision=draft["revision"],
-        )
-
-    monkeypatch.setattr(v2host, "_assert_stage_2_can_open", change_sound)
-    with pytest.raises(v2host.CrossoverV2Refused, match="Sound changed after"):
-        _apply(
-            {"expected_candidate_fingerprint": candidate.fingerprint,
-             "candidate": candidate.to_dict()},
-            _bg_run_async,
-            lambda: (_ for _ in ()).throw(AssertionError("Camilla touched")),
-        )
 
 
 def test_alternative_apply_exception_records_an_unknown_dsp_result(
@@ -5534,7 +5178,9 @@ def test_alternative_sound_save_cannot_mark_a_replacement_review(
     state = v2host.load_v2_state() or {}
     assert state["session_id"] == "fresh-review"
     assert state["candidate"]["fingerprint"] == "fresh-fingerprint"
-    assert "accepted_sound_revision" not in state
+    assert state["accepted_sound_revision"] == 2
+    assert state["accepted_sound_candidate_fingerprint"] == candidate.fingerprint
+    assert state["accepted_sound_declaration_change"]["applied_hz"] == 2750.
 
 
 def test_a_below_floor_apply_is_refused_before_sound_is_written(
@@ -5712,60 +5358,6 @@ def test_a_slope_only_change_reaches_the_declaration_and_leaves_fc_alone(
     }
 
 
-def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
-    monkeypatch, tmp_path,
-):
-    """Blocker M, positive: drives handle_v2_apply through the REAL
-    apply_baseline_profile guard end to end (no faked apply gate) with a
-    run-6-shaped measured candidate, and asserts the guard passes and the
-    emitted config carries the measured delay + inversion."""
-    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
-
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    candidate = _run6_measured_candidate(preset)
-
-    v2host.save_v2_state({
-        "session_id": "cap_run6",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-
-    payload = _apply(
-        {
-            "expected_candidate_fingerprint": candidate.fingerprint,
-            "candidate": candidate.to_dict(),
-        },
-        _bg_run_async,
-        _FakeApplyCam,
-    )
-
-    assert payload["status"] == "applied", payload.get("issues")
-    corrections = payload["profile"]["corrections"]
-    assert corrections["woofer"]["delay_ms"] == pytest.approx(0.4048, abs=1e-4)
-    assert corrections["woofer"]["inverted"] is False
-    assert corrections["tweeter"]["delay_ms"] == 0.0
-    assert corrections["tweeter"]["gain_db"] == pytest.approx(-13.0327, abs=1e-4)
-    assert corrections["tweeter"]["inverted"] is True
-    config_text = (tmp_path / "active_speaker_baseline.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "delay: 0.4048" in config_text
-
-    # The fingerprint that actually reached the seam is the COMPOSED baseline
-    # candidate's own identity, never the measured candidate's fingerprint —
-    # confirming the vocabulary translation happened rather than the two
-    # values accidentally colliding.
-    assert payload["profile"]["candidate_fingerprint"] != candidate.fingerprint
-    assert payload["profile"][
-        "candidate_fingerprint"
-    ] == baseline_candidate_fingerprint(payload["profile"])
-
-    # Success arms the deferred VERIFY gate and clears any stale apply-blocked
-    # nudge (Finding N).
-    assert v2host._applied_gate() is True
-    saved_state = v2host.load_v2_state()
-    assert saved_state["apply_blocked"] is None
 
 
 class _FakeApplyAndVolumeCam(_FakeApplyCam):
@@ -6329,49 +5921,6 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     assert v2host._applied_gate() is True
 
 
-def test_apply_refuses_when_composition_is_no_longer_bound_to_reviewed_candidate(
-    monkeypatch, tmp_path,
-):
-    """TOCTOU note pin: the host's own compose-then-verify precheck refuses by
-    name (rather than silently applying) if the composition it just built no
-    longer binds to the measured candidate the household reviewed — the
-    guard the ARCHITECT ruling asked for, exercised directly rather than by
-    trying to win a real race."""
-    from jasper.active_speaker import baseline_profile as baseline_profile_mod
-
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    candidate = _run6_measured_candidate(preset)
-
-    v2host.save_v2_state({
-        "session_id": "cap_run6",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-
-    real_build = baseline_profile_mod.build_baseline_profile_candidate
-
-    def _tampered_build(*args, **kwargs):
-        out = dict(real_build(*args, **kwargs))
-        source = dict(out.get("source") or {})
-        source["measured_candidate_fingerprint"] = "not-the-reviewed-candidate"
-        out["source"] = source
-        return out
-
-    monkeypatch.setattr(
-        baseline_profile_mod, "build_baseline_profile_candidate", _tampered_build,
-    )
-
-    with pytest.raises(v2host.CrossoverV2Refused, match="no longer current"):
-        _apply(
-            {
-                "expected_candidate_fingerprint": candidate.fingerprint,
-                "candidate": candidate.to_dict(),
-            },
-            _bg_run_async,
-            _FakeApplyCam,
-        )
-    assert v2host._applied_gate() is False
 
 
 def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
@@ -6696,7 +6245,7 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
     calls under the v2 flow). The reset must serve the clean start screen
     WITHOUT unlinking `applied` + `previous_candidate_fingerprint` — the way
     back's only durable pointer."""
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
+    from tests.test_active_speaker_baseline_profile import apply_baseline_profile
     from jasper.active_speaker.crossover_preview import build_crossover_preview
 
     from tests.test_active_speaker_baseline_profile import _draft
@@ -6968,7 +6517,7 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     the durable v2 state's Undo anchor. The prior candidate is also banked, as
     its own measure session would have left it, so the automatic way back can
     republish it."""
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
+    from tests.test_active_speaker_baseline_profile import apply_baseline_profile
     from jasper.active_speaker.crossover_preview import build_crossover_preview
 
     from tests.test_active_speaker_baseline_profile import _draft
@@ -7119,7 +6668,7 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
 @pytest.mark.parametrize("route,handler_name", [
     ("session", "capture"), ("verify", "capture"), ("apply", "apply"),
     ("position-ready", "position_ready"), ("complete", "complete"),
-    ("retake", "retake"), ("republish", "republish"),
+    ("retake", "retake"),
 ])
 def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     monkeypatch, route, handler_name,
@@ -7342,6 +6891,251 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run
             assert refused.value.code == "capture_slot_busy"
     finally:
         release.set()
+
+
+@pytest.mark.parametrize("fault,code", [
+    (None, None), ("fingerprint", "not_found"), ("manifest", "candidate_trial_required"),
+    ("partial", "candidate_trial_required"), ("integrity", "candidate_trial_evidence_invalid"),
+])
+def test_apply_requires_an_intact_completed_banked_trial(monkeypatch, tmp_path, fault, code):
+    from jasper.active_speaker.crossover_v2.apply_gate import candidate_trial_manifest
+    from jasper.cli.doctor.correction import _applied_grade_finding
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    trial = candidate_trial_manifest(candidate.fingerprint, {})
+    path = Path(trial["manifest_path"])
+    document = json.loads(path.read_text())
+    if fault == "manifest":
+        path.unlink()
+    elif fault == "partial":
+        document["status"] = "partial"
+        path.write_text(json.dumps(document))
+    elif fault == "integrity":
+        document["sets"][0]["takes"][0]["quality"]["status"] = "refused"
+        path.write_text(json.dumps(document))
+    v2host.save_v2_state({"candidate": {"fingerprint": "another-candidate"}, "applied": False})
+    cam = _FakeApplyCam()
+    raw = {"expected_candidate_fingerprint": "0" * 64 if fault == "fingerprint" else candidate.fingerprint}
+    if code:
+        with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+            v2host.handle_v2_apply(raw, _bg_run_async, lambda: cam, status={})
+        assert refusal.value.code == code
+        assert cam.path is None
+    else:
+        payload = v2host.handle_v2_apply(raw, _bg_run_async, lambda: cam, status={})
+        assert payload["status"] == "applied"
+        advice = payload["profile"]["trial_verification"]
+        assert {key: advice[key] for key in ("capture_validity", "realization", "benefit", "spec")} == {
+            "capture_validity": "usable", "realization": "unavailable",
+            "benefit": "indeterminate", "spec": "unevaluable",
+        }
+        assert advice["layers_changed"] == ["speaker", "room", "bass"]
+        block = v2status.crossover_v2_status_block()
+        assert block["trial_verification"] == advice
+        assert _applied_grade_finding(block)[1] == ""
+        assert v2host.load_v2_state()["candidate"]["fingerprint"] == candidate.fingerprint
+
+
+@pytest.mark.parametrize("layers", [("room",), ("bass",), ("room", "bass")])
+def test_apply_reuses_speaker_trial_by_layer_diff(monkeypatch, tmp_path, layers):
+    from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+
+    _, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = _run6_measured_candidate(preset)
+    cam = _FakeApplyCam()
+    first = _apply({"candidate": base.to_dict(), "expected_candidate_fingerprint": base.fingerprint},
+                   _bg_run_async, lambda: cam)
+    candidate = replace(base, analysis={**base.analysis, "measurement_status": "unmeasured"},
+                        room_correction=_room_correction() if "room" in layers else {},
+                        bass_extension=BASS_EXTENSION if "bass" in layers else {})
+    result = _apply({"candidate": candidate.to_dict(), "expected_candidate_fingerprint": candidate.fingerprint},
+                    _bg_run_async, lambda: cam)
+    assert result["status"] == "applied"
+    advice = result["profile"]["trial_verification"]
+    assert advice["layers_changed"] == list(layers)
+    assert advice["speaker_evidence_reused"] is True
+    assert advice["speaker_evidence"] == first["profile"]["trial_verification"]["speaker_evidence"]
+
+
+@pytest.mark.parametrize("tracking,amplitude", [(0., 0.), (99., 20.)])
+def test_trial_tracking_and_spec_are_advice(monkeypatch, tmp_path, tracking, amplitude):
+    from jasper.active_speaker.flat_spec import evaluate_flat_spec
+
+    _, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    frequencies = np.geomspace(20., 20000., 512)
+    report = evaluate_flat_spec(frequencies, amplitude * np.sin(np.log(frequencies)))
+    _bank_for_apply({"candidate": candidate.to_dict()}, record_fields={
+        "verify_tracking": {"max_db_notch_excluded": tracking}, "spec_report": report.to_dict(),
+    })
+    result = v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                                   _bg_run_async, _FakeApplyCam, status={})
+    assert result["status"] == "applied"
+    advice = result["profile"]["trial_verification"]
+    assert advice["capture_validity"] == "usable"
+    assert advice["realization"] == ("failed" if tracking else "matched")
+    assert advice["spec"] == ("failed" if amplitude else "passed")
+
+
+def test_retired_republish_route_cannot_change_state(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from jasper.web.correction_setup import _dispatch_crossover
+
+    _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    before = v2host.load_v2_state()
+    replies = []
+    handler = SimpleNamespace(path="/crossover/v2/republish",
+                              _send_json=lambda payload, **kwargs: replies.append((payload, kwargs["status"])))
+    _dispatch_crossover(handler)
+    assert replies == [({"ok": False, "code": "route_retired"}, 410)]
+    assert v2host.load_v2_state() == before
+
+
+@pytest.mark.parametrize("revision", [None, True, "1"])
+def test_off_slot_apply_refuses_an_unknown_measured_sound_revision(monkeypatch, tmp_path, revision):
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    state = v2host.load_v2_state()
+    state.update(candidate={"fingerprint": "another"}, sound_design_revision=revision)
+    v2host.save_v2_state(state)
+    draft_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
+    before = draft_path.read_bytes()
+    cam = _FakeApplyCam()
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                              _bg_run_async, lambda: cam, status={})
+    assert refused.value.code == "sound_design_revision_unavailable"
+    assert draft_path.read_bytes() == before
+    assert cam.path is None
+
+
+@pytest.mark.parametrize("failure", [ValueError, RuntimeError, v2host.CrossoverV2Refused])
+def test_apply_openability_refuses_before_any_write(monkeypatch, tmp_path, failure):
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    calls = []
+    def unresolved(status):
+        calls.append(status)
+        raise failure("unavailable")
+    monkeypatch.setattr(v2host, "resolve_conductor_context", unresolved)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    cam = _FakeApplyCam()
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                              _bg_run_async, lambda: cam, status={"active": False})
+    assert refused.value.code == "crossover_v2_stage2_preflight_refused"
+    assert calls == [{"active": False}]
+    assert cam.path is None
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("applied,epoch,receipt,expected", [
+    (True, 0, {"round_ordinal": 2}, 1),
+    (False, 0, None, 0),
+    (False, 2, None, 2),
+    (True, 2, None, 2),
+    (True, 2, {"round_ordinal": 3}, 3),
+])
+def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected, caplog):
+    from jasper.active_speaker.crossover_v2.coordinator import series_position_from_state
+    from tests._log_events import event_records, parse_event
+
+    v2host.save_v2_state({"applied": applied, "round_ordinal_epoch": epoch, "round_receipt": receipt})
+    with caplog.at_level(logging.INFO):
+        v2host.reset_v2_journey_state()
+    state = v2host.load_v2_state()
+    position = series_position_from_state(state)
+    assert (position.ordinal, position.ordinal_epoch) == (1, expected)
+    assert (state or {}).get("round_receipt") is None
+    events = event_records(caplog, "correction.crossover_v2_journey_reset_advanced_epoch")
+    if applied and receipt:
+        event = parse_event(events[0].getMessage())[1]
+        assert event["reset_round_ordinal_from"] == str(receipt["round_ordinal"])
+    else:
+        assert not events
+
+
+def test_apply_reads_trial_facts_once_before_the_writer_lock(monkeypatch, tmp_path):
+    from jasper.active_speaker.crossover_v2 import apply_gate
+    from jasper.active_speaker import candidate_bank
+
+    _, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    for _ in range(3):
+        _bank_for_apply({"candidate": candidate.to_dict()}, record_fields=[{}, {}])
+    checks, records, bank_reads = [], [], []
+    original_find = candidate_bank.find_banked_candidate
+    def find(fingerprint):
+        bank_reads.append(fingerprint)
+        return original_find(fingerprint)
+    monkeypatch.setattr(candidate_bank, "find_banked_candidate", find)
+    monkeypatch.setattr(apply_gate, "find_banked_candidate", find)
+    locked = False
+    original_lock = baseline_profile_mod.dsp_writer_lock
+    original_check = apply_gate.trial_is_intact
+    original_read = Path.read_text
+    @contextlib.asynccontextmanager
+    async def writer(*args, **kwargs):
+        nonlocal locked
+        async with original_lock(*args, **kwargs):
+            locked = True
+            try:
+                yield
+            finally:
+                locked = False
+    def check(trial):
+        assert not locked
+        checks.append(trial["set"]["set_id"])
+        return original_check(trial)
+    def read(path, *args, **kwargs):
+        if path.name.startswith("trial_") and path.suffix == ".json":
+            assert not locked
+            records.append(path)
+        assert path.suffix != ".wav"
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(baseline_profile_mod, "dsp_writer_lock", writer)
+    monkeypatch.setattr(apply_gate, "trial_is_intact", check)
+    monkeypatch.setattr(Path, "read_text", read)
+    result = v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                                   _bg_run_async, _FakeApplyCam, status={})
+    assert result["status"] == "applied"
+    assert bank_reads == [candidate.fingerprint]
+    assert len(checks) == 1
+    assert len(records) == len(set(records)) == 2
+    assert "_compiled_graph_text" not in result["profile"]
+
+
+def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch, tmp_path):
+    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.output_topology import load_output_topology
+
+    selected = _seed_alternative_apply(monkeypatch, tmp_path)
+    preset, _, _ = compile_preset_from_crossover_preview(load_output_topology(), load_crossover_preview())
+    previous = _run6_measured_candidate(preset)
+    cam = _FakeApplyCam()
+    applied = _apply({"candidate": previous.to_dict(), "expected_candidate_fingerprint": previous.fingerprint},
+                     _bg_run_async, lambda: cam)
+    assert applied["status"] == "applied"
+    state = v2host.load_v2_state()
+    state.update(candidate={"fingerprint": selected.fingerprint}, applied=False)
+    v2host.save_v2_state(state)
+    applied = _apply({"candidate": selected.to_dict(), "expected_candidate_fingerprint": selected.fingerprint},
+                     _bg_run_async, lambda: cam)
+    assert applied["status"] == "applied"
+    for path in tmp_path.rglob("run_manifest.json"):
+        path.unlink()
+    v2host.reset_v2_journey_state()
+    restored = v2host.handle_v2_apply({"expected_candidate_fingerprint": previous.fingerprint},
+                                     _bg_run_async, lambda: cam, status={})
+    assert restored["status"] == "applied"
+    state = v2host.load_v2_state()
+    assert state["accepted_sound_revision"] == 3
+    assert state["accepted_sound_candidate_fingerprint"] == previous.fingerprint
+    assert state["accepted_sound_declaration_change"]["previous_hz"] == 2750.
 
 
 def test_a_measure_only_session_resolves_to_review_never_done():

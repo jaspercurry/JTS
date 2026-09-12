@@ -400,3 +400,14 @@ def assert_crossover_honours_declared_floor(preset: Any) -> None:
     raise CrossoverBelowDeclaredFloor(
         "refusing to apply this crossover: " + detail
     )
+
+
+def manual_settings_for_crossover(draft: Mapping[str, Any], between_roles: tuple[str, str], selected: CrossoverGeometry) -> dict[str, Any]:
+    manual = dict(draft.get("manual_settings") or {})
+    candidates = [dict(row) for row in manual.get("crossover_candidates", [])]
+    index = matching_declared_candidate_index(candidates, between_roles)
+    if index is None:
+        raise ValueError("Sound's matching crossover setting is missing or ambiguous")
+    candidates[index].update(frequency_hz=float(selected.fc_hz), filter_type=selected.filter_type,
+                             slope_db_per_octave=float(selected.slope_db_per_octave))
+    return {**manual, "crossover_candidates": candidates}

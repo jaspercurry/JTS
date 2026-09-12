@@ -625,34 +625,16 @@ class SeriesPosition:
     #: The frame those objectives were graded in, or ``None`` for no previous
     #: round or a tier that banked no floor. In this pair for the same reason.
     previous_trusted_floor_hz: float | None = None
-    #: Which EPOCH of the ordinal sequence this round's ``ordinal`` counts in;
-    #: ``0`` is a box whose sequence has never been reset. Both doors that
-    #: replace durable state wholesale while leaving a measured graph on the
-    #: speaker increment it —
-    #: :func:`~jasper.web.correction_crossover_v2_republish.handle_v2_republish`
-    #: and :func:`~jasper.web.correction_crossover_v2.reset_v2_journey_state`'s
-    #: applied branch — because the ``round_receipt`` they drop is the
-    #: sequence's only memory.
     ordinal_epoch: int = 0
 
     @classmethod
     def first(cls, *, ordinal_epoch: int = 0) -> "SeriesPosition":
-        """The opening round — nothing has run, nothing was measured.
-
-        ``ordinal_epoch`` is threaded through rather than defaulted: every path
-        resolving to the first round is one where the sequence restarted, and a
-        republish must still be able to say "ordinal 1, epoch 2".
-        """
-
         return cls(
             ordinal=1, previous_objectives=None, previous_trusted_floor_hz=None,
             previous_blend_correction=None, ordinal_epoch=ordinal_epoch,
         )
 
 
-#: Durable-state key holding :attr:`SeriesPosition.ordinal_epoch`. Top-level
-#: rather than inside ``round_receipt``: the epoch has to survive exactly the
-#: write that DROPS the receipt — a republish's whole-dict replacement.
 ROUND_ORDINAL_EPOCH_STATE_KEY = "round_ordinal_epoch"
 
 

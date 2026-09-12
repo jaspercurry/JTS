@@ -56,11 +56,11 @@ from .camilla_yaml import (
     linearization_headroom_db,
 )
 from .candidate_trials import candidate_boost_issue
+from .crossover_v2.apply_gate import check_baseline_apply, prepare_trial
 from .boost_protection import config_graph_fingerprint
 from .crossover_contract import (
     TUNING_OWNERS,
     automatic_candidate_readiness,
-    crossover_snapshot_state,
     legacy_manual_preservation_state,
     measured_level_match_applied,
 )
@@ -1183,6 +1183,7 @@ def _frozen_applied_profile(
         # view that dropped it would describe a measured profile unable to
         # name its own measured groups.
         "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
+        "trial_verification": applied.get("trial_verification"),
         # Layer-1a driver linearization (#1668 PR-D). Mirrors "corrections"'s
         # own top-level convenience copy — the authoritative copy consumed by
         # recompose_applied_baseline_yaml lives inside recomposition_snapshot
@@ -1625,7 +1626,6 @@ def _revalidation_payload(
     current_source: Mapping[str, Any],
     *,
     status: str,
-    issues: Sequence[Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     """Describe whether a previously applied profile is stale.
 
@@ -1650,18 +1650,7 @@ def _revalidation_payload(
     if not saved_fingerprint or not changed:
         return {"required": False, "status": "not_required"}
 
-    issue_codes = {
-        str(issue.get("code") or "")
-        for issue in (issues or [])
-        if isinstance(issue, Mapping)
-    }
-    if issue_codes == {"baseline_summed_validation_missing"}:
-        next_step = "combined_check"
-        message = (
-            "active speaker setup changed after this profile was applied; "
-            "re-run the combined crossover check, then save and apply a fresh profile"
-        )
-    elif status in {"ready_to_compile", "ready_to_apply", "compiled_apply_blocked"}:
+    if status in {"ready_to_compile", "ready_to_apply", "compiled_apply_blocked"}:
         next_step = "save_profile" if status == "ready_to_compile" else "apply_profile"
         message = (
             "active speaker revalidation is saved; save and apply a fresh profile"
@@ -2136,10 +2125,6 @@ def build_baseline_profile_candidate(
             saved,
             source,
             status=str(payload.get("status") or ""),
-            issues=[
-                issue for issue in payload.get("issues", [])
-                if isinstance(issue, Mapping)
-            ],
         )
         # THE applied verdict, derived once where both the record and the
         # comparison are in hand. Consumers read this rather than the rebuild's
@@ -2275,7 +2260,6 @@ def build_baseline_profile_candidate(
                 saved,
                 source,
                 status=probe_status,
-                issues=issues,
             )
             if applied_profile_revalidation_satisfies_driver_target_proof(
                 revalidation_for_driver_proof
@@ -2309,12 +2293,6 @@ def build_baseline_profile_candidate(
             if candidate_evidence["summed"]
             else ("measurements" if summed_validation_complete else "missing")
         )
-        if not summed_validation_complete:
-            issues.append(_issue(
-                "blocker",
-                "baseline_summed_validation_missing",
-                "validate the combined crossover before saving the active profile",
-            ))
     if issues:
         return finalize(_blocked_payload(
             topology=topology,
@@ -2881,6 +2859,8 @@ def build_baseline_profile_candidate(
         },
     }
     payload = finalize(payload)
+    if compile_config and not write:
+        payload["_compiled_graph_text"] = yaml
     payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
         atomic_write_text(
@@ -3606,8 +3586,8 @@ def _prune_baseline_candidate_siblings(
     :func:`promote_applied_baseline_candidate` just promoted, always the new
     applied anchor — or the canonical file itself (which never matches the
     glob below; it carries no ``_candidate_`` suffix). A displaced sibling
-    needs no protection: the way back republishes the BANKED candidate
-    artifact and re-emits its config, never a pruned file.
+    needs no protection: apply re-emits the banked candidate
+    artifact, never a pruned file.
 
     BLAST RADIUS, stated because the code cannot show it: since #2572 the
     CamillaDSP statefile may durably name a candidate sibling. A deploy's
@@ -3666,6 +3646,7 @@ async def apply_baseline_profile(
     expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredCrossoverCandidate | None" = None,
+    trial_evidence: Mapping[str, Any] | None = None,
     refresh_inputs: Callable[
         [],
         tuple[
@@ -3692,6 +3673,8 @@ async def apply_baseline_profile(
     including its Room and bass layers, before the locked DSP transaction.
     """
 
+    if trial_evidence is None:
+        trial_evidence = prepare_trial(measured_candidate)
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
         source="active_speaker_baseline_apply",
@@ -3718,6 +3701,7 @@ async def apply_baseline_profile(
             expected_tuning_graph_fingerprint=expected_tuning_graph_fingerprint,
             on_candidate_verified=on_candidate_verified,
             measured_candidate=measured_candidate,
+            trial_evidence=trial_evidence,
             validate=validate,
         )
 
@@ -3743,6 +3727,7 @@ async def _apply_baseline_profile_locked(
     expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredCrossoverCandidate | None" = None,
+    trial_evidence: Mapping[str, Any] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -3850,84 +3835,11 @@ async def _apply_baseline_profile_locked(
             "apply": None, "issues": reviewed_candidate["issues"],
         }
 
-    if expected_candidate_fingerprint is not None:
+    if measured_candidate is None and expected_candidate_fingerprint is not None:
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
-
     candidate = build_candidate(write=True)
-    if expected_candidate_fingerprint is not None and not matches_expected(candidate):
-        return await refuse_stale(candidate)
-    snapshot_state = crossover_snapshot_state(
-        candidate,
-        expected_topology_id=topology.topology_id,
-        expected_topology_fingerprint=str(
-            (candidate.get("source") or {}).get("topology_fingerprint") or ""
-        ),
-        topology=topology,
-        expected_domain="driver" if driver_domain else "full",
-        require_applied=False,
-    )
-    if candidate.get("permissions", {}).get("may_apply") and not snapshot_state["valid"]:
-        candidate["status"] = "compiled_apply_blocked"
-        candidate["permissions"]["may_apply"] = False
-        candidate["issues"] = [
-            *candidate.get("issues", []),
-            _issue(
-                "blocker",
-                str(snapshot_state["reason"]),
-                str(snapshot_state["detail"]),
-            ),
-        ]
-        atomic_write_text(
-            state_target,
-            json.dumps(candidate, indent=2, sort_keys=True) + "\n",
-            mode=0o640,
-        )
-    if not driver_domain and candidate.get("permissions", {}).get("may_apply"):
-        from jasper.active_speaker.runtime_contract import (
-            GRAPH_APPROVED_ACTIVE_RUNTIME,
-            classify_bass_extension_graph,
-        )
-
-        try:
-            candidate_graph_text = Path(
-                str((candidate.get("config") or {}).get("path") or "")
-            ).read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            graph_proof = None
-            proof_detail = f"the emitted active graph is unreadable: {type(exc).__name__}"
-        else:
-            graph_proof = classify_bass_extension_graph(
-                topology,
-                evidence_source="desired",
-                graph_text=candidate_graph_text,
-                applied_baseline_state=candidate,
-            )
-            proof_detail = (
-                graph_proof.issues[0].get("message")
-                if graph_proof.issues
-                else "the emitted active graph failed whole-graph proof"
-            )
-        if (
-            graph_proof is None
-            or not graph_proof.allowed
-            or graph_proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME
-        ):
-            candidate["status"] = "compiled_apply_blocked"
-            candidate["permissions"]["may_apply"] = False
-            candidate["issues"] = [
-                *candidate.get("issues", []),
-                _issue(
-                    "blocker",
-                    "baseline_graph_safety_proof_failed",
-                    proof_detail,
-                ),
-            ]
-            atomic_write_text(
-                state_target,
-                json.dumps(candidate, indent=2, sort_keys=True) + "\n",
-                mode=0o640,
-            )
+    check_baseline_apply(candidate, topology, measured_candidate, state_target, trial_evidence=trial_evidence or {}, driver_domain=driver_domain)
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
             measurements,

@@ -718,10 +718,6 @@ def _candidate_summary(
         HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
     )
 
-    # WHICH era stamped the per-branch charges below, supplied by the CALLER
-    # because only the caller knows. The default is this build's era, true on
-    # the minting path; republish passes UNKNOWN rather than letting an
-    # off-disk candidate wear a current label over older numbers.
     stamped_basis = headroom_cost_basis or HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
 
     if candidate is None:
@@ -1325,6 +1321,9 @@ def build_conductor_state(
     #     BLOCKED auto-apply, which refuses the deferred VERIFY outright and so
     #     never has to survive a re-arm's rebind. Gating it drops a stale nudge
     #     rather than leaking one session's blocker onto the next.
+    for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
+        if key in prior:
+            state[key] = prior[key]
     state["previous_candidate_fingerprint"] = prior.get(
         "previous_candidate_fingerprint"
     )
@@ -1343,15 +1342,9 @@ def build_conductor_state(
     state["expected_post_apply_offset_db"] = prior.get(
         "expected_post_apply_offset_db"
     )
-    state["accepted_sound_revision"] = (prior.get("accepted_sound_revision")
-        if PHASE_MEASURE not in snap.session_phases else None)
-    # Session-gated to exactly that token: it is the inverse of a save the
-    # apply has not yet committed to a graph, readable only while the review
-    # that saved Sound is still current. A record that outlived it would be an
-    # inverse nothing can apply.
-    state["accepted_sound_declaration_change"] = (
-        prior.get("accepted_sound_declaration_change")
-        if PHASE_MEASURE not in snap.session_phases else None)
+    for key in ("accepted_sound_revision", "accepted_sound_declaration_change"):
+        state[key] = (prior.get(key) if prior.get("accepted_sound_candidate_fingerprint")
+                      or PHASE_MEASURE not in snap.session_phases else None)
     state["apply_blocked"] = (
         prior.get("apply_blocked")
         if prior.get("session_id") == snap.session_id
