@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-
 from __future__ import annotations
 
 import http.cookiejar
@@ -153,8 +152,8 @@ class WizardClient:
 
     def placed(self, run_id: str, pose: int | None = None) -> tuple[int, Any]:
         from .angle_capture import MOVER_CONFIRMED  # lazy: placement-only measurement imports
-        from .crossover_v2.position_gate import POSITION_READY_ENDPOINT  # lazy: placement-only
-        from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH  # lazy: placement-only
+        from .crossover_v2.position_gate import POSITION_READY_ENDPOINT  # lazy: placement-only measurement imports
+        from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH  # lazy: placement-only measurement imports
 
         http, status = self.run_status(run_id)
         if http != 200:

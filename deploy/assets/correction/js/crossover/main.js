@@ -675,8 +675,6 @@ function walkKey(prompt, pending, yielded, progress) {
   return JSON.stringify({prompt, pending: pending || null, yielded, busy, progress});
 }
 
-// The walkthrough: which spot, in the capture plan's own words, and the
-// control that says the microphone is there (#2881). Reads
 // See ADR-0296: the server owns each mover’s actions.
 function renderWalkDiagram(pending) {
   const degrees = pending ? pending.degrees : 0;

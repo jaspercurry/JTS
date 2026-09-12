@@ -14,8 +14,6 @@ from typing import Any, Callable
 
 from jasper.log_event import log_event
 
-from ..angle_capture import MOVER_ARM, MOVER_HUMAN
-
 from .capture_plan import (
     POSITION_BATCH_CONFIG_KEY,
     POSITION_BATCH_SIZE_KEY,
@@ -69,7 +67,7 @@ def _granted(
 
 class PositionGate:
 
-    def __init__(self, *, mover: str = MOVER_HUMAN, clock: Callable[[], float] | None = None) -> None:
+    def __init__(self, *, mover: str = "human", clock: Callable[[], float] | None = None) -> None:
         self._mover = mover
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
@@ -155,7 +153,7 @@ class PositionGate:
         return {
             "index": index, "attempt": attempt, "degrees": target, "vertical_deg": vertical,
             "role": str(screen.get(POSITION_ROLE_KEY) or ""), "prompt": _prompt_of(screen),
-            "mover": self._mover, "hand_released": self._mover != MOVER_ARM,
+            "mover": self._mover, "hand_released": self._mover != "arm",
             "actions": [
                 {"id": "position_ready",
                  "label": ("Microphone is on the design axis (0°)" if target == 0
@@ -165,11 +163,13 @@ class PositionGate:
                           "vertical_deg": vertical}},
                 {"id": "retake", "label": "Retake", "endpoint": "/sound/speaker/crossover/v2/retake", "body": {}},
                 {"id": "done", "label": "Done", "endpoint": "/sound/speaker/crossover/v2/complete", "body": {}},
-            ] if self._mover == MOVER_HUMAN else [],
+            ] if self._mover == "human" else [],
         }
 
     def invitation(self, entry: Any) -> dict[str, Any]:
-        return self._payload(1, 1, entry.screen)
+        pending = self._payload(1, 1, entry.screen)
+        pending["actions"] = pending["actions"][:1]
+        return pending
 
     def join(self, entry: Any) -> dict[str, Any]:
         """The first placement starts the hold clock (ADR-0305)."""

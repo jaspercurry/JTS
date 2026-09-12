@@ -29,9 +29,6 @@ AUTHORITY_TIER = "mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `sta
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 
 
-def _answer(verb: str, human: str, **fields: Any) -> int:
-    return answered({"verb": verb, **fields}, human)
-
 def _round_session_dir(capture_id: str) -> str:
     from jasper.active_speaker.bundles import sessions_dir  # lazy: wait-only measurement imports
     from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir  # lazy: wait-only
@@ -49,6 +46,7 @@ def _round_session_dir(capture_id: str) -> str:
     except OSError:
         return ""
     return found
+
 
 def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> int:
     error = error_of(payload)
@@ -78,11 +76,11 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     run_id = capture.get("session_id") if isinstance(capture, dict) else None
     if not isinstance(capture, dict) or not isinstance(run_id, str) or not run_id:
         return failed(EXIT_UNREADABLE, "run_answer_invalid", payload)
-    return _answer("run", "Run ready; place the microphone to start.",
-                   run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH),
-                   status_url=speaker_url(STATUS_PATH),
-                   shape="trial" if report.plan.candidates else "measure",
-                   first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
+    return answered({"verb": "run", "run_id": run_id, "link": speaker_url(CROSSOVER_PAGE_PATH),
+                     "status_url": speaker_url(STATUS_PATH),
+                     "shape": "trial" if report.plan.candidates else "measure",
+                     "first_prompt": capture.get("first_prompt"), "schedule": report.to_dict()},
+                    "Run ready; place the microphone to start.")
 
 
 def _cmd_placed(client: WizardClient, args: argparse.Namespace) -> int:
@@ -121,10 +119,9 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, exc.reason, str(exc))
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
-    return _answer("wait", f"Run banked at {banked.path}", run_id=args.run,
-                   result=result.get("result"), round_dir=str(banked.path),
-                   manifest=banked.provenance.get("manifest"),
-                   views=banked.provenance.get("views", []))
+    return answered({"verb": "wait", "run_id": args.run, "result": result.get("result"),
+                     "round_dir": str(banked.path), "manifest": banked.provenance.get("manifest"),
+                     "views": banked.provenance.get("views", [])}, f"Run banked at {banked.path}")
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
@@ -142,13 +139,8 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
         result = apply_by_fingerprint(client, args.expected_fingerprint)
     fingerprint = str(result["candidate_fingerprint"])
     if result["status"] == "applied":
-        return _answer(
-            "apply",
-            f"applied {fingerprint}",
-            candidate_fingerprint=fingerprint,
-            http=result["http"],
-            outcome=result["outcome"],
-        )
+        return answered({"verb": "apply", "candidate_fingerprint": fingerprint,
+                         "http": result["http"], "outcome": result["outcome"]}, f"applied {fingerprint}")
     lost = result["reason"] == REASON_ANSWER_LOST
     return _wizard_failure(
         EXIT_UNREADABLE if lost else EXIT_REFUSED, str(result["reason"]),
@@ -179,6 +171,8 @@ def _timeout(value: str) -> float:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from jasper.active_speaker.angle_capture import MOVERS  # lazy: parser-only measurement imports
+
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="resolve and post a plan; return its handoff link immediately")
@@ -191,7 +185,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--level", type=float, help="reference volume in dB; must match the banked level")
     run.add_argument("--ceiling", "--ceiling-db-spl", dest="ceiling", type=float, help="SPL ceiling in dB SPL")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
-    from jasper.active_speaker.angle_capture import MOVERS  # lazy: parser-only measurement imports
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="print preflight; play nothing")

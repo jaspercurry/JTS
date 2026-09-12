@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round``: the four round verbs, driven from the speaker.
-
-Every request is served by a fake opener -- :class:`WizardClient`'s own
-transport seam -- so these pin what the CLI SENDS, what it ANSWERS on stdout
-and what it EXITS with, without a wizard, a network or a speaker.
-"""
+"""Round CLI responses and requests through the wizard's fake HTTP transport."""
 from __future__ import annotations
 
 import io
@@ -120,22 +115,6 @@ def _run(argv, opener, monkeypatch, capsys):
 class _Identity:
     hostname = "jts3.local"
 
-
-# --------------------------------------------------------------------------- #
-# the vocabulary is the product's own
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# open
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# apply
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "live",
     [
@@ -216,7 +195,6 @@ def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
     assert receipt["reason"] == wc.REASON_NOT_APPLIED
     assert receipt["detail"]["refused_by"] == "wizard"
 
-
 # --------------------------------------------------------------------------- #
 # wait
 # --------------------------------------------------------------------------- #
@@ -294,15 +272,20 @@ def _run_opener(capture):
 
 
 @pytest.mark.parametrize("joining", [True, False])
-def test_placed_releases_the_pending_gate(joining, monkeypatch, capsys):
+@pytest.mark.parametrize("mover", ["confirmed", "human", "arm"])
+def test_placed_releases_only_confirmed_holds(joining, mover, monkeypatch, capsys):
     from jasper.active_speaker.crossover_v2.position_gate import POSITION_READY_ENDPOINT
-    action = {"endpoint": POSITION_READY_ENDPOINT, "body": {"index": 1, "attempt": 1}}
     opener = _run_opener({"status": "awaiting_join" if joining else "running",
-                          "join" if joining else "position_pending": {"action": action}})
+                          "join" if joining else "position_pending": {"index": 1, "attempt": 1, "mover": mover}})
     opener.pages[POSITION_READY_ENDPOINT] = '{"ok": true}'
     code, body = _run(["placed", "--run", "run-1", "--pose", "1"], opener, monkeypatch, capsys)
-    assert code == 0 and body["ok"] is True
-    assert json.loads(opener.posted_to(POSITION_READY_ENDPOINT)[0].data) == {"index": 1, "attempt": 1, "run_id": "run-1"}
+    posts = opener.posted_to(POSITION_READY_ENDPOINT)
+    if mover == "confirmed":
+        assert code == 0 and body["ok"] is True
+        assert json.loads(posts[0].data) == {"index": 1, "attempt": 1, "run_id": "run-1"}
+    else:
+        assert code == 1 and body["code"] == "walk_mover_mismatch"
+        assert not posts
 
 
 def test_status_reads_progress_once(monkeypatch, capsys):
@@ -385,7 +368,6 @@ def test_capture_slot_keeps_the_run_id_through_completion(monkeypatch):
     assert capture._get_capture_slot()["session_id"] == "run-1"
 
 
-
 def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, capsys):
     from jasper.cli import _run_request
     from tests.test_preflight import ready_facts
@@ -402,7 +384,6 @@ def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, c
 def test_run_names_a_lost_response(preflight_ready, monkeypatch, capsys):
     code, body = _run(["run"], _opener(session="bad json"), monkeypatch, capsys)
     assert code == 2 and body["reason"] == "run_answer_invalid"
-
 
 
 def test_status_fault_history_keeps_each_code_once():

@@ -972,7 +972,6 @@ Runs **on the speaker**, in the foreground, one run per walk:
 # session — the first poll is what checks a walk is still waiting.
 sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
     --mover turntable --attest-rig-clear --hostname jts3.local \
-    --expect-angles 7,-7,22,-22 \
     --trail /tmp/arm-walk.jsonl
 ```
 
@@ -1005,7 +1004,7 @@ sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
 **The stall NAME is the contract, not a number.** `serve` exits the shared
 `0/1/3` every tool in the menu does; the loop's own distinct verdict per failure
 class (`EXIT_NAMES`) rides out as the refusal record's `reason`, on stdout and
-in the stderr sentence. Four are worth knowing before a run:
+in the stderr sentence. Three are worth knowing before a run:
 
 - **A walk ends when its session does** (clean, `session_stopped`,
   `session_failed`, read off the same poll's `relay.status`) — but a terminal
@@ -1018,9 +1017,6 @@ in the stderr sentence. Four are worth knowing before a run:
 - **`status_unreachable` is almost always the wrong `--hostname`**; a single
   unreadable poll is absorbed, a whole `unreadable_ceiling_s` of them is its own
   named stall.
-- **`--expect-angles` is how a walk that never runs is caught**: any unserved
-  angle becomes `walk_not_taken`, and with no session yet in flight a walk must
-  still be staged (`walk_not_staged`).
 
 **A signal stops the walk once — and SIGHUP is one of them**, since a remote
 walk is stopped by its ssh transport going away and Python's default for SIGHUP
@@ -1029,7 +1025,7 @@ unwind IS the park, and the handler disarms itself on that first fire so a
 second signal cannot abandon the arm mid-park; signal endings exit
 `128 + signum`. **Observability**: `event=arm_walk.*` (`pending`, `moved`,
 `released`, `release_rejected`, `power_void`, `stuck`, `status_unreachable`,
-`session_ended`, `session_failed`, `parked`, `walk_not_taken`, …) — failures at
+`session_ended`, `session_failed`, `parked`, …) — failures at
 `ERROR`, progress at `INFO` — with the same fields as the `--trail` JSONL rows,
 from one call site.
 

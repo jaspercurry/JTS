@@ -1025,12 +1025,10 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         if offset % 3 == 0:
             with pytest.raises(CaptureBeginDeferred):
                 gate.gate(index, index, entry)
-            # A fresh hold is the end of the batch before it: the entry that
-            # batch was executing must not still be the one published.
             assert gate.published()["current"] is None
             pending = gate.published()["pending"]
             grants.append((pending["degrees"], pending["vertical_deg"]))
-            gate.release(**{name: pending["action"]["body"][name] for name in ("index", "attempt")})
+            gate.release(**{name: pending["actions"][0]["body"][name] for name in ("index", "attempt")})
         gate.gate(index, index, entry)
         # Every grant publishes what it is recording — the released config and
         # the ones the batch shortcut admits under it alike, since only this
@@ -1063,7 +1061,7 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
     gate.gate(4, 4, second)
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(4, 5, second)
-    assert gate.published()["pending"]["hand_released"] is True
+    assert gate.published()["pending"]["mover"] == ac.MOVER_HUMAN
     for index, attempt in ((3, 3), (4, 4), (4, None)):
         with pytest.raises(ValueError):
             gate.release(index, attempt)
