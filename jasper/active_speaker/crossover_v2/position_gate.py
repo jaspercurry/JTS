@@ -14,13 +14,12 @@ from typing import Any, Callable
 
 from jasper.log_event import log_event
 
+from ..movers import MOVER_HUMAN
 from .capture_plan import (
-    AUTO_ADVANCE_TAP,
     POSITION_BATCH_CONFIG_KEY,
     POSITION_BATCH_SIZE_KEY,
     POSITION_BATCH_START_KEY,
     POSITION_DEG_KEY,
-    POSITION_HAND_RELEASED_KEY,
     POSITION_ROLE_KEY,
     POSITION_VERTICAL_DEG_KEY,
     elevation_clause,
@@ -49,6 +48,8 @@ POSITION_GATE_TERMINAL_CODES = frozenset({
     POSITION_HOLD_EXPIRED_CODE, POSITION_TARGET_MISSING_CODE, SESSION_CEILING_EXPIRED_CODE,
 })
 POSITION_READY_ENDPOINT = "/sound/speaker/crossover/v2/position-ready"
+RETAKE_ENDPOINT = "/sound/speaker/crossover/v2/retake"
+COMPLETE_ENDPOINT = "/sound/speaker/crossover/v2/complete"
 
 
 def _prompt_of(screen: dict[str, Any]) -> dict[str, str]:
@@ -74,7 +75,8 @@ class PositionGate:
     capture and attempt within the same declared pose batch. A skipped index,
     repeated index, changed pose or abandoned hold needs a fresh grant.
     """
-    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
+    def __init__(self, *, mover: str = MOVER_HUMAN, clock: Callable[[], float] | None = None) -> None:
+        self._mover = mover
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
         self._pending: dict[str, Any] | None = None
@@ -142,26 +144,7 @@ class PositionGate:
             if self._pending is None:
                 self._opened_at = now
                 self._current = None
-                self._pending = {
-                    "index": index, "attempt": attempt, "degrees": target,
-                    "vertical_deg": vertical, "role": role,
-                    "prompt": _prompt_of(screen),
-                    "hand_released": (
-                        screen[POSITION_HAND_RELEASED_KEY] == "true"
-                        if POSITION_HAND_RELEASED_KEY in screen else
-                        str(screen.get("auto_advance") or "") == AUTO_ADVANCE_TAP
-                    ),
-                    "action": {
-                        "id": "crossover_v2_position_ready",
-                        "label": ("Microphone is on the design axis (0°)" if target == 0
-                                  else f"Microphone is at {target:+d}°") + rise,
-                        "endpoint": POSITION_READY_ENDPOINT,
-                        "body": {
-                            "index": index, "attempt": attempt, "degrees": target,
-                            "vertical_deg": vertical,
-                        },
-                    },
-                }
+                self._pending = self._payload(index, attempt, screen)
                 self._last = (index, attempt, batch)
                 log_event(
                     logger, "correction.crossover_v2_position_pending",
@@ -171,14 +154,30 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
+    def _payload(self, index: int, attempt: int, screen: dict[str, Any]) -> dict[str, Any]:
+        target = int(screen.get(POSITION_DEG_KEY, 0))
+        vertical = int(screen.get(POSITION_VERTICAL_DEG_KEY, 0))
+        rise = f", {elevation_clause(vertical)}" if vertical else ""
+        return {
+            "index": index, "attempt": attempt, "degrees": target, "vertical_deg": vertical,
+            "role": str(screen.get(POSITION_ROLE_KEY) or ""), "prompt": _prompt_of(screen),
+            "mover": self._mover,
+            "actions": [
+                {"id": "position_ready",
+                 "label": ("Microphone is on the design axis (0°)" if target == 0
+                           else f"Microphone is at {target:+d}°") + rise,
+                 "endpoint": POSITION_READY_ENDPOINT,
+                 "body": {"index": index, "attempt": attempt, "degrees": target,
+                          "vertical_deg": vertical}},
+                {"id": "retake", "label": "Retake", "endpoint": RETAKE_ENDPOINT, "body": {}},
+                {"id": "done", "label": "Done", "endpoint": COMPLETE_ENDPOINT, "body": {}},
+            ] if self._mover == MOVER_HUMAN else [],
+        }
+
     def invitation(self, entry: Any) -> dict[str, Any]:
-        screen = entry.screen
-        return {"index": 1, "attempt": 1, "prompt": _prompt_of(screen),
-                "degrees": int(screen.get(POSITION_DEG_KEY, 0)),
-                "vertical_deg": int(screen.get(POSITION_VERTICAL_DEG_KEY, 0)),
-                "hand_released": screen.get(POSITION_HAND_RELEASED_KEY, "true") == "true",
-                "action": {"id": "crossover_v2_position_ready", "label": "Microphone is in place",
-                           "endpoint": POSITION_READY_ENDPOINT, "body": {"index": 1, "attempt": 1}}}
+        pending = self._payload(1, 1, entry.screen)
+        pending["actions"] = pending["actions"][:1]
+        return pending
 
     def join(self, entry: Any) -> dict[str, Any]:
         """The first placement starts the hold clock (ADR-0305)."""

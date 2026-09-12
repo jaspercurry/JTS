@@ -67,17 +67,20 @@ const PENDING = {
   degrees: 7,
   role: "onax",
   prompt: PROMPT,
-  hand_released: true,
-  action: {
-    id: "crossover_v2_position_ready",
+  mover: "human",
+  actions: [{
+    id: "position_ready",
     label: "Microphone is at +7°",
     endpoint: "/sound/speaker/crossover/v2/position-ready",
     body: { index: 3, attempt: 1, degrees: 7 },
   },
+  {id: "retake", label: "Retake", endpoint: "/server/retake", body: {}},
+  {id: "done", label: "Done", endpoint: "/server/done", body: {}},
+  ],
 };
 // The SAME hold shape on an externally positioned walk: the arm's driver
 // releases it, so no browser control may.
-const DRIVEN_PENDING = { ...PENDING, hand_released: false };
+
 
 function envelope(capture, extra = {}) {
   return {
@@ -113,22 +116,26 @@ const release = walkAction().children[0];
 assert.equal(release.tag, "button");
 // The SERVER's label, not one composed here — the copy is the gate's, so this
 // pins where the words come from rather than what they say.
-assert.equal(release.textContent, PENDING.action.label);
+assert.equal(release.textContent, PENDING.actions[0].label);
 assert.equal(release.disabled, false);
 // While HOLDING the status differs from the capturing sentence — the two
 // moments must not read alike.
 const holdingStatus = captureStatus().textContent;
 assertWiredStatus();
 
-// The release POSTs the endpoint the SERVER named, with the server's own body
-// — the index is checked against what is actually pending, so a control that
-// minted its own would release a position the microphone never reached.
-nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
-await release.click();
-assert.deepEqual(posted, [{
-  path: "/sound/speaker/crossover/v2/position-ready",
-  body: { index: 3, attempt: 1, degrees: 7 },
-}]);
+for (const kind of ["join", "position_pending"]) {
+  const actions = kind === "join" ? PENDING.actions.slice(0, 1) : PENDING.actions;
+  nextEnvelope = envelope({status: "awaiting_capture", [kind]: {...PENDING, actions}});
+  render(nextEnvelope);
+  assert.equal(walkAction().children.length, actions.length);
+  for (const [index, action] of actions.entries()) {
+    const button = walkAction().children[index];
+    assert.equal(button.textContent, action.label);
+    assert.equal(button.className, index === 0 ? "btn btn--primary" : "btn btn--ghost");
+    await button.click();
+    assert.deepEqual(posted.at(-1), {path: action.endpoint, body: action.body});
+  }
+}
 
 // -- state: CAPTURING — released, tone playing ------------------------------ //
 // The gate drops `position_pending` the moment it admits the begin, so the
@@ -200,7 +207,7 @@ const NEXT_PENDING = {
   index: 6,
   degrees: -7,
   prompt: NEXT_PROMPT,
-  action: {...PENDING.action, body: {index: 6, attempt: 1, degrees: -7}},
+  actions: [{...PENDING.actions[0], body: {index: 6, attempt: 1, degrees: -7}}, ...PENDING.actions.slice(1)],
 };
 render(envelope({
   status: "awaiting_capture",
@@ -229,7 +236,7 @@ assert.equal(
 );
 const heldRelease = walkAction().children[0];
 assert.equal(heldRelease.tag, "button");
-assert.equal(heldRelease.textContent, NEXT_PENDING.action.label);
+assert.equal(heldRelease.textContent, NEXT_PENDING.actions[0].label);
 render(envelope(straddled));
 assert.equal(walkAction().children[0], heldRelease);
 
@@ -282,7 +289,7 @@ assert.equal(walk().hidden, false);
 assert.deepEqual(actionLabels(), []);
 const retakeRelease = walkAction().children[0];
 assert.equal(retakeRelease.tag, "button");
-assert.equal(retakeRelease.textContent, PENDING.action.label);
+assert.equal(retakeRelease.textContent, PENDING.actions[0].label);
 
 // …the release still posts the server's own body, and the screen then returns
 // to the closing pair once the walk finishes the re-recorded spot.
@@ -291,7 +298,7 @@ nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
 await retakeRelease.click();
 assert.deepEqual(posted, [{
   path: "/sound/speaker/crossover/v2/position-ready",
-  body: PENDING.action.body,
+  body: PENDING.actions[0].body,
 }]);
 render(envelope({ status: "awaiting_capture", source: "wired" }, CLOSING_ACTIONS));
 assert.equal(walk().hidden, true);
@@ -315,25 +322,15 @@ render(envelope({ status: "complete", source: "wired" }));
 assert.equal(elements.get("crossover-capture").hidden, true);
 assert.equal(walk().hidden, true);
 
-// -- a hold NOBODY here releases -------------------------------------------- //
-// The arm's own walk is gated identically and rides the identical payload, so
-// the discriminator has to be the hold's `hand_released`, not the transport.
-// A release control here could free a position the arm has not reached.
-render(envelope({
-  status: "awaiting_capture",
-  source: "wired",
-  position_pending: DRIVEN_PENDING,
-}));
-assert.equal(walk().hidden, true);
-assert.equal(walkAction().children.length, 0);
-assertWiredStatus();
-
-// -- a hold nobody at this browser releases is not narrated as a wait ------- //
-render(envelope({
-  status: "awaiting_capture",
-  source: "wired",
-  position_pending: DRIVEN_PENDING,
-}));
-assertWiredStatus();
+for (const mover of ["arm", "confirmed"]) {
+  render(envelope({
+    status: "awaiting_capture",
+    source: "wired",
+    position_pending: {...PENDING, mover},
+  }));
+  assert.equal(walk().hidden, true);
+  assert.equal(walkAction().children.length, 0);
+  assertWiredStatus();
+}
 
 console.log(JSON.stringify({ ok: true, passed }));

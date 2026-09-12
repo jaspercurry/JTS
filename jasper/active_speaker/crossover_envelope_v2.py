@@ -42,6 +42,7 @@ from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
+from .crossover_v2.position_gate import RETAKE_ENDPOINT, COMPLETE_ENDPOINT
 from .candidate_trials import tuning_trial_matches_candidate
 from .crossover_v2.journey import (
     CAPTURE_PHASES,
@@ -969,14 +970,14 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         next_action={
             "id": "crossover_v2_complete",
             "label": "Save this measurement",
-            "endpoint": "/sound/speaker/crossover/v2/complete",
+            "endpoint": COMPLETE_ENDPOINT,
             "body": {},
             "show_during_capture": True,
         } if ready else None,
         alternate_actions=[{
             "id": "crossover_v2_retake",
             "label": "Record the last spot again",
-            "endpoint": "/sound/speaker/crossover/v2/retake",
+            "endpoint": RETAKE_ENDPOINT,
             "body": {},
             "show_during_capture": True,
         }] if ready else [],

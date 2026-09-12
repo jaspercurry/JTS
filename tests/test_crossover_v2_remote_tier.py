@@ -35,6 +35,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     CrossoverV2Refused,
@@ -62,6 +63,8 @@ from jasper.active_speaker.crossover_v2.position_gate import (
     POSITION_HOLD_CODE,
     POSITION_HOLD_EXPIRED_CODE,
     POSITION_READY_ENDPOINT,
+    RETAKE_ENDPOINT,
+    COMPLETE_ENDPOINT,
     POSITION_TARGET_MISSING_CODE,
     REMOTE_POSITION_HOLD_BUDGET_S,
     SESSION_CEILING_EXPIRED_CODE,
@@ -95,8 +98,7 @@ from jasper.web import correction_capture, correction_handlers
 #: opens on two of them since the 2026-08-24 geometry ruling: VERIFY's anchor at
 #: the mark, whose sweep the tracking verdict consumes, and then the first pose
 #: of ``CLOUD_VERIFY_POSE_PROMPTS``, whose sweep joins the post-apply GROUP. The
-#: microphone does not move between them, and ``jasper-angle-capture serve``'s
-#: ``--expect-angles`` compares SETS, so a repeat adds nothing to state there.
+#: microphone does not move between them.
 STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
 STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
 
@@ -213,8 +215,8 @@ def test_the_gate_defers_until_the_driver_releases_and_then_admits():
     assert pending["attempt"] == 3
     assert pending["degrees"] == -7
     assert pending["role"] == POSITION_ROLE_ONAX
-    assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
-    assert pending["action"]["body"] == {
+    assert pending["actions"][0]["endpoint"] == POSITION_READY_ENDPOINT
+    assert pending["actions"][0]["body"] == {
         "index": 3, "attempt": 3, "degrees": -7, "vertical_deg": 0,
     }
     # The phone re-posts the SAME begin throughout a hold; each one defers again
@@ -386,7 +388,7 @@ def _label_at(degrees):
     gate = PositionGate()
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(1, 1, _entry(degrees))
-    return gate.published()["pending"]["action"]["label"]
+    return gate.published()["pending"]["actions"][0]["label"]
 
 
 def test_the_release_label_signs_a_bearing_but_never_signs_zero():
@@ -404,28 +406,24 @@ def test_the_release_label_signs_a_bearing_but_never_signs_zero():
     assert "+7" in _label_at(7)
 
 
-def test_hand_released_tracks_the_entrys_own_advance_policy():
-    """The derivation, pinned against its two inputs rather than its output.
-
-    ``hand_released`` is read off the entry's ``auto_advance`` — the plan's own
-    statement of whether a person is expected to act — so a shape that stops
-    advancing by tap stops offering a browser release in the same edit. The
-    mutation that matters is the middle case: a hold whose entry says
-    ``countdown`` must never claim a hand.
-    """
-    for policy, expected in (
-        (AUTO_ADVANCE_TAP, True),
-        (AUTO_ADVANCE_COUNTDOWN, False),
-        ("", False),
-    ):
-        gate = PositionGate()
-        with pytest.raises(CaptureBeginDeferred):
-            gate.gate(1, 1, SimpleNamespace(screen={
-                POSITION_DEG_KEY: "0",
-                POSITION_ROLE_KEY: POSITION_ROLE_ONAX,
-                "auto_advance": policy,
-            }))
-        assert gate.published()["pending"]["hand_released"] is expected
+@pytest.mark.parametrize("mover", ac.MOVERS)
+@pytest.mark.parametrize("policy", [AUTO_ADVANCE_TAP, AUTO_ADVANCE_COUNTDOWN, ""])
+def test_pending_and_join_actions_belong_to_the_mover(mover, policy):
+    gate = PositionGate(mover=mover)
+    entry = SimpleNamespace(screen={POSITION_DEG_KEY: "0", "auto_advance": policy})
+    invitation = gate.invitation(entry)
+    assert gate.published()["pending"] is None
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(1, 1, entry)
+    pending = gate.published()["pending"]
+    assert invitation == {**pending, "actions": pending["actions"][:1]}
+    assert pending["mover"] == mover
+    assert [(a["id"], a["endpoint"], a["body"]) for a in pending["actions"]] == ([
+        ("position_ready", POSITION_READY_ENDPOINT,
+         {"index": 1, "attempt": 1, "degrees": 0, "vertical_deg": 0}),
+        ("retake", RETAKE_ENDPOINT, {}),
+        ("done", COMPLETE_ENDPOINT, {}),
+    ] if mover == ac.MOVER_HUMAN else [])
 
 
 def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
@@ -599,7 +597,7 @@ def test_a_live_hold_reaches_the_envelope_on_the_capture_block():
         pending = capture["position_pending"]
         assert pending["degrees"] == -22
         assert pending["index"] == 2
-        assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
+        assert pending["actions"][0]["endpoint"] == POSITION_READY_ENDPOINT
         # Another flow's reader must never see this session's hold.
         assert correction_capture._get_capture_slot_for("sync:") is None
         # A hold is not an execution: nothing is recording while the gate waits.
