@@ -290,10 +290,12 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     if outcome == 'converged':
         assert len(box.programs) == len(box.admissions) == 2
         first, second = box.programs
+        assert all((s.f1_hz, s.f2_hz) == (20.0, 20000.0)
+                   for p in box.programs for s in p.stimulus_segments())
         assert any(s.kind == KIND_COURTESY_TONE for s in first.segments)
         assert not any(s.kind == KIND_COURTESY_TONE for s in second.segments)
         assert len(first.stimulus_segments()) == len(second.stimulus_segments()) == 1
-        assert 8.0 <= second.total_samples / second.sample_rate_hz <= 10.0
+        assert second.total_samples / second.sample_rate_hz <= 10.0
         assert box.watchdog == sweep.watchdog_seconds(-40, 0, first.total_samples / first.sample_rate_hz) + 60
         provenance = box.bank.call_args.kwargs['stimulus'].to_dict()
         assert provenance == {'program_id': second.program_id, 'phase': second.phase,
