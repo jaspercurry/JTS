@@ -59,6 +59,7 @@ APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 STATEFILE_FILENAME = "camilla-statefile.yml"
+ROOM_ARTIFACT = "room.json"
 
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 
@@ -257,14 +258,11 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | N
 
 
 def contract_sources(session_dir: Path) -> dict[str, Any]:
-    """Read candidate and room evidence; callers supply their receipt and context."""
     artifact_dir, reason = round_artifact_dir(session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
     inputs = round_inputs(session_dir)
-    paths = {
-        "candidate": artifact_dir / "candidate.json",
-        **{key: default_out(inputs, session_dir, f"{key}.json")
-           for key in ("room_median", "room_persistence", "room_ceiling")},
-    }
-    return {name: _read_json_mapping(path) or {} for name, path in paths.items()}
+    room = _read_json_mapping(default_out(inputs, session_dir, ROOM_ARTIFACT)) or {}
+    return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
+            **{f"room_{section}": room.get(section, {})
+               for section in ("median", "persistence", "ceiling")}}

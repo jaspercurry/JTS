@@ -41,7 +41,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.spatial import (
     cloud_entanglement_floor_hz,
-    cloud_trusted_floor_hz,
     cloud_validity_floor_hz,
 )
 from jasper.active_speaker.crossover_v2_flow import assemble_cloud_group_result
@@ -53,6 +52,7 @@ from jasper.active_speaker.flat_spec import (
     spec_flatness_gauge,
 )
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
+from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz
 from jasper.audio_measurement.spatial_combine import PositionCapture, combine_positions
 from jasper.active_speaker.crossover_envelope_v2 import (
     chart_cloud_status,
@@ -81,9 +81,6 @@ def _two_path_ir(delay_samples: int, r: float, *, seed: int) -> np.ndarray:
 
 
 def _locked_cloud(n: int = 6) -> list[PositionCapture]:
-    """A position-invariant two-path cloud — the same shape
-    ``test_crossover_v2_cloud_pipeline.py`` builds, so the two modules
-    exercise one pipeline on one fixture family."""
     freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
     captures = []
     for k in range(n):

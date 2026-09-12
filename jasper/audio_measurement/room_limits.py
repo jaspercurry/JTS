@@ -2,29 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Every code-computed limit on a Layer-3 room candidate, as pure numpy.
+"""Room correction limits and the trusted evidence floor (ADR-0256)."""
 
-Three families, one owner: the per-frequency cut depth the cross-position
-spread supports; the taper that returns the correction to flat below the
-ceiling (`See ADR-0256` rules 1-2 — the ceiling is the applied tune's trusted
-floor and arrives here as an argument, never derived); and the evidence a
-proposed low-frequency BOOST must show before it is admitted
-(`See docs/room-correction-regime-plan.md` D5: spatial persistence, a modally
-plausible shape, bounded headroom). A preference tilt is Layer 4 and is never
-measured, so no target curve lives here.
-
-Nothing here reads a file, knows what a candidate is, or decides policy: a
-caller supplies the median, the spread and the ceiling, and gets arrays and
-findings back.
-"""
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 
 __all__ = [
@@ -50,6 +39,7 @@ __all__ = [
     "boost_cap_db",
     "ceiling_taper",
     "cut_floor_db",
+    "cloud_trusted_floor_hz",
     "depth_fraction",
     "spatial_support",
 ]
@@ -92,6 +82,16 @@ ROOM_BOOST_MAX_DIP_DB: float = 10.0
 ROOM_MAX_FILTER_BOOST_DB: float = 6.0
 ROOM_MAX_TOTAL_BOOST_DB: float = 6.0
 ROOM_MAX_FILTERS_PER_SIDE: int = 8
+
+
+def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
+    """Convert the validity floor (1/T) to the trusted floor (2.5/T)."""
+    if validity_floor_hz is None:
+        return None
+    floor = float(validity_floor_hz)
+    if not math.isfinite(floor) or floor <= 0.0:
+        return None
+    return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
 def spatial_support(n_positions: int) -> dict[str, Any]:
@@ -193,7 +193,6 @@ class BoostAdmission:
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-safe record of the finding."""
         return dataclasses.asdict(self)
 
 

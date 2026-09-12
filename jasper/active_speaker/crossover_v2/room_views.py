@@ -22,12 +22,17 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_MEDIAN_WINDOW,
     room_ceiling_hz,
 )
-from jasper.audio_measurement.room_limits import spatial_support
+from jasper.audio_measurement.measurement_geometry import (
+    WALL_FIELD_BY_KEY, boundary_prior, load_declared_geometry,
+)
+from jasper.audio_measurement.room_limits import (
+    admit_boost, boost_cap_db, cloud_trusted_floor_hz, cut_floor_db, spatial_support,
+)
 
 from .evidence_packet import applied_profile_source
+from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
 from .round_views import RoundViewsError, local_features
-from .spatial import cloud_trusted_floor_hz
 
 #: A feature is a local excursion at least this deep against the local level,
 #: at least this wide between its half-depth edges; positions agree on it
@@ -278,4 +283,57 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
             "trend_half_width_octaves": TREND_HALF_WIDTH_OCTAVES,
         },
         "features": features,
+    }
+
+
+def incumbent_room(profile: Mapping[str, Any] | None, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    profile = profile or {}
+    snapshot = profile.get("recomposition_snapshot") or {}
+    correction = snapshot.get("room_correction", profile.get("room_correction")) or {}
+    basis = correction.get("basis") or {}
+    fingerprint = (profile.get("source") or {}).get("measured_candidate_fingerprint")
+    scopes = {"room_tune", "applied"} if correction else {"speaker_tune", "room_tune", "applied"}
+    matches = [row["set_id"] for row in manifest["sets"] if (
+        (fingerprint and row["capture_basis"].get("candidate_id") == fingerprint)
+        or (not row["capture_basis"].get("candidate_id")
+            and row["capture_basis"].get("graph_scope") in scopes)
+    )]
+    return {
+        "round_id": basis.get("round_id"), ROOM_MEDIAN_FIELD: basis.get(ROOM_MEDIAN_FIELD),
+        "set_id": matches[0] if len(matches) == 1 else None,
+        "reason": "" if len(matches) == 1 else (
+            "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
+        ),
+    }
+
+
+def room_document(
+    takes: Sequence[SeatTake], *, set_id: str, evidence: Mapping[str, Any],
+    applied_profile_path: Path | None, geometry_path: Path | None,
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    ceiling = room_ceiling(applied_profile_path)
+    median = {**room_median(takes, ceiling), "set_id": set_id, "evidence": dict(evidence)}
+    value = read_room_median(median)
+    persistence = room_persistence(takes, ceiling)
+    for feature in persistence["features"]:
+        feature["admission"] = admit_boost(
+            feature["centre_hz"], freqs_hz=value.freqs_hz, median_db=value.median_db,
+            deviations_db=value.deviations_db, n_positions=value.n_positions,
+        ).to_dict()
+    geometry = load_declared_geometry(geometry_path) if geometry_path is not None else None
+    walls = {key: distance for key, field in WALL_FIELD_BY_KEY.items()
+             if geometry is not None and (distance := getattr(geometry, field)) is not None}
+    profile, _ = applied_profile_source(applied_profile_path)
+    return {
+        "ceiling": {"hz": ceiling.ceiling_hz, "provenance": ceiling.to_dict()},
+        "median": median,
+        "persistence": persistence,
+        "limits": {
+            "cut_floor_db": cut_floor_db(value.spread_db, value.freqs_hz, value.ceiling_hz).tolist(),
+            "boost_cap_db": boost_cap_db(value.freqs_hz, value.ceiling_hz).tolist(),
+        },
+        "incumbent": incumbent_room(profile, manifest),
+        "boundary": {"advisory": True, **boundary_prior(value.freqs_hz, walls=walls)} if walls else None,
+        "boundary_reason": "" if walls else ("walls_undeclared" if geometry else "geometry_undeclared"),
     }

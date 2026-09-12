@@ -27,6 +27,8 @@ from typing import Any, Callable
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.atomic_io import atomic_write_json
 from jasper.log_event import log_event
+from jasper.sound.profile import build_sound_filter_slots, load_profile
+from jasper.sound.settings import load_sound_settings, output_trim_db
 
 logger = logging.getLogger(__name__)
 
@@ -167,25 +169,11 @@ def _refuse_if_graph_is_claimed() -> None:
         )
 
 
-def _household_layers(
-    anchor_path: str,
-) -> tuple[list[Any], list[Any], float]:
-    """The three program-domain inputs the live graph carries: (room, EQ, trim).
-
-    Read exactly where ``/sound``'s own re-emit reads them, so an audition that
-    drops the measured correction does not silently drop the household's EQ with
-    it and confound the comparison. Room PEQs come back out of the durable anchor,
-    which the displacement refusal has already proven is what is playing.
-    """
-
-    from jasper.sound.camilla_yaml import extract_room_peqs_from_config
-    from jasper.sound.profile import build_sound_filter_slots, load_profile
-    from jasper.sound.settings import load_sound_settings, output_trim_db
+def _household_layers() -> tuple[list[Any], float]:
 
     profile = load_profile()
     settings = load_sound_settings()
     return (
-        extract_room_peqs_from_config(anchor_path),
         list(build_sound_filter_slots(profile)),
         output_trim_db(profile, settings),
     )
@@ -195,7 +183,6 @@ def build_reduced_yaml(
     topology: Any,
     *,
     applied_profile: dict[str, Any],
-    anchor_path: str,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit the applied graph without its two measured-correction stages.
 
@@ -208,12 +195,11 @@ def build_reduced_yaml(
     from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
     from jasper.active_speaker.baseline_profile import applied_bass_extension
     from jasper.active_speaker.playback_route import resolve_live_active_endpoint
-    room_peqs, preference_filters, trim_db = _household_layers(anchor_path)
+    preference_filters, trim_db = _household_layers()
     device, _source = resolve_live_active_endpoint(topology)
     return recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied_profile,
-        room_peqs=room_peqs,
         preference_filters=preference_filters,
         output_trim_db=trim_db,
         out_path=None,
@@ -416,7 +402,7 @@ async def start_audition(
     ):
         anchor = await _durable_anchor(cam)
         yaml_text, issues = build_reduced_yaml(
-            topology, applied_profile=applied, anchor_path=anchor
+            topology, applied_profile=applied
         )
         if yaml_text is None or issues:
             detail = "; ".join(

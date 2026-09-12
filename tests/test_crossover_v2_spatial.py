@@ -30,7 +30,7 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
-from jasper.active_speaker.crossover_v2 import spatial
+from jasper.active_speaker.crossover_v2 import pose_curve, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
     MEASURE_KIND_BASELINE,
@@ -58,12 +58,6 @@ from jasper.audio_measurement.program_analysis import (
 
 
 def _screens(**overrides) -> spatial.CaptureScreens:
-    """A take that passes every screen, minus whatever the caller breaks.
-
-    Every ladder test below starts from a CLEAN capture and breaks exactly one
-    thing, which is what makes each assertion about that one rung rather than
-    about whichever rung happens to fire first in a soup of failures.
-    """
     base = {
         "stimulus_located": True,
         "pilot_snr_ok": True,
@@ -750,8 +744,8 @@ def test_a_banked_pose_curve_reconstructs_the_complex_transfer_function():
     tf = np.array([0.5, 2.0, 0.25, 1.0]) * np.exp(
         1j * np.array([0.3, 3.0, -2.9, 4.2])
     )
-    record = spatial.pose_curve_record(
-        spatial.LateralPoseCurve(
+    record = pose_curve.pose_curve_record(
+        pose_curve.LateralPoseCurve(
             role="woofer", freqs_hz=freqs, complex_tf=tf, band_hz=(80.0, 14000.0),
         )
     )
@@ -774,8 +768,8 @@ def test_a_banked_pose_curve_floors_a_deep_null_instead_of_banking_minus_infinit
     """
     import numpy as np
 
-    record = spatial.pose_curve_record(
-        spatial.LateralPoseCurve(
+    record = pose_curve.pose_curve_record(
+        pose_curve.LateralPoseCurve(
             role="tweeter",
             freqs_hz=np.array([1000.0]),
             complex_tf=np.array([0.0 + 0.0j]),
@@ -791,8 +785,8 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
     count the walk bookkeeping supplied separately."""
     import numpy as np
 
-    def _curve(role: str) -> spatial.LateralPoseCurve:
-        return spatial.LateralPoseCurve(
+    def _curve(role: str) -> pose_curve.LateralPoseCurve:
+        return pose_curve.LateralPoseCurve(
             role=role, freqs_hz=np.array([1000.0]),
             complex_tf=np.array([1.0 + 0.0j]), band_hz=(80.0, 20000.0),
         )

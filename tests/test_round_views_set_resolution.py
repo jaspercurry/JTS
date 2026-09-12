@@ -64,14 +64,15 @@ def test_set_selects_manifest_takes_and_files_its_own_artifact(two_sets, capsys,
     assert selected.capture_basis == group["capture_basis"]
     assert selected.takes == tuple(group["takes"])
     assert selected.selected_ids == tuple(take["take_id"] for take in group["takes"] if take["selected"])
-    assert main(["room-median", str(root), "--set", group["set_id"]]) == 0
-    answer, doc = artifact_answer(capsys)
-    assert answer["out"] == str(root / f"room_median-{group['set_id'][:12]}.json")
+    assert main(["room", str(root), "--set", group["set_id"]]) == 0
+    answer, document = artifact_answer(capsys)
+    doc = document["median"]
+    assert answer["out"] == str(root / f"room-{group['set_id'][:12]}.json")
     assert set(doc["evidence"]["take_ids"]) == set(selected.selected_ids)
     assert doc["evidence"]["basis"] == group["capture_basis"]
     assert main(["room-grade", str(root), "--set", group["set_id"]]) == 0
     _, grade = artifact_answer(capsys)
-    assert grade["room_median"] == answer["out"]
+    assert grade["room"] == answer["out"]
     assert grade["evidence"] == doc["evidence"]
 
 
@@ -89,11 +90,11 @@ def test_manifest_refusals_keep_registry_codes(two_sets, capsys, case, reason):
         manifest["finalized"] = False
         path.write_text(json.dumps(manifest))
     flag = [] if case == "ambiguous" else ["--set", "unknown" if case == "unknown" else manifest["sets"][0]["set_id"]]
-    assert main(["room-median", str(root), *flag]) == 1
+    assert main(["room", str(root), *flag]) == 1
     answer = json.loads(capsys.readouterr().out)
     assert (answer["status"], answer["reason"]) == ("refused", reason)
     assert reason in REASON_REGISTRY
-    assert not list(root.glob("room_median*.json"))
+    assert not list(root.glob("room*.json"))
 
 
 @pytest.mark.parametrize("status", ["complete", "partial", "cancelled"])
@@ -104,14 +105,14 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
     manifest["status"] = status
     (directory / RUN_MANIFEST_FILENAME).write_text(json.dumps(manifest))
     assert resolve_set(round_inputs(root)).set_id == manifest["sets"][0]["set_id"]
-    assert main(["room-median", str(root)]) == 0
+    assert main(["room", str(root)]) == 0
     answer, _ = artifact_answer(capsys)
-    assert Path(answer["out"]).name == "room_median.json"
+    assert Path(answer["out"]).name == "room.json"
 
 
 @pytest.mark.parametrize("program,first", [
     ("speaker", ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat")),
-    ("room", ("room-median", "room-persistence", "room-grade")),
+    ("room", ("room", "room-grade")),
     ("bass", ("bass", "bass-compare")),
 ])
 def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, first):
@@ -130,7 +131,7 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
     ["sweep", "round", "--scope", "take", "--capture-id", "take"],
     ["forward-model", "round", "--capture-id", "take"],
     ["forward-model", "round", "--measured-capture-id", "take"],
-    ["room-median", "round", "--capture-id", "take"],
+    ["room", "round", "--capture-id", "take"],
     ["room-persistence", "round", "--capture-id", "take"],
     ["room-grade", "round", "--room-median", "median.json"],
     ["room-grade", "round", "--baseline-room-median", "median.json"],
@@ -233,19 +234,19 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
                             (record.get("take_id", "").endswith("_second") == (candidate is second))],
                            set_id="second" if candidate is second else "first") for candidate in (original, second)]
     write_manifest(round_dir, program="room", groups=groups)
-    assert round_views.main(["room-median", str(round_dir)]) == round_views.EXIT_REFUSED
+    assert round_views.main(["room", str(round_dir)]) == round_views.EXIT_REFUSED
     refused = json.loads(capsys.readouterr().out)
     assert refused["reason"] == "round_set_unknown"
-    assert not (round_dir / "room_median.json").exists()
+    assert not (round_dir / "room.json").exists()
 
     for record, level in [(original, -30.0), (second, -20.0)]:
         set_id = "first" if record is original else "second"
-        out = round_dir / f"room_median-{set_id}.json"
+        out = round_dir / f"room-{set_id}.json"
         legacy = select_seat_takes(root, capture_id=record["take_id"])
         answer = _run(capsys, [
-            "room-median", str(round_dir), "--set", set_id, "--out", str(out),
+            "room", str(round_dir), "--set", set_id,
         ])
-        doc = json.loads(out.read_text())
+        doc = json.loads(out.read_text())["median"]
         assert doc["median_db"] == room_views.room_median(legacy.takes, room_views.room_ceiling(None))["median_db"]
         assert answer["n_positions"] == doc["n_positions"] == 7
         assert len({p["pose_key"] for p in doc["positions"]}) == 7
@@ -257,11 +258,6 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         assert median.evidence == doc["evidence"]
         expected_program = changed["program_id"] if record is second and "program_id" in changed else record["program"]["program_id"]
         assert [median.evidence["basis"][key] for key in ("program_id", "loudness_volume_db")] == [expected_program, record["loudness_volume_db"]]
-        persistence = _run(capsys, [
-            "room-persistence", str(round_dir), "--set", set_id,
-        ])
-        assert persistence["n_positions"] == 7
-        assert persistence["evidence"] == doc["evidence"]
         grade = _run(capsys, ["room-grade", str(round_dir), "--set", set_id])
         assert grade["evidence"] == doc["evidence"]
         assert grade["graph_scopes"] == [record["graph_scope"]]

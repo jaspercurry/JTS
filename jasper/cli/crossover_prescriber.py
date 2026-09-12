@@ -249,7 +249,7 @@ def _room_median(path: Path) -> tuple[RoomMedian, str]:
         raise RoomPrescriptionRefused(
             ROOM_MEDIAN_UNAVAILABLE, f"{path}: {exc}"
         ) from exc
-    return read_room_median(document), prescription_sha256(payload)
+    return read_room_median(document.get("median", document)), prescription_sha256(payload)
 
 
 def _room_median_path(args: argparse.Namespace, resolved: Path | None = None) -> Path:
@@ -450,8 +450,7 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
 
 
 PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
-#: The seat cube's median, written by ``jasper-round-views room-median``.
-ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
+ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room"].artifact
 
 
 def _cmd_contract(args: argparse.Namespace) -> int:

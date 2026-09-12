@@ -60,7 +60,6 @@ def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
 
 
 def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
-    """Resolve purpose and validate the capture mode supported by the runner."""
 
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
@@ -73,7 +72,7 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 def bookkeeping_views(program: str) -> tuple[str, ...]:
     return {
         PURPOSE_SPEAKER: ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat"),
-        PURPOSE_ROOM: ("room-median", "room-persistence", "room-grade"),
+        PURPOSE_ROOM: ("room", "room-grade"),
         PURPOSE_BASS: ("bass", "bass-compare"),
     }.get(program, ())
 
