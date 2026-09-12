@@ -23,6 +23,7 @@ from jasper.active_speaker.branch_chain import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
+from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 import yaml
 
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -330,7 +331,7 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     packet = crossover_prescriber._load_packet(args)
     raw = document(base.fingerprint, {
         "driver": driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": -2}], packet),
-        "room": room_document(sha256=prescription_sha256((round_dir / "room_median.json").read_bytes())),
+        "room": room_document(sha256=room_median_sha256(json.loads((round_dir / "room.json").read_text())["median"])),
         "alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
         "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
     })

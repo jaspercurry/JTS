@@ -266,29 +266,25 @@ higher-frequency deficits need separate speaker-informed evidence. In order:
    states each place from the head centre at ear height.
 3. `jasper-round bank <session-dir>`: records carry the measurement purpose,
    actual pose and gating result. Room analysis retains reflections.
-4. `jasper-round-views room-ceiling <round-dir>`: the applied candidate's
-   trusted floor, clamped; with no readable profile the default is used and
-   disclosed.
-5. `jasper-round-views room-median <round-dir>`: median, spread and
-   per-position deviation below the ceiling; `room_median.json` is the input
-   the room candidate reads. When several measurement sets are present, use
-   `--set <set-id>` from the run manifest. Repeat
-   takes count once per physical pose. The result names its source records,
-   missing identity fields and unusable takes; it uses only shared measured
-   frequency coverage. Use `--out <path>` to retain each candidate separately.
-6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
-   hold across the cloud, and at what fraction of positions. Use the same
-   `--set` selection as the median.
-7. Put the room prescription in the document's `room` section. Run
-   `jasper-crossover-prescriber judge <doc> --round <round-dir>`, then
-   `compose <doc> --base <fp|saved> --round <round-dir>`. Trial the returned
-   candidate fingerprint with the same room walk, then bank the round.
-8. `jasper-round-views room-grade <round-dir> [--baseline <round-dir>]`: the
-   re-measured cloud's median against flat, band by band, with the incumbent
-   round's numbers beside it. Comparisons use shared frequency coverage and
+4. `jasper-round-views room <round-dir> --set <set-id>` writes the set's
+   `room.json` artifact with a set suffix. It includes ceiling and provenance,
+   median, spread, position deviations, persistence with boost admission,
+   cut and boost limits, the incumbent room identity, and the boundary prior.
+   Missing geometry has a reason code. Repeats count once per pose, and curves
+   use only shared measured coverage. The manifest owns the set selection.
+5. Put the room prescription in the document's `room` section. Run
+   `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`,
+   then `compose <doc> --base <fp|saved> --round <round-dir> --set <set-id>`.
+   Stage the same `jasper-angle-capture plan --program room
+   --candidates <fingerprint>` walk, then open and bank a new round. Each seat
+   capture plays the room candidate through the accepted speaker tune.
+6. `jasper-round-views room-grade <round-dir> --set <candidate-set>
+   [--incumbent <set-id>]`: grade the room document against the incumbent set
+   from the same run, or an explicit set. An unknown or ambiguous incumbent
+   is disclosed. Comparisons use shared frequency coverage and
    disclose their level alignment and capture compatibility. A regressed band
    is a disclosure; restore follows the same adoption path.
-9. Save the chosen measured candidate through `jasper-round apply
+7. Save the chosen measured candidate through `jasper-round apply
    --expected-fingerprint <fingerprint>`; inspect the saved stack and its evidence links.
    Confirm that Speaker filters and alignment remain as accepted. Use
    [Evidence and recovery](#evidence-and-recovery) to resume or restore.
@@ -445,11 +441,11 @@ does not keep raising the level or discard the earlier evidence.
 | Does it hold off axis? | `directivity`, `agreement`, `co-metrics` over summed poses |
 | Does delay/polarity explain the crossover feature? | `delay-landscape`, `jasper-null`, `delay-confirm`; inspect branch levels |
 | Does a feature survive gate/pose changes? | `classify-features`, `sweep --scope round`, `close-reference` |
-| Is a low-end feature what the walls alone predict? | `boundary-prior`; advisory, from declared wall distances |
+| Is a low-end feature what the walls alone predict? | `room --set`; boundary section from declared wall distances |
 | Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |
 | How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |
 | Which part of a prescription did cloud evidence constrain? | `cloud-binding` |
-| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade [--baseline]` |
+| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade --set [--incumbent]` |
 | Can the same-take branches reconstruct its sum, or what does a full candidate predict? | `forward-model`; select exact captures and treat prediction as unmeasured |
 | Show a curve or compare two takes? | `frequency <A> [<B>]` |
 
@@ -471,10 +467,10 @@ Capture emits sound; apply persists a tune.
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|room-grade\|bass\|bass-compare\|bass-fit\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
-| `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances, which only the jasper-round-views boundary-prior model reads. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
+| `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances for jasper-round-views room. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |
 <!-- END GENERATED TOOL MENU -->
 
 Regenerate with `PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu.py`;

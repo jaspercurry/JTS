@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    RoundInputs, default_out as default_out, set_artifact_name as set_artifact_name,
+    ROOM_ARTIFACT, RoundInputs, default_out as default_out, set_artifact_name as set_artifact_name,
     round_artifact_dir,
     banked_round_of,
     recent_round_sessions,
@@ -115,10 +115,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "delay-landscape": ViewArtifact("delay_landscape.json"),
     "delay-confirm": ViewArtifact("delay_confirmation.json"),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
-    "boundary-prior": ViewArtifact("boundary_prior.json"),
-    "room-ceiling": ViewArtifact("room_ceiling.json", TAKES_SET),
-    "room-median": ViewArtifact("room_median.json", TAKES_SET),
-    "room-persistence": ViewArtifact("room_persistence.json", TAKES_SET),
+    "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(

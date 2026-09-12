@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_json_source, read_source_bytes
-from .round_views import default_out
-from .round_views._common import ARTIFACT_BY_VIEW, context_artifacts
+from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts, resolve_set
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
-from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, prescription_sha256, read_prescription_bytes
+from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
+from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
+from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
     packet_feature_classifications, packet_region_band_hz,
@@ -28,7 +29,6 @@ from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, c
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, read_prescription_document,
 )
-from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_artifact_dir, round_inputs, contract_sources, RoundInputs,
 )
@@ -44,10 +44,11 @@ AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a can
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
-def _contract_sources(inputs: RoundInputs | None) -> dict[str, Any]:
+def _contract_sources(inputs: RoundInputs | None, set_id: str | None = None) -> dict[str, Any]:
     if inputs is None:
         return {}
-    sources = contract_sources(inputs)
+    selected = resolve_set(inputs, set_id).set_id if set_id is not None else None
+    sources = contract_sources(inputs, set_id=selected)
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     for name, path in (("draft", inputs.design_draft_path),
                        ("receipt", artifact_dir / "round_receipt.json" if artifact_dir else None)):
@@ -63,22 +64,26 @@ def _contract_sources(inputs: RoundInputs | None) -> dict[str, Any]:
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
     inputs = round_inputs(Path(args.round)) if args.round else None
-    sources = _contract_sources(inputs)
+    sources = _contract_sources(inputs, args.set)
     sections = document["sections"]
     packet: dict[str, Any] = {}
-    sha = ""
-    if inputs is not None:
-        if sections.get("driver") or sections.get("blend"):
-            packet = _load_packet(args, inputs=inputs)
-        if sections.get("room"):
-            path = default_out(inputs, Path(args.round), ARTIFACT_BY_VIEW["room-median"].artifact)
-            try:
-                payload = read_source_bytes(str(path))
-                sources["room_median"] = json.loads(payload)
-            except (OSError, ValueError) as exc:
-                raise PrescriptionDocumentRefused(ROOM_MEDIAN_UNAVAILABLE, "room", str(exc)) from exc
-            sha = prescription_sha256(payload)
+    if inputs is not None and (sections.get("driver") or sections.get("blend")):
+        packet = _load_packet(args, inputs=inputs)
+    try:
+        sha = _room_median(sources.get("room_median", {}))[1] if sections.get("room") else ""
+    except RoomPrescriptionRefused as exc:
+        raise PrescriptionDocumentRefused(exc.reason, "room", exc.detail, evidence=exc.evidence) from exc
     return PrescriptionEvidence(sources, packet, sha, Path(args.round).name if args.round else "")
+
+
+def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:
+    """Bind the canonical median independently of the document's incumbent."""
+    try:
+        document = json.loads(read_source_bytes(str(source))) if isinstance(source, Path) else source
+        median = document.get("median", document) if isinstance(document, Mapping) else document
+        return read_room_median(median), room_median_sha256(median)
+    except (OSError, ValueError, RecursionError) as exc:
+        raise RoomPrescriptionRefused(ROOM_MEDIAN_UNAVAILABLE, str(exc)) from exc
 
 
 def _cmd_document(args: argparse.Namespace) -> int:
@@ -101,6 +106,9 @@ def _cmd_document(args: argparse.Namespace) -> int:
     except PrescriptionDocumentRefused as exc:
         print(json.dumps(exc.to_dict(), sort_keys=True))
         return EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED
+    except RoundSetRefused as exc:
+        print(json.dumps(PrescriptionDocumentRefused(exc.reason, "room", str(exc), evidence=exc.detail).to_dict(), sort_keys=True))
+        return EXIT_REFUSED
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
         return EXIT_REFUSED
@@ -161,10 +169,12 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
 
 def _cmd_contract(args: argparse.Namespace) -> int:
     try:
-        sources = _contract_sources(round_inputs(Path(args.round)) if args.round else None)
+        sources = _contract_sources(round_inputs(Path(args.round)) if args.round else None, args.set)
         contracts = prescription_contracts(**sources)
         document = contracts if args.section == "all" else contracts[args.section]
         payload = contract_json(document)
+    except RoundSetRefused as exc:
+        return failed(EXIT_REFUSED, exc.reason, exc.detail)
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     if args.out:
@@ -625,6 +635,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
     contract.add_argument("--round", metavar="DIR")
+    add_set_argument(contract)
     contract.add_argument("--section", choices=(*SECTIONS, "all"), default="all")
     contract.add_argument("--out", metavar="FILE")
     contract.set_defaults(func=_cmd_contract)
@@ -632,6 +643,7 @@ def build_parser() -> argparse.ArgumentParser:
         command = sub.add_parser(verb, help="judge every section and preview resolution" if verb == "judge" else "judge, prove and bank one candidate")
         command.add_argument("document", metavar="DOC")
         command.add_argument("--round", dest="round", metavar="DIR")
+        add_set_argument(command)
         if verb == "compose":
             command.add_argument("--base", required=True, metavar="FINGERPRINT|saved")
         else:

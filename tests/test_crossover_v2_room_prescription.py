@@ -19,12 +19,15 @@ proposal.
 
 from __future__ import annotations
 
+import json
 import math
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker.candidate_bank import banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
@@ -33,6 +36,7 @@ from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_views import (
     room_ceiling,
     room_median,
+    room_median_sha256,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
@@ -54,8 +58,11 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     room_prescription_to_candidate_fields,
 )
 from jasper.camilla_config_contract import PeqFilter
+from jasper.cli import crossover_prescriber as cli
+from jasper.cli.round_views._common import default_out
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
+from tests.run_manifest_fixture import write_manifest
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 
 #: The digest the fixture document echoes when the test does not care which.
@@ -304,6 +311,47 @@ def test_narrow_measurement_coverage_keeps_the_room_ceiling_taper(gain):
         _read(_document(filters=[{"freq": 180.0, "q": 1.0, "gain": gain}]), raw)
     assert excinfo.value.reason == TAPER_VIOLATED
     assert excinfo.value.evidence["freq_hz"] > raw["coverage_hz"][1]
+
+
+@pytest.mark.parametrize("verb", ["judge", "compose"])
+@pytest.mark.parametrize("measured_base", [None, "same", "different"])
+def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, capsys, verb, measured_base):
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    round_dir = bank_seat_round(tmp_path)
+    set_id = write_manifest(round_dir, program="room")["sets"][0]["set_id"]
+    median = _room_median()
+    basis = {} if measured_base is None else {
+        "candidate_id": base.fingerprint if measured_base == "same" else "another-speaker-tune",
+        "graph_fingerprint": "played-graph",
+    }
+    median["evidence"] = {"basis": basis, "take_ids": [p["id"] for p in median["positions"]]}
+    room_path = default_out(round_inputs(round_dir), round_dir, "room.json", set_id)
+    room_path.write_text(json.dumps({"median": median, "incumbent": {"round_id": "old"}}))
+    document = tmp_path / "prescription.json"
+    document.write_text(json.dumps({
+        "kind": "jts_prescription", "schema": 1, "base": base.fingerprint, "rationale": "room",
+        "sections": {"room": _document(sha256=room_median_sha256(median))},
+    }))
+    args = [verb, str(document), "--round", str(round_dir), "--set", set_id, "--root", str(root)]
+    if verb == "compose":
+        args += ["--base", base.fingerprint]
+    assert cli.main(args) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["resolution"]["room"] == "document"
+    assert len(banked_candidates(root=root)) == (1 if verb == "judge" else 2)
+    if verb == "judge":
+        room = answer["sections"]["room"]
+        assert room["kind"] == ROOM_PRESCRIPTION_KIND
+        assert room["sides"]["mono"] == ACCEPTED_FILTERS
+        assert room["measured_basis"] == basis
+    else:
+        child = find_banked_candidate(answer["candidate_fingerprint"], root=root).candidate
+        assert candidate_room_peqs(child) == tuple(PeqFilter(**entry) for entry in ACCEPTED_FILTERS)
+        assert child.room_correction["basis"]["round_id"] == round_dir.name
+        assert child.analysis["room_source"]["measured_basis"] == basis
+        assert "base_match" not in child.analysis["room_source"]
+        assert child.analysis["measurement_status"] == "unmeasured"
 
 
 @pytest.mark.parametrize("n_positions,gain,count,legacy,reason", [

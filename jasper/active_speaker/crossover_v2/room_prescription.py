@@ -234,7 +234,7 @@ def _median_array(raw: Any, field: str, *, length: int | None = None) -> np.ndar
 
 
 def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
-    """Lane B's ``room_median.json`` as a value, or a refusal naming the fault.
+    """The ``room.json`` median section as a value, or a refusal naming the fault.
 
     Strict on everything a bound is computed from — one finite array per bin, a
     strictly increasing grid that spans the whole prescribable band, one

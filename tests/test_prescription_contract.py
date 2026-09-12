@@ -56,16 +56,24 @@ def round_bank(tmp_path):
         target["recommended_highpass_slope_db_per_octave"] = 12.0
     (bank / "design-draft.json").write_text(json.dumps(draft))
     median = _room_median()
-    (bank / "room_median.json").write_text(json.dumps(median))
-    (bank / "room_ceiling.json").write_text(json.dumps({
-        "ceiling_hz": median["ceiling_hz"], "ceiling_source": median["ceiling_source"],
-        "trusted_floor_hz": median["ceiling_hz"],
-    }))
-    (bank / "room_persistence.json").write_text(json.dumps({
-        "ceiling_hz": median["ceiling_hz"], "n_positions": median["n_positions"],
-        "features": [{"kind": "dip", "centre_hz": f} for f in (45.0, 90.0)],
+    (bank / "room.json").write_text(json.dumps({
+        "median": median,
+        "ceiling": {"hz": median["ceiling_hz"], "provenance": {
+            "ceiling_hz": median["ceiling_hz"], "ceiling_source": median["ceiling_source"],
+            "trusted_floor_hz": median["ceiling_hz"],
+        }},
+        "persistence": {"ceiling_hz": median["ceiling_hz"], "n_positions": median["n_positions"],
+                        "features": [{"kind": "dip", "centre_hz": f} for f in (45.0, 90.0)]},
     }))
     return bank, session
+
+
+def test_room_contract_preserves_the_document_ceiling_provenance(round_bank):
+    bank, _ = round_bank
+    ceiling = json.loads((bank / "room.json").read_text())["ceiling"]
+    provenance = _contracts(*round_bank)["room"]["bounds"]["ceiling_provenance"]
+    assert provenance == ceiling
+    assert provenance["hz"] == provenance["provenance"]["trusted_floor_hz"]
 
 
 def _contracts(bank: Path, session: Path):
@@ -254,8 +262,8 @@ def test_bass_schema_edges_match_the_unchanged_validator(name):
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path)
-    output = default_out(round_inputs(session), session, "room_median.json")
-    output.write_text(json.dumps(_room_median()))
+    output = default_out(round_inputs(session), session, "room.json")
+    output.write_text(json.dumps({"median": _room_median()}))
     assert cli.main(["contract", "--round", str(session), "--section", "room"]) == 0
     payload = capsys.readouterr().out.rstrip("\n")
     served = json.loads(payload)

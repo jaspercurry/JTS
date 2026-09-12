@@ -150,17 +150,8 @@ def test_baseline_layer_drops_only_the_measured_correction_stages() -> None:
 def test_the_household_layers_survive_the_reduction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bass_extension: bool,
 ) -> None:
-    """The audition's OWN derivation, with nothing stubbed between it and the
-    emitter.
-
-    The reduction must take exactly one thing away. The household's preference
-    EQ and its output trim are read from live sound state rather than from the
-    applied snapshot, so they are the layers most likely to be dropped by
-    accident — and dropping them would silently add a second difference to an
-    A/B whose whole value is that there is only one.
-    """
-
     from jasper.active_speaker.audition import build_reduced_yaml
+    from tests.test_active_speaker_baseline_profile import _ROOM_CORRECTION  # lazy: fixture cycle
 
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "sound.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
@@ -182,34 +173,33 @@ def test_the_household_layers_survive_the_reduction(
     applied = _applied_profile(topology)
     if bass_extension:
         applied["recomposition_snapshot"]["bass_extension"] = _dynamic_bass_descriptor()
-    anchor_file = tmp_path / "anchor.yml"
+    applied["recomposition_snapshot"]["room_correction"] = _ROOM_CORRECTION
     full_text, issues = recompose_applied_baseline_yaml(
         topology, applied_profile=applied,
     )
     assert issues == [] and full_text is not None
-    anchor_file.write_text(full_text, encoding="utf-8")
 
     reduced, issues = build_reduced_yaml(
-        topology, applied_profile=applied, anchor_path=str(anchor_file),
+        topology, applied_profile=applied,
     )
     assert issues == [] and reduced is not None
     filters = _filters(reduced)
 
-    # The measured correction is gone...
     assert not [
         n for n in filters if n.startswith("as_blend_") or "_linearization" in n
     ]
-    # ...and the household's own preference band survived the trip.
     preference = [
         v for n, v in filters.items()
         if v.get("type") == "Biquad"
         and float((v.get("parameters") or {}).get("freq", 0.0)) == 640.0
     ]
     assert preference, sorted(filters)
-    # The manual headroom trim rode along with it into the one common gain.
     headroom = filters["active_baseline_headroom"]["parameters"]["gain"]
     assert headroom <= -3.0
     full = _filters(full_text)
+    room_names = {name for name in full if name.startswith("room_peq_")}
+    assert room_names
+    assert {name: filters[name] for name in room_names} == {name: full[name] for name in room_names}
     bass_names = {name for name in filters if name.startswith("bass_ext_dynamic")}
     assert bool(bass_names) is bass_extension
     assert all(filters[name] == full[name] for name in bass_names)
@@ -274,7 +264,6 @@ def test_the_audition_asks_for_a_reduced_graph_and_never_a_written_one(
     text, issues = audition_module.build_reduced_yaml(
         topology,
         applied_profile=_applied_profile(topology),
-        anchor_path=str(anchor),
     )
 
     assert issues == [] and text is not None
@@ -354,7 +343,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         audition_module,
         "build_reduced_yaml",
-        lambda _topology, *, applied_profile, anchor_path: (
+        lambda _topology, *, applied_profile: (
             recompose_applied_baseline_yaml(
                 topology,
                 applied_profile=applied_profile,
