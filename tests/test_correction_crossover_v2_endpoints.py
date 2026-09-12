@@ -4013,7 +4013,7 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
     tmp_path, monkeypatch, poses, complete, storage,
 ):
     import shutil
-    from jasper.active_speaker.grade_coverage import REASON_APPLIED_GRADE_MARK_ONLY
+    from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
     from tests.run_manifest_fixture import write_asked_poses
 
     state = _applied_state()

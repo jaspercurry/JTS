@@ -5,8 +5,6 @@
 """jasper-doctor checks — correction domain."""
 from __future__ import annotations
 
-from jasper.active_speaker.grade_coverage import REASON_APPLIED_GRADE_MARK_ONLY
-
 import datetime
 import itertools
 import json
@@ -28,6 +26,7 @@ from ._shared import (
     _systemctl_unavailable_result,
 )
 from ...identity import identity_state
+from ...active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from ...active_speaker.environment import (
     camilla_statefile_path,
     classify_camilla_config_text,

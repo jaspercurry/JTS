@@ -81,7 +81,7 @@ from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
 from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
-from jasper.active_speaker.grade_coverage import REASON_APPLIED_GRADE_MARK_ONLY
+from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (

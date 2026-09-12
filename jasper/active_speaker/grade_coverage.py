@@ -14,8 +14,6 @@ from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .crossover_v2.round_inputs import iter_round_sessions, round_artifact_dir
 from .run_manifest import RUN_MANIFEST_FILENAME
 
-REASON_APPLIED_GRADE_MARK_ONLY = "applied_grade_mark_only"
-
 
 def _manifest_path(state: Mapping[str, Any]) -> Path | None:
     # A recovery VERIFY has its own one-pose manifest. The candidate's original
