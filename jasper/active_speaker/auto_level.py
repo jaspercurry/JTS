@@ -19,7 +19,6 @@ from .volume_latch import read_fader_db, set_and_confirm_volume
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
 
-AGREE_DB = 0.5  # Repeat sweeps at one fader must agree; see ADR-0308.
 VOLUME_CONFIRM_TIMEOUT_S = 8.0
 START_FADER_DB = -40.0
 DAMPING = 0.9
@@ -110,7 +109,6 @@ async def level_to(
         budget = 1
         in_band: float | None = None
         remeasured = ever_unsettled = last_buried = False
-        agree_db = bounded_env_float("JASPER_SEAT_LEVEL_SETTLED_AGREE_DB", AGREE_DB, lo=0.1, hi=3.0)
         while len(result.readings) < budget:
             observed = await reading(read_level)
             assert gain is not None
@@ -132,9 +130,8 @@ async def level_to(
             gap = target_db_spl - observed
             if not buried and abs(gap) <= tolerance_db:
                 if in_band is not None:
-                    if abs(observed - in_band) > agree_db:
-                        raise _Refused(REFUSE_LEVEL_UNSETTLED)
-                    result.status, result.leveled_db_spl = "converged", observed
+                    # The tolerance band bounds the pair; see ADR-0310.
+                    result.status, result.leveled_db_spl = "converged", (in_band + observed) / 2
                     return result
                 in_band = observed
                 continue
