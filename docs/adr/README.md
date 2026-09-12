@@ -280,3 +280,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0303](0303-a-trial-plays-the-candidate-as-composed.md) | A trial plays the candidate as composed; the layer order is speaker → room → bass; the composer owns inherit/clear semantics | accepted |
 | [0304](0304-the-bass-level-axis-is-fixed-level-windows.md) | The bass level axis is fixed-level windows inside one run; canonical pose sets belong to each program and mover | accepted |
 | [0305](0305-the-measurement-hold-spans-a-whole-run.md) | The measurement hold spans a whole run from the mover's join | accepted |
+| [0307](0307-only-a-measured-excess-boost-acts.md) | Only a measured excess-boost finding acts | accepted |
