@@ -88,6 +88,7 @@ REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
 # Terminal: the re-assert has already been tried and could not be confirmed.
 # NOT ``volume_unresolved``, whose subject is the RESTORE path.
 REASON_MEASUREMENT_VOLUME_DRIFT = "measurement_volume_drift"
+REASON_MEASUREMENT_GRAPH_UNAVAILABLE = "measurement_graph_unavailable"
 # The program PLAYED; the offline evidence math refused. §4.2 divides the
 # emitted measurement protection back out of the capture, and on a
 # candidate-required bin that division is inadmissible when the protection
@@ -690,6 +691,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         },
     ),
     # Measurement graph and walk refusals (tracking issue #4942).
+    REASON_MEASUREMENT_GRAPH_UNAVAILABLE: ReasonSpec(
+        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not install or restore the measurement audio setup. Check the speaker's audio state, then start a new session.",
+        next_action={"id": "new_measurement_session", "label": "Start a new session",
+                     "href": "/sound/speaker/crossover/"},
+    ),
     REASON_MEASUREMENT_BASELINE_UNAVAILABLE: ReasonSpec(
         REASON_MEASUREMENT_BASELINE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
         "JTS could not build this program's baseline. Review the saved speaker setup before measuring.",

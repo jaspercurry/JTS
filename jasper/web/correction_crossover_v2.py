@@ -222,7 +222,7 @@ def classify_program_failure(
         StimulusCaptureStopped,
     )
     from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_MEASUREMENT_VOLUME_DRIFT,
+        REASON_MEASUREMENT_VOLUME_DRIFT, REASON_MEASUREMENT_GRAPH_UNAVAILABLE,
         REASON_PROGRAM_PLAN_SHAPE_INVALID,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
@@ -248,7 +248,7 @@ def classify_program_failure(
     if isinstance(exc, MeasurementGraphRefused):
         return exc.code, ()
     if isinstance(exc, SessionGraphError):
-        return "measurement_graph_unavailable", ()
+        return REASON_MEASUREMENT_GRAPH_UNAVAILABLE, ()
     if (
         isinstance(exc, StimulusCaptureStopped)
         and exc.code == WiredSplCeilingExceeded.code

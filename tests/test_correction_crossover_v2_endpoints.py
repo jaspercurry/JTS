@@ -9227,6 +9227,7 @@ def test_join_opens_resources_in_order_and_drains_to_a_shared_terminal_state(mon
     assert result["status"] in SESSION_ENDED_STATUSES
     if graph_fails:
         assert gate.published()["run"]["fault"] == "measurement_graph_unavailable"
+        assert gate.published()["run"]["next_action"]["id"] == "new_measurement_session"
 
 
 def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path):
