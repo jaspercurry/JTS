@@ -52,17 +52,18 @@ def _handle_crossover_capture_cancel() -> dict[str, Any]:
 def _handle_crossover_v2_position_ready(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """Release only the capture attempt whose pose the mover confirmed."""
     raw = correction_runtime.read_json_body(handler)
     for key in ("index", "attempt"):
         if key not in raw:
             raise BadRequest(f"{key} is required")
         if isinstance(raw[key], bool) or not isinstance(raw[key], int):
             raise BadRequest(f"{key} must be an integer")
-    joined = correction_capture._join_capture(raw["index"], raw["attempt"])
+    joined = correction_capture._join_capture(raw["index"], raw["attempt"], raw.get("run_id"))
     if joined is not None:
         return {"ok": True, "capture": joined}
     with _session_lock:
+        if raw.get("run_id") is not None and raw["run_id"] != (correction_capture._capture_slot or {}).get("session_id"):
+            raise CrossoverV2Refused("The named run is not current", code="capture_slot_busy")
         gate = correction_capture._capture_position_gate
     if gate is None:
         raise CrossoverV2Refused(
@@ -224,5 +225,3 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     return correction_crossover_flow.handle_reset(
         capture=correction_capture._get_capture_slot_for("crossover_v2:"),
     )
-
-

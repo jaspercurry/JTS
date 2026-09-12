@@ -513,7 +513,7 @@ def test_the_bank_lists_candidates_but_leaves_the_tournament_shortlist_unstaged(
         "delay_role": "tweeter",
     }
     assert all("measurable" not in record for record in listed.values())
-    assert "jasper-angle-capture plan --help" in payload["next"]
+    assert "jasper-round run --help" in payload["next"]
     assert not any(" stage " in command for command in payload["next"])
 
 

@@ -140,8 +140,7 @@ pattern that could catch a concurrent session -- and removes its own
 temp files.
 
 Host resolution matches every other laptop script: --host wins for the
-ssh target only; scripts/_pi_target.py (shared with
-run-crossover-round.py) still applies .env.local's PI_USER even then.
+ssh target only; scripts/_pi_target.py still applies .env.local's PI_USER.
 See resolve_target().
 """
 from __future__ import annotations

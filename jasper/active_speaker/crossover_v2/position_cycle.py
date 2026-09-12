@@ -2,16 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""N takes at ONE pose: how they are staged, and how they read back.
-
-A staged walk repeats a pose's stop ADJACENTLY rather than as a separate walk,
-so the microphone moves once per angle (:func:`.angle_capture.both_at` ships
-the same pairing). :func:`expand_angle_spec` / :func:`staged_stops` build and
-count that staged list; :func:`position_cycle_document` /
-:func:`read_position_cycle` derive the round's index from banked evidence,
-never from what the round meant to stage — a laptop-written mapping would be
-a second writer that could disagree with the speaker's record.
-"""
+"""Derive and read the pose index from banked measurement evidence."""
 
 from __future__ import annotations
 
@@ -90,66 +81,6 @@ _DOCUMENT_FIELDS = frozenset({
 
 class PositionCycleError(ValueError):
     """The index cannot be derived, or cannot be read."""
-
-
-# --------------------------------------------------------------------------- #
-# staging — N stops at one angle
-# --------------------------------------------------------------------------- #
-
-
-def expand_angle_spec(angles: str, per_position: int) -> str:
-    """``"0,7"`` at 3 takes -> ``"0,0,0,7,7,7"`` — tokens repeated VERBATIM, never parsed.
-
-    Adjacent rather than interleaved: the whole value of N takes at one pose is
-    that nothing moved between them, so ``0,7,0,7,0,7`` would walk the arm six
-    times and measure the drift this exists to hold still. Tokens are repeated
-    as text rather than parsed to floats — the angle vocabulary has exactly one
-    validator (:func:`~jasper.active_speaker.angle_capture._validated_angle`)
-    and a laptop-side parse could silently disagree with it (``0.4`` truncating
-    to ``0`` turns an off-axis pose into an on-axis one).
-
-    ``per_position=1`` returns the surviving tokens rejoined, so this is safe to
-    run on every staged round, not only cycled ones. Empty fields are dropped
-    and whitespace stripped, matching
-    :func:`jasper.cli.angle_capture._parse_angles`.
-
-    Raises :class:`PositionCycleError` for ``per_position < 1``. No upper
-    bound: the ceiling is the plan's own
-    (``angle_capture.session_lateral_walk``'s ``WALK_OVER_CAPTURE_CAPACITY``),
-    and a second, lower bound invented on the laptop would refuse walks the
-    speaker would have taken.
-    """
-    if per_position < 1:
-        raise PositionCycleError(
-            f"takes per position must be at least 1, got {per_position}"
-        )
-    tokens = [token.strip() for token in angles.split(",") if token.strip()]
-    return ",".join(token for token in tokens for _ in range(per_position))
-
-
-def staged_stops(angles: str) -> int:
-    """How many stops ``angles`` stages — the walk's own release count.
-
-    True for any regime that composes ONE stop per angle.
-    ``jasper.cli.angle_capture._REGIME_STOPS`` maps every member of ``REGIMES``
-    to a 1-tuple of itself, so a single-regime walk is one stop per token and
-    ``both`` — the entry pairing two regimes — is the exception at two. That is
-    the regime the runner refuses ``--per-position`` for, and it asks the table
-    rather than naming regimes: stops are composed as
-    ``angle x _REGIME_STOPS[regime]``, so a count taken from the tokens alone
-    would be half the real one there.
-
-    Its caller compares it against ``--complete-after``, which counts RELEASES
-    (``arm_walk._complete_due``): a walk told to complete on fewer releases than
-    it has stops posts its all-spots-measured signal partway through and exits
-    ``ok``.
-    """
-    return len([token for token in angles.split(",") if token.strip()])
-
-
-# --------------------------------------------------------------------------- #
-# reading back — the index, derived from the banked bundle
-# --------------------------------------------------------------------------- #
 
 
 def take_artifact_path(bundle_dir: str | Path, take_path: str) -> Path:

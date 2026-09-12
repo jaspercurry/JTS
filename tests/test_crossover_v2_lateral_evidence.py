@@ -73,7 +73,7 @@ def _lateral_conductor(fakes: FakeSeams, **kwargs):
     return _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=False, include_lateral=True,
+            include_cloud_measure=False, include_lateral=True,
         ),
         **kwargs,
     )
@@ -140,10 +140,10 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
 def _stage1(**flags):
     """The index map, plan and spec one set of stage-1 flags produces."""
     return (
-        build_v2_cloud_index_phase_map(tier="full", **flags),
-        build_v2_capture_plan(_roles(), FC_HZ, tier="full", **flags),
+        build_v2_cloud_index_phase_map(**flags),
+        build_v2_capture_plan(_roles(), FC_HZ, **flags),
         build_v2_session_spec(
-            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
+            _roles(), FC_HZ, acknowledgement_binding="b" * 24,
             **flags,
         ),
     )
@@ -186,7 +186,7 @@ def test_stage_1_is_the_pinned_three_capture_shape():
     ]
     assert plan.capture_target == 3
     assert plan.max_attempts == 3 + flow.CLOUD_RETAKE_ALLOWANCE
-    assert flow.stage1_base_entries(resolve_plan_shape("full")) == 3
+    assert flow.stage1_base_entries(resolve_plan_shape()) == 3
 
     # No pose reaches the wire — this plan is what the phone renders.
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
@@ -265,7 +265,7 @@ def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure(
     c = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full",
+
             include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
             include_lateral=False,
         ),
@@ -350,7 +350,7 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
 
 def test_stage_1_walks_the_poses_with_the_anchors_own_program_duration():
     plan = build_v2_capture_plan(
-        _roles(), FC_HZ, tier="full",
+        _roles(), FC_HZ,
         include_cloud_measure=False, include_lateral=True,
     )
     kinds = [entry.kind_label for entry in plan.entries]
@@ -371,10 +371,10 @@ def test_stage_1_walks_the_poses_with_the_anchors_own_program_duration():
 def test_the_index_phase_map_and_the_emitted_entries_agree():
     for include_cloud in (False, True):
         mapping = build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=include_cloud, include_lateral=True,
+            include_cloud_measure=include_cloud, include_lateral=True,
         )
         plan = build_v2_capture_plan(
-            _roles(), FC_HZ, tier="full",
+            _roles(), FC_HZ,
             include_cloud_measure=include_cloud, include_lateral=True,
         )
         assert len(mapping) == plan.capture_target
@@ -392,7 +392,7 @@ def test_the_index_phase_map_and_the_emitted_entries_agree():
 def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
     """The ``max_attempts`` derivation moved from the shape's cloud arithmetic
     to the plan's own entries. It must reproduce both shipped values exactly."""
-    shape = resolve_plan_shape("full")
+    shape = resolve_plan_shape()
     with_cloud = build_v2_capture_plan(
         _roles(), FC_HZ, plan_shape=shape, include_cloud_measure=True,
     )
@@ -417,40 +417,6 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
         assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
 
 
-def test_a_lateral_only_stage_1_still_consents_to_a_walk():
-    """The consent copy was gated on the CLOUD. A lateral-only session prompts
-    five moves, so promising a stationary microphone would be a lie."""
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
-        include_cloud_measure=False, include_lateral=True,
-    )
-    assert spec.capture_plan.capture_target == 2 + LATERAL_COUNT
-    notes = [c["text"] for c in spec.screen if c["type"] == "note"]
-    assert flow.walk_shape_for(cloud_positions=0, lateral=True) in notes
-    # The tier line is the ``guided_tier`` half, and it only renders for a
-    # session the spec builder was told is a guided WALK.
-    steps = [i for c in spec.screen if c["type"] == "steps" for i in c["items"]]
-    assert any("Full measurement" in step for step in steps)
-    # …and the pre-R16 no-walk shape still says none of it.
-    quiet = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
-        include_cloud_measure=False, include_lateral=False,
-    )
-    quiet_notes = [c["text"] for c in quiet.screen if c["type"] == "note"]
-    assert not any("of the mark" in note for note in quiet_notes)
-    quiet_steps = [
-        i for c in quiet.screen if c["type"] == "steps" for i in c["items"]
-    ]
-    assert not any("Full measurement" in step for step in quiet_steps)
-    # The reach the sentence quotes is the FURTHEST group the session runs: the
-    # walk's own 50 cm alone, the cloud's unchanged when it runs, and nothing
-    # at all when neither does.
-    assert flow.format_position_distance(50.0) in flow.walk_shape_for(
-        cloud_positions=0, lateral=True)
-    for lateral in (False, True):
-        assert flow.walk_shape_for(cloud_positions=9, lateral=lateral) == (
-            flow.cloud_walk_shape(flow.CLOUD_POSITION_PROMPTS[:8]))
-    assert flow.walk_shape_for(cloud_positions=0, lateral=False) == ""
 
 
 # --- priors: the pose evidence stays NEUTRAL ----------------------------------
@@ -994,7 +960,7 @@ def _evidence_conductor(fakes: FakeSeams, *, prompts=None, **kwargs):
     return _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=False, include_lateral=True,
+            include_cloud_measure=False, include_lateral=True,
             lateral_prompts=prompts,
         ),
         lateral_consumer=journey.LATERAL_CONSUMER_FORWARD_MODEL,

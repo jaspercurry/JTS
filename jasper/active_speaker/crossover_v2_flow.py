@@ -156,21 +156,14 @@ POSITION_ROLE_KEY = _plan.POSITION_ROLE_KEY
 POSITION_ROLE_OFFAX = _spatial.POSITION_ROLE_OFFAX
 POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
 POSITION_ROLE_XOVR = _spatial.POSITION_ROLE_XOVR
-REMOTE_VERTICAL_DISCLOSURE = _plan.REMOTE_VERTICAL_DISCLOSURE
 REVERIFY_NO_REWALK_HEADLINE = _plan.REVERIFY_NO_REWALK_HEADLINE
 STAGE1_INCLUDES_CLOUD_MEASURE = _plan.STAGE1_INCLUDES_CLOUD_MEASURE
 STAGE1_INCLUDES_ENTRY_BASELINE = _plan.STAGE1_INCLUDES_ENTRY_BASELINE
-TIERS = _plan.TIERS
-TIER_EXPRESS = _plan.TIER_EXPRESS
-TIER_FULL = _plan.TIER_FULL
-TIER_REMOTE = _plan.TIER_REMOTE
 V2PlanShape = _plan.V2PlanShape
 V2_FIRST_BEGIN_TIMEOUT_S = _plan.V2_FIRST_BEGIN_TIMEOUT_S
 VERIFY_ANCHOR_HOLD_MESSAGE = _plan.VERIFY_ANCHOR_HOLD_MESSAGE
 WALL_CLOCK_CEILING_PER_ENTRY_S = _plan.WALL_CLOCK_CEILING_PER_ENTRY_S
 WIDE_OFFSET_MIN_CM = _plan.WIDE_OFFSET_MIN_CM
-_DISPLAY_FC_HZ = _plan._DISPLAY_FC_HZ
-_DISPLAY_ROLES_BANDS = _plan._DISPLAY_ROLES_BANDS
 _LATERAL_POSE_OFFSETS_CM = _plan._LATERAL_POSE_OFFSETS_CM
 _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
@@ -189,21 +182,15 @@ cloud_plan_max_attempts = _plan.cloud_plan_max_attempts
 cloud_walk_reach_cm = _plan.cloud_walk_reach_cm
 cloud_walk_reach_cm_of = _plan.cloud_walk_reach_cm_of
 cloud_walk_shape = _plan.cloud_walk_shape
-express_cloud_measure_positions = _plan.express_cloud_measure_positions
 format_position_distance = _plan.format_position_distance
-normalize_tier = _plan.normalize_tier
 position_angle_deg = _plan.position_angle_deg
 position_elevation_deg = _plan.position_elevation_deg
 position_geometry = _plan.position_geometry
-remote_cloud_measure_positions = _plan.remote_cloud_measure_positions
-remote_cloud_verify_positions = _plan.remote_cloud_verify_positions
 remote_position_prompt = _plan.remote_position_prompt
 resolve_plan_shape = _plan.resolve_plan_shape
 session_wall_clock_ceiling_s = _plan.session_wall_clock_ceiling_s
 stage1_base_entries = _plan.stage1_base_entries
 stage1_plan_max_attempts = _plan.stage1_plan_max_attempts
-tier_display_info = _plan.tier_display_info
-tier_is_externally_positioned = _plan.tier_is_externally_positioned
 v2_first_begin_timeout_s = _plan.v2_first_begin_timeout_s
 verify_pose_table = _plan.verify_pose_table
 walk_shape_for = _plan.walk_shape_for
@@ -549,7 +536,6 @@ def assemble_cloud_group_result(
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
     trusted_ceiling_hz: float | None = None,
-    tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
     graded_spec_sink: Callable[[Any], None] | None = None,
@@ -561,7 +547,6 @@ def assemble_cloud_group_result(
         echo_band_provenance=echo_band_provenance,
         validity_floor_hz=validity_floor_hz,
         trusted_ceiling_hz=trusted_ceiling_hz,
-        tier=tier,
         position_records=position_records,
         crossover_region_hz=crossover_region_hz,
         graded_spec_sink=graded_spec_sink,
@@ -649,8 +634,7 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
-        tier: str = "",
-        positions_gated: bool = False,
+            positions_gated: bool = False,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -689,13 +673,7 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError("a v2 session walks one or two drivers")
         self.session_id = str(session_id)
         self.sound_design_revision = sound_design_revision
-        # Empty = unknown (a caller that never declared one), never silently TIER_FULL.
-        self._tier = normalize_tier(tier) if tier else ""
-        # #2879: are this walk's begins HELD until the mic is reported in place? ORed
-        # with the tier's own answer so no caller can drop the arm's gate.
-        self._positions_gated = (
-            tier_is_externally_positioned(self._tier) or bool(positions_gated)
-        )
+        self._positions_gated = bool(positions_gated)
         self._preset = source_preset
         self._roles = roles
         # Lowest role first. ``_tweeter`` is ``None`` on a 1-way main, never aliased.
@@ -1235,11 +1213,6 @@ class CrossoverV2Session:
         return drift or None
 
     @property
-    def tier(self) -> str:
-        """The commission tier this session runs, or ``""`` when undeclared."""
-        return self._tier
-
-    @property
     def current_phase(self) -> str:
         return self._journey.current_phase
 
@@ -1531,7 +1504,6 @@ class CrossoverV2Session:
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None
             ),
-            tier=self._tier,
             cloud_close=self.cloud_close_state,
             attempt_history=tuple(self._attempt_history),
         )
@@ -2637,8 +2609,7 @@ class CrossoverV2Session:
                 level=logging.WARNING,
                 session_id=self.session_id,
                 phase=phase,
-                tier=self._tier,
-                # `tier` cannot carry this: stage 2 is constructed without one. This
+                    # `tier` cannot carry this: stage 2 is constructed without one. This
                 # names the PREDICATE that refused, not WHICH shape.
                 gated=self._positions_gated,
                 median_tau_us=verdict.get("median_tau_us"),
@@ -3016,7 +2987,6 @@ class CrossoverV2Session:
             realized_branch_level=realized_branch_level,
             evidence_identities={
                 "session_id": self.session_id,
-                "tier": self._tier,
                 "speaker_id": self._speaker_id,
             },
             linearization=linearization,
@@ -3292,7 +3262,6 @@ class CrossoverV2Session:
             ),
             validity_floor_hz=_spatial.cloud_validity_floor_hz(positions),
             trusted_ceiling_hz=ceiling_hz,
-            tier=self._tier,
             # #1967: where the SHIPPED graph divides the spectrum, from the
             # preset's committed regions.
             crossover_region_hz=_verification.committed_crossover_region_hz(
@@ -3521,8 +3490,7 @@ class CrossoverV2Session:
         decision = coordinator.run_round(
             coordinator.RoundEvidence(
                 session_id=self.session_id,
-                tier=self._tier,
-                post_analysis=self._verify_analysis,
+                    post_analysis=self._verify_analysis,
                 entry_baseline=self._measure_entry_baseline,
                 # ``None`` on a tier that walks no cloud, which the evaluator reads
                 # as "no report" rather than as a pass (#2160).
@@ -4031,13 +3999,7 @@ __all__ = [
     "attempt_history_from_state",
     "attempt_record_from_verify",
     "V2PlanShape",
-    "TIER_FULL",
-    "TIER_EXPRESS",
-    "TIERS",
-    "express_cloud_measure_positions",
-    "normalize_tier",
     "resolve_plan_shape",
-    "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
     "stage1_base_entries",

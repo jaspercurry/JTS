@@ -25,6 +25,7 @@ import logging
 from typing import Any, Mapping
 
 from jasper.active_speaker import crossover_envelope_v2 as _projection
+from jasper.active_speaker.grade_coverage import asked_beyond_mark
 from jasper.log_event import log_event
 from jasper.web import correction_crossover_v2 as _host
 
@@ -101,13 +102,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # ended (``crossover_envelope_v2._session_is_live``). ``None`` when
         # there is no state file, which reads as "cannot say this is current".
         "updated_at": (state or {}).get("updated_at"),
-        # The commission tier behind whatever this block reports, or ``None``
-        # when the durable state does not say (pre-tier state, or a session
-        # that declared none). Never defaulted to "full" — see
-        # ``persist_conductor_state``.
-        "tier": (str((state or {}).get("tier") or "") or None),
-        # Which sub-moment of the measuring session's tail this is, when
-        # ``phase`` is ``closing`` (two-stage D1). ``""`` everywhere else.
         "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
@@ -155,7 +149,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "cloud": _projection.compact_cloud_status(
             (state or {}).get("cloud"),
             current_session_id=session_id,
-            tier=(state or {}).get("tier"),
         ),
         "cloud_chart": _projection.chart_cloud_status((state or {}).get("cloud")),
         "prediction": _projection.prediction_status(state),
@@ -171,7 +164,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
-    block["post_apply_grade"] = _host._post_apply_grade(block)
+    block["post_apply_grade"] = _host._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
     return block
 
 

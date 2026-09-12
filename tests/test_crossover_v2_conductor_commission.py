@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
-import types
 import pytest
 import yaml
 from dataclasses import replace
@@ -32,11 +30,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     CAPTURE_PLAN_MAX_ATTEMPTS,
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
-    CLOUD_RETAKE_ALLOWANCE,
-    CLOUD_WALK_SHAPE_TAIL,
-    CLOUD_WALK_SHAPE_TAIL_POST_APPLY,
-    DEFAULT_CLOUD_MEASURE_POSITIONS,
-    DEFAULT_CLOUD_VERIFY_POSITIONS,
     GEOMETRY_RETRY_OFFSET_CM,
     GEOMETRY_RETRY_POSITIONS,
     MAX_CLOUD_MEASURE_POSITIONS,
@@ -47,37 +40,23 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLES,
     PILOT_LEVEL_DELTA_DB,
     REVERIFY_NO_REWALK_HEADLINE,
-    TIER_EXPRESS,
     WIDE_OFFSET_MIN_CM,
-    TIER_FULL,
-    TIER_REMOTE,
     VERIFY_ANCHOR_HOLD_MESSAGE,
     CrossoverV2Session,
     CrossoverV2FlowError,
-    V2PlanShape,
     _program_duration_ms,
-    _min_positions_for_two_wide_offsets,
     _pose,
     build_v2_capture_plan,
-    build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_capture_plan,
     build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
-    cloud_geometry_retry_reach_cm,
-    cloud_walk_reach_cm,
-    cloud_walk_shape,
-    express_cloud_measure_positions,
     format_position_distance,
     resolve_plan_shape,
-    session_wall_clock_ceiling_s,
-    tier_display_info,
 )
-from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
-    RoleBand,
 )
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from tests._log_events import event_records
@@ -90,7 +69,6 @@ from tests.crossover_v2_fixtures import (
     SESSION,
     SESSION_VOLUME_DB,
     _DIAG_LOGGER,
-    _GOLDEN_V2_PLAN_BYTES,
     _cloud_conductor,
     _comb_cloud_analysis_factory,
     _comb_summed_response,
@@ -105,340 +83,11 @@ from tests.crossover_v2_fixtures import (
     _run_phase,
     _verify_analysis,
     _walk,
-    _walk_measure_cloud_to_close,
     with_records,
 )
 
 
 # --- commission tiers + the retake/confirm contract (flow-simplification) ----
-
-
-def test_express_is_a_derived_shape_not_a_loosened_floor():
-    """§1.2: express is a distinct NAMED plan, validated on its own terms.
-
-    Its N comes from the prompt table (both wide offsets, no more), its M is 1
-    (no post-apply group at all), and the FULL tier's validated floor
-    ``MIN_CLOUD_MEASURE_POSITIONS`` does not move to accommodate it — the same
-    counts are still refused when asked for as a full-tier configuration.
-    """
-    express = resolve_plan_shape(TIER_EXPRESS)
-    assert express == V2PlanShape(
-        tier=TIER_EXPRESS,
-        cloud_measure_positions=express_cloud_measure_positions(),
-        cloud_verify_positions=1,
-    )
-    assert (express.capture_target, express.max_attempts) == (7, 14)
-    assert express.has_cloud_verify_group is False
-    # The full tier is unchanged, and would REFUSE express's own counts.
-    full = resolve_plan_shape()
-    assert full.tier == TIER_FULL
-    assert (full.capture_target, full.max_attempts) == (16, 23)
-    assert full.has_cloud_verify_group is True
-    with pytest.raises(CrossoverV2FlowError):
-        resolve_plan_shape(
-            TIER_FULL,
-            cloud_measure_positions=express.cloud_measure_positions,
-            cloud_verify_positions=1,
-        )
-    # Express is a fixed shape, so an explicit count that disagrees is refused
-    # rather than quietly honoured.
-    with pytest.raises(CrossoverV2FlowError):
-        resolve_plan_shape(TIER_EXPRESS, cloud_measure_positions=6)
-
-
-def test_an_unknown_tier_is_refused_and_an_absent_one_means_full():
-    """Allowlist, not a guess: absence is the non-breaking default, an
-    unrecognised id is a caller asking for an instrument this build does not
-    have and must fail loudly rather than measure something else."""
-    assert resolve_plan_shape(None).tier == TIER_FULL
-    assert resolve_plan_shape("").tier == TIER_FULL
-    assert resolve_plan_shape("  EXPRESS  ").tier == TIER_EXPRESS
-    for bogus in ("quick", "Full measurement", "expres", "0"):
-        with pytest.raises(CrossoverV2FlowError):
-            resolve_plan_shape(bogus)
-
-
-def test_one_resolved_shape_feeds_both_the_spec_and_the_index_phase_map():
-    """The desync hazard this value exists to close: the emitted plan and the
-    conductor's index→phase map must be derived from the SAME shape, not from
-    two functions that happen to share defaults."""
-    shape = resolve_plan_shape(TIER_EXPRESS)
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24, plan_shape=shape,
-    )
-    index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
-    plan = spec.capture_plan
-    # Stage 1's own target since the split — the whole-journey
-    # ``shape.capture_target`` spans two sessions and no plan emits it.
-    assert plan.capture_target == len(index_phase) == shape.measure_capture_target
-    assert sorted(index_phase) == [e.index + 1 for e in plan.entries]
-    # Handing over two sources of truth at once is refused outright.
-    with pytest.raises(CrossoverV2FlowError):
-        build_v2_cloud_index_phase_map(plan_shape=shape, cloud_measure_positions=9)
-
-
-def test_the_post_apply_pose_set_is_a_parameter_with_a_runbook_default():
-    """(T1-5) The runbook is a SUGGESTION: the walk takes the set it is given.
-
-    Two halves, and either alone would be a half-fix. The DEFAULT is the
-    owner's ratified set — the design axis and the four sides — so a household
-    that states nothing gets it. And a caller that states a set gets THAT one,
-    down to the prompt copy, because "measure the result at these angles" was
-    not a question anyone could ask while the walk re-sliced a fixed table.
-
-    One resolver behind both, so the plan the phone is handed and the session
-    that walks it cannot read different tables.
-    """
-    assert [
-        flow.position_angle_deg(p) for p in flow.CLOUD_VERIFY_POSE_PROMPTS
-    ] == [0, -7, 7, -22, 22]
-    assert flow.verify_pose_table() is flow.CLOUD_VERIFY_POSE_PROMPTS
-    assert flow.verify_pose_table(None) is flow.CLOUD_VERIFY_POSE_PROMPTS
-
-    # A caller-supplied set: the same two at-mark-and-one-side poses, and
-    # nothing else. Chosen from the shipped table so the assertion is about the
-    # SEAM rather than about a hand-built prompt's copy.
-    chosen = flow.CLOUD_VERIFY_POSE_PROMPTS[:2]
-    assert flow.verify_pose_table(chosen) == chosen
-
-    shape = replace(resolve_plan_shape(), cloud_verify_positions=len(chosen) + 1)
-    plan = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=shape, verify_prompts=chosen,
-    )
-    assert [
-        e.screen["title"] for e in plan.entries if e.kind_label == "cloud_verify"
-    ] == [p.headline for p in chosen]
-    # …and the shape and the set have to agree in BOTH directions.
-    #
-    # Short table: the walk would prompt fewer spots than the session believes.
-    with pytest.raises(CrossoverV2FlowError, match="pose set"):
-        build_v2_verify_capture_plan(
-            FC_HZ,
-            plan_shape=replace(
-                resolve_plan_shape(), cloud_verify_positions=len(chosen) + 2,
-            ),
-            verify_prompts=chosen,
-        )
-    # LONG table: the quiet one. The poses past ``M - 1`` never reach an entry,
-    # so the walk is silently truncated to a prefix — while the orientation
-    # sentence is quoted off the WHOLE table and promises a reach the walk does
-    # not have. Pinned with a 60 cm sixth pose against the shipped 40 cm walk:
-    # unguarded, the plan builds and the consent screen says 70 cm.
-    long_table = flow.CLOUD_VERIFY_POSE_PROMPTS + (
-        next(p for p in CLOUD_POSITION_PROMPTS if p.offset_cm == 60.0),
-    )
-    assert flow.cloud_walk_reach_cm_of(long_table) > flow.cloud_walk_reach_cm_of(
-        flow.CLOUD_VERIFY_POSE_PROMPTS
-    ), "the extra pose must widen the quoted reach, or this pins nothing"
-    with pytest.raises(CrossoverV2FlowError, match="pose set"):
-        build_v2_verify_capture_plan(
-            FC_HZ, plan_shape=resolve_plan_shape(), verify_prompts=long_table,
-        )
-    # EXPRESS is the shape a bare ``!=`` would break: M = 1 emits no
-    # cloud-verify entry at all, so its empty index list must not be measured
-    # against the 5-row default. It is correct by construction and builds.
-    express = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
-    )
-    assert express.capture_target == 1
-    assert [e.kind_label for e in express.entries] == ["verify"]
-
-
-def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
-    """Work order D2, owner-confirmed 2026-07-29 — and the re-derivation of
-    ``test_an_express_plan_emits_no_cloud_verify_and_ends_on_verify``, whose
-    subject (the ``M = 1`` done-screen placement rule) moved out of stage 1's
-    builder and into stage 2's along with the post-apply group itself.
-
-    Full's stage 2 is the multi-position spatial walk; Express's is the single
-    anchor at the mark. The phone's END screen rides the LAST entry either way
-    (``renderPlanAllDone`` reads the final wire index), and Express's copy
-    claims LESS because it verified less (§1.3).
-    """
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-
-    full = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 6
-    assert [e.kind_label for e in full.entries] == (
-        ["verify"] + ["cloud_verify"] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
-    )
-    assert [e.index for e in full.entries] == list(range(6))
-    # The walk's prompted poses ARE the resolved pose set, in its own order —
-    # the 2026-08-24 ruling's design-axis member first, then the four sides.
-    assert [
-        e.screen["title"] for e in full.entries if e.kind_label == "cloud_verify"
-    ] == [p.headline for p in flow.CLOUD_VERIFY_POSE_PROMPTS]
-    assert full.entries[-1].screen["done_title"] == "Your speaker is tuned"
-    assert "Run a Full measurement" not in full.entries[-1].screen["done_body"]
-    # Stage 1's own plan claims nothing about the result any more.
-    assert all(
-        "done_title" not in e.screen
-        for e in build_v2_capture_plan(_roles(), FC_HZ).entries
-    )
-
-    express = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
-    )
-    assert express.capture_target == 1
-    assert [e.kind_label for e in express.entries] == ["verify"]
-    last = express.entries[-1]
-    assert last.screen["done_title"] == "Your speaker is tuned"
-    assert "Run a Full measurement" in last.screen["done_body"]
-    # The B2-corrected phrase, not the withdrawn one. This line used to pin
-    # `"verified-everywhere" in done_body` — an assertion actively holding the
-    # overclaim that PR #1780's review had already ruled out on jts.local, so
-    # the phone contradicted the wizard on one journey. Pin the shipped wording
-    # instead, and pin the withdrawn one OUT so it cannot come back.
-    assert (
-        "the result checked at several spots around the mark"
-        in last.screen["done_body"]
-    )
-    assert "verified-everywhere" not in last.screen["done_body"]
-
-    # RE-DERIVED budgets. Stage 2 draws its own, from its own target:
-    # Full 6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
-    assert full.max_attempts == (
-        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert express.max_attempts == (
-        1 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    # …and its own walked-away ceiling: 1800 + (6-3)*120 / the plain baseline.
-    assert session_wall_clock_ceiling_s(full) == 2160.0
-    assert session_wall_clock_ceiling_s(express) == 1800.0
-
-    # An express STAGE 1 is a strictly smaller draw than Full's.
-    express_stage1 = build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS)
-    assert express_stage1.capture_target == 6
-    assert [e.kind_label for e in express_stage1.entries] == (
-        ["check", "measure"] + ["cloud_measure"] * 4
-    )
-    assert express_stage1.max_attempts == (
-        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert session_wall_clock_ceiling_s(express_stage1) == 2160.0
-
-
-def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
-    """#1964: every word of the phone's END screen is written when stage 2 is
-    ARMED — before the first tone plays — so it may not assert an outcome the
-    session has not measured.
-
-    Full's copy read "Verified and applied.", selected only by
-    ``plan_shape.has_cloud_verify_group``. The post-apply cloud's SPEC verdict
-    is computed from the LAST capture and can FAIL while the tracking
-    comparator passes; on such a session jts.local said "Your speaker is
-    tuned, **but** the result still measures further from flat than the
-    target…" while the phone in the household's hand said "Verified and
-    applied." Two surfaces, one session, and the phone always optimistic.
-
-    Two halves are pinned, because either alone is re-breakable:
-
-    * **Structural** — this builder's entire input is a crossover frequency
-      and a plan SHAPE. There is no measured outcome in scope to bind copy to,
-      so a future "Verified" here would be as unearned as this one was.
-    * **Cross-surface** — whatever the phone bakes has to hold under EVERY
-      outcome jts.local can report. It does so by being exactly the claim each
-      of jts.local's seven done verdicts OPENS with; jts.local owns the
-      divergence, as the only surface whose component vocabulary can carry it.
-      All seven are pinned, not the two this fix reasoned about: the phone
-      bakes one headline for both tiers and all outcomes, so a single
-      unpinned variant is enough to reopen the defect.
-    """
-    import inspect
-
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-    from jasper.web.correction_crossover_v2 import _post_apply_grade
-
-    # The whole input, enumerated: a crossover frequency (or, on a speaker with
-    # none, its declared measurement band), a plan SHAPE, and the POSE SET the
-    # walk takes. Not one of the four is a measured outcome, which is the
-    # structural half of the claim above — a pose set says where the microphone
-    # goes, and a declared band what the speaker can be swept over, never how
-    # the result came out.
-    assert set(inspect.signature(build_v2_verify_capture_plan).parameters) == {
-        "fc_hz", "measurement_band_hz", "plan_shape", "verify_prompts",
-    }
-
-    done = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=resolve_plan_shape(),
-    ).entries[-1].screen
-    body = done["done_body"]
-    # No verdict vocabulary: the instrument that grades flatness has not
-    # reported when these bytes are written.
-    assert "verified" not in body.lower()
-    assert "spec" not in body.lower()
-    # It names the surface that DOES own the verdict instead of guessing it.
-    assert "speaker page" in body
-
-    # ONE headline is baked for BOTH tiers…
-    express_done = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
-    ).entries[-1].screen
-    headline = done["done_title"]
-    assert express_done["done_title"] == headline
-
-    def _verdict(**v2) -> str:
-        # R19: the done screen reads the PRODUCER's grade for the spatial
-        # verdict and the scope/completeness fact, so a fixture that describes
-        # a session has to carry what that session's state would produce.
-        # Deriving it here rather than hand-writing one keeps this a pin on
-        # the real path — a fixture that stops reaching its branch shows up as
-        # a collapsed variant below, which is exactly what this test counts.
-        block = {
-            "phase": "done", "verify": {"outcome": "pass"},
-            "applied": True, **v2,
-        }
-        if "post_apply_grade" not in block:
-            block = {**block, "post_apply_grade": _post_apply_grade(block)}
-        return build_crossover_envelope_v2({
-            "active": True,
-            "setup": {"active": True, "status": "ready"},
-            "crossover_v2": block,
-        })["verdict_text"]
-
-    # …so the invariant holds only if EVERY jts.local done verdict opens with
-    # it. There are seven, independently authored across the branches of the
-    # PHASE_DONE arm, and pinning only the ones a given fix reasoned about
-    # would leave the rest free to drift out from under the phone.
-    variants = {
-        "express": _verdict(tier=TIER_EXPRESS),
-        "generic": _verdict(
-            tier=TIER_FULL,
-            cloud={PHASE_CLOUD_VERIFY: {"overall_within_target": True}},
-        ),
-        "spec_fail": _verdict(
-            tier=TIER_FULL,
-            cloud={PHASE_CLOUD_VERIFY: {"overall_within_target": False}},
-        ),
-        # R19/#2160: a group that closed and could not grade anything is a
-        # third thing, and used to render as the miss above.
-        "spec_unmeasurable": _verdict(
-            tier=TIER_FULL,
-            cloud={PHASE_CLOUD_VERIFY: {
-                "overall_within_target": False, "flatness": {"evaluable": False},
-            }},
-        ),
-        # R19/#2098: Full verified at the mark and never closed its group.
-        "scope_incomplete": _verdict(tier=TIER_FULL),
-        "grade_inconclusive": _verdict(
-            tier=TIER_FULL,
-            post_apply_grade={"graded": False, "state": "inconclusive"},
-        ),
-        "grade_never_finished": _verdict(
-            tier=TIER_FULL, post_apply_grade={"graded": False, "state": ""},
-        ),
-    }
-    assert len(set(variants.values())) == 7, (
-        "seven DISTINCT verdicts, or a fixture stopped reaching its branch"
-    )
-    assert "further from flat than the target" in variants["spec_fail"]
-    assert "could not read enough of the sound" in variants["spec_unmeasurable"]
-    assert "unproven" in variants["scope_incomplete"]
-    for name, text in variants.items():
-        assert text.startswith(headline), (name, text)
 
 
 def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
@@ -459,21 +108,6 @@ def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
     # It is a recovery, not the end of a journey: no done copy, no confirm tap.
     assert "done_title" not in entry.screen
     assert "confirm_title" not in entry.screen
-
-
-def test_every_entry_carries_the_one_server_derived_counter():
-    """§2.1: "Measurement N of T" is the ONLY counter, it is server-derived,
-    and it counts the whole session — the per-group "Spot i of n" vocabulary
-    is retired (it disagreed with the phone's own count on screen)."""
-    for tier in (TIER_FULL, TIER_EXPRESS):
-        plan = build_v2_capture_plan(_roles(), FC_HZ, tier=tier)
-        target = plan.capture_target
-        assert [entry.screen["progress"] for entry in plan.entries] == [
-            f"Measurement {i} of {target}" for i in range(1, target + 1)
-        ]
-        for entry in plan.entries:
-            assert "Spot " not in entry.screen.get("title", "")
-            assert "hold still" not in entry.screen.get("title", "")
 
 
 def test_the_verify_anchor_keeps_its_confirm_tap_on_stage_2s_own_begin():
@@ -768,26 +402,6 @@ def test_a_failed_publish_is_retried_on_the_next_close_not_locked_out():
     assert PHASE_CLOUD_MEASURE in c._group_cloud_published
 
 
-def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():
-    """§1.2: every consumer can tell which instrument produced a result, and an
-    UNDECLARED tier reads as unknown rather than as "full" (the
-    ``echo_band_provenance`` discipline, issue #1763)."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes, tier=TIER_EXPRESS)
-    assert c.tier == TIER_EXPRESS
-    assert c.snapshot().tier == TIER_EXPRESS
-    assert c.snapshot().to_dict()["tier"] == TIER_EXPRESS
-    _walk_measure_cloud_to_close(c)
-    assert c.group_cloud_result(PHASE_CLOUD_MEASURE)["tier"] == TIER_EXPRESS
-
-    undeclared = _cloud_conductor(FakeSeams())
-    assert undeclared.tier == ""
-    assert undeclared.snapshot().tier == ""
-    with pytest.raises(CrossoverV2FlowError):
-        _cloud_conductor(FakeSeams(), tier="turbo")
-
-
 def test_the_measure_sweep_fit_rides_the_snapshot():
     """#2923: a duration-fitted MEASURE program's realized length is banked on
     the snapshot, not held only in the live conductor's memory — the durable
@@ -917,229 +531,6 @@ def test_the_summed_consent_heading_names_the_job_not_crossover_crossover():
     assert heading["text"] == "Tune your speaker"
 
 
-def test_the_consent_tier_line_derives_its_counts_and_duration():
-    """§1.4/§1.1: the consent screen names WHICH instrument, with numbers
-    derived from the plan — never hand-written. The duration is the phone's
-    OWN estimate (``CapturePlan.estimated_minutes``), so the consent screen and
-    the wake-lock hint cannot quote different sessions."""
-    # RE-DERIVED for the two-stage split. The consent screen belongs to ONE
-    # session, so its counts are STAGE 1's — 10 at Full, 6 at Express — and
-    # they are still derived from the plan the phone is about to walk, never
-    # hand-written. PR-T4 finished the reconciliation the split opened: the line
-    # now SAYS "in this session", so it and the pre-session tier chooser (which
-    # correctly quotes the whole journey, 16 and 7) can no longer be read as
-    # contradicting each other.
-    for tier, label, target in (
-        (TIER_FULL, "Full measurement", 10),
-        (TIER_EXPRESS, "Quick tune", 6),
-    ):
-        spec = build_v2_session_spec(
-            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
-        )
-        minutes = spec.capture_plan.estimated_minutes()
-        steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
-        assert steps[0] == (
-            f"{label}, this session: {target} measurements, "
-            f"about {minutes} minutes"
-        )
-        # The stage qualifier sits IN FRONT of the numbers so the capture
-        # page's own de-dup needle ("{n} measurements, about {m} minutes")
-        # still finds it — otherwise the household reads the same numbers
-        # twice, two lines apart. Pinned here as well as in the page's own
-        # suite because this is the side that can move it.
-        assert f"{target} measurements, about {minutes} minutes" in steps[0]
-    # These two calls take no include_* arguments, so they exercise the
-    # BUILDER's bare defaults (pre-apply cloud ON, lateral and entry baseline
-    # OFF) — 7 minutes at Full, 5 at Express. That is NOT the shipped stage 1,
-    # which runs the opposite flags for 3 captures and 3 minutes at either
-    # tier; the whole journey is what tier_display_info sums, pinned in its own
-    # test below.
-    assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 7
-    assert (
-        build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
-        == 4
-    )
-
-
-def test_tier_display_info_minutes_hold_across_plausible_topologies():
-    """S3 fix (adversarial review of PR #1780): ``tier_display_info``'s fixed
-    representative ``RoleBand`` pair does NOT make the realized sweep
-    duration invariant to the band (an earlier docstring overclaimed that —
-    MESM gaps and Novak sample-count rounding both depend on the swept
-    band's edges). What actually holds is narrower: the displayed WHOLE
-    MINUTES stay the same across the plausible 2-way band space, because
-    ``CapturePlan.estimated_minutes``'s ceil-to-minute quantum absorbs the
-    real (small) variance. Swept here across several genuinely different
-    plausible topologies — varying woofer/tweeter bands and ``fc_hz`` — each
-    built through the REAL ``build_v2_capture_plan``, never re-deriving the
-    arithmetic."""
-    info = tier_display_info()
-    topologies = [
-        # (woofer band, tweeter band, fc_hz)
-        (FrequencyBand(150.0, 6000.0), FrequencyBand(1800.0, 20000.0), 1600.0),
-        (FrequencyBand(80.0, 3000.0), FrequencyBand(1200.0, 20000.0), 1800.0),
-        (FrequencyBand(200.0, 4500.0), FrequencyBand(1500.0, 22000.0), 2200.0),
-    ]
-    for woofer_band, tweeter_band, fc_hz in topologies:
-        roles = [
-            RoleBand("woofer", 0, woofer_band),
-            RoleBand("tweeter", 1, tweeter_band),
-        ]
-        for tier in (TIER_FULL, TIER_EXPRESS):
-            shape = resolve_plan_shape(tier)
-            # BOTH stages, because the chooser quotes the whole journey (D2).
-            stage1 = build_v2_capture_plan(
-                roles, fc_hz, plan_shape=shape,
-                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-                include_lateral=False,
-                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-            )
-            stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
-            minutes = stage1.estimated_minutes() + stage2.estimated_minutes()
-            assert minutes == info[tier]["estimated_minutes"], (
-                f"tier={tier} woofer={woofer_band} tweeter={tweeter_band} "
-                f"fc={fc_hz}: displayed minutes drifted from tier_display_info()"
-            )
-            assert (
-                stage1.capture_target + stage2.capture_target
-                == info[tier]["capture_target"]
-            )
-
-
-def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
-    """#1941 R1, keeping work order D7's intent (#1804 + #1805).
-
-    D7 put every position on the consent screen so the walk would not be
-    discovered one prompt at a time. The intent survives; the presentation does
-    not. A SECOND ten-item ``ui_steps`` list, stacked under the first, was the
-    owner's 2026-07-30 field defect — *"crazy dense with the 10 steps all
-    spelled out"* — and a household standing at the first position cannot act
-    on the last one anyway.
-
-    What replaces it is one ``note`` carrying the two facts the list was
-    actually being used to convey: how far from the mark this reaches, and that
-    each position is prompted. The distance is DERIVED from the same
-    ``[:N - 1]`` slice of the same table the per-entry screens are built from,
-    which is why a plan-shape change still moves both together or neither.
-    """
-    for tier, positions in (
-        (TIER_FULL, DEFAULT_CLOUD_MEASURE_POSITIONS),
-        (TIER_EXPRESS, express_cloud_measure_positions()),
-    ):
-        spec = build_v2_session_spec(
-            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
-        )
-        step_lists = [c["items"] for c in spec.screen if c["type"] == "steps"]
-        assert len(step_lists) == 1, "ONE list — the stacked preview is gone"
-        # The acceptance bar #1941 sets for the pre-tone screen: at most six
-        # list items, and one orientation note.
-        assert len(step_lists[0]) <= 6
-
-        walked = CLOUD_POSITION_PROMPTS[: positions - 1]
-        shape = cloud_walk_shape(walked)
-        notes = [c["text"] for c in spec.screen if c["type"] == "note"]
-        assert shape in notes
-
-        # The reach is DERIVED from the walked slice, in the prompts' own units
-        # — not a hand-written number that could outlive the table.
-        reach = cloud_walk_reach_cm(positions)
-        assert format_position_distance(reach) in shape
-        # …and it is a true CEILING, not the stated maximum restated. The wide
-        # rows also ask the operator to step IN toward the speaker so the
-        # radius holds, which puts the capsule on a chord: a stated 40 cm
-        # lateral move really lands ~40.9 cm from the mark at the placement
-        # copy's nominal 1 m. Re-derived here, because the first version of
-        # this screen quoted the bare offset and was therefore false on the
-        # very walk it described.
-        nominal_mark_distance_cm = 100.0
-        worst_chord = max(
-            math.hypot(
-                p.offset_cm,
-                nominal_mark_distance_cm
-                - math.sqrt(
-                    max(nominal_mark_distance_cm**2 - p.offset_cm**2, 0.0)
-                ),
-            )
-            for p in walked
-        )
-        assert worst_chord <= reach, (
-            f"the quoted reach {reach} cm no longer covers the walk's own "
-            f"step-in chord ({worst_chord:.2f} cm) — widen "
-            "CLOUD_WALK_REACH_ROUNDING_CM rather than shipping a false ceiling"
-        )
-
-        # …and the claim is bounded against EVERY prompt the flow can show,
-        # not just the walked slice. CLOUD_GEOMETRY_RETRY_PROMPTS is a shipped
-        # path (GEOMETRY_RETRY_POSITIONS = 2) and is deliberately "past every
-        # position in the table", so a bare "every spot is within X" would be
-        # false the moment a capture is retaken. Whether the honesty clause is
-        # needed is DERIVED from that reach, so a narrowed retake drops it.
-        retry_reach = cloud_geometry_retry_reach_cm()
-        if retry_reach > reach:
-            assert "a redo can ask for one step further out" in shape
-        else:
-            assert "redo" not in shape
-        # Today's constants really do exercise the first branch.
-        assert retry_reach > reach
-
-        # …and no position is enumerated on the consent screen any more.
-        for prompt in walked:
-            assert prompt.text not in shape
-            assert prompt.text not in step_lists[0]
-        # The household is told they will be prompted, and the tail sets up the
-        # INTERLUDE rather than promising a tune.
-        assert "you will be told each one" in shape
-        assert shape.endswith(CLOUD_WALK_SHAPE_TAIL)
-        assert "decide" in CLOUD_WALK_SHAPE_TAIL
-
-        # …and the plan really does prompt exactly those, in that order.
-        prompted = [
-            e.screen["title"] for e in spec.capture_plan.entries
-            if e.kind_label == "cloud_measure"
-        ]
-        assert prompted == [p.headline for p in walked]
-
-
-def test_the_post_apply_walk_states_its_shape_with_its_own_tail():
-    """Stage 2's walk gets the same one-line shape as stage 1's, with its own
-    tail: the journey ends there rather than pausing for a decision. Express's
-    1-entry stage 2 is not a walk and gets no shape line at all.
-
-    RE-DERIVED for the 2026-08-24 geometry ruling: the post-apply group walks
-    its OWN pose set now, so the sentence is quoted off that table rather than
-    off a prefix of the pre-apply one.
-    """
-    full = build_v2_verify_session_spec(
-        FC_HZ, acknowledgement_binding="b" * 24, plan_shape=resolve_plan_shape(),
-    )
-    shape = cloud_walk_shape(flow.CLOUD_VERIFY_POSE_PROMPTS, post_apply=True)
-    assert len([c for c in full.screen if c["type"] == "steps"]) == 1
-    assert shape in [c["text"] for c in full.screen if c["type"] == "note"]
-    # Same derived ceiling and the same retake honesty as stage 1 — the
-    # geometry-locked retake is armed on this group too.
-    reach = flow.cloud_walk_reach_cm_of(flow.CLOUD_VERIFY_POSE_PROMPTS)
-    assert format_position_distance(reach) in shape
-    assert cloud_geometry_retry_reach_cm() > reach
-    assert "a redo can ask for one step further out" in shape
-    assert shape.endswith(CLOUD_WALK_SHAPE_TAIL_POST_APPLY)
-    # Stage 2 grades rather than handing back a decision.
-    assert CLOUD_WALK_SHAPE_TAIL_POST_APPLY != CLOUD_WALK_SHAPE_TAIL
-
-    express = build_v2_verify_session_spec(
-        FC_HZ,
-        acknowledgement_binding="b" * 24,
-        plan_shape=resolve_plan_shape(TIER_EXPRESS),
-    )
-    assert len([c for c in express.screen if c["type"] == "steps"]) == 1
-    assert cloud_walk_shape(()) == ""
-    assert cloud_walk_shape((), post_apply=True) == ""
-    # …and an empty shape renders NO note rather than an empty one, so the
-    # one-sweep screen never grows a blank section.
-    assert all(
-        c["text"] for c in express.screen if c["type"] == "note"
-    ), "an empty shape must render no note at all"
-
-
 def test_check_stops_hushing_the_room_before_it_measures_it():
     """Work order D8 / issue #1835. CHECK's ambient window is the SESSION's
     room-noise measurement and is deliberately composed to run BEFORE anyone is
@@ -1170,54 +561,6 @@ def test_check_stops_hushing_the_room_before_it_measures_it():
     for label, entry in entries.items():
         if label != "check":
             assert "noise_note" not in entry.screen
-
-
-def test_cloud_prompts_front_load_the_wide_offsets():
-    """Fundamental 1's physics, pinned: >=10 cm spread decorrelates HF nulls and
-    ~30 cm+ offsets are what support the LF edge. Each group walks its own
-    ordered table from the front, so the shortest walk either can be
-    CONFIGURED to run — its declared MIN, not its default — must still contain
-    at least two wide moves. Reordering a table for readability would
-    silently delete the LF half of the measurement — hence this test rather
-    than a comment.
-
-    RE-DERIVED 2026-08-24: the two groups walked ONE table until the geometry
-    ruling gave the post-apply group its own pose set, so the floors are now
-    derived per table rather than one standing in for both. The guarantee is
-    unchanged; what moved is which table each floor is checked against.
-
-    Round-2 review NEW-9: this used to compare against
-    ``DEFAULT_CLOUD_VERIFY_POSITIONS``, so ``M = 2`` was accepted and voided
-    the guarantee the test claims. Both groups now carry a floor, and both
-    floors are checked against the SAME derivation the code enforces.
-
-    Flow-simplification §1.2 adds a THIRD number to the same derivation: the
-    express tier's pre-apply group size. Express exists precisely because a
-    4-position walk still picks up both wide moves for free, so a reorder that
-    pushed the second wide move later must move express with it rather than
-    ship a silently one-wide "quick tune".
-    """
-    walked = CLOUD_POSITION_PROMPTS[: MIN_CLOUD_MEASURE_POSITIONS - 1]
-    assert sum(1 for prompt in walked if prompt.wide) >= 2
-    # …and the same property on the POST-apply group, which walks its own pose
-    # set since the 2026-08-24 geometry ruling rather than a prefix of the one
-    # above. Two tables, so two derivations — a single ``min()`` over the two
-    # floors would now be checking one table against the other's number.
-    post_walked = flow.CLOUD_VERIFY_POSE_PROMPTS[: MIN_CLOUD_VERIFY_POSITIONS - 1]
-    assert sum(1 for prompt in post_walked if prompt.wide) >= 2
-    # The floors are DERIVED from the table each group walks, so a reorder moves
-    # them rather than leaving a stale literal behind.
-    derived = _min_positions_for_two_wide_offsets()
-    assert MIN_CLOUD_VERIFY_POSITIONS == _min_positions_for_two_wide_offsets(
-        flow.CLOUD_VERIFY_POSE_PROMPTS
-    )
-    assert MIN_CLOUD_MEASURE_POSITIONS >= derived
-    assert express_cloud_measure_positions() == derived
-    # …and the express plan really does walk two wide moves at that size.
-    express = resolve_plan_shape(TIER_EXPRESS)
-    express_walk = CLOUD_POSITION_PROMPTS[: express.cloud_measure_positions - 1]
-    assert sum(1 for prompt in express_walk if prompt.wide) == 2
-    assert len(express_walk) == 4
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])
@@ -1494,117 +837,6 @@ def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
     ]
 
 
-@pytest.mark.parametrize("lateral_armed", [False, True])
-@pytest.mark.parametrize("tier", [TIER_FULL, TIER_EXPRESS, TIER_REMOTE])
-def test_the_consent_beeps_sentence_matches_what_the_session_plays(
-    tier, lateral_armed,
-):
-    """The consent screen's beeps sentence, checked against the PROGRAMS.
-
-    The 2026-08-18 gate round found a hand-written "The first measurement has
-    three short beeps" shipped against a stage 1 that beeps TWICE — its entry
-    baseline plays stage 2's anchor object and announces too. A prior literal
-    pin could not see it: a substring assertion is true of a sentence that is
-    false of the session.
-
-    So this walks the other way round. For each capture index it asks the
-    SESSION what that phase plays and looks for a courtesy tone in the composed
-    segments — the ground truth, what the speaker actually does — and then
-    requires the rendered sentence to be the one that describes that set. A
-    rule change that moves the announced set without moving the copy (or the
-    reverse) fails here whichever way it drifts.
-
-    **Both lateral states, and the ARMED one is the case that binds.** No
-    stage-1 plan builds the lateral group any more, so the shipped stage 1 is
-    three captures at the mark: not a guided walk, and it renders no beeps
-    sentence at all — which would leave the two-announcement shape unexercised
-    and this pin quietly vacuous. ``lateral_armed=True`` is driven straight
-    into the builders below rather than through a flag, because that is
-    exactly the shape an operator's staged angle walk produces for THIS
-    session (``prepare_v2_session`` sets the same local ``True`` once a walk
-    is taken) — and the sentence it renders is the one that was WRONG when the
-    gate found it.
-    """
-    from jasper.audio_measurement.program import KIND_COURTESY_TONE
-    from jasper.active_speaker.capture_geometry import (
-        CLOUD_WALK_PLACEMENT_POLICY_ID,
-    )
-
-    shape = resolve_plan_shape(tier)
-    stages = (
-        (
-            build_v2_session_spec(
-                _roles(), FC_HZ, acknowledgement_binding="b" * 24,
-                plan_shape=shape,
-                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-                include_lateral=lateral_armed,
-                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-            ),
-            build_v2_cloud_index_phase_map(
-                plan_shape=shape,
-                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-                include_lateral=lateral_armed,
-                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-            ),
-        ),
-        (
-            build_v2_verify_session_spec(
-                FC_HZ, acknowledgement_binding="b" * 24, plan_shape=shape,
-            ),
-            flow.build_v2_verify_index_phase_map(plan_shape=shape),
-        ),
-    )
-    conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -30.0, "tweeter": -36.0})
-
-    for spec, index_phase in stages:
-        walk = len(index_phase)
-        played = tuple(
-            index for index, phase in sorted(index_phase.items())
-            if any(
-                seg.kind == KIND_COURTESY_TONE
-                for seg in conductor.program_for_phase(phase).segments
-            )
-        )
-        steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
-        sentence = next((i for i in steps if "beeps" in i), "")
-        if not sentence:
-            # The GUIDED consent surface was not rendered, so there is no
-            # sentence to be wrong — and that is checked rather than assumed,
-            # because "no sentence" must never be how a guided session passes.
-            # Two shipped shapes land here: a single held-still sweep (Express's
-            # stage 2, the recovery re-arm) and, since the 2026-08-18 lateral
-            # pause, stage 1 itself — three captures all at the mark, so the
-            # flow's ``walked`` is False and the stationary copy applies.
-            #
-            # NOTE the consequence, which is not this PR's to fix: stage 1
-            # announces two of its three captures and its consent screen says
-            # nothing about beeps, because the stationary copy never carried
-            # that sentence. Re-arming the walk restores it.
-            assert (
-                spec.acknowledgement.id != CLOUD_WALK_PLACEMENT_POLICY_ID
-            ), (tier, walk)
-            continue
-        assert played, (tier, walk)
-        if played == tuple(range(1, walk + 1)):
-            expected = "Each measurement has"
-        elif played == (1,):
-            expected = "The first measurement has"
-        elif played == (1, walk):
-            expected = "The first and last measurements each have"
-        else:  # pragma: no cover - a shape the copy refuses to state
-            raise AssertionError(f"unstateable announced set {played} of {walk}")
-        assert sentence.startswith(expected), (tier, walk, played, sentence)
-        # …and the OTHER two openers are pinned out, so a sentence that merely
-        # contains the right words in the wrong quantifier cannot pass.
-        for other in (
-            "Each measurement has",
-            "The first measurement has",
-            "The first and last measurements each have",
-        ):
-            if other != expected:
-                assert other not in sentence, (tier, other)
-
-
 def test_a_consent_walk_must_say_which_captures_announce():
     """A guided walk with no announced set is REFUSED, not silently phrased.
 
@@ -1815,82 +1047,3 @@ def test_shipped_v2_plans_keep_their_own_retry_budget():
 def test_cloud_position_count_outside_the_declared_range_is_refused(positions):
     with pytest.raises(CrossoverV2FlowError):
         build_v2_capture_plan(_roles(), FC_HZ, cloud_measure_positions=positions)
-
-
-def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
-    """The walked-away guarantee survives a long crossover-cloud session —
-    and stays a guarantee: the ceiling grows with plan length but can never
-    be scaled away."""
-    from jasper.active_speaker.session_volume_plan import (
-        DEFAULT_WALL_CLOCK_CEILING_S,
-        MAX_WALL_CLOCK_CEILING_S,
-    )
-
-    shipped = build_v2_capture_plan(_roles(), FC_HZ)
-    # RE-DERIVED (work order D2): each STAGE arms its own ceiling from its own
-    # plan. This call takes no include_* args, so it exercises the FUNCTION's
-    # own bare defaults (cloud_measure on, lateral/entry_baseline off) --
-    # NOT the shipped Full tier's own stage 1, which runs cloud measure OFF
-    # and #2291's entry baseline ON (no stage-1 plan builds the lateral group)
-    # for 9 captures and 2,520 s (see tuning-operator-runbook.md "The
-    # capture flow" / "What v2 is" -- tier_display_info() is the derivation of
-    # record for that number).
-    # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
-    # 2640 s. What the split buys is a lower worst case per stage.
-    assert session_wall_clock_ceiling_s(shipped) == 2640.0
-    assert session_wall_clock_ceiling_s(
-        build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    ) == 2160.0
-    biggest = build_v2_capture_plan(
-        _roles(), FC_HZ,
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    # 1800 + (12 - 3) * 120 = 2880 s: the biggest CLOUD-configured stage-1 plan
-    # does not reach the hard cap, so the cap is exercised on a plan long enough
-    # to need it (the synthetic 100 below) rather than left unpinned. 12, down
-    # from 13, because #2291's stage-1 entry brought
-    # ``MAX_CLOUD_MEASURE_POSITIONS`` to 11 — see that constant's arithmetic.
-    assert session_wall_clock_ceiling_s(biggest) == 2880.0
-    assert MAX_WALL_CLOCK_CEILING_S == 3600.0
-    assert session_wall_clock_ceiling_s(
-        types.SimpleNamespace(capture_target=100)
-    ) == MAX_WALL_CLOCK_CEILING_S
-    # The 1-entry re-verify never widens the baseline.
-    assert (
-        session_wall_clock_ceiling_s(build_v2_verify_capture_plan(FC_HZ))
-        == DEFAULT_WALL_CLOCK_CEILING_S
-    )
-
-
-def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
-    """Every shipped plan's wire bytes are pinned; only an intended edit moves
-    them."""
-    import hashlib
-    import json
-
-    from jasper.active_speaker.crossover_v2_flow import (
-        build_v2_capture_plan,
-        build_v2_verify_capture_plan,
-    )
-
-    plans = {
-        "stage1-full": build_v2_capture_plan(_roles(), FC_HZ),
-        "stage1-express": build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS),
-        "stage2-full": build_v2_verify_capture_plan(
-            FC_HZ, plan_shape=resolve_plan_shape(),
-        ),
-        "stage2-express": build_v2_verify_capture_plan(
-            FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
-        ),
-        "1-entry": build_v2_verify_capture_plan(FC_HZ),
-    }
-    assert set(plans) == set(_GOLDEN_V2_PLAN_BYTES)
-    for label, plan in plans.items():
-        raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
-        expected_len, expected_sha = _GOLDEN_V2_PLAN_BYTES[label]
-        actual_sha = hashlib.sha256(raw).hexdigest()
-        assert (len(raw), actual_sha) == (expected_len, expected_sha), (
-            f"{label} v2 capture plan wire bytes changed: "
-            f"len={len(raw)} sha256={actual_sha}"
-        )

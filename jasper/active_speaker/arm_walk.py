@@ -42,8 +42,6 @@ that is when the saved zero may no longer be the acoustic axis.
 
 from __future__ import annotations
 
-from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
-
 import json
 import logging
 import signal
@@ -57,6 +55,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from jasper.log_event import log_event
 
 from .angle_capture import ARM_ENVELOPE_DEG
+from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .wizard_client import STATUS_PATH, WizardClient
 
 logger = logging.getLogger(__name__)
@@ -527,7 +526,6 @@ class ArmWalk:
         config: WalkConfig,
         *,
         trail: Trail | None = None,
-        walk_staged: Callable[[], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -535,7 +533,6 @@ class ArmWalk:
         self._session = session
         self._config = config
         self._trail = trail or Trail()
-        self._walk_staged = walk_staged
         self._clock = clock
         self._sleep = sleep
         self._parked = False
@@ -602,9 +599,6 @@ class ArmWalk:
         self._trail.emit("start_offset", offset_deg=self._mover.offset_deg())
 
         first = self._poll()
-        staged = self._staged_walk_check(first)
-        if staged is not None:
-            return staged
 
         now = self._clock()
         idle_since = last_progress = now
@@ -692,34 +686,6 @@ class ArmWalk:
                 )
                 return EXIT_OK if self._served else EXIT_IDLE_CEILING
             self._sleep(self._config.poll_s)
-
-    def _staged_walk_check(self, first: Poll) -> int | None:
-        """The one pre-motion evidence that a stated walk will actually run.
-
-        A walk the session refuses at take time leaves NO trace on the envelope, so this
-        asks the only thing answerable before anything moves: is one still staged,
-        waiting for a session not yet open. Once a session IS in flight the question is
-        unanswerable, and the loop falls back to :data:`EXIT_WALK_NOT_TAKEN` at the end.
-        The two skip reasons are reported SEPARATELY: "already open" is a fact off the
-        envelope, "could not be read" is the absence of any fact.
-        """
-        if not self._config.expect_angles or self._walk_staged is None:
-            return None
-        if not first.readable:
-            self._trail.emit("staged_check_skipped", reason="status_unreadable")
-            return None
-        if first.in_flight:
-            self._trail.emit("staged_check_skipped", reason="session_in_flight")
-            return None
-        if self._walk_staged():
-            self._trail.emit("staged_check_ok")
-            return None
-        self._trail.emit(
-            "walk_not_staged",
-            level=logging.ERROR,
-            expect_angles=",".join(f"{a:+d}" for a in self._config.expect_angles),
-        )
-        return EXIT_WALK_NOT_STAGED
 
     def _serve(self, pending: Pending) -> int | None:
         """Move, settle, release. ``None`` means the walk continues."""
@@ -987,14 +953,7 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     )
 
 
-def staged_walk_pending() -> bool:
-    """Is an angle walk waiting for the next session to take it? Delegates to the spool's own
-    predicate, imported lazily so this module stays importable and testable without the
-    crossover flow behind it.
-    """
-    from .angle_capture_spool import staged_angle_request_pending
 
-    return staged_angle_request_pending()
 
 
 __all__: Sequence[str] = (
@@ -1042,5 +1001,4 @@ __all__: Sequence[str] = (
     "parse_power",
     "pending_from_capture",
     "poll_from_status",
-    "staged_walk_pending",
 )

@@ -214,7 +214,7 @@ class LiveThen:
         return 200, '{"ok": true}'
 
 
-def _walk(mover, session, *, clock=None, trail=None, walk_staged=None, **cfg):
+def _walk(mover, session, *, clock=None, trail=None, **cfg):
     clock = clock or FakeWalkClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
@@ -222,7 +222,7 @@ def _walk(mover, session, *, clock=None, trail=None, walk_staged=None, **cfg):
     })
     return aw.ArmWalk(
         mover, session, config,
-        trail=trail, walk_staged=walk_staged,
+        trail=trail,
         clock=clock.now, sleep=clock.sleep,
     )
 
@@ -533,7 +533,7 @@ def test_a_park_signal_leaves_serve_on_128_plus_signum(monkeypatch, capsys):
 
     Its exit contract is the shared 0/1/3 with the stall in the record; a signal
     ending is the exception, and it goes out as the shell's own 128+signum with
-    NOTHING on stdout. `scripts/run-crossover-round.py`'s fall back to the bare
+    NOTHING on stdout. A caller's fall back to the bare
     rc rides on exactly that, so it is pinned here rather than assumed.
     """
     def _signalled(self):
@@ -886,16 +886,6 @@ def test_one_good_read_clears_an_unreadable_run():
     assert walk.run() == aw.EXIT_IDLE_CEILING
 
 
-def test_an_unreadable_first_poll_does_not_claim_a_session_is_open():
-    """Two skip reasons, told apart: a read fact and the absence of one."""
-    trail = _RecordingTrail()
-    walk = _walk(FakeMover(), FakeSession([_UNREADABLE]), trail=trail,
-                 unreadable_ceiling_s=10.0, expect_angles=(7,),
-                 walk_staged=lambda: False)
-    assert walk.run() == aw.EXIT_STATUS_UNREACHABLE
-    assert trail.one("staged_check_skipped")["reason"] == "status_unreadable"
-
-
 def test_nothing_ever_pending_is_a_failure_not_a_quiet_zero():
     assert _walk(FakeMover(), FakeSession([_QUIET]),
                  idle_ceiling_s=10.0).run() == aw.EXIT_IDLE_CEILING
@@ -1010,17 +1000,6 @@ def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
     walk = _walk(FakeMover(), session, idle_ceiling_s=600.0, complete_after=1)
     assert walk.run() == aw.EXIT_OK
     assert session.released == [1]
-
-
-def test_residue_does_not_skip_the_staged_walk_check_either():
-    """``in_flight`` gates that check too: a terminal block read as a live
-    session made the one pre-motion evidence unanswerable, so a walk the
-    session would refuse got moved for anyway."""
-    trail = _RecordingTrail()
-    walk = _walk(FakeMover(), FakeSession([_COMPLETE]), trail=trail,
-                 expect_angles=(7,), walk_staged=lambda: False)
-    assert walk.run() == aw.EXIT_WALK_NOT_STAGED
-    assert not [r for r in trail.rows if r["event"] == "staged_check_skipped"]
 
 
 def test_a_session_that_finished_without_the_stated_angles_still_fails():
@@ -1140,29 +1119,6 @@ def test_a_stated_walk_that_arrives_is_a_success():
     assert walk.run() == aw.EXIT_OK
 
 
-def test_nothing_staged_and_no_session_refuses_before_it_moves():
-    mover = FakeMover()
-    walk = _walk(mover, FakeSession([_QUIET]), expect_angles=(7,),
-                 walk_staged=lambda: False)
-    assert walk.run() == aw.EXIT_WALK_NOT_STAGED
-    assert mover.moves == [0]  # only the park
-
-
-def test_a_session_already_in_flight_skips_the_unanswerable_check():
-    trail = _RecordingTrail()
-    session = FakeSession([_pending(1, 7), _QUIET])
-    walk = _walk(FakeMover(), session, trail=trail, idle_ceiling_s=10.0,
-                 expect_angles=(7,), walk_staged=lambda: False)
-    assert walk.run() == aw.EXIT_OK
-    assert trail.one("staged_check_skipped")["reason"] == "session_in_flight"
-
-
-def test_no_expectation_means_no_staged_check():
-    walk = _walk(FakeMover(), FakeSession([_QUIET]), idle_ceiling_s=10.0,
-                 walk_staged=lambda: False)
-    assert walk.run() == aw.EXIT_IDLE_CEILING
-
-
 # --------------------------------------------------------------------------- #
 # reading the envelope
 # --------------------------------------------------------------------------- #
@@ -1251,8 +1207,6 @@ def test_anything_not_terminal_reads_as_in_flight(status):
     waiting. Ending early strands a round; one more poll costs one poll."""
     poll = aw.poll_from_status({"capture": {"status": status}})
     assert poll.in_flight and not poll.ended
-
-
 
 
 # --------------------------------------------------------------------------- #

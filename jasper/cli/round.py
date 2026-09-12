@@ -2,32 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Open, wait, apply a named candidate, or bank a round through existing owners.
-
-Apply republishes a banked selection only when it differs from the live slot;
-the existing wizard apply path owns graph admission, installation and restore.
-"""
-
+"""Start an inline plan, place the microphone, read progress and bank a run."""
 from __future__ import annotations
 
 import argparse
-import shlex
+import math
 from pathlib import Path
 from typing import Any, Sequence
 
 from jasper.active_speaker.wizard_client import (
-    CSRF_PAGE_PATH,
-    REASON_ANSWER_LOST,
-    REASON_NO_FINGERPRINT,
-    SESSION_PATH,
-    STAGE_MEASURE,
-    STAGE_POST_APPLY,
-    TIERS,
-    VERIFY_PATH,
-    WizardClient,
-    apply_by_fingerprint,
-    error_of,
-    wait_for_round,
+    CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST, REASON_NO_FINGERPRINT,
+    WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, read_identity, speaker_url
 
@@ -40,39 +25,12 @@ PROG = "jasper-round"
 REPUBLISH_PATH = "/sound/speaker/crossover/v2/republish"
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
-
-#: This tool's own refusals, in the slug vocabulary the library's carry.
-REASON_TIER_REQUIRED = "tier_required"
-REASON_OPEN_REFUSED = "open_refused"
-
-#: Said whenever an apply's answer is lost, because "it failed" is a claim this
-#: tool cannot make there.
-LOST_ANSWER_ADVICE = (
-    "the apply may or may not have taken effect -- read the crossover status "
-    "and decide from the live candidate, not from this exit code"
-)
-
-#: Authority tier for the generated tool-menu index
-#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
-AUTHORITY_TIER = "mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not)"
-
-#: A lost answer and a deadline are both UNREADABLE: neither is a refusal and
-#: neither says the round failed. Which one it was rides in the receipt's
-#: ``reason`` (``answer_lost`` / ``wait_timeout``), not in the number.
-_EXIT_BY_WAIT_STATUS = {
-    "failed": EXIT_REFUSED,
-    "lost": EXIT_UNREADABLE,
-    "timed_out": EXIT_UNREADABLE,
-}
+AUTHORITY_TIER = "mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads)"
+LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 
 
 def _answer(verb: str, human: str, **fields: Any) -> int:
-    """The verb's answer: its non-empty fields, under the verb."""
-
-    return answered(
-        {"verb": verb, **{k: v for k, v in fields.items() if v not in (None, "", {})}},
-        human,
-    )
+    return answered({"verb": verb, **fields}, human)
 
 
 def _round_session_dir(capture_id: str) -> str:
@@ -94,7 +52,6 @@ def _round_session_dir(capture_id: str) -> str:
     return found
 
 
-
 def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> int:
     error = error_of(payload)
     fields = error if isinstance(error, dict) else {}
@@ -104,71 +61,74 @@ def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> 
     )
 
 
-def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
-    """One stage open. The tier is stated, never inherited (#2639).
+def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: run-only
+    from ._run_request import resolve_run  # lazy: run-only measurement imports
 
-    An ABSENT tier resolves server-side to ``full``, silently demoting an
-    Express household and handing the turntable rig a plan it cannot walk. So
-    the measuring stage refuses without one here rather than posting a body
-    whose meaning depends on what the last session was. The post-apply stage
-    takes no tier at all: it reads the instrument the MEASURING session
-    recorded.
-    """
-    post_apply = args.stage == STAGE_POST_APPLY
-    if not post_apply and not args.tier:
-        return failed(EXIT_REFUSED, REASON_TIER_REQUIRED, {"stage": args.stage})
-    path = VERIFY_PATH if post_apply else SESSION_PATH
-    http, payload = client.open_session(
-        args.tier or "", stage=args.stage
-    )
+    try:
+        report = resolve_run(args)
+    except (ValueError, OSError, CrossoverV2FlowError) as exc:
+        return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
+    if args.dry_run:
+        answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
+        return EXIT_REFUSED if report.blocking else EXIT_OK
+    if report.blocking:
+        return failed(EXIT_REFUSED, report.issues[0].code, report.to_dict())
+    http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
-        return _wizard_failure(
-            EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
-            REASON_ANSWER_LOST if http == 0 else REASON_OPEN_REFUSED,
-            {"stage": args.stage, "tier": args.tier or "", "path": path,
-             "http": http}, payload,
-        )
-    block = client.v2_block()
-    url = speaker_url(CROSSOVER_PAGE_PATH)
-    return _answer(
-        "open",
-        f"{args.stage} session open -- the round is driven at {url}",
-        stage=args.stage,
-        tier=None if post_apply else args.tier,
-        path=path,
-        http=http,
-        session_id=str(block.get("session_id") or ""),
-        phase=str(block.get("phase") or ""),
-        handoff_url=url,
-        next=f"{PROG} wait",
-    )
+        return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
+                               "run_refused", {"http": http}, payload)
+    capture = payload.get("capture", payload) if isinstance(payload, dict) else None
+    run_id = capture.get("session_id") if isinstance(capture, dict) else None
+    if not isinstance(capture, dict) or not isinstance(run_id, str) or not run_id:
+        return failed(EXIT_UNREADABLE, "run_answer_invalid", payload)
+    return _answer("run", "Run ready; place the microphone to start.",
+                   run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH),
+                   status_url=speaker_url(STATUS_PATH),
+                   shape="trial" if report.plan.candidates else "measure",
+                   first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
+
+
+def _cmd_placed(client: WizardClient, args: argparse.Namespace) -> int:
+    http, payload = client.placed(args.run, args.pose)
+    if http != 200:
+        return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
+                               "placement_refused", {"run_id": args.run, "http": http}, payload)
+    return answered(payload)
+
+
+def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
+    http, payload = client.run_status(args.run)
+    if http != 200:
+        return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
+                               "status_unavailable", {"http": http}, payload)
+    return answered(payload)
 
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
-    result = wait_for_round(
-        client, timeout_s=args.timeout_s, poll_s=args.poll_s
+    from jasper.active_speaker.round_bank import (  # lazy: banking imports analysis
+        RoundBankError, bank_round,
     )
-    status = str(result["status"])
-    facts = {key: result.get(key) for key in ("capture", "needs_recovery", "execution", "verify")}
-    if status != "terminal":
-        return failed(
-            _EXIT_BY_WAIT_STATUS[status], str(result["reason"]),
-            {**facts, "phase": result["phase"], "session_id": result["session_id"],
-             "failure": result["failure"],
-             "waited_s": args.timeout_s if status == "timed_out" else None},
-        )
-    session_dir = _round_session_dir(str(result["session_id"]))
-    return _answer(
-        "wait",
-        f"session {result['session_id']} stopped at {result['phase']}",
-        phase=result["phase"],
-        session_id=result["session_id"],
-        candidate_fingerprint=result["candidate_fingerprint"],
-        session_dir=session_dir,
-        next=f"{PROG} bank {shlex.quote(session_dir)}" if session_dir else "",
-        session_dir_reason="" if session_dir else "capture_bundle_unavailable",
-        **facts,
-    )
+
+    from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
+
+    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, poll_s=DEFAULT_POLL_S)
+    if result["status"] != "terminal":
+        return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
+                      str(result["reason"]), result)
+    session_dir = _round_session_dir(args.run)
+    if not session_dir:
+        return failed(EXIT_UNREADABLE, "capture_bundle_unavailable", result)
+    try:
+        banked = bank_round(Path(session_dir), view_runner=run_bookkeeping)
+    except RoundBankError as exc:
+        return failed(EXIT_REFUSED, exc.reason, str(exc))
+    except OSError as exc:
+        return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
+    return _answer("wait", f"Run banked at {banked.path}", run_id=args.run,
+                   result=result.get("result"), round_dir=str(banked.path),
+                   manifest=banked.provenance.get("manifest"),
+                   views=banked.provenance.get("views", []))
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
@@ -210,190 +170,57 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
     )
 
 
-def _cmd_bank(args: argparse.Namespace) -> int:
-    # Banking pulls the whole bundle and measurement import graph in: an
-    # ordinary open must not pay for a door it is not carrying (ADR-0226).
-    from jasper.active_speaker.round_bank import (
-        DEFAULT_CAMPAIGN_ROOT,
-        RoundBankError,
-        bank_round,
-    )
-
-    root = Path(args.campaign_root) if args.campaign_root else DEFAULT_CAMPAIGN_ROOT
-    try:
-        banked = bank_round(Path(args.session_dir), campaign_root=root)
-    except RoundBankError as exc:
-        return failed(EXIT_REFUSED, exc.reason, str(exc))
-    except OSError as exc:
-        return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
-    provenance = banked.provenance
-    return _answer(
-        "bank",
-        f"{banked.path} session={provenance['session_id']} "
-        f"banked_at_utc={provenance['banked_at_utc']} "
-        f"installed_sha={provenance['installed_sha'] or 'unknown'} "
-        f"missing={','.join(provenance['missing'] or ['none'])}",
-        round_dir=str(banked.path),
-        provenance=provenance,
-    )
-
-
 def _connection_args(parser: argparse.ArgumentParser) -> None:
-    """The wizard verbs' shared arguments; ``bank`` reaches no wizard."""
-    parser.set_defaults(wizard=True)
-    parser.add_argument(
-        "--hostname",
-        default=None,
-        help=(
-            "the speaker's own hostname (JASPER_HOSTNAME, e.g. jts3.local). "
-            "Sent as the Host header so the wizard's management-host guard "
-            "admits a loopback request -- it refuses 127.0.0.1, and it "
-            "refuses another speaker's name (default: this speaker's "
-            "configured identity)"
-        ),
-    )
-    parser.add_argument(
-        "--base-url",
-        default="http://127.0.0.1",
-        help="where the wizard is reached (default: %(default)s)",
-    )
+    parser.add_argument("--hostname", help="speaker hostname used for the Host header")
+    parser.add_argument("--base-url", default="http://127.0.0.1", help="wizard address")
+
+
+def _timeout(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise argparse.ArgumentTypeError("timeout must be finite and nonnegative")
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog=PROG,
-        description=(
-            "Open, wait on, apply and bank a crossover round from the speaker "
-            "itself. The three wizard verbs scripts/run-crossover-round.py "
-            "drives from a laptop, over the same transport and the same apply "
-            "gate, plus the bank that files a finished session in the on-box "
-            "campaign home."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "EXAMPLE\n"
-            "  ssh pi@jts3.local\n"
-            "  /opt/jasper/.venv/bin/jasper-round open --tier express\n"
-            "  /opt/jasper/.venv/bin/jasper-round wait --timeout-s 1200\n"
-            "  /opt/jasper/.venv/bin/jasper-round apply "
-            "--expected-fingerprint <fp>\n"
-            "  /opt/jasper/.venv/bin/jasper-round bank <session-dir>\n"
-            "\n"
-            "WHAT THIS DOES NOT DO\n"
-            "  - it does not stage an angle walk or run the arm (both are\n"
-            "    jasper-angle-capture); each is its own tool and this one\n"
-            "    sequences none of them\n"
-            "  - `wait` polls the session the wizard is publishing NOW, so\n"
-            "    run it after `open`, not against yesterday's round\n"
-            "  - `bank` files a round on this box only -- the same tree is\n"
-            "    assembled over ssh by scripts/bank-crossover-round.sh -- and\n"
-            "    evicts nothing: the campaign home is operator-pruned\n"
-            "\n"
-            "EXIT CODES\n"
-            "  0  the verb did what it says -- the wizard answered, or\n"
-            "     the round was banked and its directory is on stdout\n"
-            "  1  EXIT_REFUSED -- the wizard's refusal, this tool's own\n"
-            "     pre-flight fingerprint refusal, or a session `bank` will\n"
-            "     not bank (not a bundle, unfinished, or already banked --\n"
-            "     a banked round is never overwritten). Nothing was applied\n"
-            "  2  EXIT_UNREADABLE -- no answer to read. The receipt's\n"
-            "     `reason` says which: `answer_lost` (the daemon is down, a\n"
-            "     wrong --hostname, a dropped connection) or `wait_timeout`\n"
-            "     (the deadline passed with the session still running --\n"
-            "     nothing was cancelled, the round is still going). A lost\n"
-            "     answer to the apply POST does NOT mean the apply failed\n"
-            "  3  EXIT_WRITE_FAILED -- `bank` could not write the copy: a\n"
-            "     filesystem problem, not a request problem"
-        ),
-    )
-    parser.set_defaults(wizard=False)
+    parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-
-    opener = sub.add_parser("open", help="post one stage open on this speaker")
-    _connection_args(opener)
-    opener.add_argument(
-        "--tier",
-        choices=sorted(TIERS),
-        default=None,
-        help=(
-            "the commission instrument this session measures with. Required "
-            "for --stage %s and ignored for %s, which takes the instrument "
-            "the measuring session recorded"
-            % (STAGE_MEASURE, STAGE_POST_APPLY)
-        ),
-    )
-    opener.add_argument(
-        "--stage",
-        choices=(STAGE_MEASURE, STAGE_POST_APPLY),
-        default=STAGE_MEASURE,
-        help=(
-            "%s opens a new measuring session; %s opens the post-apply check "
-            "(default: %%(default)s)" % (STAGE_MEASURE, STAGE_POST_APPLY)
-        ),
-    )
-    opener.set_defaults(func=_cmd_open)
-
-    waiter = sub.add_parser(
-        "wait", help="poll until the wizard's session stops; writes nothing"
-    )
-    _connection_args(waiter)
-    waiter.add_argument(
-        "--timeout-s", type=float, default=DEFAULT_TIMEOUT_S,
-        help="how long the session may take to stop (default: %(default)s)",
-    )
-    waiter.add_argument(
-        "--poll-s", type=float, default=DEFAULT_POLL_S,
-        help="how often the envelope is read (default: %(default)s)",
-    )
-    waiter.set_defaults(func=_cmd_wait)
-
-    applier = sub.add_parser(
-        "apply", help="apply the candidate with THIS fingerprint and no other"
-    )
-    _connection_args(applier)
-    applier.add_argument(
-        "--expected-fingerprint",
-        required=True,
-        help=(
-            "select this banked candidate, then use the full apply path; "
-            "authored candidates need a completed trial of the same fingerprint"
-        ),
-    )
-    applier.set_defaults(func=_cmd_apply)
-
-    banker = sub.add_parser(
-        "bank", help="file a finished session in the on-box campaign home"
-    )
-    banker.add_argument(
-        "session_dir",
-        help="the live session bundle to bank (the directory holding info.json)",
-    )
-    banker.add_argument(
-        "--campaign-root",
-        default=None,
-        help="where banked rounds live (default: the on-box campaign home)",
-    )
-    banker.set_defaults(func=_cmd_bank)
+    run = sub.add_parser("run", help="resolve and post a plan; return its handoff link immediately")
+    _connection_args(run)
+    run.add_argument("--program", choices=("speaker", "room", "bass"))
+    poses = run.add_mutually_exclusive_group()
+    poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
+    poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
+    run.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
+    run.add_argument("--level", type=float, help="reference volume in dB; must match the banked level")
+    run.add_argument("--ceiling", "--ceiling-db-spl", dest="ceiling", type=float, help="SPL ceiling in dB SPL")
+    run.add_argument("--repeats", type=int, help="takes per pose and configuration")
+    run.add_argument("--mover", choices=("human", "arm", "confirmed"))
+    run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
+    run.add_argument("--dry-run", action="store_true", help="print preflight; play nothing")
+    run.set_defaults(func=_cmd_run)
+    for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):
+        command = sub.add_parser(verb, help=function.__name__.removeprefix("_cmd_"))
+        _connection_args(command)
+        command.add_argument("--run", required=True, help="run id returned by run")
+        if verb == "placed":
+            command.add_argument("--pose", type=int, help="expected pending pose number")
+        if verb == "wait":
+            command.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
+        command.set_defaults(func=function)
+    apply = sub.add_parser("apply", help="apply the named banked candidate")
+    _connection_args(apply)
+    apply.add_argument("--expected-fingerprint", required=True)
+    apply.set_defaults(func=_cmd_apply)
     return parser
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
-    """``opener`` is :class:`WizardClient`'s own transport seam, for tests.
-
-    ``bank`` reaches no wizard, so no client is built -- and it declares none
-    of :func:`_connection_args`' arguments to build one from.
-    """
-    args = build_parser().parse_args(list(argv) if argv is not None else None)
-    if not args.wizard:
-        return int(args.func(args))
-    client = WizardClient(
-        host_header=args.hostname or read_identity().hostname,
-        base_url=args.base_url,
-        csrf_page_path=CSRF_PAGE_PATH,
-        opener=opener,
-    )
+    args = build_parser().parse_args(argv)
+    client = WizardClient(host_header=args.hostname or read_identity().hostname,
+                          base_url=args.base_url, csrf_page_path=CSRF_PAGE_PATH, opener=opener)
     return int(args.func(client, args))
 
 
-if __name__ == "__main__":  # pragma: no cover - console-script entry point
+if __name__ == "__main__":
     raise SystemExit(main())

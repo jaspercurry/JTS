@@ -38,7 +38,7 @@ def speaker_round(tmp_path):
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     state = json.loads(inputs.state_path.read_text())
-    state.update(session_phases=["check", "measure"], tier="full")
+    state.update(session_phases=["check", "measure", "verify"])
     inputs.state_path.write_text(json.dumps(state))
     row, record = next((row, dict(doc)) for row, doc in measurement_documents(inputs.session_dir) if row.phase == "measure")
     program = build_measure_program(
@@ -85,21 +85,22 @@ def speaker_round(tmp_path):
     return root, record, program, classes, region, trim
 
 
-@pytest.mark.parametrize("vocabulary,cloud_planned,cloud_present,tier,expected", [
-    (None, False, False, "full", "bounded_boost"),
-    (None, True, False, "full", "cut_only"),
-    (None, True, True, "full", "bounded_boost"),
-    (None, False, False, "", "cut_only"),
-    ("cut_only", False, False, "full", "cut_only"),
-    ("bounded_boost", True, False, "full", "bounded_boost"),
+@pytest.mark.parametrize("vocabulary,cloud_planned,cloud_present,post_apply_verifies,expected", [
+    (None, False, False, True, "bounded_boost"),
+    (None, True, False, True, "cut_only"),
+    (None, True, True, True, "bounded_boost"),
+    (None, False, False, False, "cut_only"),
+    ("cut_only", False, False, True, "cut_only"),
+    ("bounded_boost", True, False, True, "bounded_boost"),
 ])
 def test_speaker_fit_matches_explicit_math_and_banked_decisions(
-    speaker_round, vocabulary, cloud_planned, cloud_present, tier, expected, capsys,
+    speaker_round, vocabulary, cloud_planned, cloud_present, post_apply_verifies, expected, capsys,
 ):
     root, record, program, classes, region, trim = speaker_round
     inputs = round_inputs(root)
     state = json.loads(inputs.state_path.read_text())
-    state["tier"] = tier
+    if not post_apply_verifies:
+        state["session_phases"].remove("verify")
     if cloud_planned:
         state["session_phases"].insert(1, "cloud_measure")
     inputs.state_path.write_text(json.dumps(state))

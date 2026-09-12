@@ -2,13 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read banked round views and print one JSON answer per invocation (ADR-0237)."""
+"""Read measured evidence and write the registered round views (ADR-0237)."""
 
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+from pathlib import Path
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HarmonicEvidenceRefused,
@@ -158,6 +162,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         # What no stage claimed: the round READ, and the view then declined to
         # grade it. That is the refusal exit, not an unreadable one.
         return failed(EXIT_REFUSED, REASON_REFUSED, str(exc))
+
+
+def run_bookkeeping(view: str, target: Path) -> dict[str, Any]:
+    parser = build_parser()
+    verbs = next(action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+    if view not in verbs:
+        return {"view": view, "status": "unavailable", "reason": "verb_not_registered"}
+    output = io.StringIO()
+    with redirect_stdout(output), redirect_stderr(io.StringIO()):
+        try:
+            code = main([view, str(target)])
+        except SystemExit:
+            return {"view": view, "status": "unavailable", "reason": "inputs_required"}
+    answer = json.loads(output.getvalue())
+    return {**answer, "view": view, "status": "written" if code == 0 else "unavailable"}
 
 
 if __name__ == "__main__":

@@ -23,8 +23,7 @@ from ._base import ControlHandlerMixin
 class MeasurementRoutes(ControlHandlerMixin):
     def _get_measurement(self) -> None:
         # The same projection /state.measurement carries, on its own cheap
-        # route. Operator doors (jasper-seat-level, jasper-angle-capture stage)
-        # ask "is a measurement live?" before they act, and /state is the heavy
+        # route. Preflight reads it before measuring; /state is the heavy
         # aggregate — camilla, renderers, mux, a 20 s budget. This is one
         # in-memory dict. Ungated: it is a read, and it reveals only what
         # /state already does.

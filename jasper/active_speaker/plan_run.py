@@ -30,7 +30,6 @@ from .angle_capture import (
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
-from .angle_capture_spool import angle_request_document
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
@@ -131,7 +130,12 @@ def spl_watch(
 
 
 def request_fingerprint(request: AngleCaptureRequest) -> str:
-    return json_fingerprint(angle_request_document(request))
+    """This walk's identity: sha256 over ``AngleCaptureRequest.to_dict()``.
+
+    The inline plan and manifest use the same document without a clock, so
+    two runs of one walk fingerprint alike, and an edited stop does not.
+    """
+    return json_fingerprint(request.to_dict())
 
 
 @dataclass(frozen=True)

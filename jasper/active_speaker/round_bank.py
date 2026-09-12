@@ -8,8 +8,7 @@ The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
 on the box itself so a round outlives session retention (#3498, #2882). It is
 the tree
 :func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
-reads, plus the two files this path derives for whoever opens the round
-directory next::
+reads, plus the bookkeeping views declared by ``measurement_programs``::
 
     <campaign-root>/<round-id>/
       bundle/<session-id>/...    the live session bundle, hard-linked
@@ -43,7 +42,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Callable, Mapping, NamedTuple
 
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
@@ -274,10 +273,34 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
     return {"written": written, "skipped": skipped}
 
 
+def _bookkeeping(
+    target: Path, bundle: Path, view_runner: Callable[[str, Path], dict[str, Any]] | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
+    from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
+    from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
+
+    artifacts, _ = round_artifact_dir(bundle)
+    manifest = artifacts / RUN_MANIFEST_FILENAME if artifacts else None
+    if manifest is None or not manifest.is_file():
+        return None, []
+    document = json.loads(manifest.read_text())
+    name, _, size = str(document.get("program") or "").partition("/")
+    purpose = name if not name or name in PURPOSES else program(name, size or None).purpose
+    results = [
+        view_runner(view, target) if view_runner else {
+            "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+        }
+        for view in bookkeeping_views(purpose)
+    ]
+    return str(manifest), results
+
+
 def bank_round(
     session_dir: Path,
     *,
     campaign_root: Path = DEFAULT_CAMPAIGN_ROOT,
+    view_runner: Callable[[str, Path], dict[str, Any]] | None = None,
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
@@ -288,7 +311,8 @@ def bank_round(
     """Bank one live session bundle and its SSOT documents into the campaign home.
 
     The bundle is hard-linked in, not copied byte-for-byte (falling back to a
-    copy only across a filesystem boundary) — see :func:`_link_or_copy`.
+    copy across a filesystem boundary or when hard-link permissions deny it)
+    — see :func:`_link_or_copy`.
 
     Returns the banked round directory and the ``provenance.json`` payload
     written beside the bundle: when it was banked, which session it came from,
@@ -333,6 +357,9 @@ def bank_round(
     session_id = str(info.get("session_id") or session_dir.name)
     target = Path(campaign_root) / _round_id(session_dir, session_id)
     if target.exists():
+        existing = json.loads((target / "provenance.json").read_text())
+        if existing.get("session_id") == session_id:
+            return BankedRound(target, existing)
         raise RoundBankError(REASON_ALREADY_BANKED, f"{target} is already banked")
 
     documents = _ssot_documents(
@@ -360,6 +387,7 @@ def bank_round(
         calibration_id = str(((info.get("fingerprints") or {}).get("mic") or {}).get("calibration_id") or "")
         ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
+        manifest, views = _bookkeeping(target, target / "bundle" / session_dir.name, view_runner)
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {
             "banked_at_utc": datetime.now(timezone.utc).strftime(
@@ -371,6 +399,8 @@ def bank_round(
             "git_absent": sha is None,
             "missing": missing,
             "capture_ring": ring,
+            "manifest": manifest,
+            "views": views,
         }
         (target / "provenance.json").write_text(
             json.dumps(provenance, indent=2, sort_keys=True) + "\n",

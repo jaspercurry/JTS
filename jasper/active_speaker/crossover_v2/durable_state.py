@@ -143,7 +143,6 @@ class V2ConductorSnapshot:
     # readers must render it as unknown rather than assuming full: guessing
     # would attach a post-apply cross-position claim to a result that never
     # measured across positions.
-    tier: str = ""
     # WHERE the pre-apply cloud's close has got to: one of
     # :data:`CLOUD_CLOSE_NONE` / :data:`CLOUD_CLOSE_AWAITING_CONFIRM` /
     # :data:`CLOUD_CLOSE_RUNNING`. Persisted because the wizard renders from
@@ -167,7 +166,6 @@ class V2ConductorSnapshot:
             ),
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
-            "tier": self.tier,
             "cloud_close": self.cloud_close,
             "attempt_history": [item.to_dict() for item in self.attempt_history],
         }
@@ -994,7 +992,6 @@ def build_conductor_state(
         # readers must render it as unknown rather than assuming "full":
         # express makes no cross-position post-apply claim, so guessing would
         # attach a claim the measurement never made.
-        "tier": snap.tier,
         # WHERE the pre-apply cloud's close has got to. The wizard renders
         # from this file alone, and "every stage-1 phase accepted, no
         # candidate" is true at the confirm screen, during the fit, and after a
@@ -1224,12 +1221,6 @@ def build_conductor_state(
         },
         "evidence": dict(evidence) if evidence else None,
     }
-    # A conductor that declares no tier of its own — the verify-only re-arm —
-    # must not erase which instrument produced the applied result. Carried
-    # forward UNCONDITIONALLY, because the re-arm runs under a brand-new capture
-    # session id and a session-scoped guard would drop it on "Try again".
-    if not state["tier"] and prior.get("tier"):
-        state["tier"] = str(prior["tier"])
     # The dated reference (#1927) carries forward across the writes of a
     # VERIFY-ONLY session and is dropped by any session that MEASURES.
     #

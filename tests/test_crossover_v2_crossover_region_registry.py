@@ -189,7 +189,7 @@ def test_the_extension_is_unioned_into_no_mask():
     combined = _combined()
     kw = dict(
         echo_band_hz=(ECHO_BAND_HF_REGIME_FLOOR_HZ, 18000.0),
-        validity_floor_hz=None, tier="reference",
+        validity_floor_hz=None,
     )
     without = flow.assemble_cloud_group_result(combined, **kw)
     with_region = flow.assemble_cloud_group_result(

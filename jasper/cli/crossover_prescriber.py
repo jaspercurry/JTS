@@ -491,7 +491,7 @@ def _next_commands(
     # Status discovers candidates; the LLM chooses a compatible shortlist.
     # Staging every retained artifact would turn discovery into an experiment.
     if len(sections["banked"]["candidates"]) > 1:
-        commands.append("jasper-angle-capture plan --help")
+        commands.append("jasper-round run --help")
     if seat_level_db is None:
         commands.append("jasper-seat-level")
     return commands

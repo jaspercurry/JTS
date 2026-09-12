@@ -1324,7 +1324,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "session_id",
     "session_phases",
     "sound_design_revision",
-    "tier",
     "updated_at",
     "verify",
     "verify_priors",

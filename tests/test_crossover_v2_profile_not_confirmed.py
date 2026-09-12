@@ -721,18 +721,6 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
     assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/verify"
 
 
-# --------------------------------------------------------------------------- #
-# #1833 — the rewrap that ran BEFORE classification
-# --------------------------------------------------------------------------- #
-
-
-def test_verify_plan_shape_refusal_keeps_its_code():
-    with pytest.raises(v2host.CrossoverV2Refused) as caught:
-        v2host._verify_plan_shape(
-            {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY}, {"tier": "turbo"})
-    assert caught.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
-
-
 def test_graph_refusal_retains_its_classifier_code():
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
 

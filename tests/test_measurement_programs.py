@@ -84,6 +84,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("seat", "cloud"),
         ("seat", "cube"),
         ("seat", "express"),
+        ("speaker", "mark"),
         ("tournament", "express"),
         ("tournament", "full"),
     )

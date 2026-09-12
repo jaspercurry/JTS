@@ -74,7 +74,6 @@ class PositionGate:
     capture and attempt within the same declared pose batch. A skipped index,
     repeated index, changed pose or abandoned hold needs a fresh grant.
     """
-
     def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
@@ -84,6 +83,7 @@ class PositionGate:
         self._last_release: dict[str, Any] | None = None
         self._opened_at: float | None = None
         self._progress: dict[str, Any] | None = None
+        self._faults: list[str] = []
         self._session_ceiling_expired = False
         self._last: tuple[int, int, tuple[int, int, int, int]] | None = None
 
@@ -193,7 +193,10 @@ class PositionGate:
 
     def publish(self, progress: dict[str, Any]) -> None:
         with self._lock:
-            self._progress = deepcopy(progress)
+            fault = progress.get("fault")
+            if fault and fault not in self._faults:
+                self._faults.append(str(fault))
+            self._progress = deepcopy({**progress, "faults": self._faults})
 
     def published(self) -> dict[str, dict[str, Any] | None]:
         """The hold awaiting a release and the entry a grant is executing.

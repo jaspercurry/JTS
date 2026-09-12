@@ -135,6 +135,9 @@ REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
 REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
 REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
+#: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
+#: with no hand moving, or a tap-wait from an arm with none to give). NOT a
+#: comparison against the session's GATE.
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
