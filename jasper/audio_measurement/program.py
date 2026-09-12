@@ -41,6 +41,8 @@ from jasper.audio_measurement.sweep import (
 )
 from jasper.log_event import log_event
 
+from .room_boundary import ROOM_FLOOR_HZ
+
 logger = logging.getLogger(__name__)
 
 PROGRAM_SCHEMA_VERSION = 1
@@ -118,6 +120,9 @@ DEFAULT_VERIFY_SWEEP_S = 6.0
 DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = 20_000.0
+# The in-room fit needs the whole audible band (Bank AES-134).
+# This belongs to the per-speaker profile; see #4990.
+SUMMED_SWEEP_BAND_HZ = (ROOM_FLOOR_HZ, VERIFY_F_HI_HZ)
 
 # Run-up past each crossover shoulder (null-confirm); 1.25x (~1/3 octave)
 # keeps both Fc/2, 2*Fc read points off the edge bin.

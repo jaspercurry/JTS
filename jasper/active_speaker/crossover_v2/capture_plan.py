@@ -21,11 +21,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
-from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_VERIFY_SWEEP_S,
+    SUMMED_SWEEP_BAND_HZ,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -1255,11 +1255,15 @@ def _cloud_entry_screen(
     }
 
 
+def summed_sweep_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
+    return SUMMED_SWEEP_BAND_HZ[0], min(SUMMED_SWEEP_BAND_HZ[1], measurement_band_hz(roles)[1])
+
+
 def room_sweep_band_hz(
     roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
 ) -> tuple[float, float] | None:
     if any(gate_exemption(resolved_measurement_purpose(p.purpose, p.kind)) for p in prompts):
-        return ROOM_FLOOR_HZ, measurement_band_hz(roles)[1]
+        return summed_sweep_band_hz(roles)
     return None
 
 

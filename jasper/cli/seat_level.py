@@ -53,6 +53,7 @@ from jasper.audio_measurement.calibration import (
     MIC_CALIBRATION_UNAVAILABLE_DETAIL, REFUSE_MIC_CALIBRATION_UNAVAILABLE, resolve_mic_sensitivity,
 )
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.active_speaker.crossover_v2.capture_plan import summed_sweep_band_hz
 from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
 from jasper.audio_measurement.wired_capture import WiredSplMonitor, resolve_wired_mic
 from jasper.log_event import log_event
@@ -216,6 +217,7 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                     roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
                     session_volume_db=start, fc_hz=context.fc_hz,
                     sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+                    summed_sweep_band_hz=summed_sweep_band_hz(context.roles_bands),
                 )
                 program = excitation.verify_program(leading_pilots=False)
                 watchdog_s = watchdog_seconds(start, ceiling_db, program.total_samples / program.sample_rate_hz)

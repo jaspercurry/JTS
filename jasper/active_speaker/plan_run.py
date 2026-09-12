@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-from jasper.audio_measurement.program import ExcitationProgram
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
@@ -135,12 +135,14 @@ class PlanCapture:
 
 def prepare_plan_captures(
     request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
+    roles_bands: Sequence[RoleBand] = (),
 ) -> tuple[PlanCapture, ...]:
     """Derive preparation and requested captures together (ADR-0297)."""
     resolved = resolve_request(request)
     baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
     placed = stop_specs(request, candidate_scopes=candidate_scopes,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids)
+                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids,
+                        roles_bands=roles_bands)
     captures: list[PlanCapture] = []
     if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
         captures.append(PlanCapture(
@@ -154,7 +156,8 @@ def prepare_plan_captures(
             headline="", detail="", regime=REGIME_SUMMED),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request, candidate_scopes={},
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids)
+                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids,
+                                roles_bands=roles_bands)
         assert base_spec is not None
         captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
     for offset, spec in enumerate(placed):

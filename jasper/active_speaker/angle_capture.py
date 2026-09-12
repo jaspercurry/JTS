@@ -30,14 +30,14 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from jasper.json_fields import finite_float
-from jasper.audio_measurement.program import ExcitationProgram
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
-from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
+from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
@@ -650,6 +650,7 @@ def stop_specs(
     candidate_scopes: Mapping[str, str],
     prompts: Sequence[CloudPositionPrompt],
     baseline_ids: Mapping[str, str],
+    roles_bands: Sequence[RoleBand] = (),
 ) -> tuple[MeasureSpec | None, ...]:
     """Place resolved candidate IDs; ``None`` for each per-driver take.
 
@@ -677,6 +678,9 @@ def stop_specs(
                 else MEASURE_KIND_CANDIDATE
             ),
             positions=(stop.angle_deg,),
+            sweep_band_hz=request.template.sweep_band_hz or (
+                room_sweep_band_hz(roles_bands, (prompt,)) if roles_bands else None
+            ) or (),
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
             candidate_id=stop.candidate_id or baseline_ids.get(stop.purpose or "speaker", ""),
