@@ -304,7 +304,7 @@ def _round_is_over(failure: Any, phase: str) -> bool:
 
     Durable state carries ONE failure at a time and the wired walk writes the
     rejected capture's code into it, clearing it on the next accepted take
-    (``correction_crossover_v2_wired._capture_one`` ->
+    (``plan_run.run_plan`` ->
     ``durable_state.build_conductor_state``). So the block's presence says a
     take was refused, never that the session stopped: a round is over when its
     phase has left :data:`RUNNING_PHASES`, or when the refusal carries a code no

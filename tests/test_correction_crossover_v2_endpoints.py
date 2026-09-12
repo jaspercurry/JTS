@@ -9134,8 +9134,8 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert v2host.load_v2_state() == before
 
 
-@pytest.mark.parametrize("graph_fails", [False, True])
-def test_join_opens_resources_in_order_and_drains_a_failed_graph(monkeypatch, graph_fails):
+@pytest.mark.parametrize("terminal", ["complete", "failed", "stopped"])
+def test_join_opens_resources_in_order_and_drains_to_a_shared_terminal_state(monkeypatch, terminal):
     from jasper.active_speaker.crossover_v2.session import TuningSession
     from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
@@ -9147,6 +9147,9 @@ def test_join_opens_resources_in_order_and_drains_a_failed_graph(monkeypatch, gr
     from tests.engine_twin import FakeGraph, FakePlay, FakeRecords
     from tests.test_correction_crossover_v2_wired import _fake_handler
 
+    from jasper.active_speaker.arm_walk import SESSION_ENDED_STATUSES
+
+    graph_fails = terminal == "failed"
     events, gate = [], PositionGate()
     cam = _FakeVolCam(-30)
     _own_the_fader(monkeypatch, cam)
@@ -9186,7 +9189,7 @@ def test_join_opens_resources_in_order_and_drains_a_failed_graph(monkeypatch, gr
 
     async def execute(*args, **kwargs):
         events.append("run")
-        return SimpleNamespace(reason="", cancelled=False)
+        return SimpleNamespace(reason="user_stopped" if terminal == "stopped" else "", cancelled=False)
     monkeypatch.setattr(plan_run, "run_plan", execute)
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
@@ -9210,7 +9213,7 @@ def test_join_opens_resources_in_order_and_drains_a_failed_graph(monkeypatch, gr
         async def finished():
             for _ in range(200):
                 capture = correction_capture._get_capture_slot()
-                if capture["status"] in {"complete", "failed"}:
+                if capture["status"] in SESSION_ENDED_STATUSES:
                     return capture
                 await asyncio.sleep(.01)
             pytest.fail("joined capture did not finish")
@@ -9220,7 +9223,8 @@ def test_join_opens_resources_in_order_and_drains_a_failed_graph(monkeypatch, gr
     assert ("run" in events) is not graph_fails
     assert not owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
     assert cam.vol == -30
-    assert result["status"] == ("failed" if graph_fails else "complete")
+    assert result["status"] == terminal
+    assert result["status"] in SESSION_ENDED_STATUSES
     if graph_fails:
         assert gate.published()["run"]["fault"] == "measurement_graph_unavailable"
 
@@ -9271,3 +9275,65 @@ def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
     assert capture._get_capture_slot_for("crossover_v2:")["session_id"] == "pending"
     assert capture._request_capture_stop("crossover_v2:")["status"] == "stopped"
     assert capture._pending_capture is None
+
+
+
+def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypatch):
+    from dataclasses import replace
+    from jasper.web import correction_capture as capture
+    from jasper.platform.systemd import no_hold
+
+    monkeypatch.setattr(capture, "_capture_slot", None)
+    monkeypatch.setattr(capture, "_pending_capture", None)
+    kind = capture.CaptureKind("crossover_v2:session", lambda: None, lambda _: None,
+                              session_id="first", join_entry=SimpleNamespace(screen={}))
+    first = capture._stage_capture(kind, idle_hold=no_hold)
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        capture._stage_capture(replace(kind, session_id="second"), idle_hold=no_hold)
+    assert refused.value.code == "capture_slot_busy"
+    assert capture._get_capture_slot_for("crossover_v2:") == first
+
+
+def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from jasper.active_speaker.crossover_v2.position_gate import PositionGate
+    from jasper.platform.systemd import no_hold
+    from jasper.web import correction_capture as capture, correction_handlers as handlers
+    from tests.test_correction_crossover_v2_wired import _fake_handler
+
+    monkeypatch.setattr(capture, "_capture_slot", None)
+    monkeypatch.setattr(capture, "_pending_capture", None)
+    entered, release, second = threading.Event(), threading.Event(), threading.Event()
+    opens = []
+    def opened():
+        opens.append(True)
+        entered.set()
+        assert release.wait(2)
+        return SimpleNamespace(pi_session=None)
+    async def run(_):
+        pass
+    gate = PositionGate()
+    kind = capture.CaptureKind("crossover_v2:session", opened, run, position_gate=gate,
+                              session_id="same", join_entry=SimpleNamespace(screen={"position_deg": "0"}))
+    capture._stage_capture(kind, idle_hold=no_hold)
+    def join(mark=None):
+        if mark:
+            mark.set()
+        return handlers._handle_crossover_v2_position_ready(_fake_handler(b'{"index":1,"attempt":1}'))
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(join)
+            assert entered.wait(2)
+            other = pool.submit(join, second)
+            assert second.wait(2)
+            release.set()
+            assert first.result(timeout=2) == other.result(timeout=2) == {
+                "ok": True, "capture": {"status": "awaiting_capture"}}
+        assert opens == [True]
+        assert gate.join(kind.join_entry)["index"] == 1
+        with pytest.raises(v2host.CrossoverV2Refused) as refused:
+            handlers._handle_crossover_v2_position_ready(_fake_handler(b'{"index":9,"attempt":1}'))
+        assert refused.value.code == "capture_slot_busy"
+    finally:
+        release.set()

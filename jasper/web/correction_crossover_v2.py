@@ -78,7 +78,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     prepare_plan_captures, build_inline_session_spec,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.web.correction_plan_capture import bind_plan_analysis, compose_plan_program
+from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.plan_run import spl_watch
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity

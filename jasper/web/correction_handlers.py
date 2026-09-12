@@ -18,6 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime
@@ -64,8 +65,8 @@ def _handle_crossover_v2_position_ready(
     with _session_lock:
         gate = correction_capture._capture_position_gate
     if gate is None:
-        raise ValueError(
-            "no remote measurement is waiting for the microphone right now"
+        raise CrossoverV2Refused(
+            "no remote measurement is waiting for the microphone right now", code="capture_slot_busy",
         )
     released = gate.release(raw["index"], raw["attempt"])
     return {"ok": True, "released": released}
@@ -90,7 +91,7 @@ def _handle_crossover_v2_complete(
 def _handle_crossover_v2_retake(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """Ask the executor to re-take the previous capture at its next gate."""
+    """No index, ever: the executor owns which capture to re-take (ADR-0296)."""
     correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_retake = correction_capture._capture_retake_request

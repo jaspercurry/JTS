@@ -1736,8 +1736,6 @@ class CrossoverV2Session:
             default_code=REASON_LOCATE_FAILED,
             retry_charge=executor_ledger.charge if executor_ledger is not None else "operator",
         )
-        if executor_ledger is not None and attempt > 1 and executor_ledger.can_retry(executor_ledger.charge):
-            executor_ledger.spend(executor_ledger.charge)
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
             self.capture_published_refusal = True
@@ -1789,6 +1787,8 @@ class CrossoverV2Session:
                 ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
             except _admission.AttemptOverspendError as exc:
                 raise CrossoverV2FlowError(str(exc)) from exc
+        if executor_ledger is not None and attempt > 1:
+            ledger.spend(executor_ledger.charge)
         ledger.admitted += 1
         self._armed_index = index
         self._armed_capture = (index, attempt)
@@ -2207,10 +2207,10 @@ class CrossoverV2Session:
             return verdict
         assert gain_plan is not None
         self._gain_plan_db = dict(gain_plan.gain_db)
-        self._measure_gain_ceiling_db = {
-            role: solve.flat_target_gain_db
-            for role, solve in gain_plan.role_solves.items()
-        }
+        self._measure_gain_ceiling_db.clear()
+        self._measure_gain_ceiling_db.update({
+            role: solve.flat_target_gain_db for role, solve in gain_plan.role_solves.items()
+        })
         # HOLD the ambient report, don't just publish it (#1830): without it MEASURE's
         # per-driver SNR verdict has no noise floor to grade against.
         self._check_ambient_report = (
@@ -4135,10 +4135,10 @@ class CrossoverV2Session:
                                       if key.startswith("next_gain_db.")})
             self._measure_program = self._compose_measure_program(self._gain_plan_db)
             if verdict.next == "retake_quieter":
-                self._measure_gain_ceiling_db = {
+                self._measure_gain_ceiling_db.update({
                     role: min(ceiling, self._gain_plan_db[role])
                     for role, ceiling in self._measure_gain_ceiling_db.items()
-                }
+                })
 
     def _measure_binding_response(self, analysis: ProgramAnalysis) -> Any | None:
         """The driver response whose gate window BINDS MEASURE — the shortest."""

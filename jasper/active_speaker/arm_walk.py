@@ -42,6 +42,8 @@ that is when the saved zero may no longer be the acoustic axis.
 
 from __future__ import annotations
 
+from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
+
 import json
 import logging
 import signal
@@ -93,12 +95,6 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: Status endpoint unreadable for this long with no good read. A blip is
 #: absorbed; a wrong ``--hostname``, a 403, or a stopped wizard never clears.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
-
-#: The ``capture.status`` values meaning the session is OVER. Every other
-#: value, INCLUDING an unrecognised one, reads as in flight (ending early
-#: strands a round; waiting costs one poll). Pinned against the wizard's own
-#: in-flight set by ``tests/test_arm_walk.py``.
-SESSION_ENDED_STATUSES = frozenset({"complete", "stopped", "failed"})
 
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
 DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")

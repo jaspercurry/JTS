@@ -585,7 +585,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not read the measurement plan. Submit a complete plan in the current format.",
         next_action={
             "id": "review_plan",
-            "label": "Start over",
+            "label": "Review measurement settings",
             "href": "/sound/speaker/crossover/",
         },
     ),

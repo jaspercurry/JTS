@@ -189,6 +189,7 @@ async def run_plan(
     try:
         resolved = resolve_request(request)
         try:
+            # Remove the CLI shape when W1-15 supplies prepared captures to this host.
             if captures is None:
                 specs = stop_specs(request, candidate_scopes=candidate_scopes,
                                    prompts=tuple(stop.prompt for stop in resolved),
@@ -288,6 +289,12 @@ async def _run(
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
+    def default_admit(index: int, attempt: int, entry: Any, ledger: SlotAttempts) -> None:
+        if ledger.charge != "none":
+            ledger.spend(ledger.charge)
+        ledger.admitted += 1
+
+    admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, asyncio.CancelledError)
     started = clock()
@@ -347,21 +354,17 @@ async def _run(
                 if gate:
                     gate.publish(progress)
                 await _grant(gate, offset + 1, offset + 1 + grant_epoch, entry, signals,
-                             (lambda: admit(offset + 1, attempt, entry, ledger)) if admit else None)
+                             lambda: admit(offset + 1, attempt, entry, ledger))
                 if gate:
                     if item.pose_index not in moved:
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
                 take_started = clock()
                 if retry is not None:
-                    if admit is None:
-                        ledger.spend(retry.charge)
                     progress["budget"] = ledger.to_payload()
                     if gate:
                         gate.publish(progress)
                 attempts[offset] = attempt
-                if admit is None:
-                    ledger.admitted += 1
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
                 outcome = await (measure or session.measure)(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))

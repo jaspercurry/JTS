@@ -100,8 +100,8 @@ def test_executor_admission_uses_only_the_runs_pose_ledger(refused, charge):
             conductor.authorize_begin(1, 2, executor_ledger=ledger)
     else:
         conductor.authorize_begin(1, 2, executor_ledger=ledger)
-    assert ledger.by_household == (1 if charge == "operator" else 0)
-    assert ledger.by_speaker == (1 if charge == "speaker" else 0)
+    assert ledger.by_household == (1 if charge == "operator" and not refused else 0)
+    assert ledger.by_speaker == (1 if charge == "speaker" and not refused else 0)
     assert ledger.admitted == (1 if refused else 2)
     assert conductor._slot_attempts == {}
 
