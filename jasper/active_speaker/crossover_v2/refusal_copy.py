@@ -433,6 +433,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("mic_feed_lost", "The microphone stopped sending samples. Check its connection and try again."),
            ("mic_clipping", "The microphone clipped. Check the microphone and lower the level."),
            ("volume_latch_unconfirmed", "The amplifier gain could not be confirmed. Check the audio connection."),
+           ("fader_above_cap", "The amplifier gain exceeds the 0 dB cap. Lower it before leveling."),
            ("spl_target_uncapturable", "The microphone cannot measure the requested level. Use a suitable microphone."),
            ("seat_level_watchdog_expired", "Leveling timed out. Check the audio connection and try again."),
        )},

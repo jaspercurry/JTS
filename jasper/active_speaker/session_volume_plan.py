@@ -61,7 +61,6 @@ from jasper.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
 
-from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
 from .seat_level_reference import ANCHOR_UNUSABLE, LevelUnresolved, seat_level_reference_volume_db
 from .volume_latch import (
@@ -193,8 +192,7 @@ def loudest_driver_cap_dbfs(
     its own cap per segment. **It is NOT "the loudest volume every driver
     permits"** — on the repo's woofer/compression-driver fixture it returns
     ``0.0`` dB while the tweeter's cap sits at −65. One signal through the whole
-    graph with no per-segment gain must use
-    :func:`unsegmented_stimulus_ceiling_db` instead.
+    graph still needs admission against every driver cap.
     """
     return max(
         _driver_caps_dbfs(
@@ -203,158 +201,6 @@ def loudest_driver_cap_dbfs(
             declared_sensitivities=declared_sensitivities,
         )
     )
-
-
-def unsegmented_stimulus_ceiling_db(
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Iterable[str],
-    *,
-    stimulus_peak_dbfs: float,
-    declared_sensitivities: Mapping[str, float] | None = None,
-    branch_peaks_dbfs: Mapping[str, float] | None = None,
-) -> float:
-    """The loudest main volume at which ONE un-segmented signal still has room.
-
-    "Has room" is a purely DIGITAL question — a signal through the whole graph
-    carries no per-driver segment gain, so what runs out is headroom::
-
-        ceiling = MAX_TEST_LEVEL_DBFS - binding_peak_dbfs
-
-    Without ``branch_peaks_dbfs`` every branch is assumed to see the whole
-    stimulus peak. With it, ``binding_peak_dbfs`` is ``max`` over the branches
-    the caller rendered through the ACTUAL live graph — which binds TIGHTER
-    than the full-band bound whenever a branch chain boosts.
-
-    **Declared per-driver caps do not bound this volume — they are DISCLOSED**
-    on ``event=active_speaker.unsegmented_ceiling_bound``, even a published one:
-    a per-driver level limit cannot be enforced on a signal carrying no
-    per-driver gain, and clamping the whole speaker to the tightest driver's
-    figure pinned a 75 dB SPL seat target at 68.3 dB with ~30 dB of digital
-    headroom unused. They still bind per DRIVER at admission and in the composed
-    segment level, and resolving them still raises when a ledger cannot be read
-    (that same call resolves the permitted BAND, which does refuse). What stops
-    this volume instead: full scale, the emitted graph's limiters and
-    ``devices.volume_limit``, the ramp's ``HARD_CEILING_DBFS``, and — live, on
-    measured samples — the commissioning SPL stop.
-
-    ``branch_peaks_dbfs`` is keyed by ``target_fingerprint`` and is a claim about
-    one stimulus through one graph; it is never reusable.
-    :mod:`jasper.active_speaker.branch_peak` owns producing it.
-
-    **Fail-conservative, never fail-open**: any missing, non-finite or unusable
-    branch peak falls back to the full-band bound under
-    ``reason=branch_peaks_incomplete``, which can only make this quieter.
-    Mic-independent by construction — no calibration, sensitivity or measured
-    level enters it.
-    """
-    if not math.isfinite(stimulus_peak_dbfs):
-        raise SessionVolumePlanError(
-            f"stimulus peak must be finite, got {stimulus_peak_dbfs!r}"
-        )
-    # Materialised once and handed to the helper as the SAME list, so the caps
-    # come back in a known one-to-one order with these fingerprints (and a
-    # generator argument is not consumed twice).
-    fingerprints = list(target_fingerprints)
-    caps = _driver_caps_dbfs(
-        safety_profile,
-        fingerprints,
-        declared_sensitivities=declared_sensitivities,
-    )
-    peak = float(stimulus_peak_dbfs)
-    rendered = _binding_branch_peak_dbfs(fingerprints, branch_peaks_dbfs)
-    # Which bound was used is a fact about the RENDER, never a comparison of
-    # the two numbers: a branch whose peak happens to equal the stimulus peak
-    # would otherwise report the bound it did not take.
-    incomplete = rendered is None and branch_peaks_dbfs is not None
-    binding = peak if rendered is None else rendered
-    ceiling = MAX_TEST_LEVEL_DBFS - binding
-    detail, declared_cap_ceiling = _declared_cap_disclosure(
-        fingerprints,
-        caps,
-        branch_peaks_dbfs if not incomplete else None,
-        stimulus_peak_dbfs=peak,
-        ceiling_db=ceiling,
-    )
-    log_event(
-        logger,
-        "active_speaker.unsegmented_ceiling_bound",
-        bound="per_branch" if rendered is not None else "full_band",
-        # Named rather than inferred from ``bound``: silently serving the
-        # conservative bound reads as "the graph is just this tight" and sends
-        # an operator hunting the wrong number.
-        reason="branch_peaks_incomplete" if incomplete else "",
-        ceiling_db=f"{ceiling:.2f}",
-        binding_peak_dbfs=f"{binding:.2f}",
-        stimulus_peak_dbfs=f"{peak:.2f}",
-        declared_cap_ceiling_db=f"{declared_cap_ceiling:.2f}",
-        headroom_over_declared_caps_db=f"{ceiling - declared_cap_ceiling:+.2f}",
-        drivers=detail,
-    )
-    return ceiling
-
-
-def _usable_branch_peak(value: Any) -> float | None:
-    """One rendered branch peak, or ``None`` when it is not a usable number.
-
-    The single owner of "is this branch fact usable", so the bound and the
-    disclosure cannot disagree about which branches resolved.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    peak = float(value)
-    return peak if math.isfinite(peak) else None
-
-
-def _binding_branch_peak_dbfs(
-    fingerprints: list[str],
-    branch_peaks_dbfs: Mapping[str, float] | None,
-) -> float | None:
-    """``max(branch_peak_d)`` — the branch that clips first — or ``None``.
-
-    ``None`` is the fail-conservative answer the caller turns back into the
-    full-band bound. EVERY active driver must carry a finite branch peak: a
-    partial render would bound the speaker by only the branches that resolved.
-    """
-    if not branch_peaks_dbfs:
-        return None
-    peaks: list[float] = []
-    for fingerprint in fingerprints:
-        branch_peak = _usable_branch_peak(branch_peaks_dbfs.get(fingerprint))
-        if branch_peak is None:
-            return None
-        peaks.append(branch_peak)
-    return max(peaks) if peaks else None
-
-
-def _declared_cap_disclosure(
-    fingerprints: list[str],
-    caps: list[float],
-    branch_peaks_dbfs: Mapping[str, float] | None,
-    *,
-    stimulus_peak_dbfs: float,
-    ceiling_db: float,
-) -> tuple[str, float]:
-    """The receipt for the caps this ceiling is NOT bounded by.
-
-    One log-safe token per driver —
-    ``<fingerprint>:cap=<x>,branch=<y>,at_ceiling=<z>,past_cap=<+d>`` — plus the
-    ceiling the declared caps alone would have produced. ``past_cap`` is signed:
-    positive means this volume drives that driver past its declared figure.
-    """
-    peaks = branch_peaks_dbfs or {}
-    parts: list[str] = []
-    cap_ceilings: list[float] = []
-    for fingerprint, cap in zip(fingerprints, caps):
-        rendered = _usable_branch_peak(peaks.get(fingerprint))
-        received = stimulus_peak_dbfs if rendered is None else rendered
-        at_ceiling = received + ceiling_db
-        cap_ceilings.append(cap - received)
-        shown = "none" if rendered is None else f"{rendered:.2f}"
-        parts.append(
-            f"{fingerprint}:cap={cap:.2f},branch={shown}"
-            f",at_ceiling={at_ceiling:.2f},past_cap={at_ceiling - cap:+.2f}"
-        )
-    return " ".join(parts), min(cap_ceilings)
 
 
 def session_measurement_volume_db(

@@ -39,25 +39,23 @@ class SeatLevelTargetError(ValueError):
 
 @dataclass(frozen=True)
 class StimulusProvenance:
-    """The exact leveling signal; sweep statistics are not comparable to noise."""
+    """The summed program and the statistic used for the session gain."""
 
-    path: str
-    sha256: str
+    program_id: str
+    phase: str
+    wav_sha256: str
     peak_dbfs: float
-    rms_dbfs: float
-    band_hz: tuple[float, float] | None = None
+    bundle_id: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "path": self.path,
-            "sha256": self.sha256,
+            "program_id": self.program_id,
+            "phase": self.phase,
+            "wav_sha256": self.wav_sha256,
             "peak_dbfs": round(float(self.peak_dbfs), 2),
-            "rms_dbfs": round(float(self.rms_dbfs), 2),
-            "band_hz": (
-                None
-                if self.band_hz is None
-                else [round(float(edge), 1) for edge in self.band_hz]
-            ),
+            "statistic": "max_window_db_spl",
+            "graph_scope": "candidate",
+            "bundle_id": self.bundle_id,
         }
 
 

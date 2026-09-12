@@ -1,29 +1,34 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""Calibrated seat-SPL CLI refusals, playback control, and evidence."""
+"""Watched sweep wiring, session restoration, and level provenance."""
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import math
+from contextlib import asynccontextmanager
+from functools import partial
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import numpy as np
 import pytest
 
-from jasper.audio_measurement.calibration import (
-    MicSensitivity,
-    resolve_mic_sensitivity,
-)
-from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
+from jasper.active_speaker import seat_level_sweep as sweep
+from jasper.active_speaker.crossover_v2 import composition
+from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
+from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
+from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
+from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
+from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
 from jasper.cli import seat_level
-from jasper.cli._refusal import STATUS_BY_CODE
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields
 
-CAL_WITH_SENS = (
-    '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n10.2\t-6.5\n'
-)
+CAL_WITH_SENS = '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_CURVE_ONLY = "10.0\t-6.6\n10.2\t-6.5\n"
 
 
@@ -35,886 +40,333 @@ def test_resolve_sensitivity_reads_an_explicit_calibration_file(tmp_path):
     )
 
 
-@pytest.mark.parametrize(
-    "text, name",
-    [
-        pytest.param(CAL_CURVE_ONLY, "curve_only.txt", id="no_sens_factor_line"),
-        pytest.param(None, "absent.txt", id="file_missing"),
-    ],
-)
-def test_resolve_sensitivity_is_none_when_there_is_no_absolute_reference(
-    tmp_path, text, name
-):
-    path = tmp_path / name
+@pytest.mark.parametrize("text", [CAL_CURVE_ONLY, None])
+def test_resolve_sensitivity_is_none_without_absolute_reference(tmp_path, text):
+    path = tmp_path / "mic.txt"
     if text is not None:
         path.write_text(text)
     assert resolve_mic_sensitivity(calibration_file=str(path)) is None
 
 
-@pytest.mark.parametrize("mic_present", [True, False])
-def test_missing_calibration_refuses_before_the_mic_is_opened(tmp_path, monkeypatch, capsys, mic_present):
-    stimulus = tmp_path / "check.wav"
-    stimulus.write_bytes(b"RIFF....WAVE")
-    cal = tmp_path / "curve_only.txt"
-    cal.write_text(CAL_CURVE_ONLY)
-
-    def _never(*_a, **_k):  # pragma: no cover - asserted by not being called
-        raise AssertionError("hardware was touched despite a missing calibration")
-
-    monkeypatch.setattr(
-        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
-        lambda: SimpleNamespace(model_label="UMIK-2") if mic_present else None,
-    )
-    monkeypatch.setattr("jasper.audio_measurement.wired_level_meter.WiredLevelMeter", _never)
-    monkeypatch.setattr("jasper.camilla.primary_controller", _never)
-
-    code = seat_level.main(
-        ["--stimulus-wav", str(stimulus), "--calibration-file", str(cal)]
-    )
-    assert code == 1
-    assert json.loads(capsys.readouterr().out)["reason"] == (
-        seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE if mic_present else seat_level.REFUSE_MIC_ABSENT
-    )
+@pytest.mark.parametrize("argv", [["--calibration-file", "curve.txt"], ["--mic-serial", "no-such-serial"]])
+def test_missing_calibration_refuses_before_hardware(tmp_path, monkeypatch, capsys, argv):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "curve.txt").write_text(CAL_CURVE_ONLY)
+    hardware = Mock(side_effect=AssertionError("hardware touched"))
+    monkeypatch.setattr(seat_level, "resolve_wired_mic", hardware)
+    monkeypatch.setattr(seat_level, "primary_controller", hardware)
+    assert seat_level.main(argv) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE
+    hardware.assert_not_called()
 
 
-def test_a_missing_stimulus_refuses_first(tmp_path, capsys):
-    """The shared refusal document, whose ``status`` its exit code picks."""
-    cal = tmp_path / "umik2.txt"
-    cal.write_text(CAL_WITH_SENS)
-    code = seat_level.main(
-        ["--stimulus-wav", str(tmp_path / "nope.wav"), "--calibration-file", str(cal)]
-    )
-    assert code == seat_level.EXIT_REFUSED
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == STATUS_BY_CODE[seat_level.EXIT_REFUSED]
-    assert payload["reason"] == seat_level.REFUSE_STIMULUS_MISSING
-
-
-def test_the_verb_installs_a_handler_so_its_receipt_reaches_the_journal(
-    tmp_path,
-):
-    """The disclosure receipt has a production reader, proved without caplog.
-
-    ``unsegmented_stimulus_ceiling_db`` logs the caps this ceiling drives past
-    at INFO. The root logger defaults to WARNING and this module registers no
-    handler of its own, so before ``main`` called ``basicConfig`` every field
-    of that receipt was computed and discarded on a real run — and a guard
-    written with ``caplog.at_level("INFO")`` cannot see that, because forcing
-    the level is precisely the thing production does not do.
-
-    So this test takes the root logger away from pytest for the duration:
-    handlers cleared, level restored to the WARNING default, ``main`` run for
-    real, and then a record emitted through the module's OWN logger at INFO
-    has to arrive somewhere. Restored in ``finally`` either way.
-    """
-    import logging
-
-    cal = tmp_path / "umik2.txt"
-    cal.write_text(CAL_WITH_SENS)
-
-    root = logging.getLogger()
-    saved_handlers = list(root.handlers)
-    saved_level = root.level
-    received: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            received.append(record)
-
-    try:
-        root.handlers = []
-        root.setLevel(logging.WARNING)
-        code = seat_level.main(
-            [
-                "--stimulus-wav",
-                str(tmp_path / "nope.wav"),
-                "--calibration-file",
-                str(cal),
-            ]
-        )
-        assert code == 1
-        # ``basicConfig`` ran and it ran at INFO, not at the WARNING default
-        # that hid the event.
-        assert root.handlers, "the CLI installed no log handler"
-        assert root.level == logging.INFO
-        root.addHandler(_Capture())
-        logging.getLogger(
-            "jasper.active_speaker.session_volume_plan"
-        ).info("event=active_speaker.unsegmented_ceiling_bound probe=1")
-    finally:
-        root.handlers = saved_handlers
-        root.setLevel(saved_level)
-
-    assert any("unsegmented_ceiling_bound" in r.getMessage() for r in received)
+def test_missing_mic_has_its_own_refusal(monkeypatch, capsys):
+    monkeypatch.setattr(seat_level, "resolve_wired_mic", lambda: None)
+    assert seat_level.main([]) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == seat_level.REFUSE_MIC_ABSENT
 
 
 def test_defaults_are_the_operators_stated_band():
-    args = seat_level.build_parser().parse_args(["--stimulus-wav", "x.wav"])
-    target = seat_level.SeatLevelTarget(
-        target_db_spl=args.target_db_spl, tolerance_db=args.tolerance_db
-    )
-    assert (target.low_db_spl, target.high_db_spl) == (74.0, 76.0)
-
-
-# --- the whole verb, on a stubbed healthy box -------------------------------
-
-
-def _stereo_wav(path, *, peak_int16=16384):
-    """A two-channel WAV whose true peak is a known fraction of full scale."""
-    import struct
-    import wave
-
-    with wave.open(str(path), "wb") as out:
-        out.setnchannels(2)
-        out.setsampwidth(2)
-        out.setframerate(48_000)
-        out.writeframes(
-            b"".join(struct.pack("<hh", peak_int16, 0) for _ in range(64))
-        )
-    return path
-
-
-def test_stimulus_peak_reads_the_loudest_channel_not_a_downmix(tmp_path):
-    # Half of int16 full scale on ONE channel, silence on the other. A downmix
-    # would average to a quarter and report ~-12 dBFS, which would hand the
-    # ceiling 6 dB it has not earned.
-    wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
-    assert seat_level.stimulus_provenance(wav).peak_dbfs == pytest.approx(
-        -6.02, abs=0.05
-    )
-
-
-def test_the_same_read_measures_the_RMS_the_refusal_discloses(tmp_path):
-    """One read, both numbers — a second read is a second answer.
-
-    A constant half-scale on one channel of two: the peak is -6.02 dBFS and the
-    RMS over the whole interleaved array is 3 dB below it, because half the
-    samples are the silent channel. The crest that falls out is what decides
-    whether a seat-SPL target is reachable at all, so it is measured rather
-    than assumed.
-    """
-    wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
-
-    levels = seat_level.stimulus_provenance(wav)
-
-    assert levels.peak_dbfs == pytest.approx(-6.02, abs=0.05)
-    assert levels.rms_dbfs == pytest.approx(-9.03, abs=0.05)
-
-
-def test_a_silent_stimulus_is_refused_not_treated_as_infinitely_quiet(tmp_path):
-    wav = _stereo_wav(tmp_path / "silent.wav", peak_int16=0)
-    with pytest.raises(ValueError, match="no signal"):
-        seat_level.stimulus_provenance(wav)
-
-
-def test_the_stimulus_read_carries_the_file_identity_the_reference_banks(tmp_path):
-    """#3477: a level with no identity beside it is a half-recorded stimulus.
-
-    ``dB SPL = stimulus dBFS + chain gain + volume``. Two references banked
-    against different WAVs differ by the stimulus term, and a consumer holding
-    only the levels cannot tell that from a chain change — so WHICH file was
-    played is part of the same one read, never a second one that could see a
-    swapped symlink.
-    """
-    import hashlib
-
-    wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
-
-    provenance = seat_level.stimulus_provenance(wav)
-
-    assert provenance.path == str(wav)
-    assert provenance.sha256 == hashlib.sha256(wav.read_bytes()).hexdigest()
-    assert provenance.band_hz is None
-    assert provenance.peak_dbfs == pytest.approx(-6.02, abs=0.05)
-
-
-def _band_profile(*bands):
-    """A driver-safety profile that declares nothing but each driver's band."""
-    return {
-        "targets": [
-            {"target_fingerprint": f"fp-{index}", "measurement_band_hz": list(band)}
-            for index, band in enumerate(bands)
-        ]
-    }
-
-
-@pytest.mark.parametrize(
-    "bands, expected",
-    [
-        # Two declared bands that do not overlap: the generated default has to
-        # cover BOTH drivers, so the hull is the answer and an intersection
-        # would be empty.
-        pytest.param(([45.0, 3000.0], [2000.0, 18000.0]), (45.0, 18000.0), id="two_way"),
-        # A single declaration is its own hull.
-        pytest.param(([60.0, 16000.0],), (60.0, 16000.0), id="full_range"),
-        # Declarations outside the global driver-test limits are clamped to
-        # them, never obeyed past them.
-        pytest.param(([1.0, 40_000.0],), (20.0, 23_000.0), id="clamped_to_the_limits"),
-    ],
-)
-def test_the_default_stimulus_is_derived_from_the_declared_bands(
-    tmp_path, monkeypatch, bands, expected
-):
-    """#3475: with no ``--stimulus-wav`` the tool synthesizes its own.
-
-    Band, level and duration all come from declarations that already exist —
-    the drivers' ``measurement_band_hz``, the active-driver capture source
-    level, and the branch-peak render bound — so nothing here is a property of
-    one rig, one room, or one operator's home directory.
-    """
-    from jasper.active_speaker.branch_peak import MAX_STIMULUS_SAMPLES
-    from jasper.active_speaker.commissioning_admission import (
-        ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
-    )
-
-    profile = _band_profile(*bands)
-    targets = [
-        {"target_fingerprint": target["target_fingerprint"]}
-        for target in profile["targets"]
-    ]
-    _stub_draft(monkeypatch, {"driver_safety_profile": profile}, targets)
-
-    seen = {}
-
-    def _capture(**kwargs):
-        seen.update(kwargs)
-        return tmp_path / "generated.wav"
-
-    monkeypatch.setattr(
-        "jasper.audio_measurement.playback.ensure_bandlimited_noise_wav", _capture
-    )
-
     args = seat_level.build_parser().parse_args([])
-    assert args.stimulus_wav is None
-    declarations = seat_level._load_declarations(args)
-    path, band_hz = seat_level.default_stimulus_wav(declarations)
-
-    assert path == tmp_path / "generated.wav"
-    assert band_hz == expected
-    assert (seen["f_lo_hz"], seen["f_hi_hz"]) == expected
-    # The level is the one the driver-capture excitation already uses, so a
-    # reference banked against the default sits at the same digital level the
-    # session's own programs do.
-    assert seen["dbfs"] == ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS
-    # Long enough to be worth playing, short enough that the per-branch peak
-    # solve stays EXACT — past the render bound it degrades to the conservative
-    # full-band bound, which is exactly the second-order effect #3475 reports.
-    assert seen["duration_s"] * seen["sample_rate"] <= MAX_STIMULUS_SAMPLES
+    target = seat_level.SeatLevelTarget(args.target_db_spl, args.tolerance_db)
+    assert (target.low_db_spl, target.high_db_spl) == (74.0, 76.0)
+    target.validate(ceiling_db_spl=85.0)
+    with pytest.raises(seat_level.SeatLevelTargetError):
+        seat_level.SeatLevelTarget(90.0, 2.5).validate(ceiling_db_spl=85.0)
 
 
-def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
-    """The B1 root cause, isolated: the preset resolver must produce a preset.
-
-    ``resolve_commission_inputs()`` alone returns ``None`` for the preset on an
-    ordinary box; ``resolve_capture_preset(topology)`` is the sibling that
-    compiles one or falls back to the bundled preset. This drives the REAL
-    resolver against a stubbed topology/draft and asserts a real SPL ceiling
-    comes back rather than an AttributeError on ``None``.
-    """
-    stimulus = _stereo_wav(tmp_path / "s.wav")
-    monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
-        lambda _p: SimpleNamespace(topology_id="t"),
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda **kw: {"driver_safety_profile": {"drivers": []}},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.declared_effective_driver_sensitivities",
-        lambda draft: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.active_driver_targets",
-        lambda topo: [{"target_fingerprint": "fp-woofer"}],
-    )
-    # The CLI binds this at import, so patch it where the CLI looks it up.
-    monkeypatch.setattr(
-        seat_level, "unsegmented_stimulus_ceiling_db", lambda *a, **k: -30.0
-    )
-
-    args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
-    ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        stimulus,
-        seat_level.stimulus_provenance(stimulus),
-        seat_level._load_declarations(args),
-    )
-
-    assert ceiling_db == -30.0
-    # A real number from a real preset — never an AttributeError on None.
-    assert 45.0 <= spl_ceiling <= 85.0
+@pytest.mark.parametrize("start,cap,duration", [(-40, 0, 8.0), (-55, -12, 11.6), (-40, 12, 10.0)])
+def test_watchdog_covers_the_sweep_and_loop_budget(start, cap, duration):
+    from jasper.active_speaker.auto_level import MAX_STEP_DB
+    assert sweep.watchdog_seconds(start, cap, duration) == (
+        math.ceil((min(cap, 0) - start) / MAX_STEP_DB) + 7
+    ) * (duration + 6.0) + 30.0
 
 
-# --- the honest ceiling: the two conservatisms, at the CLI's own call site ---
-#
-# JTS3's declared numbers: woofer admitted at -8.0 dBFS, declared sensitivities
-# 108.5 (tweeter) / 83.3 (woofer), and a -14.4 dB L-pad on the tweeter recorded
-# in the same design draft.
-
-_PAD_DB = -14.4
-_SENS_WOOFER = 83.3
-_SENS_TWEETER = 108.5
-
-
-def _draft_with_a_padded_tweeter(safety_profile):
-    return {
-        "driver_safety_profile": safety_profile,
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": _SENS_WOOFER},
-                {
-                    "role": "tweeter",
-                    "sensitivity_db_2v83_1m": _SENS_TWEETER,
-                    "pad": {"attenuation_db": _PAD_DB},
-                },
-            ]
-        },
-    }
-
-
-def _stub_declarations(monkeypatch):
-    """Stub the one declaration load for tests that stub the derivations too."""
-    monkeypatch.setattr(
-        seat_level,
-        "_load_declarations",
-        lambda args: seat_level._Declarations(None, {}, {}),
-    )
-
-
-def _stub_draft(monkeypatch, draft, targets):
-    monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
-        lambda _p: SimpleNamespace(topology_id="t"),
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft", lambda **kw: draft
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.active_driver_targets", lambda topo: targets
-    )
-
-
-def test_seat_level_hands_the_ceiling_the_PAD_FOLDED_sensitivities(
-    tmp_path, monkeypatch
-):
-    """Conservatism 1, pinned at the one production site that originates it.
-
-    ``jasper/cli/seat_level.py`` was the only place in the tree that read a
-    sensitivity mapping out of the draft and fed it to ceiling math with the
-    NAKED reader — the crossover-v2 flow already reads the
-    pad-folded sibling. An L-pad'd tweeter's acoustic output is quieter than
-    its datasheet rating by exactly the pad, and the derived HF ceiling is a
-    sensitivity DELTA, so the naked figure protects the driver as if it were
-    14.4 dB more sensitive than it physically is.
-
-    Mutation guard: put ``declared_driver_sensitivities`` back in
-    ``_derive_bounds`` and the captured mapping carries the naked 108.5.
-    """
-    stimulus = _stereo_wav(tmp_path / "s.wav")
-    draft = _draft_with_a_padded_tweeter({"drivers": []})
-    _stub_draft(monkeypatch, draft, [{"target_fingerprint": "fp", "output_index": 0}])
-    monkeypatch.setattr(seat_level, "_applied_branch_peaks", lambda *a, **k: None)
-
-    seen = {}
-
-    def _capture(*_a, **kwargs):
-        seen.update(kwargs)
-        return -30.0
-
-    monkeypatch.setattr(seat_level, "unsegmented_stimulus_ceiling_db", _capture)
-    args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
-    seat_level._derive_bounds(
-        stimulus,
-        seat_level.stimulus_provenance(stimulus),
-        seat_level._load_declarations(args),
-    )
-
-    assert seen["declared_sensitivities"] == {
-        "woofer": _SENS_WOOFER,
-        "tweeter": _SENS_TWEETER + _PAD_DB,
-    }
-    assert seen["declared_sensitivities"]["tweeter"] != _SENS_TWEETER
-
-
-def test_an_unreadable_applied_graph_falls_back_to_the_conservative_bound(
-    tmp_path, monkeypatch, caplog
-):
-    """Fail-conservative at the graph-reading boundary.
-
-    No statefile, an unparseable config, a graph carrying a filter the render
-    cannot model — every one of them hands the ceiling ``None`` and it derives
-    the full-band bound, which is the number that shipped. The reason is
-    logged: a silent fallback is indistinguishable from a genuinely tight
-    graph, and sends an operator hunting the wrong number.
-    """
-    stimulus = _stereo_wav(tmp_path / "s.wav")
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.read_camilla_statefile_config_path",
-        lambda *a, **k: None,
-    )
-    with caplog.at_level("INFO", logger="jasper.cli.seat_level"):
-        peaks = seat_level._applied_branch_peaks(
-            stimulus, [{"target_fingerprint": "fp", "output_index": 0}]
-        )
-    assert peaks is None
-    assert event_records(caplog, "active_speaker.seat_level_branch_peaks_unavailable")
-
-    caplog.clear()
-    missing = tmp_path / "gone.yml"
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.read_camilla_statefile_config_path",
-        lambda *a, **k: str(missing),
-    )
-    with caplog.at_level("INFO", logger="jasper.cli.seat_level"):
-        assert (
-            seat_level._applied_branch_peaks(
-                stimulus, [{"target_fingerprint": "fp", "output_index": 0}]
-            )
-            is None
-        )
-    assert event_records(caplog, "active_speaker.seat_level_branch_peaks_unavailable")
-
-
-@pytest.mark.parametrize(
-    "document, shape",
-    [
-        ("", "an empty statefile"),
-        ("[]", "a list document"),
-        ("- one\n- two", "a populated list document"),
-        ("just a string", "a scalar string document"),
-        ("42", "a scalar int document"),
-        ("{{{ not yaml", "an unparseable document"),
-    ],
-)
-def test_an_unreadable_graph_DOCUMENT_still_reaches_the_conservative_fallback(
-    tmp_path, monkeypatch, caplog, document, shape
-):
-    """The fallback has to survive the shapes a half-written statefile takes.
-
-    ``yaml.safe_load`` answers an empty file with None, a list document with a
-    list, and a scalar document with a str/int — none of which carry ``.get``.
-    Reaching the render with one of those raised an AttributeError that the
-    catch tuple here does not name, so the conservative fallback was skipped
-    and the verb crashed instead of quietly bounding by the full-band peak.
-    Every one of these must come back ``None``, logged.
-    """
-    stimulus = _stereo_wav(tmp_path / "s.wav")
-    graph = tmp_path / "applied.yml"
-    graph.write_text(document, encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.read_camilla_statefile_config_path",
-        lambda *a, **k: str(graph),
-    )
-    with caplog.at_level("INFO", logger="jasper.cli.seat_level"):
-        peaks = seat_level._applied_branch_peaks(
-            stimulus, [{"target_fingerprint": "fp", "output_index": 0}]
-        )
-    assert peaks is None, shape
-    assert event_records(caplog, "active_speaker.seat_level_branch_peaks_unavailable")
-
-
-def _jts3_shaped_graph(*, woofer_channel: int, tweeter_channel: int, fc_hz=1648.7):
-    """A basin-2-shaped two-way: mono-sum split, an LR4 pair, and the tweeter's
-    own inverted trim / shelf / peaking chain.
-
-    The two channel indexes are arguments rather than literals because role and
-    output index are NOT positionally related — the shipped 2-way emitter
-    fixture puts the tweeter on channel 0, and this test's topology puts it on
-    channel 1. Taking them from the topology is what makes this fixture a test
-    of the render's own fingerprint-to-channel pairing instead of a restatement
-    of it.
-    """
-    mono_leg = -6.020599913
-    return {
-        "devices": {
-            "samplerate": 48000,
-            "capture": {"channels": 2},
-            "playback": {"channels": 2},
-        },
-        "filters": {
-            "active_baseline_headroom": {
-                "type": "Gain",
-                "parameters": {"gain": 0.0, "inverted": False, "mute": False},
-            },
-            "as_woofer_lp": {
-                "type": "BiquadCombo",
-                "parameters": {
-                    "type": "LinkwitzRileyLowpass", "freq": fc_hz, "order": 4,
-                },
-            },
-            "as_woofer_delay": {
-                "type": "Delay",
-                "parameters": {"delay": 0.35, "unit": "ms"},
-            },
-            "as_woofer_baseline_limiter": {
-                "type": "Limiter",
-                "parameters": {"soft_clip": True, "clip_limit": -1.0},
-            },
-            "as_tweeter_hp": {
-                "type": "BiquadCombo",
-                "parameters": {
-                    "type": "LinkwitzRileyHighpass", "freq": fc_hz, "order": 4,
-                },
-            },
-            "as_tweeter_shelf": {
-                "type": "Biquad",
-                "parameters": {
-                    "type": "Highshelf", "freq": 4000.0, "q": 0.707, "gain": -6.17,
-                },
-            },
-            "as_tweeter_peak_1": {
-                "type": "Biquad",
-                "parameters": {
-                    "type": "Peaking", "freq": 2600.0, "q": 2.0, "gain": -3.2,
-                },
-            },
-            "as_tweeter_peak_2": {
-                "type": "Biquad",
-                "parameters": {
-                    "type": "Peaking", "freq": 6100.0, "q": 3.0, "gain": -2.1,
-                },
-            },
-            "as_tweeter_peak_3": {
-                "type": "Biquad",
-                "parameters": {
-                    "type": "Peaking", "freq": 11000.0, "q": 1.5, "gain": -1.4,
-                },
-            },
-            "as_tweeter_baseline_gain": {
-                "type": "Gain",
-                "parameters": {"gain": -4.6081, "inverted": True, "mute": False},
-            },
-            "as_tweeter_baseline_limiter": {
-                "type": "Limiter",
-                "parameters": {"soft_clip": True, "clip_limit": -1.0},
-            },
-        },
-        "mixers": {
-            "split_active_2way": {
-                "channels": {"in": 2, "out": 2},
-                "mapping": [
-                    {
-                        "dest": d,
-                        "sources": [
-                            {"channel": 0, "gain": mono_leg, "inverted": False},
-                            {"channel": 1, "gain": mono_leg, "inverted": False},
-                        ],
-                    }
-                    for d in (0, 1)
-                ],
-            }
-        },
-        "pipeline": [
-            {
-                "type": "Filter",
-                "channels": [0, 1],
-                "names": ["active_baseline_headroom"],
-            },
-            {"type": "Mixer", "name": "split_active_2way"},
-            {
-                "type": "Filter",
-                "channels": [woofer_channel],
-                "names": [
-                    "as_woofer_lp", "as_woofer_delay", "as_woofer_baseline_limiter",
-                ],
-            },
-            {
-                "type": "Filter",
-                "channels": [tweeter_channel],
-                "names": [
-                    "as_tweeter_hp", "as_tweeter_shelf", "as_tweeter_peak_1",
-                    "as_tweeter_peak_2", "as_tweeter_peak_3",
-                    "as_tweeter_baseline_gain", "as_tweeter_baseline_limiter",
-                ],
-            },
-        ],
-    }
-
-
-def _broadband_wav(path, *, peak_dbfs=-12.0, seconds=3.0):
-    """Content on BOTH sides of the crossover, on one channel only — the shape
-    a session check program has, and the shape that makes the mono-sum leg and
-    each branch's own filtering visible in the rendered peak."""
-    import numpy as np
-    from scipy.io import wavfile
-
-    rate = 48000
-    n = int(rate * seconds)
-    t = np.arange(n) / rate
-    rng = np.random.default_rng(11)
-    signal = (
-        np.sin(2.0 * np.pi * 220.0 * t)
-        + 0.9 * np.sin(2.0 * np.pi * 5200.0 * t)
-        + 0.35 * rng.normal(0.0, 1.0, n)
-    )
-    signal = signal / np.max(np.abs(signal)) * (10.0 ** (peak_dbfs / 20.0))
-    stereo = np.zeros((n, 2))
-    stereo[:, 0] = signal
-    wavfile.write(str(path), rate, (stereo * 32767.0).astype(np.int16))
-    return path
-
-
-def _jts3_safety_profile(topology):
-    from jasper.active_speaker.driver_safety import build_driver_safety_profile
-
-    def _driver(target_id, role, peak, required):
-        return {
-            "target_id": target_id,
-            "role": role,
-            "model": f"model-{role}",
-            "hard_excitation_band_hz": [500, 20_000],
-            "measurement_band_hz": [500, 10_000],
-            **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
-            "level_duration_limits": {
-                "max_effective_peak_dbfs": peak,
-                "max_sweep_duration_s": 6,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 0,
-            },
-            "required_protection_filters": required,
-            "cabinet": {
-                "enclosure_kind": "sealed",
-                "radiator_count": 1,
-                "effective_radiating_diameter_mm": 132 if role == "woofer" else 25,
-                **({"baffle_width_mm": 210} if role == "woofer" else {}),
-            },
-        }
-
-    return build_driver_safety_profile(
-        topology,
-        manual_settings={
-            "drivers": [
-                _driver("mono:woofer", "woofer", -8.0, [
-                    {"kind": "lowpass", "cutoff_hz": 3000,
-                     "minimum_slope_db_per_octave": 24}
-                ]),
-                _driver("mono:tweeter", "tweeter", -65.0, [
-                    {"kind": "highpass", "cutoff_hz": 5000,
-                     "minimum_slope_db_per_octave": 24}
-                ]),
-            ],
-            "crossover_candidates": [],
-        },
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-
-def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkeypatch):
-    """The de-nannied ceiling through the REAL derivation.
-
-    Real ``_derive_bounds``, real ``unsegmented_stimulus_ceiling_db``, real
-    branch render, real driver-safety profile — only the topology and the
-    statefile lookup are stubbed.
-
-    Two things are pinned end to end. The ceiling is full scale less the
-    LOUDEST branch peak the render found, which on this fixture is the woofer's;
-    and it clears the ceiling the declared caps used to impose (-21.2 dB on
-    these numbers) by tens of decibels, which is the 2026-08-23 ruling.
-
-    The magnitudes are this fixture's own — a branch peak is a property of one
-    stimulus through one graph and is never transferable, which is the whole
-    reason the render is redone per stimulus rather than cached.
-    """
-    import yaml
-
-    from jasper.active_speaker.measurement import active_driver_targets
-    from jasper.active_speaker.session_volume_plan import (
-        unsegmented_stimulus_ceiling_db,
-    )
-    from tests.active_speaker_fixtures import mono_output_topology
-
-    topology = mono_output_topology()
-    profile = _jts3_safety_profile(topology)
-    targets = active_driver_targets(topology)
-    by_role = {t["role"]: t["target_fingerprint"] for t in targets}
-    channels = {t["role"]: t["output_index"] for t in targets}
-    # The topology's own channel assignment is what the render is keyed on, and
-    # it is NOT positional — this topology puts the woofer on 0 where the
-    # shipped 2-way emitter fixture puts it on 1. The graph below is built from
-    # these indexes so the test proves the pairing rather than restating it.
-    assert set(channels) == {"woofer", "tweeter"}
-    assert sorted(channels.values()) == [0, 1]
-
-    stimulus = _broadband_wav(tmp_path / "check.wav")
-    graph = tmp_path / "applied.yml"
-    graph.write_text(
-        yaml.safe_dump(
-            _jts3_shaped_graph(
-                woofer_channel=channels["woofer"],
-                tweeter_channel=channels["tweeter"],
-            )
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.read_camilla_statefile_config_path",
-        lambda *a, **k: str(graph),
-    )
-    _stub_draft(monkeypatch, _draft_with_a_padded_tweeter(profile), targets)
-
-    args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
-    ceiling_db, spl_ceiling = seat_level._derive_bounds(
-        stimulus,
-        seat_level.stimulus_provenance(stimulus),
-        seat_level._load_declarations(args),
-    )
-
-    peak = seat_level.stimulus_provenance(stimulus).peak_dbfs
-    fingerprints = [t["target_fingerprint"] for t in targets]
-    full_band = unsegmented_stimulus_ceiling_db(
-        profile, fingerprints, stimulus_peak_dbfs=peak,
-        declared_sensitivities={"woofer": _SENS_WOOFER, "tweeter": _SENS_TWEETER},
-    )
-
-    # The bound with no render: full scale less the stimulus's own peak.
-    assert full_band == pytest.approx(-peak, abs=0.01)
-    # With the render: full scale less the LOUDEST branch, which is the woofer
-    # here — the quiet tweeter branch no longer holds the volume down.
-    branch = seat_level._applied_branch_peaks(stimulus, targets)
-    assert set(branch) == set(fingerprints)
-    assert branch[by_role["tweeter"]] < branch[by_role["woofer"]]
-    assert ceiling_db == pytest.approx(-branch[by_role["woofer"]], abs=0.01)
-    assert ceiling_db - full_band == pytest.approx(
-        peak - max(branch.values()), abs=0.01
-    )
-    # The ruling, as a number: the declared caps used to pin this ceiling at
-    # min(-8.0, -33.2) - peak. Mutation guard — restore that term and the
-    # ceiling collapses to it, tens of decibels below what the box can drive.
-    declared_cap_ceiling = min(
-        -18.8 - branch[by_role["tweeter"]], -8.0 - branch[by_role["woofer"]]
-    )
-    assert ceiling_db > declared_cap_ceiling
-    assert min(-8.0, -33.2) - peak == pytest.approx(-21.2, abs=0.01)
-    assert ceiling_db > -21.2
-    # The commissioning SPL stop is a SEPARATE bound and is untouched by any of
-    # this — it is still a real number from the preset.
-    assert 45.0 <= spl_ceiling <= 85.0
-
-
-def test_the_measured_SPL_stop_still_rejects_a_target_above_the_profile_ceiling():
-    """The runtime backstop this PR must not weaken.
-
-    The volume ceiling got honest; the measured seat-SPL ceiling did not move.
-    A band whose TOP exceeds ``max_commissioning_level_db_spl`` is still
-    refused as ``seat_spl_target_rejected`` before a note is played, however
-    much digital headroom the ledger now admits.
-    """
-    from jasper.active_speaker.seat_level_reference import (
-        SeatLevelTarget,
-        SeatLevelTargetError,
-    )
-
-    target = SeatLevelTarget(target_db_spl=90.0, tolerance_db=2.5)
-    with pytest.raises(SeatLevelTargetError):
-        target.validate(ceiling_db_spl=85.0)
-    # And the 75-80 band this PR exists to make reachable is still accepted.
-    SeatLevelTarget(target_db_spl=75.0, tolerance_db=1.0).validate(ceiling_db_spl=85.0)
-
-
-@pytest.mark.parametrize('outcome', ['converged', 'refused', 'cancelled', 'spawn_cancelled', 'replay_cancelled', 'replay_cancelled_twice', 'first_chunk_stop'])
-def test_session_banks_only_a_level_and_always_restores(tmp_path, monkeypatch, caplog, outcome):
-    import asyncio
-    from contextlib import asynccontextmanager
-    from unittest.mock import AsyncMock, Mock
-    from jasper.active_speaker.auto_level import LevelResult
-    from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
-
-    stimulus = _stereo_wav(tmp_path / 'probe.wav')
-    cal = tmp_path / 'mic.txt'
-    cal.write_text(CAL_WITH_SENS)
-    cam = SimpleNamespace(gain=-8.0)
-    async def get():
-        return cam.gain
+@pytest.fixture
+def box(tmp_path, monkeypatch):
+    state = SimpleNamespace(gain=-8.0, loudness=-15.0, level=75.0, ambient=35.0, events=[], programs=[], admissions=[],
+                            playback_failure=None, ambient_failure=None, ambient_start_fails=True, bundle_failed=False,
+                            missing_spl=False, loudness_failure=None, renders=[])
+    async def get(**kwargs):
+        return state.gain
     async def set_gain(gain):
-        cam.gain = gain
+        state.gain = gain
         return True
-    cam.get_volume_db, cam.set_volume_db = get, set_gain
-    closed = []
-    watchdog_s = (math.ceil(40.0 / seat_level.MAX_STEP_DB) + 7) * (
-        8.0 + 3 * seat_level.MIC_WINDOW_S
-    ) + 4 * 8.0
+    async def get_loudness():
+        return state.loudness
+    async def set_loudness(gain, **kwargs):
+        if state.loudness_failure and gain != -15.0:
+            raise state.loudness_failure
+        state.loudness = gain
+        return True
+    cam = SimpleNamespace(get_volume_db=get, set_volume_db=set_gain,
+                          get_loudness_volume_db=get_loudness, set_loudness_volume_db=set_loudness)
     class Plan:
         def __init__(self, *, state_path):
             assert state_path == seat_level.DEFAULT_SESSION_VOLUME_STATE_PATH
         def set_wall_clock_ceiling_s(self, seconds):
-            assert seconds - 60.0 == watchdog_s
+            state.watchdog = seconds
         async def open(self, gain, door):
-            self.entry = cam.gain
+            self.entry = state.gain
+            self.measurement_volume_db = gain
+            state.events.append("open")
             await set_gain(gain)
             return SessionVolumeOpenResult.OPENED
+        def assert_ready(self):
+            assert "open" in state.events and "close" not in state.events
         async def close(self, door, *, reason):
             await set_gain(self.entry)
-            closed.append(reason)
+            state.events.append("close")
             return SessionVolumeRestoreResult.EXACT_RESTORED
     @asynccontextmanager
     async def isolation(**kwargs):
+        assert kwargs == {"gate_owner": "seat-level"}
+        state.events.append("gate")
+        try:
+            yield
+        finally:
+            state.events.append("ungate")
+    @asynccontextmanager
+    async def writer_lock(*args, **kwargs):
         yield
-    meter = SimpleNamespace(start=Mock(), stop=Mock(), drain=lambda: [])
-    players = []
-    playing_task = []
-    spawns = []
-    async def spawn(*args, **kwargs):
-        spawns.append(True)
-        if outcome == 'spawn_cancelled' or ('replay_cancelled' in outcome and len(spawns) == 2):
-            playing_task[0].cancel()
-            if outcome.endswith('twice'):
-                asyncio.get_running_loop().call_soon(playing_task[0].cancel)
-                await asyncio.sleep(0)
-        player = SimpleNamespace(returncode=None, terminate=Mock(), kill=Mock(), wait=AsyncMock(return_value=0))
-        players.append(player)
-        return player
-    async def loop(target, **kwargs):
-        playing_task.append(asyncio.current_task())
-        await kwargs['play']()
-        if outcome == 'first_chunk_stop':
-            await kwargs['next_samples']()
-        if 'replay' in outcome:
-            players[-1].returncode = 0
-            await kwargs['play']()
-        if outcome == 'cancelled':
-            raise asyncio.CancelledError
-        return LevelResult(outcome, None if outcome == 'converged' else 'level_unreachable', -17.5, 75.0)
-    bank = Mock()
-    monkeypatch.setattr(seat_level, 'level_to', loop)
+    async def install():
+        state.events.append("graph")
+    async def restore():
+        state.events.append("restore_graph")
+    graph = SimpleNamespace(installed_graph_yaml=lambda: "accepted graph",
+                            install=install, restore=restore)
+    candidate = SimpleNamespace(fingerprint="accepted", bass_extension={"enabled": False})
+    context = SimpleNamespace(topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
+        role_targets={"woofer": "w", "tweeter": "t"}, safety_profile={}, declared_sensitivities={"tweeter": 94.1},
+        playback_device="fake", roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),
+                                             RoleBand("tweeter", 1, FrequencyBand(500, 20000))),
+        driver_caps_dbfs={"woofer": -8, "tweeter": -12}, driver_sweep_duration_limits_s={}, fc_hz=1600.)
+    def resolve(status, **kwargs):
+        assert kwargs == {"topology": context.topology, "require_banked_level": False}
+        return context
+    class Store:
+        bundle_dir = tmp_path
+        def identify_artifact(self, relative):
+            state.renders.append(relative)
+            return SimpleNamespace(sha256=hashlib.sha256((tmp_path / relative).read_bytes()).hexdigest(), path=relative)
+        def bank(self, *args):
+            raise AssertionError("a take was banked")
+    def open_bundle(*args, **kwargs):
+        assert state.events[:2] == ["gate", "open"]
+        state.events.append("bundle")
+        (tmp_path / "info.json").write_text('{"session_id": "level-bundle"}')
+        (tmp_path / "artifacts.json").write_text('{"artifacts": []}')
+        return None if state.bundle_failed else {"bundle_dir": tmp_path, "session_id": "level-bundle"}
+    def observe(monitor, spl):
+        amplitude = 10 ** ((spl - 94.0) / 20)
+        data = np.full(1024, amplitude * np.iinfo(np.int32).max, dtype="<i4")
+        monitor.observe(data.tobytes(), len(data), 1)
+    class Recorder:
+        failure = None
+        def start(self):
+            assert self.spl_monitor.max_window_db_spl == -math.inf
+            state.events.append("ambient")
+            observe(self.spl_monitor, state.ambient)
+            self.failure = state.ambient_failure or self.spl_monitor.error
+            if self.failure and state.ambient_start_fails:
+                raise self.failure
+        def abort(self):
+            state.events.append("abort")
+    class Capture:
+        def __init__(self, **kwargs):
+            self.monitor = kwargs['spl_monitor']
+            assert self.monitor.ceiling_db_spl == 85.0
+            state.capture = self
+        async def around(self, play, *, program):
+            self.monitor.reset()
+            try:
+                await play()
+            finally:
+                state.events.append("capture_stopped")
+        def take_answer(self):
+            if state.missing_spl:
+                return SimpleNamespace(capture_integrity={})
+            return SimpleNamespace(capture_integrity={"spl": {"max_window_db_spl": round(self.monitor.max_window_db_spl, 2)}})
+    def readmit(program, path, **kwargs):
+        assert kwargs["graph_yaml"] == "accepted graph"
+        assert kwargs["session_volume_db"] == state.gain
+        assert kwargs["declared_sensitivities"] == context.declared_sensitivities
+        assert kwargs["bass_extension"] == candidate.bass_extension
+        state.admissions.append(kwargs)
+        state.programs.append(program)
+        return SimpleNamespace(allowed=True, refusals=())
+    async def player(bundle_dir, artifact, **kwargs):
+        assert state.loudness == state.gain
+        state.artifact = artifact
+        (tmp_path / "capture.wav").write_bytes(b"raw")
+        observe(state.capture.monitor, state.level)
+        if state.capture.monitor.error:
+            raise StimulusCaptureStopped("spl_ceiling_exceeded", "stop", PlaybackObservation(emission="partial"))
+        if state.playback_failure:
+            raise state.playback_failure
+        return SimpleNamespace()
+    state.reference_path = tmp_path / "reference.json"
+    bank = Mock(wraps=partial(seat_level.write_seat_level_reference, state_path=state.reference_path))
+    monkeypatch.setattr(seat_level, 'write_seat_level_reference', bank)
     monkeypatch.setattr(seat_level, 'measurement_window', isolation)
     monkeypatch.setattr(seat_level, 'SessionVolumePlan', Plan)
     monkeypatch.setattr(seat_level, 'live_measurement_session', lambda **kw: None)
-    monkeypatch.setattr(seat_level, 'write_seat_level_reference', bank)
-    monkeypatch.setattr(seat_level, '_derive_bounds', lambda *a: (0.0, 85.0))
-    _stub_declarations(monkeypatch)
-    monkeypatch.setattr('jasper.audio_measurement.wired_capture.resolve_wired_mic', lambda: SimpleNamespace(pcm='fake'))
+    monkeypatch.setattr(seat_level, 'resolve_wired_mic', lambda: object())
+    monkeypatch.setattr(seat_level, 'resolved_household_sensitivity', lambda mic: MicSensitivity(0.0))
+    monkeypatch.setattr(seat_level, 'primary_controller', lambda: cam)
+    monkeypatch.setattr(seat_level, 'conductor_status', lambda: {})
+    monkeypatch.setattr(seat_level, 'load_output_topology_strict', lambda path: context.topology)
+    monkeypatch.setattr(seat_level, 'resolve_conductor_context', resolve)
+    monkeypatch.setattr(seat_level, 'commissioning_spl_ceiling_db', lambda *a, **kw: 85.0)
+    monkeypatch.setattr(seat_level, 'load_applied_baseline_profile_state', lambda: {})
+    monkeypatch.setattr(seat_level, 'candidate_from_applied_profile', lambda *a: candidate)
+    monkeypatch.setattr(seat_level, 'confirmed_protection_sections', lambda *a: {})
+    monkeypatch.setattr(seat_level, 'bind_measurement_graph', lambda *a, **kw: graph)
+    monkeypatch.setattr(seat_level, 'open_bundle', open_bundle)
+    monkeypatch.setattr(seat_level.CommissioningEvidenceStore, 'open', lambda *a, **kw: Store())
+    monkeypatch.setattr(seat_level, 'mark_state', lambda *a: state.events.append("closed_bundle"))
+    monkeypatch.setattr(sweep, 'make_wired_recorder', lambda *a, **kw: Recorder())
+    monkeypatch.setattr(sweep, 'WiredStimulusCapture', Capture)
+    monkeypatch.setattr('jasper.active_speaker.program_admission.readmit_summed_program_from_wav', readmit)
+    monkeypatch.setattr('jasper.active_speaker.program_playback.verified_program_aplay', player)
+    monkeypatch.setattr('jasper.dsp_apply.dsp_writer_lock', writer_lock)
+    monkeypatch.setattr(composition, 'confirm_graph_is_live', AsyncMock())
+    state.bank, state.graph, state.context, state.bundle_dir = bank, graph, context, tmp_path
+    return state
 
-    def make_meter(*args, **kwargs):
-        if outcome == 'first_chunk_stop':
-            kwargs['spl_monitor'].error = WiredSplCeilingExceeded(86.0, 85.0)
-        return meter
 
-    monkeypatch.setattr('jasper.audio_measurement.wired_level_meter.WiredLevelMeter', make_meter)
-    monkeypatch.setattr('jasper.audio_measurement.correction_lane.exec_correction_play', spawn)
-    monkeypatch.setattr('jasper.camilla.primary_controller', lambda: cam)
-    args = seat_level.build_parser().parse_args(['--stimulus-wav', str(stimulus), '--calibration-file', str(cal)])
+@pytest.mark.parametrize('outcome', ['converged', 'stop', 'ambient_stop', 'ambient_start_lost', 'ambient_reads_lost', 'missing_spl',
+                                            'loudness_refused', 'cancelled', 'error', 'bundle_failed'])
+def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
+    if outcome == 'stop':
+        box.level = 86.0
+    elif outcome == 'ambient_stop':
+        box.ambient_failure = WiredSplCeilingExceeded(86.0, 85.0)
+    elif outcome.startswith('ambient_') and outcome.endswith('_lost'):
+        box.ambient_failure = WiredCaptureError("failed N consecutive reads")
+        box.ambient_start_fails = outcome == 'ambient_start_lost'
+    elif outcome == 'missing_spl':
+        box.missing_spl = True
+    elif outcome == 'loudness_refused':
+        from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
+        box.loudness_failure = MeasurementDoorRefused("measurement_door_volume_not_open", "unconfirmed")
+    elif outcome == 'cancelled':
+        box.playback_failure = asyncio.CancelledError()
+    elif outcome == 'error':
+        box.playback_failure = OSError()
+    elif outcome == 'bundle_failed':
+        box.bundle_failed = True
+    args = seat_level.build_parser().parse_args([])
     with caplog.at_level('INFO', logger='jasper.cli.seat_level'):
-        if 'cancelled' in outcome:
+        if outcome == 'cancelled':
             with pytest.raises(asyncio.CancelledError):
                 asyncio.run(seat_level._run(args))
         else:
             result, _ = asyncio.run(seat_level._run(args))
-            assert result['status'] == ('refused' if outcome == 'first_chunk_stop' else outcome)
+            assert result['status'] == ('converged' if outcome == 'converged' else 'refused')
             assert result['restored'] is True
-    if outcome == 'first_chunk_stop':
-        assert result['reason'] == 'spl_ceiling_exceeded'
-        assert event_fields(caplog, 'active_speaker.seat_level_result') == {
-            'status': 'refused',
-            'reason': 'spl_ceiling_exceeded',
-            'gain_db': 'null',
-            'leveled_db_spl': 'null',
-            'ambient_db_spl': 'null',
-            'readings': 'null',
-        }
-    assert cam.gain == -8.0
-    assert len(closed) == 1
-    assert players[-1].terminate.called
-    assert meter.stop.called
-    assert bank.call_count == int(outcome == 'converged')
+            if outcome in ('ambient_start_lost', 'ambient_reads_lost', 'missing_spl'):
+                assert result['reason'] == 'mic_feed_lost'
+            if outcome == 'loudness_refused':
+                assert result['reason'] == 'measurement_door_volume_not_open'
+            if 'stop' in outcome:
+
+                assert result['reason'] == 'spl_ceiling_exceeded'
+                assert result['readings'][-1][1] == pytest.approx(86.0)
+                assert event_fields(caplog, 'active_speaker.seat_level_result')['reason'] == 'spl_ceiling_exceeded'
+    assert box.gain == -8.0
+    assert box.loudness == -15.0
+    if outcome == 'bundle_failed':
+        assert box.events[-3:] == ['restore_graph', 'close', 'ungate']
+        assert not box.programs
+    else:
+        assert box.events[-4:] == ['restore_graph', 'close', 'closed_bundle', 'ungate']
+        assert 'abort' in box.events
+    assert box.bank.call_count == int(outcome == 'converged')
+    assert not list(box.bundle_dir.rglob('*.wav'))
+    assert json.loads((box.bundle_dir / 'info.json').read_text())['session_id'] == 'level-bundle'
+    assert (box.bundle_dir / 'artifacts.json').is_file()
+    if outcome == 'converged':
+        assert len(box.programs) == len(box.admissions) == 2
+        first, second = box.programs
+        assert any(s.kind == KIND_COURTESY_TONE for s in first.segments)
+        assert not any(s.kind == KIND_COURTESY_TONE for s in second.segments)
+        assert len(first.stimulus_segments()) == len(second.stimulus_segments()) == 1
+        assert 8.0 <= second.total_samples / second.sample_rate_hz <= 10.0
+        assert box.watchdog == sweep.watchdog_seconds(-40, 0, first.total_samples / first.sample_rate_hz) + 60
+        provenance = box.bank.call_args.kwargs['stimulus'].to_dict()
+        assert provenance == {'program_id': second.program_id, 'phase': second.phase,
+            'wav_sha256': box.artifact.sha256, 'peak_dbfs': round(second.stimulus_segments()[0].gain_db, 2),
+            'statistic': 'max_window_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
+        assert json.loads(box.reference_path.read_text())['stimulus'] == provenance
+        assert box.bank.call_args.kwargs['measured_db_spl'] == 75.0
+
+
+def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch):
+    from jasper.active_speaker.crossover_v2 import door
+    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph
+    from tests.test_active_speaker_measurement_door import _profile
+    profile = _profile()
+    candidate = MeasuredCrossoverCandidate(
+        program_id="accepted", analysis={"measurement_status": "unmeasured"},
+        source_preset=profile.preset, role_attenuations_db={"woofer": 0.0, "tweeter": 0.0},
+    )
+    lookup = Mock(side_effect=AssertionError("accepted candidate went to the bank"))
+    monkeypatch.setattr(door, "find_banked_candidate", lookup)
+    graph = door.bind_measurement_graph(profile, candidate=candidate, camilla_factory=Mock(), config_dir=tmp_path)
+    assert graph.graph_yaml() == compile_tuning_graph(profile, scope="candidate", candidate=candidate)
+    graph.select_scope("drivers")
+    from jasper.active_speaker.measurement_emit import emit_measurement_graph
+    assert graph.graph_yaml() == emit_measurement_graph(profile)
+    lookup.assert_not_called()
+
+
+def test_unapplied_baseline_refuses_with_its_code(box, monkeypatch, capsys):
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    monkeypatch.setattr(seat_level, 'candidate_from_applied_profile', candidate_from_applied_profile)
+    assert seat_level.main([]) == 1
+    assert json.loads(capsys.readouterr().out)['reason'] == 'applied_baseline_snapshot_unavailable'
+    assert not box.events
+    box.bank.assert_not_called()
+
+
+def test_driver_caps_do_not_move_the_fader_cap(box):
+    box.context.driver_caps_dbfs['tweeter'] = -65.0
+    box.level = 35.0
+    result, _ = asyncio.run(seat_level._run(seat_level.build_parser().parse_args([])))
+    assert result['reason'] == 'mic_not_observing'
+    assert result['gain_db'] == seat_level.HARD_CEILING_DBFS == 0.0
+    box.bank.assert_not_called()
+
+
+@pytest.mark.parametrize('gain,reason', [(None, 'volume_latch_unconfirmed'), (0.1, 'fader_above_cap')])
+def test_sweep_fader_readback_refusals_are_distinct(box, monkeypatch, capsys, gain, reason):
+    async def read_once(*args, read_level, **kwargs):
+        monkeypatch.setattr(sweep, 'read_fader_db', AsyncMock(return_value=gain))
+        await read_level()
+        pytest.fail('invalid fader was accepted')
+    monkeypatch.setattr(seat_level, 'level_to', read_once)
+    assert seat_level.main([]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['reason'] == reason
+    assert result['detail']['restored'] is True
+    assert reason in seat_level.REASON_REGISTRY
+    assert not box.admissions
+
+
+def test_repeated_sweep_reuses_render_but_installs_and_admits_each_time(box, monkeypatch):
+    async def readings(*args, read_level, set_main_volume_db, **kwargs):
+        for _ in range(3):
+            assert await read_level() == 75.0
+        await set_main_volume_db(-39.0)
+        assert await read_level() == 75.0
+        return seat_level.LevelResult('refused', 'level_unreachable')
+    monkeypatch.setattr(seat_level, 'level_to', readings)
+    asyncio.run(seat_level._run(seat_level.build_parser().parse_args([])))
+    assert len(box.renders) == 3  # First prelude, no prelude, changed gain.
+    assert len(box.admissions) == 4
+    assert box.programs[1] is box.programs[2]
+    assert box.events.count('graph') == 5  # Initial hold plus every reading.
+    assert not list(box.bundle_dir.rglob('*.wav'))

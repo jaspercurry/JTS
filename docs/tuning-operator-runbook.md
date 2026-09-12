@@ -66,6 +66,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `delay_implausible` | The delay JTS measured between the drivers isn't one this speaker's geometry can produce. Measure again — if it repeats, check that nothing moved during the sweep. | Measure again — if it repeats, check that nothing moved during the sweep. | `fix_and_retry` |
 | `drift_baselines_disagree` | The capture glitched — measuring again. | measuring again. | `silent_auto_retry` |
 | `dry_run_requires_local_host` | Dry-run reads this machine's facts. Run it on the speaker. |  | `hard_stop` |
+| `fader_above_cap` | The amplifier gain exceeds the 0 dB cap. Lower it before leveling. |  | `fix_and_retry` |
 | `fingerprint_required` | Supply a candidate fingerprint. | Supply a candidate fingerprint | `hard_stop` |
 | `geometry_retake_unreachable` | The room needs the microphone measured from a wider spot, and from above the mark, than this measurement can ask for. Run a Full measurement that prompts each spot on screen, and walk those spots by hand, to finish tuning this speaker. |  | `session_restart` |
 | `internal_error` | Something went wrong on the speaker during that measurement. Try again. |  | `fix_and_retry` |
@@ -149,7 +150,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 |---|---|---|---|
 | `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction, replacing the live tune and deleting no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-mic-calibration models\|fetch\|upload\|show` | Register the household's measurement microphone: fetch its vendor calibration by serial or store a file you already have, and remember that mic so every measurement resolves its calibration from one record. A box with no record measures uncalibrated. | advisory (`fetch`/`upload` write; `models`/`show` do not) | `jasper/cli/mic_calibration.py` |
-| `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference — PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
+| `jasper-seat-level` | Play the room/bass summed measurement sweep and adjust the fader until the calibrated mic's loudest window (max_window_db_spl) reads the target; bank the session gain. PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |

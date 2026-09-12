@@ -113,7 +113,7 @@ def volume_fields_agree(provenance: CaptureProvenance) -> bool:
 _READ_ERRORS = (OSError, RuntimeError, TypeError, ValueError, AttributeError)
 
 
-def _stimulus_peak_dbfs(program: Any) -> float | None:
+def stimulus_peak_dbfs(program: Any) -> float | None:
     """Loudest stimulus segment's declared digital peak, dBFS. Scoped to
     ``stimulus_segments()`` (excludes the courtesy prelude); session volume is NOT
     folded in.
@@ -224,7 +224,7 @@ async def observe_capture_provenance(
     except _READ_ERRORS:
         unreadable.append("stimulus.program_id")
     try:
-        peak_dbfs = _stimulus_peak_dbfs(program)
+        peak_dbfs = stimulus_peak_dbfs(program)
     except _READ_ERRORS:
         unreadable.append("stimulus.peak_dbfs")
 

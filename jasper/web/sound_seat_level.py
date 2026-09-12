@@ -15,11 +15,8 @@ plain SIGTERM/SIGKILL would orphan the stimulus player mid-tone, so
 :meth:`_SeatLevelSession.stop` only escalates to that after SIGINT gets no
 response within :data:`SEAT_LEVEL_STOP_TIMEOUT_S`.
 
-Owner ruling (#2761, 2026-08-20): the operator's SPL target is not
-second-guessed here — the CLI's own physics-derived ceiling
-(``unsegmented_stimulus_ceiling_db``) and the profile's
-``max_commissioning_level_db_spl`` are the only bounds. This module adds no
-target ceiling of its own.
+The CLI bounds the pass with the commissioning SPL stop through the watch
+and a fader ceiling derived from the binding driver cap; this surface adds none.
 """
 
 from __future__ import annotations

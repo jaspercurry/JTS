@@ -109,7 +109,7 @@ ALLOWLIST: dict[str, str] = {
         "doesn't already provide. Flagged by R6's review as a candidate "
         "for this allowlist (#4416)."
     ),
-    "jasper/web/sound_seat_level.py:147": (
+    "jasper/web/sound_seat_level.py:144": (
         "_SeatLevelSession.start's Popen is captured into self._process for "
         "status()/stop() and reaped by _reap's proc.communicate() on its own "
         "daemon thread; the constructor itself takes no timeout= keyword. "

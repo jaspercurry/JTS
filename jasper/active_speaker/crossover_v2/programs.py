@@ -67,17 +67,9 @@ def pilot_gains(hi_gain_db: float) -> tuple[float, float]:
 
 
 def courtesy_prelude_for_phase(phase: str) -> bool:
-    """Does this phase's capture announce itself with the courtesy prelude?
+    """Announce a session, not every take (#1677).
 
-    **The prelude announces a SESSION, not a capture** (#1677). Stage 1 opens on
-    :data:`PHASE_CHECK` and stage 2 on :data:`PHASE_VERIFY`; both open on a
-    warning, and a re-warning before every capture costs 3.6 s — 0.6 s of beeps
-    plus a 3.0 s settle — of held-still silence for information the household
-    already has.
-
-    ONE shared rule rather than a decision at each site: the phone's DURATION
-    BUDGET and the composers below both ask this function, so the phone can
-    never budget a shorter recording window than the program it is capturing.
+    Capture budgets share this decision so the prelude cannot overrun recording.
     """
     return phase in COURTESY_PRELUDE_PHASES
 
@@ -224,10 +216,14 @@ class SessionExcitation:
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
         )
 
-    def verify_program(self, *, extra_backoff_db: float = 0.0, sweep_s: float | None = None) -> ExcitationProgram:
+    def verify_program(
+        self, *, extra_backoff_db: float = 0.0, sweep_s: float | None = None,
+        courtesy_prelude: bool | None = None, leading_pilots: bool = True,
+    ) -> ExcitationProgram:
         """The mono summed sweep, bounded by every driven role's cap and duration."""
         return self._summed_sweep(
-            courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
+            courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY) if courtesy_prelude is None else courtesy_prelude,
+            leading_pilots=leading_pilots,
             extra_backoff_db=extra_backoff_db,
             sweep_s=sweep_s,
         )
@@ -241,6 +237,7 @@ class SessionExcitation:
 
     def _summed_sweep(
         self, *, courtesy_prelude: bool, extra_backoff_db: float, sweep_s: float | None = None,
+        leading_pilots: bool = True,
     ) -> ExcitationProgram:
         binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
         gain = back_off_gain(
@@ -256,7 +253,7 @@ class SessionExcitation:
             sweep_band_hz=self.summed_sweep_band_hz,
             gain_db=gain,
             downstream_gain_db=self.session_volume_db,
-            leading_pilot_gains_db=self.pilot_gains(gain),
+            leading_pilot_gains_db=self.pilot_gains(gain) if leading_pilots else None,
             courtesy_prelude=courtesy_prelude,
             **({"sweep_s": sweep_s} if sweep_s is not None else {}),
         )

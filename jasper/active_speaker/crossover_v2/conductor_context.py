@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
 
 from jasper.log_event import log_event
 
@@ -44,6 +44,7 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+_Level = TypeVar("_Level", bound=float | None)
 
 
 def conductor_status() -> dict[str, Any]:
@@ -72,7 +73,7 @@ def conductor_status() -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class V2ConductorContext:
+class V2ConductorContext(Generic[_Level]):
     """Everything the production conductor needs, resolved from live status."""
 
     preset: Any
@@ -87,7 +88,7 @@ class V2ConductorContext:
     driver_sweep_duration_limits_s: dict[str, float]
     role_targets: dict[str, str]
     safety_profile: Mapping[str, Any]
-    session_volume_db: float
+    session_volume_db: _Level
     #: The declared woofer<->tweeter acoustic-center spacing, in metres,
     #: or ``None`` when undeclared -- see ``design_draft.declared_driver_spacing_m``,
     #: the ONE owner of this fact. ``MeasurementGeometry.parallax_us`` treats
@@ -310,23 +311,24 @@ def _resolve_radiating_diameter_by_role(draft: Mapping[str, Any]) -> dict[str, f
     return out
 
 
-def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
-    """Resolve preset/bands/caps/targets/volume from live status + topology.
+@overload
+def resolve_conductor_context(
+    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[True] = True,
+) -> V2ConductorContext[float]: ...
 
-    Fail-closed: every missing input is a :class:`CrossoverV2Refused` naming
-    what to finish first — never a guessed default.
 
-    This runs at SESSION OPEN — ``prepare_v2_session`` calls it before the
-    capture session is registered, and before a
-    verify-only re-arm — which is what makes the driver-safety-profile gate
-    below a pre-flight rather than a surprise (issue
-    #1821). Before that gate existed, this function checked only that a
-    profile object was PRESENT while its refusal text claimed confirmation had
-    been checked; the real confirmation gate lived four screens later inside
-    ``prepare_driver_excitation_plan`` at CHECK-phase program admission. A
-    household with an un-confirmed profile therefore burned a link, walked to
-    the phone, and hit a deterministic refusal that was knowable before any of
-    it — the exact 2026-07-28 JTS3 dead-end.
+@overload
+def resolve_conductor_context(
+    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[False],
+) -> V2ConductorContext[None]: ...
+
+
+def resolve_conductor_context(
+    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: bool = True,
+) -> V2ConductorContext:
+    """Resolve confirmed limits before capture starts, not at play time (#1821).
+
+    Leveling resolves the speaker inputs before a session level can be banked.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
@@ -353,7 +355,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         topology_is_subless_passive_mains,
     )
 
-    topology = load_output_topology()
+    topology = topology if topology is not None else load_output_topology()
     # A subless passive main has no active crossover, so the gates below — all
     # asking whether an ACTIVE one is commissioned — are not questions about it.
     passive_mains = topology_is_subless_passive_mains(topology)
@@ -499,14 +501,15 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         float(preset.crossover_regions[0].fc_hz)
         if preset.crossover_regions else None
     )
-    try:
-        session_volume_db = session_measurement_volume_db(
-            safety_profile,
-            [role_targets[role] for role in roles],
-            declared_sensitivities=declared_sensitivities,
-        )
-    except LevelUnresolved as exc:
-        raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
+    session_volume_db = None
+    if require_banked_level:
+        try:
+            session_volume_db = session_measurement_volume_db(
+                safety_profile, [role_targets[role] for role in roles],
+                declared_sensitivities=declared_sensitivities,
+            )
+        except LevelUnresolved as exc:
+            raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
     playback_device, _playback_device_source = resolve_active_playback_device(
         topology
     )

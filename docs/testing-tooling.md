@@ -1093,18 +1093,17 @@ playback. Keep the gain for subsequent rounds so a DSP change's loudness effect
 remains visible. Confirm the microphone's capture control is at 100%, where
 its calibration sensitivity was measured.
 
-The stimulus is band-limited white noise over the active drivers' declared
-measurement bands. The loop reads the ambient floor in silence, then steps
-from fresh microphone readings. Each upward step is at most 6 dB. Each settled
-reading requires two half-second windows agreeing within 0.5 dB; two agreeing
-readings in the target band complete the pass. The existing `JASPER_SEAT_LEVEL_*`
-settings set the minimum rise, window agreement and settle timeout. Every sample
-is checked against the commissioning stop, before a window median is taken.
+The verb plays the room/bass summed program sweep and reads the watch's
+loudest window (`max_window_db_spl`), the statistic on every measurement take.
+It reads the same statistic for one second in silence before the first sweep.
+Each upward step is at most 6 dB. Two consecutive sweeps in the target band,
+at one fader setting and within 0.5 dB of each other, complete the pass.
+The watch checks every sample against the commissioning SPL stop.
 
 The result reports the reading trail and the measured restore outcome. A
 refusal banks nothing. The digital fader clamp and the independent SPL watch
 remain active. Tests: `test_auto_level.py`, `test_cli_seat_level.py`,
-`test_wired_level_meter.py`, `test_active_speaker_session_volume_plan.py`.
+`test_active_speaker_session_volume_plan.py`.
 
 ---
 
