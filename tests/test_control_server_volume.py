@@ -117,7 +117,7 @@ def test_volume_set_rejects_active_speaker_setup_block(
             "configured": False,
             "volume_allowed": False,
             "grouping_allowed": False,
-            "reason": "baseline_summed_validation_missing",
+            "reason": "candidate_trial_required",
             "detail": "validate the combined crossover before saving the active profile",
         },
     )
@@ -345,7 +345,7 @@ def _block_active_speaker_volume(monkeypatch):
             "configured": False,
             "volume_allowed": False,
             "grouping_allowed": False,
-            "reason": "baseline_summed_validation_missing",
+            "reason": "candidate_trial_required",
             "detail": "validate the combined crossover before saving the active profile",
         },
     )

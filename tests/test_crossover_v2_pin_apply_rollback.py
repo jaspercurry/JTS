@@ -11,17 +11,16 @@ from dataclasses import replace
 import pytest
 
 from jasper.active_speaker import compile_preset_from_crossover_preview
-from jasper.active_speaker.baseline_profile import apply_baseline_profile, build_baseline_profile_candidate
+from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
 from jasper.active_speaker import candidate_trials
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.boost_protection import (
     BOOST_OVER_DECLARED_BOUND, boost_finding_path, config_graph_fingerprint, record_boost_finding,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_republish as republish_door
+from jasper.web import correction_crossover_v2 as v2host, correction_crossover_v2_status as v2status
 from tests.test_active_speaker_baseline_profile import (
-    _draft, _dual_apple_topology, _measurements, _v2_candidate, _valid_config,
+    apply_baseline_profile, _draft, _dual_apple_topology, _measurements, _v2_candidate, _valid_config,
 )
 
 PREVIOUS = "fp-previous-measured"
@@ -58,7 +57,7 @@ def test_rollback_available_pairs_and_preflights(
 ):
     _seed_previous_candidate(paired=paired)
     monkeypatch.setattr(
-        republish_door, "republish_preflight", lambda fingerprint: preflight_code,
+        v2status, "_offerable_previous_candidate", lambda state: PREVIOUS if preflight_code is None else None,
     )
 
     assert v2host._previous_candidate_known() is expected

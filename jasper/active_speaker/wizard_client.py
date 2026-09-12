@@ -24,13 +24,7 @@ STATUS_PATH = "/sound/speaker/crossover/status"
 SESSION_PATH = "/sound/speaker/crossover/v2/session"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
 
-#: Why a round verb refused, as a slug a script can branch on. First four are this
-#: client's own pre-flight refusals (nothing sent); last three are the wizard's answer,
-#: the answer that never arrived, and the clock's.
 REASON_NO_FINGERPRINT = "no_fingerprint_named"
-REASON_NO_V2_STATE = "no_v2_state"
-REASON_NO_CANDIDATE = "no_candidate_published"
-REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 REASON_NOT_APPLIED = "apply_not_applied"
 REASON_ANSWER_LOST = "answer_lost"
 REASON_WAIT_TIMEOUT = "wait_timeout"
@@ -168,10 +162,7 @@ class WizardClient:
                               "attempt": pending["attempt"], "run_id": run_id})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
-        """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline
-        ``candidate`` override sent -- the host reopens the artifact from the recorded
-        evidence bundle.
-        """
+        """Post the banked identity; the daemon owns admission."""
         return self.post_json(
             APPLY_PATH, {"expected_candidate_fingerprint": expected_fingerprint}
         )
@@ -193,33 +184,12 @@ def error_of(payload: Any) -> str | dict[str, Any]:
     return str(payload)[:200]
 
 
-def _live_fingerprint(block: Mapping[str, Any]) -> str:
-    candidate = block.get("candidate")
-    return (
-        str(candidate.get("fingerprint") or "")
-        if isinstance(candidate, Mapping)
-        else ""
-    )
-
-
 def apply_by_fingerprint(
     client: WizardClient, expected_fingerprint: str
 ) -> dict[str, Any]:
     named = (expected_fingerprint or "").strip()
     if not named:
         return _blocked(REASON_NO_FINGERPRINT, named, "")
-    block = client.v2_block()
-    live = _live_fingerprint(block)
-    if live != named:
-        # Empty block vs published-but-different candidate: same refusal,
-        # different diagnoses (the first is usually an unreadable envelope).
-        return _blocked(
-            REASON_FINGERPRINT_MISMATCH
-            if live
-            else REASON_NO_CANDIDATE if block else REASON_NO_V2_STATE,
-            named,
-            live,
-        )
     http, payload = client.apply(named)
     outcome = str(payload.get("status") or "") if isinstance(payload, Mapping) else ""
     applied = http == 200 and outcome == "applied"
@@ -232,7 +202,7 @@ def apply_by_fingerprint(
             "" if applied else REASON_ANSWER_LOST if lost else code or REASON_NOT_APPLIED
         ),
         "expected_candidate_fingerprint": named,
-        "candidate_fingerprint": live,
+        "candidate_fingerprint": named,
         "http": http,
         "outcome": outcome,
         "payload": payload,

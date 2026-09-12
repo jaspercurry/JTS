@@ -2212,20 +2212,12 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
 ):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     _seed_round_state(previous_candidate=failure != "unavailable")
-    conductor, attempts = _restoring_stage_2(monkeypatch)
+    conductor, attempts = _restoring_stage_2(monkeypatch, load_ok=failure != "apply")
     _install_entry_baseline(conductor, scale=0.4)
-    live = {"candidate_fingerprint": "applied", "config": {"sha256": "a" * 64}}
+    previous_sha = v2host.load_v2_state().get("previous_applied_profile", {}).get("config", {}).get("sha256")
+    live = {"candidate_fingerprint": "applied", "config": {"sha256": "a" * 64},
+            "source": {"measured_candidate_fingerprint": "fp-stage-1"}}
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda *a, **k: live)
-    apply = v2host.handle_v2_apply
-
-    def apply_previous(*args, **kwargs):
-        result = apply(*args, **kwargs)
-        if failure == "apply":
-            return {"status": "apply_failed"}
-        live.update(candidate_fingerprint="previous", config={"sha256": "b" * 64})
-        return result
-
-    monkeypatch.setattr(v2host, "handle_v2_apply", apply_previous)
     if failure == "displaced":
         monkeypatch.setattr(restore, "current_graph_fingerprint", lambda: "c" * 16)
     if failure == "bank":
@@ -2250,11 +2242,11 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
     assert result["accepted"] is False
     assert result["code"] == BOOST_OVER_DECLARED_BOUND
     assert result["auto_retry"] is False
-    assert protection["restored"] is restored
+    assert protection["restored"] is restored, protection
     assert protection["graph_fingerprint"] == "a" * 16
     assert protection["finding_recorded"] is (failure != "bank")
     assert len(attempts) == (0 if failure in ("unavailable", "displaced") else 1)
-    assert live["config"]["sha256"] == ("b" if restored else "a") * 64
+    assert live["config"]["sha256"] == (previous_sha if restored else "a" * 64)
     assert conductor._grade_round_once(flow.PhaseVerdict(True)).payload["protection"] == protection
     first_count = len(attempts)
     _flow_seams(conductor).restore_boost("a" * 16)

@@ -78,7 +78,7 @@ def test_grouping_set_enable_rejects_active_speaker_setup_block(
             "configured": False,
             "volume_allowed": False,
             "grouping_allowed": False,
-            "reason": "baseline_summed_validation_missing",
+            "reason": "candidate_trial_required",
             "detail": "validate the combined crossover before saving the active profile",
         },
     )
@@ -124,7 +124,7 @@ def test_grouping_set_disabled_ignores_active_speaker_setup_block(
             "configured": False,
             "volume_allowed": False,
             "grouping_allowed": False,
-            "reason": "baseline_summed_validation_missing",
+            "reason": "candidate_trial_required",
             "detail": "validate the combined crossover before saving the active profile",
         },
     )

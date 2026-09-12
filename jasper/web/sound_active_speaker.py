@@ -1286,33 +1286,19 @@ def apply_measured_crossover_geometry(
     """
     from jasper.active_speaker.crossover_declaration import (
         declared_crossover_geometry,
-        matching_declared_candidate_index,
+        manual_settings_for_crossover,
     )
     from jasper.active_speaker.design_draft import load_design_draft
 
     draft = load_design_draft(topology=load_output_topology())
-    manual = draft.get("manual_settings")
-    if not isinstance(manual, Mapping):
-        raise ValueError("Sound has no manual crossover setting to update")
-    raw = manual.get("crossover_candidates")
-    candidates = list(raw) if isinstance(raw, list) else []
-    index = matching_declared_candidate_index(candidates, between_roles)
-    if index is None:
-        raise ValueError("Sound's matching crossover setting is missing or ambiguous")
     current = declared_crossover_geometry(draft, between_roles)
     if current is None or not current.matches(configured):
         raise ValueError("Sound changed since this measurement; review afresh")
-    updated_candidates = [dict(item) for item in candidates]
-    updated_candidates[index]["frequency_hz"] = float(selected.fc_hz)
-    updated_candidates[index]["filter_type"] = selected.filter_type
-    updated_candidates[index]["slope_db_per_octave"] = float(
-        selected.slope_db_per_octave
-    )
     return _active_speaker_design_draft_save_payload({
         "expected_revision": expected_revision,
         "driver_research_request": draft.get("driver_research_request"),
         "driver_research": draft.get("driver_research"),
-        "manual_settings": {**manual, "crossover_candidates": updated_candidates},
+        "manual_settings": manual_settings_for_crossover(draft, between_roles, selected),
         "operator_inputs": draft.get("operator_inputs"),
     }, durable=True)
 
