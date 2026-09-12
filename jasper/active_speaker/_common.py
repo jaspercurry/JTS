@@ -90,6 +90,11 @@ MANUAL_DRIVER_FIELDS = {
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
+def baseline_id(topology_id: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "_.:-" else "_" for ch in topology_id)
+    return "baseline-" + (safe.strip("_")[:80] or "active_speaker")
+
+
 def issue(severity: str, code: str, message: str) -> dict[str, str]:
     """A severity-tagged diagnostic record (`blocker`/`warning`/…)."""
 

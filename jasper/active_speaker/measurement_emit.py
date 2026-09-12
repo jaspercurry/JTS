@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Sequence
 
 from jasper.active_speaker import camilla_yaml, candidate_bank
+from jasper.active_speaker._common import baseline_id
 from jasper.active_speaker.crossover_v2.measure_spec import (
     CANDIDATE_SCOPES,
     GRAPH_SCOPE_DRIVERS,
@@ -118,6 +119,7 @@ def compile_tuning_graph(
     devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
     candidate_text = compile_candidate_config(
         candidate, playback_device=profile.playback_device,
+        baseline_id=baseline_id(profile.topology.topology_id),
         capture_device=devices.capture_device,
         capture_format=devices.capture_format,
         playback_format=devices.playback_format,

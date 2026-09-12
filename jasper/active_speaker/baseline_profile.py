@@ -45,7 +45,7 @@ from jasper.output_topology import (
     topology_fingerprint_matches,
 )
 
-from ._common import finite_float as _finite_float, issue as _issue
+from ._common import baseline_id, finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
     _branch_context,
@@ -197,11 +197,6 @@ def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str
 
 def baseline_config_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
-
-
-def _safe_id(value: str) -> str:
-    out = "".join(ch if ch.isalnum() or ch in "_.:-" else "_" for ch in value)
-    return out.strip("_")[:80] or "active_speaker"
 
 
 def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
@@ -1069,7 +1064,7 @@ def _blocked_payload(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASELINE_PROFILE_KIND,
         "status": status,
-        "baseline_id": f"baseline-{_safe_id(topology.topology_id)}",
+        "baseline_id": baseline_id(topology.topology_id),
         "created_at": None,
         "updated_at": None,
         "source": dict(source),
@@ -2629,7 +2624,7 @@ def build_baseline_profile_candidate(
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
                 out_path=config_target if write else None,
-                baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                baseline_id=baseline_id(topology.topology_id),
                 bass_extension=bass_extension,
             )
         else:
@@ -2645,7 +2640,7 @@ def build_baseline_profile_candidate(
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
                 out_path=config_target if write else None,
-                baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                baseline_id=baseline_id(topology.topology_id),
                 bass_extension=bass_extension,
                 linearization=linearization,
                 blend_correction=blend_correction,
@@ -2712,7 +2707,7 @@ def build_baseline_profile_candidate(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASELINE_PROFILE_KIND,
         "status": status,
-        "baseline_id": f"baseline-{_safe_id(topology.topology_id)}",
+        "baseline_id": baseline_id(topology.topology_id),
         "created_at": (
             saved.get("created_at") if saved and saved.get("created_at") else now
         ),
@@ -3133,7 +3128,7 @@ def recompose_applied_baseline_yaml(
         out_path=out_path,
         baseline_id=str(
             applied_profile.get("baseline_id")
-            or f"baseline-{_safe_id(topology.topology_id)}"
+            or baseline_id(topology.topology_id)
         ),
         bass_extension=(applied_bass_extension(applied_profile) if bass_extension is None else bass_extension),
         linearization=linearization,
