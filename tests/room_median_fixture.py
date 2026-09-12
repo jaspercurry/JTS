@@ -2,18 +2,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A room median fixture with a mode, dip and per-band ripple."""
+"""Room analysis documents and medians with a mode, dip and per-band ripple."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Sequence
+from unittest.mock import Mock
 
 import numpy as np
+import pytest
 
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.active_speaker.crossover_v2 import room_selection
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.cli.round_views._common import ARTIFACT_BY_VIEW
 from jasper.audio_measurement.room_limits import spatial_support
+
+
+@pytest.fixture(autouse=True)
+def analyzed_room_documents(monkeypatch):
+    def analyze(bundle_dir, *, calibration_root=None):
+        for row, record in measurement_documents(bundle_dir):
+            yield SimpleNamespace(record_path=f"{EVIDENCE_ROOT}/artifacts/{row.path}",
+                                  document=lambda record=record: record)
+
+    analyzer = Mock(side_effect=analyze)
+    monkeypatch.setattr(room_selection, "analyzed_measurements", analyzer)
+    return analyzer
 
 
 #: The median's own grid: 1/12 octave from the room floor to the last rung

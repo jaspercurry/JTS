@@ -17,6 +17,7 @@ from jasper.active_speaker.crossover_v2 import room_views
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused
 from tests.run_manifest_fixture import write_manifest
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
@@ -40,6 +41,7 @@ from tests.test_active_speaker_runtime_contract import _active_topology
 from tests.test_active_speaker_baseline_profile import _ROOM_CORRECTION
 from tests.test_crossover_v2_room_prescription import _document
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round
+from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 
 _QUIET_HZ = 200.0
 
@@ -66,7 +68,7 @@ def room_round(tmp_path):
     root = bank_seat_round(tmp_path, magnitudes_db=_cube())
     session = round_inputs(root).session_dir
     for row, record in measurement_documents(session):
-        record["graph_scope"] = "room_tune"
+        record.update(graph_scope="room_tune", candidate_id="")
         take_artifact_path(session, row.path).write_text(json.dumps(record))
     write_manifest(root, program="room")
     profile = _applied_profile(_active_topology("mono", "active_2_way"))
@@ -179,6 +181,60 @@ def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_
     assert result["window"] == "ungated"
     assert "pose_kind" not in result["evidence"]["basis"]
     assert len(set(result["evidence"]["pose_keys"])) == 3
+
+
+@pytest.mark.parametrize("view,copied_calibration", [
+    ("room", False), ("room", True), ("room-grade", True), ("bookkeeping", False),
+])
+def test_room_views_analyze_wired_takes_without_banked_curves(
+    tmp_path, capsys, analyzed_room_documents, view, copied_calibration,
+):
+    root = bank_seat_round(tmp_path, magnitudes_db=_cube()[:3])
+    bundle = round_inputs(root).session_dir
+    takes = list(analyzed_room_documents.side_effect(bundle))
+    for take, bearing in zip(takes, (0, -20, 20)):
+        record = take.document()
+        record.update(pose_kind="bearing", position_deg=bearing, mark_distance_m=1.0,
+                      measurement_purpose="room")
+        record.pop("seat_offset_m")
+        (bundle / take.record_path).write_text(json.dumps({**record, "curves": []}))
+    write_manifest(root, program="room")
+    analyzed_room_documents.side_effect = lambda *args, **kwargs: iter(takes)
+    calibration_root = tmp_path / "calibration" if copied_calibration else None
+    if view == "bookkeeping":
+        for verb in ("room", "room-grade"):
+            result = round_views.run_bookkeeping(verb, root)
+            assert result["status"] == "written"
+            assert result["n_positions"] == 3
+    else:
+        flags = ["--calibration-root", str(calibration_root)] if copied_calibration else []
+        assert _run(capsys, [view, str(root), *flags])["n_positions"] == 3
+    analyzed_room_documents.assert_called_once_with(bundle, calibration_root=calibration_root)
+    median = json.loads((root / "room.json").read_text())["median"]
+    assert median["n_positions"] == 3
+    assert set(median["evidence"]["pose_keys"]) == {
+        "az+0.00_el+0.00_d+1.00", "az-20.00_el+0.00_d+1.00", "az+20.00_el+0.00_d+1.00",
+    }
+    assert all(not record["curves"] for _, record in measurement_documents(bundle))
+
+
+@pytest.mark.parametrize("view", ["room", "room-grade", "bookkeeping"])
+@pytest.mark.parametrize("code", [
+    "measurement_capture_identity_mismatch", "measurement_program_manifest_missing",
+    "measurement_analysis_program_unsupported",
+])
+def test_room_analysis_refusals_are_unreadable(tmp_path, capsys, analyzed_room_documents, view, code):
+    root = bank_seat_round(tmp_path)
+    analyzed_room_documents.side_effect = MeasurementAnalysisRefused(code)
+    if view == "bookkeeping":
+        result = round_views.run_bookkeeping("room", root)
+        assert result["status"] == "unavailable"
+    else:
+        assert round_views.main([view, str(root), "--calibration-root", str(tmp_path)]) == round_views.EXIT_UNREADABLE
+        result = json.loads(capsys.readouterr().out)
+        assert result["status"] == "unreadable"
+    assert result["reason"] == round_views.REASON_UNREADABLE
+    assert not (root / "room.json").exists()
 
 
 @pytest.mark.parametrize("geometry", [None, {}, {"front_wall_m": 0.85}])

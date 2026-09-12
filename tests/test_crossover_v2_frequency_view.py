@@ -23,7 +23,7 @@ from jasper.active_speaker.commissioning_evidence_store import CommissioningEvid
 from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
-from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
+from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle, analyzed_measurements
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording
@@ -820,6 +820,13 @@ def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle
     assert round_views_main([
         "frequency", str(bundle), "--analyze-wavs", "--out", str(tmp_path / "refused.json"),
     ]) == EXIT_UNREADABLE
+
+
+def test_analyzed_document_states_the_gate_it_read_with(summed_capture_bundle):
+    bundle, _, _, bank = summed_capture_bundle
+    asyncio.run(bank("take", scope="candidate"))
+    documents = [take.document() for take in analyzed_measurements(bundle)]
+    assert [document["gating_applied"] for document in documents] == [False]
 
 
 @pytest.mark.parametrize('summed_capture_bundle', [20000, 200], indirect=True)

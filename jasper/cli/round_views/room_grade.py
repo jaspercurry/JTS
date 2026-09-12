@@ -19,6 +19,8 @@ from jasper.active_speaker.crossover_v2.room_grade import (
 from jasper.active_speaker.crossover_v2.room_prescription import (
     RoomPrescriptionRefused,
 )
+from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs
 from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, read_json_source, stage
 
 from ._common import (
@@ -32,9 +34,15 @@ from ._common import (
     refused_by_name,
     resolve_set, round_inputs,
 )
+from .room import write_room
 
 
-def _document(path: Path) -> dict:
+def _document(
+    inputs: RoundInputs, directory: Path, set_id: str | None, calibration_root: Path | None,
+) -> dict:
+    if calibration_root is not None:
+        return write_room(inputs, directory, set_id, calibration_root=calibration_root)[0]
+    path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id)
     document = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
     if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
         raise StageFailed(EXIT_UNREADABLE, TypeError("room_document_malformed"))
@@ -59,18 +67,20 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, directory)
     selected = resolve_set(inputs, args.set)
     candidate_path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, args.set)
-    candidate = _document(candidate_path)
-    incumbent_id = args.incumbent or (candidate.get("incumbent") or {}).get("set_id")
-    incumbent_doc = None
-    if incumbent_id is not None:
-        resolve_set(inputs, incumbent_id)
-        incumbent_doc = candidate if incumbent_id == selected.set_id else _document(default_out(
-            inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, incumbent_id,
-        ))
     try:
+        candidate = _document(inputs, directory, args.set, args.calibration_root)
+        incumbent_id = args.incumbent or (candidate.get("incumbent") or {}).get("set_id")
+        incumbent_doc = None
+        if incumbent_id is not None:
+            resolve_set(inputs, incumbent_id)
+            incumbent_doc = candidate if incumbent_id == selected.set_id else _document(
+                inputs, directory, incumbent_id, args.calibration_root,
+            )
         median = read_room_median(candidate.get("median", {}))
         incumbent = None if incumbent_doc is None else read_room_median(incumbent_doc.get("median", {}))
         grade = grade_room_median(median, incumbent=incumbent)
+    except RoundCapturesRefused as exc:
+        return refused_by_name(exc.reason, exc.detail)
     except RoomPrescriptionRefused as exc:
         # A document that will not read into a median is the INPUT failing, not
         # this view declining a round it read.
@@ -127,6 +137,7 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("room-grade", help="grade a room set against its incumbent in this run")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
+    parser.add_argument("--calibration-root", type=Path, help="rebuild room documents with this microphone calibration registry")
     add_set_argument(parser)
     parser.add_argument("--incumbent", help="override the incumbent with this set from the same run")
     parser.set_defaults(func=_cmd_room_grade)

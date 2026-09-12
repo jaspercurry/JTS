@@ -63,6 +63,7 @@ from jasper.cli.round_views._common import default_out
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
 from tests.run_manifest_fixture import write_manifest
+from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 
 #: The digest the fixture document echoes when the test does not care which.

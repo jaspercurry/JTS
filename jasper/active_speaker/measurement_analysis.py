@@ -50,8 +50,10 @@ class AnalyzedMeasurement:
     analysis: ProgramAnalysis
 
     def document(self) -> dict[str, Any]:
+        summed = self.analysis.summed_response
         return {
             **self.record, "curves": analysis_curve_records(self.analysis, self.program),
+            "gating_applied": bool((summed.gating or {}).get("applied")) if summed is not None else None,
             "diagnostic": analysis_diagnostic_summary(self.analysis),
             "calibration": {"applied": self.calibration is not None,
                             "calibration_id": self.calibration.calibration_id if self.calibration else None},
