@@ -71,6 +71,17 @@ from typing import (
     TypeVar, cast,
 )
 
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    PlanCapture, POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY,
+    prepare_plan_captures, build_inline_session_spec,
+)
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.web.correction_plan_capture import bind_plan_analysis, compose_plan_program
+from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+from jasper.active_speaker.plan_run import spl_watch
+from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.bundles import mark_state
@@ -232,7 +243,6 @@ def classify_program_failure(
     )
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused  # lazy: graph import cost
-    from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
@@ -3968,10 +3978,6 @@ def prepare_v2_session(
         from jasper.active_speaker.excitation_safety_plan import (
             resolve_driver_protection_slope_db_per_octave,
         )
-        from jasper.active_speaker.crossover_v2.capture_plan import (
-            prepare_plan_captures,
-            build_inline_session_spec,
-        )
         from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
         from jasper.active_speaker.crossover_v2.journey import (
             LATERAL_CONSUMER_FORWARD_MODEL,
@@ -3981,7 +3987,6 @@ def prepare_v2_session(
             alignment_delay_search_bounds_us,
         )
 
-        from jasper.active_speaker.angle_capture import AngleCaptureRequest, LateralWalkRefused
 
         if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
             raise CrossoverV2Refused("An inline v3 plan is required", code="program_plan_shape_invalid")
@@ -4077,12 +4082,8 @@ def prepare_v2_session(
         )
         if request.template.level_matched and not engine_level_trims:
             raise CrossoverV2Refused("No measured driver levels are available", code="walk_level_match_no_evidence")
-        from jasper.active_speaker.angle_capture import resolve_request
-        lateral_prompts = tuple(
-            resolve_request(dataclasses.replace(request, stops=(capture.stop,),
-                candidates=(capture.stop.candidate_id or "base",), repeats=1))[0].prompt
-            for capture in captures if capture.spec.program_phase == "lateral"
-        )
+        lateral_prompts = tuple(capture.resolved(request).prompt
+            for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     if verify_only:
         import numpy as np
@@ -4158,14 +4159,14 @@ def prepare_v2_session(
     position_gate = PositionGate() if not verify_only or (plan_shape and plan_shape.positions_gated) else None
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
-        captures, roles_bands=context.roles_bands, fc_hz=session_fc_hz,
+        captures, request=request, roles_bands=context.roles_bands, fc_hz=session_fc_hz,
         acknowledgement_binding=acknowledgement_binding,
         retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
         default_setup_calibration=default_setup_calibration_for_v2(),
     )
     if not verify_only:
         save_v2_state({"session_id": capture_session_id, "plan": request.to_dict(),
-                       "phase": "awaiting_join", "accepted_phases": [], "applied": False}, durable=True)
+                       "phase": captures[0].spec.program_phase, "accepted_phases": [], "applied": False}, durable=True)
 
     held: _HeldSession | None = None
 
@@ -4192,7 +4193,6 @@ def prepare_v2_session(
             evidence_store, session_id, run_async
         )
         capture_provenance = CaptureProvenanceRecorder()
-        from jasper.web.correction_plan_capture import compose_plan_program
         production_play = bind_production_play(
             camilla_factory=camilla_factory,
             evidence_store=evidence_store,
@@ -4333,8 +4333,6 @@ def prepare_v2_session(
         from jasper.active_speaker.crossover_v2.session import TuningSession
 
         volume_claim = _session_volume_claim()
-        from jasper.active_speaker.plan_run import spl_watch
-        from jasper.audio_measurement.household_mic import resolved_household_sensitivity
         engine_spl_monitor, spl_note = spl_watch(
             None if verify_only else request.spl_ceiling_db_spl,
             topology=context.topology, preset=context.preset, device=device,
@@ -4345,7 +4343,6 @@ def prepare_v2_session(
             device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
         )
         from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
-        from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
         manifest = RunManifest(session_id, _record_store(evidence_store, session_id),
                                incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
         captured_records = CapturedRecordStore(manifest, stimulus_capture)
@@ -4362,15 +4359,11 @@ def prepare_v2_session(
             measurement_level_db=context.session_volume_db,
             level_match_trims_db=engine_level_trims,
         )
-        from jasper.web.correction_plan_capture import bind_plan_analysis
         analyze, assessor = bind_plan_analysis(conductor, captured_records, manifest=manifest,
                                               evidence=refs, verify_only=verify_only)
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
         if verify_only:
-            from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
-            from jasper.active_speaker.crossover_v2.capture_plan import PlanCapture, POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY
-            from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
             run_request = AngleCaptureRequest(stops=tuple(
                 AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
                           elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)))

@@ -31,6 +31,9 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
     WiredStimulusCapture as WiredStimulusCapture,
 )
 from jasper.log_event import log_event
+from jasper.active_speaker import plan_run
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
+from jasper.web._common import refusal_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -110,10 +113,7 @@ def build_v2_wired_run_and_consume(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> Callable[[Any], Awaitable[Any]]:
     async def run(pi_session: Any) -> None:
-        from jasper.active_speaker import plan_run  # lazy: host/executor import cycle
         from jasper.web import correction_crossover_v2 as host  # lazy: host binds runner
-        from jasper.web._common import refusal_envelope  # lazy: host error classification
-        from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
 
         session_id = pi_session.session_id
         deadline = monotonic() + ceiling_s
@@ -133,6 +133,18 @@ def build_v2_wired_run_and_consume(
             await host._play_under_session_pause(body)
             return measured[0]
 
+        def publish_failure(exc: BaseException) -> str:
+            envelope = refusal_envelope(exc)
+            code = envelope["code"] or "internal_error"
+            if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):
+                code = "user_stopped"
+            envelope = refusal_envelope(code=code)
+            if position_gate is not None:
+                position_gate.abandon_hold()
+                position_gate.publish({"status": "failed", "fault": code,
+                                       "next_action": envelope["next_action"]})
+            return str(code)
+
         try:
             opened = await volume.open()
             if opened is not None and str(getattr(opened, "value", opened)) != "opened":
@@ -148,25 +160,21 @@ def build_v2_wired_run_and_consume(
                     raise CaptureStopped("capture stopped")
                 raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
         except BaseException as exc:  # noqa: BLE001 - drain the held resources on every exit
-            envelope = refusal_envelope(exc)
-            code = envelope["code"] or "internal_error"
-            if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):
-                code = "user_stopped"
-            envelope = refusal_envelope(code=code)
             try:
-                if position_gate is not None:
-                    position_gate.abandon_hold()
-                    position_gate.publish({"status": "failed", "fault": code,
-                                           "next_action": envelope["next_action"]})
+                code = publish_failure(exc)
                 host._persist_terminal_failure(conductor, code)
             finally:
                 await _abandon_best_effort(session_id, volume)
             raise
         else:
             try:
-                host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
-            finally:
-                await _drain_volume(session_id, volume.close, "volume_close")
+                try:
+                    host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
+                finally:
+                    await _drain_volume(session_id, volume.close, "volume_close")
+            except BaseException as exc:  # noqa: BLE001 - publish faults after the drain too
+                publish_failure(exc)
+                raise
 
     return run
 

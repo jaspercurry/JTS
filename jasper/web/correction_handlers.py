@@ -74,15 +74,7 @@ def _handle_crossover_v2_position_ready(
 def _handle_crossover_v2_complete(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/complete — the wired all-spots-measured signal (D1).
-
-    The wired session's stand-in for the phone's authenticated
-    complete-capture-set event (#2662 W2b): the driver (or the W3 wizard
-    surface) says the household is done measuring, the held pre-apply group
-    closes, and the fit runs. Only a live WIRED session holds the signal — a
-    a finished session drops it with the slot — so "nothing waiting" is a conflict
-    (stale caller), the position-ready shape.
-    """
+    """Tell the executor to finish the run with the captures already banked."""
     correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_complete = correction_capture._capture_complete_request
@@ -98,32 +90,7 @@ def _handle_crossover_v2_complete(
 def _handle_crossover_v2_retake(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/retake — the wired session's per-take retake.
-
-    The local stand-in for the phone's ``begin_capture {retake: true}``: the
-    household (or the W3 wizard surface) says the take that just completed
-    should be measured again. The walk re-opens THAT slot the next time it is
-    waiting on a person — a held begin, or the held-set window — on the
-    same terms.
-
-    **No ``index``, and that is the contract rather than a shortcut.** The
-    rule is that a retake names the slot which JUST COMPLETED
-    (``retakes_the_just_accepted_slot``: ``index == accepted_count``), and the
-    walk is the only thing that knows that number — it is a worker-thread
-    local, not a published one. Accepting an index here would mint a second
-    answer to "which slot", and the only thing a caller could do with it is
-    disagree. The signal says WHAT the household wants; WHICH slot stays the
-    walk's own fact.
-
-    Only a live session holds the signal, and a finished session drops it
-    with the slot, so "nothing waiting" is a conflict (stale caller), the
-    position-ready shape. Whether the retake is then ADMISSIBLE (a take exists
-    to replace, the plan's attempts are not spent, the slot's extras ledger
-    still has room) is the walk's decision, journalled as
-    ``event=correction.crossover_v2_wired_retake_refused``: a refused retake
-    leaves the household with the take they already had, which is why it is
-    never a session death.
-    """
+    """Ask the executor to re-take the previous capture at its next gate."""
     correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_retake = correction_capture._capture_retake_request

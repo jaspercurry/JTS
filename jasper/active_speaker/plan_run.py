@@ -210,8 +210,7 @@ async def run_plan(
         return manifest
 
     if captures is not None:
-        stops = [resolve_request(replace(request, stops=(capture.stop,),
-                   candidates=(capture.stop.candidate_id or "base",), repeats=1))[0] for capture in captures]
+        stops = [capture.resolved(request) for capture in captures]
         playable = list(enumerate(capture.spec for capture in captures))
         manifest.planned = [{"index": index, "repeat": capture.repeat,
                              "pose": _pose(capture.stop), "candidate_id": capture.stop.candidate_id}
@@ -227,6 +226,7 @@ async def run_plan(
         rows = list(batch)
         for config, (index, (offset, spec)) in enumerate(rows, 1):
             entry = SimpleNamespace(screen={**stops[index].screen,
+                                    "title": stops[index].prompt.headline, "body": stops[index].prompt.detail,
                                     **position_screen_keys(stops[index].prompt), **screens.get(index + 1, {})})
             work.append(_Work(spec, manifest.planned[offset], pose_index, config, len(rows), entry))
     return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=gate,
@@ -443,7 +443,9 @@ async def _run(
         manifest.finalized = True
         if gate:
             gate.abandon_hold()
-            gate.publish({**progress, "status": manifest.status, "fault": manifest.reason or (verdict.fault if verdict else None),
+            gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,
+                          "takes": manifest.takes_measured, "not_measured": manifest.takes_skipped,
+                          "fault": manifest.reason or (verdict.fault if verdict else None),
                           "next_action": "accept" if manifest.status == "complete" else "stop"})
         log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
                   takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)

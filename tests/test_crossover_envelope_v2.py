@@ -6118,3 +6118,19 @@ def test_attempt_advice_preserves_next_experiment_actions(reason):
     assert advice["next_action"] == baseline["next_action"]
     assert advice["alternate_actions"] == baseline["alternate_actions"]
     assert not advice["busy"]
+
+
+@pytest.mark.parametrize("capture, screen", [
+    ({"status": "awaiting_join", "join": {"index": 1}}, "microphone_check"),
+    ({"status": "complete", "run": {"status": "complete"}}, "done"),
+    ({"status": "complete", "run": {"status": "partial"}}, "done"),
+    ({"status": "failed", "run": {"status": "failed", "fault": "measurement_graph_unavailable"}}, "hard_stop"),
+    ({"status": "failed", "run": {"status": "complete"}}, "microphone_check"),
+])
+def test_inline_run_screen_tracks_the_capture_lifecycle(capture, screen):
+    status = _status(phase="check")
+    status["capture"] = capture
+    envelope = build_crossover_envelope_v2(status)
+    assert envelope["screen"] == screen
+    if capture["status"] in {"complete", "awaiting_join"}:
+        assert envelope["next_action"] is None

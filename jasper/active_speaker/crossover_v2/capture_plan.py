@@ -35,6 +35,7 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     build_verify_program,
 )
+from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
@@ -61,11 +62,12 @@ from .programs import (
 )
 from .spatial import GEOMETRY_RETRY_POSITIONS
 from .sweep_spec import build_crossover_sweep_spec
+from .refusal_copy import CrossoverV2Refused
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from ..angle_capture import AngleCaptureRequest, AngleStop
+    from ..angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop
     from .measure_spec import MeasureSpec
 
 
@@ -74,6 +76,11 @@ class PlanCapture:
     stop: AngleStop
     spec: MeasureSpec
     repeat: int = 1
+
+    def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
+        from ..angle_capture import BASE_CANDIDATE, resolve_request  # lazy: angle_capture imports pose primitives here
+        return resolve_request(replace(request, stops=(self.stop,),
+            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
 
 
 def prepare_plan_captures(
@@ -117,15 +124,11 @@ def prepare_plan_captures(
 
 
 def build_inline_session_spec(
-    captures: Sequence[PlanCapture], *, roles_bands: Sequence[RoleBand], fc_hz: float | None,
+    captures: Sequence[PlanCapture], *, request: AngleCaptureRequest,
+    roles_bands: Sequence[RoleBand], fc_hz: float | None,
     acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
 ) -> Any:
-    from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
-    from .refusal_copy import CrossoverV2Refused
-    from ..angle_capture import pose_at_angle  # lazy: angle_capture imports pose primitives here
-
-    prompts = [pose_at_angle(c.stop.angle_deg, c.stop.elevation_deg, kind=c.stop.kind,
-                            distance_m=c.stop.distance_m, seat_offset_m=c.stop.seat_offset_m) for c in captures]
+    prompts = [c.resolved(request).prompt for c in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
                                  [c.stop.candidate_id for c in captures])
     entries = []

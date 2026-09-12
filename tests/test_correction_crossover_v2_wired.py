@@ -773,7 +773,8 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
-def test_host_composes_each_clip_retry_at_its_assessed_level(phase):
+@pytest.mark.parametrize("clipped_take", [False, True])
+def test_host_binds_assessment_and_applies_its_retry_level(phase, clipped_take):
     from dataclasses import replace
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.audio_measurement.program import STIMULUS_KINDS
@@ -783,22 +784,27 @@ def test_host_composes_each_clip_retry_at_its_assessed_level(phase):
     factory = {"check": _check_analysis, "measure": _measure_analysis, "verify": _verify_analysis}[phase]
     def clipped(program):
         analysis = factory(program)
-        return replace(analysis, locations=tuple(replace(loc, clipped=True) for loc in analysis.locations))
-    conductor = _conductor(FakeSeams(**{phase: clipped}), index_phase_map={1: phase},
+        return replace(analysis, locations=tuple(replace(loc, clipped=clipped_take) for loc in analysis.locations))
+    fakes = FakeSeams(**{phase: clipped})
+    conductor = _conductor(fakes, index_phase_map={1: phase},
                            gain_plan_db={"woofer": -11.0, "tweeter": -13.0})
     analyze, assessor = bind_plan_analysis(conductor, SimpleNamespace(enrich=None),
         manifest=SimpleNamespace(calibration={}), evidence={}, verify_only=phase == "verify")
     spec = MeasureSpec(kind="baseline", graph_scope="speaker_tune" if phase == "verify" else "drivers", program_phase=phase)
     gain = None
-    for attempt in range(1, 4):
+    for attempt in range(1, 4 if clipped_take else 2):
         program = compose_plan_program(conductor, spec, gain)
         peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
         if gain is not None:
             assert peak == pytest.approx(gain)
         analysis = analyze({"index": 1, "attempt": attempt, "program": program.to_dict()}, "take")
         verdict = assessor(analysis, phase=phase, program=program)
-        assert verdict.fault == "clipped"
-        assert verdict.next == "retake_quieter"
-        assert verdict.charge == "speaker"
-        gain = verdict.next_gain_db
-        assert gain < peak
+        if clipped_take:
+            assert verdict.fault == "clipped"
+            assert verdict.next == "retake_quieter"
+            assert verdict.charge == "speaker"
+            gain = verdict.next_gain_db
+            assert gain < peak
+        else:
+            assert verdict.ok
+    assert fakes.published_candidates == []

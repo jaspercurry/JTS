@@ -10,7 +10,7 @@ from typing import Any
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
-from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, STIMULUS_KINDS, ExcitationProgram
+from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
 
@@ -69,7 +69,7 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
     excitation = conductor._excitation
     if spec.program_phase == PHASE_CHECK:
         program = excitation.check_program()
-        peak = max(segment.gain_db for segment in program.segments if segment.kind in STIMULUS_KINDS)
+        peak = max(segment.gain_db for segment in program.stimulus_segments())
         conductor._check_program = excitation.check_program(
             extra_backoff_db=0.0 if stimulus_dbfs is None else peak - stimulus_dbfs)
         return conductor._check_program
