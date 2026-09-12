@@ -387,7 +387,7 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
    single-valued and has no lookup, so each measure session overwrites it and a
    failed one leaves it `None`, with every candidate still sitting write-once in
    its bundle. `handle_v2_republish`
-   ([`correction_crossover_v2_republish.py`](../../jasper/web/correction_crossover_v2_republish.py))
+   (`correction_crossover_v2_republish.py` (deleted; ADR-0301))
    locates one by its own fingerprint through
    [`candidate_bank.py`](../../jasper/active_speaker/candidate_bank.py) (the single
    owner of where banked candidates live), re-verifies it through
@@ -512,7 +512,7 @@ Design prose lives in each module's docstring. What that index does not cover:
 | [`crossover_envelope_v2.py`](../../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
 | [`delta_probe.py`](../../jasper/active_speaker/delta_probe.py) | The realized-vs-commanded map for an applied correction change, and its four verdicts. |
 | [`web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
-| [`web/correction_crossover_v2_republish.py`](../../jasper/web/correction_crossover_v2_republish.py) | The republish door: re-publish a banked candidate by fingerprint so apply can reach it. |
+| `web/correction_crossover_v2_republish.py` (deleted; ADR-0301) | The republish door: re-publish a banked candidate by fingerprint so apply can reach it. |
 | `web/correction_crossover_v2_relay.py` (deleted; ADR-0222) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
 | [`web/correction_crossover_v2_wired.py`](../../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider: source resolution, the local plan walk, the answer mint. |
 | [`audio_measurement/wired_capture.py`](../../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the ≥128-zero dropout scan, 32-bit WAV encode. |

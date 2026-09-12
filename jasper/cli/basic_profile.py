@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    starting the measurement journey over is\n"
             "    `POST /crossover/reset` on the correction wizard\n"
             "  - you want a MEASURED candidate applied -- that door is\n"
-            "    `jasper-round apply --expected-fingerprint <fp>`\n"
+            "    `jasper-round apply <fp>`\n"
             "\n"
             "EXIT CODES\n"
             "  0  the door answered; `review` printed the candidate, or\n"

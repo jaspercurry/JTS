@@ -192,12 +192,12 @@ def banked_round_of(session_dir: Path) -> Path | None:
         return None
 
 
-def iter_round_sessions(session_dir: Path) -> Iterator[Path]:
+def iter_round_sessions(session_dir: Path | None = None) -> Iterator[Path]:
     """Search retained stores without a recent window or a materialized history."""
     from jasper.active_speaker.candidate_bank import _candidate_roots, _directories  # lazy: bank imports
 
-    bank = banked_round_of(session_dir)
-    root = bank.parent if bank else session_dir.parent
+    bank = banked_round_of(session_dir) if session_dir else None
+    root = bank.parent if bank else session_dir.parent if session_dir else bundles.sessions_dir()
     for store in _candidate_roots(root):
         for directory in _directories(store):
             try:

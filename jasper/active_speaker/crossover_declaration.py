@@ -1,4 +1,35 @@
-"""Compare and project the crossover geometry owned by Sound."""
+"""The crossover geometry Sound DECLARES, and the change one candidate asks for.
+
+``/sound``'s design draft spells a crossover as ``frequency_hz`` /
+``filter_type`` / ``slope_db_per_octave``; a measured candidate's
+:class:`~jasper.active_speaker.profile.CrossoverRegion` spells the same fact as
+``fc_hz`` / ``target_type`` / ``order``. This is the one place the two are
+compared, and the one place their difference becomes an instruction. The change
+is derived from the candidate, never from an advisory selection record, so the
+declaration and the emitted graph cannot disagree. Nothing here writes:
+``sound_setup`` owns the single durable writer in both directions.
+
+**Why the comparison has to exist at all.**
+``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard is a whole-
+dataclass ``!=``: the candidate's ``source_preset`` must equal the preset
+recompiled *now* from the saved declaration. So a candidate measured at a
+crossover the declaration does not carry can only be applied by making the
+declaration carry it FIRST. That is what :class:`CrossoverDeclarationChange`
+describes, and what
+``jasper.web.sound_setup.apply_measured_crossover_geometry`` writes.
+
+**Why it is derived from the candidate rather than read off a selection
+record.** The candidate is the artifact that will be applied; a persisted
+recommendation is a claim *about* it. Deriving the change from the candidate
+means the declaration and the emitted graph cannot disagree by construction,
+and it leaves exactly one answer to "what crossover is this apply asking for".
+An advisory record — the retired corner selector's recommendation was one, and
+whatever supersedes it will be another — stays what it is: evidence a screen
+may render, and not a gate it was never able to keep honest.
+
+**Nothing here writes.** This module derives and refuses; ``sound_setup`` owns
+the single durable writer, in both directions.
+"""
 
 from __future__ import annotations
 

@@ -1387,6 +1387,9 @@ def build_conductor_state(
     #     BLOCKED auto-apply, which refuses the deferred VERIFY outright and so
     #     never has to survive a re-arm's rebind. Gating it drops a stale nudge
     #     rather than leaking one session's blocker onto the next.
+    for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
+        if key in prior:
+            state[key] = prior[key]
     state["previous_candidate_fingerprint"] = prior.get(
         "previous_candidate_fingerprint"
     )

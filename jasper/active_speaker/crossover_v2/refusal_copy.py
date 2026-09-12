@@ -474,7 +474,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
        for code, action, label in (
            ("candidate_trial_required", "trial_candidate", "Complete a trial of this candidate."),
            ("candidate_trial_evidence_invalid", "repeat_trial", "Repeat the damaged trial set."),
-           ("candidate_fingerprint_mismatch", "select_candidate", "Select the banked candidate fingerprint."),
+           ("sound_design_revision_unavailable", "measure_again", "Measure the current Sound design."),
+           ("crossover_v2_stage2_preflight_refused", "speaker_setup", "Complete speaker setup before applying."),
            ("candidate_trial_graph_mismatch", "repeat_trial", "Trial the current compiled graph."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
        )},

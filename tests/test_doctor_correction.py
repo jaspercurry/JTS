@@ -468,7 +468,7 @@ def _verify_cloud(*, passed, flatness):
                 },
                 cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             ),
-            "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
+            "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="verify-failed-behind-a-passing-group",
         ),
         # The capture was clean and the crossover-region claim missed its
@@ -486,7 +486,7 @@ def _verify_cloud(*, passed, flatness):
                 },
                 cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             ),
-            "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
+            "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
         ),
         # The cloud spec failure wins the row's reason on a WARN — it is why
@@ -1137,3 +1137,13 @@ def test_check_correction_status(monkeypatch, tmp_path, setup, expected_status, 
 
     assert r.status == expected_status
     assert r.reason == expected_reason
+
+
+@pytest.mark.parametrize("dimension,value", [("capture_validity", "unusable"), ("realization", "failed"),
+                                             ("benefit", "regressed"), ("spec", "failed")])
+def test_trial_advice_failure_warns_in_doctor(monkeypatch, dimension, value):
+    block = {"trial_verification": {dimension: value}}
+    monkeypatch.setattr(correction, "_crossover_v2_status_block", lambda: block)
+    result = correction.check_crossover_v2_cloud_pipeline(_evidence.EvidenceCache())
+    assert result.status == "warn"
+    assert result.reason == correction.REASON_APPLIED_GRADE_VERIFY_FAILED

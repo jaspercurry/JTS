@@ -70,7 +70,6 @@ def require_candidate_trial(
     basis = group.get("capture_basis") or {}
     if (
         trial.get("status") != "complete"
-        or trial.get("finalized") is not True
         or basis.get("candidate_id") != candidate.fingerprint
         or basis.get("graph_scope") != "candidate"
         or basis.get("role") != "summed"

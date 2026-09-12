@@ -614,10 +614,6 @@ _POST_ROUTES = {
     "/crossover/v2/verify": _dispatch_crossover,
     "/crossover/v2/republish": _dispatch_crossover,
     "/crossover/v2/apply": _dispatch_crossover,
-    # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
-    # so the apply door above can reach it by fingerprint. The apply slot is
-    # single-valued and every measure session overwrites it; this is the lookup
-    # it never had.
     # The review screen's "Keep current sound", which #2641 found inert.
     "/crossover/v2/decline": _dispatch_crossover,
     # A GATED session's position release — the report that the microphone has

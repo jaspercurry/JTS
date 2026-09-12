@@ -56,7 +56,7 @@ from .camilla_yaml import (
     linearization_headroom_db,
 )
 from .candidate_trials import candidate_boost_issue
-from .crossover_v2.apply_gate import check_baseline_apply
+from .crossover_v2.apply_gate import check_baseline_apply, prepare_trial
 from .boost_protection import config_graph_fingerprint
 from .crossover_contract import (
     TUNING_OWNERS,
@@ -3646,6 +3646,7 @@ async def apply_baseline_profile(
     expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredCrossoverCandidate | None" = None,
+    trial_evidence: Mapping[str, Any] | None = None,
     refresh_inputs: Callable[
         [],
         tuple[
@@ -3672,6 +3673,8 @@ async def apply_baseline_profile(
     including its Room and bass layers, before the locked DSP transaction.
     """
 
+    if trial_evidence is None:
+        trial_evidence = prepare_trial(measured_candidate)
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
         source="active_speaker_baseline_apply",
@@ -3698,6 +3701,7 @@ async def apply_baseline_profile(
             expected_tuning_graph_fingerprint=expected_tuning_graph_fingerprint,
             on_candidate_verified=on_candidate_verified,
             measured_candidate=measured_candidate,
+            trial_evidence=trial_evidence,
             validate=validate,
         )
 
@@ -3723,6 +3727,7 @@ async def _apply_baseline_profile_locked(
     expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredCrossoverCandidate | None" = None,
+    trial_evidence: Mapping[str, Any] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -3834,7 +3839,7 @@ async def _apply_baseline_profile_locked(
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
     candidate = build_candidate(write=True)
-    check_baseline_apply(candidate, topology, measured_candidate, state_target, driver_domain=driver_domain)
+    check_baseline_apply(candidate, topology, measured_candidate, state_target, trial_evidence=trial_evidence or {}, driver_domain=driver_domain)
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
             measurements,

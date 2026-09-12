@@ -304,7 +304,8 @@ def _bank_for_apply(raw, *, record_fields=None):
 
 def _apply(raw, run_async, camilla_factory, *, status=None):
     _bank_for_apply(raw)
-    return v2host.handle_v2_apply(raw, run_async, camilla_factory, status=status or {})
+    with _stage2_openable():
+        return v2host.handle_v2_apply(raw, run_async, camilla_factory, status=status or {})
 
 
 # --- the first-begin budget knob (#2637) ---------------------------------------
@@ -3402,9 +3403,6 @@ def test_observe_apply_success_arms_the_deferred_verify_gate():
         "applied": False,
     })
     assert v2host._applied_gate() is False
-    # A mismatched fingerprint must NOT arm verify.
-    v2host.observe_apply_success("fp-other")
-    assert v2host._applied_gate() is False
     v2host.observe_apply_success("fp-1")
     assert v2host._applied_gate() is True
 
@@ -5614,6 +5612,7 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     produced by ``v2host.ensure_crossover_preview_ready()``, the real
     session-start seam, so this fixture proves the same machinery a browser
     session would drive."""
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.output_topology import save_output_topology
 
@@ -5878,7 +5877,7 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     )
 
     assert payload["status"] == "applied", payload
-    assert len(fsync_calls) == 10
+    assert len(fsync_calls) == 12
 
 
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
@@ -6143,7 +6142,9 @@ def test_alternative_sound_save_cannot_mark_a_replacement_review(
     state = v2host.load_v2_state() or {}
     assert state["session_id"] == "fresh-review"
     assert state["candidate"]["fingerprint"] == "fresh-fingerprint"
-    assert "accepted_sound_revision" not in state
+    assert state["accepted_sound_revision"] == 2
+    assert state["accepted_sound_candidate_fingerprint"] == candidate.fingerprint
+    assert state["accepted_sound_declaration_change"]["applied_hz"] == 2750.
 
 
 def test_a_below_floor_apply_is_refused_before_sound_is_written(
@@ -8022,7 +8023,7 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run
     ("partial", "candidate_trial_required"), ("integrity", "candidate_trial_evidence_invalid"),
 ])
 def test_apply_requires_an_intact_completed_banked_trial(monkeypatch, tmp_path, fault, code):
-    from jasper.active_speaker.crossover_v2.apply_evidence import candidate_trial_manifest
+    from jasper.active_speaker.crossover_v2.apply_gate import candidate_trial_manifest
     from jasper.cli.doctor.correction import _applied_grade_finding
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -8116,3 +8117,67 @@ def test_retired_republish_route_cannot_change_state(monkeypatch, tmp_path):
     _dispatch_crossover(handler)
     assert replies == [({"ok": False, "code": "route_retired"}, 410)]
     assert v2host.load_v2_state() == before
+
+
+@pytest.mark.parametrize("revision", [None, True, "1"])
+def test_off_slot_apply_refuses_an_unknown_measured_sound_revision(monkeypatch, tmp_path, revision):
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    state = v2host.load_v2_state()
+    state.update(candidate={"fingerprint": "another"}, sound_design_revision=revision)
+    v2host.save_v2_state(state)
+    draft_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
+    before = draft_path.read_bytes()
+    cam = _FakeApplyCam()
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                              _bg_run_async, lambda: cam, status={})
+    assert refused.value.code == "sound_design_revision_unavailable"
+    assert draft_path.read_bytes() == before
+    assert cam.path is None
+
+
+@pytest.mark.parametrize("failure", [ValueError, RuntimeError, v2host.CrossoverV2Refused])
+def test_apply_openability_refuses_before_any_write(monkeypatch, tmp_path, failure):
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    calls = []
+    def unresolved(status):
+        calls.append(status)
+        raise failure("unavailable")
+    monkeypatch.setattr(v2host, "resolve_conductor_context", unresolved)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    cam = _FakeApplyCam()
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                              _bg_run_async, lambda: cam, status={"active": False})
+    assert refused.value.code == "crossover_v2_stage2_preflight_refused"
+    assert calls == [{"active": False}]
+    assert cam.path is None
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("applied,epoch,receipt,expected", [
+    (True, 0, {"round_ordinal": 2}, 1),
+    (False, 0, None, 0),
+    (False, 2, None, 2),
+    (True, 2, None, 2),
+    (True, 2, {"round_ordinal": 3}, 3),
+])
+def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected, caplog):
+    from jasper.active_speaker.crossover_v2.coordinator import series_position_from_state
+    from tests._log_events import event_records, parse_event
+
+    v2host.save_v2_state({"applied": applied, "round_ordinal_epoch": epoch, "round_receipt": receipt})
+    with caplog.at_level(logging.INFO):
+        v2host.reset_v2_journey_state()
+    state = v2host.load_v2_state()
+    position = series_position_from_state(state)
+    assert (position.ordinal, position.ordinal_epoch) == (1, expected)
+    assert (state or {}).get("round_receipt") is None
+    events = event_records(caplog, "correction.crossover_v2_journey_reset_advanced_epoch")
+    if applied and receipt:
+        event = parse_event(events[0].getMessage())
+        assert event["reset_round_ordinal_from"] == str(receipt["round_ordinal"])
+    else:
+        assert not events

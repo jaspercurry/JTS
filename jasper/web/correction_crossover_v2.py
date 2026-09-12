@@ -395,7 +395,7 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
 
     * :func:`observe_apply_success`, which owns
       ``previous_candidate_fingerprint``, the only pointer the way back
-      (republish-then-apply) resolves its target from. It is created in the
+      resolves its target from. It is created in the
       same moment the new graph goes live, so a lost write leaves a corrected
       speaker with no recorded way back.
     * the RECEIPT identity, written by :func:`persist_conductor_state` — but
@@ -504,48 +504,36 @@ def _record_live_model_error(**observation: Any) -> bool:
 
 
 def reset_v2_journey_state() -> None:
-    """Clear the journey while retaining the playing graph's way back."""
+    """Clear the journey; keep the playing graph's proof and reset disclosure."""
+    from jasper.active_speaker.crossover_v2.coordinator import (
+        ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
+    )
+
     state = load_v2_state()
-    if not state or not state.get("applied"):
+    if state is None:
+        return
+    epoch = round_ordinal_epoch_from_state(state)
+    applied = bool(state.get("applied"))
+    if not applied and not epoch:
         clear_v2_state()
         return
-    previous_candidate = state.get("previous_candidate_fingerprint")
-    displaced_by = state.get("previous_candidate_displaced_by")
-    attempts_loop = state.get("attempts_loop")
-    save_v2_state({
-        "session_id": None,
-        "accepted_phases": [],
-        "applied": True,
-        "gain_plan_db": None,
-        "candidate": None,
-        "verify": None,
-        "failure": None,
-        "apply_blocked": None,
-        "verify_priors": None,
-        "evidence": None,
-        # Start over is how the household initiates another tune. Preserve the
-        # prior applied-candidate attempts so the next VERIFY is compared with
-        # its immediate predecessor.
-        "attempts_loop": (
-            dict(attempts_loop) if isinstance(attempts_loop, Mapping) else None
-        ),
-        # Start over keeps the applied graph playing, so the way back's
-        # pointer survives with it.
-        "previous_candidate_fingerprint": (
-            previous_candidate
-            if isinstance(previous_candidate, str) and previous_candidate
-            else None
-        ),
-        # The pointer's pairing survives on the same terms: Start over
-        # keeps the applied graph playing, so the apply that recorded the
-        # pointer is still the one under grade.
-        "previous_candidate_displaced_by": (
-            displaced_by
-            if isinstance(displaced_by, str) and displaced_by
-            else None
-        ),
-    })
-    log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
+    receipt = state.get("round_receipt")
+    if applied and receipt is not None:
+        epoch += 1
+        ordinal = receipt.get("round_ordinal") if isinstance(receipt, Mapping) else None
+        log_event(logger, "correction.crossover_v2_journey_reset_advanced_epoch",
+                  round_ordinal_epoch=epoch,
+                  reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
+    clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
+             "gain_plan_db": None, "candidate": None, "verify": None, "failure": None,
+             "apply_blocked": None, "verify_priors": None, "evidence": None,
+             ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
+    if applied:
+        for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile"):
+            clean[key] = state.get(key)
+    save_v2_state(clean)
+    log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
+              else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
 
 
 def observe_apply_success(
@@ -555,25 +543,14 @@ def observe_apply_success(
     expected_post_apply_offset_db: float = 0.0,
     tuning_trial: Mapping[str, Any] | None = None,
     selected_candidate: Mapping[str, Any] | None = None,
+    previous_applied_profile: Mapping[str, Any] | None = None,
 ) -> None:
     """Persist the completed apply and its displaced candidate together."""
     state = load_v2_state() or {}
     if selected_candidate is not None:
         state["candidate"] = dict(selected_candidate)
-    candidate = state.get("candidate")
-    stored = (
-        str(candidate.get("fingerprint") or "")
-        if isinstance(candidate, Mapping)
-        else ""
-    )
-    if stored and candidate_fingerprint and stored != candidate_fingerprint:
-        log_event(
-            logger,
-            "correction.crossover_v2_apply_fingerprint_mismatch",
-            level=logging.WARNING,
-        )
-        return
     state["applied"] = True
+    state["previous_applied_profile"] = dict(previous_applied_profile) if previous_applied_profile else None
     state["tuning_trial"] = (
         dict(tuning_trial)
         if isinstance(tuning_trial, Mapping)
@@ -1513,8 +1490,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # independent"), so a crossover-region claim that missed its tolerance
     # rides a clean ``pass`` — and the other way, an absent tracking max is an
     # ``outcome`` pass whose integration claim reads ``not_evaluated``, which
-    # this union must not read as proved (#3487: a republished candidate has no
-    # measure round to track against, and ``tracking_passed`` stays ``None``).
     # It reads ``integration`` and ``absolute`` because a
     # VERIFY grades no others: its one summed sweep leaves both per-branch
     # claims structurally ``not_evaluated`` (``CLAIM_NO_PER_BRANCH_CAPTURE``).
@@ -1529,15 +1504,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     verify_failed = outcome == "fail" or CLAIM_FAIL in {
         tracking_status, absolute_status,
     }
-    # **A capture that graded NO claim proved nothing at the mark** — which the
-    # union above cannot say, because it looks for a failure and finds none.
-    # Reachable since the gate stopped refusing an ungradeable tracking claim
-    # (#3487): a republished candidate has no measure round to track against,
-    # and a capture that also finds no trusted crossover region leaves the
-    # absolute claim ``not_evaluated`` too. INDETERMINATE is the republish
-    # door's own declared outcome for that shape and the mark badge is its
-    # opposite. Only a claims RECORD says this: an absent block is a pre-R18
-    # build and keeps the standing-alone rule stated above.
     no_claim_graded = bool(claims) and not {tracking_status, absolute_status} & {
         CLAIM_PASS, CLAIM_FAIL,
     }
@@ -1677,13 +1643,7 @@ def _resolve_measurement_level_trims(
 
 
 def _fc_hz_label(hz: float) -> str:
-    """A crossover frequency as the household reads it: ``2250``, ``1787.5``.
-
-    One formatter, because the apply path's refusal copy and the republish
-    door's name the same numbers to the same person, and two spellings of one
-    frequency in two adjacent sentences is a defect the household is the
-    first to notice.
-    """
+    """Format a crossover frequency without a fractional zero."""
     return f"{hz:.1f}".rstrip("0").rstrip(".")
 
 
@@ -4009,9 +3969,10 @@ def handle_v2_apply(
     from jasper.active_speaker.crossover_preview import build_crossover_preview, load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-    from jasper.active_speaker.crossover_v2.apply_gate import ApplyGraph, apply_preconditions
-    from jasper.active_speaker.crossover_v2.apply_evidence import candidate_trial_manifest
+    from jasper.active_speaker.crossover_v2.apply_gate import ApplyGraph, apply_preconditions, prepare_trial
+    from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN
     from jasper.output_topology import load_output_topology
     from jasper.web.sound_setup import apply_measured_crossover_geometry
 
@@ -4024,12 +3985,10 @@ def handle_v2_apply(
     state = load_v2_state() or {}
     current = (state.get("candidate") or {}).get("fingerprint") == expected
     review_session_id = str(state.get("session_id") or "") if current else ""
-    if not current:
-        state = {}
     applied_tuning_trial = None
     topology = load_output_topology()
     pre_draft = load_design_draft(topology=topology)
-    accepted_revision = (state or {}).get("accepted_sound_revision")
+    accepted_revision = state.get("accepted_sound_revision") if (current or state.get("accepted_sound_candidate_fingerprint") == expected) else None
     saved_already = (
         isinstance(accepted_revision, int) and not isinstance(accepted_revision, bool)
     )
@@ -4100,30 +4059,37 @@ def handle_v2_apply(
     if not (reviewed_baseline.get("config") or {}).get("sha256"):
         issue = _blocking_apply_issue(reviewed_baseline)
         _persist_apply_blocked(issue)
+        reviewed_baseline.pop("_compiled_graph_text", None)
         return {"status": "blocked", "profile": reviewed_baseline, "apply": None,
                 "issues": reviewed_baseline.get("issues", []), "issue": issue}
-    manifest = candidate_trial_manifest(expected, reviewed_baseline)
+    incumbent = reviewed_baseline.get("applied_recomposition_profile") or {}
+    restored = state.get("previous_applied_profile") if (
+        state.get("previous_candidate_fingerprint") == expected
+        and state.get("previous_candidate_displaced_by") == (incumbent.get("source") or {}).get("measured_candidate_fingerprint")
+    ) else None
+    trial_evidence = prepare_trial(candidate, reviewed_baseline, restored=restored)
+    manifest = trial_evidence["manifest"]
     issues = apply_preconditions(
-        ApplyGraph(reviewed_baseline, topology, candidate, expected), banked, manifest,
-        reviewed_baseline.get("applied_recomposition_profile"),
+        ApplyGraph(reviewed_baseline, topology, candidate, openability=lambda: resolve_conductor_context(status)), banked, manifest,
+        restored,
     )
     if issues:
         raise CrossoverV2Refused(issues[0].detail, code=issues[0].code)
-    assert manifest is not None
-    trial_graph = manifest["set"]["capture_basis"]["submitted_graph_fingerprint"]
-    record_id = manifest["set"]["takes"][0]["artifacts"]["record_id"]
-    applied_tuning_trial = tuning_trial_reference(candidate, {
-        "candidate_id": expected, "graph_scope": "candidate", "graph_fingerprint": trial_graph,
-        "record_path": str(Path(manifest["bundle"]) / "evidence/v1/artifacts" / record_id),
-    })
+    trial_graph = str((reviewed_baseline.get("config") or {}).get("sha256") or "")[:16]
+    if manifest is not None:
+        record_id = manifest["set"]["takes"][0]["artifacts"]["record_id"]
+        applied_tuning_trial = tuning_trial_reference(candidate, {
+            "candidate_id": expected, "graph_scope": "candidate", "graph_fingerprint": trial_graph,
+            "record_path": str(Path(manifest["bundle"]) / EVIDENCE_ROOT / "artifacts" / record_id),
+        })
     if change is not None:
         if not saved_already:
-            measured_revision = (state or {}).get("sound_design_revision", pre_draft.get("revision"))
+            measured_revision = state.get("sound_design_revision") if current else None
             if (isinstance(measured_revision, bool)
                     or not isinstance(measured_revision, int)):
                 raise CrossoverV2Refused(
                     "the Sound revision measured for this review is missing; "
-                    "review a fresh measurement")
+                    "review a fresh measurement", code="sound_design_revision_unavailable")
             try:
                 saved = apply_measured_crossover_geometry(
                     expected_revision=measured_revision,
@@ -4135,15 +4101,15 @@ def handle_v2_apply(
                 raise CrossoverV2Refused(
                     "Sound changed since this review; review a fresh measurement") from exc
             accepted_revision = saved.get("revision")
-            if (
-                isinstance(accepted_revision, bool)
-                or not isinstance(accepted_revision, int)
-                or current and not _update_current_review(
-                    review_session_id, expected, None,
-                    {"accepted_sound_revision": accepted_revision,
-                     "accepted_sound_declaration_change": change_to_record(change)},
+            with _state_lock:
+                accepted_state = load_v2_state() or {}
+                accepted_state.update(
+                    accepted_sound_revision=accepted_revision,
+                    accepted_sound_declaration_change=change_to_record(change),
+                    accepted_sound_candidate_fingerprint=expected,
                 )
-            ):
+                save_v2_state(accepted_state, durable=True)
+            if isinstance(accepted_revision, bool) or not isinstance(accepted_revision, int):
                 raise _review_replaced()
         preview = _before_dsp(lambda: ensure_crossover_preview_ready(durable=True))
         draft = _before_dsp(lambda: load_design_draft(topology=topology))
@@ -4198,6 +4164,7 @@ def handle_v2_apply(
             tuning_owner="automatic",
             expected_tuning_graph_fingerprint=trial_graph,
             measured_candidate=candidate,
+            trial_evidence=trial_evidence,
         ))
     except Exception as exc:  # noqa: BLE001 - DSP result may be ambiguous
         if alternative:
@@ -4223,7 +4190,8 @@ def handle_v2_apply(
                     or None,
                     expected_post_apply_offset_db=offset_db,
                     tuning_trial=applied_tuning_trial,
-                    selected_candidate=_candidate_summary(candidate, topology_pinned=True),
+                    selected_candidate=_candidate_summary(candidate, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN),
+                    previous_applied_profile=pre_apply_profile,
                 )
     issue = None
     if payload.get("status") in {"blocked", "apply_failed"}:
@@ -4251,6 +4219,7 @@ def handle_v2_apply(
         status=payload.get("status"),
         candidate_fingerprint=expected,
     )
+    (payload.get("profile") or {}).pop("_compiled_graph_text", None)
     return payload
 
 

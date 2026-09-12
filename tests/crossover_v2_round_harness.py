@@ -28,6 +28,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
+from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile as _real_safety_evaluation
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2.round_evidence import (
@@ -275,46 +276,77 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
 
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
-    """Expose the operator's restore doors and count every apply attempt."""
+    """Bank the displaced graph; leave admission and DSP apply intact."""
+    import copy
+    import json
+    from dataclasses import replace
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.web import correction_crossover_backend
-    from jasper.web import correction_crossover_v2_status as v2status
+    from tests.active_speaker_fixtures import valid_camilla_config
+    from tests.test_active_speaker_baseline_profile import _draft, _MEASURE_EVIDENCE
+    from tests.test_active_speaker_measured_crossover_candidate import _candidate
+    from tests.test_crossover_v2_stage_bridge import _topology
 
-    attempts: list[int] = []
-
-    # Hermetic stand-ins for the doors' surroundings: the displacement gate
-    # reads the applied-profile SSOT (absent here unless a test installs one),
-    # and the way-back preflight reads the candidate bank (absent in a round
-    # test); each answers its production shape for the seeded prior.
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "load_applied_baseline_profile_state",
-        lambda *a, **k: None,
+    root = v2host._state_path().parent
+    topology = _topology()
+    with monkeypatch.context() as build_context:
+        build_context.setattr("jasper.active_speaker.driver_safety.evaluate_driver_safety_profile", _real_safety_evaluation)
+        draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    preset, _, _ = baseline_profile_mod.compile_preset_from_crossover_preview(topology, preview)
+    measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)
+    profile = baseline_profile_mod.build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        measured_candidate=measured, tuning_owner="automatic", write=True,
+        state_path=root / "previous.json", config_path=root / "previous.yml", validate=valid_camilla_config,
     )
-
-    monkeypatch.setattr(v2status, "_offerable_previous_candidate", lambda state: _PREVIOUS_CANDIDATE_FINGERPRINT)
-
-    def _apply(raw: Any, _run_async: Any, _camilla: Any, *, status: Any,
-               ) -> dict[str, Any]:
-        del status
-        attempts.append(1)
-        expected = str(raw.get("expected_candidate_fingerprint") or "")
-        if expected != _PREVIOUS_CANDIDATE_FINGERPRINT:
-            raise v2host.CrossoverV2Refused(
-                "the reviewed crossover is no longer current"
-            )
-        return {"status": "applied"}
-
-    monkeypatch.setattr(v2host, "handle_v2_apply", _apply)
+    profile.update(status="applied", trial_verification={
+        "capture_validity": "usable", "realization": "matched", "benefit": "improved", "spec": "passed"})
+    state = v2host.load_v2_state() or {}
+    if state.get("previous_candidate_fingerprint"):
+        state.update(previous_candidate_fingerprint=measured.fingerprint, previous_applied_profile=profile)
+        v2host.save_v2_state(state)
+    candidate_path = root / "sessions/authored/evidence/v1/artifacts/crossover_v2/previous/candidate.json"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text(json.dumps(measured.to_dict()))
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: root / "sessions")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(root / "applied.json"))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(root / "baseline.yml"))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(root / "dsp-apply.json"))
+    monkeypatch.setattr(baseline_profile_mod, "load_applied_baseline_profile_state", lambda *a, **k: None)
+    def compile_profile(*args, **kwargs):
+        candidate = copy.deepcopy(profile)
+        candidate.update(status="compiled", applied_recomposition_profile=baseline_profile_mod.load_applied_baseline_profile_state())
+        candidate["permissions"]["may_apply"] = True
+        return candidate
+    monkeypatch.setattr(baseline_profile_mod, "build_baseline_profile_candidate", compile_profile)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", _status)
-    return attempts
+    return []
 
 
-def _restoring_stage_2(monkeypatch) -> tuple[Any, list[int]]:
-    """A real stage 2 with the operator's restore doors available."""
+def _restoring_stage_2(monkeypatch, *, load_ok=True) -> tuple[Any, list[int]]:
+    """A real stage 2 with a banked prior graph and a hardware stand-in."""
+    from pathlib import Path
+    import hashlib
+
     attempts = _stub_restore_doors(monkeypatch)
+    class Camilla:
+        path = None
+        async def get_config_file_path(self, **kwargs):
+            return self.path
+        async def set_config_file_path(self, path, **kwargs):
+            attempts.append(1)
+            if not load_ok:
+                return False
+            self.path = path
+            live = baseline_profile_mod.load_applied_baseline_profile_state()
+            if live is not None:
+                live.update(candidate_fingerprint="previous", config={"sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()})
+            return True
+    camilla = Camilla()
     prepared = v2host.prepare_v2_session(
         {}, status=_status(), run_async=_bg_run_async,
-        camilla_factory=lambda: SimpleNamespace(), verify_only=True,
+        camilla_factory=lambda: camilla, verify_only=True,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
     return conductor, attempts
