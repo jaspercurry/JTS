@@ -60,6 +60,12 @@ def test_missing_calibration_refuses_before_hardware(tmp_path, monkeypatch, caps
     hardware.assert_not_called()
 
 
+def test_missing_mic_has_its_own_refusal(monkeypatch, capsys):
+    monkeypatch.setattr(seat_level, "resolve_wired_mic", lambda: None)
+    assert seat_level.main([]) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == seat_level.REFUSE_MIC_ABSENT
+
+
 def test_defaults_are_the_operators_stated_band():
     args = seat_level.build_parser().parse_args([])
     target = seat_level.SeatLevelTarget(args.target_db_spl, args.tolerance_db)
@@ -326,13 +332,12 @@ def test_unapplied_baseline_refuses_with_its_code(box, monkeypatch, capsys):
     box.bank.assert_not_called()
 
 
-def test_binding_driver_cap_refuses_an_unreachable_target_early(box):
-    box.context.driver_caps_dbfs['tweeter'] = -30.0
-    box.level = 65.0
+def test_driver_caps_do_not_move_the_fader_cap(box):
+    box.context.driver_caps_dbfs['tweeter'] = -65.0
+    box.level = 35.0
     result, _ = asyncio.run(seat_level._run(seat_level.build_parser().parse_args([])))
-    assert result['reason'] == 'level_unreachable'
-    assert result['gain_db'] == -30.0 - seat_level.BASE_STIMULUS_PEAK_DBFS
-    assert [gain for gain, _ in result['readings']] == [-40, -34, -28, -22, -18]
+    assert result['reason'] == 'mic_not_observing'
+    assert result['gain_db'] == seat_level.HARD_CEILING_DBFS == 0.0
     box.bank.assert_not_called()
 
 

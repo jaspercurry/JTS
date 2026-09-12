@@ -53,7 +53,6 @@ from jasper.audio_measurement.calibration import (
     MIC_CALIBRATION_UNAVAILABLE_DETAIL, REFUSE_MIC_CALIBRATION_UNAVAILABLE, resolve_mic_sensitivity,
 )
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
-from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
 from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
 from jasper.audio_measurement.wired_capture import WiredSplMonitor, resolve_wired_mic
 from jasper.log_event import log_event
@@ -166,7 +165,9 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         if code == "composition_saved_tune_unavailable":
             code = "applied_baseline_snapshot_unavailable"
         return _refused(code, str(exc))
-    ceiling_db = min(min(context.driver_caps_dbfs.values()) - BASE_STIMULUS_PEAK_DBFS, HARD_CEILING_DBFS)
+    # Driver caps bind each composed segment through back_off_gain and live re-admission.
+    # The fader itself is bounded only by digital full scale.
+    ceiling_db = HARD_CEILING_DBFS
 
     target = SeatLevelTarget(
         target_db_spl=args.target_db_spl, tolerance_db=args.tolerance_db
