@@ -65,13 +65,23 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from jasper.active_speaker import preflight, preflight_live
 from typing import (
-    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
+    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence,
     TypeVar,
 )
 
+from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
+)
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures, spl_watch
+from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
@@ -99,7 +109,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_FINDINGS,
     CAPABILITY_PREDICTED_SUM as CAPABILITY_PREDICTED_SUM,
     PHASE_MEASURE,
-    PHASE_VERIFY,
     PHASE_CLOUD_VERIFY,
     PHASE_CLOUD_MEASURE,
     STAGE_MEASURE_CAPABILITIES,
@@ -122,7 +131,6 @@ from jasper.active_speaker.crossover_v2.conductor_context import (
     resolve_conductor_context,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
 from jasper.active_speaker.crossover_v2 import durable_state as _durable
 from jasper.active_speaker.crossover_v2.durable_state import (
     build_conductor_state,
@@ -213,7 +221,7 @@ def classify_program_failure(
         StimulusCaptureStopped,
     )
     from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_MEASUREMENT_VOLUME_DRIFT,
+        REASON_MEASUREMENT_VOLUME_DRIFT, REASON_MEASUREMENT_GRAPH_UNAVAILABLE,
         REASON_PROGRAM_PLAN_SHAPE_INVALID,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
@@ -238,6 +246,8 @@ def classify_program_failure(
 
     if isinstance(exc, MeasurementGraphRefused):
         return exc.code, ()
+    if isinstance(exc, SessionGraphError):
+        return REASON_MEASUREMENT_GRAPH_UNAVAILABLE, ()
     if (
         isinstance(exc, StimulusCaptureStopped)
         and exc.code == WiredSplCeilingExceeded.code
@@ -1539,7 +1549,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         TIER_EXPRESS,
         TIER_FULL,
     )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
@@ -1819,188 +1828,6 @@ entry_baseline_prior_from_state = _durable.entry_baseline_prior_from_state
 pilot_transfer_prior_from_state = _durable.pilot_transfer_prior_from_state
 commanded_delta_prior_from_state = _durable.commanded_delta_prior_from_state
 declared_transfer_prior_from_state = _durable.declared_transfer_prior_from_state
-
-
-def _take_staged_angle_walk(
-    plan_shape: Any,
-    *,
-    base_entries: int,
-    lateral_group_present: bool,
-    plans_cloud_group: bool,
-    preset: Any,
-    topology: Any,
-    device: Any,
-) -> tuple[
-    tuple[Any, ...], str, dict[int, Any], dict[str, float], tuple[Any, ...], Any
-] | None:
-    """Admit the staged walk before opening any measurement resource."""
-    from jasper.active_speaker.angle_capture import (
-        WALK_LATERAL_GROUP_ALREADY_PLANNED,
-        WALK_LEVEL_MATCH_NO_EVIDENCE,
-        WALK_STIMULUS_NOT_ACCEPTED,
-        WALK_STOP_NO_LONGER_VALID,
-        LateralWalkRefused,
-        design_axis_spec,
-        session_lateral_walk,
-        stop_specs,
-    )
-    from jasper.active_speaker.angle_capture_spool import (
-        AngleRequestRefused,
-        staged_angle_request_pending,
-        take_staged_angle_request,
-    )
-    from jasper.active_speaker.plan_run import spl_watch
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        build_v2_cloud_index_phase_map,
-        position_angle_deg,
-        position_elevation_deg,
-    )
-    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
-    from jasper.active_speaker.crossover_v2.journey import (
-        LATERAL_CONSUMER_FORWARD_MODEL,
-        PHASE_LATERAL,
-        PHASE_MEASURE,
-    )
-    from jasper.active_speaker.crossover_v2.spatial import TakeClaim
-
-    def refused(reason: str, detail: str) -> CrossoverV2Refused:
-        log_event(
-            logger, "correction.crossover_v2_angle_walk_refused",
-            level=logging.WARNING, reason=reason, detail=detail,
-            # READ BACK, never asserted: the spool's two unreadable arms
-            # deliberately do not consume.
-            consumed=not staged_angle_request_pending(),
-            session_continues=False,
-        )
-        # RETURNED, not raised, so every arm below reads ``raise refused(...)``
-        # — the journal line and the refusal are one statement, and no arm can
-        # log without refusing or refuse without logging.
-        return CrossoverV2Refused(
-            f"the staged angle walk was refused ({reason}): {detail}", code=reason,
-        )
-
-    try:
-        request = take_staged_angle_request()
-        if request is None:
-            return None
-        facts = preflight_live.read_preflight_facts(
-            request, context=SimpleNamespace(preset=preset, topology=topology), device=device,
-        )
-        report = preflight.preflight(request, facts)
-        for issue in report.issues:
-            if issue.blocking:
-                raise refused(issue.code, issue.detail)
-        request = report.plan
-        if lateral_group_present:
-            raise LateralWalkRefused(
-                WALK_LATERAL_GROUP_ALREADY_PLANNED,
-                "this session already walks a lateral group; a staged walk "
-                "cannot be a second one",
-            )
-        prompts = session_lateral_walk(
-            request,
-            externally_positioned=plan_shape.externally_positioned,
-            base_entries=base_entries,
-            plans_cloud_group=plans_cloud_group,
-            supported_summed_candidates=True,
-        )
-    except (AngleRequestRefused, LateralWalkRefused) as exc:
-        raise refused(exc.reason, exc.detail) from exc
-    except CrossoverV2FlowError as exc:
-        # The third class: a banked stop the seam can no longer build. The spool
-        # re-raises it un-wrapped because ``_validated_angle``'s own sentence
-        # beats anything a second vocabulary could say, so it arrives with no
-        # slug — it gets one here and keeps that sentence as the detail.
-        raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
-    measure_spec = design_axis_spec(request)
-    level_trims, trim_source = _resolve_measurement_level_trims(
-        measure_spec, preset=preset, topology=topology,
-    )
-    if measure_spec.level_matched and not level_trims:
-        raise refused(
-            WALK_LEVEL_MATCH_NO_EVIDENCE,
-            "this walk asks the measurement graph to level-match the driver "
-            "branches, and this speaker has no measured per-driver level "
-            "evidence to match them by; run the driver trim step, or stage "
-            "the walk without --level-matched",
-        )
-    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at run open
-    candidate_ids = tuple(stop.candidate_id for stop in request.stops)
-    try:
-        spl_monitor, spl_note = spl_watch(
-            measure_spec.spl_ceiling_db_spl,
-            topology=topology,
-            preset=preset,
-            sensitivity=facts.anchor.sensitivity,
-            resolved_ceiling_db_spl=report.spl_ceiling_db_spl,
-            device=device,
-        )
-        candidate_scopes = report.candidate_scopes
-    except LateralWalkRefused as exc:
-        raise refused(exc.reason, exc.detail) from exc
-    # Asked of the ONE owner of this session's index space rather than counted
-    # here, so the specs cannot be keyed to captures the plan never runs.
-    walk_index_phase = build_v2_cloud_index_phase_map(
-        plan_shape=plan_shape,
-        include_cloud_measure=plans_cloud_group,
-        include_lateral=True,
-        lateral_prompts=prompts,
-    )
-    specs_by_index: dict[int, Any] = {
-        index: measure_spec
-        for index, phase in walk_index_phase.items()
-        if phase == PHASE_MEASURE
-    }
-    try:
-        placed = stop_specs(
-            request, candidate_scopes=candidate_scopes, prompts=prompts,
-            baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
-                                                if stop.plays_summed and not stop.candidate_id),
-        )
-    except ValueError as exc:
-        raise refused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
-    for index, spec in zip(
-        sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
-        placed,
-    ):
-        if spec is not None:
-            specs_by_index[index] = spec
-    lateral_claims = tuple(
-        TakeClaim(candidate_id=spec.candidate_id if spec else stop.candidate_id, measurement_purpose=stop.purpose or "")
-        for stop, spec in zip(request.stops, placed)
-    )
-
-    log_event(
-        logger, "correction.crossover_v2_angle_walk_taken",
-        stops=len(prompts),
-        angles=",".join(f"{position_angle_deg(p):+d}" for p in prompts),
-        elevations=",".join(f"{position_elevation_deg(p):+d}" for p in prompts),
-        mover=request.mover,
-        regimes=",".join(sorted({stop.regime for stop in request.stops})),
-        polarity=request.template.polarity,
-        inverted_role=request.template.inverted_role,
-        delayed_role=request.template.delayed_role,
-        delay_us=request.template.delay_us,
-        level_matched=request.template.level_matched,
-        # WHICH evidence answered, so a take's receipts name the source of the
-        # gains its graph carries instead of leaving a reader to guess between
-        # the banked trim and the guided captures. Empty on an unmatched walk.
-        level_match_source=trim_source,
-        level_match_trims_db=",".join(
-            f"{role}:{db:g}" for role, db in sorted(level_trims.items())
-        ),
-        candidates=",".join(sorted(set(candidate_ids) - {""})),
-        consumer=LATERAL_CONSUMER_FORWARD_MODEL,
-        spl_monitor=spl_note,
-    )
-    return (
-        prompts,
-        LATERAL_CONSUMER_FORWARD_MODEL,
-        specs_by_index,
-        level_trims,
-        lateral_claims,
-        spl_monitor,
-    )
 
 
 def _resolve_measurement_level_trims(
@@ -3187,6 +3014,7 @@ def bind_production_play(
     config_dir: str | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
     program_for_phase: Callable[[str], Any],
+    program_for_spec: Callable[[Any, Any], Any] | None = None,
 ) -> "ProductionPlay":
     """Bind the shared graph and stimulus owners to this session's state."""
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
@@ -3205,6 +3033,8 @@ def bind_production_play(
     )
 
     def _program(spec: Any, stimulus_dbfs: Any) -> Any:
+        if program_for_spec is not None:
+            return program_for_spec(spec, stimulus_dbfs)
         if stimulus_dbfs is not None:
             raise ValueError("The round's program owns its stimulus level.")
         phase = spec.program_phase
@@ -3239,16 +3069,6 @@ def bind_production_play(
     return ProductionPlay(graph=session_graph, compose=compose)
 
 
-# --------------------------------------------------------------------------- #
-# what the host hands the capture provider (S1a/S1c)
-# --------------------------------------------------------------------------- #
-#
-# The plan runner itself is jasper.web.correction_crossover_v2_wired's own
-# (reached where it lives). These stay HERE because they are host policy the
-# provider merely drives: the volume lifecycle it is handed, the group-close
-# seam, and the eager-fit starter it calls back into.
-
-
 @dataclass(frozen=True)
 class V2VolumeHooks:
     """The session-volume lifecycle the runner drives (§5.5)."""
@@ -3256,81 +3076,6 @@ class V2VolumeHooks:
     open: Callable[[], Any]      # async
     close: Callable[[], Any]     # async
     abandon: Callable[[], Any]   # async
-
-
-def drive_group_close(conductor: Any, *, evidence: Mapping[str, Any] | None) -> None:
-    """The household's "all spots measured — Continue" group close (D1).
-
-    **The group-close seam at the host boundary, one owner for every
-    provider** (#2662 W2b): the wired runner drives it on the local
-    authenticated completion event, the wired runner on its local completion
-    signal, and both must run the identical sequence — persist FIRST (the
-    combine + fit are the slowest thing in the session and the wizard renders
-    from durable state, so a confirmation whose fit never reached disk would
-    leave the review screen with nothing to review), then the conductor's
-    confirm (the only thing that fits a correction in stage 1), then persist
-    the fitted result. A ``CaptureBeginRefused`` raised under the close
-    propagates to the calling runner, which ends the session as an admission
-    refusal does; PR-L4's seam has refused nothing since deviations (c)/(i).
-
-    What this deliberately does NOT do is apply — the review interlude is the
-    apply decision point (2026-07-28 ruling); the full history lives on the
-    provider's ``complete_capture_set`` docstring, whose body now
-    delegates here.
-    """
-    conductor.note_group_close_started()
-    persist_conductor_state(conductor, failure_code=None, evidence=evidence)
-    confirmed = conductor.confirm_cloud_measure_group()
-    if confirmed is not None:
-        persist_conductor_state(conductor, failure_code=None, evidence=evidence)
-
-
-def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
-    """Start the eager fit for a just-walked pre-apply cloud (owner, 2026-07-30).
-
-    Called from ``consume`` the moment the final stage-1 position is ACCEPTED,
-    which is the moment the phone starts showing the group-close confirm. The
-    household is now walking back to a browser; the combine + fit are the
-    slowest thing in the session, and until this rider they did not start until
-    that walk finished and they tapped Continue — several seconds of dead air on
-    a screen that looked stalled.
-
-    **This is the ONLY background thread stage 1 starts, and it cannot apply.**
-    Its target computes a candidate and banks it on the conductor; making that
-    candidate real still needs the household's own confirmation, and applying it
-    still needs their separate POST from the review screen (work order D1). The
-    ``handle_v2_apply``-on-a-thread this file used to run is gone and is not
-    coming back through here — pinned by
-    ``test_no_session_path_applies_anything``, which reads this function's
-    source as well as the runner's.
-
-    Fire-and-forget by design: every reason not to run is checked inside
-    ``run_speculative_group_close`` under the conductor's own lock, and the
-    result is an optimisation the confirm path never depends on. A thread that
-    cannot be started is therefore a logged non-event — the confirm fits
-    exactly as it did before this rider — and never a capture failure.
-
-    Daemonised so a session torn down mid-fit (Stop, a wizard restart) cannot
-    hold the process open waiting for work whose answer nobody will read.
-    """
-    try:
-        thread = threading.Thread(
-            target=conductor.run_speculative_group_close,
-            name="jts-v2-eager-fit",
-            daemon=True,
-        )
-        thread.start()
-    except RuntimeError:
-        # Thread exhaustion on a loaded Pi. The fit still happens, just on the
-        # confirm where it always used to.
-        log_event(
-            logger,
-            "correction.crossover_v2_speculative_close_unstarted",
-            level=logging.WARNING,
-            session_id=getattr(conductor, "session_id", ""),
-        )
-        return None
-    return thread
 
 
 # The key :func:`attach_stage2_preflight` writes onto ``status["crossover_v2"]``
@@ -3432,22 +3177,11 @@ class V2PreparedSession:
     open: Callable[[], Any]
     run_and_consume: Callable[[Any], Any]
     request_stop: Callable[[], None]
-    #: This session's position gate, or ``None`` for an ungated one. Built for
-    #: either GATED shape (``V2PlanShape.positions_gated``): the remote tier,
-    #: and a hand-walked round. ``correction_setup`` reads
-    #: :meth:`PositionGate.pending` into the status block the envelope renders,
-    #: and routes the release POST to :meth:`PositionGate.release`.
     position_gate: PositionGate | None = None
-    #: The session's completion signal for a held set (work order D1). The W3
-    #: wizard surface is what will POST this; it exists now because the
-    #: held-set walk semantics need a signal source to be complete.
     request_complete: Callable[[], None] | None = None
-    #: The session's per-take RETAKE signal. ``None`` on a GATELESS session,
-    #: which never waits for a person to serve it in. Routed from
-    #: ``POST /crossover/v2/retake`` through the same slot as
-    #: :attr:`request_complete`, and honoured in either window where the walk
-    #: is waiting on a person: a HELD BEGIN, or the held-set window.
     request_retake: Callable[[], None] | None = None
+    join_spec: Any = None
+    session_id: str = ""
 
 
 def _volume_hooks(
@@ -3467,66 +3201,23 @@ def _volume_hooks(
     door = _volume_door(camilla_factory, claim=volume_claim, reason="session")
 
     async def _open() -> Any:
-        # Hold voice paused for the WHOLE session BEFORE setting the volume, so
-        # the idle reconciler cannot revert the measurement volume in the gap
-        # before the first play (W6.1). If the volume does not actually open —
-        # a non-OPENED result OR any raise — release the pause in the finally
-        # so a failed open never strands voice paused.
-        await acquire_session_measurement_pause()
-        opened: Any = None
-        try:
-            opened = await plan.open(context.session_volume_db, door)
-        finally:
-            if str(getattr(opened, "value", opened)) != "opened":
-                await release_session_measurement_pause()
+        opened = await plan.open(context.session_volume_db, door)
         if str(getattr(opened, "value", opened)) != "opened":
-            # RETURN, rather than falling through. A volume that did not
-            # confirm is not a volume anything may be admitted against, so
-            # installing the measurement graph here would buy two CamillaDSP
-            # swaps — install and restore — for a session that never plays.
-            # The runners' own non-OPENED branch is what tells the household
-            # why, and it is only reachable if this result gets back to it.
-            #
-            # A refused CLAIM lands here too, and that is the NB1 property one
-            # frame down: ``plan.open`` establishes through the claim, so a
-            # session another holder's level-match still owns is refused before
-            # ``tuning.open()`` is ever called, and costs zero graph swaps.
             return opened
-        # AFTER the plan confirms, and that order is the whole of it. The plan
-        # writes its durable intent BEFORE the claim is taken, so a crash in
-        # the gap hydrates as a recoverable state rather than a forgotten one;
-        # then ``tuning.open()`` finds the session's claim already held at this
-        # level and takes the graph. The two are symmetric: the session opens
-        # where the plan opened, and closes where the graph went back.
 
         async def _give_back_the_level() -> None:
-            """Drain the level this open took, then let voice go.
-
-            Inner order is load-bearing: the drain runs even if the pause
-            release fails, because a fader left at measurement level is worse
-            than voice left paused.
-            """
             try:
                 await plan.abandon(door, reason="session_open_failed")
             finally:
                 await release_session_measurement_pause()
 
-        # A ``finally`` on a success flag rather than a broad ``except``: this
-        # has to cover a CANCELLED open as well as a raising one, and a
-        # ``CancelledError`` is not an ``Exception``. An open that got the
-        # level but not the graph must keep NEITHER.
         session_open = False
         try:
+            await acquire_session_measurement_pause()
             await tuning.open()
             session_open = True
         finally:
             if not session_open:
-                # SHIELDED, the same shape ``TuningSession._release_slots``
-                # uses: a cancel landing inside the drain aborts it and leaves
-                # the fader at measurement level with nobody holding it — and
-                # because the plan never latched, ``needs_recovery`` answers
-                # False, so the recovery screen never offers. Only the
-                # wall-clock ceiling would ever notice.
                 giving_back = asyncio.ensure_future(_give_back_the_level())
                 try:
                     await asyncio.shield(giving_back)
@@ -3921,15 +3612,7 @@ def bind_v2_stage_seams(
 
 
 def _resolve_prepare_wired_mic() -> Any:
-    """The measurement mic this prepare opens on (#2662 W2b).
-
-    Resolved ONCE per prepare and threaded into ``_open`` — the mint and the
-    runner build must describe one decision, not two reads of a probe that can
-    change between them. The provider is imported lazily. A resolution error
-    (``WiredMicMissing``) refuses at the tap, before any evidence store or
-    durable state is touched, carrying the provider's own code so the journal
-    names the disclosure rather than quoting it.
-    """
+    """Resolve once at admission and keep the microphone's refusal code."""
     from jasper.audio_measurement.wired_capture import WiredCaptureError
     from jasper.web import correction_crossover_v2_wired as wired
 
@@ -3970,13 +3653,6 @@ def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
 def _wired_stimulus_capture(
     wired_device: Any, evidence_store: Any, *, spl_monitor: Any = None, read_loudness_volume_db: Any = None,
 ) -> Any:
-    """The play seam's capture half: the Pi's own microphone, on the box the
-    stimulus comes out of.
-
-    ``spl_monitor`` is the watch a staged walk's stated ceiling bought
-    (:func:`_take_staged_angle_walk`); ``None`` on every session that stages
-    none, which is every ordinary one.
-    """
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
         WiredStimulusCapture,
     )  # lazy: ALSA capture boundary
@@ -3987,137 +3663,6 @@ def _wired_stimulus_capture(
         setup_reference=lambda: setup_from_hint(default_setup_calibration_for_v2()),
         spl_monitor=spl_monitor, read_loudness_volume_db=read_loudness_volume_db,
     )
-
-
-def _bind_engine_measure_leg(
-    *, tuning: Any, stimulus_capture: Any,
-    index_phase_map: Mapping[int, str], run_async: Any,
-    specs_by_index: Mapping[int, Any] | None = None,
-    records: Any, conductor: Any, retention: Any,
-) -> Callable[[int, int, Any], Mapping[str, Any]]:
-    """Route each flow phase through the shared take owner and one record write."""
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, position_geometry,
-    )
-    from jasper.active_speaker.crossover_v2.journey import GROUP_PHASES
-    from jasper.active_speaker.crossover_v2.spatial import pose_kind_fields
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-    from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
-    from jasper.active_speaker.crossover_v2.program_transaction import (
-        STIMULUS_ADMISSION_REFUSED, STIMULUS_EMISSION_FAILED,
-        STIMULUS_LEVEL_NOT_READY, STIMULUS_NOT_CAPTURED, STIMULUS_PLAY_FAILED,
-    )
-    from jasper.active_speaker.crossover_v2.session import UNPROVEN_LEVEL
-    from jasper.active_speaker.program_admission import ProgramAdmissionError
-    from jasper.active_speaker.program_playback import ProgramPlaybackError
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-    from jasper.audio_measurement.wired_capture import WiredCaptureError
-
-    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at session open
-    purposes = {index: "room" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "speaker"
-                for index, phase in index_phase_map.items() if phase in SUMMED_SWEEP_PHASES and index not in (specs_by_index or {})}
-    baselines = baseline_candidate_ids(purposes.values())
-    specs = {}
-    for index, phase in index_phase_map.items():
-        default = (specs_by_index or {}).get(index) or MeasureSpec(
-            kind="verify" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "candidate",
-            graph_scope="candidate" if phase in SUMMED_SWEEP_PHASES else "drivers",
-            candidate_id=baselines[purposes[index]] if index in purposes else "",
-        )
-        specs[index] = dataclasses.replace(default, program_phase=phase)
-
-    def _raise_incident(incident: str) -> NoReturn:
-        if incident == STIMULUS_ADMISSION_REFUSED:
-            raise ProgramAdmissionError("program re-admission refused")
-        if incident == STIMULUS_PLAY_FAILED:
-            raise ProgramPlaybackError(f"stimulus failed: {incident}")
-        if incident == STIMULUS_LEVEL_NOT_READY:
-            raise SessionVolumePlanError("no measurement volume is open")
-        if incident == STIMULUS_NOT_CAPTURED:
-            raise WiredCaptureError("the wired capture produced no evidence")
-        if incident == STIMULUS_EMISSION_FAILED:
-            raise CrossoverV2LocalSeamError("the emission mechanism failed")
-        raise CrossoverV2LocalSeamError(f"measurement failed: {incident}")
-
-    def _measure_capture(index: int, attempt: int, entry: Any) -> Any:
-        spec = specs[index]
-        pose: dict[str, Any] = {}
-        if spec.program_phase in GROUP_PHASES:
-            prompt = conductor._prompt_shown_for(spec.program_phase, index)
-            geometry = position_geometry(prompt)
-            spec = dataclasses.replace(
-                spec, positions=(geometry.degrees,) if geometry.degrees is not None else (),
-                position_axis=geometry.axis, vertical_deg=geometry.vertical_deg,
-                pose_prompts=(prompt.text,),
-            )
-            pose = {"position_deg": geometry.degrees, "position_axis": geometry.axis,
-                    "vertical_deg": geometry.vertical_deg, "prompt": prompt.text,
-                    **pose_kind_fields(geometry), "measurement_purpose": prompt.purpose}
-        elif entry is not None:
-            screen = entry.screen
-            spec = dataclasses.replace(
-                spec, positions=(int(screen.get(POSITION_DEG_KEY, 0)),),
-                vertical_deg=int(screen.get(POSITION_VERTICAL_DEG_KEY, 0)),
-            )
-        verdicts: list[Any] = []
-        restore_errors: list[Exception] = []
-
-        def _enrich(answer: Any, record: Mapping[str, Any]) -> Mapping[str, Any]:
-            if answer is None:
-                return pose
-            retention.pending.clear()
-            context = {**pose, "phase": spec.program_phase, "index": index, "attempt": attempt}
-            try:
-                run_async(tuning.restore_graph())
-            except Exception as exc:  # noqa: BLE001 - bank the completed capture, then re-raise
-                restore_errors.append(exc)
-                return {**context, "graph_restore_status": "failed",
-                        "graph_restore_error_type": type(exc).__name__}
-            verdict = conductor.consume_capture(index, attempt, answer)
-            verdicts.append(verdict)
-            metadata = dict(retention.enrich(answer, record))
-            return {**metadata, **context, "analysis_verdict": verdict}
-
-        def _banked(record: Mapping[str, Any], record_id: str) -> None:
-            retention.after_bank(record, record_id)
-            if verdicts:
-                conductor.note_take_banked(record)
-
-        async def _measured() -> Any:
-            measured: list[Any] = []
-
-            async def _body() -> None:
-                measured.append(await tuning.measure(spec))
-
-            await _under_measurement_isolation(_body)
-            return measured[0]
-
-        records.enrich, records.after_bank = _enrich, _banked
-        try:
-            # The capture owns playback bounds and cleanup; analysis can exceed the HTTP deadline.
-            outcome = run_async(_measured(), timeout=None)
-        finally:
-            records.enrich = records.after_bank = None
-            _persist_execution_result(
-                str(tuning.session_id), playback=tuning.last_playback.as_dict(),
-                record_ids=list(tuning.banked_record_ids), index=index, attempt=attempt,
-            )
-        if len(outcome.stimuli) != 1:
-            raise CrossoverV2LocalSeamError("one flow slot must produce exactly one stimulus")
-        stimulus = outcome.stimuli[0]
-        if restore_errors:
-            raise restore_errors[0]
-        if verdicts:
-            return verdicts[0]
-        answer = stimulus_capture.take_answer()
-        if answer is not None and stimulus.incident == UNPROVEN_LEVEL:
-            run_async(tuning.restore_graph())
-            verdict = conductor.consume_capture(index, attempt, answer)
-            retention.enrich(answer, {})
-            return verdict
-        _raise_incident(stimulus.incident or STIMULUS_NOT_CAPTURED)
-
-    return _measure_capture
 
 
 def _build_wired_run(
@@ -4131,7 +3676,7 @@ def _build_wired_run(
     ceiling_s: float,
     complete_event: threading.Event,
     retake_event: threading.Event,
-    capture_stimulus: Any = None,
+    **host: Any,
 ) -> Callable[[Any], Any]:
     """The provider runner, driving the conductor hooks.
 
@@ -4150,7 +3695,7 @@ def _build_wired_run(
         retake_event=retake_event,
         position_gate=position_gate,
         evidence_refs=evidence_refs,
-        capture_stimulus=capture_stimulus,
+        **host,
     )
 
 
@@ -4200,88 +3745,7 @@ def prepare_v2_session(
     camilla_factory: Any,
     verify_only: bool = False,
 ) -> V2PreparedSession:
-    """Prepare one v2 capture hosting — ``verify_only`` picks which stage.
-
-    ``POST /crossover/v2/session`` (S1a) when false, ``POST
-    /crossover/v2/verify`` when true. The flag is the dispatch's own
-    discriminator handed one frame down, never re-derived here
-    (``correction_handlers._handle_crossover_v2_capture``).
-
-    **One sequence, and the nine steps along it that fork.** From the
-    capture-source resolution onward both stages run the same steps in the same
-    order: resolve the source, rebind the plan shape, open the evidence bundle,
-    build the position gate, mint the capture session, re-arm the walked-away
-    ceiling, bind the evidence publishers, bind the play seam, open the journey,
-    bind the seams, construct the conductor, persist, build the runner, return a
-    :class:`V2PreparedSession`. That shared SEQUENCE is why they are one
-    function rather than two free to drift apart; it is not a claim that every
-    step is identical. Exactly nine of them read ``verify_only`` — the prologue
-    (which gates run, and whether the round is RESOLVED from the request or
-    REHYDRATED from durable state), the stage-1-only plan flags and staged angle
-    walk, the prior-snapshot read against the durable rehydration, the position
-    gate's journal line (``stage`` and ``captures``, never the gate predicate,
-    which is shared), the session spec builder, the play seam's
-    ``protection_sections_by_role`` (stage 2 takes no MEASURE capture, so it
-    leaves the seam's own ``None``), the journey's capability set, the
-    conductor's constructor and its kwargs, and the returned ``label``.
-
-    ``bind_v2_stage_seams`` is deliberately not among the nine: one call serves
-    both stages, which is what keeps "which callable implements each seam"
-    answerable in one place instead of at two sites free to disagree.
-
-    **Stage 1** (``verify_only=False``). Gates (fail-closed, before any capture
-    registration): the volume-recovery gate (``needs_recovery`` — the W2
-    ruling) and the conductor-context resolution. Hydration (S1d): the durable
-    state is hydrated through :meth:`CrossoverV2Session.hydrate` with the NEW
-    capture session id — a prior session's CHECK/MEASURE evidence is invalidated
-    per §5.6 (and logged); the fresh session starts at CHECK.
-
-    ``raw["tier"]`` selects the commission instrument (flow-simplification
-    §3): the wizard posts the household's explicit choice, and an unrecognised
-    one is refused before any capture registration rather than silently measured
-    as something else. It is resolved into ONE :class:`V2PlanShape` here, which
-    is then threaded into both the emitted spec and the conductor's index→phase
-    map — the two surfaces that must agree about the walk and used to reach
-    their defaults independently.
-
-    **An ABSENT tier inherits the lapsed session's, and #2639 is the
-    asymmetry that fixed.** ``resolve_plan_shape`` is strict about unknown
-    names and lenient about absence, resolving nothing to ``TIER_FULL``; every
-    re-measure action the envelope mints posts an empty body, because the
-    action does not know what the session was. So a REMOTE session's own retry
-    silently minted ``full`` — a tier the turntable rig cannot walk, since full
-    is not externally positioned and its verify plan raises in
-    ``position_angle_deg`` — and an Express household was demoted by the same
-    line. The verify-only stage reads its tier from durable state
-    (``_verify_plan_shape``); this reads the same fact from the same place when
-    the body does not name one, which makes the two stages agree rather than
-    giving the retry a second rule. An explicit body tier still wins: the tier
-    chooser is how a household changes instrument.
-
-    **Stage 2** (``verify_only=True``). Requires a durable post-apply state
-    (MEASURE accepted + applied). Opens a NEW capture session hosting a
-    post-apply plan; the conductor is rebuilt in verify-only mode (CHECK/MEASURE
-    marked accepted, applied, verify priors rehydrated from the durable state),
-    with its index→phase map built by ``build_v2_verify_index_phase_map``.
-
-    **ONE entry point, two shapes** (two-stage commission work order D2,
-    owner-confirmed 2026-07-29) — generalized over the plan shape rather than
-    forked into a second builder:
-
-    * ``raw["stage"] == "post_apply"`` — **stage 2**, the tier's own shipped
-      verify walk. The tier comes from the durable state the measuring session
-      wrote, so the household's choice at the tier chooser governs both stages.
-      Express is one position at the mark; Full is the multi-position spatial
-      walk whose combined curve the after-chart, the post-apply spec verdict,
-      and the delta probe read. Running Full's stage 2 as a single position
-      would leave its post-apply group with 0 curves and no combine at all.
-    * anything else (the default, and every shipped caller) — the **§5.2
-      recovery re-verify**: one entry at the mark, byte-identical to what this
-      endpoint has always done, and what a FAILED stage 2 offers.
-
-    An unrecognised ``stage`` is refused rather than silently measured as
-    something else — the same strictness ``normalize_tier`` applies to a tier.
-    """
+    """Prepare the inline run or the existing post-apply verification."""
     from jasper.active_speaker.crossover_v2.capture_plan import (
         session_wall_clock_ceiling_s,
     )
@@ -4308,9 +3772,6 @@ def prepare_v2_session(
             raise CrossoverV2Refused(
                 "the measurement volume needs recovery; recover it before verifying"
             )
-        # ``or {}`` rather than a None check, so the narrowing survives into
-        # ``_open`` below: an absent state and an unapplied one are the same
-        # refusal, and the empty mapping never reaches past this gate.
         state = load_v2_state() or {}
         if not state.get("applied"):
             raise CrossoverV2Refused(
@@ -4341,51 +3802,39 @@ def prepare_v2_session(
         context = resolve_conductor_context(status)
     else:
         from jasper.active_speaker.branch_chain import confirmed_protection_sections
-        from jasper.active_speaker.crossover_v2.capture_plan import (
-            STAGE1_INCLUDES_CLOUD_MEASURE,
-            STAGE1_INCLUDES_ENTRY_BASELINE,
-            build_v2_cloud_index_phase_map,
-            build_v2_session_spec,
-            resolve_plan_shape,
-        )
         from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
         from jasper.active_speaker.crossover_v2.journey import (
-            LATERAL_CONSUMER_FC_SELECTOR,
+            LATERAL_CONSUMER_FORWARD_MODEL,
         )
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
         )
 
-        requested_tier = (raw.get("tier") if raw else None) or None
-        if requested_tier is None:
-            # #2639. Read fresh rather than from any snapshot: this runs before
-            # hydration, and the lapsed session's tier is exactly what the durable
-            # state's ``tier`` key holds. ``None`` here is still ``None`` to
-            # ``resolve_plan_shape`` — a first session, with no lapsed tier to
-            # inherit, keeps the shipped default.
-            requested_tier = ((load_v2_state() or {}).get("tier")) or None
+
+        if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
+            raise CrossoverV2Refused("An inline v3 plan is required", code="program_plan_shape_invalid")
         try:
-            plan_shape = resolve_plan_shape(requested_tier)
-        except CrossoverV2FlowError as exc:
-            raise refused_from_flow_error(exc) from exc
-        if session_volume_plan().needs_recovery:
-            raise CrossoverV2Refused(
-                "the measurement volume needs recovery; recover it before starting "
-                "a new session"
-            )
-        # W6.1 E1/E3-at-open: force-drain a stale-active (ceiling) and reset a
-        # residual owned-active leftover so plan.open() starts clean — the silent
-        # 200→adapter_failed loop happened when a prior session left the volume
-        # active and open() then refused. Runs AFTER the needs_recovery gate (which
-        # refused a crash-active / unresolved state toward the recover screen), then
-        # re-gates in case a drain here could not confirm and latched unresolved.
-        reconcile_session_volume_for_new_session(run_async, camilla_factory)
+            request = AngleCaptureRequest.from_mapping(raw["plan"])
+        except LateralWalkRefused as exc:
+            raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
+        except (ValueError, TypeError, CrossoverV2FlowError) as exc:
+            raise CrossoverV2Refused(str(exc), code="program_plan_shape_invalid") from exc
+        plan_shape = None
         if session_volume_plan().needs_recovery:
             raise CrossoverV2Refused(
                 "the measurement volume needs recovery; recover it before starting "
                 "a new session"
             )
         context = resolve_conductor_context(status)
+        facts = preflight_live.read_preflight_facts(request, context=context)
+        report = preflight.preflight(request, facts)
+        issue = next((issue for issue in report.issues if issue.blocking), None)
+        if issue is not None:
+            raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
+        request = report.plan
+        assert request.level.resolved is not None
+        context = dataclasses.replace(context, session_volume_db=request.level.resolved.reference_volume_db)
+        captures = prepare_plan_captures(request, candidate_scopes=report.candidate_scopes)
         try:
             protection_sections = confirmed_protection_sections(
                 context.safety_profile, context.role_targets
@@ -4394,84 +3843,21 @@ def prepare_v2_session(
             raise CrossoverV2Refused(
                 "The confirmed driver protection cannot be used for this measurement."
             ) from exc
-    # #2662 W2b: the microphone that answers this session's asks. After the
-    # speaker-level gates (they are prior questions) and before any state is
-    # opened, so a refused start (unplugged mic) costs no side effects (gate
-    # S3, both stages).
-    wired_device = _resolve_prepare_wired_mic()
-    # Rebound ONCE, here, so every surface downstream — the index map, the
-    # spec, the gate — reads one shape rather than a half-updated one.
+
+    wired_device = _resolve_prepare_wired_mic() if verify_only else None
     plan_shape = _hand_released_plan_shape(plan_shape)
-    # Capture index -> the MEASURE spec a staged walk states there (R-1's
-    # reverse polarity, and #3498's per-pose candidate). Bound here rather than
-    # inside the branch below because ``_open`` reads it on both stages, and
-    # stage 2 takes no MEASURE capture at all: empty is the engine leg's own
-    # default spec at every MEASURE index, which is every ordinary session.
     engine_measure_specs: dict[int, Any] = {}
-    # The per-role attenuation that spec's graph carries, resolved once at
-    # adoption beside it. Empty on every session that stages no level-matched
-    # walk, which is every ordinary one.
     engine_level_trims: dict[str, float] = {}
-    # What each stop of a staged walk was measured UNDER, in stop order, for
-    # the pose records the flow banks. Empty on every session that stages none.
-    lateral_claims: tuple[Any, ...] = ()
-    # The live SPL watch a staged walk's STATED ceiling bought, held here for
-    # the capture half built in ``_open``. ``None`` on every session that
-    # stages no ceiling, which is every ordinary one.
-    engine_spl_monitor: Any = None
     if not verify_only:
-        include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
-        # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
-        # the cloud flag, rather than passed as a literal below, because an
-        # operator's staged angle walk flips it and the spec and the conductor's
-        # index map must be built from ONE decision either way.
-        include_lateral = False
-        # #2291's entry baseline. Same reason, same place: the emitted plan and the
-        # conductor's index→phase map are two surfaces that must agree about which
-        # captures this session runs, and reading the flag twice is how they get to
-        # disagree.
-        include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
-        # ...and the map those three flags decide, built ONCE: the journal line
-        # below and the conductor's walk read one plan, not two readings of it.
-        stage1_index_phase = build_v2_cloud_index_phase_map(
-            plan_shape=plan_shape,
-            include_cloud_measure=include_cloud_measure,
-            include_lateral=include_lateral,
-            include_entry_baseline=include_entry_baseline,
+        stage1_index_phase = {index: capture.spec.program_phase for index, capture in enumerate(captures, 1)}
+        engine_measure_specs = {index: capture.spec for index, capture in enumerate(captures, 1)}
+        engine_level_trims, _ = _resolve_measurement_level_trims(
+            request.template, preset=context.preset, topology=context.topology,
         )
-        # P2's staged angle walk (#2732). ONE take, feeding the map, the spec and
-        # the conductor's two lateral kwargs. Before any state is opened, so a
-        # refusal costs nothing. The map above is this walk's ``base_entries`` —
-        # the captures that are NOT the walk — and is rebuilt below when one is
-        # taken; that rebuild is still ONE decision, because the take is not redone.
-        staged_walk = _take_staged_angle_walk(
-            plan_shape,
-            base_entries=len(stage1_index_phase),
-            lateral_group_present=include_lateral,
-            plans_cloud_group=include_cloud_measure,
-            preset=context.preset,
-            topology=context.topology,
-            device=wired_device,
-        )
-        lateral_prompts: tuple[Any, ...] | None = None
-        lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
-        if staged_walk is not None:
-            (
-                lateral_prompts,
-                lateral_consumer,
-                engine_measure_specs,
-                engine_level_trims,
-                lateral_claims,
-                engine_spl_monitor,
-            ) = staged_walk
-            include_lateral = True
-            stage1_index_phase = build_v2_cloud_index_phase_map(
-                plan_shape=plan_shape,
-                include_cloud_measure=include_cloud_measure,
-                include_lateral=include_lateral,
-                include_entry_baseline=include_entry_baseline,
-                lateral_prompts=lateral_prompts,
-            )
+        if request.template.level_matched and not engine_level_trims:
+            raise CrossoverV2Refused("No measured driver levels are available", code="walk_level_match_no_evidence")
+        lateral_prompts = tuple(capture.resolved(request).prompt
+            for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     if verify_only:
         import numpy as np
@@ -4484,43 +3870,16 @@ def prepare_v2_session(
                 np.asarray(sum_raw["freqs_hz"], dtype=float),
                 np.asarray(sum_raw["magnitude_db"], dtype=float),
             )
-        # Two-stage commission D4: the prediction's stored spec verdict, rehydrated
-        # exactly like ``gate_ms`` below so this re-arm's own persist carries it
-        # forward instead of blanking it. Absent (a state written before D4, or an
-        # ungradeable prediction) stays None — unknown, never a pass.
         predicted_spec = (
             priors_raw.get("predicted_spec") if isinstance(priors_raw, Mapping) else None
         )
         predicted_spec = predicted_spec if isinstance(predicted_spec, Mapping) else None
-        # The delta probe's commanded axis, rehydrated (#2291 Phase 3). This is the
-        # stage the probe RUNS in, and stage 1 is the only stage that can produce
-        # the curve, so without this every shipped stage 2 graded its correction
-        # with the shortfall-vs-model-error discriminator switched off. ``None``
-        # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
-        # permission granted either.
         commanded_delta = commanded_delta_prior_from_state(state)
-        # The probe's STATE axis, rehydrated on exactly the same route and for the
-        # same reason (#2614). ``None`` narrows the two directional safety rules to
-        # the change axis alone, which the probe's own caller names on the journal
-        # rather than letting a hearing-safety mask quietly shrink.
         declared_transfer = declared_transfer_prior_from_state(state)
-        # What stage 1 proposed, rehydrated (#2392) — the identity the round
-        # receipt names. Stage 2 plans nothing, so this is the only channel, and an
-        # absent key (a state written before #2392, or a stage 1 whose proposal
-        # assembly was refused) stays ``""``: the receipt then records the
-        # candidate fingerprint under an explicit ``proposal_fingerprint_kind``
-        # rather than claiming a proposal identity it never had.
         proposal_fingerprint = (
             str(priors_raw.get("proposal_fingerprint") or "")
             if isinstance(priors_raw, Mapping) else ""
         )
-        # #2291's measured "before", rehydrated. Stage 2 never captures one — its
-        # plan has no ``PHASE_ENTRY_BASELINE`` entry, by construction, because the
-        # baseline has to precede the apply this stage is verifying — so this is
-        # the only way the benefit verdict gets a side to compare against. ``None``
-        # stays ``entry_baseline_unavailable``: INDETERMINATE, never a pass, and
-        # declared to the capability journal below so the verdict's reason is not
-        # the first place anyone learns it was missing.
         entry_baseline = entry_baseline_prior_from_state(state)
         alignment_objective = str(
             (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
@@ -4529,15 +3888,6 @@ def prepare_v2_session(
         gate_ms = (
             priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
         )
-        # Measurement-honesty gate G3's PREVIOUS reference — read as dated
-        # history, never rehydrated as this session's comparator (#1927). This
-        # re-arm always establishes its own baseline from its own first usable
-        # VERIFY attempt; the only thing this record can do is make the session
-        # SAY it reset the reference, and by how much. Absent (a state written
-        # before this key, or a session that never reached a usable VERIFY pilot)
-        # simply leaves the disclosure silent. Shape validation lives in
-        # ``CrossoverV2Session.__init__`` so the "values plus a date, or
-        # nothing" rule has one owner.
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
@@ -4573,50 +3923,24 @@ def prepare_v2_session(
     stop_lock = threading.Lock()
     complete_event = threading.Event()
     retake_event = threading.Event()
-    # The position gate — built for any GATED shape, so a tap-paced session
-    # (every ungated round) still carries no gate at all and every begin reaches
-    # the conductor exactly as it always has. Two shapes are gated: the arm's
-    # remote tier, whose driver releases each hold, and a hand-walked round on
-    # the wired source, where a person does. ``plan_shape`` is ``None`` for the
-    # verify-only recovery re-arm, which has no tier and therefore no gate — it
-    # is the one-sweep session a household starts by hand, at the mark, with
-    # nowhere to walk to.
-    position_gate = (
-        PositionGate()
-        if plan_shape is not None and plan_shape.positions_gated
-        else None
+    position_gate = PositionGate() if not verify_only or (plan_shape and plan_shape.positions_gated) else None
+    capture_session_id = "wired-" + secrets.token_hex(8)
+    spec = None if verify_only else build_inline_session_spec(
+        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        roles_bands=context.roles_bands, fc_hz=context.fc_hz,
+        acknowledgement_binding=acknowledgement_binding,
+        retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
+        default_setup_calibration=default_setup_calibration_for_v2(),
     )
-    if position_gate is not None and plan_shape is not None:
-        log_event(
-            logger,
-            "correction.crossover_v2_remote_session_open",
-            stage=2 if verify_only else 1,
-            tier=plan_shape.tier,
-            # WHICH mover releases this session's holds. The event name is the
-            # arm's and stays it — a driver greps it, and the doc names it —
-            # so the second gated shape says so in a field instead of a second
-            # event nothing is watching for. The shape's own field name, not a
-            # second word for it.
-            hand_released=plan_shape.hand_released_positions,
-            # The captures this session will ACTUALLY take, off that plan. Stage
-            # 1 logged ``plan_shape.measure_capture_target`` — the
-            # cloud-INCLUSIVE shape target, 10 where the shipped stage 1 walks 3.
-            # The reader is an external positioner with no screen to check it
-            # against, and OVER-reporting is the direction that STALLS a walk: a
-            # driver sized at 10 waits for seven captures that are never coming,
-            # until the session ceiling expires (#2506). On 2026-08-19 a
-            # wired-night driver met exactly that contradiction — its own
-            # ``--complete-after 3`` against this line's 10 — and settled it by
-            # re-deriving the count by hand on the live box.
-            captures=(
-                plan_shape.verify_capture_target
-                if verify_only else len(stage1_index_phase)
-            ),
-        )
+    if not verify_only:
+        evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
 
     held: _HeldSession | None = None
 
     def _open() -> Any:
+        nonlocal spec
+        device = wired_device if verify_only else _resolve_prepare_wired_mic()
+        assert device is not None
         if verify_only:
             spec = build_v2_verify_session_spec(
                 context.fc_hz,
@@ -4625,61 +3949,21 @@ def prepare_v2_session(
                 plan_shape=plan_shape,
                 default_setup_calibration=default_setup_calibration_for_v2(),
             )
-        else:
-            spec = build_v2_session_spec(
-                context.roles_bands,
-                # THIS round's corner, the same one the conductor below was opened
-                # at. The entry-baseline program this plan announces is stage 2's
-                # own anchor, and ``build_verify_program`` is fc-dependent TWICE:
-                # the sweep's low bound is ``min(VERIFY_F_LO_HZ=150, fc/2)`` (live
-                # below fc = 300) and the leading pilot's high bound is
-                # ``min(VERIFY_PILOT_F_HI_HZ=800, fc/VERIFY_PILOT_FC_CLEARANCE_RATIO
-                # =2.5)`` (live below fc = 2000). So a plan built at the incumbent
-                # corner while the session solves at a pinned one announces a
-                # DIFFERENT program at every corner under 2000 Hz — which is most
-                # of a two-way's legal pin band, jts3's 1600-2500 included, not the
-                # sub-300 Hz curiosity an earlier version of this comment claimed.
-                context.fc_hz,
-                acknowledgement_binding=acknowledgement_binding,
-                plan_shape=plan_shape,
-                include_cloud_measure=include_cloud_measure,
-                include_lateral=include_lateral,
-                include_entry_baseline=include_entry_baseline,
-                lateral_prompts=lateral_prompts,
-                branch_diagnostic=any(s.graph_scope == "candidate_branches" for s in engine_measure_specs.values()),
-                lateral_candidate_ids=(
-                    tuple(claim.candidate_id for claim in lateral_claims)
-                    if any(s.graph_scope != GRAPH_SCOPE_DRIVERS for s in engine_measure_specs.values())
-                    else None
-                ),
-                default_setup_calibration=default_setup_calibration_for_v2(),
-            )
-        # This stage's own wall-clock budget, read ONCE off the plan it just
-        # emitted: the runner's confirm-wait is bounded by it and the
-        # walked-away volume ceiling is armed from it further down, and those
-        # two must describe the same session (issue #2509).
+        assert spec is not None
         ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
-        rc = _mint_wired_session(wired_device, spec)
-        # The conductor + publishers bind to the MINTED provider session id
-        # (the seam's identity rule — the wired id rides the same key).
-        capture_session_id = rc.pi_session.session_id
-        # Re-arm the walked-away ceiling from THIS stage's own plan, BEFORE the
-        # volume opens. The volume plan is process-global, so a preceding
-        # session would otherwise leave its ceiling in force in either
-        # direction: a cloud stage 1 legitimately outlasts the 3-entry flow's
-        # window, and a 1-entry stage 2 cannot possibly need a cloud's. Scaled
-        # from the plan this session actually emitted, never from the constants,
-        # so a caller-configured cloud is covered too.
+        rc = _mint_wired_session(device, spec)
+        if not verify_only:
+            rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
+        session_id = rc.pi_session.session_id
         session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
         publish_check, publish_candidate, refs = bind_evidence_publishers(
-            evidence_store, capture_session_id, run_async
+            evidence_store, session_id, run_async
         )
-        # Written by the play seam, read by analyze.
         capture_provenance = CaptureProvenanceRecorder()
         production_play = bind_production_play(
             camilla_factory=camilla_factory,
             evidence_store=evidence_store,
-            capture_session_id=capture_session_id,
+            capture_session_id=session_id,
             topology=context.topology,
             preset=context.preset,
             role_channels=context.role_channels,
@@ -4687,24 +3971,18 @@ def prepare_v2_session(
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
-            # Stage 2 takes no MEASURE capture, so it declares no measurement
-            # protection sections and rides the seam's own "none" default.
             protection_sections_by_role=(
                 None if verify_only else protection_sections
             ),
             declared_sensitivities=context.declared_sensitivities,
             provenance=capture_provenance,
             program_for_phase=lambda phase: conductor.program_for_phase(phase),
+            program_for_spec=lambda spec, gain: (
+                conductor.program_for_phase(spec.program_phase) if verify_only and gain is None
+                else compose_plan_program(conductor, spec, gain)),
         )
         session_graph = production_play.graph
         if verify_only:
-            # This stage's journey (#2291 Phase 4), the same contract stage 1
-            # opens and differing only in its arguments. ``available`` states
-            # facts about the rehydration above and nothing more — which slug
-            # each fact answers to is the journey's, so the journal's "missing"
-            # line cannot drift from what the conductor was really constructed
-            # with. No ``verify_capture_target``: this plan really does contain
-            # VERIFY, so the phase-derived reading is already the right one.
             opening = open_stage(
                 STAGE_VERIFY_CAPABILITIES,
                 index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
@@ -4715,29 +3993,15 @@ def prepare_v2_session(
                 ),
             )
         else:
-            # This stage's journey, resolved once (#2291 Phase 4). The index→phase
-            # map is the one built above from the SAME resolved plan shape the
-            # emitted spec used — not merely the same function at its own defaults
-            # — so the prompt an entry carries, the phase the conductor runs for
-            # that index, and the count the journal announced can never disagree.
-            # ``verify_capture_target`` is the tier's own number, handed over as a
-            # fact: the boost-permission rule that reads it (work
-            # order D2's consequence — this session's phases carry no VERIFY,
-            # because the post-apply sweep is stage 2) belongs to the journey.
             opening = open_stage(
                 STAGE_MEASURE_CAPABILITIES,
                 index_phase_map=stage1_index_phase,
-                verify_capture_target=plan_shape.verify_capture_target,
+                verify_capture_target=0,
             )
-        # ONE binding for both stages. ``bind_v2_stage_seams`` is already the
-        # single owner of "which callable implements each seam"; taking it at
-        # one call site is what stops the two stages disagreeing about one —
-        # which they had begun to, stage 2 reaching its check publisher through
-        # a second, underscore-prefixed name for the same object.
         seams = bind_v2_stage_seams(
             opening,
             evidence_store=evidence_store,
-            capture_session_id=capture_session_id,
+            capture_session_id=session_id,
             refs=refs,
             publish_check=publish_check,
             publish_candidate=publish_candidate,
@@ -4747,15 +4011,8 @@ def prepare_v2_session(
         )
         if verify_only:
             conductor = CrossoverV2Session(
-                session_id=capture_session_id,
-                # The topology the round being graded was MEASURED and APPLIED at
-                # — the pin when the durable state carried one, else the context's
-                # own. Resolved once, above.
+                session_id=session_id,
                 source_preset=context.preset,
-                # Stage 1's twin, and the ONLY statement of the fact this session
-                # gets: this ctor is handed no ``tier`` at all, so before #2879 a
-                # geometry-locked stage-2 group prompted for the 75 cm rung even on
-                # the arm. The gate above and this now read one shape.
                 positions_gated=bool(plan_shape and plan_shape.positions_gated),
                 roles_bands=context.roles_bands,
                 fc_hz=context.fc_hz,
@@ -4797,7 +4054,7 @@ def prepare_v2_session(
             series_position = series_position_from_state(prior_raw)
             conductor = CrossoverV2Session.hydrate(
                 prior_snapshot,
-                session_id=capture_session_id,
+                session_id=session_id,
                 source_preset=context.preset,
                 roles_bands=context.roles_bands,
                 fc_hz=context.fc_hz,
@@ -4805,20 +4062,14 @@ def prepare_v2_session(
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
                 session_volume_db=context.session_volume_db,
                 seams=seams,
-                tier=plan_shape.tier,
-                # The gate's own fact, handed down rather than re-derived from the
-                # tier: a geometry-locked retake asks for a pose no HELD walk can
-                # state, so the group refuses it for either gated shape.
-                positions_gated=plan_shape.positions_gated,
+                positions_gated=True,
                 index_phase_map=opening.plan.index_phase_map,
                 post_apply_verifies=opening.plan.post_apply_verifies,
                 driver_spacing_m=context.driver_spacing_m,
                 driver_class_by_role=context.driver_class_by_role,
                 radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-                # #2732 P2. From the SAME take the map and the spec above read.
-                lateral_consumer=lateral_consumer,
+                lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 lateral_prompts=lateral_prompts,
-                lateral_claims=lateral_claims,
                 measure_specs_by_index=engine_measure_specs,
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
@@ -4827,51 +4078,50 @@ def prepare_v2_session(
                 speaker_id=context.topology.topology_id,
                 series_position=series_position,
             )
-        # Stage 2 keeps the durable candidate/applied facts and rebinds the
-        # session id; stage 1 writes its fresh one.
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        # The engine's session, constructed HERE and held for the run's
-        # lifetime. Its graph slot is the one this stage just bound, so the
-        # measurement graph is a field on an object that dies with the run.
         from jasper.active_speaker.crossover_v2.session import TuningSession
 
-        # ONE claim for this session, minted HERE and injected into both the
-        # things that hold it: the engine's volume seam, and the plan's door.
-        # Made at the composition root rather than reached for afterwards —
-        # ``EngineSeams`` is engine-internal, and a front end that read
-        # ``tuning.seams.volume`` back out would be doing engine work outside
-        # the engine (``session_seams.EngineSeams``, wave 2's enforcement pin).
         volume_claim = _session_volume_claim()
-        # The half that records what a stimulus does to the room — minted ONCE,
-        # because two parties hold the same object: the play transaction (which
-        # records across the play and banks the path) and the walk (which
-        # drains the minted answer so `consume_capture` grades the very take
-        # the engine banked).
+        engine_spl_monitor, spl_note = spl_watch(
+            None if verify_only else request.spl_ceiling_db_spl,
+            topology=context.topology, preset=context.preset, device=device,
+            sensitivity=resolved_household_sensitivity(device),
+            resolved_ceiling_db_spl=None if verify_only else report.spl_ceiling_db_spl,
+        )
         stimulus_capture = _wired_stimulus_capture(
-            wired_device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
+            device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
         )
         from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
-        captured_records = CapturedRecordStore(
-            _record_store(evidence_store, capture_session_id), stimulus_capture,
-        )
+        manifest = RunManifest(session_id, _record_store(evidence_store, session_id),
+                               incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
+        captured_records = CapturedRecordStore(manifest, stimulus_capture)
+
         tuning = TuningSession(
-            session_id=capture_session_id,
+            session_id=session_id,
             seams=bind_v2_engine_seams(
                 session_graph=session_graph,
-                # The session's own program door, so a stimulus is picked BY
-                # IDENTITY from what this conductor composed rather than
-                # recomposed at a guessed level.
                 compose_stimulus=production_play.compose,
                 capture_stimulus=stimulus_capture,
                 records=captured_records,
                 volume_claim=volume_claim,
             ),
             measurement_level_db=context.session_volume_db,
-            # Resolved at adoption, applied here: the session installs the
-            # trims a ``level_matched`` spec asks for and derives none of its
-            # own. Empty on every session whose walk asked for no level match.
             level_match_trims_db=engine_level_trims,
         )
+        analyze, assessor = bind_plan_analysis(conductor, captured_records, manifest=manifest,
+                                              evidence=refs, verify_only=verify_only)
+        run_request = None if verify_only else request
+        run_captures = None if verify_only else captures
+        if verify_only:
+            run_request = AngleCaptureRequest(stops=tuple(
+                AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
+                          elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
+                for entry in spec.capture_plan.entries
+            ))
+            run_captures = tuple(PlanCapture(stop, MeasureSpec(
+                kind="verify", graph_scope="candidate", candidate_id=BASE_CANDIDATE, positions=(stop.angle_deg,),
+                vertical_deg=stop.elevation_deg, program_phase=opening.plan.index_phase_map[index],
+            )) for index, stop in enumerate(run_request.stops, 1))
         nonlocal held
         source_run = _build_wired_run(
             conductor,
@@ -4886,14 +4136,10 @@ def prepare_v2_session(
             ceiling_s=ceiling_s,
             complete_event=complete_event,
             retake_event=retake_event,
-            capture_stimulus=_bind_engine_measure_leg(
-                tuning=tuning,
-                stimulus_capture=stimulus_capture,
-                index_phase_map=opening.plan.index_phase_map,
-                run_async=run_async,
-                specs_by_index=engine_measure_specs,
-                records=captured_records, conductor=conductor, retention=seams.bank_take,
-            ),
+            tuning=tuning, manifest=manifest, analyze=analyze, assessor=assessor,
+            request=run_request, captures=run_captures,
+            candidate_scopes={} if verify_only else report.candidate_scopes,
+            spl_monitor=spl_note,
         )
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc
@@ -4930,19 +4176,14 @@ def prepare_v2_session(
 
     return V2PreparedSession(
         label=V2_CAPTURE_KIND_VERIFY if verify_only else V2_CAPTURE_KIND_SESSION,
+        join_spec=spec,
+        session_id=capture_session_id,
         open=_open,
         run_and_consume=_run,
         request_stop=_request_stop,
         position_gate=position_gate,
         request_complete=complete_event.set,
         request_retake=(
-            # Carried only by a walk that can ever WAIT for a person, which is
-            # the same question the gate answers: the retake is served at a
-            # HELD BEGIN or in the held-set window, and a gateless walk reaches
-            # neither — the recovery re-arm is one sweep at the mark with no
-            # group to hold open. Carrying it there would answer a household's
-            # POST with ok:true and then do nothing at all, which is the one
-            # shape a signal seam must never have.
             retake_event.set if position_gate is not None else None
         ),
     )

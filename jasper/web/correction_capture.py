@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+from ..active_speaker.capture_status import CAPTURE_COMPLETE, CAPTURE_STOPPED, CAPTURE_FAILED
 from ..audio_measurement import household_mic
+from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from ..log_event import log_event
 
 from ._common import refusal_envelope
@@ -35,16 +37,16 @@ from . import correction_runtime
 from .correction_runtime import logger
 
 
-# Guards the capture slot below. Lazy work only.
+# A pending plan holds no resources; only the active slot owns hardware and signals.
+# At most one of each may exist: staging never displaces either owner.
 # ORDERING: never hold this lock across a correction_runtime bridge call
 # (ensure_loop / run_async) — loop work takes this lock too, so the bridge
 # would stall behind the holder.
 _session_lock = threading.Lock()
+_join_lock = threading.Lock()  # Serialize HTTP joins without holding the loop-shared lock.
 
-# The measurement capture in flight, surfaced in /status, or None. Claimed by
-# the route that opens a session and updated by its background runner. Guarded
-# by _session_lock (same single-session scope).
 _capture_slot: dict[str, Any] | None = None
+_pending_capture: tuple[CaptureKind, Callable[[str], AbstractContextManager[Any]]] | None = None
 _capture_stop_request: Callable[[], None] | None = None
 # The active session's position gate, or None — set for a GATED round (the
 # remote commission tier, and a hand-walked round).
@@ -70,6 +72,11 @@ def _set_capture_slot(value: dict[str, Any] | None) -> None:
     global _capture_slot, _capture_stop_request, _capture_position_gate
     global _capture_complete_request, _capture_retake_request
     with _session_lock:
+        if value is not None and _capture_position_gate is not None:
+            value = {**value, "run": _capture_position_gate.published().get("run")}
+        if value is not None and _capture_slot and value.get("kind") == _capture_slot.get("kind"):
+            if "join_accepted" in _capture_slot:
+                value = {**value, "join_accepted": _capture_slot["join_accepted"]}
         _capture_slot = value
         if value is None or value.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
             _capture_stop_request = None
@@ -90,22 +97,15 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
     another flow's waiting state.
     """
     capture = _get_capture_slot()
-    if capture is None:
+    with _session_lock:
+        pending = _pending_capture
+    if pending is not None and pending[0].label.startswith(kind_prefix) and (
+        capture is None or capture.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES
+        or not str(capture.get("kind") or "").startswith(kind_prefix)
+    ):
+        return _pending_payload(pending[0])
+    if capture is None or not str(capture.get("kind") or "").startswith(kind_prefix):
         return None
-    if not str(capture.get("kind") or "").startswith(kind_prefix):
-        return None
-    # A gated session's live position hold AND the entry its last grant is
-    # executing, merged in here rather than pushed into the slot by the gate:
-    # the gate owns both facts and hands them over under one lock, so there is
-    # one writer and no window in which the slot advertises a hold the gate has
-    # already released or pairs it with an entry already executing.
-    #
-    # THREE guards keep a hold from outliving its session, and none of them is
-    # the envelope: ``_set_capture_slot`` drops ``_capture_position_gate`` as
-    # soon as the slot leaves an in-flight status; the in-flight test below
-    # re-checks that on every read; and the gate clears its own ``_pending`` on
-    # both exits from a hold. A finished session therefore reports no hold even
-    # if its gate object is still referenced somewhere.
     with _session_lock:
         gate = _capture_position_gate
     if gate is not None and capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES:
@@ -114,6 +114,8 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
         except (OSError, RuntimeError, ValueError):
             logger.warning("could not read the position gate", exc_info=True)
             published = {}
+        if published.get("run"):
+            capture["run"] = published["run"]
         for key in ("pending", "current"):
             if published.get(key):
                 capture[f"position_{key}"] = published[key]
@@ -179,7 +181,7 @@ def _begin_capture_slot(
         return True
 
 
-def _publish_capture_waiting(kind_label: str) -> dict[str, Any]:
+def _publish_capture_waiting(kind_label: str, *, joined: bool = False) -> dict[str, Any]:
     """Open the capture window without overwriting a concurrent Stop."""
 
     global _capture_slot
@@ -193,6 +195,8 @@ def _publish_capture_waiting(kind_label: str) -> dict[str, Any]:
             raise RuntimeError("capture ownership changed while the session opened")
         status = "awaiting_capture" if capture.get("status") == "starting" else "stopping"
         _capture_slot = {**capture, "status": status}
+        if joined:
+            _capture_slot["join_accepted"] = {"status": status}
         return dict(_capture_slot)
 
 
@@ -204,9 +208,20 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
     slot prevents a second run from entering during cleanup.
     """
 
-    global _capture_slot
+    global _capture_slot, _pending_capture
     with _session_lock:
         capture = _capture_slot
+        active_matches = (
+            capture is not None and capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
+            and str(capture.get("kind") or "").startswith(kind_prefix)
+        )
+        if not active_matches and _pending_capture is not None and _pending_capture[0].label.startswith(kind_prefix):
+            kind, _ = _pending_capture
+            _pending_capture = None
+            stopped = {"status": CAPTURE_STOPPED, "kind": kind.label}
+            if not capture or capture.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+                _capture_slot = stopped
+            return stopped
         if capture is None or capture.get("status") not in _CAPTURE_STOPPABLE_STATUSES:
             raise ValueError("no matching capture is running")
         if not str(capture.get("kind") or "").startswith(kind_prefix):
@@ -222,7 +237,7 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
         except (OSError, RuntimeError, ValueError) as exc:
             _capture_slot = {
                 **capture,
-                "status": "failed",
+                "status": CAPTURE_FAILED,
                 "error": "the measurement stop signal failed",
             }
             raise RuntimeError("the measurement stop signal failed") from exc
@@ -260,6 +275,67 @@ class CaptureKind:
     #: The session's per-take retake signal, or None. Routed to
     #: POST /crossover/v2/retake via the slot, same lifecycle again.
     request_retake: Callable[[], None] | None = None
+    session_id: str = ""
+    join_entry: Any = None
+
+
+def _pending_payload(kind: CaptureKind) -> dict[str, Any]:
+    return {"status": "awaiting_join", "kind": kind.label, "session_id": kind.session_id,
+            "url": "/sound/speaker/crossover/", "first_prompt": dict(kind.join_entry.screen),
+            "join": kind.position_gate.invitation(kind.join_entry) if kind.position_gate else None,
+            "index": 1, "attempt": 1}
+
+
+def _stage_capture(kind: CaptureKind, *, idle_hold: Callable[[str], AbstractContextManager[Any]]) -> dict[str, Any]:
+    global _pending_capture, _capture_slot
+    with _session_lock:
+        if _pending_capture is not None:
+            raise CrossoverV2Refused("A prepared capture is already waiting for placement", code="capture_slot_busy")
+        _pending_capture = (kind, idle_hold)
+        if _capture_slot and _capture_slot.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+            _capture_slot = None
+    return _pending_payload(kind)
+
+
+def _join_capture(index: int, attempt: int) -> dict[str, Any] | None:
+    with _join_lock:
+        return _join_capture_locked(index, attempt)
+
+
+def _join_capture_locked(index: int, attempt: int) -> dict[str, Any] | None:
+    global _pending_capture
+    with _session_lock:
+        pending = _pending_capture
+        capture = _capture_slot
+        if (capture and "join_accepted" in capture and (index, attempt) == (1, 1)
+                and (pending is None or capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES)):
+            position = _capture_position_gate.published() if _capture_position_gate else {}
+            pose = position.get("pending") or position.get("current")
+            if pose is None or (pose["index"], pose["attempt"]) == (index, attempt):
+                return dict(capture["join_accepted"])
+        if pending is None:
+            return None
+        if (_capture_slot and _capture_slot.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
+                and str(_capture_slot.get("kind") or "").startswith("crossover_v2:")):
+            return None
+        if (index, attempt) != (1, 1):
+            raise CrossoverV2Refused("The first placement must name index 1 and attempt 1", code="capture_slot_busy")
+        _pending_capture = None
+    kind, idle_hold = pending
+    try:
+        return _run_capture(kind, idle_hold=idle_hold)
+    except Exception as exc:  # noqa: BLE001 - publish admission faults, then propagate
+        if kind.position_gate is not None:
+            envelope = refusal_envelope(exc)
+            if not envelope["code"]:
+                envelope = refusal_envelope(code="internal_error")
+            kind.position_gate.abandon_hold()
+            kind.position_gate.publish({"status": CAPTURE_FAILED, "fault": envelope["code"],
+                                        "next_action": envelope["next_action"]})
+            capture = _get_capture_slot()
+            if capture and capture.get("status") == CAPTURE_FAILED and capture.get("kind") == kind.label:
+                _set_capture_slot({**capture, **envelope, "run": kind.position_gate.published()["run"]})
+        raise
 
 
 def _run_capture(
@@ -299,14 +375,17 @@ def _run_capture(
         # wording, never misreport which measurement is in the way.
         holder = _get_capture_slot()
         held_by = str(holder.get("kind") or "") if holder else ""
-        raise ValueError(
+        raise CrossoverV2Refused(
             (f"a capture ({held_by})" if held_by else "another capture")
             + " already holds the measurement slot; finish or cancel it"
-            " before starting another"
+            " before starting another", code="capture_slot_busy",
         )
     spawned = False
     session_hold = ExitStack()
     try:
+        if kind.join_entry is not None:
+            assert kind.position_gate is not None
+            kind.position_gate.join(kind.join_entry)
         rc = kind.open()
 
         async def _run() -> None:
@@ -323,10 +402,10 @@ def _run_capture(
                     and capture.get("status") == "stopping"
                 ):
                     raise CaptureStopped("capture stopped")
-                _set_capture_slot({"status": "complete", "kind": kind.label})
+                _set_capture_slot({"status": CAPTURE_COMPLETE, "kind": kind.label})
             except (asyncio.CancelledError, CaptureStopped):
                 _set_capture_slot({
-                    "status": "stopped",
+                    "status": CAPTURE_STOPPED,
                     "kind": kind.label,
                     "error": "Measurement stopped safely.",
                 })
@@ -345,7 +424,7 @@ def _run_capture(
                     reason=type(exc).__name__,
                 )
                 _set_capture_slot({
-                    "status": "failed",
+                    "status": CAPTURE_FAILED,
                     "kind": kind.label,
                     **refusal_envelope(exc),
                 })
@@ -356,7 +435,7 @@ def _run_capture(
                 # session is genuinely over.
                 session_hold.close()
 
-        waiting = _publish_capture_waiting(kind.label)
+        waiting = _publish_capture_waiting(kind.label, joined=kind.join_entry is not None)
         session_hold.enter_context(idle_hold(f"capture:{kind.label}"))
         asyncio.run_coroutine_threadsafe(_run(), correction_runtime.ensure_loop())
         spawned = True
@@ -364,7 +443,10 @@ def _run_capture(
     finally:
         if not spawned:
             session_hold.close()  # nothing will run to release it
-            _set_capture_slot(None)  # release the slot on any early failure
+            if kind.join_entry is None:
+                _set_capture_slot(None)
+            else:
+                _set_capture_slot({"status": CAPTURE_FAILED, "kind": kind.label})
 
 
 def _crossover_blocking_phase() -> str | None:

@@ -18,6 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime
@@ -58,11 +59,14 @@ def _handle_crossover_v2_position_ready(
             raise BadRequest(f"{key} is required")
         if isinstance(raw[key], bool) or not isinstance(raw[key], int):
             raise BadRequest(f"{key} must be an integer")
+    joined = correction_capture._join_capture(raw["index"], raw["attempt"])
+    if joined is not None:
+        return {"ok": True, "capture": joined}
     with _session_lock:
         gate = correction_capture._capture_position_gate
     if gate is None:
-        raise ValueError(
-            "no remote measurement is waiting for the microphone right now"
+        raise CrossoverV2Refused(
+            "no remote measurement is waiting for the microphone right now", code="capture_slot_busy",
         )
     released = gate.release(raw["index"], raw["attempt"])
     return {"ok": True, "released": released}
@@ -71,15 +75,7 @@ def _handle_crossover_v2_position_ready(
 def _handle_crossover_v2_complete(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/complete — the wired all-spots-measured signal (D1).
-
-    The wired session's stand-in for the phone's authenticated
-    complete-capture-set event (#2662 W2b): the driver (or the W3 wizard
-    surface) says the household is done measuring, the held pre-apply group
-    closes, and the fit runs. Only a live WIRED session holds the signal — a
-    a finished session drops it with the slot — so "nothing waiting" is a conflict
-    (stale caller), the position-ready shape.
-    """
+    """Tell the executor to finish the run with the captures already banked."""
     correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_complete = correction_capture._capture_complete_request
@@ -95,32 +91,7 @@ def _handle_crossover_v2_complete(
 def _handle_crossover_v2_retake(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/retake — the wired session's per-take retake.
-
-    The local stand-in for the phone's ``begin_capture {retake: true}``: the
-    household (or the W3 wizard surface) says the take that just completed
-    should be measured again. The walk re-opens THAT slot the next time it is
-    waiting on a person — a held begin, or the held-set window — on the
-    same terms.
-
-    **No ``index``, and that is the contract rather than a shortcut.** The
-    rule is that a retake names the slot which JUST COMPLETED
-    (``retakes_the_just_accepted_slot``: ``index == accepted_count``), and the
-    walk is the only thing that knows that number — it is a worker-thread
-    local, not a published one. Accepting an index here would mint a second
-    answer to "which slot", and the only thing a caller could do with it is
-    disagree. The signal says WHAT the household wants; WHICH slot stays the
-    walk's own fact.
-
-    Only a live session holds the signal, and a finished session drops it
-    with the slot, so "nothing waiting" is a conflict (stale caller), the
-    position-ready shape. Whether the retake is then ADMISSIBLE (a take exists
-    to replace, the plan's attempts are not spent, the slot's extras ledger
-    still has room) is the walk's decision, journalled as
-    ``event=correction.crossover_v2_wired_retake_refused``: a refused retake
-    leaves the household with the take they already had, which is why it is
-    never a session death.
-    """
+    """No index, ever: the executor owns which capture to re-take (ADR-0296)."""
     correction_runtime.read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
         request_retake = correction_capture._capture_retake_request
@@ -138,22 +109,7 @@ def _handle_crossover_v2_capture(
     verify_only: bool,
     idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/session | /crossover/v2/verify (Wave 5a).
-
-    Thin dispatch over :mod:`jasper.web.correction_crossover_v2` — the v2 host
-    module owns gating, conductor construction, seam bindings, and the plan
-    runner; this bridges it into the shared capture slot/lifecycle machinery
-    (``_run_capture``) exactly as the other hosted crossover
-    captures do.
-
-    ``idle_hold`` covers the one background lifetime a v2 session still owns:
-    the capture runner (through ``_run_capture``). It serves no HTTP
-    request, and it is the flow the 600 s idle exit actually killed (issue
-    #1854). It used to reach a SECOND lifetime — the auto-apply worker thread
-    the runner spawned — which the two-stage split removed: the apply is now a
-    household POST served in-request, so the tracker's ordinary
-    in-flight-request accounting holds the process for it.
-    """
+    """Stage an inline session, or start the existing verification route."""
     raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_backend, correction_crossover_v2 as v2host
@@ -180,8 +136,11 @@ def _handle_crossover_v2_capture(
         position_gate=prepared.position_gate,
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
+        session_id=prepared.session_id,
+        join_entry=prepared.join_spec.capture_plan.entries[0] if prepared.join_spec is not None else None,
     )
-    return {"capture": correction_capture._run_capture(kind, idle_hold=idle_hold)}
+    start = correction_capture._run_capture if verify_only else correction_capture._stage_capture
+    return {"capture": start(kind, idle_hold=idle_hold)}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:

@@ -37,6 +37,7 @@ import pytest
 
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -3100,52 +3101,23 @@ def test_prepare_refuses_when_volume_needs_recovery():
     v2host.set_volume_plan_for_tests(_NeedsRecovery())
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None
+            _inline_body(), status={}, run_async=None, camilla_factory=None
         )
     assert "recover" in str(excinfo.value)
 
 
-def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
-    """Flow-simplification §3: the wizard posts the household's explicit tier.
-    An id this build does not have must be refused BEFORE any capture
-    registration or volume mutation, not silently measured as something else —
-    so the gate runs ahead of every other one in the preparer.
-
-    The evidence that THIS gate fired moved when #1833 stopped the raw flow
-    text reaching the household: the refusal now carries the classifier's code
-    and the journal carries the constraint. Both still separate it from the
-    volume-recovery gate below it, which is uncoded and says "recover".
-
-    #2059 (owner ruling 2026-08-13): an unknown tier is a malformed request,
-    not a level ceiling — it now carries its own code, distinct from
-    ``program_unplayable``, rather than the generic "re-check the driver
-    details" copy.
-    """
-    import logging
-
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_PROGRAM_PLAN_SHAPE_INVALID,
-    )
-
-    class _Ready:
-        needs_recovery = False
-
-    v2host.set_volume_plan_for_tests(_Ready())
-    caplog.set_level(logging.WARNING, logger=v2host.__name__)
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.prepare_v2_session(
-            {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
-        )
-    assert excinfo.value.code == REASON_PROGRAM_PLAN_SHAPE_INVALID
-    assert "recover" not in str(excinfo.value)
-    assert any(
-        "unknown commission tier" in r.getMessage() and "turbo" in r.getMessage()
-        for r in caplog.records
-    )
+@pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
+def test_session_requires_an_inline_v3_plan(body):
+    from jasper.web._common import refusal_envelope
+    with pytest.raises(v2host.CrossoverV2Refused) as caught:
+        v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
+    envelope = refusal_envelope(caught.value)
+    assert envelope["code"] in {"program_plan_shape_invalid", "walk_schema_version_unsupported"}
+    assert envelope["next_action"]
 
 
 def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
-    from jasper.active_speaker import angle_capture_spool, preflight_live
+    from jasper.active_speaker import preflight_live
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
     from tests.test_preflight import ready_facts
@@ -3159,12 +3131,11 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
     ))
     monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda *_: pytest.fail("bundle opened before preflight"))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
-    monkeypatch.setattr(angle_capture_spool, "take_staged_angle_request", lambda: request)
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda *args, **kwargs: ready_facts(
         request,
     ))
     with pytest.raises(v2host.CrossoverV2Refused) as exc:
-        v2host.prepare_v2_session({}, status={}, run_async=None, camilla_factory=None)
+        v2host.prepare_v2_session({"plan": request.to_dict()}, status={}, run_async=None, camilla_factory=None)
     assert exc.value.code == "not_found"
     assert refusal_copy_for(exc.value.code)[1]
 
@@ -3180,11 +3151,12 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
 
     from jasper.active_speaker import branch_chain
 
+    _ready_inline(monkeypatch)
     v2host.set_volume_plan_for_tests(_Ready())
     monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(
         v2host, "resolve_conductor_context",
-        lambda _status: SimpleNamespace(safety_profile={}, role_targets={}),
+        lambda _status: _inline_context(),
     )
     monkeypatch.setattr(branch_chain, "confirmed_protection_sections", _unrepresentable)
     monkeypatch.setattr(
@@ -3192,7 +3164,7 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
         lambda *_: pytest.fail("bundle opened before protection preflight"),
     )
     with pytest.raises(v2host.CrossoverV2Refused, match="confirmed driver protection"):
-        v2host.prepare_v2_session({}, status={}, run_async=None, camilla_factory=None)
+        v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
 
 
 def test_the_tier_rides_the_durable_state_and_state_block():
@@ -5513,7 +5485,7 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
         assert not v2host.session_measurement_pause_held()
 
     asyncio.run(scenario())
-    assert log == ["enter", "exit"]
+    assert log == []
 
 
 # --- W6.1 Finding E: recovery paths actually recover -----------------------------
@@ -8361,3 +8333,284 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     assert body["code"] == "measurement_candidate_required"
     assert isinstance(body["next_action"], dict)
     assert body["next_action"]["id"] == "select_candidate"
+
+def _inline_body():
+    from jasper.active_speaker.angle_capture import summed_at
+    return {"plan": summed_at([0, 20]).to_dict()}
+
+
+def _ready_inline(monkeypatch):
+    from jasper.active_speaker import preflight_live
+    from tests.test_preflight import ready_facts
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
+
+
+def _inline_context() -> V2ConductorContext:
+    return V2ConductorContext(
+        preset=_preset(), fc_hz=FC_HZ, roles_bands=tuple(_roles()),
+        safety_profile={"targets": [{
+            "role": role, "target_fingerprint": f"fp-{role}",
+            "required_protection_filters": [{
+                "kind": kind, "cutoff_hz": cutoff,
+                "minimum_slope_db_per_octave": 24.0,
+            }],
+        } for role, kind, cutoff in (
+            ("woofer", "lowpass", 6000.0), ("tweeter", "highpass", 300.0),
+        )]},
+        role_targets={role: f"fp-{role}" for role in CAPS},
+        driver_caps_dbfs=dict(CAPS),
+        driver_sweep_duration_limits_s={role: 6.0 for role in CAPS},
+        session_volume_db=SESSION_VOLUME_DB,
+        driver_spacing_m=0.0, driver_spacing_source="unknown",
+        topology=SimpleNamespace(topology_id="t-inline"),
+        playback_device="hw:Test", role_channels={"woofer": 0, "tweeter": 1},
+        sound_design_revision=1,
+    )
+
+
+def _inline_prepared(monkeypatch, tmp_path):
+    _ready_inline(monkeypatch)
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context())
+    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    _, _, _, store = _retention_bundle(tmp_path, "inline")
+    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda _: (store, store.session_id))
+    return v2host.prepare_v2_session(_inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
+
+
+@pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
+def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch, tmp_path, prior_capture):
+    from jasper.web import correction_capture
+
+    monkeypatch.setattr(correction_capture, "_capture_slot", prior_capture)
+    monkeypatch.setattr(correction_capture, "_pending_capture", None)
+    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: pytest.fail("live mic admission before join"))
+    monkeypatch.setattr(v2host, "_session_volume_claim", lambda: pytest.fail("claim before join"))
+    before = v2host.load_v2_state()
+    prepared, store = _inline_prepared(monkeypatch, tmp_path)
+    kind = correction_capture.CaptureKind(
+        label=prepared.label, open=prepared.open, run_and_consume=prepared.run_and_consume,
+        position_gate=prepared.position_gate, session_id=prepared.session_id,
+        join_entry=prepared.join_spec.capture_plan.entries[0],
+    )
+    result = correction_capture._stage_capture(kind, idle_hold=lambda _: pytest.fail("idle hold before join"))
+    assert result["url"] == "/sound/speaker/crossover/"
+    assert result["session_id"] == prepared.session_id
+    assert correction_capture._get_capture_slot_for("crossover_v2:")["status"] == "awaiting_join"
+    assert correction_capture._get_capture_slot() is None
+    assert prepared.position_gate.published() == {"pending": None, "current": None}
+    assert not v2host.session_measurement_pause_held()
+    plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
+    assert plan["stops"] == _inline_body()["plan"]["stops"]
+    assert v2host.load_v2_state() == before
+
+
+@pytest.mark.parametrize("terminal", ["complete", "failed", "stopped"])
+def test_join_opens_resources_in_order_and_drains_to_a_shared_terminal_state(monkeypatch, terminal):
+    from jasper.active_speaker.crossover_v2.session import TuningSession
+    from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from jasper.active_speaker.crossover_v2.position_gate import PositionGate
+    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
+    from jasper.web import correction_capture, correction_handlers, correction_runtime
+    from jasper.platform.systemd import no_hold
+    from jasper.volume_owner import volume_owner, ClaimKind
+    from tests.engine_twin import FakeGraph, FakePlay, FakeRecords
+    from tests.test_correction_crossover_v2_wired import _fake_handler
+
+    from jasper.active_speaker.capture_status import SESSION_ENDED_STATUSES
+
+    graph_fails = terminal == "failed"
+    events, gate = [], PositionGate()
+    cam = _FakeVolCam(-30)
+    _own_the_fader(monkeypatch, cam)
+    owner = volume_owner()
+    claim = MeasurementVolumeClaim(owner)
+    plan = SessionVolumePlan()
+    v2host.set_volume_plan_for_tests(plan)
+    opening = plan.open
+    async def open_level(*args):
+        events.append("claim")
+        return await opening(*args)
+    monkeypatch.setattr(plan, "open", open_level)
+    async def pause():
+        events.append("window")
+    async def unpause():
+        events.append("release_window")
+    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", pause)
+    monkeypatch.setattr(v2host, "release_session_measurement_pause", unpause)
+    class Graph(FakeGraph):
+        async def install(self, *args, **kwargs):
+            events.append("graph")
+            if graph_fails:
+                from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+                raise SessionGraphError("graph failed")
+            return await super().install(*args, **kwargs)
+    graph = Graph()
+    tuning = TuningSession("joined", EngineSeams(graph, claim, FakeRecords(), FakePlay()), -18)
+    hooks = v2host._volume_hooks(lambda: cam, SimpleNamespace(session_volume_db=-18),
+                                 tuning=tuning, volume_claim=claim)
+    def opened():
+        assert correction_capture._get_capture_slot()["status"] == "starting"
+        events.extend(["slot", "mic"])
+        return SimpleNamespace(pi_session=tuning)
+    from jasper.active_speaker import plan_run
+    from jasper.web.correction_crossover_v2_wired import build_v2_wired_run_and_consume
+    import threading
+
+    async def execute(*args, **kwargs):
+        events.append("run")
+        return SimpleNamespace(reason="user_stopped" if terminal == "stopped" else "", cancelled=False)
+    monkeypatch.setattr(plan_run, "run_plan", execute)
+    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
+    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
+    monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
+    run = build_v2_wired_run_and_consume(
+        SimpleNamespace(_measure_gain_ceiling_db={}), volume=hooks,
+        stop_event=threading.Event(), stop_lock=threading.Lock(), ceiling_s=30,
+        complete_event=threading.Event(), retake_event=threading.Event(),
+        tuning=tuning, manifest=None, request=None, captures=None,
+        analyze=None, assessor=None, candidate_scopes={}, spl_monitor="test", position_gate=gate,
+    )
+    entry = SimpleNamespace(screen={"position_deg": "0"})
+    kind = correction_capture.CaptureKind("crossover_v2:session", opened, run,
+                                           position_gate=gate, session_id="joined", join_entry=entry)
+    monkeypatch.setattr(correction_capture, "_capture_slot", None)
+    monkeypatch.setattr(correction_capture, "_pending_capture", None)
+    with contextlib.ExitStack():
+        correction_capture._stage_capture(kind, idle_hold=no_hold)
+        correction_handlers._handle_crossover_v2_position_ready(
+            _fake_handler(b'{"index":1,"attempt":1}'))
+        async def finished():
+            for _ in range(200):
+                capture = correction_capture._get_capture_slot()
+                if capture["status"] in SESSION_ENDED_STATUSES:
+                    return capture
+                await asyncio.sleep(.01)
+            pytest.fail("joined capture did not finish")
+        result = correction_runtime.run_async(finished())
+    assert events[:4] == ["slot", "mic", "claim", "window"]
+    assert events[4] == "graph"
+    assert ("run" in events) is not graph_fails
+    assert not owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
+    assert cam.vol == -30
+    assert result["status"] == terminal
+    assert result["status"] in SESSION_ENDED_STATUSES
+    if graph_fails:
+        assert gate.published()["run"]["fault"] == "measurement_graph_unavailable"
+        assert gate.published()["run"]["next_action"]["id"] == "new_measurement_session"
+
+
+def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path):
+    from jasper.web import correction_crossover_v2_wired as wired
+    from tests.test_correction_crossover_v2_wired import _device
+    from tests.test_preflight import ready_facts
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest
+
+    prepared, store = _inline_prepared(monkeypatch, tmp_path)
+    _own_the_fader(monkeypatch, _FakeVolCam(-30))
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    v2host.set_volume_plan_for_tests(SessionVolumePlan())
+    monkeypatch.setattr(wired, "resolve_v2_wired_mic", _device)
+    monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
+                        lambda _: ready_facts(AngleCaptureRequest.from_mapping(_inline_body()["plan"])).anchor.sensitivity)
+    bound = {}
+    def build(conductor, **kwargs):
+        bound.update(conductor=conductor, **kwargs)
+        return None
+    monkeypatch.setattr(v2host, "_build_wired_run", build)
+    opened = prepared.open()
+    assert opened.pi_session.session_id == prepared.session_id
+    assert not bound["tuning"].is_open
+    assert bound["request"].to_dict() == store.reopen_json_artifact(
+        store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
+    assert bound["conductor"]._candidate is None
+
+
+def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
+    from jasper.web import correction_capture as capture
+    from jasper.active_speaker.crossover_v2.position_gate import PositionGate
+    from jasper.platform.systemd import no_hold
+
+    monkeypatch.setattr(capture, "_capture_slot", None)
+    monkeypatch.setattr(capture, "_pending_capture", None)
+    stopped = []
+    assert capture._begin_capture_slot("crossover_v2:session", request_stop=lambda: stopped.append(True))
+    kind = capture.CaptureKind("crossover_v2:session", lambda: None, lambda _: None,
+        position_gate=PositionGate(), session_id="pending", join_entry=SimpleNamespace(screen={"position_deg": "0"}))
+    capture._stage_capture(kind, idle_hold=no_hold)
+    assert capture._get_capture_slot_for("crossover_v2:")["status"] == "starting"
+    assert capture._join_capture(2, 1) is None
+    assert capture._request_capture_stop("crossover_v2:")["status"] == "stopping"
+    assert stopped == [True]
+    capture._set_capture_slot({"kind": kind.label, "status": "complete"})
+    assert capture._get_capture_slot_for("crossover_v2:")["session_id"] == "pending"
+    assert capture._request_capture_stop("crossover_v2:")["status"] == "stopped"
+    assert capture._pending_capture is None
+
+
+
+def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypatch):
+    from dataclasses import replace
+    from jasper.web import correction_capture as capture
+    from jasper.platform.systemd import no_hold
+
+    monkeypatch.setattr(capture, "_capture_slot", None)
+    monkeypatch.setattr(capture, "_pending_capture", None)
+    kind = capture.CaptureKind("crossover_v2:session", lambda: None, lambda _: None,
+                              session_id="first", join_entry=SimpleNamespace(screen={}))
+    first = capture._stage_capture(kind, idle_hold=no_hold)
+    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        capture._stage_capture(replace(kind, session_id="second"), idle_hold=no_hold)
+    assert refused.value.code == "capture_slot_busy"
+    assert capture._get_capture_slot_for("crossover_v2:") == first
+
+
+def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from jasper.active_speaker.crossover_v2.position_gate import PositionGate
+    from jasper.web import correction_capture as capture, correction_handlers as handlers
+    from tests.test_correction_crossover_v2_wired import _fake_handler
+
+    monkeypatch.setattr(capture, "_capture_slot", None)
+    monkeypatch.setattr(capture, "_pending_capture", None)
+    entered, release, second, drained = (threading.Event() for _ in range(4))
+    opens = []
+    def opened():
+        opens.append(True)
+        entered.set()
+        assert release.wait(2)
+        return SimpleNamespace(pi_session=None)
+    async def run(_):
+        pass
+    @contextlib.contextmanager
+    def idle_hold(_):
+        try:
+            yield
+        finally:
+            drained.set()
+    gate = PositionGate()
+    kind = capture.CaptureKind("crossover_v2:session", opened, run, position_gate=gate,
+                              session_id="same", join_entry=SimpleNamespace(screen={"position_deg": "0"}))
+    capture._stage_capture(kind, idle_hold=idle_hold)
+    def join(mark=None):
+        if mark:
+            mark.set()
+        return handlers._handle_crossover_v2_position_ready(_fake_handler(b'{"index":1,"attempt":1}'))
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(join)
+            assert entered.wait(2)
+            other = pool.submit(join, second)
+            assert second.wait(2)
+            release.set()
+            assert first.result(timeout=2) == other.result(timeout=2) == {
+                "ok": True, "capture": {"status": "awaiting_capture"}}
+        assert drained.wait(2)
+        assert opens == [True]
+        assert gate.join(kind.join_entry)["index"] == 1
+        with pytest.raises(v2host.CrossoverV2Refused) as refused:
+            handlers._handle_crossover_v2_position_ready(_fake_handler(b'{"index":9,"attempt":1}'))
+        assert refused.value.code == "capture_slot_busy"
+    finally:
+        release.set()

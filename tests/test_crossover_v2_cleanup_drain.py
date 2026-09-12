@@ -30,8 +30,6 @@ from typing import Any, Callable
 
 import pytest
 
-from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
-from jasper.capture_protocol import CapturePlan
 from jasper.volume_owner import ClaimKind, VolumeOwner
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
@@ -57,43 +55,6 @@ class _Fader:
         return self.db
 
 
-class _Conductor:
-    """The least conductor either runner asks questions of."""
-
-    def __init__(self, *, done: bool = False, awaiting: Any = False) -> None:
-        self.session_id = "drain-test"
-        self.last_failure_code = None
-        self.capture_published_refusal = False
-        self.armed_capture = None
-        self.accepted_phases: set[str] = set()
-        self._done = done
-        self._awaiting = awaiting
-
-    @property
-    def current_phase(self) -> str:
-        return PHASE_DONE if self._done else "check"
-
-    def cloud_measure_group_awaiting_confirm(self) -> bool:
-        if isinstance(self._awaiting, Exception):
-            raise self._awaiting
-        return bool(self._awaiting)
-
-
-def _session() -> SimpleNamespace:
-    """A no-capture plan: every row reaches its arm without a take."""
-    return SimpleNamespace(
-        session_id="drain-test",
-        pull_token="tok",
-        spec=SimpleNamespace(
-            capture_plan=CapturePlan(
-                capture_target=0, max_attempts=1,
-                schema_version=2, entries=(),
-            ),
-            sample_rate_hz=48000,
-        ),
-    )
-
-
 @dataclass(frozen=True)
 class _Row:
     """One arm of one provider, and how to steer a runner into it."""
@@ -109,17 +70,25 @@ def _wired_row(
     done: bool = False,
 ) -> _Row:
     async def _drive(hooks: Any, monkeypatch: Any) -> None:
+        from jasper.active_speaker import plan_run
+        from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
+
+        async def execute(*args, **kwargs):
+            if isinstance(awaiting, Exception):
+                raise awaiting
+            if awaiting:
+                raise CaptureBeginRefused("session_ceiling_expired", "expired")
+            return SimpleNamespace(reason="", cancelled=False)
+
+        monkeypatch.setattr(plan_run, "run_plan", execute)
         runner = v2wired.build_v2_wired_run_and_consume(
-            _Conductor(done=done, awaiting=awaiting),
-            volume=hooks,
-            stop_event=threading.Event(),
-            stop_lock=threading.Lock(),
-            capture_stimulus=lambda *_: pytest.fail("the empty plan must not capture"),
-            ceiling_s=ceiling_s,
-            complete_event=threading.Event(),
-            poll_interval_s=0.01,
+            SimpleNamespace(_measure_gain_ceiling_db={}), volume=hooks,
+            stop_event=threading.Event(), stop_lock=threading.Lock(),
+            ceiling_s=ceiling_s, complete_event=threading.Event(), retake_event=threading.Event(),
+            tuning=None, manifest=None, request=None, captures=None, analyze=None, assessor=None,
+            candidate_scopes={}, spl_monitor="test",
         )
-        await runner(_session())
+        await runner(SimpleNamespace(session_id="drain-test"))
 
     return _Row(id=id, persist=persist, drive=_drive)
 
@@ -135,7 +104,6 @@ ROWS = (
         "wired-catch-all", "_persist_terminal_failure",
         awaiting=RuntimeError("a capture-chain fault"),
     ),
-    _wired_row("wired-complete-abandon", "persist_conductor_state", done=False),
     _wired_row("wired-complete-close", "persist_conductor_state", done=True),
 )
 

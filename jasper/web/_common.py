@@ -166,7 +166,7 @@ def refusal_envelope(
             message = str(exc)
     copy, action = refusal_copy_for(code)
     return {
-        "ok": False, "code": code, "next_action": action,
+        "ok": False, "code": code, "next_action": getattr(exc, "next_action", None) or action,
         "error": message if message is not None else copy,
     }
 

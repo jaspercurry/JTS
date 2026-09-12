@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import groupby
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -28,12 +28,14 @@ from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
+    DEFAULT_VERIFY_SWEEP_S,
     ExcitationProgram,
     RoleBand,
     build_check_program,
     build_measure_program,
     build_verify_program,
 )
+from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
@@ -60,8 +62,52 @@ from .programs import (
 )
 from .spatial import GEOMETRY_RETRY_POSITIONS
 from .sweep_spec import build_crossover_sweep_spec
+from .refusal_copy import CrossoverV2Refused
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .measure_spec import MeasureSpec
+
+
+def build_inline_session_spec(
+    captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
+    roles_bands: Sequence[RoleBand], fc_hz: float | None,
+    acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
+) -> Any:
+    prompts = [prompt for _, prompt, _ in captures]
+    batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
+                                 [candidate_id for _, _, candidate_id in captures])
+    entries = []
+    for index, (spec, prompt, _) in enumerate(captures, 1):
+        phase = spec.program_phase
+        if phase == PHASE_CHECK:
+            program = build_check_program(roles_bands, courtesy_prelude=True)
+        elif phase == PHASE_MEASURE:
+            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
+        else:
+            program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
+                                           sweep_band_hz=spec.sweep_band_hz or None,
+                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
+        if spec.graph_scope == "candidate_branches":
+            program = build_branch_program(program, {r.role: r.channel for r in roles_bands})
+        entries.append(CapturePlanEntry(
+            index=index - 1, kind_label=phase,
+            duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
+            screen={"progress": capture_progress_label(index, len(captures)),
+                    "title": prompt.headline, "body": prompt.detail,
+                    POSITION_HAND_RELEASED_KEY: str(hand_released).lower(),
+                    **position_screen_keys(prompt), **batches.get(index, {})},
+        ))
+    attempts = len(entries) + sum(1 for _ in groupby(prompt.place for prompt in prompts)) * retries_per_pose
+    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
+    plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,
+                       schema_version=2, entries=tuple(entries))
+    return build_crossover_sweep_spec(
+        driver_label="crossover", driver_role="summed", acknowledgement_binding=acknowledgement_binding,
+        stimulus_duration_ms=max(e.duration_ms for e in entries), capture_plan=plan, **spec_kwargs,
+    )
 
 
 CAPTURE_PLAN_TARGET = 3

@@ -84,6 +84,28 @@ from tests.crossover_v2_fixtures import (
 # --- §5.10 failure templates ------------------------------------------------------
 
 
+@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize("charge", ["operator", "speaker"])
+def test_executor_admission_uses_only_the_runs_pose_ledger(refused, charge):
+    from jasper.active_speaker.crossover_v2.admission import SlotAttempts
+    from jasper.active_speaker.crossover_v2.refusal_copy import NON_RETRIABLE_CODES
+
+    conductor = _conductor(FakeSeams())
+    ledger = SlotAttempts(charge=charge, retries_per_pose=0 if charge == "speaker" else 1)
+    conductor.authorize_begin(1, 1, executor_ledger=ledger)
+    assert ledger.admitted == 1
+    if refused:
+        conductor._last_reason[conductor._slot_of_index(1)] = next(iter(NON_RETRIABLE_CODES))
+        with pytest.raises(CaptureBeginRefused):
+            conductor.authorize_begin(1, 2, executor_ledger=ledger)
+    else:
+        conductor.authorize_begin(1, 2, executor_ledger=ledger)
+    assert ledger.by_household == (1 if charge == "operator" and not refused else 0)
+    assert ledger.by_speaker == (1 if charge == "speaker" and not refused else 0)
+    assert ledger.admitted == (1 if refused else 2)
+    assert conductor._slot_attempts == {}
+
+
 def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
     fakes = FakeSeams()
     c = _conductor(fakes)

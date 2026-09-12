@@ -94,12 +94,12 @@ class _Store:
         return await self.records.bank(record)
 
 
-async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None):
+async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None):
     fakes = seams or FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     async with open_session(replace(fakes, records=manifest)) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                         gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, signals=signals)
+                                         gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, signals=signals, captures=captures)
     return result, fakes
 
 
@@ -534,7 +534,8 @@ def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
 
 
 @pytest.mark.parametrize("available", [True, False])
-def test_run_resolves_one_baseline_before_any_take(monkeypatch, available):
+@pytest.mark.parametrize("prepared", [True, False])
+def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepared):
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
     calls = []
     def baselines(purposes):
@@ -543,14 +544,34 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available):
             raise MeasurementGraphRefused("measurement_baseline_unavailable", {})
         return {"speaker": "banked-base"}
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids", baselines)
+    monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
     request = replace(_walk([0, 20, -20], ("base",)), repeats=2)
-    result, fakes = asyncio.run(_run_gated(request))
+    captures = plan_run.prepare_plan_captures(request, candidate_scopes={}) if prepared else None
+    assert calls == []
+    result, fakes = asyncio.run(_run_gated(request, captures=captures))
     assert len(calls) == 1
     if available:
         assert result.status == "complete"
-        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * 6
-        assert fakes.graph.scopes == [("candidate", "banked-base")] * 6
+        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * (6 + prepared)
+        assert fakes.graph.scopes == [("candidate", "banked-base")] * (6 + prepared)
     else:
         assert result.reason == "measurement_baseline_unavailable"
         assert result.finalized and not result.attempts
         assert not fakes.banked
+
+
+@pytest.mark.parametrize(("regime", "candidate", "phases"), [
+    ("per_driver", "base", ("check", "entry_baseline", "measure")),
+    ("summed", "base", ("entry_baseline", "lateral")),
+    ("summed", "candidate-a", ("lateral",)),
+])
+def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases):
+    request = ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(20, regime, candidate_id=candidate),),
+        candidates=(candidate,), repeats=2,
+    )
+    captures = plan_run.prepare_plan_captures(request, candidate_scopes={"candidate-a": "candidate"})
+    assert tuple(capture.spec.program_phase for capture in captures) == (*phases, phases[-1])
+    assert [capture.repeat for capture in captures[-2:]] == [1, 2]
+    assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
+    assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])

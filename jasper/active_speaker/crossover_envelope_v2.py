@@ -2371,6 +2371,19 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "cloud": None,
         }
 
+    capture = _mapping(status.get("capture"))
+    if capture.get("join"):
+        return _envelope(screen="microphone_check", active_step="microphone_check", verdict="",
+                         next_action=None, status=status)
+    run = _mapping(capture.get("run"))
+    if capture.get("status") == "complete" and run:
+        return _envelope(screen="done", active_step="verify", verdict="Run saved.",
+                         next_action=None, status=status)
+    if capture.get("status") == "failed" and run.get("fault") in REASON_REGISTRY:
+        fault = REASON_REGISTRY[str(run["fault"])]
+        return _envelope(screen="hard_stop", active_step="microphone_check", verdict=fault.message,
+                         next_action=run.get("next_action"), status=status)
+
     v2 = _v2(status)
     phase = str(v2.get("phase") or PHASE_CHECK)
     active_step = _PHASE_STEP[phase]

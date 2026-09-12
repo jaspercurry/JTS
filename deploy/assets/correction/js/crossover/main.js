@@ -62,7 +62,7 @@ const RETRY_MS = 5000;
 // measurement finishes. Normal cadence resumes on visibilitychange (and on
 // the next render() call after that).
 const HIDDEN_POLL_MS = 10000;
-const CAPTURE_STOPPABLE = new Set(['starting', 'awaiting_capture']);
+const CAPTURE_STOPPABLE = new Set(['awaiting_join', 'starting', 'awaiting_capture']);
 // Wind-down: in flight, but the captures are over and the session is draining
 // its own work. A walkthrough has nothing to say here — the status line
 // narrates it instead.
@@ -728,7 +728,7 @@ function setUnitsButtons(unit) {
 
 function renderWalk(capture, {active, yielded}) {
   const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
-  const held = walking ? capture.position_pending : null;
+  const held = walking ? (capture.join || capture.position_pending) : null;
   const pending = held && held.hand_released ? held : null;
   // The entry the gate is EXECUTING, and the only thing that moves during a
   // pose batch: configs 2..N are granted under the first config's release, so
@@ -812,7 +812,7 @@ function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
   // if it waited on the reader.
   const awaitingReader = Boolean(
     !suppressConnectAffordance &&
-    capture.position_pending && capture.position_pending.hand_released,
+    (capture.join || capture.position_pending)?.hand_released,
   );
   els.captureStatus.textContent = awaitingReader
     ? 'The tone plays as soon as you confirm the microphone is in place.'

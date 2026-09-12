@@ -1632,19 +1632,21 @@ class CrossoverV2Session:
 
     # --- capture callbacks ---------------------------------------------------
 
-    def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
+    def authorize_begin(
+        self, index: int, attempt: int, entry: Any = None, *,
+        executor_ledger: SlotAttempts | None = None,
+    ) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7)."""
         phase = self._phase_of_index(index)
         slot = self._slot_of_index(index)
-        # READ, never create: a begin held at the VERIFY anchor must not leave a meter
-        # behind for a capture that never started.
-        ledger = self._slot_attempts.get(slot)
+        ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.get(slot)
 
         decision = _admission.assess_begin(
-            ledger=ledger,
+            ledger=None if executor_ledger is not None and attempt == 1 else ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
+            retry_charge=executor_ledger.charge if executor_ledger is not None else "operator",
         )
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
@@ -1658,8 +1660,6 @@ class CrossoverV2Session:
                 ),
             )
         if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
-            # Only reachable with a meter in hand — the decision is derived from
-            # this ledger's own spent extras.
             assert ledger is not None
             code = decision.code
             spec = REASON_REGISTRY[code]
@@ -1673,8 +1673,6 @@ class CrossoverV2Session:
             )
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
-                # The code the household is told about is the condition actually
-                # observed here, never a generic exhaustion code.
                 code,
                 self._extras_spent_message(
                     ledger,
@@ -1683,8 +1681,6 @@ class CrossoverV2Session:
                 ),
             )
         if decision.kind != _admission.ADMIT:
-            # One arm per :data:`admission.DECISION_KINDS` member; this fallback is LOUD
-            # because falling through would start a capture nobody authorized.
             log_event(
                 logger, "correction.crossover_v2_begin_decision_kind_unmapped",
                 level=logging.ERROR, session_id=self.session_id,
@@ -1697,23 +1693,20 @@ class CrossoverV2Session:
                     REASON_LOCATE_FAILED, REASON_REGISTRY[REASON_LOCATE_FAILED],
                 ),
             )
-        ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
-        if decision.spends_extra:
+        ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.setdefault(slot, SlotAttempts())
+        if decision.spends_extra and executor_ledger is None:
             try:
                 ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
             except _admission.AttemptOverspendError as exc:
-                # The flow's own error type is what every caller already handles;
-                # the ledger is pure and has no business knowing it.
                 raise CrossoverV2FlowError(str(exc)) from exc
+        if executor_ledger is not None and attempt > 1:
+            ledger.spend(executor_ledger.charge)
         ledger.admitted += 1
         self._armed_index = index
         self._armed_capture = (index, attempt)
         log_event(
             logger, "correction.crossover_v2_authorized",
             session_id=self.session_id, phase=phase, index=index, attempt=attempt,
-            # The same numbers the household reads (ruling item 2). ``attempt`` alone
-            # is the PLAN's running counter and cannot say how many tries this
-            # POSITION has had.
             extra_used=ledger.extras_used,
             extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
             extra_by_speaker=ledger.by_speaker,
@@ -2126,10 +2119,10 @@ class CrossoverV2Session:
             return verdict
         assert gain_plan is not None
         self._gain_plan_db = dict(gain_plan.gain_db)
-        self._measure_gain_ceiling_db = {
-            role: solve.flat_target_gain_db
-            for role, solve in gain_plan.role_solves.items()
-        }
+        self._measure_gain_ceiling_db.clear()
+        self._measure_gain_ceiling_db.update({
+            role: solve.flat_target_gain_db for role, solve in gain_plan.role_solves.items()
+        })
         # HOLD the ambient report, don't just publish it (#1830): without it MEASURE's
         # per-driver SNR verdict has no noise floor to grade against.
         self._check_ambient_report = (
@@ -4046,10 +4039,10 @@ class CrossoverV2Session:
                                       if key.startswith("next_gain_db.")})
             self._measure_program = self._compose_measure_program(self._gain_plan_db)
             if verdict.next == "retake_quieter":
-                self._measure_gain_ceiling_db = {
+                self._measure_gain_ceiling_db.update({
                     role: min(ceiling, self._gain_plan_db[role])
                     for role, ceiling in self._measure_gain_ceiling_db.items()
-                }
+                })
 
     def _measure_binding_response(self, analysis: ProgramAnalysis) -> Any | None:
         """The driver response whose gate window BINDS MEASURE — the shortest."""

@@ -77,6 +77,7 @@ from tests.crossover_v2_round_harness import (
 # idiom for "this module-level name is deliberate", and it says so without
 # spending a lint suppression against the repo's frozen noqa budget.
 from tests.test_crossover_v2_stage_bridge import (
+    _inline_body,
     _MINTED_CAPTURE_SESSION_ID,
     _flow_seams,
     _isolated_v2_state as _isolated_v2_state,
@@ -1982,7 +1983,7 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
     v2host.save_v2_state(_state_carrying_a_banked_instruction())
 
     prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=None, camilla_factory=None,
+        _inline_body(), status=_status(), run_async=None, camilla_factory=None,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
 

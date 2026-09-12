@@ -27,6 +27,7 @@ from .capture_plan import (
 )
 from .capture_source import CaptureBeginDeferred, CaptureBeginRefused
 from .refusal_copy import (
+    CrossoverV2Refused,
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
     REASON_SESSION_CEILING_EXPIRED,
@@ -80,6 +81,7 @@ class PositionGate:
         self._pending: dict[str, Any] | None = None
         self._current: dict[str, Any] | None = None
         self._released: set[tuple[int, int]] = set()
+        self._last_release: dict[str, Any] | None = None
         self._opened_at: float | None = None
         self._progress: dict[str, Any] | None = None
         self._session_ceiling_expired = False
@@ -169,6 +171,26 @@ class PositionGate:
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
         )
 
+    def invitation(self, entry: Any) -> dict[str, Any]:
+        screen = entry.screen
+        return {"index": 1, "attempt": 1, "prompt": _prompt_of(screen),
+                "degrees": int(screen.get(POSITION_DEG_KEY, 0)),
+                "vertical_deg": int(screen.get(POSITION_VERTICAL_DEG_KEY, 0)),
+                "hand_released": screen.get(POSITION_HAND_RELEASED_KEY, "true") == "true",
+                "action": {"id": "crossover_v2_position_ready", "label": "Microphone is in place",
+                           "endpoint": POSITION_READY_ENDPOINT, "body": {"index": 1, "attempt": 1}}}
+
+    def join(self, entry: Any) -> dict[str, Any]:
+        """The first placement starts the hold clock (ADR-0305)."""
+        with self._lock:
+            joined = (1, 1) in self._released
+        if not joined:
+            try:
+                self.gate(1, 1, entry)
+            except CaptureBeginDeferred:
+                pass
+        return self.release(1, 1)
+
     def publish(self, progress: dict[str, Any]) -> None:
         with self._lock:
             self._progress = deepcopy(progress)
@@ -200,6 +222,7 @@ class PositionGate:
             self._opened_at = None
             self._last = None
             self._released.clear()
+            self._last_release = None
         if abandoned:
             log_event(
                 logger, "correction.crossover_v2_position_hold_abandoned",
@@ -208,21 +231,20 @@ class PositionGate:
             )
 
     def release(self, index: int | None = None, attempt: int | None = None) -> dict[str, Any]:
-        """Accept only the named pending capture attempt; stale actions raise ValueError."""
+        """Replay the current grant; refuse stale or mismatched placement actions."""
         with self._lock:
             pending = self._pending
-            if not pending:
-                raise ValueError("no measurement is waiting for the microphone right now")
-            wanted = int(pending["index"])
-            wanted_attempt = int(pending["attempt"])
-            if index is None or attempt is None:
-                raise ValueError("a placement grant must name both index and attempt")
-            if int(index) != wanted:
-                raise ValueError(f"measurement {wanted} is waiting, not {int(index)}")
-            if int(attempt) != wanted_attempt:
-                raise ValueError(f"attempt {wanted_attempt} is waiting, not {int(attempt)}")
+            prior = self._last_release
+            if pending is None and prior and (index, attempt) == (prior["index"], prior["attempt"]):
+                current = self._current
+                if current is None or (index, attempt) == (current["index"], current["attempt"]):
+                    return deepcopy(prior)
+            if pending is None or (index, attempt) != (pending["index"], pending["attempt"]):
+                raise CrossoverV2Refused("No matching capture is waiting for placement", code="capture_slot_busy")
+            wanted, wanted_attempt = pending["index"], pending["attempt"]
             self._released.add((wanted, wanted_attempt))
             released = deepcopy(pending)
+            self._last_release = pending
             self._pending = None
             self._opened_at = None
         log_event(
