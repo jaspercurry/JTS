@@ -109,6 +109,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     validated_lateral_consumer,
 )
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
+from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
+from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz
 from jasper.audio_measurement.program import (
     ExcitationProgram,
     RoleBand,
@@ -541,7 +543,6 @@ LATERAL_EVIDENCE_BAND_HZ = _spatial.LATERAL_EVIDENCE_BAND_HZ
 LATERAL_EVIDENCE_POINTS_PER_OCTAVE = _spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
 LateralPose = _spatial.LateralPose
 lateral_evidence_grid_hz = _spatial.lateral_evidence_grid_hz
-lateral_pose_curve = _spatial.lateral_pose_curve
 _primary_sweep_bands = _spatial._primary_sweep_bands
 
 
@@ -3453,7 +3454,7 @@ class CrossoverV2Session:
         self._group_cloud_result[phase] = result
         # #2609 SF5 / §4.2: what the ROUND needs and the serialized result does not
         # carry. Recorded for both phases; only ``PHASE_CLOUD_VERIFY``'s are read.
-        floor_hz = _spatial.cloud_trusted_floor_hz(
+        floor_hz = cloud_trusted_floor_hz(
             _spatial.cloud_validity_floor_hz(positions)
         )
         self._group_trusted_floor_hz[phase] = floor_hz
@@ -4312,7 +4313,6 @@ __all__ = [
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "LateralPose",
     "lateral_evidence_grid_hz",
-    "lateral_pose_curve",
     "STAGE1_INCLUDES_ENTRY_BASELINE",
     "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",

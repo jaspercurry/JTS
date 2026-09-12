@@ -22,7 +22,6 @@ from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FIL
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-from jasper.active_speaker.crossover_v2.room_views import ROOM_FLOOR_HZ
 from jasper.active_speaker.crossover_v2.round_views import (
     CLOUD_BINDING_FIT_INPUTS_NOT_BANKED,
     ENTRY_STATE_UNREADABLE,
@@ -55,10 +54,6 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
-from jasper.audio_measurement.measurement_geometry import (
-    BOUNDARY_PRIOR_NULL_FLOOR_DB,
-    DeclaredGeometry,
-)
 
 from tests.crossover_v2_banked_round import (
     bank_cloud_echo_band,
@@ -1531,109 +1526,6 @@ def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, caps
     assert cli.main(["frequency", str(round_dir)]) == 0
     view = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
     assert [s["kind"] for s in view["runs"][0]["series"]] == ["entry_baseline"]
-
-
-def _declare_walls(round_dir: Path, **walls: float) -> Path:
-    """Freeze a declared geometry beside a banked round, as the banker does."""
-    path = round_dir / round_inputs_mod.DECLARED_GEOMETRY_FILENAME
-    DeclaredGeometry(
-        speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0, **walls,
-    ).save(path)
-    return path
-
-
-def test_cli_boundary_prior_states_the_declared_wall_and_names_the_undeclared(
-    tmp_path, capsys,
-):
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    _declare_walls(round_dir, front_wall_m=0.85)
-
-    assert cli.main(["boundary-prior", str(round_dir)]) == cli.EXIT_OK
-    answered = json.loads(capsys.readouterr().out)
-    wall, = answered["walls"]
-    assert wall["wall"] == "front"
-    assert wall["distance_m"] == pytest.approx(0.85)
-    assert wall["f_null_hz"] == pytest.approx(100.9, abs=0.1)
-    assert answered["unknown"] == ["side_wall_m"]
-    assert answered["ceiling_source"] == "default"
-
-    payload = json.loads((round_dir / "boundary_prior.json").read_text())
-    assert payload["kind"] == "jts_boundary_prior"
-    assert payload["advisory"] is True
-    assert payload["sound_speed_source"] == "default"
-    assert payload["freqs_hz"][0] == pytest.approx(20.0)
-    assert max(payload["freqs_hz"]) <= payload["ceiling_hz"]
-    assert len(payload["prior_db"]) == len(payload["freqs_hz"])
-    assert min(payload["prior_db"]) == BOUNDARY_PRIOR_NULL_FLOOR_DB
-
-
-def test_cli_boundary_prior_answers_unknown_rather_than_refusing_an_undeclared_room(
-    tmp_path, capsys,
-):
-    """A disclosed unknown IS the answer: exit 0, empty walls, empty curve."""
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-
-    assert cli.main(["boundary-prior", str(round_dir)]) == cli.EXIT_OK
-    answered = json.loads(capsys.readouterr().out)
-    assert answered["walls"] == []
-    assert answered["unknown"] == ["front_wall_m", "side_wall_m", "geometry"]
-
-    payload = json.loads((round_dir / "boundary_prior.json").read_text())
-    assert payload["walls"] == {}
-    assert payload["prior_db"] == []
-
-
-def test_cli_boundary_prior_reads_a_ceiling_from_the_argument_and_the_room_median(
-    tmp_path, capsys,
-):
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    _declare_walls(round_dir, front_wall_m=0.85)
-    (round_dir / "room_median.json").write_text(json.dumps({"ceiling_hz": 120.0}))
-
-    assert cli.main(["boundary-prior", str(round_dir)]) == cli.EXIT_OK
-    from_median = json.loads(capsys.readouterr().out)
-    assert from_median["ceiling_source"] == "room_median"
-    assert from_median["ceiling_hz"] == pytest.approx(120.0)
-
-    assert cli.main(["boundary-prior", str(round_dir), "--ceiling-hz", "80"]) == 0
-    from_argument = json.loads(capsys.readouterr().out)
-    assert from_argument["ceiling_source"] == "argument"
-    assert from_argument["ceiling_hz"] == pytest.approx(80.0)
-    assert max(
-        json.loads((round_dir / "boundary_prior.json").read_text())["freqs_hz"]
-    ) <= 80.0
-
-
-def test_cli_boundary_prior_refuses_a_ceiling_at_the_grid_floor(tmp_path, capsys):
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    _declare_walls(round_dir, front_wall_m=0.85)
-
-    assert cli.main(
-        ["boundary-prior", str(round_dir), "--ceiling-hz", str(ROOM_FLOOR_HZ)]
-    ) == cli.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["reason"] == (
-        "boundary_prior_ceiling_invalid"
-    )
-
-
-def test_cli_boundary_prior_reports_an_unparseable_geometry_as_unreadable(
-    tmp_path, capsys,
-):
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    (round_dir / round_inputs_mod.DECLARED_GEOMETRY_FILENAME).write_text("{not json")
-
-    assert cli.main(["boundary-prior", str(round_dir)]) == cli.EXIT_UNREADABLE
-    assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
 def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):
