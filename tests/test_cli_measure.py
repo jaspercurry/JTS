@@ -39,7 +39,6 @@ from jasper.cli.measure import (
     REFUSE_CANDIDATE_ID_REQUIRED,
     REFUSE_GRAPH_LOST,
     REFUSE_NO_MIC,
-    REFUSE_ONE_POSITION_PER_RUN,
     REFUSE_SPEC_INVALID,
     REFUSE_SPECS_MIXED_POSE,
     REFUSE_SPECS_UNREADABLE,
@@ -147,7 +146,7 @@ def test_a_second_position_is_refused_because_nothing_moves_the_microphone():
     with pytest.raises(MeasureFlagError) as caught:
         spec_from_args(_args("--position", "-30", "--position", "30"))
 
-    assert caught.value.reason == REFUSE_ONE_POSITION_PER_RUN
+    assert caught.value.reason == REFUSE_SPEC_INVALID
 
 
 def test_the_engine_s_own_refusals_reach_the_operator_as_input_errors():
@@ -230,28 +229,6 @@ def test_the_door_carries_the_conductor_gates_rather_than_a_second_opinion(
 
     assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY
     assert excinfo.value.detail == "the tweeter target is missing"
-
-
-def test_a_preview_that_is_not_staged_refuses_before_the_gate_is_reached(
-    monkeypatch,
-):
-    """The door measures the box as DECLARED. ``resolve_conductor_context``
-    runs ``ensure_crossover_preview_ready``, which REGENERATES a stale preview
-    — setup under a measurement's name — so an unstaged preview has to refuse
-    before the gate, not be repaired by it."""
-    from jasper.active_speaker.crossover_v2 import conductor_context
-
-    _stub_box_reads(monkeypatch, preview_status="stale")
-    monkeypatch.setattr(
-        conductor_context,
-        "conductor_status",
-        lambda: pytest.fail("the session-open gate must not be reached"),
-    )
-
-    with pytest.raises(measure.BoxNotMeasurable) as excinfo:
-        measure.read_box_declaration()
-
-    assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY
 
 
 def _declaration() -> BoxDeclaration:
@@ -426,7 +403,7 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys,
         "cleanup_state": "not_needed", "returncode": 0,
     }
     # stdout IS the answer: the bank verb, spelled with this run's own bundle.
-    assert payload["next"] == f"jasper-round bank {payload['bundle_dir']}"
+    assert payload["next"] == f"jasper-round-views inventory {payload['bundle_dir']}"
     assert payload["bundle_dir"] in captured.err
     assert speaker["capture"].arounds == 1
     assert len(speaker["played"]) == 1
@@ -747,7 +724,7 @@ def test_a_file_entry_that_names_two_bearings_is_refused(tmp_path):
             ["--kind", MEASURE_KIND_BASELINE, "--specs", _specs_file(tmp_path, entries)]
         ))
 
-    assert caught.value.reason == REFUSE_ONE_POSITION_PER_RUN
+    assert caught.value.reason == REFUSE_SPEC_INVALID
 
 
 @pytest.mark.parametrize(
@@ -1155,26 +1132,6 @@ def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
 
 
 @pytest.fixture
-def staged(tmp_path, monkeypatch):
-    """A writable pending slot for the walk a run takes."""
-    from jasper.active_speaker import angle_capture_spool as spool
-
-    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
-    try:
-        yield spool
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
-
-
-def _one_pose_walk(**fields: Any) -> Any:
-    from jasper.active_speaker import angle_capture as ac
-
-    return ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(12, ac.REGIME_SUMMED),), **fields,
-    )
-
-
-@pytest.fixture
 def applied_baseline(monkeypatch, tmp_path):
     """An applied Layer-A record matching this speaker, so a SUMMED scope emits.
 
@@ -1201,46 +1158,6 @@ def applied_baseline(monkeypatch, tmp_path):
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
 
 
-@pytest.mark.parametrize("source", ["staged", "path"])
-def test_a_staged_walk_measures_through_the_same_loop_as_a_spec_batch(
-    speaker, staged, applied_baseline, tmp_path, capsys, source,
-):
-    """The door's second front: an LLM states a walk, the run plays it, and the
-    answer is the same document a spec batch answers with.
-
-    ``staged`` consumes the pending slot; a path is the operator's own file and
-    is left where it was.
-    """
-    path = staged.stage_angle_request(_one_pose_walk())
-    moved = tmp_path / "walk.json"
-    if source == "path":
-        moved.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-        path.unlink()
-
-    code = measure.main([
-        "--request", "staged" if source == "staged" else str(moved),
-    ])
-
-    payload = json.loads(capsys.readouterr().out)
-    assert code == EXIT_OK
-    assert payload["n_takes"] == 1
-    record = json.loads(
-        (Path(payload["bundle_dir"]) / ARTIFACTS / payload["record_ids"][0]).read_text()
-    )
-    assert record["position_deg"] == 12
-    assert staged.staged_angle_request_pending() is False
-
-
-@pytest.mark.parametrize("levels", [(-20,), (-20, -14)])
-def test_fixed_cli_level_mismatch_is_refused_before_the_hold(speaker, staged, capsys, levels):
-    staged.stage_angle_request(replace(_one_pose_walk(), operating_levels_db=levels))
-    code = measure.main(["--request", "staged", "--volume-db", "-14"])
-    payload = json.loads(capsys.readouterr().out)
-    assert (code, payload["reason"]) == (measure.EXIT_REFUSED, "walk_level_policy_invalid")
-    assert speaker["played"] == []
-    assert speaker["cam"].loaded == []
-
-
 def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path):
     """The counts a caller reads back without re-deriving them from the takes —
     written into the bundle, so the run's own answer outlives the terminal."""
@@ -1262,49 +1179,6 @@ def test_every_run_leaves_a_package_naming_what_it_did(speaker, capsys, tmp_path
     assert document["honoured"]["takes_measured"] == payload["n_takes"] == 2
     assert [group["capture_basis"]["candidate_id"] for group in document["sets"]] == ["a", "b"]
     assert payload["spl_monitor"] == plan_run.spl_monitor_note(85)
-
-
-@pytest.mark.parametrize(
-    ("argv", "reason"),
-    [
-        (["--request", "staged", "--kind", MEASURE_KIND_BASELINE],
-         measure.REFUSE_REQUEST_UNREADABLE),
-        (["--request", "staged", "--position", "7"],
-         measure.REFUSE_REQUEST_UNREADABLE),
-        (["--request", "staged", "--spl-ceiling-db-spl", "70"],
-         measure.REFUSE_REQUEST_UNREADABLE),
-        (["--request", "staged", "--specs", "unread.json"],
-         measure.REFUSE_REQUEST_UNREADABLE),
-        (["--request", "staged"], measure.REFUSE_NO_STAGED_REQUEST),
-    ],
-    ids=["kind", "position", "spl-ceiling-db-spl", "specs", "nothing-staged"],
-)
-def test_a_walk_states_its_own_takes_so_the_flags_are_refused_beside_it(
-    staged, capsys, argv, reason,
-):
-    code = measure.main(argv)
-
-    payload = json.loads(capsys.readouterr().out)
-    assert code == EXIT_UNREADABLE
-    assert payload["reason"] == reason
-
-
-def test_a_multi_pose_walk_is_refused_because_this_door_moves_nothing(
-    staged, capsys,
-):
-    """S12 again, for the walk shape: N poses through a door that prompts nobody
-    would bank N bearings nothing moved to."""
-    from jasper.active_speaker import angle_capture as ac
-
-    staged.stage_angle_request(ac.AngleCaptureRequest(stops=(
-        ac.AngleStop(0, ac.REGIME_SUMMED), ac.AngleStop(20, ac.REGIME_SUMMED),
-    )))
-
-    code = measure.main(["--request", "staged"])
-
-    payload = json.loads(capsys.readouterr().out)
-    assert code == EXIT_UNREADABLE
-    assert payload["reason"] == REFUSE_ONE_POSITION_PER_RUN
 
 
 @pytest.mark.parametrize(
@@ -1422,3 +1296,30 @@ def test_manifest_write_failure_reports_banked_takes_and_restores(speaker, monke
     assert payload["detail"]["reason"] == measure.REFUSE_STORE_LOST
     assert len(payload["detail"]["record_ids"]) == 1
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_request_flag_is_retired():
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["--request", "staged"])
+    assert exc.value.code == 2
+
+def test_a_preview_that_is_not_staged_refuses_before_the_gate_is_reached(
+    monkeypatch,
+):
+    """The door measures the box as DECLARED. ``resolve_conductor_context``
+    runs ``ensure_crossover_preview_ready``, which REGENERATES a stale preview
+    — setup under a measurement's name — so an unstaged preview has to refuse
+    before the gate, not be repaired by it."""
+    from jasper.active_speaker.crossover_v2 import conductor_context
+
+    _stub_box_reads(monkeypatch, preview_status="stale")
+    monkeypatch.setattr(
+        conductor_context,
+        "conductor_status",
+        lambda: pytest.fail("the session-open gate must not be reached"),
+    )
+
+    with pytest.raises(measure.BoxNotMeasurable) as excinfo:
+        measure.read_box_declaration()
+
+    assert excinfo.value.reason == measure.REFUSE_BOX_NOT_READY

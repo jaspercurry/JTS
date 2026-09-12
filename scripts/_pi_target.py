@@ -14,8 +14,7 @@ than guessing ``jts.local`` (#3498), so this module treats a failed run OR
 an empty result as "no target" and raises :class:`LibTargetError` rather
 than guessing a value. Every caller refuses on that -- there is no
 degraded default speaker left anywhere in the tree; what differs is only
-how loudly (``scripts/jasper-pipe-probe`` exits with the message,
-``scripts/run-crossover-round.py`` writes a Trail row first).
+how loudly each caller reports the error.
 """
 from __future__ import annotations
 

@@ -42,12 +42,12 @@ restate either.
 | Find what a measurement change actually moved, at value level | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Detect, probe, or move the experimental USB turntable | [USB turntable experiment](#usb-turntable-experiment) |
 | Pull a crossover-v2 round's evidence off the Pi | [Crossover-v2 round banking](#crossover-v2-round-banking) |
-| Emit a round packet, or judge a prescription against it | [Crossover prescriber harness](#crossover-prescriber-harness) |
+| Judge and compose a prescription document | [Crossover prescriber harness](#crossover-prescriber-harness) |
 | Decide if a bump is a driver defect, interference, or the room | [Feature-classification instrument](#feature-classification-instrument) |
 | Grade a round's entry state, or compare seats and sessions | [Round-grading comparison views](#round-grading-comparison-views) |
-| State a capture walk at stated angles | [Angle-walk door](#angle-walk-door) |
+| State a capture walk at stated angles | [Inline measurement plans](#inline-measurement-plans) |
 | Have the lab turntable arm WALK a live session | [Lab-arm walk harness](#lab-arm-walk-harness) |
-| Run one whole crossover-v2 round from the laptop | [Crossover round runner](#crossover-round-runner) |
+| Run one whole crossover-v2 round from the laptop | [Run and retain a round](#run-and-retain-a-round) |
 | See whether a speaker ships a MEASURED per-driver level | [Measured driver base trim](#measured-driver-base-trim) |
 | Find the volume that measures a stated dB SPL at the seat | [Seat-SPL leveling](#seat-spl-leveling) |
 | Sweep for roadmap-dated phrasing that may have gone stale | [`scripts/tense-grep.sh`](../scripts/tense-grep.sh) — advisory, always exits 0; `--all` sweeps the whole repo |
@@ -933,98 +933,25 @@ jasper-round-views agreement <round-dir>
 
 ---
 
-## Angle-walk door
+## Inline measurement plans
 
-`jasper-angle-capture` ([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py))
-is how an operator states a capture walk —
-`{per-driver | summed} × {angles} × {arm | human-guided}` — and sees exactly
-what it resolves to before anything plays. Seam:
-[`angle_capture.py`](../jasper/active_speaker/angle_capture.py).
+`jasper-round` resolves programs through
+[`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py)
+and posts the v3 plan directly to the daemon. No planner spool is involved.
 
 ```sh
-# THE DOOR: a named program owns the geometry. Prints price, handoff URL, and
-# how to tell the walk landed.
-jasper-angle-capture stage --program baseline --size express
-jasper-angle-capture plan  --program baseline --size full     # dry run
-jasper-angle-capture stage --program spot --azimuth 22 --elevation 10
-
-# THE CANDIDATE CYCLE: the same poses once per banked candidate, adjacent
-jasper-angle-capture stage --program tournament --size full --candidates fp1,fp2
-
-# THE OPERATOR ESCAPE HATCH: a free-form angle list no program names
-jasper-angle-capture plan  --angles 0,7,-7,22,-22 --regime per_driver --mover human
-jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver
-
-# R-1's reverse-null: the design-axis MEASURE capture with one branch flipped
-jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
-
-# WHAT IS STAGED: the peek, without taking it
-jasper-angle-capture show
-
-jasper-angle-capture withdraw
+jasper-round run --program speaker --dry-run
+jasper-round run --program speaker --poses 0,7,-7 --candidates base,fp1,fp2
+jasper-round placed --run <id>
+jasper-round status --run <id>
+jasper-round wait --run <id>
 ```
 
-- `--program` and `--angles` are mutually exclusive and one is required.
-  `--program` names a row of
-  [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py),
-  the only owner of the poses; `--regime` belongs to `--angles` alone. Every
-  verb answers with one JSON receipt on **stdout** — `program`, `size`,
-  `mover`, `stops`, `price` (`mic_moves` / `captures` / `ceiling_min`),
-  `level`, `handoff_url`, `next` — and renders the walk for a person on
-  **stderr**. `plan` is the **dry run of** `stage` — same constructors, same
-  refusals — and its stderr names, per stop, the capture index, signed
-  bearing, pose prompt, program, advance policy, and (for an arm) the
-  `position_deg` the position gate waits for.
-- **`level` is absolute dB SPL at the microphone**, resolved by
-  [`seat_level_reference.py`](../jasper/active_speaker/seat_level_reference.py)
-  from the banked seat-level anchor with the mic's parsed sensitivity and the
-  preset's `max_commissioning_level_db_spl` as a hard ceiling. It never falls
-  back to a relative number: `plan` prints the missing input, `stage` refuses
-  with `seat_anchor_unusable`, `level_over_ceiling` or `preset_unavailable`.
-- **Angles are whole degrees, negative LEFT and positive RIGHT facing the
-  speaker, and nothing is coerced.** `7.5`, `0.4` and `+7 deg` are all refused:
-  `int(0.4)` is `0`, so a truncating parser would silently turn a just-off-axis
-  request into an on-axis capture. There is no second validator in the CLI.
-- **The household's tape measure has one writer and no walk flags.**
-  `jasper-declare-geometry set` stores the rig's `DeclaredGeometry`; `stage`
-  only echoes it, banked beside the bundle as `declared-geometry.json`.
-- **`--polarity` / `--inverted-role` are WALK-level, not per angle**, and
-  nothing on the staging side judges the pair — its one gate is `MeasureSpec`,
-  so `--polarity inverted` with no `--inverted-role` stages cleanly and refuses
-  the next open. An inverted walk needs a WIRED session: only the wired source
-  binds the engine MEASURE leg the flip rides.
-- **Exit codes**: `0` accepted, `1` refused (bad angle, unknown regime or mover,
-  session already running), `3` an accepted request could not be banked. `1`
-  means fix the request; `3` means fix the filesystem.
-- **What it does not do**: it runs no capture and opens no session. `stage`
-  writes one single-use, last-wins document to
-  `/var/lib/jasper/active_speaker_angle_capture_request.json`
-  (`event=angle_capture.request_staged`; owner
-  [`angle_capture_spool.py`](../jasper/active_speaker/angle_capture_spool.py)).
-  The next session open consumes it and walks its stops as that session's
-  lateral group, banking each pose's raw WAV plus a sidecar carrying
-  `position_deg`, `offset_cm`, `at_mark`, `regime`, `lateral_consumer`. While a
-  walk is staged the `microphone_check` tier chooser prices it (`staged_walk`)
-  through a peek. A taken walk is EVIDENCE: its close adjudicates nothing.
-
-**The take-time refusals, each of which REFUSES THE OPEN**
-([ADR-0006](adr/0006-staged-walk-refuses-the-open.md)) rather than opening the
-session in its ordinary shape: `walk_regime_unsupported`,
-`walk_mover_mismatch`, `walk_over_mover_envelope` (arm ±45°, person ±80° —
-normally refused at the door, so reaching the take means a hand-edited or
-pre-bound document), `walk_over_capture_capacity`,
-`walk_lateral_group_already_planned`, `walk_stop_no_longer_valid`,
-`walk_polarity_not_accepted`, `walk_delay_not_accepted`,
-`walk_level_match_no_evidence`, `walk_candidate_not_measurable`,
-`walk_stimulus_not_accepted` and `walk_policy_unsupported_yet`. The document is
-consumed except on the spool's two unreadable arms, so a permissions mistake
-cannot destroy the evidence of itself — the `consumed=` field says which
-happened; do not assume it.
-
-Read the journal, not the code: `event=correction.crossover_v2_angle_walk_taken`
-/ `…_angle_walk_refused` / `…_lateral_walk_closed`. Coverage:
-`tests/test_angle_capture_{trigger,seam,take}.py`,
-`tests/test_crossover_v2_lateral_evidence.py`.
+`run` returns the run id and link before a mover joins. `wait` banks the run
+and returns its manifest and bookkeeping results. A view that lacks an input
+is reported as unavailable. The program registry owns the per-program list.
+Use `--plan FILE` for an explicit v3 `AngleCaptureRequest.to_dict()` document.
+The run uses the same preflight for documents and CLI-built plans.
 
 ---
 
@@ -1045,7 +972,6 @@ Runs **on the speaker**, in the foreground, one run per walk:
 # session — the first poll is what checks a walk is still waiting.
 sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
     --mover turntable --attest-rig-clear --hostname jts3.local \
-    --expect-angles 7,-7,22,-22 \
     --trail /tmp/arm-walk.jsonl
 ```
 
@@ -1072,13 +998,13 @@ sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
 | power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `power_void`. The PARK's own move is deliberately not re-checked (the walk is often parking *because* of a power sign); it still passes the adapter's own preflight |
 | ±45° clamp | belt-and-braces over the adapter's refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
 | park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream |
-| `set-zero` is unreachable | `power`, `position` and `offset` are the complete verb set |
+| `set-zero` is unreachable | `power`, `stop`, `position` and `offset` are the complete verb set |
 | the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED |
 
 **The stall NAME is the contract, not a number.** `serve` exits the shared
 `0/1/3` every tool in the menu does; the loop's own distinct verdict per failure
 class (`EXIT_NAMES`) rides out as the refusal record's `reason`, on stdout and
-in the stderr sentence. Four are worth knowing before a run:
+in the stderr sentence. Three are worth knowing before a run:
 
 - **A walk ends when its session does** (clean, `session_stopped`,
   `session_failed`, read off the same poll's `relay.status`) — but a terminal
@@ -1091,9 +1017,6 @@ in the stderr sentence. Four are worth knowing before a run:
 - **`status_unreachable` is almost always the wrong `--hostname`**; a single
   unreadable poll is absorbed, a whole `unreadable_ceiling_s` of them is its own
   named stall.
-- **`--expect-angles` is how a walk that never runs is caught**: any unserved
-  angle becomes `walk_not_taken`, and with no session yet in flight a walk must
-  still be staged (`walk_not_staged`).
 
 **A signal stops the walk once — and SIGHUP is one of them**, since a remote
 walk is stopped by its ssh transport going away and Python's default for SIGHUP
@@ -1102,93 +1025,23 @@ unwind IS the park, and the handler disarms itself on that first fire so a
 second signal cannot abandon the arm mid-park; signal endings exit
 `128 + signum`. **Observability**: `event=arm_walk.*` (`pending`, `moved`,
 `released`, `release_rejected`, `power_void`, `stuck`, `status_unreachable`,
-`session_ended`, `session_failed`, `parked`, `walk_not_taken`, …) — failures at
+`session_ended`, `session_failed`, `parked`, …) — failures at
 `ERROR`, progress at `INFO` — with the same fields as the `--trail` JSONL rows,
 from one call site.
 
 ---
 
-## Crossover round runner
+## Run and retain a round
 
-[`scripts/run-crossover-round.py`](../scripts/run-crossover-round.py) runs ONE
-crossover-v2 round end to end from the laptop, composing `jasper-angle-capture
-stage`, `jasper-angle-capture serve`, the wizard's endpoints and
-`bank-crossover-round.sh`. It builds nothing new on the Pi.
+Use `jasper-round run` on the speaker, give the human its link, then
+`jasper-round wait --run <id>`. The wait answer names the banked round and
+manifest. Apply a chosen candidate with
+`jasper-round apply --expected-fingerprint <fp>`.
 
-```sh
-# measure (stage 1), lab arm walking five angles
-PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
-    --campaign captures/my-night --label r1 --tier remote \
-    --angles 0,7,-7,22,-22 --regime per_driver \
-    --attest-rig-clear --expect-angles 7,-7,22,-22
-
-# the same five angles, three takes at each — one walk, fifteen stops
-… --per-position 3 …
-
-# …read the candidate it printed, decide, THEN apply it BY NAME
-PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fingerprint>
-
-# the post-apply check (stage 2)
-… --label r1-verify --stage verify --attest-rig-clear --expect-angles 7,-7,22,-22
-```
-
-`--campaign` is the campaign directory and `--label` the round's name inside it;
-both are required to measure.
-
-- **The apply gate is why the file exists.** A measurement run NEVER applies: it
-  ends with the candidate's fingerprint and numbers printed on stdout and stops.
-  Applying is a second invocation that must NAME the fingerprint, and the runner
-  refuses **before any POST leaves the laptop** when the live candidate differs
-  (`rc 11`; the test asserts nothing was sent, not merely a non-zero exit).
-- **No `--complete-after`, and that is the recipe.** The session closes ITSELF
-  once it has served every hold it planned, and the walk reads that terminal
-  status. A laptop-side count cannot be honest — the flag counts RELEASES and
-  the staged stop count is only a floor. Pass it only when a WALK has to close a
-  wired stage's held set.
-- **Phase order.** The walk is launched *before* the session opens, because
-  `serve`'s first poll is what checks a staged walk is still waiting,
-  and only with `--attest-rig-clear` — the attestation is the operator's.
-  `--angles` / `--regime` / `--expect-angles` are forwarded as written; bounds
-  and vocabulary are the seam's. A walk staged by an aborted round stays staged.
-  Stopping a walk is a transport drop and the park happens on the speaker after
-  the local ssh client is gone, so the runner reports the hangup, never the arm
-  as parked. **`--tier` is ignored by `--stage verify`**: stage 2 takes the
-  instrument the measuring session recorded.
-- **`--per-position N`** stages each angle N times **adjacently**, so the arm
-  settles and releases N times without travelling; what varies between takes is
-  time and whatever you changed, never the pose. It governs a staged *measure*
-  walk at any regime composing one stop per angle (`per_driver`, `summed`).
-- **Every staged round banks `position_cycle.json`** — one sorted index of the
-  poses the round actually measured, **derived** from the banked bundle (owner
-  [`position_cycle.py`](../jasper/active_speaker/crossover_v2/position_cycle.py)),
-  never from what the round *meant* to stage. When the bundle cannot support the
-  index the runner names what was missing and writes nothing. `jasper-round
-  bank` derives the same file, through the same writer, for a round banked on
-  the box; a round with nothing to index is named in its `provenance.json`.
-- **Refused before anything runs**, eight configurations: an `--apply` with an
-  empty fingerprint or with `--per-position` at any value; `--angles` without
-  `--attest-rig-clear`; an unreadable `--alignment-prescription` or
-  `--topology-prescription`; `--per-position` under 1, or without `--angles`,
-  or with `--stage verify`, or with a regime that does not compose exactly one
-  stop per angle; and a `--complete-after` below the staged stop count. An
-  **empty angle field is not** refused: `--angles 0,,7,` stages `0,7`.
-- **Completion is polled, not slept**: the runner waits for the session id to
-  move off the pre-open one *and* for the phase to leave the running set (every
-  capture phase plus `closing` and `applying`).
-- **No verdict is re-mapped.** `serve`'s exit code rides through beside the
-  stall IT named, read off its refusal record (`arm_walk_exit=1
-  arm_walk_exit_name=stuck`), and
-  `bank-crossover-round.sh`'s `0/3/4` decides the round. A failing walk stops the
-  round *before* banking, and the runner prints the one bank command that keeps
-  the evidence sitting on the Pi. Its own exit codes are `EXIT_NAMES` in the
-  script, tabulated in the [operator runbook](tuning-operator-runbook.md)'s
-  "Exit codes"; each carries its deciding value on the phase line and in the
-  `--trail` JSONL.
-- **Which speaker.** The target is `scripts/_lib.sh`'s. `--hostname` overrides
-  the speaker's *name* alone, which is the one way the ssh target and the name
-  can come from different places — a round then ssh's to one speaker carrying
-  another's `Host:` header, which the management-host guard 403s. The runner
-  discloses the pair and where each half came from (the `identity` trail row).
+[`bank-crossover-round.sh`](../scripts/bank-crossover-round.sh) remains the
+laptop pull tool for bundles, the journal window and throttling diagnostics.
+Its `SINCE` value sets the journal window. It retains partial evidence and
+reports each missing artifact.
 
 ---
 

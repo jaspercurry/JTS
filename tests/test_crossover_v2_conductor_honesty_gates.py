@@ -602,21 +602,16 @@ def test_verify_out_of_tolerance_and_inconclusive():
     _run_phase(c, 2, 2)
     c.note_apply_complete()
 
-    # Out of tolerance: |measured − predicted| > 1.5 dB.
     fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
     verdict = _run_phase(c, 3, 3)
-    assert verdict["code"] == "verify_out_of_tolerance"
-    assert verdict["template"] == "verify_fail"
+    assert c.verify_code == "verify_out_of_tolerance"
     assert c.verify_outcome == "fail"
 
-    # Gate-comparability: VERIFY's own gate shorter than MEASURE's ⇒
-    # "inconclusive — re-verify", not fail (§5.2).
     fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
     verdict = _run_phase(c, 3, 4)
     assert verdict["code"] == "verify_inconclusive"
     assert c.verify_outcome == "inconclusive"
 
-    # A comparable-gate clean re-verify passes (budget 2 admits it).
     fakes.verify = _verify_analysis
     verdict = _run_phase(c, 3, 5)
     assert verdict["accepted"] is True

@@ -30,7 +30,7 @@ REVALIDATION_PENDING = "revalidation_pending"
 _BIN = "/opt/jasper/.venv/bin"
 ORIENTATION_COMMAND = f"sudo {_BIN}/jasper-crossover-prescriber status"
 PROGRAM_DOOR_COMMAND = (
-    f"sudo {_BIN}/jasper-angle-capture plan --help"
+    f"sudo {_BIN}/jasper-round run --help"
 )
 
 

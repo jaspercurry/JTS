@@ -45,20 +45,17 @@ band supports the claim. Choose the order from the next question.
    round. Confirm the speaker, base design, and returned paths.
 2. **Plan the question.** For an initial baseline, use the base tune without
    inherited corrections. For a comparison, name the candidate fingerprints
-   and required poses. `jasper-angle-capture plan` previews the program and
-   human effort without staging it.
-3. **Stage and measure.** Register the wired measurement mic once. Its record
+   and required poses. `jasper-round run --dry-run` prints preflight and the schedule.
+3. **Run.** Register the wired measurement mic once. Its record
    and its calibration files live under a root-owned, group-`jasper` state
    directory the login account is outside, so on the speaker every verb runs as
    `sudo /opt/jasper/.venv/bin/jasper-mic-calibration <verb>`:
    `fetch --model <key> --serial <serial>`, or `upload <file>`. `show` prints
    the household record every take's calibration context resolves from, and a
-   box without one measures uncalibrated. Stage the chosen program, then use
-   `jasper-round open --tier express` (or the chosen tier) and `jasper-round wait`.
-   Give the human the returned `handoff_url` and the next placement/start action.
-   `scripts/run-crossover-round.py` is the laptop adapter for one round.
-4. **Bank.** `jasper-round bank <session-dir>` uses the `session_dir` returned
-   by `wait`. It places the round under
+   box without one measures uncalibrated. Use `jasper-round run --program speaker`. Give the human the returned
+   `link`; `placed --run <id>` can confirm placement from the terminal.
+4. **Wait and bank.** `jasper-round wait --run <id>` returns the manifest and
+   view results. It places the round under
    `/var/lib/jasper/active_speaker/campaigns/<round-id>/`, outside normal session
    retention. Keep completed valid takes even when another take fails.
 5. **Inspect and enrich.** `jasper-round-views inventory <round-dir>` shows
@@ -85,10 +82,8 @@ band supports the claim. Choose the order from the next question.
    least-bad measured candidate, or compile another candidate and reuse the same
    measurement tools. The latest round may already supply enough evidence.
 9. **Adopt when chosen.** `jasper-round apply --expected-fingerprint <fp>` is
-   explicit persistence of the selected candidate. On the laptop,
-   `scripts/run-crossover-round.py --apply <fp>` is a separate invocation.
-   If a post-apply check would answer a remaining question, use
-   `jasper-round open --stage post_apply`; it is not a compulsory final round.
+   explicit persistence of the selected candidate. If a later capture would
+   answer a remaining question, start another `jasper-round run`.
 
 ## Candidate batches and reusable parts
 
@@ -98,7 +93,7 @@ delay, and polarity. Use the existing design path for a different base design;
 its driver protection must be derived for that design.
 
 ```
-jasper-angle-capture stage --program tournament --size express --candidates base,fp1,fp2
+jasper-round run --program speaker --poses baseline/express --candidates base,fp1,fp2
 ```
 
 `base` adds the base graph to the same pose batch. Choose the batch size for the question.
@@ -170,23 +165,24 @@ take window overlays when only one recording should answer the question.
 
 ## Optional complete-tune branch check
 
-Use one saved candidate when the crossover sum needs a closer look:
+Build a v3 plan with `request_for_program(program("branches", "express"),
+candidates=(fp,))` and save `to_dict()` as `branches.json`:
 
 ```
-jasper-angle-capture plan --program branches --size express --candidates <fp>
-jasper-angle-capture stage --program branches --size express --candidates <fp>
+jasper-round run --plan branches.json --dry-run
+jasper-round run --plan branches.json
 ```
 
 The branch program starts after a full candidate is banked. It cannot select
 the bare base graph; keep using the normal baseline path until a candidate
 exists.
 
-Open the usual browser session and give the human its placement/start action.
+Give the human the returned link and its placement/start action.
 At the selected pose, one recording contains woofer, tweeter, two clock-check
 repeats, then both. All five sweeps use the same stimulus level and volume.
 Each branch retains the candidate's crossover, correction, trim, delay,
 polarity, and protection. This is a diagnostic; it does not fit or adopt a tune.
-The existing `--regime both` remains the neutral per-driver/summed pair.
+
 
 The retained take carries all three complex curves, raw impulses, exact
 candidate/graph/WAV/program identities, and clock/gate facts. View it with
@@ -257,15 +253,12 @@ Measure the seat cloud through Speaker with Room and bass off, ungated
 (methodology §11). The current fitter corrects below its disclosed ceiling;
 higher-frequency deficits need separate speaker-informed evidence. In order:
 
-1. `jasper-angle-capture plan --program room`: the default listening-area
-   cloud. `--size quick --mover arm` selects the three-position arm smoke test;
-   the speaker stays fixed and the arm moves the microphone. `stage` the plan.
-   The arm test samples its local area, not the final listening-area cloud.
-   Existing `seat/cloud`, `seat/cube` and `seat/express` remain available.
-2. `jasper-round open --tier express`, then the phone's position-ready walk
+1. `jasper-round run --program room --dry-run` previews the default seat cloud.
+   `--layout room_quick --mover arm` selects the local arm smoke test.
+2. `jasper-round run --program room` returns the link and run id. The page
    states each place from the head centre at ear height.
-3. `jasper-round bank <session-dir>`: records carry the measurement purpose,
-   actual pose and gating result. Room analysis retains reflections.
+3. `jasper-round wait --run <id>` banks captures and runs the program's views.
+   Records carry purpose, actual pose and gating result. Room retains reflections.
 4. `jasper-round-views room <round-dir> --set <set-id>` writes the set's
    `room.json` artifact with a set suffix. It includes ceiling and provenance,
    median, spread, position deviations, persistence with boost admission,
@@ -275,8 +268,8 @@ higher-frequency deficits need separate speaker-informed evidence. In order:
 5. Put the room prescription in the document's `room` section. Run
    `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`,
    then `compose <doc> --base <fp|saved> --round <round-dir> --set <set-id>`.
-   Stage the same `jasper-angle-capture plan --program room
-   --candidates <fingerprint>` walk, then open and bank a new round. Each seat
+   Use `jasper-round run --program room --candidates <fingerprint>`, then
+   `jasper-round wait --run <id>`. Each seat
    capture plays the room candidate through the accepted speaker tune.
 6. `jasper-round-views room-grade <round-dir> --set <candidate-set>
    [--incumbent <set-id>]`: grade the room document against the incumbent set
@@ -318,10 +311,9 @@ Inputs are accepted Speaker plus Room, a smooth bass target, and any compatible
 retained bass captures. Start with `status` and `inventory`; correct remaining
 Room peaks in Room before fitting extension.
 
-1. Plan `jasper-angle-capture plan --program bass`. The shared cloud is the
-   normal listening-area plan; `--size quick` gives the smaller trial. Stage
-   useful off/candidate choices at each held position, then open and bank a
-   round through the same placement/start flow as Room.
+1. Preview `jasper-round run --program bass --dry-run`, then run without
+   `--dry-run`. Use `--poses bass/quick` for a smaller trial. Name candidates
+   for a trial; `wait --run <id>` banks it and reports unavailable views.
 2. Run `bass` and `bass-compare` below. Inspect frequency plots, noise,
    harmonics and repeat variation before deciding which bands need more data.
    `bass-fit-table` suggests a bounded native shape from matched measured changes.
@@ -462,11 +454,11 @@ Capture emits sound; apply persists a tune.
 | `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction, replacing the live tune and deleting no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-mic-calibration models\|fetch\|upload\|show` | Register the household's measurement microphone: fetch its vendor calibration by serial or store a file you already have, and remember that mic so every measurement resolves its calibration from one record. A box with no record measures uncalibrated. | advisory (`fetch`/`upload` write; `models`/`show` do not) | `jasper/cli/mic_calibration.py` |
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference — PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
-| `jasper-angle-capture plan\|stage\|show\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage`/`withdraw` write; `serve` moves the arm; `plan`/`show` are reads) | `jasper/cli/angle_capture.py` |
+| `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round run\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read measured round evidence, including repeat --set spread across takes. Answers use stdout; detailed reports use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances for jasper-round-views room. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |

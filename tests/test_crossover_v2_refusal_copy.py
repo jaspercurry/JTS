@@ -105,8 +105,7 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
     # holds no module for them, so ``_OWNERS`` points back at the flow and the
     # single-owner pin is the tree-wide absence test rather than an identity.
     "crossover_v2_flow": (
-        "ATTEMPT_REASON_NO_FLOOR",
-        "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
+            "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
         "PRESCRIBED_NON_WORSENING_DB",
     ),
     "capture_dispatch": (

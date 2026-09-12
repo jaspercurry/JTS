@@ -2,28 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+
 """The walk a session will do, decided before anything plays: where the
 microphone goes, in what order, with what words on the screen, how many attempts
 each pose is allowed, and which excitation program each capture index runs.
 
-It decides; it does not act — no I/O, no session state, no fader, no graph. The
-one side effect is a journal line on the tier-display cache. Mover-agnostic
+It decides; it does not act — no I/O, no session state, no fader, no graph. Mover-agnostic
 (MS-17): positions are degrees and centimetres, and nothing here knows whether a
 human or an arm moves the microphone.
 """
-
 from __future__ import annotations
 
 import logging
 import math
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from itertools import groupby
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
-from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
@@ -37,7 +34,6 @@ from jasper.audio_measurement.program import (
 )
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
-from jasper.log_event import log_event
 
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT,
@@ -73,7 +69,7 @@ if TYPE_CHECKING:
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
-    acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
+    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
@@ -96,7 +92,6 @@ def build_inline_session_spec(
             duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
             screen={"progress": capture_progress_label(index, len(captures)),
                     "title": prompt.headline, "body": prompt.detail,
-                    POSITION_HAND_RELEASED_KEY: str(hand_released).lower(),
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
     attempts = len(entries) + sum(1 for _ in groupby(prompt.place for prompt in prompts)) * retries_per_pose
@@ -341,7 +336,6 @@ _VERTICAL_DETAIL = "Keep the microphone pointed at the speaker."
 # and the post-apply group ``[:M - 1]`` — so the first two wide moves sit at
 # offsets 3 and 4 (1-based) rather than at the end, where a shorter group would
 # never reach them. Reordering this table moves two derived numbers
-# (``MIN_CLOUD_VERIFY_POSITIONS`` and ``express_cloud_measure_positions()``).
 _LATERAL_POSE = "Move the microphone {d} to the {side} of the mark, at mark height."
 _VERTICAL_POSE = "Move the microphone back over the mark, {d} {updown} mark height."
 
@@ -438,7 +432,6 @@ if len(LATERAL_POSE_PROMPTS) != 2 * len(_LATERAL_POSE_OFFSETS_CM) + 2:
 #
 # Derived from the same ``_SIDE_POSE_PROMPTS`` the lateral walk uses, so an edit
 # to the shared offsets moves both walks together, and vertical-free BY
-# CONSTRUCTION, which is what lets ``remote_cloud_verify_positions`` stop
 # clamping. The at-mark row bypasses ``_pose`` because a 0 cm move cannot clear
 # :data:`MIN_CLOUD_OFFSET_CM`; that floor is a property of the group, and the
 # four sides beside this row carry the whole ±7/±22 spread the combine needs.
@@ -464,9 +457,6 @@ if DEFAULT_CLOUD_VERIFY_POSITIONS != 1 + len(CLOUD_VERIFY_POSE_PROMPTS):
         f"{DEFAULT_CLOUD_VERIFY_POSITIONS}"
     )
 
-# --- remote tier: the same walk, stated as ANGLES (external positioner) ------ #
-#
-# Owned by :mod:`.spatial`.
 MARK_DISTANCE_M = _spatial.MARK_DISTANCE_M
 
 
@@ -491,7 +481,7 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
             "a vertical position has no horizontal bearing: an external "
             "positioner cannot raise or lower the microphone, so an "
             f"externally positioned walk must contain no {POSITION_ROLE_XOVR} "
-            "pose (see remote_cloud_verify_positions)"
+            "pose"
         )
     if float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0:
         # An off-axis pose that declared no side would multiply out to 0° —
@@ -803,237 +793,48 @@ def _walk_shape(reach: float, *, post_apply: bool = False) -> str:
     )
 
 
-# --------------------------------------------------------------------------- #
-# commission tiers
-# --------------------------------------------------------------------------- #
-
-# The named plan SHAPES a session can be opened with. A tier is a distinct,
-# validated (N, M) pair, not a loosened floor, so ``MIN_CLOUD_MEASURE_POSITIONS``
-# never moves to accommodate express.
-TIER_FULL = "full"
-TIER_EXPRESS = "express"
-# The EXTERNALLY DRIVEN tier (experimental): Full's stage-1 shape walked by a
-# mic positioner over HTTP, so it is the one tier whose entries auto-begin
-# (:data:`AUTO_ADVANCE_COUNTDOWN`) behind a per-entry POSITION GATE and the one
-# whose positions are stated as ANGLES. Not a household choice — it is in
-# :data:`TIERS` only so ``normalize_tier`` admits a POST naming it.
-TIER_REMOTE = "remote"
-TIERS = (TIER_FULL, TIER_EXPRESS, TIER_REMOTE)
-DEFAULT_TIER = TIER_FULL
-
-# Express's post-apply group: VERIFY's design-axis anchor and nothing else. An
-# ``M = 1`` plan emits NO cloud-verify entries, so express makes no
-# cross-position post-apply claim — it verifies tracking at the mark
-# (``VERIFY_TOLERANCE_DB``) and says so.
-EXPRESS_CLOUD_VERIFY_POSITIONS = 1
-
-
-def express_cloud_measure_positions() -> int:
-    """Express's pre-apply group size — the shortest prompted cloud that still
-    contains BOTH of :data:`CLOUD_POSITION_PROMPTS`' wide (~30 cm-class) moves.
-    """
-    return _min_positions_for_two_wide_offsets()
-
-
-def _vertical_prompt_indexes() -> list[int]:
-    """Where the vertical poses sit in :data:`CLOUD_POSITION_PROMPTS`."""
-    return [
-        i for i, prompt in enumerate(CLOUD_POSITION_PROMPTS)
-        if prompt.role == POSITION_ROLE_XOVR
-    ]
-
-
-def remote_cloud_measure_positions() -> int:
-    """Remote's pre-apply group size."""
-    positions = DEFAULT_CLOUD_MEASURE_POSITIONS
-    return positions
-
-
-def remote_cloud_verify_positions() -> int:
-    """Remote's post-apply group size — Full's walk, minus vertical.
-
-    An external positioner swings on ONE axis and cannot raise or lower the
-    capsule, so remote walks the longest prefix of
-    :data:`CLOUD_VERIFY_POSE_PROMPTS` asking for no
-    :data:`POSITION_ROLE_XOVR` move; what it cannot sample is disclosed
-    (:data:`REMOTE_VERTICAL_DISCLOSURE`). The post-apply table is vertical-free
-    today, so the subtraction is a no-op — kept derived so adding a vertical row
-    shortens remote's walk rather than aiming a positioner at it.
-    """
-    verticals = [
-        i for i, prompt in enumerate(CLOUD_VERIFY_POSE_PROMPTS)
-        if prompt.role == POSITION_ROLE_XOVR
-    ]
-    # A group of size ``g`` walks prompts ``[:g - 1]``.
-    positions = (verticals[0] + 1) if verticals else DEFAULT_CLOUD_VERIFY_POSITIONS
-    if positions < MIN_CLOUD_VERIFY_POSITIONS:
-        raise CrossoverV2FlowError(
-            "the remote tier's vertical-free verify walk is "
-            f"{positions} positions, below the validated floor of "
-            f"{MIN_CLOUD_VERIFY_POSITIONS} — CLOUD_VERIFY_POSE_PROMPTS must "
-            "keep both wide lateral moves ahead of any vertical one"
-        )
-    return min(positions, DEFAULT_CLOUD_VERIFY_POSITIONS)
-
-
-# What a remote session states about the axis its positioner cannot reach. ONE
-# sentence, disclosed once per session: a consumer reading this group's roles
-# finds no ``xovr`` member, and the honest reading is "unsampled", not "flat".
-REMOTE_VERTICAL_DISCLOSURE = (
-    "Measured on the horizontal axis only — a remote positioner cannot raise "
-    "or lower the microphone, so no vertical spot was sampled."
-)
-
-
 @dataclass(frozen=True)
 class V2PlanShape:
-    """The RESOLVED (tier, N, M) triple — one value, threaded everywhere.
-
-    The plan the phone is handed and the index→phase map the session walks must
-    derive from one of these or they can disagree.
-    """
-
-    tier: str
     cloud_measure_positions: int
     cloud_verify_positions: int
-    #: Whether a PERSON releases every begin. Set for a HAND-WALKED round on the
-    #: wired capture source, which has no capture page to pace it: without a
-    #: hold the walk fires every capture back to back while the household is
-    #: still walking. Not a tier — the tier decides the (N, M) shape and whether
-    #: a MACHINE advances the walk (:attr:`externally_positioned`).
     hand_released_positions: bool = False
-
-    def __post_init__(self) -> None:
-        if self.hand_released_positions and self.externally_positioned:
-            # The arm's own driver releases its holds, so a shape claiming
-            # BOTH movers has not decided which one is on the floor.
-            raise CrossoverV2FlowError(
-                f"tier {self.tier!r} is positioned by an external driver, so "
-                "its holds cannot also be hand-released"
-            )
+    externally_positioned: bool = False
 
     @property
     def measure_capture_target(self) -> int:
-        """The cloud-INCLUSIVE shape target (``1 + N``) — CHECK plus the
-        pre-apply cloud. NOT what stage 1 runs: the ``STAGE1_INCLUDES_*`` flags
-        decide that, and the real count is :func:`stage1_base_entries`."""
         return 1 + self.cloud_measure_positions
 
     @property
     def verify_capture_target(self) -> int:
-        """Accepted captures STAGE 2 runs (``M``) — VERIFY's anchor plus
-        ``M − 1`` prompted post-apply positions. 5 at Full
-        (:data:`DEFAULT_CLOUD_VERIFY_POSITIONS`), 1 for express (whose whole
-        post-apply check is the anchor at the mark).
-        """
         return self.cloud_verify_positions
 
     @property
     def capture_target(self) -> int:
-        """Accepted captures the WHOLE JOURNEY runs (``1 + N + M``).
-
-        No single session emits this any more — since the two-stage split it is
-        the sum of two sessions' targets (:attr:`measure_capture_target` and
-        :attr:`verify_capture_target`), which is what the tier chooser's
-        household-facing "N measurements" claim is about: the household is
-        choosing both stages when it picks a tier.
-        """
         return self.measure_capture_target + self.verify_capture_target
 
     @property
     def measure_max_attempts(self) -> int:
-        """Stage 1's admission budget (its entries + geometry retakes + spare)."""
-        return (
-            self.measure_capture_target
-            + GEOMETRY_RETRY_POSITIONS
-            + CLOUD_RETAKE_ALLOWANCE
-        )
+        return self.measure_capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
 
     @property
     def verify_max_attempts(self) -> int:
-        """Stage 2's admission budget, derived exactly like stage 1's."""
-        return (
-            self.verify_capture_target
-            + GEOMETRY_RETRY_POSITIONS
-            + CLOUD_RETAKE_ALLOWANCE
-        )
+        return self.verify_capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
 
     @property
     def max_attempts(self) -> int:
-        """The whole journey's admission budget — the CONSERVATIVE bound.
-
-        The sum rather than ``max(measure, verify)``, so a guard that passes on
-        it passes on both stages. Not what either session emits — those read
-        :attr:`measure_max_attempts` / :attr:`verify_max_attempts`.
-        """
         return self.capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
 
     @property
     def has_cloud_verify_group(self) -> bool:
-        """Whether this shape emits a post-apply position GROUP at all.
-
-        ``False`` for express (``M = 1``), whose end-screen copy rides VERIFY's
-        anchor rather than a group tail.
-        """
         return self.cloud_verify_positions > 1
 
     @property
-    def externally_positioned(self) -> bool:
-        """Whether an EXTERNAL DRIVER moves the microphone between captures.
-
-        The ADVANCE axis, and only that: every entry auto-begins behind the
-        cancelable countdown (:func:`_entry_advance`). Implies
-        :attr:`positions_gated` — a countdown alone would fire into an arm still
-        in motion — but not the converse: a person can walk the same bearings
-        and release each hold by hand, which needs the gate and not the
-        countdown.
-        """
-        return tier_is_externally_positioned(self.tier)
-
-    @property
     def positions_gated(self) -> bool:
-        """Whether poses are stated as BEARINGS and every begin is HELD until
-        something reports the microphone in place.
-
-        The POSE-STATEMENT axis: the prompt copy restates each pose as its
-        angles (:func:`_positioned_prompt`) and every entry declares them in
-        machine terms (:data:`POSITION_DEG_KEY`, :data:`POSITION_VERTICAL_DEG_KEY`,
-        :data:`POSITION_ROLE_KEY`, :func:`_entry_policy`), which is what the
-        host's position gate reads.
-        True for the arm and for a hand-released round; only the arm also gets
-        the countdown.
-        """
         return self.externally_positioned or self.hand_released_positions
 
 
-def tier_is_externally_positioned(tier: Any) -> bool:
-    """Whether ``tier`` names a tier an EXTERNAL DRIVER positions.
-
-    Deliberately LENIENT where :func:`normalize_tier` is strict: callers hold
-    whatever tier string a durable state file carried, and an unknown one is
-    "not externally positioned" rather than a refusal that takes down a close.
-    """
-    return str(tier or "").strip().lower() == TIER_REMOTE
-
-
-def normalize_tier(tier: Any) -> str:
-    """Allowlist a household-supplied tier id; empty/absent means FULL.
-
-    Strict about the value, lenient about absence: an unset tier keeps the full
-    instrument, an unknown one asks for an instrument this build does not have.
-    """
-    name = str(tier or "").strip().lower()
-    if not name:
-        return DEFAULT_TIER
-    if name not in TIERS:
-        raise PlanShapeError(
-            f"unknown commission tier {name!r} (expected one of {', '.join(TIERS)})"
-        )
-    return name
-
-
 class PlanShapeError(CrossoverV2FlowError):
-    """#2059: an unknown tier or an out-of-range position count.
+    """#2059: an out-of-range position count.
 
     A distinct subclass, not a new top-level exception, so every existing
     ``except CrossoverV2FlowError`` still catches it. Lets
@@ -1044,51 +845,11 @@ class PlanShapeError(CrossoverV2FlowError):
     """
 
 
-# The tiers that are ONE named (N, M) pair rather than a configurable range.
-# Values are callables so each pair stays DERIVED at call time from the prompt
-# table it mirrors.
-_FIXED_SHAPE_TIERS: dict[str, Callable[[], tuple[int, int]]] = {
-    TIER_EXPRESS: lambda: (
-        express_cloud_measure_positions(), EXPRESS_CLOUD_VERIFY_POSITIONS,
-    ),
-    TIER_REMOTE: lambda: (
-        remote_cloud_measure_positions(), remote_cloud_verify_positions(),
-    ),
-}
-
-
 def resolve_plan_shape(
-    tier: Any = None,
     *,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
 ) -> V2PlanShape:
-    """Resolve (and validate) one plan shape from a tier and optional counts.
-
-    Express and remote each admit EXACTLY one (N, M) pair
-    (:data:`_FIXED_SHAPE_TIERS`), so an explicit count that disagrees is
-    refused. Full keeps the shipped ranges.
-    """
-    name = normalize_tier(tier)
-    if name in _FIXED_SHAPE_TIERS:
-        n, m = _FIXED_SHAPE_TIERS[name]()
-        for label, wanted, got in (
-            ("cloud_measure_positions", n, cloud_measure_positions),
-            ("cloud_verify_positions", m, cloud_verify_positions),
-        ):
-            if got is not None and int(got) != wanted:
-                raise PlanShapeError(
-                    f"the {name} tier is a fixed shape: {label} must be "
-                    f"{wanted}, got {int(got)}"
-                )
-        # Routed through the shared table-length check so a shortened prompt
-        # table fails here rather than at entry-build time.
-        _validated_cloud_counts(
-            cloud_measure_positions=n, cloud_verify_positions=m, tier=name,
-        )
-        return V2PlanShape(
-            tier=name, cloud_measure_positions=n, cloud_verify_positions=m,
-        )
     n, m = _validated_cloud_counts(
         cloud_measure_positions=(
             DEFAULT_CLOUD_MEASURE_POSITIONS
@@ -1100,15 +861,13 @@ def resolve_plan_shape(
             if cloud_verify_positions is None
             else cloud_verify_positions
         ),
-        tier=name,
     )
-    return V2PlanShape(tier=name, cloud_measure_positions=n, cloud_verify_positions=m)
+    return V2PlanShape(cloud_measure_positions=n, cloud_verify_positions=m)
 
 
 def _shape_from_kwargs(
     plan_shape: V2PlanShape | None,
     *,
-    tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
 ) -> V2PlanShape:
@@ -1116,7 +875,7 @@ def _shape_from_kwargs(
 
     Passing both is refused rather than silently preferring one.
     """
-    loose = (tier, cloud_measure_positions, cloud_verify_positions)
+    loose = (cloud_measure_positions, cloud_verify_positions)
     if plan_shape is not None:
         if any(value is not None for value in loose):
             raise CrossoverV2FlowError(
@@ -1125,7 +884,6 @@ def _shape_from_kwargs(
             )
         return plan_shape
     return resolve_plan_shape(
-        tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
@@ -1146,27 +904,19 @@ def _validated_cloud_counts(
     *,
     cloud_measure_positions: int,
     cloud_verify_positions: int,
-    tier: str = DEFAULT_TIER,
 ) -> tuple[int, int]:
-    """Validate one (N, M) pair AGAINST ITS TIER's rules.
-
-    The FULL tier keeps the shipped ranges; express is exempt from them because
-    :func:`resolve_plan_shape` has already pinned its N and M to the derived
-    constants. Both share the pre-apply prompt-table length check below.
-    """
     n = int(cloud_measure_positions)
     m = int(cloud_verify_positions)
-    if tier != TIER_EXPRESS:
-        if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
-            raise PlanShapeError(
-                f"cloud_measure_positions must be "
-                f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
-            )
-        if m < MIN_CLOUD_VERIFY_POSITIONS:
-            raise PlanShapeError(
-                f"cloud_verify_positions must be at least "
-                f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
-            )
+    if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
+        raise PlanShapeError(
+            f"cloud_measure_positions must be "
+            f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
+        )
+    if m < MIN_CLOUD_VERIFY_POSITIONS:
+        raise PlanShapeError(
+            f"cloud_verify_positions must be at least "
+            f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
+        )
     # The PRE-apply group indexes :data:`CLOUD_POSITION_PROMPTS`, so that table
     # bounds N here. M is deliberately NOT bounded: the post-apply group walks a
     # table resolved at plan-build time, so its fit is checked where that table
@@ -1182,7 +932,6 @@ def _validated_cloud_counts(
 def cloud_capture_target(
     *,
     plan_shape: V2PlanShape | None = None,
-    tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
 ) -> int:
@@ -1194,7 +943,6 @@ def cloud_capture_target(
     """
     return _shape_from_kwargs(
         plan_shape,
-        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     ).capture_target
@@ -1203,7 +951,6 @@ def cloud_capture_target(
 def cloud_plan_max_attempts(
     *,
     plan_shape: V2PlanShape | None = None,
-    tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
 ) -> int:
@@ -1215,7 +962,6 @@ def cloud_plan_max_attempts(
     """
     return _shape_from_kwargs(
         plan_shape,
-        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     ).max_attempts
@@ -1257,7 +1003,6 @@ DEFAULT_INDEX_PHASE_MAP: Mapping[int, str] = MappingProxyType(
 def build_v2_cloud_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,
-    tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
     include_lateral: bool = False,
@@ -1288,7 +1033,6 @@ def build_v2_cloud_index_phase_map(
     """
     _shape_from_kwargs(
         plan_shape,
-        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
@@ -1323,19 +1067,6 @@ def build_v2_verify_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,
 ) -> dict[int, str]:
-    """Capture-plan index → session phase for a STAGE-2 (verify) session.
-
-    ::
-
-        1                    VERIFY             (design-axis anchor, at the mark)
-        2 .. M               CLOUD_VERIFY       (M-1 prompted positions)
-
-    ``plan_shape is None`` is the 1-entry recovery re-verify
-    (``{1: PHASE_VERIFY}``). A shape supplies the tier's own post-apply walk:
-    express is ``M = 1`` and resolves to the same single-entry map; Full is the
-    multi-position walk the after-chart, the post-apply spec verdict and the
-    delta probe all read.
-    """
     m = 1 if plan_shape is None else plan_shape.verify_capture_target
     mapping = {1: PHASE_VERIFY}
     for offset in range(m - 1):
@@ -1444,7 +1175,6 @@ POSITION_ROLE_KEY = "position_role"
 POSITION_BATCH_START_KEY = "position_batch_start"
 POSITION_BATCH_SIZE_KEY = "position_batch_size"
 POSITION_BATCH_CONFIG_KEY = "position_batch_config"
-POSITION_HAND_RELEASED_KEY = "position_hand_released"
 
 
 def pose_batch_screens(
@@ -1538,7 +1268,6 @@ def build_v2_capture_plan(
     fc_hz: float | None,
     *,
     plan_shape: V2PlanShape | None = None,
-    tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
     include_lateral: bool = False,
@@ -1608,7 +1337,6 @@ def build_v2_capture_plan(
     )
     shape = _shape_from_kwargs(
         plan_shape,
-        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
@@ -1666,13 +1394,6 @@ def build_v2_capture_plan(
             screen={
                 "progress": capture_progress_label(2, target),
                 "title": "Keep the microphone still — this spot is the mark.",
-                # MEASURE is the session's longest capture and can be its
-                # loudest: each driver's level is solved to the SNR the fit
-                # needs in its own band. It takes a household TAP rather than a
-                # countdown (#1823) — that consent ruling binds the hand-walked
-                # tiers only, and an externally positioned shape auto-advances
-                # behind the position gate. Household language in the copy: say
-                # what the level is FOR, never which internal stage asked.
                 "body": (
                     "This one is longer, and can be the loudest — it measures "
                     "each driver alone at the level it needs to hear each one "
@@ -1696,11 +1417,9 @@ def build_v2_capture_plan(
         batch = candidate_screens.get(capture_index, {})
         if branch_diagnostic and not prompt.preserve_text:
             batch = {**batch, "title": "Measure woofer, tweeter and both", "body": "Keep the mic still for all five sweeps. The repeated solo sweeps check the recording clock."}
-        if batch:
-            policy[POSITION_HAND_RELEASED_KEY] = str(not shape.externally_positioned).lower()
-            if int(batch.get(POSITION_BATCH_CONFIG_KEY, 1)) > 1:
-                policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
-                              countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
+        if int(batch.get(POSITION_BATCH_CONFIG_KEY, 1)) > 1:
+            policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
+                          countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,
@@ -1774,23 +1493,6 @@ def build_v2_verify_capture_plan(
     plan_shape: V2PlanShape | None = None,
     verify_prompts: Sequence[CloudPositionPrompt] | None = None,
 ) -> Any:
-    """The post-apply (STAGE 2) plan — the tier's own verify walk, or the
-    1-entry recovery re-arm.
-
-    ``plan_shape is None`` is the recovery re-verify: one entry,
-    ``CAPTURE_PLAN_MAX_ATTEMPTS``, and copy that leads with how cheap it is. A
-    ``plan_shape`` builds stage 2 of the two-stage commission flow — VERIFY's
-    design-axis anchor at the mark plus ``M − 1`` prompted post-apply positions.
-    Express is ``M = 1`` and makes no cross-position claim.
-
-    The anchor entry carries ``confirm_title`` / ``confirm_body``, so the tone
-    waits for the household to say they are standing on the mark.
-
-    ``verify_prompts`` is the pose set this walk takes; ``None`` is the ratified
-    one (:func:`verify_pose_table`). The shape's ``M`` and the table's length
-    must agree — a shape asking for more poses than the table supplies is
-    refused here rather than walked short.
-    """
     from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 
     # The anchor is stage 2's OPENING capture, so it is announced; the prompted
@@ -1823,7 +1525,6 @@ def build_v2_verify_capture_plan(
                 "progress": capture_progress_label(1, 1),
                 "title": REVERIFY_NO_REWALK_HEADLINE,
                 "body": "Put the microphone back on the mark and hold it still.",
-                # No shape, so no tier: the recovery re-arm keeps the tap.
                 **_entry_advance(None),
             },
         )
@@ -1835,21 +1536,6 @@ def build_v2_verify_capture_plan(
         )
     index_phase = build_v2_verify_index_phase_map(plan_shape=plan_shape)
     target = plan_shape.verify_capture_target
-    # The phone's END screen once every capture completes; the page reads the
-    # FINAL wire index's entry, so which entry carries it depends on the tier.
-    #
-    # Every word here is written BEFORE THE FIRST TONE PLAYS, so nothing on this
-    # screen may assert a MEASURED outcome (#1964). It states only what arming
-    # establishes: the correction is applied, and reaching this screen means the
-    # tracking comparator passed. The post-apply SPEC verdict can fail while
-    # tracking passes, and the phone cannot carry that caveat — its component
-    # vocabulary has no result-shaped member and the capture's host-event slot is
-    # last-write-wins — so the verdict has ONE owner, jts.local's done screen,
-    # and this copy points at it rather than guessing it.
-    #
-    # Express's upgrade-path phrase is COPIED from jts.local
-    # (``crossover_envelope_v2``'s express ``done_verdict`` and
-    # ``_TIER_CLAIMS[TIER_FULL]``), so a re-wording has one place to start.
     done_screen = {
         "done_title": "Your speaker is tuned",
         "done_body": (
@@ -1952,13 +1638,6 @@ def build_v2_verify_session_spec(
     verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     **spec_kwargs: Any,
 ) -> Any:
-    """The capture spec for a post-apply session (stage 2, or the recovery).
-
-    The consent surface is chosen by the PLAN's own shape, not by the caller's
-    intent. A single-capture plan keeps the stationary consent copy and leads
-    with :data:`REVERIFY_NO_REWALK_HEADLINE`; a multi-capture plan takes the
-    guided consent surface with its own capture count and tier.
-    """
     # Resolved ONCE and handed to both readers below, so the orientation's
     # sentence and the walk's entries come from the same object.
     verify_table = verify_pose_table(verify_prompts)
@@ -1970,7 +1649,6 @@ def build_v2_verify_session_spec(
     extra: dict[str, Any] = (
         {
             "guided_captures": plan.capture_target,
-            "guided_tier": plan_shape.tier if plan_shape is not None else "",
             # Quoted off the SAME resolved pose set the entries above were
             # built from, so the sentence cannot describe a reach the walk does
             # not have.
@@ -2029,100 +1707,12 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
 # allowance, deliberately generous — never a measured position time.
 WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
 
-# A fixed, representative 2-way RoleBand pair for :func:`tier_display_info`
-# ONLY — never the household's actual excitation ceilings/topology. The
-# tweeter's lower edge is the CONSERVATIVE end of a plausible tweeter
-# (~1.5-2 kHz): a too-low f1 biases the estimated minutes SHORT, the wrong
-# failure direction for a number the household reads as a promise.
-#
-# Deliberately NOT derived from the household's declared driver low limit
-# (#2603): the only resolution path for it (``resolve_conductor_context``) is
-# refuse-if-not-ready and can regenerate the crossover preview file as a SIDE
-# EFFECT, which this ~1.5 s-poll display value must not do.
-_DISPLAY_ROLES_BANDS = (
-    RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-    RoleBand("tweeter", 1, FrequencyBand(1800.0, 20000.0)),
-)
-_DISPLAY_FC_HZ = 1600.0
-
-
-def tier_display_info() -> dict[str, dict[str, int]]:
-    """Per-tier ``{capture_target, estimated_minutes}`` for the wizard's
-    pre-session tier chooser.
-
-    Derived from the same builders a live session uses, but over a fixed
-    representative band pair (:data:`_DISPLAY_ROLES_BANDS`), because resolving
-    the household's real topology is refuse-if-not-ready and has side effects.
-    Realized sweep length does vary with the band; what makes the fixed pair
-    honest is that :meth:`CapturePlan.estimated_minutes`' ceil-to-whole-minutes
-    quantum absorbs that variance across the plausible 2-way band space, which
-    ``test_tier_display_info_minutes_hold_across_plausible_topologies`` sweeps.
-    That invariant is empirical, not structural, and would need re-deriving if
-    the plausible band space widened. The figure itself is this function's
-    output; do not write it down elsewhere.
-
-    Memoized because the inputs are module constants.
-    :func:`functools.lru_cache` does not cache an exception, so the try/except
-    below is a one-time fallback for that residual path, not a per-poll retry.
-    """
-    try:
-        return _tier_display_info_cached()
-    except (CrossoverV2FlowError, ValueError) as exc:
-        log_event(
-            logger, "correction.tier_display_info_failed",
-            level=logging.WARNING, error=str(exc),
-        )
-        return {
-            tier: {
-                "capture_target": (stage1_base_entries(shape)
-                                   + shape.verify_capture_target),
-                "estimated_minutes": 0,
-                # Present even here: the chooser's copy reads both keys.
-                "stage1_captures": stage1_base_entries(shape),
-                "stage2_captures": shape.verify_capture_target,
-            }
-            for tier, shape in ((t, resolve_plan_shape(t)) for t in TIERS)
-        }
-
-
-@lru_cache(maxsize=1)
-def _tier_display_info_cached() -> dict[str, dict[str, int]]:
-    out: dict[str, dict[str, int]] = {}
-    for tier in TIERS:
-        shape = resolve_plan_shape(tier)
-        # BOTH stages: ``capture_target`` is the whole journey's count, so the
-        # duration must be too. Two ceils rather than one is deliberately
-        # conservative — the household really does pay two per-session set-ups.
-        stage1 = build_v2_capture_plan(
-            _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
-            include_lateral=False,
-            include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
-        )
-        stage2 = build_v2_verify_capture_plan(_DISPLAY_FC_HZ, plan_shape=shape)
-        out[tier] = {
-            # Summed from the plans: the shape's own `capture_target` counts a
-            # pre-apply cloud stage 1 no longer walks.
-            "capture_target": stage1.capture_target + shape.verify_capture_target,
-            "estimated_minutes": (
-                stage1.estimated_minutes() + stage2.estimated_minutes()
-            ),
-            # Off the SHAPE's own two targets — the same properties the plan
-            # builders size themselves from — so their sum is
-            # ``capture_target`` by construction and the fallback path above can
-            # answer with the same numbers.
-            "stage1_captures": stage1.capture_target,
-            "stage2_captures": shape.verify_capture_target,
-        }
-    return out
-
-
 def build_v2_session_spec(
     roles_bands: Sequence[RoleBand],
     fc_hz: float | None,
     *,
     acknowledgement_binding: str,
     plan_shape: V2PlanShape | None = None,
-    tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
     include_lateral: bool = False,
@@ -2142,7 +1732,6 @@ def build_v2_session_spec(
     """
     shape = _shape_from_kwargs(
         plan_shape,
-        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
@@ -2183,7 +1772,6 @@ def build_v2_session_spec(
         ),
         # …and which INSTRUMENT that walk is, so the spec builder need not
         # re-derive a shape it does not own.
-        guided_tier=shape.tier if walked else "",
         # …and how far the walk reaches: the FURTHEST of whichever groups run,
         # from the same table the per-entry screens above are built from.
         walk_shape=walk_shape_for(

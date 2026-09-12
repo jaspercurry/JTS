@@ -36,7 +36,6 @@ from jasper.audio_measurement.analysis import (
 )
 from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
-from .contracts import POLARITY_INVERTED
 from .evidence_packet import round_artifact_dir
 from .position_cycle import PoseCurvePair
 
@@ -487,44 +486,6 @@ def landscape_from_bank(
     )
 
 
-def confirmation_stage_commands(
-    landscape: DelayLandscape, *, position_deg: int, inverted_role: str
-) -> list[str]:
-    """The ``jasper-angle-capture stage`` lines that play this landscape.
-
-    One per confirmation coordinate, built from the landscape's OWN
-    ``dsp_candidate`` — which maps a signed grid coordinate onto the
-    executable (role, non-negative delay) pair — so the staged coordinate
-    comes from the grid that proposed it and no caller forms a second opinion
-    about which branch moves.
-
-    The zero coordinate carries NO delay flags. ``delay_target`` is ``None``
-    there because neither branch is delayed, and ``MeasureSpec`` refuses a
-    half-stated pair, so a line naming a role with 0 us would be refused at the
-    door it was printed for.
-
-    Every line carries ``--level-matched``, including the zero coordinate.
-    These are reverse-null confirmations, and a null between branches ~10 dB
-    apart in sensitivity is bounded by that gap however well the coordinate is
-    chosen — so a confirm line that did not ask for the level match would be
-    printing a measurement whose answer the graph had already decided.
-    """
-
-    head = (
-        f"jasper-angle-capture stage --angles {position_deg} "
-        f"--polarity {POLARITY_INVERTED} --inverted-role {inverted_role} "
-        "--level-matched"
-    )
-    lines = []
-    for coordinate in landscape.confirmation_coordinates_us:
-        candidate = landscape.spec.dsp_candidate(coordinate)
-        lines.append(head if candidate.delay_target is None else (
-            f"{head} --delayed-role {candidate.delay_target} "
-            f"--delay-us {candidate.delay_us:g}"
-        ))
-    return lines
-
-
 def graded_null_rows(rows_dir: Path, *, fc_hz: float) -> list[dict[str, Any]]:
     """The banked ``null_runs`` rows this landscape can be graded against.
 
@@ -712,7 +673,6 @@ __all__ = [
     "DelayLandscape",
     "DelayLandscapeError",
     "compute_landscape",
-    "confirmation_stage_commands",
     "confirmation_verdict",
     "landscape_from_bank",
     "curve_shoulder_span",

@@ -34,7 +34,6 @@ import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
-from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.seat_level_reference import ResolvedLevel
 from jasper.active_speaker import crossover_v2_flow as flow
@@ -68,8 +67,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
-from jasper.cli import angle_capture as cli
-from jasper.cli import measure as measure_cli
 from tests.crossover_v2_banked_round import bank_seat_round
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
@@ -610,7 +607,7 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
                 externally_positioned=session_positioned,
                 base_entries=3,
             )
-        assert excinfo.value.reason == ac.WALK_MOVER_MISMATCH
+        assert excinfo.value.reason == ac.REASON_WALK_MOVER_MISMATCH
     # ...and both matched pairs compose.
     for mover, session_positioned in (
         (ac.MOVER_ARM, True),
@@ -869,25 +866,6 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("raw,cycle", [
-    (None, ()),
-    ("base", ("",)),
-    (" base, fp-a,fp-b ", ("", "fp-a", "fp-b")),
-    ("fp-a,fp-b", ("fp-a", "fp-b")),
-])
-def test_cli_preserves_the_stated_candidate_cycle(raw, cycle):
-    argv = ["plan", "--program", "tournament", "--size", "full"]
-    if raw is not None:
-        argv += ["--candidates", raw]
-    request = cli._build_request(cli.build_parser().parse_args(argv))
-    program = mp.program("tournament", "full")
-
-    assert [stop.candidate_id for stop in request.stops] == list(cycle or ("",)) * program.capture_count
-    assert {stop.regime for stop in request.stops} == {
-        ac.REGIME_SUMMED if cycle else ac.REGIME_PER_DRIVER,
-    }
-
-
 @pytest.mark.parametrize(
     ("program", "candidates"),
     [
@@ -938,7 +916,7 @@ def _candidate_batch_plan():
     return flow.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ,
         acknowledgement_binding="candidate-batch-test",
-        plan_shape=dataclasses.replace(flow.resolve_plan_shape("full"), hand_released_positions=True),
+        plan_shape=dataclasses.replace(flow.resolve_plan_shape(), hand_released_positions=True),
         include_lateral=True,
         lateral_prompts=prompts,
         lateral_candidate_ids=tuple(stop.candidate_id for stop in request.stops),
@@ -968,12 +946,10 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         if offset % 3 == 0:
             with pytest.raises(CaptureBeginDeferred):
                 gate.gate(index, index, entry)
-            # A fresh hold is the end of the batch before it: the entry that
-            # batch was executing must not still be the one published.
             assert gate.published()["current"] is None
             pending = gate.published()["pending"]
             grants.append((pending["degrees"], pending["vertical_deg"]))
-            gate.release(**{name: pending["action"]["body"][name] for name in ("index", "attempt")})
+            gate.release(**{name: pending["actions"][0]["body"][name] for name in ("index", "attempt")})
         gate.gate(index, index, entry)
         # Every grant publishes what it is recording — the released config and
         # the ones the batch shortcut admits under it alike, since only this
@@ -1006,7 +982,7 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
     gate.gate(4, 4, second)
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(4, 5, second)
-    assert gate.published()["pending"]["hand_released"] is True
+    assert gate.published()["pending"]["mover"] == ac.MOVER_HUMAN
     for index, attempt in ((3, 3), (4, 4), (4, None)):
         with pytest.raises(ValueError):
             gate.release(index, attempt)
@@ -1025,28 +1001,6 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
 # --------------------------------------------------------------------------- #
 # 7. categorized poses: a seat is stated from the head, a close from the baffle
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def spool_slot(tmp_path, monkeypatch):
-    """A writable pending slot, and an idle speaker.
-
-    Same shape and same reason as the take suite's: without the redirects a
-    staged document would land in the real ``/var/lib/jasper`` and read
-    whatever measurement state the machine running the suite happens to hold.
-    """
-    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
-    monkeypatch.setattr(
-        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
-        tmp_path / "session_volume.json",
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.session_volume_plan.read_measurement_hold", lambda: None,
-    )
-    try:
-        yield
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
 
 
 @pytest.mark.parametrize(
@@ -1236,38 +1190,6 @@ def test_the_shipped_programs_resolve_exactly_as_before(
     assert ac.walk_price(request) == price
 
 
-def test_a_bearing_walk_stages_the_document_it_always_did(spool_slot) -> None:
-    """The spooled stop is additive too, and reads back as what was staged.
-
-    A bearing's entry carries the four keys it always carried; a categorized
-    one adds ONLY what is true of it -- a seat has no standoff, a close has no
-    head offset -- and both survive the round trip through the document.
-    """
-    bearing_keys = {"angle_deg", "regime", "elevation_deg", "candidate_id", "purpose"}
-    for program_id, size, extra in (
-        ("baseline", "express", set()),
-        ("seat", "cube", {"kind", "seat_offset_m"}),
-        ("close", "spot", {"kind", "distance_m"}),
-    ):
-        request = ac.request_for_program(mp.program(program_id, size))
-        spool.stage_angle_request(request)
-        document = json.loads(
-            spool.angle_request_spool_path().read_text(encoding="utf-8")
-        )
-
-        assert [set(entry) for entry in document["stops"]] == (
-            [bearing_keys | extra] * len(request.stops)
-        )
-        assert spool.peek_staged_angle_request().stops == request.stops
-        taken = spool.take_staged_angle_request()
-        assert taken.stops == request.stops
-        assert all(
-            stop.seat_offset_m is None
-            or all(isinstance(metres, float) for metres in stop.seat_offset_m)
-            for stop in taken.stops
-        )
-
-
 def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
     tmp_path: Path,
 ) -> None:
@@ -1293,40 +1215,6 @@ def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
     assert len({doc_pose_key(take) for take in takes}) == 7
 
 
-@pytest.mark.parametrize("mover,tier", [(ac.MOVER_HUMAN, "full"), (ac.MOVER_ARM, "remote")])
-def test_plan_copy_survives_staging_and_reaches_the_measurement_screen(spool_slot, mover, tier):
-    custom = dataclasses.replace(mp.program("room", "cloud"), poses=(
-        dataclasses.replace(mp.ProgramPose(-20, 0), headline="Left sample", detail="Keep the mic still."),
-    ))
-    request = ac.request_for_program(custom, mover=mover)
-    spool.stage_angle_request(request)
-    restored = spool.take_staged_angle_request()
-    assert restored == request
-    prompts = tuple(stop.prompt for stop in ac.resolve_request(restored))
-    plan = flow.build_v2_session_spec(
-        _ROLES_BANDS, _FC_HZ, acknowledgement_binding="measurement-plan-copy-test",
-        plan_shape=dataclasses.replace(flow.resolve_plan_shape(tier), hand_released_positions=mover == ac.MOVER_HUMAN),
-        include_lateral=True, lateral_prompts=prompts,
-        lateral_candidate_ids=("",),
-    ).capture_plan
-    entry, = [entry for entry in plan.entries if entry.kind_label == "lateral"]
-    assert entry.screen["title"] == "Left sample"
-    assert entry.screen["body"] == "Keep the mic still."
-    assert flow.position_angle_deg(prompts[0]) == -20
-
-
-@pytest.mark.parametrize("kind,purpose", [("bearing", "speaker"), ("seat", "room"), ("close", "reference")])
-def test_legacy_staged_stops_keep_their_capture_purpose(spool_slot, kind, purpose):
-    stop = ac.AngleStop(0, ac.REGIME_SUMMED, kind=kind,
-                        seat_offset_m=(0, 0, 0) if kind == "seat" else None)
-    spool.stage_angle_request(ac.AngleCaptureRequest((stop,)))
-    path = spool.angle_request_spool_path()
-    doc = json.loads(path.read_text())
-    doc["stops"][0].pop("purpose")
-    path.write_text(json.dumps(doc))
-    assert spool.take_staged_angle_request().stops[0].purpose == purpose
-
-
 @pytest.mark.parametrize("size", ["cloud", "quick"])
 def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     program = mp.program("room", size)
@@ -1334,7 +1222,7 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     prompts = tuple(s.prompt for s in ac.resolve_request(request))
     plan = flow.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ, acknowledgement_binding="room-position-test",
-        plan_shape=dataclasses.replace(flow.resolve_plan_shape("full"), hand_released_positions=True),
+        plan_shape=dataclasses.replace(flow.resolve_plan_shape(), hand_released_positions=True),
         include_lateral=True, lateral_prompts=prompts,
         lateral_candidate_ids=tuple(s.candidate_id for s in request.stops),
     ).capture_plan
@@ -1392,27 +1280,6 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
     assert price["mic_moves"] == program.mic_move_count
     assert price["captures"] == program.capture_count * len(cycle)
     assert price["stimulus_s"] == (None if stimulus_s is None else pytest.approx(stimulus_s))
-
-
-def test_the_whole_template_reads_back_whole(spool_slot) -> None:
-    """ONE spec per walk, so every capture is matched by construction: the whole
-    template crosses the document together, written and read by the spec itself.
-    """
-    request = replace(
-        ac.summed_at([0, 7]),
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE,
-            sweep_band_hz=(200.0, 3000.0),
-            sweep_s=2.5,
-            level_ladder_dbfs=(-20.0, -14.0),
-        ),
-    )
-    spool.stage_angle_request(request)
-
-    banked = json.loads(spool.angle_request_spool_path().read_text())["template"]
-    assert MeasureSpec.from_mapping(banked) == request.template
-    assert spool.peek_staged_angle_request() == request
-    assert spool.take_staged_angle_request() == request
 
 
 @pytest.mark.parametrize(
@@ -1530,123 +1397,6 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     )
 
 
-def test_a_stated_ceiling_stages_and_rides_the_walk(spool_slot) -> None:
-    """A walk stating an SPL ceiling banks and comes back with it: the door that
-    plays it installs the monitor that watches it."""
-    request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
-        spl_ceiling_db_spl=80.0,
-    )
-    spool.stage_angle_request(request)
-
-    assert spool.take_staged_angle_request() == request
-
-
-@pytest.mark.parametrize(
-    ("field", "banked"),
-    [
-        ("delay_us", "loud"),
-        ("delay_us", "250"),
-        ("sweep_s", "two and a half"),
-        ("sweep_s", math.nan),
-        ("spl_ceiling_db_spl", "loud"),
-        ("sweep_band_hz", "200,3000"),
-        ("level_ladder_dbfs", "-20"),
-        ("level_ladder_dbfs", ["-20", "quiet"]),
-        ("sweep_s", True),
-        ("delay_us", ""),
-        ("spl_ceiling_db_spl", []),
-        ("candidate_id", 7),
-        ("level_matched", "true"),
-        ("no_such_field", 1),
-    ],
-    ids=["delay-word", "delay-numeral", "sweep-s-word", "sweep-s-nan",
-         "ceiling-word", "band-string", "ladder-bare-string", "ladder-bad-rung",
-         "sweep-s-bool", "delay-empty", "ceiling-list", "id-number",
-         "matched-string", "unknown-key"],
-)
-def test_a_banked_template_field_that_is_not_one_refuses_as_malformed(
-    spool_slot, field: str, banked: object,
-) -> None:
-    """The spec reads its own document, so a hand-edited field is judged exactly
-    as a flag would be -- a numeral STRING included, since ``jasper-measure``
-    refuses one and two doors onto one class may not disagree. Refused as this
-    document's own slug naming the field, never as a ``ValueError``/``TypeError``
-    past every caller that catches ``CrossoverV2FlowError``.
-    """
-    spool.stage_angle_request(
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),))
-    )
-    path = spool.angle_request_spool_path()
-    doc = json.loads(path.read_text())
-    doc["template"][field] = banked
-    path.write_text(json.dumps(doc))
-
-    with pytest.raises(spool.AngleRequestRefused) as excinfo:
-        spool.peek_staged_angle_request()
-    assert excinfo.value.reason == spool.SPOOL_MALFORMED
-    assert field in excinfo.value.detail
-
-
-def test_the_stimulus_flags_are_one_spelling_in_both_clis() -> None:
-    """``jasper-measure`` states the stimulus per take and ``jasper-angle-capture``
-    states it once for a walk, but both name the same ``MeasureSpec`` fields -- so
-    the same words parse to the same namespace on either parser.
-    """
-    words = [
-        "--sweep-band-hz", "200", "3000", "--sweep-s", "2.5",
-        "--level-dbfs", "-20", "--level-dbfs", "-14",
-        "--spl-ceiling-db-spl", "100",
-    ]
-    fields = ("sweep_band_hz", "sweep_s", "level_dbfs", "spl_ceiling_db_spl")
-    walk = cli.build_parser().parse_args(["plan", "--angles", "0", *words])
-    take = measure_cli.build_parser().parse_args(["--kind", "candidate", *words])
-
-    stated = [getattr(walk, field) for field in fields]
-    assert stated == [getattr(take, field) for field in fields]
-    assert stated == [[200.0, 3000.0], 2.5, [-20.0, -14.0], 100.0]
-
-
-def test_cli_stimulus_flags_reach_the_staged_request(spool_slot) -> None:
-    """The stimulus flags, through the CLI's own request builder, staged and read
-    back -- the spool round trip is pinned separately above, so this pins the CLI
-    WIRING.
-    """
-    argv = [
-        "stage", "--angles", "0", "--regime", "summed",
-        "--sweep-band-hz", "200", "3000",
-        "--sweep-s", "2.5",
-        "--level-dbfs", "-20", "--level-dbfs", "-14",
-    ]
-    request = cli._build_request(cli.build_parser().parse_args(argv))
-    assert request.template.sweep_band_hz == (200.0, 3000.0)
-    assert request.template.sweep_s == 2.5
-    assert request.template.level_ladder_dbfs == (-20.0, -14.0)
-    assert request.level.mode == ac.LEVEL_HOLD_REFERENCE
-
-    spool.stage_angle_request(request)
-    assert spool.take_staged_angle_request() == request
-
-
-def test_cli_stimulus_flags_reach_the_printed_price(capsys, monkeypatch) -> None:
-    from tests.test_preflight import ready_facts
-
-    monkeypatch.setattr(cli, "read_preflight_facts", ready_facts)
-    argv = [
-        "plan", "--program", "tournament", "--size", "express", "--candidates", "base",
-        "--sweep-s", "2.0",
-        "--level-dbfs", "-20", "--level-dbfs", "-14", "--level-dbfs", "-8",
-    ]
-    args = cli.build_parser().parse_args(argv)
-    args.invocation = argv
-
-    assert cli._cmd_plan(args) == cli.EXIT_OK
-    document = json.loads(capsys.readouterr().out)
-
-    price = document["price"]
-    assert price["stimulus_s"] == pytest.approx(price["captures"] * 2.0 * 3)
-
-
 @pytest.mark.parametrize(
     "overlay",
     [{"polarity": "inverted", "inverted_role": "tweeter"},
@@ -1691,13 +1441,13 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
 @pytest.mark.parametrize("levels", [(-12.7,), (-20, -14)])
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
-def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candidates, levels):
+def test_v3_request_round_trip_and_capture_schedule(repeats, candidates, levels):
     request = ac.request_for_program(
         mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
         spl_ceiling_db_spl=80.0, retries_per_pose=2, operating_levels_db=levels,
         level=ac.LevelPolicy(resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
-    doc = spool.angle_request_document(request)
+    doc = request.to_dict()
     assert doc["artifact_schema_version"] == 3
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
@@ -1705,8 +1455,6 @@ def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candida
     assert doc["level"] == {"mode": "hold_reference", "anchor_db_spl": 75.8,
                             "reference_volume_db": -12.7, "mic_serial": "8108494"}
     assert (doc["operating_levels_db"], doc["repeats"], doc["retries_per_pose"]) == (list(levels), repeats, 2)
-    spool.stage_angle_request(request)
-    assert spool.peek_staged_angle_request() == spool.take_staged_angle_request() == request
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
     specs = ac.stop_specs(request, baseline_ids={"room": "baseline-room"}, candidate_scopes={"room-fp": "candidate"},
                           prompts=[s.prompt for s in ac.resolve_request(request)])
@@ -1734,20 +1482,6 @@ def test_invalid_level_policy_refuses_at_construction(fields):
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
-@pytest.mark.parametrize("version", [1, 2])
-def test_old_request_version_refuses_by_name(spool_slot, version):
-    doc = spool.angle_request_document(ac.summed_at([0]))
-    doc["artifact_schema_version"] = version
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.AngleCaptureRequest.from_mapping(doc)
-    assert refused.value.reason == ac.WALK_SCHEMA_VERSION_UNSUPPORTED
-    spool.angle_request_spool_path().write_text(json.dumps(doc))
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        spool.take_staged_angle_request()
-    assert refused.value.reason == ac.WALK_SCHEMA_VERSION_UNSUPPORTED
-    assert not spool.staged_angle_request_pending()
-
-
 @pytest.mark.parametrize("fields, reason", [
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
@@ -1765,31 +1499,10 @@ def test_request_names_the_program_baseline(program, scope):
     assert ac.request_for_program(mp.program(program)).baseline_graph_scope == scope
 
 
-@pytest.mark.parametrize("field,value", [
-    *[(f.name, ...) for f in dataclasses.fields(ac.AngleCaptureRequest)],
-    ("stops", None), ("stops", [None]), ("stops", [{}]),
-    ("stops", [{"angle_deg": 0, "regime": "bad"}]),
-    ("template", None), ("template", []), ("level", None), ("level", []),
-    ("level", {}), ("level", {"mode": "hold_reference"}), ("mover", []), ("program", 3),
-])
-def test_malformed_request_fields_raise_value_error(spool_slot, field, value):
-    doc = ac.summed_at([0]).to_dict()
-    if value is ...:
-        del doc[field]
-    else:
-        doc[field] = value
-    with pytest.raises(ValueError):
-        ac.AngleCaptureRequest.from_mapping(doc)
-    spool.angle_request_spool_path().write_text(json.dumps(doc))
-    with pytest.raises(spool.AngleRequestRefused) as refused:
-        spool.take_staged_angle_request()
-    assert refused.value.reason == spool.SPOOL_MALFORMED
-
-
 @pytest.mark.parametrize("program,size,mover,reason", [
     ("room", "quick", ac.MOVER_ARM, None),
-    ("room", "quick", ac.MOVER_HUMAN, ac.WALK_MOVER_MISMATCH),
-    ("bass", "quick", ac.MOVER_HUMAN, ac.WALK_MOVER_MISMATCH),
+    ("room", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
+    ("bass", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
     ("seat", "cloud", ac.MOVER_HUMAN, None),
     ("seat", "cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
 ])
@@ -1844,3 +1557,10 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
     assert gate_accepts == plan_accepts
     if stops in (1, 140):
         assert plan_accepts == (stops == 1)
+
+
+@pytest.mark.parametrize("candidates", [(), ("base", "fp-a")])
+@pytest.mark.parametrize("repeats", [1, 3])
+def test_v3_plan_round_trips_without_a_spool(candidates, repeats):
+    request = ac.request_for_program(mp.program("room", "cloud"), candidates=candidates, repeats=repeats)
+    assert ac.AngleCaptureRequest.from_mapping(request.to_dict()) == request

@@ -1,5 +1,6 @@
 {
   "layouts": {
+    "speaker_mark": [{"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2}],
     "baseline_full": [
       {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 4},
       {"azimuth_deg": -10, "elevation_deg": 0},
@@ -22,9 +23,7 @@
       {"azimuth_deg": 0, "elevation_deg": -10},
       {"azimuth_deg": 0, "elevation_deg": 10}
     ],
-    "tournament_express": [
-      {"azimuth_deg": 0, "elevation_deg": 0}
-    ],
+    "tournament_express": [{"azimuth_deg": 0, "elevation_deg": 0}],
     "tournament_full": [
       {"azimuth_deg": 0, "elevation_deg": 0},
       {"azimuth_deg": -20, "elevation_deg": 0},
@@ -62,11 +61,10 @@
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0}
     ]},
-    "close_spot": [
-      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
-    ]
+    "close_spot": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}]
   },
   "programs": [
+    {"id": "speaker", "size": "mark", "layout": "speaker_mark", "purpose": "speaker", "regime": "per_driver"},
     {"id": "baseline", "size": "full", "layout": "baseline_full", "purpose": "speaker", "regime": "per_driver"},
     {"id": "baseline", "size": "express", "layout": "baseline_express", "purpose": "speaker", "regime": "per_driver"},
     {"id": "tournament", "size": "full", "layout": "tournament_full", "purpose": "speaker", "regime": "per_driver"},
@@ -82,6 +80,7 @@
     {"id": "close", "size": "spot", "layout": "close_spot", "purpose": "reference", "regime": "summed"}
   ],
   "default_sizes": {
+    "speaker": "mark",
     "baseline": "express",
     "tournament": "express",
     "branches": "express",

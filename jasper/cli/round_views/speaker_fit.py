@@ -13,7 +13,6 @@ from typing import Any
 import numpy as np
 
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
-from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
 from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, boost_allowed, fit_branches
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -60,10 +59,8 @@ def _production_vocabulary(inputs: RoundInputs, candidate: dict[str, Any]) -> st
     if inputs.state_path is None:
         raise RoundViewsError("production vocabulary requires the capture's journey state")
     state = json.loads(inputs.state_path.read_text())
-    shape = resolve_plan_shape(state["tier"]) if state.get("tier") else None
     plan = open_stage(
         STAGE_MEASURE_CAPABILITIES, index_phase_map=dict(enumerate(state["session_phases"])),
-        verify_capture_target=shape.verify_capture_target if shape else None,
     ).plan
     allowed = boost_allowed(
         post_apply_verifies=plan.post_apply_verifies,
@@ -93,14 +90,13 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     vocabulary = args.vocabulary or stage(
         EXIT_UNREADABLE, (OSError, ValueError, KeyError, TypeError), _production_vocabulary, inputs, candidate,
     )
-    analysis = candidate["analysis"]
+    analysis = take.get("analysis") or candidate["analysis"]
     if analysis["program_id"] != program.program_id:
         raise RoundViewsError("banked analysis does not match the selected program")
-    # Remove this ambiguity check when candidate analysis carries a take ID.
     matching_takes = {take["take_id"] for group in manifest["sets"]
                       if group["capture_basis"].get("program_id") == program.program_id
                       for take in group["takes"] if take["selected"]}
-    if matching_takes != {take_id}:
+    if not take.get("analysis") and matching_takes != {take_id}:
         raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")

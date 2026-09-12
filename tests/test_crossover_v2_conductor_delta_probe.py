@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+from unittest.mock import Mock
+
 import numpy as np
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -21,6 +24,9 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _roles,
     _run_phase,
+    _tracking_curve,
+    _verify_analysis,
+    _verify_only_conductor,
 )
 
 
@@ -120,6 +126,25 @@ def test_verify_rearm_measure_predicted_sum_era_round_trip():
 
 
 
+def test_delta_probe_runs_only_after_tracking_has_passed(monkeypatch):
+    fakes = FakeSeams()
+    freqs = np.linspace(100.0, 20000.0, 64)
+    c = _verify_only_conductor(
+        fakes, measure_predicted_sum=(freqs, np.zeros_like(freqs)),
+        measure_commanded_delta=(freqs, np.ones_like(freqs)),
+    )
+    probe = Mock(wraps=c._run_delta_probe)
+    monkeypatch.setattr(c, "_run_delta_probe", probe)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program, max_db=2.4),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
+        ),
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
+    assert c.delta_probe is None
+    probe.assert_not_called()
 
 
 

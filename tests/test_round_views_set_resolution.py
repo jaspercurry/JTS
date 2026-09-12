@@ -111,9 +111,9 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
 
 
 @pytest.mark.parametrize("program,first", [
-    ("speaker", ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat")),
+    ("speaker", ("inventory", "classify-features", "distortion", "directivity", "per-seat")),
     ("room", ("room", "room-grade")),
-    ("bass", ("bass", "bass-compare")),
+    ("bass", ("bass",)),
 ])
 def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, first):
     root = bank_seat_round(tmp_path)

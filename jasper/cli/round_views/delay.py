@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compute delay proposals and compare banked acoustic confirmations."""
+"""Propose delay coordinates from banked curves and grade their null captures."""
 
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,6 @@ from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, rou
 from jasper.active_speaker.crossover_v2.delay_landscape import (
     BankedLandscape,
     DelayLandscapeError,
-    confirmation_stage_commands,
     confirmation_verdict,
     depth_by_coordinate,
     graded_null_rows,
@@ -62,6 +62,7 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
         args.inverted_role = args.inverted_role or (pair.document.get("inverted_role") if pair else None) or args.upper_role
         if args.fc_hz is None:
             raise DelayLandscapeError("The bank has no crossover corner; supply --fc-hz")
+        args.capture_bundle = bundle
         return landscape_from_bank(
             bundle,
             spec=sweep_spec(
@@ -89,6 +90,18 @@ def _bank(payload: Any, args: argparse.Namespace) -> Path | None:
     )
 
 
+def _confirmation_commands(args: argparse.Namespace, coordinates: tuple[float, ...]) -> list[str]:
+    bundle = args.capture_bundle
+    return [shlex.join([
+        "jasper-null", "--bundle-dir", str(bundle), "--fc-hz", str(args.fc_hz),
+        "--position", str(args.position_deg), "--polarity", "invert",
+        "--inverted-role", args.inverted_role, "--upper-role", args.upper_role,
+        "--lower-role", args.lower_role, "--phase", args.phase,
+        "--path-difference-m", str(args.path_difference_m), f"--delays={coordinate:g}",
+        *(["--step-us", str(args.step_us)] if args.step_us is not None else []),
+    ]) for coordinate in coordinates]
+
+
 def _cmd_delay_landscape(args: argparse.Namespace) -> int:
     try:
         landscape, take_path, composition = _landscape_from_bank(args)
@@ -104,10 +117,7 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
         "delay_coordinates": "residual addition to measured tune" if composition == "complete_tune_measured" else "neutral branch delay",
         "confirm_with": [
             "Author full candidate variants with these residual changes added to the measured tune's alignment; compare their summed captures with tournament. jasper-null uses neutral branches and cannot confirm this tune."
-        ] if composition == "complete_tune_measured" else confirmation_stage_commands(
-            landscape, position_deg=args.position_deg,
-            inverted_role=args.inverted_role,
-        ),
+        ] if composition == "complete_tune_measured" else _confirmation_commands(args, landscape.confirmation_coordinates_us),
     }
     return answer(
         args.command, out=_bank(payload, args), take_path=take_path,
@@ -168,10 +178,8 @@ def _cmd_delay_confirm(args: argparse.Namespace) -> int:
 def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -> None:
     """The bundle, the corner and the pose — the landscape both verbs compute."""
 
-    child.add_argument(
-        "bundle_dir", metavar=_BUNDLE_DIR_METAVAR,
-        help="banked round or its commissioning bundle",
-    )
+    child.add_argument("bundle_dir", metavar=_BUNDLE_DIR_METAVAR,
+                       help="banked round or its commissioning bundle")
     child.add_argument("--fc-hz", type=float,
                        help="override the banked applied crossover corner")
     child.add_argument("--upper-role", default="tweeter")
@@ -181,20 +189,12 @@ def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -
         "--inverted-role", default=None, choices=sorted(DRIVER_ROLES),
         help="override the banked inverted role; otherwise the upper role",
     )
-    child.add_argument(
-        "--path-difference-m", type=float, default=0.0,
-        help="lower-driver path minus upper-driver path; 0.0 centres the "
-             "half-period window on zero when geometry is undeclared",
-    )
-    child.add_argument(
-        "--step-us", type=float, default=None,
-        help="grid step in microseconds (50-100); the shared walk's own "
-             "default is used when omitted",
-    )
-    child.add_argument(
-        "--phase", default=None, choices=(PHASE_MEASURE, PHASE_LATERAL),
-        help="override the selected take phase",
-    )
+    child.add_argument("--path-difference-m", type=float, default=0.0,
+                       help="lower-driver path minus upper-driver path in metres")
+    child.add_argument("--step-us", type=float, default=None,
+                       help="grid step in microseconds (50-100); defaults to the walk's step")
+    child.add_argument("--phase", default=None, choices=(PHASE_MEASURE, PHASE_LATERAL),
+                       help="override the selected take phase")
     child.add_argument(
         "--position-deg", type=int, default=None,
         help="override the selected take bearing",

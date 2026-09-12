@@ -128,7 +128,7 @@ def test_the_lateral_walk_keeps_its_own_retention_and_never_enters_a_cloud_group
     conductor = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_lateral=True,
+            include_lateral=True,
         ),
     )
     _run_phase(conductor, 1, 1)

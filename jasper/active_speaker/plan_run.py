@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""One plan walk and retry owner, with evidence kept by RunManifest."""
+"""Execute planned captures with one retry owner and one evidence manifest (ADR-0296)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ from .angle_capture import (
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
-from .angle_capture_spool import angle_request_document
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
@@ -47,6 +46,7 @@ from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
+from .crossover_v2.planning import analysis_json
 from .restore_wait import resilient_restore
 from .measurement_programs import POSE_KIND_BEARING
 from .run_manifest import RunManifest
@@ -130,13 +130,12 @@ def spl_watch(
 
 
 def request_fingerprint(request: AngleCaptureRequest) -> str:
-    """This walk's identity: sha256 over the document the spool banks it as.
+    """This walk's identity: sha256 over ``AngleCaptureRequest.to_dict()``.
 
-    Asked of :func:`~.angle_capture_spool.angle_request_document` so a run's
-    manifest names the same shape a staged walk has on disk, minus the clock --
+    The inline plan and manifest use the same document without a clock, so
     two runs of one walk fingerprint alike, and an edited stop does not.
     """
-    return json_fingerprint(angle_request_document(request))
+    return json_fingerprint(request.to_dict())
 
 
 @dataclass(frozen=True)
@@ -497,7 +496,8 @@ async def _run(
                             assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
                                               program=program, gain_ceiling_db=gain_ceiling_db)
                             if program is not None:
-                                record = {**record, "curves": analysis_curve_records(analysis, program)}
+                                record = {**record, "curves": analysis_curve_records(analysis, program),
+                                          "analysis": analysis_json(analysis)}
                         except (ValueError, KeyError, OSError) as exc:
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
                                                    evidence={"error_type": type(exc).__name__})

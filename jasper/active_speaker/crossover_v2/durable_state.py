@@ -2,32 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The durable crossover-v2 state document, in both directions:
-:func:`build_conductor_state` assembles it and the ``*_from_state`` readers take
-it apart, so one document has one owner.
-
-Reading and writing the FILE is not here — the host keeps the schema version,
-the atomic write and the fsync decision; only :data:`DEFAULT_V2_STATE_PATH`
-lives here. :func:`build_conductor_state` returns the document and the
-durability verdict together rather than performing the write.
-
-The conductor argument is duck-typed on purpose: callers persist stand-ins, so
-every optional field is read through ``getattr`` with a default and an absent
-attribute means what the key's own absence means downstream.
-
-The carry-forward rules are the interesting half. A key is either written fresh
-by this session or inherited from the state being replaced, in one of three
-shapes named at each rule: **unconditional** (the host-owned apply keys, which a
-session-scoped guard would drop on the first post-apply write because the
-deferred VERIFY auto-arms under a new capture session id —
-``test_every_host_owned_apply_key_survives_persist_conductor_state`` derives
-that set mechanically), **session-scoped** (a previous session's answer says
-nothing about this one), and **phase-gated** (keyed on the phase that PRODUCES
-the value, so a session that never had the chance inherits rather than erases).
-
-No ``jasper.web`` import, and nothing from
-``jasper.active_speaker.crossover_v2_flow``.
-"""
+"""Durable crossover state and advisory VERIFY records."""
 
 from __future__ import annotations
 
@@ -38,12 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.active_speaker.attempts_loop import (
-    PROVENANCE_REALIZED,
-    AttemptBudget,
-    AttemptIntegrity,
-    AttemptRecord,
-)
 from jasper.active_speaker.candidate_trials import has_tuning_layers
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
@@ -55,6 +24,55 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
 logger = logging.getLogger(__name__)
+
+# Retention bound for the journey record; retries belong to the executor (ADR-0296).
+MAX_ATTEMPT_HISTORY = 4
+PROVENANCE_REALIZED = "realized"
+
+
+@dataclass(frozen=True)
+class AttemptIntegrity:
+    comparable: bool
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"comparable": self.comparable, "reasons": list(self.reasons)}
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    attempt_id: str
+    metric: str
+    provenance: str
+    integrity: AttemptIntegrity
+    sitting_id: str = ""
+    repeats_used: int = 1
+    grade_db: float | None = None
+    n_graded_bins: int | None = None
+    curve_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id:
+            raise ValueError("AttemptRecord.attempt_id must be non-empty")
+        if not self.metric:
+            raise ValueError("AttemptRecord.metric must be non-empty")
+        if self.provenance not in {"model-graded", PROVENANCE_REALIZED}:
+            raise ValueError(f"unknown provenance {self.provenance!r}")
+        if self.repeats_used < 1:
+            raise ValueError("repeats_used must be at least 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempt_id": self.attempt_id,
+            "metric": self.metric,
+            "provenance": self.provenance,
+            "sitting_id": self.sitting_id,
+            "integrity": self.integrity.to_dict(),
+            "repeats_used": self.repeats_used,
+            "grade_db": self.grade_db,
+            "n_graded_bins": self.n_graded_bins,
+            "curve_refs": list(self.curve_refs),
+        }
 
 #: Where this document lives on a speaker. Re-exported by
 #: ``jasper.web.correction_crossover_v2`` under the same name, which still owns
@@ -121,21 +139,8 @@ class V2ConductorSnapshot:
     # module-global tuple cannot express. Empty on older state; readers fall
     # back to ``CAPTURE_PHASES``.
     session_phases: tuple[str, ...] = ()
-    # WHICH INSTRUMENT produced this session. Empty string means UNKNOWN and
-    # readers must render it as unknown rather than assuming full: guessing
-    # would attach a post-apply cross-position claim to a result that never
-    # measured across positions.
-    tier: str = ""
-    # Attempt history is journey-scoped, not capture-session-scoped: a second
-    # apply→VERIFY runs under a fresh capture session, so these records survive
-    # ``hydrate``'s session rebind while CHECK/MEASURE evidence does not.
-    #
-    # Surviving is not the same as being COMPARABLE (#2081): they also survive
-    # ``reset_v2_journey_state``, across which the mic was re-placed, so each
-    # record carries the sitting that produced it and the kernel refuses a
-    # cross-sitting pair rather than reporting an improvement no study licenses.
+    # History survives the capture-session rebind; see ADR-0296.
     attempt_history: tuple[AttemptRecord, ...] = ()
-    last_attempt_decision: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -150,12 +155,7 @@ class V2ConductorSnapshot:
             ),
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
-            "tier": self.tier,
             "attempt_history": [item.to_dict() for item in self.attempt_history],
-            "last_attempt_decision": (
-                dict(self.last_attempt_decision)
-                if self.last_attempt_decision is not None else None
-            ),
         }
 
 
@@ -349,13 +349,6 @@ def verify_measured_curve_from_state(
 
 
 def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
-    """Restore the session-owned attempt history from durable journey state.
-
-    Invalid rows are dropped as unavailable history, never partially trusted.
-    The floor is intentionally absent from this shape: it has one owner in
-    :mod:`jasper.active_speaker.model_error_store` and is read afresh by the
-    host when it constructs the session.
-    """
 
     loop = raw.get("attempts_loop") if isinstance(raw, Mapping) else None
     rows = loop.get("history") if isinstance(loop, Mapping) else None
@@ -373,10 +366,6 @@ def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
                 attempt_id=str(row.get("attempt_id") or ""),
                 metric=str(row.get("metric") or ""),
                 provenance=str(row.get("provenance") or ""),
-                # #2081. Absent on every row written before it, and ``""`` is
-                # exactly what the kernel refuses on — so an upgraded speaker
-                # stops claiming improvement against its pre-upgrade attempt
-                # instead of claiming one whose sitting nothing recorded.
                 sitting_id=str(row.get("sitting_id") or ""),
                 integrity=AttemptIntegrity(
                     comparable=integrity.get("comparable") is True,
@@ -392,18 +381,8 @@ def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
                     else 1
                 ),
                 grade_db=_attempt_optional_float(row.get("grade_db")),
-                deviation_from_predecessor_db=_attempt_optional_float(
-                    row.get("deviation_from_predecessor_db")
-                ),
                 n_graded_bins=(
                     _attempt_optional_positive_int(row.get("n_graded_bins"))
-                ),
-                predicted_remaining_improvement_db=_attempt_optional_float(
-                    row.get("predicted_remaining_improvement_db")
-                ),
-                in_spec=(
-                    row.get("in_spec")
-                    if isinstance(row.get("in_spec"), bool) else None
                 ),
                 curve_refs=tuple(
                     str(ref) for ref in row.get("curve_refs", ())
@@ -413,9 +392,7 @@ def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
         except (TypeError, ValueError, OverflowError):
             continue
         restored.append(record)
-    # The kernel's hard cap is the only live attempt budget; older rows carry
-    # no decision value and would grow Pi state for no payoff.
-    return tuple(restored[-AttemptBudget().hard_cap_attempts:])
+    return tuple(restored[-MAX_ATTEMPT_HISTORY:])
 
 
 def _attempt_optional_float(value: Any) -> float | None:
@@ -434,24 +411,8 @@ def _attempt_optional_positive_int(value: Any) -> int | None:
 def attempt_record_from_verify(
     analysis: ProgramAnalysis, *, attempt_id: str, sitting_id: str,
 ) -> AttemptRecord:
-    """Map one VERIFY analysis into the pure kernel's realized record (#2033).
 
-    VERIFY leaves repeat-only checks ``not_evaluated`` because it contains one
-    summed sweep; their names ride as reasons but do not make an otherwise clean
-    capture incomparable. Any evaluated failure does, and carries both the
-    failed and not-evaluated names.
-
-    ``sitting_id`` is the capture session that captured this sweep, and is
-    REQUIRED rather than defaulted because the available default — ``""`` — is
-    what the kernel reads as "unrecorded" and refuses on (#2081). The capture
-    session is the right proxy for one continuous microphone sitting for the
-    reason ``hydrate`` invalidates CHECK and MEASURE across a rebind.
-    """
-
-    # Function-local for the module's standing reason: ``verification`` pulls
-    # numpy at module scope and this module is on the socket-activated web
-    # host's import path.
-    from .verification import CAPTURE_INTEGRITY_UNAVAILABLE
+    from .verification import CAPTURE_INTEGRITY_UNAVAILABLE  # lazy: verification loads NumPy
 
     integrity = analysis.capture_integrity
     if integrity is None:
@@ -477,9 +438,6 @@ def attempt_record_from_verify(
         grade_db=_attempt_optional_float(
             tracking.get(ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED)
         ),
-        # ``frame.n_bins`` comes from the exact validity-clamped,
-        # notch-excluded mask VERIFY graded, and carrying it activates the
-        # kernel's denominator-shrink refusal.
         n_graded_bins=_attempt_optional_positive_int(frame.get("n_bins")),
     )
 
@@ -1005,11 +963,6 @@ def build_conductor_state(
                 item.to_dict()
                 for item in (getattr(snap, "attempt_history", ()) or ())
             ],
-            "last_decision": (
-                dict(getattr(snap, "last_attempt_decision"))
-                if getattr(snap, "last_attempt_decision", None) is not None
-                else None
-            ),
         }
     else:
         prior_attempts = prior.get("attempts_loop")
@@ -1023,11 +976,6 @@ def build_conductor_state(
         # ``crossover_envelope_v2.crossover_v2_phase`` so a verify-only re-arm
         # reaches "done" rather than waiting on a position group it never had.
         "session_phases": list(snap.session_phases),
-        # WHICH INSTRUMENT produced this state. Empty string means unknown and
-        # readers must render it as unknown rather than assuming "full":
-        # express makes no cross-position post-apply claim, so guessing would
-        # attach a claim the measurement never made.
-        "tier": snap.tier,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(getattr(snap, "measure_gain_ceiling_db", None) or {}),
@@ -1252,12 +1200,6 @@ def build_conductor_state(
         },
         "evidence": dict(evidence) if evidence else None,
     }
-    # A conductor that declares no tier of its own — the verify-only re-arm —
-    # must not erase which instrument produced the applied result. Carried
-    # forward UNCONDITIONALLY, because the re-arm runs under a brand-new capture
-    # session id and a session-scoped guard would drop it on "Try again".
-    if not state["tier"] and prior.get("tier"):
-        state["tier"] = str(prior["tier"])
     # The dated reference (#1927) carries forward across the writes of a
     # VERIFY-ONLY session and is dropped by any session that MEASURES.
     #

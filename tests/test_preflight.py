@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import replace
-import json
 
 import pytest
 
@@ -12,7 +11,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.preflight import PreflightFacts, preflight
 from jasper.active_speaker.seat_level_reference import AnchorFacts
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.cli import angle_capture as cli
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
@@ -96,18 +94,6 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     assert report.plan.level.resolved.anchor_db_spl == 75
     assert report.plan.baseline_graph_scope == "preset"
     assert {row.graph_scope for row in report.schedule} == {"candidate"}
-
-
-@pytest.mark.parametrize("verb", ["plan", "stage"])
-def test_cli_plan_prints_blocking_preflight(monkeypatch, capsys, verb):
-    monkeypatch.setattr(cli, "read_preflight_facts", lambda plan: ready_facts(plan))
-    assert cli.main([verb, "--angles", "0", "--spl-ceiling-db-spl", "90"]) == 1
-    captured = capsys.readouterr()
-    body = json.loads(captured.out)
-    assert captured.err
-    assert body["code"] == "walk_ceiling_above_stop"
-    assert body["detail"]["issues"][0]["blocking"] is True
-    assert body["next_action"]
 
 
 @pytest.mark.parametrize("fault", ["box", "wrong_mic", "no_calibration"])

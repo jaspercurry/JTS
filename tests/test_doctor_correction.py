@@ -440,31 +440,21 @@ def _verify_cloud(*, passed, flatness):
             "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-unmeasurable",
         ),
-        # #2098: a Full session verified only at the mark is not the claim Full
-        # promised.
+        # #2098: a plan asking beyond the mark needs a spatial grade.
         pytest.param(
-            _v2_applied_state(tier="full", verify={"outcome": "pass"}), "ok",
-            correction.REASON_APPLIED_GRADE_MARK_ONLY, id="full-mark-only",
+            _v2_applied_state(verify={"outcome": "pass"}, asked_poses=[{"deg": 0}, {"deg": 20}]),
+            "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY, id="mark-only-incomplete",
         ),
-        # A group that closed but could not combine reaches the same arm — the
-        # wording claims delivered evidence only, never "never closed".
         pytest.param(
             _v2_applied_state(
-                tier="full", verify={"outcome": "pass"},
-                cloud={
-                    "cloud_verify": _cloud_group_unavailable(
-                        reason="combine_failed"
-                    ),
-                },
+                verify={"outcome": "pass"}, asked_poses=[{"deg": 0}, {"deg": 20}],
+                cloud={"cloud_verify": _cloud_group_unavailable(reason="combine_failed")},
             ),
-            "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY,
-            id="full-closed-but-unavailable",
+            "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY, id="closed-but-unavailable",
         ),
-        # The mark IS express's whole promise; a finding here would fire on
-        # every express session ever run.
         pytest.param(
-            _v2_applied_state(tier="express", verify={"outcome": "pass"}),
-            "ok", correction.REASON_CLOUD_NOT_RUN, id="express-mark",
+            _v2_applied_state(verify={"outcome": "pass"}, asked_poses=[{"deg": 0}]),
+            "ok", correction.REASON_CLOUD_NOT_RUN, id="mark-only-plan",
         ),
         pytest.param(
             _v2_applied_state(
@@ -566,8 +556,15 @@ def _verify_cloud(*, passed, flatness):
     ],
 )
 def test_check_crossover_v2_cloud_pipeline_verdicts(
-    monkeypatch, state, status, reason
+    tmp_path, monkeypatch, state, status, reason
 ):
+    from tests.run_manifest_fixture import write_asked_poses
+
+    state = dict(state) if state is not None else None
+    poses = state.pop("asked_poses", None) if state is not None else None
+    if poses is not None:
+        root = write_asked_poses(tmp_path, state, poses)
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
     _patch_v2_state(monkeypatch, state)
 
     r = correction.check_crossover_v2_cloud_pipeline()

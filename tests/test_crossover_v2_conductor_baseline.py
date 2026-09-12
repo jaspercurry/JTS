@@ -21,19 +21,10 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     MEASURED_BENEFIT_MARGIN_DB,
     measured_response_from_analysis,
 )
-from jasper.active_speaker.attempts_loop import (
-    PROVENANCE_REALIZED,
-    REASON_ATTEMPT_NOT_COMPARABLE,
-    REASON_BASELINE_ESTABLISHED,
-    REASON_GRADED_BINS_SHRANK,
-    REASON_IMPROVEMENT_ABOVE_FLOOR,
-    STOP_EVIDENCE,
-    AttemptIntegrity,
-    AttemptRecord,
-    decide_next,
+from jasper.active_speaker.crossover_v2.durable_state import (
+    PROVENANCE_REALIZED, AttemptIntegrity, AttemptRecord,
 )
 from jasper.active_speaker.crossover_v2_flow import (
-    ATTEMPT_REASON_NO_FLOOR,
     GAIN_CAP_BACKOFF_DB,
     MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
     CrossoverV2FlowError,
@@ -54,12 +45,6 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
-    INTEGRITY_CHECK_SWEEP_HEARD,
-    INTEGRITY_CHECK_SWEEP_SCHEDULE,
-    INTEGRITY_FAIL,
-    INTEGRITY_NOT_EVALUATED,
-    CaptureIntegrity,
-    IntegrityCheck,
 )
 from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
@@ -74,7 +59,6 @@ from tests.crossover_v2_fixtures import (
     _DIAG_LOGGER,
     _ENTRY_BASELINE_RESIDUAL_DB,
     _POST_APPLY_RESIDUAL_DB,
-    _attempt_floor,
     _capture,
     _conductor,
     _measure_analysis,
@@ -170,7 +154,6 @@ def test_accepted_apply_verify_writes_model_error_exactly_once():
         },
     }
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-    assert c.last_attempt_decision["reason"] == REASON_BASELINE_ESTABLISHED
 
 
 def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_path):
@@ -215,14 +198,10 @@ def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_pat
 def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     tmp_path, caplog,
 ):
-    """A recovery conflict cannot reuse the previous candidate's verdict."""
     from jasper.active_speaker.model_error_store import (
         ModelErrorConflictError,
         load_state,
         record_model_error,
-    )
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
     )
     from jasper.web import correction_crossover_v2 as v2host
 
@@ -248,11 +227,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
             n_graded_bins=120,
         ),
     )
-    prior_decision = decide_next(history, _attempt_floor()).to_dict()
-    assert prior_decision["reason"] == REASON_IMPROVEMENT_ABOVE_FLOOR
-    assert prior_decision["basis_attempt_ids"] == [
-        "candidate-base", "candidate-previous",
-    ]
 
     # The store write won, then the process died before the new journey fact.
     record_model_error(
@@ -279,7 +253,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
         recovered_fakes,
         seams=replace(recovered_fakes.seams(), record_model_error=record),
         attempt_history=history,
-        last_attempt_decision=prior_decision,
         tuning_attempt_id="candidate-current",
         speaker_id="speaker-a",
     )
@@ -290,7 +263,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     assert len(records) == 1
     assert records[0]["realized_db"] == pytest.approx(0.9)
     assert recovered.attempt_history == history
-    assert recovered.last_attempt_decision is None
     assert event_records(
         caplog, "correction.crossover_v2_model_error_identity_conflict"
     )
@@ -298,30 +270,15 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
         caplog, "correction.crossover_v2_model_error_write_failed"
     )
 
-    # The host persists the conductor snapshot verbatim. The household surface
-    # must see no attempt sentence—not the hydrated previous candidate's 0.4 dB
-    # claim dressed up as the current result.
     v2host.set_state_path_for_tests(state_path)
     try:
         v2host.persist_conductor_state(recovered, failure_code=None)
         persisted = v2host.load_v2_state()
     finally:
         v2host.set_state_path_for_tests(None)
-    assert persisted["attempts_loop"]["last_decision"] is None
     assert [
         item["attempt_id"] for item in persisted["attempts_loop"]["history"]
     ] == ["candidate-base", "candidate-previous"]
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done",
-            "verify": persisted["verify"],
-            "candidate": persisted["candidate"],
-            "attempts_loop": persisted["attempts_loop"],
-        },
-    })
-    assert "tracked its prediction" not in envelope["verdict_text"]
 
 
 def test_model_error_store_failure_warns_without_blocking_verify(caplog):
@@ -425,221 +382,16 @@ def test_base_exception_from_the_store_seam_still_propagates():
         _run_phase(c, 1, 1)
 
 
-def test_glitched_verify_reaches_loop_as_stop_evidence():
-    integrity = CaptureIntegrity(checks=(
-        IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL),
-        IntegrityCheck(
-            INTEGRITY_CHECK_SWEEP_SCHEDULE,
-            INTEGRITY_NOT_EVALUATED,
-            "sweep was not heard",
-        ),
-    ))
-    fakes = FakeSeams()
-    fakes.verify = lambda program: _verify_analysis(program, integrity=integrity)
-    # No adopted floor is the production default. Evidence refusal must still
-    # outrank that absent grading precondition (#2033).
-    c = _conductor(
-        fakes,
-        index_phase_map={1: PHASE_VERIFY},
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        tuning_attempt_id="candidate-glitched",
-    )
-
-    verdict = _run_phase(c, 1, 1)
-
-    assert verdict["accepted"] is False
-    assert c.attempt_history == ()
-    decision = c.last_attempt_decision
-    assert decision["decision"] == STOP_EVIDENCE
-    assert decision["reason"] == REASON_ATTEMPT_NOT_COMPARABLE
-    assert decision["notes"] == [
-        INTEGRITY_CHECK_SWEEP_HEARD,
-        INTEGRITY_CHECK_SWEEP_SCHEDULE,
-    ]
 
 
-def test_no_floor_records_ungraded_and_a_floor_never_outranks_evidence():
-    """The two grading-arm combinations nothing else drives (#2033 order).
-
-    Row 1: a comparable capture on a speaker with no adopted floor is
-    recorded UNGRADED — the no-floor status, not a refusal and not a claim.
-    Row 2: a non-comparable capture on a speaker that HAS a floor still
-    answers as a capture problem: the floor's presence must not promote
-    grading past the evidence refusal. A mutation fusing the two conditions
-    (refuse only when non-comparable AND floorless) survives every other
-    case in the suite and fails only on this pair.
-    """
-    fakes = FakeSeams()
-    c = _conductor(
-        fakes,
-        index_phase_map={1: PHASE_VERIFY},
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        tuning_attempt_id="candidate-a",
-    )
-    assert _run_phase(c, 1, 1)["accepted"] is True
-    decision = c.last_attempt_decision
-    assert decision["reason"] == ATTEMPT_REASON_NO_FLOOR
-    assert decision["decision"] is None
-    assert decision["improved"] is None
-    assert decision["floor"] is None
-    assert decision["basis_attempt_ids"] == ["candidate-a"]
-    # Ungraded is recorded, not dropped: the attempt still enters history.
-    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-
-    integrity = CaptureIntegrity(checks=(
-        IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL),
-    ))
-    floored_fakes = FakeSeams()
-    floored_fakes.verify = lambda program: _verify_analysis(
-        program, integrity=integrity,
-    )
-    floored = _verify_only_conductor(
-        floored_fakes, tuning_attempt_id="candidate-b",
-    )
-    assert _run_phase(floored, 1, 1)["accepted"] is False
-    decision = floored.last_attempt_decision
-    assert decision["decision"] == STOP_EVIDENCE
-    assert decision["reason"] == REASON_ATTEMPT_NOT_COMPARABLE
-    assert floored.attempt_history == ()
 
 
-def test_live_seam_refuses_improvement_when_verify_denominator_shrinks():
-    history = (
-        AttemptRecord(
-            attempt_id="candidate-previous",
-            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SESSION,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=1.0,
-            n_graded_bins=400,
-        ),
-    )
-    fakes = FakeSeams()
-    fakes.verify = lambda program: _verify_analysis(
-        program, max_db=0.6, n_graded_bins=200,
-    )
-    c = _verify_only_conductor(
-        fakes,
-        attempt_history=history,
-        tuning_attempt_id="candidate-latest",
-    )
-
-    verdict = _run_phase(c, 1, 1)
-
-    assert verdict["accepted"] is True
-    decision = c.last_attempt_decision
-    assert decision["decision"] == STOP_EVIDENCE
-    assert decision["reason"] == REASON_GRADED_BINS_SHRANK
-    assert decision["basis_attempt_ids"] == [
-        "candidate-previous", "candidate-latest",
-    ]
 
 
-def test_live_seam_preserves_immediate_predecessor_basis():
-    history = (
-        AttemptRecord(
-            attempt_id="candidate-early",
-            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SESSION,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=9.0,
-        ),
-        AttemptRecord(
-            attempt_id="candidate-previous",
-            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SESSION,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=1.0,
-        ),
-    )
-    fakes = FakeSeams()
-    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
-    c = _verify_only_conductor(
-        fakes,
-        attempt_history=history,
-        tuning_attempt_id="candidate-latest",
-    )
-
-    verdict = _run_phase(c, 1, 1)
-
-    assert verdict["accepted"] is True
-    decision = c.last_attempt_decision
-    assert decision["reason"] == REASON_IMPROVEMENT_ABOVE_FLOOR
-    assert decision["basis_attempt_ids"] == [
-        "candidate-previous", "candidate-latest",
-    ]
-    assert decision["improvement_db"] == pytest.approx(0.4)
 
 
-def test_live_seam_refuses_a_claim_against_a_previous_measurement_journey():
-    """Issue #2081, at the seam the household actually reaches.
-
-    "Start over" preserves ``attempts_loop`` on purpose, so the second tune's
-    VERIFY is graded against the first tune's — but the microphone was put
-    down, re-placed and re-aimed in between, and the claim floor was measured
-    with it bolted down (``captures/repeat-floor-20260731``). The predecessor
-    below carries the session that measured it; this VERIFY carries its own.
-    Before the fix the conductor answered ``improvement_above_floor`` with
-    ``improvement_db 0.4`` and no record of the gap; the only thing that
-    differs from the test above is which sitting the predecessor names.
-    """
-    history = (
-        AttemptRecord(
-            attempt_id="candidate-previous",
-            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            # A DIFFERENT capture session — the first tune's, not this one's.
-            sitting_id="first_tune_verify_session",
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=1.0,
-        ),
-    )
-    fakes = FakeSeams()
-    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
-    c = _verify_only_conductor(
-        fakes,
-        attempt_history=history,
-        tuning_attempt_id="candidate-latest",
-    )
-
-    verdict = _run_phase(c, 1, 1)
-
-    # The VERIFY itself still passes — this is a claim refusal, not a capture
-    # rejection, and the household's speaker is not told its measurement failed.
-    assert verdict["accepted"] is True
-    decision = c.last_attempt_decision
-    assert decision["decision"] == STOP_EVIDENCE
-    assert decision["reason"] == "sitting_mismatch"
-    assert decision["basis_attempt_ids"] == [
-        "candidate-previous", "candidate-latest",
-    ]
-    # No unlicensed number survives to a renderer.
-    assert decision["improvement_db"] is None
-    assert decision["magnitude_db"] is None
-    # The attempt is still BANKED — refusing the claim must not cost the
-    # household the record, or the next tune has no predecessor either.
-    assert [item.attempt_id for item in c.attempt_history] == [
-        "candidate-previous", "candidate-latest",
-    ]
 
 
-def test_live_seam_stamps_this_session_as_the_new_attempts_sitting():
-    """The stamp is the session that captured the sweep, not a constant."""
-    fakes = FakeSeams()
-    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
-    c = _verify_only_conductor(fakes, tuning_attempt_id="candidate-latest")
-
-    assert _run_phase(c, 1, 1)["accepted"] is True
-
-    banked = c.attempt_history[-1]
-    assert banked.attempt_id == "candidate-latest"
-    assert banked.sitting_id == c.session_id
-    assert banked.sitting_id  # never the empty "unrecorded" value
 
 
 def test_the_banked_sitting_survives_the_durable_state_round_trip():
@@ -845,8 +597,6 @@ def test_predicted_ripple_threshold_boundary_exact_is_silent_just_above_disclose
     verdict2 = _run_phase(c2, 2, 2)
     assert verdict2["accepted"] is True
     assert c2.measure_ripple_reservation is not None
-
-
 
 
 def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():

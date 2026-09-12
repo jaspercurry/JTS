@@ -33,6 +33,8 @@ from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
+from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
+from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
@@ -87,6 +89,7 @@ __all__ = [
     "REGIMES",
     "MOVER_ARM",
     "MOVER_HUMAN",
+    "MOVER_CONFIRMED",
     "MOVERS",
     "LEVEL_HOLD_REFERENCE",
     "MAX_ANGLE_DEG",
@@ -118,7 +121,6 @@ __all__ = [
     "index_phase_map",
     "announced_indexes",
     "WALK_REGIME_UNSUPPORTED",
-    "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
     "WALK_LEVEL_POLICY_INVALID",
     "WALK_CEILING_ABOVE_STOP",
@@ -139,19 +141,6 @@ __all__ = [
     "session_lateral_walk",
 ]
 
-
-#: An external driver turns the microphone and reports the angle reached; the one mover
-#: that auto-advances
-#: (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`),
-#: holds released by the driver's own report.
-MOVER_ARM = "arm"
-
-#: A person moves the microphone and taps when there, exactly as shipped hand-walked
-#: tiers do -- reading the SAME angle-stated prompt the arm is driven to
-#: (:func:`pose_at_angle`); only the advance policy differs.
-MOVER_HUMAN = "human"
-
-MOVERS = (MOVER_ARM, MOVER_HUMAN)
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
 REQUEST_SCHEMA_VERSION = 3
@@ -181,6 +170,7 @@ MAX_ELEVATION_DEG = 30
 MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_ARM: ARM_ENVELOPE_DEG,
     MOVER_HUMAN: MAX_ANGLE_DEG,
+    MOVER_CONFIRMED: MAX_ANGLE_DEG,
 })
 
 #: Elevation half of the pair above. The arm's 0 is a rig fact: it rotates about the
@@ -188,6 +178,7 @@ MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
 MOVER_MAX_ELEVATION_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_ARM: 0,
     MOVER_HUMAN: MAX_ELEVATION_DEG,
+    MOVER_CONFIRMED: MAX_ELEVATION_DEG,
 })
 
 #: Which composed program object each regime plays, stated as the PHASE whose program it
@@ -762,7 +753,7 @@ def request_for_program(
     stimulus calls this again for that program.
     """
     if program.mover is not None and program.mover != mover:
-        raise LateralWalkRefused(WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
+        raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     return AngleCaptureRequest(
@@ -929,11 +920,6 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
 
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 
-#: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
-#: with no hand moving, or a tap-wait from an arm with none to give). NOT a
-#: comparison against the session's GATE.
-WALK_MOVER_MISMATCH = "walk_mover_mismatch"
-
 #: A stop is outside the stated mover's own reach on one AXIS
 #: (:data:`MOVER_MAX_ANGLE_DEG`, :data:`MOVER_MAX_ELEVATION_DEG`). Decided by
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.
@@ -1017,7 +1003,7 @@ SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own
 
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
-    WALK_MOVER_MISMATCH,
+    REASON_WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
@@ -1067,7 +1053,7 @@ def session_lateral_walk(
     this walk. Returns one pose per stop, in stop order, never a session phase.
 
     Raises :class:`LateralWalkRefused` with :data:`WALK_REGIME_UNSUPPORTED`,
-    :data:`WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_CAPTURE_CAPACITY` --
+    :data:`REASON_WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_CAPTURE_CAPACITY` --
     properties of the PAIR (walk, session), so the spool's own document
     validation cannot make them. The capacity bound asks
     :func:`stage1_plan_max_attempts`, the same producer the emitted plan
@@ -1092,7 +1078,7 @@ def session_lateral_walk(
         )
     if request.externally_positioned != externally_positioned:
         raise LateralWalkRefused(
-            WALK_MOVER_MISMATCH,
+            REASON_WALK_MOVER_MISMATCH,
             f"the walk states mover={request.mover!r} "
             f"(externally_positioned={request.externally_positioned}) but this "
             f"session is externally_positioned={externally_positioned}",

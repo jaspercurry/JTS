@@ -37,7 +37,6 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
 )
-from jasper.active_speaker.attempts_loop import FloorStats
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
@@ -687,23 +686,12 @@ def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     )
 
 
-def _attempt_floor() -> FloorStats:
-    return FloorStats.from_repeat_study(
-        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        median_db=0.05,
-        p95_db=0.1,
-        source="test repeat study",
-        measured_at="2026-08-03",
-    )
-
-
 def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     return _conductor(
         fakes,
         index_phase_map={1: PHASE_VERIFY},
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         applied=True,
-        attempt_floor=_attempt_floor(),
         **kwargs,
     )
 

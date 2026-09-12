@@ -81,6 +81,7 @@ from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
 from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
+from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
@@ -372,6 +373,7 @@ def load_v2_state() -> dict[str, Any] | None:
     ):
         return None
     state = dict(raw)
+    state.pop("tier", None)  # ADR-0298: old records have unknown plan coverage.
     if "room_trial" in state:
         state.setdefault("tuning_trial", state.pop("room_trial"))
     return state
@@ -1369,11 +1371,7 @@ def reconcile_session_volume_for_new_session(
 # an unknown state must degrade to "not graded" rather than to a crash.
 GRADE_NOT_APPLIED = "not_applied"
 GRADE_GRADED = "graded"
-# Express's passing grade. Distinct from GRADE_GRADED so a `/state` reader can
-# tell the two claims apart WITHOUT cross-referencing `tier` (PR-L4 review):
-# express verifies at the mark only — it never walks a post-apply position
-# group — so "graded" and "confirmed at one spot" are materially different
-# promises and were rendering as the same word.
+# A local pass is distinct from a spatial grade (#2098).
 GRADE_MARK_VERIFIED = "mark_verified"
 GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
@@ -1389,12 +1387,10 @@ GRADE_TUNING_TRIAL_MEASURED = "tuning_trial_measured"
 #
 # ``state`` above answers "was it checked". These answer the two questions a
 # surface needed and had to guess at: how WIDE is the evidence behind that
-# answer, and does that width meet what the commission tier promised.
+# answer, and does that width meet what the run asked for.
 # --------------------------------------------------------------------------- #
 
-#: How far the evidence behind ``state`` reaches. Never a tier — a tier is what
-#: was PROMISED, this is what was DELIVERED, and conflating them is the #2098
-#: defect (a Full session's mark-only pass rendered as the full claim).
+#: Delivered coverage, compared below with the run's asked poses (#2098).
 GRADE_SCOPE_NONE = "none"
 GRADE_SCOPE_MARK = "mark"
 GRADE_SCOPE_SPATIAL = "spatial"
@@ -1448,7 +1444,7 @@ def _spatial_grade(post_apply: Any) -> str:
     return GRADE_SPATIAL_FAILED
 
 
-def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
+def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = False) -> dict[str, Any]:
     """Was the correction now ON the speaker ever checked after it landed?
 
     **Applied implies graded** (linearization-integrity PR-L4 item 4). A
@@ -1465,9 +1461,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     the commonest way to reach it is a household that closed the phone after
     the apply — auto-restoring would silently undo a correction that is very
     probably fine, on evidence that says nothing about the correction at all.
-    Worse, express-tier sessions omit the post-apply position group by design,
-    so an auto-restore keyed on a missing cloud grade would revert every
-    express session ever run. The way back already exists on the done screen,
+    The way back already exists on the done screen,
     and it is the household's call. What was missing is being told.
 
     The returned ``state`` is one of the ``GRADE_*`` constants above;
@@ -1475,7 +1469,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
     ``complete`` below carry the verdict it cannot. Both a passing VERIFY
     outcome and a graded post-apply cloud count — either instrument is a real
-    check, and the tiers differ in which one they run. A mark-VERIFY that
+    check. A mark-VERIFY that
     FAILED caps ``state`` whatever the cloud group says (#2464); the
     derivation below owns that rule and states why.
 
@@ -1484,36 +1478,19 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     three are why this returns more than a state name. ``state`` alone cannot
     carry either fact, and both were being guessed at downstream:
 
-    * a Full session whose post-apply group never closed reaches
-      ``mark_verified`` — a true local result, and NOT the claim Full
-      promised. It rendered as "applied and graded".
+    * a run that asked for poses beyond the mark but whose post-apply group
+      never closed reaches ``mark_verified`` — a true local result, short of
+      what its plan asked. It rendered as "applied and graded".
     * a post-apply group that closed with ``overall_within_target=False`` reaches
       ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
       rendered as "applied and graded" — measured on jts3 2026-08-07, a
       −4.63 dB spatial miss under a green tick.
 
-    ``scope`` is what the evidence DELIVERED; ``tier`` is what the session
-    PROMISED; ``complete`` is the producer's own comparison of the two, so no
-    consumer re-derives it (plan §7: one producer owns the scope/completeness
-    fact for the wizard, ``/state``, and doctor). The ``else`` tier branch
-    catches two different inputs and judges BOTH on delivery alone — but NOT
-    because "the promise cannot be known", which is false of the first input
-    and misdescribes the second:
-
-    * **No ``tier`` line at all.** ``normalize_tier`` documents an absent tier
-      as Full, so this promise IS knowable and the branch declines it BY
-      CHOICE. A state file with no tier came from a build that had no tier
-      concept and therefore never MADE Full's promise; judging it against
-      Full's stricter spatial-scope bar would false-warn a correctly
-      commissioned legacy speaker about delivery it was never asked to
-      produce. Wiring ``normalize_tier`` in here IS that regression.
-    * **A tier word from a later build.** ``normalize_tier`` does not default
-      this one — it RAISES, by its own "fail loudly rather than silently
-      measure something else" rule. That rule is right for a caller opening a
-      session and wrong here: ``_post_apply_grade`` runs unguarded inside
-      ``crossover_v2_status_block`` on every ``/state`` read, wizard poll, and
-      doctor run, so raising would take the whole status block down over a
-      word this build only needed to not grade.
+    ``scope`` is what the evidence DELIVERED; the persisted run manifest's
+    asked poses state what the run PROMISED. ``complete`` compares the two,
+    so the wizard, ``/state`` and doctor do not each derive that fact. Records
+    without a plan retain delivery-only grading (ADR-0298): an old session
+    never made a spatial promise merely because a later build knows one.
 
     ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
     the doctor's cloud-pipeline line prints, never re-derived, so "the grade
@@ -1526,10 +1503,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     surface-not-auto-restore paragraph above, which this extends rather than
     revisits.
     """
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        TIER_EXPRESS,
-        TIER_FULL,
-    )
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
@@ -1727,9 +1700,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     elif no_claim_graded:
         state = GRADE_INCONCLUSIVE
     elif outcome == "pass":
-        # Verified at the mark only. On express that is the whole grade by
-        # design; on full it means VERIFY passed but the post-apply group has
-        # not closed yet.
+        # Completeness below compares this measured scope with the asked poses.
         state = GRADE_MARK_VERIFIED
     else:
         state = GRADE_UNVERIFIED
@@ -1743,16 +1714,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         scope = GRADE_SCOPE_MARK
     else:
         scope = GRADE_SCOPE_NONE
-    tier = str(block.get("tier") or "")
-    if tier == TIER_FULL:
-        complete = scope == GRADE_SCOPE_SPATIAL
-    elif tier == TIER_EXPRESS:
-        # Express promises the mark and structurally never walks a post-apply
-        # group, so the mark IS its whole grade — complete, and explicitly
-        # scoped. A spatial verdict would exceed the promise, never miss it.
-        complete = scope in {GRADE_SCOPE_MARK, GRADE_SCOPE_SPATIAL}
-    else:
-        complete = scope != GRADE_SCOPE_NONE
+    complete = scope == GRADE_SCOPE_SPATIAL if spatial_required else scope != GRADE_SCOPE_NONE
     flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
     flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
@@ -1774,6 +1736,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
             if spatial == GRADE_SPATIAL_FAILED else None
         ),
         "complete": complete,
+        **({"reason": REASON_APPLIED_GRADE_MARK_ONLY} if scope == GRADE_SCOPE_MARK and not complete else {}),
         "improvement_db": improvement_db,
         "tracking_passed": True if tracking_status == CLAIM_PASS else False if tracking_status == CLAIM_FAIL else None,
         "absolute_passed": True if absolute_status == CLAIM_PASS else False if absolute_status == CLAIM_FAIL else None,
@@ -3605,21 +3568,10 @@ VERIFY_STAGE_RECOVERY = "recovery"
 
 
 def _verify_plan_shape(
-    raw: Mapping[str, Any] | None, state: Mapping[str, Any] | None,
+    raw: Mapping[str, Any] | None,
 ) -> Any:
-    """Resolve the post-apply plan shape, or ``None`` for the 1-entry recovery.
-
-    Explicit rather than inferred. A shape could be guessed from the durable
-    state (has VERIFY been walked? has it been accepted?), but every such
-    inference has a case where it silently downgrades Full's multi-position
-    post-apply walk to one sweep — a household who opened stage 2 and let the
-    link expire before the first capture would get the recovery instrument on
-    their next tap and lose the spatial "after" evidence with no way to know.
-    The caller says which instrument it wants; the tier still comes from the
-    durable state, so the household's tier choice governs both stages.
-    """
+    """The caller chooses a full post-apply walk or one recovery sweep."""
     from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
-    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
     stage = str((raw or {}).get(VERIFY_STAGE_KEY) or VERIFY_STAGE_RECOVERY).strip()
     if stage == VERIFY_STAGE_RECOVERY:
@@ -3629,10 +3581,7 @@ def _verify_plan_shape(
             f"unknown verify stage {stage!r} (expected "
             f"{VERIFY_STAGE_POST_APPLY!r} or {VERIFY_STAGE_RECOVERY!r})"
         )
-    try:
-        return resolve_plan_shape((state or {}).get("tier"))
-    except CrossoverV2FlowError as exc:
-        raise refused_from_flow_error(exc) from exc
+    return resolve_plan_shape()
 
 
 def prepare_v2_session(
@@ -3688,15 +3637,11 @@ def prepare_v2_session(
                 "this measured tuning is already applied; it does not "
                 "use the speaker-fit verification stage"
             )
-        attempt_store = _attempt_loop_store_snapshot()
-        attempts_loop = state.get("attempts_loop")
-        attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
-        prior_attempt_decision = attempts_loop.get("last_decision")
         tuning_attempt_id = (
             str(candidate_state.get("fingerprint") or "")
             if isinstance(candidate_state, Mapping) else ""
         )
-        plan_shape = _verify_plan_shape(raw, state)
+        plan_shape = _verify_plan_shape(raw)
         context = resolve_conductor_context(status)
     else:
         from jasper.active_speaker.branch_chain import confirmed_protection_sections
@@ -3707,7 +3652,6 @@ def prepare_v2_session(
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
         )
-
 
         if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
             raise CrossoverV2Refused("An inline v3 plan is required", code="program_plan_shape_invalid")
@@ -3789,15 +3733,6 @@ def prepare_v2_session(
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
-        attempt_store = _attempt_loop_store_snapshot()
-        prior_loop = (
-            prior_raw.get("attempts_loop")
-            if isinstance(prior_raw, Mapping) else None
-        )
-        prior_decision = (
-            prior_loop.get("last_decision")
-            if isinstance(prior_loop, Mapping) else None
-        )
         prior_snapshot = (
             V2ConductorSnapshot(
                 session_id=str(prior_raw.get("session_id") or ""),
@@ -3806,11 +3741,6 @@ def prepare_v2_session(
                 gain_plan_db=prior_raw.get("gain_plan_db"),
                 measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
                 attempt_history=attempt_history_from_state(prior_raw),
-                last_attempt_decision=(
-                    dict(prior_decision)
-                    if isinstance(prior_decision, Mapping)
-                    else None
-                ),
             )
             if isinstance(prior_raw, Mapping)
             else None
@@ -3821,13 +3751,13 @@ def prepare_v2_session(
     stop_lock = threading.Lock()
     complete_event = threading.Event()
     retake_event = threading.Event()
-    position_gate = PositionGate() if not verify_only or (plan_shape and plan_shape.positions_gated) else None
+    position_gate = PositionGate(mover=request.mover) if not verify_only else PositionGate() if plan_shape and plan_shape.positions_gated else None
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         acknowledgement_binding=acknowledgement_binding,
-        retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
+        retries_per_pose=request.retries_per_pose,
         default_setup_calibration=default_setup_calibration_for_v2(),
     )
     if not verify_only:
@@ -3940,11 +3870,6 @@ def prepare_v2_session(
                 verify_pilot_transfer_prior=pilot_transfer_prior,
                 attempt_history=attempt_history_from_state(state),
                 series_position=series_position_from_state(state),
-                attempt_floor=attempt_store.floor,
-                last_attempt_decision=(
-                    dict(prior_attempt_decision)
-                    if isinstance(prior_attempt_decision, Mapping) else None
-                ),
                 speaker_id=context.topology.topology_id,
                 tuning_attempt_id=tuning_attempt_id,
             )
@@ -3972,7 +3897,6 @@ def prepare_v2_session(
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
                 tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
-                attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
                 series_position=series_position,
             )

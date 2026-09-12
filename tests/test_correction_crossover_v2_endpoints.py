@@ -48,8 +48,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2_flow import (
-    TIER_EXPRESS,
-    TIER_FULL,
     V2_FIRST_BEGIN_TIMEOUT_S,
     CrossoverV2Session,
     V2FlowSeams,
@@ -57,7 +55,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_session_spec,
-    resolve_plan_shape,
     v2_first_begin_timeout_s,
 )
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
@@ -2552,85 +2549,6 @@ def test_the_preflight_does_not_run_without_a_candidate(caplog):
         v2host.resolve_conductor_context = original
 
 
-def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
-    """**The deliberate T3 tripwire, re-derived** (work order D1/D2).
-
-    PR-T2 pinned ``test_every_shipped_index_phase_map_contains_verify``: every
-    shipped ``index_phase_map`` contained a VERIFY, which was the load-bearing
-    half of its claim that ``PHASE_REVIEW`` — and therefore
-    ``attach_stage2_preflight`` — cost nothing, because the review branch keys
-    on VERIFY's absence and nothing could produce it. T2 wrote that pin
-    expecting T3 to break it, and named the break as the moment to re-read the
-    preflight's cost paragraph.
-
-    **The new invariant, stated explicitly:** a STAGE-1 (measuring) map
-    contains no VERIFY entry, by design — its absence is what resolves a
-    measure-only session to the review interlude instead of "your speaker is
-    tuned". A STAGE-2 (post-apply) map always contains exactly one, at index 1,
-    because a post-apply session that verified nothing would have nothing to
-    grade. Both halves are checked across both tiers and all four corners of
-    Full's validated (N, M) box, so neither rests on the default counts.
-
-    **The cost paragraph, re-read.** ``attach_stage2_preflight`` is now
-    genuinely reachable, once per envelope GET while the review interlude is
-    on screen. T2 named the one shape it would not survive: a review screen
-    rendering beside a permanently in-flight capture, which would turn
-    ``ensure_crossover_preview_ready``'s writes into a 1.5 s loop. T3 owns
-    re-checking that, and it holds — the review screen is reached only AFTER
-    stage 1's session has ended (its runner returns, the capture is purged, and
-    the wizard's poll stops at ``captureIsActive(env.capture)``), and the interlude
-    itself starts no session. The calls are bounded to the seconds a
-    just-closed capture spends winding down, exactly as T2 predicted.
-    """
-    from jasper.active_speaker.crossover_v2_flow import (
-        DEFAULT_CLOUD_VERIFY_POSITIONS,
-        MAX_CLOUD_MEASURE_POSITIONS,
-        MIN_CLOUD_MEASURE_POSITIONS,
-        MIN_CLOUD_VERIFY_POSITIONS,
-        TIER_EXPRESS,
-        TIER_FULL,
-        build_v2_verify_index_phase_map,
-    )
-
-    for tier in (TIER_FULL, TIER_EXPRESS):
-        stage1 = build_v2_cloud_index_phase_map(tier=tier)
-        assert PHASE_VERIFY not in stage1.values(), tier
-        assert PHASE_CLOUD_VERIFY not in stage1.values(), tier
-        stage2 = build_v2_verify_index_phase_map(
-            plan_shape=resolve_plan_shape(tier)
-        )
-        assert stage2[1] == PHASE_VERIFY, tier
-        assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, tier
-    # The corners of the configurable (N, M) space plus the shipped default.
-    # N is DERIVED from its own two bounds rather than written out: the upper
-    # one moved (12 -> 11) when #2291's entry baseline took a capture blob index,
-    # and a literal here would have made this test fail for the wrong reason
-    # instead of following the constant it is exercising the extremes of.
-    #
-    # M's LOW corner follows the same rule and for the same reason: it moved
-    # (5 -> 6) when the 2026-08-24 geometry ruling gave the post-apply group its
-    # own pose set, and a literal would have failed this test on the floor
-    # rather than on the invariant it is about. The high corner stays a literal
-    # — M has no derived ceiling, and 12 is simply well past any shipped shape.
-    _n_lo, _n_hi = MIN_CLOUD_MEASURE_POSITIONS, MAX_CLOUD_MEASURE_POSITIONS
-    _m_lo = MIN_CLOUD_VERIFY_POSITIONS
-    for n, m in (
-        (_n_lo, _m_lo), (_n_hi, _m_lo), (_n_lo, 12), (_n_hi, 12),
-        (9, DEFAULT_CLOUD_VERIFY_POSITIONS),
-    ):
-        shape = resolve_plan_shape(
-            cloud_measure_positions=n, cloud_verify_positions=m,
-        )
-        stage1 = build_v2_cloud_index_phase_map(plan_shape=shape)
-        assert PHASE_VERIFY not in stage1.values(), (n, m)
-        assert PHASE_CLOUD_VERIFY not in stage1.values(), (n, m)
-        stage2 = build_v2_verify_index_phase_map(plan_shape=shape)
-        assert stage2[1] == PHASE_VERIFY, (n, m)
-        assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, (n, m)
-    # The recovery re-verify keeps its shipped one-entry map.
-    assert build_v2_verify_index_phase_map() == {1: PHASE_VERIFY}
-
-
 def test_the_envelope_route_actually_runs_the_preflight():
     """The wiring, pinned at its one call site.
 
@@ -2802,51 +2720,6 @@ def test_the_preflight_runs_after_the_freshness_gates(monkeypatch):
             status={},
         )
     assert "no longer current" in str(excinfo.value)
-
-
-def test_the_verify_endpoint_opens_the_tier_matched_stage_2_or_the_recovery():
-    """ONE entry point, two shapes — generalized over the plan shape rather
-    than forked into a second builder (work order D2).
-
-    The tier comes from the durable state the MEASURING session wrote, so the
-    household's choice at the tier chooser governs both stages.
-    """
-    from jasper.active_speaker.crossover_v2_flow import (
-        DEFAULT_CLOUD_VERIFY_POSITIONS,
-        TIER_EXPRESS,
-        TIER_FULL,
-        build_v2_verify_capture_plan,
-    )
-
-    # Full's count is DERIVED, not the literal 6: it moved twice in a week
-    # (6 -> 5 on the 2026-08-18 trim, 5 -> 6 when the 2026-08-24 geometry ruling
-    # put the design axis into the pose set), and this test is about the tier
-    # MATCH rather than about either number.
-    for tier, expected in (
-        (TIER_FULL, DEFAULT_CLOUD_VERIFY_POSITIONS), (TIER_EXPRESS, 1),
-    ):
-        shape = v2host._verify_plan_shape({"stage": "post_apply"}, {"tier": tier})
-        assert shape == resolve_plan_shape(tier)
-        assert build_v2_verify_capture_plan(
-            FC_HZ, plan_shape=shape,
-        ).capture_target == expected
-
-    # Absent / explicit "recovery" is the shipped 1-entry re-arm, which is what
-    # a FAILED stage 2 offers — every pre-two-stage caller posts `{}`.
-    for raw in ({}, {"stage": "recovery"}, None):
-        assert v2host._verify_plan_shape(raw, {"tier": TIER_FULL}) is None
-    assert build_v2_verify_capture_plan(FC_HZ).capture_target == 1
-
-
-def test_an_unknown_verify_stage_is_refused_rather_than_guessed():
-    """Same strictness ``normalize_tier`` applies to a tier: a caller asking
-    for an instrument this build does not have fails loudly rather than
-    silently measuring something else."""
-    from jasper.active_speaker.crossover_v2_flow import TIER_FULL
-
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host._verify_plan_shape({"stage": "turbo"}, {"tier": TIER_FULL})
-    assert "unknown verify stage" in str(excinfo.value)
 
 
 def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
@@ -3049,24 +2922,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     )
     with pytest.raises(v2host.CrossoverV2Refused, match="confirmed driver protection"):
         v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
-
-
-def test_the_tier_rides_the_durable_state_and_state_block():
-    """§1.2: `/state` can tell WHICH instrument produced a result, and an
-    unknown one reads as unknown rather than as "full" — the
-    ``echo_band_provenance`` discipline (issue #1763)."""
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK],
-        "tier": "express",
-    })
-    assert v2status.crossover_v2_status_block()["tier"] == "express"
-    # State written before tiers existed says nothing, and nothing is invented.
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK],
-    })
-    assert v2status.crossover_v2_status_block()["tier"] is None
 
 
 # --- two-stage commission D4: the prediction on the wire ------------------
@@ -3378,13 +3233,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
                 "grade_db": 0.9,
             }
         ],
-        "last_decision": {
-            "decision": "continue",
-            "reason": "baseline_established",
-            "basis_attempt_ids": ["candidate-a"],
-            "provenance": "realized",
-            "floor": {"claim_floor_db": 0.17},
-        },
     }
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3406,7 +3254,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     block = v2status.crossover_v2_status_block()
     assert block["attempts_loop"] == {
-        "last_decision": loop["last_decision"],
         "store_count": 7,
     }
     assert "history" not in block["attempts_loop"]
@@ -3614,7 +3461,8 @@ def _no_sweep_state(*, fc_selection=None):
     )
 
     stage1 = list(dict.fromkeys(build_v2_cloud_index_phase_map(
-        tier="express",
+
+
         include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ).values()))
@@ -3781,7 +3629,7 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
         def snapshot(self):
             return SimpleNamespace(
                 session_id="cap_p04", accepted_phases=(PHASE_VERIFY,),
-                session_phases=(PHASE_VERIFY,), tier="express", applied=True,
+                session_phases=(PHASE_VERIFY,),  applied=True,
                 gain_plan_db=None, candidate_fingerprint=None,
             )
 
@@ -3802,7 +3650,7 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     conductor = _StubConductor("cap_malformed")
     conductor.snapshot = lambda: SimpleNamespace(
         session_id="cap_malformed", accepted_phases=(PHASE_VERIFY,),
-        session_phases=(PHASE_VERIFY,), tier="", applied=True,
+        session_phases=(PHASE_VERIFY,), applied=True,
         gain_plan_db=None, candidate_fingerprint=None,
     )
     monkeypatch.setattr(
@@ -3857,7 +3705,7 @@ def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     it. The ruling is grade-and-disclose: the tune stays, the failure is
     loud."""
     v2host.save_v2_state(_applied_state(
-        tier=TIER_FULL,
+        tier="full",
         cloud_verify=_closed_cloud_group(
             passed=False, flatness=_GRADED_AND_FAILED_FLATNESS,
         ),
@@ -3873,27 +3721,39 @@ def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
 
 
-def test_a_full_session_that_only_verified_at_the_mark_is_incomplete():
-    """#2098's own field evidence: Full, ``verify.outcome=pass``, ``cloud``
-    absent — a true local result rendered as the wider claim. The local pass
-    is preserved; what is added is that it is not what Full promised."""
-    v2host.save_v2_state(_applied_state(tier=TIER_FULL))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_MARK_VERIFIED  # the local pass stands
-    assert grade["graded"] is True
-    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_ABSENT
-    assert grade["complete"] is False
+@pytest.mark.parametrize("storage", ["live", "banked", "recovery"])
+@pytest.mark.parametrize("poses,complete", [
+    ([{"kind": "bearing", "deg": 0, "elevation_deg": 0}], True),
+    ([{"kind": "bearing", "deg": 0}, {"kind": "bearing", "deg": 20}], False),
+    ([{"kind": "bearing", "deg": 0, "elevation_deg": 10}], False),
+    ([{"kind": "seat", "deg": 0, "seat_offset_m": [0.3, 0, 0]}], False),
+])
+def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
+    tmp_path, monkeypatch, poses, complete, storage,
+):
+    import shutil
+    from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
+    from tests.run_manifest_fixture import write_asked_poses
 
-
-def test_an_express_session_verified_at_the_mark_is_complete_and_scoped():
-    """Express structurally never walks a post-apply group, so the mark IS its
-    whole promise. Judging it against Full's would warn every express session
-    ever run — the mirror of the defect."""
-    v2host.save_v2_state(_applied_state(tier=TIER_EXPRESS))
+    state = _applied_state()
+    root = write_asked_poses(tmp_path, state, poses)
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
+    if storage == "banked":
+        target = tmp_path / "campaigns" / "banked-run" / "bundle"
+        target.mkdir(parents=True)
+        shutil.move(root / "asked-run", target)
+    elif storage == "recovery":
+        original = root / "asked-run/evidence/v1/artifacts/crossover_v2" / state["session_id"]
+        state["candidate"] = {"fingerprint": "applied-candidate"}
+        state["session_id"] = "recovery"
+        write_asked_poses(tmp_path, state, [{"deg": 0}])
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
+                            lambda fingerprint: SimpleNamespace(path=original / "candidate.json"))
+    v2host.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2host.GRADE_SCOPE_MARK
-    assert grade["complete"] is True
+    assert grade["complete"] is complete
+    assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
 
 
 _PASSING_GROUP = {"passed": True, "flatness": {
@@ -3915,7 +3775,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
     ("state", "expected"),
     (
         pytest.param(
-            {"tier": TIER_FULL, "cloud_verify": _PASSING},
+            {"tier": "full", "cloud_verify": _PASSING},
             # No number beside a pass: printing the margin of a pass next to a
             # failure verdict is how the two get confused.
             {"spatial": v2host.GRADE_SPATIAL_PASSED,
@@ -3927,11 +3787,11 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # never happened. No spatial CLAIM exists, so the delivered width falls
         # back to what the mark proved — on Full, short of the promise.
         pytest.param(
-            {"tier": TIER_FULL, "cloud_verify": _closed_cloud_group(
+            {"tier": "full", "cloud_verify": _closed_cloud_group(
                 passed=False, flatness=_UNMEASURABLE_FLATNESS)},
             {"spatial": v2host.GRADE_SPATIAL_UNMEASURABLE,
              "spatial_worst_db": None, "scope": v2host.GRADE_SCOPE_MARK,
-             "complete": False},
+             "complete": True},
             id="an-ungradeable-group-is-not-a-failure",
         ),
         # Unmeasurable is claimed only on POSITIVE evidence: a state written
@@ -3939,7 +3799,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # no ``flatness``, and downgrading that on the ABSENCE of an instrument
         # is the fabricated reading pointed the other way.
         pytest.param(
-            {"tier": TIER_FULL, "cloud_verify": _closed_cloud_group(passed=False)},
+            {"tier": "full", "cloud_verify": _closed_cloud_group(passed=False)},
             {"spatial": v2host.GRADE_SPATIAL_FAILED, "spatial_worst_db": None},
             id="a-failing-group-with-no-gauge-stays-a-failure",
         ),
@@ -3956,7 +3816,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             id="a-tier-from-the-future-is-judged-on-delivery",
         ),
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "inconclusive"},
+            {"tier": "full", "verify_outcome": "inconclusive"},
             {"state": v2host.GRADE_INCONCLUSIVE,
              "scope": v2host.GRADE_SCOPE_NONE, "complete": False},
             id="a-verify-that-did-not-pass-delivers-no-scope",
@@ -3967,7 +3827,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # untouched and still rides its own field (#2160 rider) — capping the
         # badge is not co-locating the two facts.
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "fail",
+            {"tier": "full", "verify_outcome": "fail",
              "claims": {"integration": {"status": "fail", "max_db": 4.2}},
              "cloud_verify": _PASSING},
             {"state": v2host.GRADE_FAILED, "graded": False,
@@ -3979,7 +3839,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # crossover-region claim that missed its tolerance rides a clean
         # ``pass``: the CLAIMS record is the source, and both facts stand.
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "pass",
+            {"tier": "full", "verify_outcome": "pass",
              "claims": {"integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "fail", "max_db": 4.31,
                                      "worst_hz": 1590.4}},
@@ -3991,7 +3851,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # The two instruments are a UNION, not a fallback: an ``outcome`` fail
         # whose claims are ``not_evaluated`` still caps.
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "fail",
+            {"tier": "full", "verify_outcome": "fail",
              "claims": {"integration": {"status": "not_evaluated"},
                         "absolute": {"status": "not_evaluated",
                                      "reason": "no_trusted_region"}},
@@ -4002,7 +3862,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # The same masking defect one arm over: the ``inconclusive`` arm was
         # unreachable behind the closed-group test.
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "inconclusive",
+            {"tier": "full", "verify_outcome": "inconclusive",
              "cloud_verify": _closed_cloud_group(passed=False)},
             {"state": v2host.GRADE_INCONCLUSIVE, "graded": False},
             id="an-inconclusive-verify-is-not-masked-by-a-closed-group",
@@ -4011,7 +3871,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # the walked group is the wider claim and still wins the state word,
         # or this demotes every correctly graded Full session.
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "pass",
+            {"tier": "full", "verify_outcome": "pass",
              "claims": {"integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "pass", "max_db": 0.8}},
              "cloud_verify": _PASSING},
@@ -4021,12 +3881,12 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # Absence of claims is a pre-R18 state file, never a fail and never a
         # pass-of-claims: the outcome stands as the only record there is.
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "pass", "cloud_verify": _PASSING},
+            {"tier": "full", "verify_outcome": "pass", "cloud_verify": _PASSING},
             {"state": v2host.GRADE_GRADED},
             id="no-claims-block-graded-on-a-passing-outcome-alone",
         ),
         pytest.param(
-            {"tier": TIER_FULL, "verify_outcome": "fail", "cloud_verify": _PASSING},
+            {"tier": "full", "verify_outcome": "fail", "cloud_verify": _PASSING},
             {"state": v2host.GRADE_FAILED},
             id="no-claims-block-graded-on-a-failing-outcome-alone",
         ),
@@ -6660,7 +6520,7 @@ class _StubConductor:
         return SimpleNamespace(
             session_id=self._session_id, accepted_phases=(),
             session_phases=self._session_phases,
-            tier="", applied=self._applied, gain_plan_db=None,
+            applied=self._applied, gain_plan_db=None,
             candidate_fingerprint=None,
         )
 
@@ -7976,6 +7836,14 @@ def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
     assert capture._pending_capture is None
 
 
+@pytest.mark.parametrize("tier", ["full", "express", "remote", "unrecognised"])
+def test_old_tier_is_read_as_unknown_and_omitted(tmp_path, tier):
+    v2host.set_state_path_for_tests(tmp_path / "state.json")
+    v2host.save_v2_state({"tier": tier, "session_id": "historic"})
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "historic"
+    assert "tier" not in state
+
 
 def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypatch):
     from dataclasses import replace
@@ -7993,7 +7861,8 @@ def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypat
     assert capture._get_capture_slot_for("crossover_v2:") == first
 
 
-def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
+@pytest.mark.parametrize("run_id", [None, "same"])
+def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run_id):
     from concurrent.futures import ThreadPoolExecutor
     import threading
     from jasper.active_speaker.crossover_v2.position_gate import PositionGate
@@ -8024,7 +7893,8 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
     def join(mark=None):
         if mark:
             mark.set()
-        return handlers._handle_crossover_v2_position_ready(_fake_handler(b'{"index":1,"attempt":1}'))
+        payload = {"index": 1, "attempt": 1, **({"run_id": run_id} if run_id else {})}
+        return handlers._handle_crossover_v2_position_ready(_fake_handler(json.dumps(payload).encode()))
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(join)
@@ -8037,8 +7907,9 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
         assert drained.wait(2)
         assert opens == [True]
         assert gate.join(kind.join_entry)["index"] == 1
-        with pytest.raises(v2host.CrossoverV2Refused) as refused:
-            handlers._handle_crossover_v2_position_ready(_fake_handler(b'{"index":9,"attempt":1}'))
-        assert refused.value.code == "capture_slot_busy"
+        for payload in ({"index": 9, "attempt": 1}, {"index": 1, "attempt": 1, "run_id": "old"}):
+            with pytest.raises(v2host.CrossoverV2Refused) as refused:
+                handlers._handle_crossover_v2_position_ready(_fake_handler(json.dumps(payload).encode()))
+            assert refused.value.code == "capture_slot_busy"
     finally:
         release.set()

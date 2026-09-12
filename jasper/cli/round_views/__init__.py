@@ -2,33 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator entry point for the round-grading comparison views (issue #2769).
-
-One console script, one subcommand per view — each a thin argparse wrapper
-over :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
-number this tool prints. A round directory is EITHER a banked round tree or a
-live session bundle still on the speaker, whichever
-:func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs` finds,
-so an operator can grade the round they just ran without banking it first
-(#3498). The artifact lands beside a BANKED round, travelling with the
-evidence it was computed from, and beside the CALLER for a live bundle, which
-belongs to the daemon (:func:`default_out`).
-
-Every subcommand prints its ANSWER as one JSON document on stdout and its one
-human line on stderr (:func:`._common.answer`, ADR-0237); ``--out PATH``
-files the artifact elsewhere. On failure the exit code names the
-STAGE that failed and it publishes the shared failure record; ``--help``'s
-EXIT CODES block and docs/tuning-operator-runbook.md's "Exit codes" state the
-numbers and the record's shape, so neither is repeated here.
-
-Subcommands: one module per view family, each documenting its own verbs.
-"""
+"""Read measured evidence and write the registered round views (ADR-0237)."""
 
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+from pathlib import Path
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HarmonicEvidenceRefused,
@@ -108,14 +92,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Read a round's measured evidence. Select standalone views or "
-            "per-seat --include agreement directivity co-metrics to share a "
-            "round read. Answers use stdout; details use files."
+            "Read measured round evidence, including repeat --set spread across takes. "
+            "Answers use stdout; detailed reports use files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "WHEN NOT TO USE\n"
-            "  - frozen/repeat/repeat-floor need MULTIPLE round directories\n"
+            "  - frozen/repeat-floor need MULTIPLE round directories\n"
             "    (a baseline plus a target, or two-or-more rounds);\n"
             "    entry/per-seat/agreement grade a single round\n"
             "\n"
@@ -179,6 +162,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         # What no stage claimed: the round READ, and the view then declined to
         # grade it. That is the refusal exit, not an unreadable one.
         return failed(EXIT_REFUSED, REASON_REFUSED, str(exc))
+
+
+def run_bookkeeping(view: str, target: Path) -> dict[str, Any]:
+    parser = build_parser()
+    verbs = next(action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+    if view not in verbs:
+        return {"view": view, "status": "unavailable", "reason": "verb_not_registered"}
+    output = io.StringIO()
+    with redirect_stdout(output), redirect_stderr(io.StringIO()):
+        try:
+            code = main([view, str(target)])
+        except SystemExit:
+            return {"view": view, "status": "unavailable", "reason": "inputs_required"}
+    answer = json.loads(output.getvalue())
+    return {**answer, "view": view, "status": "written" if code == 0 else "unavailable"}
 
 
 if __name__ == "__main__":

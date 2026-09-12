@@ -124,7 +124,8 @@ pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 def _stage_1_map() -> dict[int, str]:
     """The index→phase map the shipped stage 1 runs, at the production flags."""
     return build_v2_cloud_index_phase_map(
-        plan_shape=resolve_plan_shape("full"),
+        plan_shape=resolve_plan_shape(),
+
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -192,7 +193,8 @@ def test_stage_1_plans_exactly_one_entry_baseline_and_it_is_last():
     somewhere in the plan would satisfy a membership check and lose that.
     """
     plan = build_v2_capture_plan(
-        _roles(), FC_HZ, plan_shape=resolve_plan_shape("full"),
+        _roles(), FC_HZ, plan_shape=resolve_plan_shape(),
+
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )

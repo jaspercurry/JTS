@@ -537,7 +537,7 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
 
 def _lateral_conductor(fakes):
     return _conductor(fakes, index_phase_map=flow.build_v2_cloud_index_phase_map(
-        tier="full", include_lateral=True,
+        include_lateral=True,
     ))
 
 

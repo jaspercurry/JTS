@@ -18,7 +18,8 @@ second validator is the thing this design exists to avoid.
 
 from __future__ import annotations
 
-import json
+import dataclasses
+
 from types import SimpleNamespace
 
 import pytest
@@ -26,8 +27,6 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import candidate_bank
-from jasper.active_speaker import angle_capture_spool as spool
-from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
@@ -51,46 +50,17 @@ _ROLES_BANDS = (
 )
 
 
-@pytest.fixture
-def slot(tmp_path, monkeypatch):
-    """A writable pending slot, and an idle speaker.
-
-    Same fixture shape as the trigger suite's, and for its reason: without the
-    volume-state redirect every test here would read the real
-    ``/var/lib/jasper`` state of whatever machine runs the suite, and a
-    developer's box mid-measurement would fail the suite for a reason that has
-    nothing to do with this code.
-    """
-    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
-    monkeypatch.setattr(
-        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
-        tmp_path / "session_volume.json",
-    )
-    from jasper.active_speaker import preflight_live
-    from tests.test_preflight import ready_facts
-    def facts(plan, **kwargs):
-        candidates = {stop.candidate_id: candidate_bank.find_banked_candidate(stop.candidate_id).candidate
-                      for stop in plan.stops if ac.candidate_identity(stop.candidate_id) != ac.BASE_CANDIDATE}
-        return ready_facts(plan, candidates=candidates)
-
-    monkeypatch.setattr(preflight_live, "read_preflight_facts", facts)
-    try:
-        yield
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
-
-
 #: Where the design-axis MEASURE capture sits in a stage-1 plan, which is the
 #: index a walk's own walk-level spec is keyed to.
 _MEASURE_INDEX = 2
 
 
 def _hand_shape():
-    return flow.resolve_plan_shape(flow.TIER_FULL)
+    return flow.resolve_plan_shape()
 
 
 def _arm_shape():
-    return flow.resolve_plan_shape(flow.TIER_REMOTE)
+    return dataclasses.replace(flow.resolve_plan_shape(), externally_positioned=True)
 
 
 #: A measurement mic whose registry row names the channel an SPL watch reads.
@@ -107,7 +77,7 @@ def _events(caplog) -> list[str]:
 # --- the ordinary session -----------------------------------------------------
 
 
-def test_the_shipped_stage_1_still_plans_no_lateral_group(slot):
+def test_the_shipped_stage_1_still_plans_no_lateral_group():
     """The retirement is untouched by the take existing.
 
     With no staged document the session ships no lateral group at all -- so
@@ -124,67 +94,6 @@ def test_the_shipped_stage_1_still_plans_no_lateral_group(slot):
 
 
 # --- the take -----------------------------------------------------------------
-
-
-def test_a_peek_reads_the_staged_walk_without_spending_it(slot):
-    """The page prices a staged walk before Start; the open is still the take.
-
-    Same reader, same request object -- what a peek does NOT do is empty the
-    slot, so a household that reads the price and never presses Start still has
-    its walk.
-    """
-    assert spool.peek_staged_angle_request() is None
-
-    request = ac.request_for_program(mp.program("baseline", "express"))
-    spool.stage_angle_request(request)
-    assert spool.peek_staged_angle_request() == request
-    assert spool.staged_angle_request_pending() is True
-    assert spool.peek_staged_angle_request() == request
-
-    assert spool.take_staged_angle_request() == request
-    assert spool.staged_angle_request_pending() is False
-    assert spool.peek_staged_angle_request() is None
-
-
-@pytest.mark.parametrize(
-    "read", [spool.peek_staged_angle_request, spool.take_staged_angle_request],
-)
-def test_a_field_the_document_cannot_coerce_refuses_by_name(slot, read):
-    """A hand-edited ``delay_us`` is a REFUSAL, not a bare ``ValueError``.
-
-    Both readers, because the page peeks this slot on every poll while only the
-    session open takes it: a coercion escaping as ``ValueError`` would take the
-    tier chooser down on every poll and 500 the open, instead of costing the
-    chooser one offer and refusing the open by name.
-    """
-    path = spool.angle_request_spool_path()
-    spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["template"]["delay_us"] = "12us"
-    path.write_text(json.dumps(doc), encoding="utf-8")
-
-    with pytest.raises(spool.AngleRequestRefused) as excinfo:
-        read()
-    assert excinfo.value.reason == spool.SPOOL_MALFORMED
-
-
-def test_a_document_staged_before_elevation_existed_reads_as_mark_height(slot):
-    """Additive at the reader, at the SAME schema version.
-
-    The rule the polarity pair already follows: the key is written
-    unconditionally and read back with a default, so a document banked before
-    the axis was sayable still runs — as the walk at mark height it always was.
-    """
-    spool.stage_angle_request(ac.per_driver_at([7]))
-    path = spool.angle_request_spool_path()
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    for stop in doc["stops"]:
-        del stop["elevation_deg"]
-    path.write_text(json.dumps(doc), encoding="utf-8")
-
-    request = spool.take_staged_angle_request()
-
-    assert [stop.elevation_deg for stop in request.stops] == [0]
 
 
 # --- what the taken walk composes into ----------------------------------------
@@ -347,12 +256,3 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
 
 
 # --- the take opens the session, whatever the document does -------------------
-
-
-def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
-    assert not hasattr(spool, "SPOOL_REFUSAL_REASONS")
-    assert spool.ANGLE_SPOOL_REFUSAL_REASONS == frozenset({
-        spool.SPOOL_MALFORMED,
-        spool.SPOOL_TOO_LARGE,
-        spool.SESSION_ALREADY_LIVE,
-    })

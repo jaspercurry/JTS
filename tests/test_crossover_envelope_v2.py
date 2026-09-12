@@ -22,23 +22,13 @@ disclosure, the way back to the previous tuning beside the forward actions.
 """
 from __future__ import annotations
 
-import json
-import math
 import time
 from typing import Mapping
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker.attempts_loop import (
-    FLOOR_SCOPE_ACROSS_SITTINGS,
-    PROVENANCE_MODEL_GRADED,
-    PROVENANCE_REALIZED,
-    AttemptIntegrity,
-    AttemptRecord,
-    FloorStats,
-    decide_next,
-)
+
 
 #: These sentence tests are about the RENDERER, so their pairs share a sitting
 #: — otherwise the kernel refuses before a floor or improvement sentence can be
@@ -60,6 +50,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
+    PHASE_LATERAL,
     PHASE_REVIEW,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -75,17 +66,12 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_SNR_FLOOR,
     REASON_USER_STOPPED,
     REASON_VERIFY_CROSSOVER_REGION,
-    REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
     reason_message,
     verify_inconclusive_cause,
     verify_inconclusive_message,
-)
-from jasper.active_speaker.crossover_v2_flow import ATTEMPT_REASON_NO_FLOOR
-from jasper.active_speaker.crossover_v2.contracts import (
-    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
 )
 # The one flow-owned symbol this suite still reaches for, and deliberately: the
 # predicted-ripple disclosure is a MEASURE-phase threshold whose 20 lines of
@@ -264,247 +250,12 @@ def test_setup_not_ready_blocks_before_any_capture():
 def test_check_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="check"))
     assert env["screen"] == "microphone_check"
-    # Flow-simplification §3: on a fresh topology (no applied_crossover),
-    # Full is the recommended (primary) tier — the first-ever-commission
-    # case, never a silent express default.
-    assert env["next_action"]["id"] == "start_v2_session_full"
+    assert env["next_action"] is None
     statuses = _step_statuses(env)
     assert statuses["speaker_setup"] == "done"
     assert statuses["microphone_check"] == "active"
     assert env["progress"] == {"position": 2, "total": 5}
-    # Item 5a (#1605): the placement guidance names the load-bearing facts —
-    # distance and tweeter height. Substring guards, not exact wording, so copy
-    # can still be refined.
-    #
-    # AMENDED for the spatial cloud (flat-linearization PR-3b, round-1 review
-    # blocker B1): this screen used to promise "keep it in that one spot for
-    # the whole measurement", which the cloud makes FALSE on the very first
-    # screen the household reads. What replaces it is not silence — the
-    # starting spot is now named as the mark, and the guided moves are
-    # disclosed here rather than sprung at the third capture.
-    verdict = env["verdict_text"].lower()
-    assert "1 m" in verdict
-    assert "tweeter height" in verdict
-    assert "mark" in verdict
-    assert "guide you to" in verdict
-    assert "whole measurement" not in verdict
 
-
-# --- tier chooser (flow-simplification §3) --------------------------------------
-
-
-def test_check_phase_offers_both_tiers_first_class():
-    """Both tiers render every session — never a silent default. The choice
-    posts ``{tier}`` to the same session-start endpoint the old single
-    "Start measurement" button used."""
-    env = build_crossover_envelope_v2(_status(phase="check"))
-    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
-    assert set(actions) == {"start_v2_session_full", "start_v2_session_express"}
-    for action_id, tier in (
-        ("start_v2_session_full", "full"),
-        ("start_v2_session_express", "express"),
-    ):
-        action = actions[action_id]
-        assert action["endpoint"] == "/sound/speaker/crossover/v2/session"
-        assert action["body"] == {"tier": tier}
-
-
-def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
-    """§1.1: the displayed minutes/counts must come from
-    ``tier_display_info`` (built from the two plan shapes), never a
-    hand-written prettier figure."""
-    from jasper.active_speaker.crossover_v2_flow import tier_display_info
-
-    info = tier_display_info()
-    env = build_crossover_envelope_v2(_status(phase="check"))
-    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
-    full = actions["start_v2_session_full"]
-    express = actions["start_v2_session_express"]
-    # RE-DERIVED for the two-stage split (work order D7, PR-T4). The chooser
-    # used to quote ONE capture count against one duration; after the split a
-    # household picking a tier is picking TWO sessions with its own decision in
-    # between, so the description states the per-stage counts and the
-    # whole-journey duration. `capture_target` is still the sum of the two by
-    # construction, which is what this asserts instead of a literal.
-    assert str(info["full"]["estimated_minutes"]) in full["description"]
-    assert str(info["full"]["stage1_captures"]) in full["description"]
-    assert str(info["full"]["stage2_captures"]) in full["description"]
-    assert str(info["express"]["estimated_minutes"]) in express["description"]
-    assert str(info["express"]["stage1_captures"]) in express["description"]
-    assert str(info["express"]["stage2_captures"]) in express["description"]
-    for tier in ("full", "express"):
-        assert (
-            info[tier]["stage1_captures"] + info[tier]["stage2_captures"]
-            == info[tier]["capture_target"]
-        )
-    # …and the interlude is NAMED, because it is the thing the split added and
-    # a chooser that hid it would sell two sittings as one.
-    assert "You decide whether to apply" in full["description"]
-    assert "You decide whether to apply" in express["description"]
-    # The one-line claims difference (§1.3): express confirms at the mark,
-    # full re-checks at several spots around the mark. B2 fix (adversarial
-    # review of PR #1780): "across the room" overclaimed past what the
-    # post-apply cloud actually samples.
-    assert "confirm the result at the mark" in express["description"]
-    assert "re-check the result at several spots around the mark" in full["description"]
-
-
-def test_check_phase_states_a_staged_walks_price_before_start(tmp_path, monkeypatch):
-    """WP2b (#3498): the session open takes a staged walk whichever tier is
-    pressed, so the chooser is the last screen that can say what it costs.
-
-    Both cards carry the same document, each priced against ITS OWN tier: the
-    walk belongs to the session, and ``ceiling_min`` is that whole session's
-    ceiling, so the card cannot quote 4 min for a 46-minute sitting. An empty
-    slot adds nothing at all, and a slot the spool refuses to read costs the
-    chooser its offer rather than the screen.
-    """
-    from jasper.active_speaker import angle_capture as ac
-    from jasper.active_speaker import angle_capture_spool as spool
-    from jasper.active_speaker import crossover_v2_flow as flow
-    from jasper.active_speaker import measurement_programs as mp
-
-    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
-    monkeypatch.setattr(
-        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
-        tmp_path / "session_volume.json",
-    )
-    try:
-        idle = build_crossover_envelope_v2(_status(phase="check"))
-        express = mp.program("baseline", "express")
-        spool.stage_angle_request(ac.request_for_program(express))
-        offered = build_crossover_envelope_v2(_status(phase="check"))
-        # A peek, not a take: the session open is still the only take.
-        assert spool.staged_angle_request_pending() is True
-        # A field the document cannot coerce refuses in the spool's own
-        # vocabulary (``tests/test_angle_capture_take.py``), which this screen
-        # already catches — so the chooser renders, minus the offer.
-        path = spool.angle_request_spool_path()
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        doc["template"]["delay_us"] = "12us"
-        path.write_text(json.dumps(doc), encoding="utf-8")
-        unreadable = build_crossover_envelope_v2(_status(phase="check"))
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
-
-    for env in (idle, unreadable):
-        for action in [env["next_action"], *env["alternate_actions"]]:
-            assert "staged_walk" not in action
-
-    for action in [offered["next_action"], *offered["alternate_actions"]]:
-        # Built through the SAME tier → shape resolution the chooser prices
-        # with, so this pins that the ceiling follows the tier rather than a
-        # figure written down twice.
-        ceiling_min = math.ceil(
-            flow.wall_clock_ceiling_s(
-                flow.stage1_base_entries(
-                    flow.resolve_plan_shape(action["body"]["tier"])
-                )
-                + express.capture_count
-            ) / 60
-        )
-        assert action["staged_walk"] == {
-            "program": "baseline/express",
-            "mic_moves": express.mic_move_count,
-            "captures": express.capture_count,
-            "ceiling_min": ceiling_min,
-        }
-        # The price is on the description too, because that is the only field
-        # the page renders (``wrapChoice`` in crossover/js/main.js).
-        assert "baseline/express" in action["description"]
-        assert str(express.mic_move_count) in action["description"]
-        assert str(express.capture_count) in action["description"]
-        assert str(ceiling_min) in action["description"]
-
-
-def test_check_phase_recommends_full_on_a_first_commission():
-    """No applied_crossover at all — never measured before on this topology
-    — recommends Full (§3)."""
-    env = build_crossover_envelope_v2(_status(phase="check"))
-    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
-    assert actions["start_v2_session_full"]["recommended"] is True
-    assert actions["start_v2_session_express"]["recommended"] is False
-    assert env["next_action"]["id"] == "start_v2_session_full"
-
-
-def test_check_phase_full_commissioned_recommends_quick():
-    """S4 (coordinator ruling, adversarial review of PR #1780): Full
-    recommended UNTIL a Full-tier commission has completed on this
-    topology. An automatic crossover valid for THIS topology
-    (``applied_crossover.owner == "automatic"``) AND the durable v2 state's
-    own ``tier`` recording ``"full"`` — a completed Full commission — is
-    exactly when Quick tune becomes recommended (a re-tune)."""
-    status = {
-        "active": True,
-        "setup": {
-            "active": True,
-            "status": "ready",
-            "applied_crossover": {"valid": True, "owner": "automatic"},
-        },
-        "crossover_v2": {"phase": "check", "tier": "full"},
-    }
-    env = build_crossover_envelope_v2(status)
-    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
-    assert actions["start_v2_session_express"]["recommended"] is True
-    assert actions["start_v2_session_full"]["recommended"] is False
-    assert env["next_action"]["id"] == "start_v2_session_express"
-
-
-def test_check_phase_express_commissioned_still_recommends_full():
-    """S4: an automatic crossover applied from a Quick-tune (Express)
-    commission still recommends Full — the household has never actually
-    walked the wider, comb-decorrelating cloud on this topology, so §1.3's
-    HF-null mitigation keeps recommending it (never a silent express
-    default just because SOMETHING is applied)."""
-    status = {
-        "active": True,
-        "setup": {
-            "active": True,
-            "status": "ready",
-            "applied_crossover": {"valid": True, "owner": "automatic"},
-        },
-        "crossover_v2": {"phase": "check", "tier": "express"},
-    }
-    env = build_crossover_envelope_v2(status)
-    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
-    assert actions["start_v2_session_full"]["recommended"] is True
-    assert actions["start_v2_session_express"]["recommended"] is False
-    assert env["next_action"]["id"] == "start_v2_session_full"
-
-
-def test_check_phase_applied_automatic_with_unknown_tier_recommends_full():
-    """S4: an applied automatic crossover with NO recorded tier (state
-    written before tiers existed, or a legacy per-driver flow's measured
-    result — N5a: "automatic" is not exclusively v2-measured) still
-    recommends Full — the tier signal must say "full" explicitly, never be
-    assumed from "something is applied"."""
-    status = {
-        "active": True,
-        "setup": {
-            "active": True,
-            "status": "ready",
-            "applied_crossover": {"valid": True, "owner": "automatic"},
-        },
-        "crossover_v2": {"phase": "check"},
-    }
-    env = build_crossover_envelope_v2(status)
-    assert env["next_action"]["id"] == "start_v2_session_full"
-
-
-def test_check_phase_manual_applied_still_recommends_full():
-    """A manually-authored applied crossover (never run through the guided
-    v2 flow) is NOT a prior automatic commission — still recommend Full."""
-    status = {
-        "active": True,
-        "setup": {
-            "active": True,
-            "status": "ready",
-            "applied_crossover": {"valid": True, "owner": "manual"},
-        },
-        "crossover_v2": {"phase": "check"},
-    }
-    env = build_crossover_envelope_v2(status)
-    assert env["next_action"]["id"] == "start_v2_session_full"
 
 
 def test_measure_phase_is_phone_driven():
@@ -660,16 +411,6 @@ def test_verify_phase_screen():
     assert "only check" not in env["verdict_text"].lower()
 
 
-def test_verify_phase_express_discloses_its_the_only_check():
-    """Express (M=1) has no post-apply cloud — this VERIFY anchor is the
-    WHOLE post-apply check, not the first of several (flow-simplification
-    §1.3 degraded-claims table)."""
-    env = build_crossover_envelope_v2(_status(phase="verify", tier="express"))
-    assert env["screen"] == "verify"
-    assert "only check" in env["verdict_text"].lower()
-    assert "at the mark" in env["verdict_text"].lower()
-
-
 def test_verify_phase_express_discloses_before_tuning_flatness_from_measure_cloud():
     """B1 fix (adversarial review of PR #1780): express's pre-apply cloud has
     already closed by the time this screen renders (it walks BEFORE VERIFY),
@@ -698,253 +439,20 @@ def test_done_is_the_result_screen_plain_outcome_first():
     assert any(n["code"] == "crossover_v2_verified" for n in env["nudges"])
 
 
-def test_done_renders_the_floor_stop_sentence_from_kernel_output():
-    floor = FloorStats.from_repeat_study(
-        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        median_db=0.04,
-        p95_db=0.085,
-        source="2026-07-31 fixed-mic repeat study",
-        measured_at="2026-07-31",
-    )
-    attempts = [
-        AttemptRecord(
-            attempt_id="candidate-a",
-            metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SITTING,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=1.0,
-        ),
-        AttemptRecord(
-            attempt_id="candidate-b",
-            metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SITTING,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=0.91,
-        ),
-    ]
-    decision = decide_next(attempts, floor)
-    assert decision.decision == "stop_floor"
-
-    env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={"last_decision": decision.to_dict(), "store_count": 2},
-    ))
-
-    baseline = build_crossover_envelope_v2(_done_status())
-    assert env["screen"] == baseline["screen"] == "done"
-    assert env["next_action"] == baseline["next_action"]
-    assert env["alternate_actions"] == baseline["alternate_actions"]
 
 
-def test_done_describes_tracking_fidelity_without_claiming_crossover_quality():
-    floor = FloorStats.from_repeat_study(
-        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        median_db=0.04,
-        p95_db=0.1,
-        source="test fixed-mic repeat study",
-        measured_at="2026-08-03",
-    )
-    decision = decide_next(
-        [
-            AttemptRecord(
-                attempt_id="candidate-a",
-                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-                provenance=PROVENANCE_REALIZED,
-                sitting_id=SITTING,
-                integrity=AttemptIntegrity(comparable=True),
-                grade_db=1.0,
-            ),
-            AttemptRecord(
-                attempt_id="candidate-b",
-                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-                provenance=PROVENANCE_REALIZED,
-                sitting_id=SITTING,
-                integrity=AttemptIntegrity(comparable=True),
-                grade_db=0.6,
-            ),
-        ],
-        floor,
-    )
-
-    env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={"last_decision": decision.to_dict()},
-    ))
-
-    assert env["verdict_text"].endswith(
-        "The latest applied result tracked its prediction 0.4 dB more closely "
-        "(realized vs realized)."
-    )
-    assert "Improved the crossover" not in env["verdict_text"]
 
 
-def test_done_explains_a_cross_sitting_refusal_without_engine_vocabulary():
-    """#2081's household sentence, rendered from the kernel's own refusal.
-
-    The unlicensed alternative is one line above in this file: with a shared
-    sitting the same two grades render "tracked its prediction 0.4 dB more
-    closely". Here the phone moved, so the screen says that instead of a number
-    it cannot support — and says it in household terms, with "floor", "scope"
-    and "sitting" left in the decision's notes where support can read them.
-    """
-    floor = FloorStats.from_repeat_study(
-        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        median_db=0.04,
-        p95_db=0.1,
-        source="test fixed-mic repeat study",
-        measured_at="2026-08-03",
-    )
-    decision = decide_next(
-        [
-            AttemptRecord(
-                attempt_id="candidate-a",
-                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-                provenance=PROVENANCE_REALIZED,
-                sitting_id="first-tune",
-                integrity=AttemptIntegrity(comparable=True),
-                grade_db=1.0,
-            ),
-            AttemptRecord(
-                attempt_id="candidate-b",
-                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-                provenance=PROVENANCE_REALIZED,
-                sitting_id="second-tune",
-                integrity=AttemptIntegrity(comparable=True),
-                grade_db=0.6,
-            ),
-        ],
-        floor,
-    )
-
-    env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={"last_decision": decision.to_dict()},
-    ))
-
-    assert env["verdict_text"].endswith(
-        "The previous result was measured with the microphone in a different "
-        "position, so this attempt is recorded without comparing the two."
-    )
-    # The claim the same numbers would have produced within one sitting.
-    assert "0.4 dB more closely" not in env["verdict_text"]
-    for engine_word in ("floor", "scope", "sitting", "provenance"):
-        assert engine_word not in env["verdict_text"].lower()
 
 
-def test_done_does_not_blame_the_mic_when_the_sitting_is_merely_unrecorded():
-    """An upgraded speaker knows nothing about where its old attempt was
-    measured, and must not tell the household their microphone moved (#2081)."""
-    env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={"last_decision": {
-            "decision": "stop_evidence",
-            "reason": "sitting_unrecorded",
-            "basis_attempt_ids": ["candidate-a", "candidate-b"],
-        }},
-    ))
-    baseline = build_crossover_envelope_v2(_done_status())
-    assert env["screen"] == "done"
-    assert env["next_action"] == baseline["next_action"]
-    assert env["alternate_actions"] == baseline["alternate_actions"]
 
 
-def test_first_attempt_sentence_formats_the_kernel_provenance():
-    metric = "linearization_residual_rms_db"
-    floor = FloorStats.from_policy_bar(
-        metric=metric,
-        claim_floor_db=0.5,
-        source="test policy bar",
-        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
-    )
-    decision = decide_next(
-        [AttemptRecord(
-            attempt_id="candidate-a",
-            metric=metric,
-            provenance=PROVENANCE_MODEL_GRADED,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=0.9,
-        )],
-        floor,
-    )
-
-    env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={"last_decision": decision.to_dict()},
-    ))
-
-    assert env["verdict_text"].endswith(
-        "Recorded the first model-graded tracking result; another attempt is "
-        "needed before improvement can be judged."
-    )
 
 
-def test_done_makes_no_claim_when_the_store_has_no_floor():
-    env = build_crossover_envelope_v2(_done_status(
-        attempts_loop={
-            "last_decision": {
-                "decision": None,
-                "reason": ATTEMPT_REASON_NO_FLOOR,
-                "provenance": PROVENANCE_REALIZED,
-                "floor": None,
-            },
-            "store_count": 1,
-        },
-    ))
-
-    assert env["verdict_text"].endswith(
-        "No improvement claim was made because this speaker has no adopted "
-        "measurement floor."
-    )
 
 
-def test_verdict_copy_switches_once_a_floor_is_adopted_after_a_no_floor_round():
-    """#2570's remaining half: the copy-continuity check the issue's own
-    2026-08-17 comment named as the cheapest close-out. Round N has no
-    adopted floor; round N+1, after a floor is adopted, is graded against
-    it. The sentence dispatch table (``_ATTEMPT_SENTENCE_BY_REASON``) keys
-    off ``decision.reason``, so this pins that the reason itself changes
-    once ``decide_next`` is handed a floor -- the two rendered sentences are
-    already pinned verbatim by
-    ``test_done_makes_no_claim_when_the_store_has_no_floor`` and
-    ``test_first_attempt_sentence_formats_the_kernel_provenance``.
-    """
-    round_n_reason = ATTEMPT_REASON_NO_FLOOR
-
-    # Round N+1: a floor now exists (adopted between the two rounds), and
-    # this is the first attempt graded against it.
-    metric = "linearization_residual_rms_db"
-    floor = FloorStats.from_policy_bar(
-        metric=metric,
-        claim_floor_db=0.5,
-        source="test policy bar",
-        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
-    )
-    decision = decide_next(
-        [AttemptRecord(
-            attempt_id="candidate-a",
-            metric=metric,
-            provenance=PROVENANCE_MODEL_GRADED,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=0.9,
-        )],
-        floor,
-    )
-
-    assert decision.reason != round_n_reason
 
 
-def _cloud_verify_spec(passed: bool):
-    return {
-        PHASE_CLOUD_VERIFY: {
-            "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [],
-            "overall_within_target": passed, "excluded_interval_count": 0,
-            "flatness": {
-                "max_db": -4.85, "max_hz": 11480.0,
-                "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
-                "rms_db": 1.37, "n_bins": 900, "n_excluded": 0,
-                "evaluable": True, "passed": passed,
-            },
-            "carve_outs": [],
-        },
-    }
 
 
 def _shipped_claims(integration: str = "pass", absolute: str = "pass") -> dict:
@@ -1069,43 +577,6 @@ def test_done_headline_will_not_call_an_unmeasurable_group_a_miss():
     assert {n["code"] for n in shipped["nudges"]} == {
         "crossover_v2_verified_target",
     }
-
-
-def test_done_headline_says_a_full_session_never_closed_its_wider_check():
-    """#2098: a Full session that verified at the mark and never closed its
-    post-apply group read as an unqualified "Your speaker is tuned" — the
-    widest of the three claims on the narrowest evidence. The local pass is
-    still stated; what is added is the part that is unproven.
-
-    A PRE-CLAIMS durable state, deliberately: with no claims block there is no
-    terminal result code, so this sentence is the screen's answer. On a shipped
-    post-R18 session the result copy replaces it — the spatial verdict is
-    ABSENT here, not failed, so #2738's cap does not reach it and #2605's
-    override stands as specified. Named rather than left implicit (#2738: this
-    test read as shipped-shape coverage and was not)."""
-    env = build_crossover_envelope_v2(_status(
-        phase="done", tier="full", verify={"outcome": "pass"}, applied=True,
-        candidate=_candidate_summary(),
-    ))
-    verdict = env["verdict_text"].lower()
-    assert "confirmed at the mark" in verdict
-    # SF1 (#2242 gate): delivered-evidence wording only — never "never
-    # finished", which asserts a mechanism this branch cannot know (a closed
-    # group whose pipeline failed reaches the same branch and DID close).
-    assert "has not produced a result" in verdict
-    assert "never finished" not in verdict
-    assert "unproven" in verdict
-
-
-def test_done_headline_leaves_a_complete_express_result_alone():
-    """Express's scope IS the mark, so the incomplete branch must not fire —
-    its own copy already names both the scope and the upgrade path."""
-    env = build_crossover_envelope_v2(_status(
-        phase="done", tier="express", verify={"outcome": "pass"}, applied=True,
-        candidate=_candidate_summary(),
-    ))
-    assert "unproven" not in env["verdict_text"].lower()
-    assert "Run a Full measurement" in env["verdict_text"]
 
 
 def test_the_done_screen_spells_the_producers_grade_words():
@@ -1866,43 +1337,6 @@ def test_a_session_restart_on_an_applied_speaker_still_discloses_the_apply():
     ))
     assert "The crossover was already applied." in env["verdict_text"]
     assert "undo" not in env["verdict_text"].lower()
-
-
-def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
-    """Flow-simplification §1.3: express's done screen states plainly what
-    was verified ("confirmed at the mark") and names the Full upgrade path
-    — never a claim wider than what express measured."""
-    env = build_crossover_envelope_v2(_status(
-        phase="done", tier="express",
-        verify={"outcome": "pass"}, candidate=_candidate_summary(),
-    ))
-    assert env["screen"] == "done"
-    verdict = env["verdict_text"].lower()
-    assert "confirmed at the mark" in verdict
-    assert "full measurement" in verdict
-    assert env["tier"] == "express"
-    # The upgrade is the recommended next step, so it is the promoted head.
-    upgrade = env["next_action"]
-    assert upgrade["id"] == "run_full_measurement"
-    assert upgrade["endpoint"] == "/sound/speaker/crossover/v2/session"
-    assert upgrade["body"] == {"tier": "full"}
-
-
-def test_done_full_tier_has_no_upgrade_action_and_reports_its_own_tier():
-    env = build_crossover_envelope_v2(_status(
-        phase="done", tier="full",
-        verify={"outcome": "pass"}, candidate=_candidate_summary(),
-    ))
-    alternates = {a["id"]: a for a in env["alternate_actions"]}
-    assert "run_full_measurement" not in alternates
-    assert env["tier"] == "full"
-
-
-def test_envelope_tier_key_is_none_when_the_state_does_not_say():
-    """Pre-tier durable state (or no session yet) reports ``None`` — never a
-    guessed default (mirrors ``crossover_v2_status_block``'s own rule)."""
-    env = build_crossover_envelope_v2(_status(phase="measure"))
-    assert env["tier"] is None
 
 
 def test_done_candidate_review_carries_the_measured_numbers():
@@ -2856,6 +2290,12 @@ def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block(
         },
     })
     assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
+
+
+@pytest.mark.parametrize("phase", [PHASE_CLOUD_VERIFY, PHASE_LATERAL])
+def test_compact_cloud_status_never_fabricates_a_required_count(phase):
+    result = compact_cloud_status({phase: {"geometry": {}, "pipeline": {}}})
+    assert result[phase]["positions_required"] is None
 
 
 # --- #1857: every band discloses its own deviation, not just the pointer's ---
@@ -3948,58 +3388,6 @@ def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
     assert "Re-measure" in labels
 
 
-# --- #1873: the wizard drops a retry its own copy has just ruled out ----------
-
-
-def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
-    """The household's field report on this screen was that "Try again" was the
-    only obvious control, so they took it until the capture session expired. For a
-    verdict that has already established the mismatch repeats, that button is a
-    dead lever presented as the next step: it opens a fresh /v2/verify and
-    re-checks the SAME applied graph.
-
-    So the primary becomes Re-measure — the lever that CAN change the outcome,
-    by fitting a new crossover — and the way back stays beside it when a
-    prior banked candidate exists. What changes is which action the screen
-    steers towards, and that the dead one is gone."""
-    env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True,
-        failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
-    ))
-    assert env["screen"] == "verify_fail"
-    assert env["verdict_text"] == (
-        REASON_REGISTRY[REASON_VERIFY_DETERMINISTIC_MISMATCH].message
-    )
-    assert env["next_action"]["id"] == "verify_remeasure"
-    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/session"
-    # Promoted, not gated behind the expert disclosure it sat in as an
-    # alternate — a primary the screen steers towards is not a disclosure.
-    assert "expert" not in env["next_action"]
-    # …and it keeps the flag that makes it survive the wizard's
-    # capture-in-flight gate while the ended session winds down. On a primary
-    # the same flag also stands the dead capture's own controls down,
-    # which is the wanted behaviour for a verdict that ends the session.
-    assert env["next_action"]["show_during_capture"] is True
-    ids = [a["id"] for a in env["alternate_actions"]]
-    # …and not offered twice.
-    assert "verify_remeasure" not in ids
-    assert "verify_retry" not in ids
-
-
-def test_deterministic_mismatch_copy_matches_the_controls_on_its_own_screen():
-    """The #1924 rule: every control the sentence names is on this screen, and
-    the sentence does not name one that is not. It must not say "Try again" —
-    that button is gone precisely because this verdict says it cannot help."""
-    env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True,
-        failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
-    ))
-    verdict = env["verdict_text"]
-    assert "Re-measure" in verdict
-    assert "Try again" not in verdict
-    assert "Re-measure" in env["next_action"]["label"]
-
-
 def test_no_registry_sentence_names_undo():
     for code, spec in REASON_REGISTRY.items():
         for text in (
@@ -4009,12 +3397,7 @@ def test_no_registry_sentence_names_undo():
             assert "undo" not in text.lower(), (code, text)
 
 
-
-
 def test_a_retriable_verify_fail_code_keeps_its_try_again():
-    """The regression guard on the swap above. Every OTHER verify_fail code is
-    retriable and its retry is a real lever, so the shipped screen — "Try
-    again" primary, expert Re-measure alternate — is untouched."""
     for code in (
         REASON_VERIFY_OUT_OF_TOLERANCE, REASON_VERIFY_INCONCLUSIVE,
         REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_CROSSOVER_REGION,
@@ -4030,15 +3413,6 @@ def test_a_retriable_verify_fail_code_keeps_its_try_again():
 
 
 def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_retry():
-    """The swap is keyed on the code's OWN registry row — verify_fail template
-    AND budget 0 — never on budget alone, and this is why.
-
-    ``capture_timeout`` and ``user_stopped`` are budget-0 ``session_restart``
-    rows that land on this screen only because something is applied (W6.7
-    ruling 3). Their zero budget says no further CAPTURE of what failed can
-    help; it says nothing about the VERIFY check, and here "Try again" means a
-    fresh /v2/verify session — which for a dead capture is precisely the fix.
-    Keying on budget alone would have taken the working button away."""
     for code in (REASON_CAPTURE_TIMEOUT, REASON_USER_STOPPED):
         assert REASON_REGISTRY[code].retry_budget == 0, code
         env = build_crossover_envelope_v2(_status(
@@ -4049,9 +3423,6 @@ def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_r
 
 
 def test_an_unknown_code_on_the_verify_fail_screen_keeps_its_retry():
-    """A code with no registry row makes no claim about whether a retry can
-    help, so the defensive branch keeps the affordance rather than removing one
-    on the strength of an absent record."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, failure={"code": "not_a_registered_code"},
     ))
@@ -4308,9 +3679,8 @@ def test_aged_failure_greets_with_the_entry_screen_not_the_terminal_one():
     ))
     assert env["screen"] == "microphone_check"
     # A way forward, and it is the ordinary one — start a measurement.
-    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/session"
+    assert env["next_action"] is None
     # Not the terminal screen's actions.
-    assert env["next_action"]["id"] != "verify_retry"
 
 
 def test_aged_failure_never_replays_the_previous_sessions_numbers():
@@ -4329,7 +3699,7 @@ def test_aged_failure_never_replays_the_previous_sessions_numbers():
     # switch — it draws from whatever these keys carry).
     assert env["cloud"] is None
     assert env["cloud_chart"] is None
-    assert env["tier"] is None
+    assert "tier" not in env
     # Belt and braces: no stale number survives anywhere in the payload,
     # however a future key might carry it.
     rendered = repr(env)
@@ -4348,7 +3718,7 @@ def test_aged_failure_fixture_would_paint_a_chart_without_the_fix():
     assert env["screen"] == "verify_fail"
     assert env["cloud"] is not None
     assert env["cloud_chart"] is not None
-    assert env["tier"] == "full"
+    assert "tier" not in env
     assert "6.66" in repr(env)
 
 
@@ -4722,11 +4092,9 @@ def test_dead_session_phase_screen_becomes_the_dated_entry_screen(phase, applied
     continues the dead one, and none of its numbers survive."""
     env = build_crossover_envelope_v2(_dead_session_status(phase, applied=applied))
     assert env["screen"] == "microphone_check"
-    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/session"
-    assert [a.get("endpoint") for a in env["alternate_actions"]] == [
-        "/sound/speaker/crossover/v2/session",
-    ]
-    assert (env["cloud"], env["cloud_chart"], env["tier"]) == (None, None, None)
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+    assert (env["cloud"], env["cloud_chart"]) == (None, None)
     assert env["expert_details"] == []
     assert _history_note(env).startswith("Your last measurement ended yesterday")
 
@@ -4757,7 +4125,7 @@ def test_dead_post_apply_session_never_offers_the_confirm_prompt():
     ))
     assert live["next_action"]["id"] == "verify_start"
     dead = build_crossover_envelope_v2(_dead_session_status("verify", applied=True))
-    assert dead["next_action"]["id"] != "verify_start"
+    assert dead["next_action"] is None
     assert "verify_start" not in [a["id"] for a in dead["alternate_actions"]]
 
 
@@ -4842,8 +4210,6 @@ def test_failed_post_apply_walk_names_what_survived():
 @pytest.mark.parametrize("v2", [
     # Nothing applied — there is no banked tuning to name.
     {"applied": False, "tier": "full"},
-    # Express has no cross-position post-apply walk to be missing.
-    {"applied": True, "tier": "express"},
     # The walk closed: nothing about it is outstanding.
     {"applied": True, "tier": "full", "cloud": {"cloud_verify": {"geometry": {}}}},
 ])
@@ -5887,28 +5253,11 @@ def test_each_kept_round_offers_another_round_as_a_choice(ordinal, adoption, row
     assert remeasure["body"] == {}
 
 
-@pytest.mark.parametrize("reason", [
-    "below_claim_floor", "attempt_not_comparable", "budget_exhausted",
-    "no_material_improvement_predicted", "in_spec", "ungraded_no_floor",
-])
-def test_attempt_advice_preserves_next_experiment_actions(reason):
-    base = _done_status(round_receipt={"row": "keep_for_iteration"})
-    baseline = build_crossover_envelope_v2(base)
-    base["crossover_v2"]["attempts_loop"] = {
-        "last_decision": {"authority": "advisory", "reason": reason},
-    }
-    advice = build_crossover_envelope_v2(base)
-    assert advice["screen"] == "done"
-    assert advice["next_action"] == baseline["next_action"]
-    assert advice["alternate_actions"] == baseline["alternate_actions"]
-    assert not advice["busy"]
-
-
 @pytest.mark.parametrize("capture, screen", [
     ({"status": "awaiting_join", "join": {"index": 1}}, "microphone_check"),
     ({"status": "complete", "run": {"status": "complete"}}, "done"),
     ({"status": "complete", "run": {"status": "partial"}}, "done"),
-    ({"status": "failed", "run": {"status": "failed", "fault": "measurement_graph_unavailable"}}, "hard_stop"),
+    ({"status": "failed", "run": {"status": "failed", "fault": "measurement_candidate_invalid"}}, "hard_stop"),
     ({"status": "failed", "run": {"status": "complete"}}, "microphone_check"),
 ])
 def test_inline_run_screen_tracks_the_capture_lifecycle(capture, screen):
@@ -5918,3 +5267,20 @@ def test_inline_run_screen_tracks_the_capture_lifecycle(capture, screen):
     assert envelope["screen"] == screen
     if capture["status"] in {"complete", "awaiting_join"}:
         assert envelope["next_action"] is None
+
+
+def _cloud_verify_spec(passed: bool):
+    return {
+        PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [],
+            "overall_within_target": passed, "excluded_interval_count": 0,
+            "flatness": {
+                "max_db": -4.85, "max_hz": 11480.0,
+                "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
+                "rms_db": 1.37, "n_bins": 900, "n_excluded": 0,
+                "evaluable": True, "passed": passed,
+            },
+            "carve_outs": [],
+        },
+    }

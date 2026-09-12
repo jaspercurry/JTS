@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import shutil
 import json
 import hashlib
 import wave
@@ -30,9 +32,13 @@ from jasper.active_speaker.crossover_v2.feature_classifier import load_round_cap
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
 from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
+from tests.run_manifest_fixture import write_manifest
+from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
+from tests.test_crossover_v2_frequency_view import summed_capture_bundle  # noqa: F401
+from jasper.active_speaker.measurement_programs import bookkeeping_views
+
 from jasper.active_speaker.round_bank import (
     CAPTURE_RING_DIR,
-    REASON_ALREADY_BANKED,
     REASON_NOT_A_BUNDLE,
     REASON_SESSION_UNFINISHED,
     SKIP_NO_CAPTURED_AT,
@@ -43,7 +49,6 @@ from jasper.active_speaker.round_bank import (
     RoundBankError,
     bank_round,
 )
-from jasper.cli import round as cli
 
 from tests.crossover_v2_banked_round import bank_measure_round
 
@@ -175,10 +180,7 @@ def test_a_banked_round_is_never_overwritten(tmp_path):
     }
     first = bank_round(session_dir, **kwargs)
 
-    with pytest.raises(RoundBankError) as excinfo:
-        bank_round(session_dir, **kwargs)
-
-    assert excinfo.value.reason == REASON_ALREADY_BANKED
+    assert bank_round(session_dir, **kwargs) == first
     assert (first.path / "provenance.json").is_file()
 
 
@@ -224,54 +226,6 @@ def test_a_round_id_that_is_not_a_plain_token_falls_back_to_the_session_id(
     )
 
     assert banked.path == tmp_path / "campaigns" / session_dir.name
-
-
-def test_an_unreadable_info_json_exits_as_a_filesystem_failure(
-    tmp_path, monkeypatch, capsys
-):
-    session_dir, _state = _live_session(tmp_path)
-
-    def _denied(self: Path, *args: object, **kwargs: object) -> str:
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(Path, "read_text", _denied)
-    parser = cli.build_parser()
-    args = parser.parse_args(
-        ["bank", str(session_dir), "--campaign-root", str(tmp_path / "campaigns")]
-    )
-
-    assert args.func(args) == cli.EXIT_WRITE_FAILED
-
-    assert json.loads(capsys.readouterr().out)["reason"] == "write_failed"
-
-
-def test_the_answer_carries_the_banked_path_and_its_provenance(tmp_path, capsys):
-    session_dir, _state = _live_session(tmp_path)
-    argv = ["bank", str(session_dir), "--campaign-root", str(tmp_path / "campaigns")]
-
-    assert cli.main(argv) == cli.EXIT_OK
-
-    payload = json.loads(capsys.readouterr().out)
-    assert Path(payload["round_dir"]) == tmp_path / "campaigns" / "r1"
-    assert payload["provenance"]["session_id"] == session_dir.name
-
-
-def test_cli_refusal_carries_the_reason_slug(tmp_path, capsys):
-    not_a_bundle = tmp_path / "empty"
-    not_a_bundle.mkdir()
-    parser = cli.build_parser()
-    args = parser.parse_args(
-        ["bank", str(not_a_bundle), "--campaign-root", str(tmp_path / "campaigns")]
-    )
-
-    assert args.func(args) == cli.EXIT_REFUSED
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {
-        "status": "refused",
-        "reason": REASON_NOT_A_BUNDLE,
-        "detail": payload["detail"],
-    }
 
 
 @pytest.mark.parametrize("snapshot", [True, False])
@@ -409,3 +363,77 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
     assert bank.provenance["capture_ring"]["skipped"] == [{
         "path": "crossover_v2/capture-id/positions/take.json", "reason": reason,
     }]
+
+
+@pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("bass-compare", "inputs_required")])
+def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
+    from jasper.active_speaker import measurement_programs
+    from jasper.cli.round_views import run_bookkeeping
+    from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+    session, state = _live_session(tmp_path)
+    artifacts, _ = round_artifact_dir(session)
+    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/cloud", "run_id": session.name}))
+    monkeypatch.setattr(measurement_programs, "bookkeeping_views", lambda program: (view,))
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
+    assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
+    assert Path(banked.provenance["manifest"]).is_file()
+
+
+@pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
+def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
+    from jasper.active_speaker.measurement_programs import bookkeeping_views
+    from jasper.cli.round_views import run_bookkeeping
+    session, state = _live_session(tmp_path)
+    write_manifest(session, program=purpose)
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
+    views = banked.provenance["views"]
+    assert tuple(row["view"] for row in views) == bookkeeping_views(purpose)
+    for row in views:
+        if row["status"] == "written":
+            assert Path(row["out"]).is_file()
+        else:
+            assert row["status"] == "unavailable" and row["reason"]
+            assert row["reason"] not in {"inputs_required", "verb_not_registered"}
+    if purpose == "speaker":
+        assert views[0]["status"] == "written"
+
+
+@pytest.mark.parametrize("purpose,view", [
+    (purpose, view)
+    for purpose in ("speaker", "room", "bass")
+    for view in bookkeeping_views(purpose)
+])
+def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
+    from jasper.cli.round_views import run_bookkeeping
+    from tests.crossover_v2_banked_round import bank_seat_round
+    from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir, _flat_curve
+    from tests.test_crossover_v2_feature_classifier import _bundle, _resonant_ir
+
+    monkeypatch.chdir(tmp_path)
+    if view == "classify-features":
+        target, _ = _bundle(tmp_path, _resonant_ir(3.0))
+    elif view == "distortion":
+        _, compose, sidecar, _, _ = request.getfixturevalue("harmonic_capture")
+        session = tmp_path / "session"
+        shutil.copytree(sidecar.parent.parent, session / "ring")
+        _, state = compose(-16.0)
+        (session / CAPTURE_STATE_FILENAME).write_text(json.dumps(state))
+        target = bank_round(session, campaign_root=tmp_path / "bank",
+                            applied_profile_path=tmp_path / "applied-profile.json").path
+    elif purpose == "bass":
+        target, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+        asyncio.run(bank("baseline"))
+        write_manifest(target, program=purpose)
+    elif purpose == "room":
+        target = bank_seat_round(tmp_path)
+        if view == "room-grade":
+            assert run_bookkeeping("room", target)["status"] == "written"
+    else:
+        target = _make_round_dir(tmp_path, "run", position_curves={
+            "cloud_verify_02": ("onax", _flat_curve()),
+            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3)),
+        }, position_degrees={"cloud_verify_02": 0, "cloud_verify_04": 20})
+        write_manifest(target, program=purpose)
+    answer = run_bookkeeping(view, target)
+    assert answer["status"] == "written", answer
+    assert Path(answer["out"]).is_file()

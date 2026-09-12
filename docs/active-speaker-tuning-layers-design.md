@@ -164,8 +164,8 @@ There is no prescribed number of rounds or compulsory classifier pass.
 ## Measurement geometry and composition
 
 [measurement_programs.py](../jasper/active_speaker/measurement_programs.py)
-owns supported programs. Use `jasper-angle-capture plan` to inspect an angle
-walk and its cost before staging it. Same-pose repeats estimate repeatability;
+owns supported programs. Use `jasper-round run --dry-run` to inspect preflight
+and the schedule. Same-pose repeats estimate repeatability;
 distinct angles test spatial behaviour. Increasing one cannot replace the other.
 
 Crossover capture uses a microphone connected to the Pi. A USB microphone and

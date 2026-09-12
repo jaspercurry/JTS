@@ -12,7 +12,6 @@ from .crossover_v2.alignment_prescription import (
 
 import hashlib
 import logging
-import math
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -40,15 +39,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         MeasuredResponse,
     )
 
-from jasper.active_speaker.attempts_loop import (
-    REASON_ATTEMPT_NOT_COMPARABLE,
-    STOP_EVIDENCE,
-    AttemptBudget,
-    AttemptRecord,
-    FloorStats,
-    LoopDecision,
-    decide_next,
-)
+from jasper.active_speaker.crossover_v2.durable_state import AttemptRecord, MAX_ATTEMPT_HISTORY
 from jasper.active_speaker.delta_probe import DeltaProbeMap
 from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.camilla_yaml import role_polarity
@@ -165,20 +156,13 @@ POSITION_ROLE_KEY = _plan.POSITION_ROLE_KEY
 POSITION_ROLE_OFFAX = _spatial.POSITION_ROLE_OFFAX
 POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
 POSITION_ROLE_XOVR = _spatial.POSITION_ROLE_XOVR
-REMOTE_VERTICAL_DISCLOSURE = _plan.REMOTE_VERTICAL_DISCLOSURE
 REVERIFY_NO_REWALK_HEADLINE = _plan.REVERIFY_NO_REWALK_HEADLINE
 STAGE1_INCLUDES_ENTRY_BASELINE = _plan.STAGE1_INCLUDES_ENTRY_BASELINE
-TIERS = _plan.TIERS
-TIER_EXPRESS = _plan.TIER_EXPRESS
-TIER_FULL = _plan.TIER_FULL
-TIER_REMOTE = _plan.TIER_REMOTE
 V2PlanShape = _plan.V2PlanShape
 V2_FIRST_BEGIN_TIMEOUT_S = _plan.V2_FIRST_BEGIN_TIMEOUT_S
 VERIFY_ANCHOR_HOLD_MESSAGE = _plan.VERIFY_ANCHOR_HOLD_MESSAGE
 WALL_CLOCK_CEILING_PER_ENTRY_S = _plan.WALL_CLOCK_CEILING_PER_ENTRY_S
 WIDE_OFFSET_MIN_CM = _plan.WIDE_OFFSET_MIN_CM
-_DISPLAY_FC_HZ = _plan._DISPLAY_FC_HZ
-_DISPLAY_ROLES_BANDS = _plan._DISPLAY_ROLES_BANDS
 _LATERAL_POSE_OFFSETS_CM = _plan._LATERAL_POSE_OFFSETS_CM
 _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
@@ -197,21 +181,15 @@ cloud_plan_max_attempts = _plan.cloud_plan_max_attempts
 cloud_walk_reach_cm = _plan.cloud_walk_reach_cm
 cloud_walk_reach_cm_of = _plan.cloud_walk_reach_cm_of
 cloud_walk_shape = _plan.cloud_walk_shape
-express_cloud_measure_positions = _plan.express_cloud_measure_positions
 format_position_distance = _plan.format_position_distance
-normalize_tier = _plan.normalize_tier
 position_angle_deg = _plan.position_angle_deg
 position_elevation_deg = _plan.position_elevation_deg
 position_geometry = _plan.position_geometry
-remote_cloud_measure_positions = _plan.remote_cloud_measure_positions
-remote_cloud_verify_positions = _plan.remote_cloud_verify_positions
 remote_position_prompt = _plan.remote_position_prompt
 resolve_plan_shape = _plan.resolve_plan_shape
 session_wall_clock_ceiling_s = _plan.session_wall_clock_ceiling_s
 stage1_base_entries = _plan.stage1_base_entries
 stage1_plan_max_attempts = _plan.stage1_plan_max_attempts
-tier_display_info = _plan.tier_display_info
-tier_is_externally_positioned = _plan.tier_is_externally_positioned
 v2_first_begin_timeout_s = _plan.v2_first_begin_timeout_s
 verify_pose_table = _plan.verify_pose_table
 walk_shape_for = _plan.walk_shape_for
@@ -228,7 +206,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASURE_GAIN_ADJUSTED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
     REASON_REGISTRY,
-    REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
@@ -241,13 +218,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.crossover_v2.spatial import (
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
-
-# The cross-session tuning-attempt ledger's constants. Here because this module
-# applies all three and nothing else reads them: ``_assert_accountable`` chooses
-# between the two bars, ``_grade_verify_attempt`` emits the reason.
-
-#: A grading status, not a refusal: no ``REASON_REGISTRY`` entry, no copy.
-ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 
 #: dB of pooled spec residual (``flat_spec.spec_convergence_residual``), RAW
 #: pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
@@ -345,15 +315,6 @@ MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 # may step between attempts before the recorder itself is suspect. See
 # ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = _dispatch.VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
-
-# dB. How close two consecutive graded VERIFY attempts must land before the
-# mismatch is called DETERMINISTIC rather than transient (#1873). See ADR-0183
-# — do NOT tighten toward the raw measured p95 without rereading it.
-VERIFY_REPEAT_FLOOR_DB = 0.2
-
-#: ``terminal_outcome`` for the verdict above: the captures agreed, and the
-#: agreement ends the set.
-VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
 CrossoverV2FlowError = _contracts.CrossoverV2FlowError
 
@@ -571,7 +532,6 @@ def assemble_cloud_group_result(
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
     trusted_ceiling_hz: float | None = None,
-    tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
     graded_spec_sink: Callable[[Any], None] | None = None,
@@ -583,7 +543,6 @@ def assemble_cloud_group_result(
         echo_band_provenance=echo_band_provenance,
         validity_floor_hz=validity_floor_hz,
         trusted_ceiling_hz=trusted_ceiling_hz,
-        tier=tier,
         position_records=position_records,
         crossover_region_hz=crossover_region_hz,
         graded_spec_sink=graded_spec_sink,
@@ -670,8 +629,7 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
-        tier: str = "",
-        positions_gated: bool = False,
+            positions_gated: bool = False,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -696,8 +654,6 @@ class CrossoverV2Session:
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
         attempt_history: Sequence[AttemptRecord] = (),
         series_position: "SeriesPosition | None" = None,
-        attempt_floor: FloorStats | None = None,
-        last_attempt_decision: Mapping[str, Any] | None = None,
         speaker_id: str = "",
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
@@ -712,13 +668,7 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError("a v2 session walks one or two drivers")
         self.session_id = str(session_id)
         self.sound_design_revision = sound_design_revision
-        # Empty = unknown (a caller that never declared one), never silently TIER_FULL.
-        self._tier = normalize_tier(tier) if tier else ""
-        # #2879: are this walk's begins HELD until the mic is reported in place? ORed
-        # with the tier's own answer so no caller can drop the arm's gate.
-        self._positions_gated = (
-            tier_is_externally_positioned(self._tier) or bool(positions_gated)
-        )
+        self._positions_gated = bool(positions_gated)
         self._preset = source_preset
         self._roles = roles
         # Lowest role first. ``_tweeter`` is ``None`` on a 1-way main, never aliased.
@@ -754,16 +704,11 @@ class CrossoverV2Session:
             }
         # Attempts belong to the commissioning journey, not to this capture session.
         self._attempt_history = list(attempt_history)[
-            -AttemptBudget().hard_cap_attempts:
+            -MAX_ATTEMPT_HISTORY:
         ]
         # #2602's series memory, resolved by the host from durable state on BOTH stages
         # since #2698, because the two readers run on different ones.
         self._series_position = series_position
-        self._attempt_floor = attempt_floor
-        self._last_attempt_decision = (
-            dict(last_attempt_decision)
-            if isinstance(last_attempt_decision, Mapping) else None
-        )
         self._speaker_id = str(speaker_id or "unknown")
         self._tuning_attempt_id = str(tuning_attempt_id or "")
         # Layer-1a per-role driver class (#1668 PR-C); empty matches
@@ -973,12 +918,6 @@ class CrossoverV2Session:
         # setup identity — the 2026-07-30 bench measured 0.775 dB of ordinary mic
         # replacement.
         self._verify_pilot_baseline: dict[str, float] | None = None
-        # #1873's discriminator: the PREVIOUS VERIFY attempt's out-of-tolerance
-        # ``max_db_notch_excluded``, in this session only. A MISMATCH, not a
-        # grade — an attempt inside tolerance clears it. SESSION-SCOPED because
-        # ``VERIFY_REPEAT_FLOOR_DB`` is a fixed-mic number and a re-arm is a fresh
-        # sitting.
-        self._verify_last_mismatch_max_db: float | None = None
         # WHEN this session set the reference above (epoch float), stamped in the same
         # statement so the two cannot disagree.
         self._verify_pilot_baseline_at: float | None = None
@@ -1171,14 +1110,6 @@ class CrossoverV2Session:
         """Accepted applied-candidate attempts, oldest first and bounded."""
         return tuple(self._attempt_history)
 
-    @property
-    def last_attempt_decision(self) -> dict[str, Any] | None:
-        """The latest comparison advice, or the explicit no-floor status."""
-        return (
-            dict(self._last_attempt_decision)
-            if self._last_attempt_decision is not None else None
-        )
-
     def phase_status(self, phase: str) -> str:
         return self._journey.phase_status(phase)
 
@@ -1246,11 +1177,6 @@ class CrossoverV2Session:
             if finite.size:
                 drift[first.role] = float(np.max(np.abs(finite)))
         return drift or None
-
-    @property
-    def tier(self) -> str:
-        """The commission tier this session runs, or ``""`` when undeclared."""
-        return self._tier
 
     @property
     def current_phase(self) -> str:
@@ -1544,9 +1470,7 @@ class CrossoverV2Session:
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None
             ),
-            tier=self._tier,
             attempt_history=tuple(self._attempt_history),
-            last_attempt_decision=self._last_attempt_decision,
         )
 
     @classmethod
@@ -1567,7 +1491,6 @@ class CrossoverV2Session:
         if snapshot is not None:
             journey = {
                 "attempt_history": snapshot.attempt_history,
-                "last_attempt_decision": snapshot.last_attempt_decision,
             }
         # Explicit caller values win for migrations/tests that deliberately replace one
         # journey fact; ordinary production hydration supplies none.
@@ -2629,8 +2552,7 @@ class CrossoverV2Session:
                 level=logging.WARNING,
                 session_id=self.session_id,
                 phase=phase,
-                tier=self._tier,
-                # `tier` cannot carry this: stage 2 is constructed without one. This
+                    # `tier` cannot carry this: stage 2 is constructed without one. This
                 # names the PREDICATE that refused, not WHICH shape.
                 gated=self._positions_gated,
                 median_tau_us=verdict.get("median_tau_us"),
@@ -2999,7 +2921,6 @@ class CrossoverV2Session:
             ),
             validity_floor_hz=_spatial.cloud_validity_floor_hz(positions),
             trusted_ceiling_hz=ceiling_hz,
-            tier=self._tier,
             # #1967: where the SHIPPED graph divides the spectrum, from the
             # preset's committed regions.
             crossover_region_hz=_verification.committed_crossover_region_hz(
@@ -3228,8 +3149,7 @@ class CrossoverV2Session:
         decision = coordinator.run_round(
             coordinator.RoundEvidence(
                 session_id=self.session_id,
-                tier=self._tier,
-                post_analysis=self._verify_analysis,
+                    post_analysis=self._verify_analysis,
                 entry_baseline=self._measure_entry_baseline,
                 # ``None`` on a tier that walks no cloud, which the evaluator reads
                 # as "no report" rather than as a pass (#2160).
@@ -3326,14 +3246,7 @@ class CrossoverV2Session:
         *,
         capture_attempt: int,
     ) -> None:
-        """Hand a VERIFY record to S3 and bank an accepted new attempt once.
-
-        A rejected capture is still judged so integrity failures reach STOP_EVIDENCE
-        (#2033) but is not appended to accepted history. **Exactly-once survives a
-        failed write, which is why the seam call catches broadly** (#2386): the
-        repeat guard only sees a repeat once the attempt is appended, at the END
-        of this method.
-        """
+        """Bank accepted VERIFY evidence without scheduling another measurement."""
 
         # The identity is the APPLIED candidate's, most specific first: the tuning
         # attempt id, the built candidate's fingerprint, then a per-capture fallback.
@@ -3409,10 +3322,6 @@ class CrossoverV2Session:
                 )
             else:
                 if not identity_accepted:
-                    # The store already owns this identity with different numbers. Clear
-                    # the hydrated decision too, or the done screen calls a prior basis
-                    # "the latest applied result".
-                    self._last_attempt_decision = None
                     log_event(
                         logger,
                         "correction.crossover_v2_model_error_identity_conflict",
@@ -3423,56 +3332,8 @@ class CrossoverV2Session:
                     )
                     return
 
-        prospective = [*self._attempt_history, record]
-        # The arm ORDER is a ruling (#2033): evidence refusal outranks grading
-        # preconditions. The LAST arm makes the claim about the speaker, so a future
-        # arm that cannot decide must degrade toward the first.
-        if not record.integrity.comparable:
-            decision = LoopDecision(
-                decision=STOP_EVIDENCE,
-                reason=REASON_ATTEMPT_NOT_COMPARABLE,
-                attempts_used=len(prospective),
-                budget=AttemptBudget(),
-                floor=self._attempt_floor,
-                basis_attempt_ids=(record.attempt_id,),
-                provenance=record.provenance,
-                notes=record.integrity.reasons,
-            ).to_dict()
-        elif self._attempt_floor is None:
-            decision = LoopDecision(
-                decision=None,
-                reason=ATTEMPT_REASON_NO_FLOOR,
-                attempts_used=len(prospective),
-                budget=AttemptBudget(),
-                basis_attempt_ids=(attempt_id,),
-                provenance=record.provenance,
-            ).to_dict()
-        else:
-            decision = decide_next(prospective, self._attempt_floor).to_dict()
-        self._last_attempt_decision = decision
-        floor = decision.get("floor")
-        log_event(
-            logger,
-            "correction.crossover_v2_attempt_decision",
-            session_id=self.session_id,
-            speaker_id=self._speaker_id,
-            decision=str(decision.get("decision") or "ungraded"),
-            reason=str(decision.get("reason") or ""),
-            basis=",".join(
-                str(item) for item in decision.get("basis_attempt_ids", ())
-            ),
-            floor_db=(floor.get("claim_floor_db") if isinstance(floor, Mapping) else None),
-            floor_basis=(floor.get("basis") if isinstance(floor, Mapping) else None),
-            provenance=str(decision.get("provenance") or ""),
-        )
-        # An accepted verdict does not imply a comparable record (#2082): the
-        # legacy ``capture_integrity=None`` shape is defensive-only today, but
-        # banking an incomparable record into history would make the NEXT
-        # attempt's predecessor comparison fail permanently.
-        if not verdict.accepted or not record.integrity.comparable:
-            return
-
-        self._attempt_history = prospective[-AttemptBudget().hard_cap_attempts:]
+        if verdict.accepted and record.integrity.comparable:
+            self._attempt_history = [*self._attempt_history, record][-MAX_ATTEMPT_HISTORY:]
 
     def _set_verify_outcome(
         self, outcome: str, code: str | None, gate: dict[str, Any] | None,
@@ -3487,29 +3348,6 @@ class CrossoverV2Session:
         self._verify_outcome = outcome
         self._verify_code = code
         self._verify_gate = gate
-
-    def _note_verify_mismatch(self, max_db: Any) -> str:
-        """Which out-of-tolerance code this attempt earns (#1873).
-
-        The single owner of both halves of the discriminator.
-        ``verify_deterministic_mismatch`` once an attempt lands within
-        :data:`VERIFY_REPEAT_FLOOR_DB` of **its predecessor** — never of a fixed
-        first attempt, unlike the G3 reference above — where the instrument cannot
-        tell the two apart. **The non-finite guard is load-bearing for NaN**:
-        without it, ``nan > floor`` is ``False`` and an unmeasurable capture reads
-        as agreement.
-        """
-        if not isinstance(max_db, (int, float)) or not math.isfinite(float(max_db)):
-            # No usable grade: this attempt is a mismatch nothing can agree
-            # with, and it cannot agree with anything either.
-            self._verify_last_mismatch_max_db = None
-            return REASON_VERIFY_OUT_OF_TOLERANCE
-        current = float(max_db)
-        previous = self._verify_last_mismatch_max_db
-        self._verify_last_mismatch_max_db = current
-        if previous is None or abs(current - previous) > VERIFY_REPEAT_FLOOR_DB:
-            return REASON_VERIFY_OUT_OF_TOLERANCE
-        return REASON_VERIFY_DETERMINISTIC_MISMATCH
 
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call: ``_log_verify_diag`` runs unconditionally after this method
@@ -3547,35 +3385,13 @@ class CrossoverV2Session:
             tracking
         )
         self._verify_frame = _verification._verify_frame_from_tracking(tracking)
-        # Every §7 claim, graded BEFORE any of them gates, so a capture that fails one
-        # still discloses the others.
         self._verify_claims = _verification._verify_claims(
             tracking, analysis.verify_absolute
         )
-        # Notch-aware, validity-floor-clamped comparator: the NOTCH-EXCLUDED max
-        # over this capture's own gate-derived band. Run 7 read 27.83 dB raw
-        # against a predicted sum whose own ripple was ~30 dB.
-        max_db = tracking.get("max_db_notch_excluded")
-        # Gated on the CLAIM just recorded: R18's vocabulary is three-valued, and a
-        # claim nobody could grade must not read as one that failed (#3487).
         if self._verify_claims["integration"]["status"] == CLAIM_FAIL:
-            code = self._note_verify_mismatch(max_db)
-            self._set_verify_outcome("fail", code, gate_record)
-            # Its own name: the integrity-screen branch above already binds a
-            # ``payload`` in this scope.
-            mismatch_payload: dict[str, Any] = {"tracking": dict(tracking)}
-            if code == REASON_VERIFY_DETERMINISTIC_MISMATCH:
-                # The runner's contract for "no later capture can make this set
-                # usable": the session closes on the verdict instead of waiting
-                # for a next begin whose only answer would be a refusal.
-                mismatch_payload["terminal"] = True
-                mismatch_payload["terminal_outcome"] = (
-                    VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
-                )
-            return replace(verdict, accepted=False, code=code, payload=mismatch_payload, next="fix_and_retake", charge="operator")
-        # Graded and inside tolerance: the mismatch did NOT repeat, so the pair #1873's
-        # discriminator would draw its claim from is broken.
-        self._verify_last_mismatch_max_db = None
+            self._set_verify_outcome("fail", REASON_VERIFY_OUT_OF_TOLERANCE, gate_record)
+            return replace(verdict, payload={"tracking": dict(tracking), "authority": "advisory"},
+                           next="accept", charge="none")
         # The delta probe, run only once tracking has PASSED. What it adds is the
         # band tracking cannot see: the whole span the correction commands.
         self._verify_tracking_curve = analysis.verify_tracking_curve
@@ -3839,17 +3655,10 @@ __all__ = [
     "V2FlowSeams",
     "V2RecordPublishers",
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
-    "ATTEMPT_REASON_NO_FLOOR",
     "attempt_history_from_state",
     "attempt_record_from_verify",
     "V2PlanShape",
-    "TIER_FULL",
-    "TIER_EXPRESS",
-    "TIERS",
-    "express_cloud_measure_positions",
-    "normalize_tier",
     "resolve_plan_shape",
-    "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
     "stage1_base_entries",
@@ -3871,8 +3680,6 @@ __all__ = [
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
     "SWEEP_LOCATE_CONFIDENCE_FLOOR",
     "VERIFY_PILOT_TRANSFER_STEP_CEILING_DB",
-    "VERIFY_REPEAT_FLOOR_DB",
-    "VERIFY_TERMINAL_OUTCOME_DETERMINISTIC",
     "alignment_to_candidate_fields",
     "back_off_gain",
     "verify_absolute_tolerance_db",
