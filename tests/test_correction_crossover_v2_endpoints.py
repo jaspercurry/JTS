@@ -39,7 +39,7 @@ from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
 from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_APPLYING,
+    PHASE_REVIEW,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
@@ -2389,29 +2389,14 @@ def test_a_session_that_verified_still_resolves_to_done():
         assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE, phases
 
 
-def test_a_corrupt_state_cannot_reach_the_review_screen_either():
-    """The corrupt-state fallback the walk already documents must keep working
-    — and must not become a NEW way to reach the review screen.
-
-    A garbled ``session_phases`` filters to the empty tuple and walks
-    PRE_CLOUD_CAPTURE_PHASES, which DOES contain VERIFY, so it can never
-    satisfy the measure-only test on the strength of an unreadable state file.
-    It resolves through the loop to its first unaccepted phase, exactly as
-    before this change.
-    """
-    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
-
+def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
     v2host.save_v2_state({
         "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "session_phases": ["nonsense", "also-not-a-phase"],
         "applied": False,
     })
-    phase = v2status.crossover_v2_status_block()["phase"]
-    assert phase != PHASE_REVIEW
-    # MEASURE is accepted and VERIFY is not, so the shipped special case owns
-    # this state — the honest "the apply is in flight" answer, not a terminal.
-    assert phase == PHASE_APPLYING
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
 # --- the stage-2 openability preflight (D3, render-time half) ----------------
@@ -4759,14 +4744,12 @@ def test_status_block_reports_needs_recovery_and_phase():
     block = v2status.crossover_v2_status_block()
     assert block["needs_recovery"] is True
     assert block["phase"] == PHASE_MEASURE
-    # And the "applying" projection: measure accepted, not yet applied — the
-    # conductor's own auto-apply is in flight (owner ruling, 2026-07-20).
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
     })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_APPLYING
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
 def _linearization_summary(linearization=None, *, outcome=None, analysis=None):

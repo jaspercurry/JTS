@@ -329,7 +329,7 @@ def test_a_verify_only_walk_that_measured_nothing_reports_verify_not_applying():
     assert journey.current_phase == PHASE_VERIFY
 
 
-def test_a_walk_with_no_verify_never_reports_the_interlude():
+def test_a_measure_only_walk_finishes_in_review():
     """Stage 1 finishes with measured evidence awaiting review."""
 
     journey = _journey(STAGE1_MAP)

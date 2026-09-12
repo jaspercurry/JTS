@@ -11,6 +11,7 @@ import types
 import pytest
 from dataclasses import replace
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -713,6 +714,10 @@ def test_measure_accept_finishes_measured_without_publishing_a_candidate(phases)
     assert verdict["accepted"] is True
     assert verdict["next"] == "accept"
     assert conductor.current_phase == PHASE_REVIEW
+    assert crossover_v2_phase({
+        "accepted_phases": list(conductor.accepted_phases),
+        "session_phases": phases, "applied": conductor.applied,
+    }, review_declined=False) == PHASE_REVIEW
     assert conductor.candidate is None
     assert conductor.applied is False
     assert fakes.published_candidates == []

@@ -209,6 +209,15 @@ class JourneyPlan:
 # --------------------------------------------------------------------------- #
 
 
+def pending_capture_phase(phases: Iterable[str], accepted: AbstractSet[str], *, applied: bool) -> str | None:
+    for phase in phases:
+        if phase not in accepted:
+            if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
+                return PHASE_REVIEW
+            return phase
+    return None
+
+
 class CommissionJourney:
     """One round's position in its :class:`JourneyPlan`.
 
@@ -298,16 +307,8 @@ class CommissionJourney:
 
     @property
     def current_phase(self) -> str:
-        for phase in self.plan.phases:
-            if phase not in self._accepted:
-                if (
-                    phase == PHASE_VERIFY
-                    and PHASE_MEASURE in self._accepted
-                    and not self._applied
-                ):
-                    return PHASE_REVIEW
-                return phase
-        return PHASE_REVIEW if PHASE_MEASURE in self._accepted and not self._applied else PHASE_DONE
+        pending = pending_capture_phase(self.plan.phases, self._accepted, applied=self._applied)
+        return pending or (PHASE_REVIEW if PHASE_MEASURE in self._accepted and not self._applied else PHASE_DONE)
 
     def unresolved_in_group(self, phase: str, *, excluding: int) -> tuple[int, ...]:
         """The group's positions still unwalked, ignoring the one being decided.

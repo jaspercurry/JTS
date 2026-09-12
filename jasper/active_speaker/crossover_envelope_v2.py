@@ -79,6 +79,7 @@ from .crossover_v2.journey import (
     PHASE_REVIEW,
     PHASE_VERIFY,
     PRE_CLOUD_CAPTURE_PHASES,
+    pending_capture_phase,
 )
 from .crossover_v2.spatial import _geometry_guidance_copy
 from .crossover_v2.refusal_copy import (
@@ -2803,46 +2804,9 @@ def crossover_v2_phase(
         else ()
     )
     phases = known or PRE_CLOUD_CAPTURE_PHASES
-    for phase in phases:
-        if phase not in accepted:
-            if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
-                return PHASE_APPLYING
-            return phase
-    # Every phase this session ran is accepted. WHICH terminal state that is
-    # depends on whether the session ever intended to verify (two-stage
-    # commission D3, work order premise 6 — a verified collision).
-    #
-    # A MEASURE-ONLY session — stage 1 of the two-stage flow: CHECK, MEASURE,
-    # CLOUD_MEASURE, no VERIFY — used to fall straight through to PHASE_DONE,
-    # the RESULT screen, whose copy is "Your speaker is tuned." Nothing had
-    # been applied; the household had measured a speaker and was told it was
-    # tuned. The special case one line up cannot catch it (it keys on
-    # PHASE_VERIFY being in the walked phases, which is exactly what a
-    # measure-only session lacks), so the honest terminal for that shape is
-    # the review interlude: a candidate to look at and a decision to make.
-    #
-    # Keyed on the WALKED tuple, not on ``known``, so the corrupt-state
-    # fallback documented above keeps working unchanged: a garbled
-    # ``session_phases`` filters to the empty tuple, walks
-    # PRE_CLOUD_CAPTURE_PHASES — which DOES contain PHASE_VERIFY — and so can
-    # never reach the review branch on the strength of an unreadable state
-    # file. It resolves through the loop above to its first unaccepted phase,
-    # exactly as before.
-    #
-    # ``applied`` still wins over the REVIEW interlude: once something is
-    # genuinely on the speaker the decision has been made, and re-offering
-    # "apply this?" over a speaker that already has it would be the mirror of
-    # the bug being fixed.
-    #
-    # But an applied measure-only session is not DONE either (two-stage
-    # commission D2): stage 1 measured, the household applied from the
-    # review screen, and the post-apply check — stage 2 — has not been opened
-    # yet. That is exactly PHASE_VERIFY: "the crossover is applied, put the
-    # microphone back where it started", whose screen now carries the action
-    # that opens stage 2. Once stage 2 IS open its own conductor records VERIFY
-    # in ``session_phases``, so this branch stops firing and the ordinary walk
-    # above resolves the rest of the journey — including PHASE_DONE's "applied
-    # implies graded" ladder for a stage 2 that ran and could not decide.
+    pending = pending_capture_phase(phases, accepted, applied=applied)
+    if pending is not None:
+        return pending
     if PHASE_VERIFY not in phases:
         if applied:
             candidate = state.get("candidate") if isinstance(state, Mapping) else None

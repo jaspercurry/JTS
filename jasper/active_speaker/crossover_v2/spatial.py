@@ -135,9 +135,8 @@ __all__ = [
 
 
 # --------------------------------------------------------------------------- #
-# cloud close state, and the geometry-retry ceiling (#2291 Phase 5c-ii)
+# geometry-retry ceiling (#2291 Phase 5c-ii)
 # --------------------------------------------------------------------------- #
-
 
 # How many wider-spread RETAKES of the group's last position the
 # geometry-locked check may ask for, once per group.
