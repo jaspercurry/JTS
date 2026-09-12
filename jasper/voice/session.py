@@ -382,6 +382,16 @@ class LiveConnection(Protocol):
         daemon calls this once the ``WakeLoop`` exists."""
         ...
 
+    def warm_session_until(self) -> float | None:
+        """Epoch seconds at which a billable session held open past the
+        end of a conversation closes itself, or None when none is held.
+
+        Only a provider that bills connected silence and keeps a session
+        warm between conversations ever returns a number; the rest keep
+        the base's None. Surfaced at ``/state.voice.live_session_warm_until``
+        so an agent can see money on the meter."""
+        ...
+
 
 def log_first_chunk(
     logger: logging.Logger,

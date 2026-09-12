@@ -21,10 +21,21 @@ from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversati
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
 from tests._async_wait import wait_signalled, wait_until
-from tests._log_events import event_fields
+from tests._log_events import event_field_maps, event_fields
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
+
+
+@pytest.fixture(autouse=True)
+def _warm_toggle_off_by_default(tmp_path, monkeypatch):
+    """Point the warm-session toggle's SSOT file at an absent path.
+
+    The adapter reads it fresh per conversation, so without this a host
+    whose real `/var/lib/jasper/voice_provider.env` has the toggle on
+    would send every test in this file down the warm path.
+    """
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(tmp_path / "absent.env"))
 
 
 class LiveSocket:
@@ -578,3 +589,174 @@ async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monk
     assert [e["type"] for e in socket.sent].count("session.close") == 1
     assert socket.closed
     assert elapsed < 1.0
+
+
+# --- The warm session (ADR-0295) --------------------------------------
+
+
+class _Meter:
+    """The billable-activity meter, recording the intervals it is told to open."""
+
+    def __init__(self):
+        self.events = []
+
+    def mark_started(self) -> None:
+        self.events.append("open")
+
+    def mark_ended(self, *, seconds=None) -> None:
+        self.events.append(("close", seconds))
+
+
+def _live(socket, *, warm: bool) -> OpenAILiveConnection:
+    return OpenAILiveConnection(
+        api_key="test",
+        connect=(socket if callable(socket) else (lambda: socket)),
+        warm_session=lambda: warm,
+    )
+
+
+@pytest.mark.parametrize("warm, closed_on_release", [(False, True), (True, False)])
+async def test_the_toggle_decides_whether_a_conversation_closes_its_session(
+    warm, closed_on_release,
+):
+    socket = LiveSocket()
+    conn = _live(socket, warm=warm)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    await turn.release()
+    try:
+        sent_close = "session.close" in [e["type"] for e in socket.sent]
+        assert sent_close is closed_on_release
+        assert socket.closed is closed_on_release
+        assert (conn.warm_session_until() is None) is closed_on_release
+    finally:
+        await conn.stop()
+
+
+async def test_a_wake_inside_the_window_reuses_the_session_and_pays_one_interval(caplog):
+    """The window buys back the dial, and costs one billable interval.
+
+    Nothing reaches the provider between the two conversations — not even
+    the sender's own silence — and the session the second wake answers on
+    is the one the first left open, so no second `session.start` goes out.
+    """
+    caplog.set_level(logging.INFO)
+    socket = LiveSocket()
+    meter = _Meter()
+    conn = _live(socket, warm=True)
+    conn.set_billable_activity_meter(meter)
+    await conn.start(ToolRegistry(), "Be brief.")
+
+    first = await conn.acquire_turn()
+    await first.send_audio(b"\x00\x40" * 640)
+    await wait_until(lambda: any(e["type"] == "session.input_audio.append" for e in socket.sent))
+    await first.release()
+    assert conn.warm_session_until() is not None
+
+    quiet_at = len(socket.sent)
+    await first.send_audio(b"\x00\x40" * 640)
+    # Several sender ticks (80 ms each) of warm time with a live mic.
+    await asyncio.sleep(0.25)
+    assert len(socket.sent) == quiet_at
+
+    second = await conn.acquire_turn()
+    try:
+        assert [e["type"] for e in socket.sent].count("session.start") == 1
+        assert conn.warm_session_until() is None
+        assert not second.turn_lost()
+        # The reused session still reaches the turn that now owns it.
+        await socket.events.put(output_audio(AUDIBLE_PCM))
+        await wait_until(lambda: second.chunks_received() == 1)
+    finally:
+        await second.release()
+        await conn.stop()
+
+    reused = [f["session_reused"] for f in event_field_maps(caplog, "provider.turn_ended")]
+    assert reused == ["false", "true"]
+    # ONE interval for the whole session, closed on the server's own meter.
+    assert meter.events == ["open", ("close", 12.5)]
+
+
+async def test_a_warm_session_nobody_comes_back_for_closes_itself(monkeypatch):
+    """The idle close is the turn's own close, just later."""
+    monkeypatch.setattr(openai_live_session, "WARM_SESSION_SEC", 0.05)
+    socket = LiveSocket()
+    meter = _Meter()
+    conn = _live(socket, warm=True)
+    conn.set_billable_activity_meter(meter)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    await turn.release()
+
+    await wait_until(lambda: socket.closed)
+    try:
+        assert [e["type"] for e in socket.sent].count("session.close") == 1
+        assert conn.warm_session_until() is None
+        assert meter.events == ["open", ("close", 12.5)]
+        assert conn._state is ConnectionState.CONNECTED
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("server_event", [
+    {"type": "session.closed", "usage": {"seconds": 7.0}},
+    {"type": "error"},
+])
+async def test_a_session_the_server_closed_while_warm_costs_the_next_wake_a_dial(
+    monkeypatch, server_event,
+):
+    """Losing a warm session is not an outage — the next wake just dials.
+
+    No cue, no recorded failure, no lost turn: the household cannot tell
+    this wake from one that never had a warm session to reuse.
+    """
+    monkeypatch.setattr(openai_live_session, "CLOSE_ACK_TIMEOUT_SEC", 0.05)
+    sockets = []
+    cues = []
+
+    def connect():
+        sockets.append(LiveSocket())
+        return sockets[-1]
+
+    async def cue_cb(slug: str) -> None:
+        cues.append(slug)
+
+    conn = _live(connect, warm=True)
+    conn.set_failure_escalation_cb(cue_cb)
+    await conn.start(ToolRegistry(), "Be brief.")
+    first = await conn.acquire_turn()
+    await first.release()
+
+    await sockets[0].events.put(server_event)
+    await wait_until(lambda: conn._receive_task.done())
+
+    second = await conn.acquire_turn()
+    try:
+        assert len(sockets) == 2
+        assert [e["type"] for e in sockets[1].sent].count("session.start") == 1
+        assert not second.turn_lost()
+        assert cues == []
+        assert conn.last_failure_detail() is None
+    finally:
+        await second.release()
+        await conn.stop()
+
+
+async def test_stop_closes_a_session_left_warm():
+    """Shutdown is the last chance to take a warm session off the meter."""
+    socket = LiveSocket()
+    meter = _Meter()
+    conn = _live(socket, warm=True)
+    conn.set_billable_activity_meter(meter)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    await turn.release()
+    assert conn.warm_session_until() is not None
+
+    await conn.stop()
+
+    assert [e["type"] for e in socket.sent].count("session.close") == 1
+    assert socket.closed
+    assert conn.warm_session_until() is None
+    assert meter.events == ["open", ("close", 12.5)]
+    assert conn._state is ConnectionState.CLOSED

@@ -618,6 +618,10 @@ class BaseLiveConnection:
     def last_failure_detail(self) -> str | None:
         return self._outage.detail
 
+    def warm_session_until(self) -> float | None:
+        """No session outlives its conversation unless a subclass says so."""
+        return None
+
     def _secret_literals(self) -> tuple[str, ...]:
         """Secret values this connection holds, for redaction fallback.
 

@@ -1586,6 +1586,10 @@ class WakeLoop:
             # The provider's own reason for the outage that
             # connection_paused only reports the existence of.
             "connection_error": self._connection.last_failure_detail(),
+            # Epoch seconds a billable session stays dialled with nobody
+            # talking to it, or None. Money on the meter, so it is read
+            # from the connection rather than inferred from `state`.
+            "live_session_warm_until": self._connection.warm_session_until(),
             "mic_muted": self._mic_muted,
             "measurement_active": self._measurement_active.is_set(),
             "duck_active": self._ducker.is_ducked,

@@ -294,13 +294,24 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         runtime_imports=("jasper.voice.openai_live_session", "openai"),
         pricing_url="https://developers.openai.com/api/docs/guides/voice-latency-cost",
         pricing_buckets=("flat_per_hour_usd",),
-        extras=(ProviderExtra(
-            name="backend_model", env="JASPER_OPENAI_LIVE_BACKEND_MODEL",
-            label="Task and tool model", default="gpt-5.4-mini",
-            options=(ProviderExtraOption("gpt-5.4-mini", "GPT-5.4 mini"),
-                     ProviderExtraOption("gpt-5.4", "GPT-5.4")),
-            hint="Chooses tools; JTS executes them locally. Billed separately from voice.",
-        ),),
+        extras=(
+            ProviderExtra(
+                name="backend_model", env="JASPER_OPENAI_LIVE_BACKEND_MODEL",
+                label="Task and tool model", default="gpt-5.4-mini",
+                options=(ProviderExtraOption("gpt-5.4-mini", "GPT-5.4 mini"),
+                         ProviderExtraOption("gpt-5.4", "GPT-5.4")),
+                hint="Chooses tools; JTS executes them locally. Billed separately from voice.",
+            ),
+            ProviderExtra(
+                name="warm_session", env="JASPER_OPENAI_LIVE_WARM_SESSION",
+                label="Keep the Live session open for 60 s after a conversation",
+                default="off",
+                options=(ProviderExtraOption("off", "Off (default) - a new session per wake"),
+                         ProviderExtraOption("on", "On - about $0.05 per idle minute")),
+                hint="A follow-up wake inside the window answers without the 0.5-3.9 s dial. "
+                     "Live meters every connected minute, idle included. See ADR-0295.",
+            ),
+        ),
     ),
     ProviderCatalogEntry(
         id="grok",
@@ -421,11 +432,21 @@ def default_voice_id(provider_id: str) -> str:
     return defaults[0].id
 
 
-def default_extra_value(provider_id: str, name: str) -> str:
+def _require_extra(provider_id: str, name: str) -> ProviderExtra:
     provider = _require_provider(provider_id)
     for extra in provider.extras:
         if extra.name == name:
-            return extra.default
+            return extra
     raise KeyError(
         f"voice provider {provider_id!r} has no extra field {name!r}",
     )
+
+
+def default_extra_value(provider_id: str, name: str) -> str:
+    return _require_extra(provider_id, name).default
+
+
+def extra_env(provider_id: str, name: str) -> str:
+    """The env key one provider extra is stored under, so a reader never
+    restates the literal the catalog already owns."""
+    return _require_extra(provider_id, name).env

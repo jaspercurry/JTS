@@ -41,6 +41,7 @@ from ..env_load import merged_env_files, read_env_file_state
 from .catalog import (
     VALID_PROVIDER_IDS,
     default_model_id,
+    extra_env,
     provider_by_id,
 )
 
@@ -301,3 +302,21 @@ def read_barge_in_enabled(provider: str, path: str | None = None) -> bool:
     if not file_state.loaded:
         return resolve_barge_in_enabled(provider, {})
     return resolve_barge_in_enabled(provider, file_state.values)
+
+
+# --- OpenAI Live warm-session toggle (DEFAULT OFF) ---------------------
+#
+# Same shape and the same reason as the barge-in flag above: a provider
+# selector in the broad-group SSOT file, read fresh (mtime-cached) once
+# per conversation, so a wizard save takes effect without a restart. It
+# spends money while idle, so an unreadable file reads as OFF, never as a
+# guessed on. See ADR-0295.
+
+LIVE_WARM_SESSION_ENV = extra_env("openai_live", "warm_session")
+
+
+def read_live_warm_session_enabled(path: str | None = None) -> bool:
+    """Whether a finished Live conversation leaves its session dialled."""
+    file_state = _read_env_file_state_mtime_cached(_resolve_path(path))
+    values = file_state.values if file_state.loaded else {}
+    return values.get(LIVE_WARM_SESSION_ENV, "").strip().lower() in _TRUTHY
