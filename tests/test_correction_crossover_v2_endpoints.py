@@ -3701,13 +3701,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
                 "grade_db": 0.9,
             }
         ],
-        "last_decision": {
-            "decision": "continue",
-            "reason": "baseline_established",
-            "basis_attempt_ids": ["candidate-a"],
-            "provenance": "realized",
-            "floor": {"claim_floor_db": 0.17},
-        },
     }
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3729,7 +3722,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     block = v2status.crossover_v2_status_block()
     assert block["attempts_loop"] == {
-        "last_decision": loop["last_decision"],
         "store_count": 7,
     }
     assert "history" not in block["attempts_loop"]

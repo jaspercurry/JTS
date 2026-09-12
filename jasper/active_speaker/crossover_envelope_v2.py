@@ -1993,11 +1993,7 @@ def _verify_fail_envelope(
     back. Shared by ``REASON_VERIFY_OUT_OF_TOLERANCE`` /
     ``REASON_VERIFY_INCONCLUSIVE`` and the VERIFY-phase override in
     :func:`_failure_envelope` for any other code once the candidate is
-    applied. A code no retry can clear does not get "Try again" (#1873):
-    for ``verify_deterministic_mismatch``, whose verdict IS that a
-    second attempt agreed with the first, Re-measure is promoted to
-    primary instead — keyed on the code's own registry row, template AND
-    budget. ``show_during_capture`` on the alternates keeps them
+    applied. ``show_during_capture`` on the alternates keeps them
     reachable while a capture is still transitioning (``stopping``);
     ``verify_retry`` deliberately omits it, since starting a brand-new
     session during teardown is the race the gate prevents.
@@ -2010,12 +2006,6 @@ def _verify_fail_envelope(
         "expert": True,
         "show_during_capture": True,
     }
-    own_spec = REASON_REGISTRY.get(code)
-    retriable = not (
-        own_spec is not None
-        and own_spec.template == TEMPLATE_VERIFY_FAIL
-        and own_spec.retry_budget == 0
-    )
     return _envelope(
         screen="verify_fail", active_step="verify",
         verdict=message,
@@ -2025,17 +2015,10 @@ def _verify_fail_envelope(
             "label": "Try again",
             "endpoint": "/sound/speaker/crossover/v2/verify",
             "body": {},
-        } if retriable else {
-            # Promoted, not duplicated — leaves the alternate list below.
-            # ``show_during_capture`` is KEPT: on a primary the wizard reads
-            # it as ``suppressConnectAffordance`` and hides the phone QR,
-            # which is wanted since this verdict ENDS the capture session.
-            **{k: v for k, v in remeasure.items() if k != "expert"},
-            "label": "Re-measure this speaker",
         },
         alternate_actions=[
             *_way_back_action(status),
-            *([remeasure] if retriable else []),
+            remeasure,
         ],
         status=status,
         # Flatness lines are a SIBLING claim to the integration-verify

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Production attempt identity, durable write ordering and advisory decisions."""
+"""Production attempt identity, durable write ordering and VERIFY advice."""
 
 from dataclasses import replace
 from types import SimpleNamespace
@@ -78,7 +78,6 @@ def test_an_unidentifiable_attempt_gets_a_session_scoped_id():
 
 
 def test_store_write_precedes_journey_history():
-    prior = {"decision": None, "reason": "seeded-prior"}
     observed: list[dict[str, Any]] = []
     fakes = FakeSeams()
     c = _verify_only_conductor(
@@ -86,13 +85,11 @@ def test_store_write_precedes_journey_history():
         seams=replace(fakes.seams(), record_model_error=lambda **obs: (
             observed.append({
                 "attempt_id": obs["attempt_id"],
-                "decision_at_write": c.last_attempt_decision,
                 "history_at_write": tuple(
                     item.attempt_id for item in c.attempt_history
                 ),
             }) or True
         )),
-        last_attempt_decision=prior,
         tuning_attempt_id="candidate-a",
     )
 
@@ -100,13 +97,11 @@ def test_store_write_precedes_journey_history():
 
     assert len(observed) == 1
     assert observed[0]["attempt_id"] == "candidate-a"
-    assert observed[0]["decision_at_write"] is None
     assert observed[0]["history_at_write"] == ()
-    assert c.last_attempt_decision != prior
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
 
 
-def test_comparison_advice_does_not_limit_further_human_started_experiments():
+def test_history_retention_does_not_limit_further_human_started_experiments():
     history = ()
     cap = MAX_ATTEMPT_HISTORY
     for attempt in range(cap + 2):
@@ -114,7 +109,6 @@ def test_comparison_advice_does_not_limit_further_human_started_experiments():
             FakeSeams(), tuning_attempt_id=f"candidate-{attempt}", attempt_history=history,
         )
         assert _run_phase(c, 1, 1)["accepted"] is True
-        assert c.last_attempt_decision is None
         history = c.attempt_history
     assert len(history) == cap
     assert history[-1].attempt_id == f"candidate-{cap + 1}"
@@ -145,7 +139,6 @@ def test_failed_verify_grade_is_durable_advice_without_a_retake(tmp_path):
     assert verdict["accepted"] is True
     assert verdict["next"] == "accept"
     assert conductor.current_phase == "done"
-    assert conductor.last_attempt_decision is None
     path = tmp_path / "state.json"
     host.set_state_path_for_tests(path)
     try:
@@ -155,7 +148,6 @@ def test_failed_verify_grade_is_durable_advice_without_a_retake(tmp_path):
         host.set_state_path_for_tests(None)
     assert state["verify"]["outcome"] == "fail"
     assert state["verify"]["claims"]["integration"]["status"] == "fail"
-    assert state["attempts_loop"]["last_decision"] is None
     assert state["attempts_loop"]["history"][-1]["grade_db"] == 3.0
     grade = host._post_apply_grade(state)
     assert grade["state"] == host.GRADE_FAILED

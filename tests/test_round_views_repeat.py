@@ -33,9 +33,9 @@ def repeated_round(tmp_path):
                            "trim_db": {"woofer": 0.0, "tweeter": -3.0 + i * 0.1},
                            "predicted_ripple_db": 1.0 + i * 0.05}} for i in range(2)]
     group = {"set_id": "mark", "capture_basis": {"role": "woofer"}, "takes": takes}
-    samples = {f"{role}_{metric}": [0.0, spread] for role in ("woofer", "tweeter")
-               for metric, spread in (("delay_us", 1.0), ("trim_db", 0.1), ("ripple_db", 0.1))}
-    floor = derive_repeat_floor(samples=samples, units={f"{r}_delay_us": "us" for r in ("woofer", "tweeter")},
+    samples = {"delay_us": [0.0, 1.0], "ripple_db": [0.0, 0.1],
+               **{f"{role}_trim_db": [0.0, 0.1] for role in ("woofer", "tweeter")}}
+    floor = derive_repeat_floor(samples=samples, units={"delay_us": "us"},
                                 rounds=[{"take_id": "prior-a"}, {"take_id": "prior-b"}])
     write_repeat_floor(floor, state_path=root / "repeat-floor.json")
     return root, group
@@ -61,15 +61,14 @@ def test_repeat_pair_and_spread_use_selected_take_values(repeated_round, mutatio
     result = json.loads(capsys.readouterr().out)
     assert result["pair"] == pair
     assert result["take_ids"] == ["take-0", "take-1"]
-    for metrics in result["roles"].values():
+    assert all(set(metrics) == {"trim_db"} for metrics in result["roles"].values())
+    for metrics in [result["take"], *result["roles"].values()]:
         for summary in metrics.values():
             assert summary["n"] == 2
             assert summary["spread"] == pytest.approx(percentile(pairwise_abs_deltas(summary["values"]), 95))
             assert summary["median"] == pytest.approx(percentile(summary["values"], 50))
-    if metric:
-        assert {"role": "tweeter", "metric": metric} in result["disagreements"]
-    else:
-        assert result["disagreements"] == []
+    identity = {"role": "tweeter"} if metric == "trim_db" else {"scope": "take"}
+    assert result["disagreements"] == ([{**identity, "metric": metric}] if metric else [])
     assert result["floor"]["n_repeats"] == 2
     assert result["floor"]["metrics"]["tweeter_trim_db"]["pairwise_abs_delta_p95_db"] == pytest.approx(
         result["roles"]["tweeter"]["trim_db"]["spread"])
@@ -104,7 +103,9 @@ def test_current_takes_cannot_supply_their_own_agreement_tolerance(repeated_roun
     assert round_views.main(["repeat", str(root), "--set", "mark"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["pair"] == "unmeasured"
-    assert {"role": "tweeter", "metric": "delay_us"} in result["unmeasured"]
+    assert result["unmeasured"] == [
+        {"scope": "take", "metric": "delay_us"}, {"scope": "take", "metric": "ripple_db"},
+        {"role": "woofer", "metric": "trim_db"}, {"role": "tweeter", "metric": "trim_db"}]
 
 
 def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys):
@@ -132,7 +133,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
     write_manifest(root, groups=groups)
     assert round_views.main(["repeat", str(root), "--set", groups[0]["set_id"]]) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer["roles"]["woofer"]["ripple_db"]["values"] == [1.0, 2.0]
+    assert answer["take"]["ripple_db"]["values"] == [1.0, 2.0]
 
 
 def test_repeat_spreads_all_takes_and_names_the_pair(repeated_round, capsys):
@@ -146,7 +147,7 @@ def test_repeat_spreads_all_takes_and_names_the_pair(repeated_round, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["pair"] == "agrees"
     assert result["pair_take_ids"] == ["take-0", "take-1"]
-    summary = result["roles"]["woofer"]["delay_us"]
+    summary = result["take"]["delay_us"]
     assert summary == {"values": [100.0, 101.0, 150.0], "median": 101.0,
                        "spread": percentile(pairwise_abs_deltas([100.0, 101.0, 150.0]), 95), "n": 3}
     assert result["floor"]["n_repeats"] == 3

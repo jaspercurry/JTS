@@ -153,7 +153,6 @@ class V2ConductorSnapshot:
     cloud_close: str = ""
     # History survives the capture-session rebind; see ADR-0296.
     attempt_history: tuple[AttemptRecord, ...] = ()
-    last_attempt_decision: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,10 +170,6 @@ class V2ConductorSnapshot:
             "tier": self.tier,
             "cloud_close": self.cloud_close,
             "attempt_history": [item.to_dict() for item in self.attempt_history],
-            "last_attempt_decision": (
-                dict(self.last_attempt_decision)
-                if self.last_attempt_decision is not None else None
-            ),
         }
 
 
@@ -982,11 +977,6 @@ def build_conductor_state(
                 item.to_dict()
                 for item in (getattr(snap, "attempt_history", ()) or ())
             ],
-            "last_decision": (
-                dict(getattr(snap, "last_attempt_decision"))
-                if getattr(snap, "last_attempt_decision", None) is not None
-                else None
-            ),
         }
     else:
         prior_attempts = prior.get("attempts_loop")

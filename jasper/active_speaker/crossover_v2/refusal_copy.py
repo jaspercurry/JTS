@@ -170,7 +170,6 @@ REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
 # terminal" rule the two codes above state. Renders through the SAME
 # ``verify_fail`` template as its siblings — one more parameterization of that
 # screen, not a new screen.
-REASON_VERIFY_DETERMINISTIC_MISMATCH = "verify_deterministic_mismatch"
 # §5.2's "inconclusive — re-verify" verdict: VERIFY's own detected first
 # reflection forced a shorter gate than MEASURE's, so the overlay difference is
 # not evidence about driver alignment.
@@ -956,18 +955,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "The result didn't quite match the prediction.",
             "Try again.",
         ),
-    ),
-    # Budget 0 — the ONE verify_fail row that is not retriable: a second
-    # graded attempt already agreed with the first inside the instrument's
-    # repeat floor, so a third lands in the same place. For a non-retriable
-    # code ``_verify_fail_envelope`` promotes Re-measure to the primary rather
-    # than offering a "Try again" this row has ruled out.
-    REASON_VERIFY_DETERMINISTIC_MISMATCH: ReasonSpec(
-        REASON_VERIFY_DETERMINISTIC_MISMATCH, TEMPLATE_VERIFY_FAIL, 0, "",
-        "JTS checked twice and measured the same difference both times, so "
-        "this is what your speaker actually does — not a bad measurement, and "
-        "another try lands in the same place. Re-measure to fit the crossover "
-        "again.",
     ),
     REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
         REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,

@@ -39,7 +39,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         MeasuredResponse,
     )
 
-from jasper.active_speaker.attempts_loop import FloorStats
 from jasper.active_speaker.crossover_v2.durable_state import AttemptRecord, MAX_ATTEMPT_HISTORY
 from jasper.active_speaker.delta_probe import DeltaProbeMap
 from jasper.active_speaker.branch_chain import CrossoverSection
@@ -676,8 +675,6 @@ class CrossoverV2Session:
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
         attempt_history: Sequence[AttemptRecord] = (),
         series_position: "SeriesPosition | None" = None,
-        attempt_floor: FloorStats | None = None,
-        last_attempt_decision: Mapping[str, Any] | None = None,
         speaker_id: str = "",
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
@@ -739,7 +736,6 @@ class CrossoverV2Session:
         # #2602's series memory, resolved by the host from durable state on BOTH stages
         # since #2698, because the two readers run on different ones.
         self._series_position = series_position
-        self._last_attempt_decision: dict[str, Any] | None = None
         self._speaker_id = str(speaker_id or "unknown")
         self._tuning_attempt_id = str(tuning_attempt_id or "")
         # Layer-1a per-role driver class (#1668 PR-C); empty matches
@@ -1170,14 +1166,6 @@ class CrossoverV2Session:
         """Accepted applied-candidate attempts, oldest first and bounded."""
         return tuple(self._attempt_history)
 
-    @property
-    def last_attempt_decision(self) -> dict[str, Any] | None:
-        """The latest comparison advice, or the explicit no-floor status."""
-        return (
-            dict(self._last_attempt_decision)
-            if self._last_attempt_decision is not None else None
-        )
-
     def phase_status(self, phase: str) -> str:
         return self._journey.phase_status(phase)
 
@@ -1546,7 +1534,6 @@ class CrossoverV2Session:
             tier=self._tier,
             cloud_close=self.cloud_close_state,
             attempt_history=tuple(self._attempt_history),
-            last_attempt_decision=self._last_attempt_decision,
         )
 
     @classmethod
@@ -1567,7 +1554,6 @@ class CrossoverV2Session:
         if snapshot is not None:
             journey = {
                 "attempt_history": snapshot.attempt_history,
-                "last_attempt_decision": snapshot.last_attempt_decision,
             }
         # Explicit caller values win for migrations/tests that deliberately replace one
         # journey fact; ordinary production hydration supplies none.

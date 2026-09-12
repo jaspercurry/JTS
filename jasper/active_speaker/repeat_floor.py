@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from statistics import mean, stdev
-from typing import Any, Mapping, Sequence, TypeGuard
+from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float
@@ -86,28 +86,28 @@ def derive_repeat_floor(
 
 
 def repeat_pair(
-    samples: Mapping[str, Mapping[str, Sequence[float]]], floor: Mapping[str, Any] | None,
+    take: Mapping[str, Sequence[float]], trims: Mapping[str, Sequence[float]], floor: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Compare the first two takes against a previously banked floor (ADR-0302)."""
     disagreements, unmeasured = [], []
-    limits: dict[str, dict[str, float]] = {}
-    for role, metrics in samples.items():
-        for metric, values in metrics.items():
-            delta = abs(values[0] - values[1])
-            if metric == "polarity":
-                if delta:
-                    disagreements.append({"role": role, "metric": metric})
-                continue
-            name = f"{role}_{metric}"
-            thresholds = stopping_thresholds({**(floor or {}), "aggregate_metric": name})
-            unit = "us" if metric == "delay_us" else "db"
-            threshold = thresholds.get(f"margin_{unit}") if thresholds else None
-            if threshold is None:
-                unmeasured.append({"role": role, "metric": metric})
-            else:
-                limits.setdefault(role, {})[metric] = threshold
-                if delta > threshold:
-                    disagreements.append({"role": role, "metric": metric})
+    limits: dict[str, float] = {}
+    metrics = [(name, values, {"scope": "take", "metric": name}) for name, values in take.items()]
+    metrics += [(f"{role}_trim_db", values, {"role": role, "metric": "trim_db"}) for role, values in trims.items()]
+    for name, values, finding in metrics:
+        delta = abs(values[0] - values[1])
+        if name == "polarity":
+            if delta:
+                disagreements.append(finding)
+            continue
+        thresholds = stopping_thresholds({**(floor or {}), "aggregate_metric": name})
+        unit = "us" if name == "delay_us" else "db"
+        threshold = thresholds.get(f"margin_{unit}") if thresholds else None
+        if threshold is None:
+            unmeasured.append(finding)
+        else:
+            limits[name] = threshold
+            if delta > threshold:
+                disagreements.append(finding)
     return {"pair": "disagrees" if disagreements else "unmeasured" if unmeasured else "agrees",
             "disagreements": disagreements, "unmeasured": unmeasured, "pair_limits": limits}
 
@@ -137,10 +137,6 @@ def load_repeat_floor(
     return raw
 
 
-def _finite(value: Any) -> TypeGuard[float]:
-    return finite_float(value) is not None
-
-
 def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
     aggregate = record.get("metrics")
     if not isinstance(aggregate, Mapping):
@@ -149,9 +145,9 @@ def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
     if not isinstance(row, Mapping):
         return None
     unit = row.get("unit", "db")
-    p95 = row.get(f"pairwise_abs_delta_p95_{unit}")
-    median = row.get(f"pairwise_abs_delta_median_{unit}")
-    if not _finite(p95) or not _finite(median):
+    p95 = finite_float(row.get(f"pairwise_abs_delta_p95_{unit}"))
+    median = finite_float(row.get(f"pairwise_abs_delta_median_{unit}"))
+    if p95 is None or median is None:
         return None
     try:
         floor = FloorStats.from_repeat_study(
