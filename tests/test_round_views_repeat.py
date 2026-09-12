@@ -133,3 +133,20 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
     assert round_views.main(["repeat", str(root), "--set", groups[0]["set_id"]]) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["roles"]["woofer"]["ripple_db"]["values"] == [1.0, 2.0]
+
+
+def test_repeat_spreads_all_takes_and_names_the_pair(repeated_round, capsys):
+    root, group = repeated_round
+    third = deepcopy(group["takes"][1])
+    third.update(take_id="take-2", repeat=3)
+    third["analysis"]["delay_us"] = 150.0
+    group["takes"].append(third)
+    write_manifest(root, groups=[group])
+    assert round_views.main(["repeat", str(root), "--set", "mark"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["pair"] == "agrees"
+    assert result["pair_take_ids"] == ["take-0", "take-1"]
+    summary = result["roles"]["woofer"]["delay_us"]
+    assert summary == {"values": [100.0, 101.0, 150.0], "median": 101.0,
+                       "spread": percentile(pairwise_abs_deltas([100.0, 101.0, 150.0]), 95), "n": 3}
+    assert result["floor"]["n_repeats"] == 3
