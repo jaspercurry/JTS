@@ -101,6 +101,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._resample_state = None
         self._input_q = asyncio.Queue(maxsize=16)
         self._input_admitted = True
+        self._input_caught_up = 0.0
         self._sender = None
         self._transcript_intervals = {"user": [], "assistant": []}
         self._seconds = 0.0
@@ -129,18 +130,34 @@ class OpenAILiveTurn(BaseLiveTurn):
         while not self._input_q.empty():
             self._input_q.get_nowait()
 
+    async def _send_input(self, pcm: bytes) -> None:
+        if not self._input_admitted:
+            pcm = bytes(len(pcm))
+        wire, self._resample_state = _upsample_16k_to_24k(pcm, self._resample_state)
+        await self._conn._send({"type": "session.input_audio.append", "audio": base64.b64encode(wire).decode("ascii")})
+
     async def _send_audio_stream(self) -> None:
+        """Feed the session's audio timeline at the room's rate.
+
+        Live advances that timeline off the audio it is handed, so the
+        quiet this synthesizes between mic frames has to leave at 1x or
+        the server's silence-driven endpointing runs fast. Only the
+        newest queued frame is that live edge: anything stacked behind it
+        was captured earlier — while the socket was still dialling, or
+        behind a slow tick — and is already that old in the room, so it
+        owes no wall clock and goes out as fast as the socket takes it.
+        """
         while not self._released and not self._turn_lost:
             started = time.monotonic()
+            for _ in range(max(0, self._input_q.qsize() - 1)):
+                stale = self._input_q.get_nowait()
+                self._input_caught_up += len(stale) / 32000
+                await self._send_input(stale)
             try:
                 pcm = self._input_q.get_nowait()
             except asyncio.QueueEmpty:
                 pcm = bytes(2560)  # 80 ms at 16 kHz, including button-release silence
-            else:
-                if not self._input_admitted:
-                    pcm = bytes(len(pcm))
-            wire, self._resample_state = _upsample_16k_to_24k(pcm, self._resample_state)
-            await self._conn._send({"type": "session.input_audio.append", "audio": base64.b64encode(wire).decode("ascii")})
+            await self._send_input(pcm)
             await asyncio.sleep(max(0, len(pcm) / 32000 - (time.monotonic() - started)))
 
     async def send_text_context(self, text: str) -> None:
@@ -186,6 +203,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             "finalized": self._finalized,
             "quiet_played": self._quiet_played,
             "quiet_discarded": self._quiet_discarded,
+            "input_catchup_ms": round(self._input_caught_up * 1000),
         }
 
     async def on_event(self, event: dict) -> None:

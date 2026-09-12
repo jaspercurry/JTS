@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import audioop
 import base64
 import json
 import logging
+import random
 import time
 from contextlib import asynccontextmanager
 
@@ -273,6 +275,120 @@ async def test_silence_does_not_count_as_an_answer_and_mute_discards_buffered_in
     finally:
         await turn.release()
         await conn.stop()
+
+
+async def test_speech_buffered_during_the_dial_catches_up_and_live_input_stays_paced(
+    monkeypatch, caplog,
+):
+    """The dial costs seconds the room does not wait through."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(openai_live_session, "time", FrozenClock())
+    frame = b"\xff\x7f" * 1280  # 80 ms at 16 kHz: one pacing quantum
+    backlog = 16  # the sender's whole input queue, 1.28 s of speech
+    socket = LiveSocket()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+
+    def speech_appends():
+        return sum(
+            1 for e in socket.sent
+            if e["type"] == "session.input_audio.append" and any(base64.b64decode(e["audio"]))
+        )
+
+    try:
+        started = time.monotonic()
+        for _ in range(backlog):
+            await turn.send_audio(frame)
+        await wait_until(lambda: speech_appends() == backlog, timeout=3.0)
+        caught_up = time.monotonic() - started
+        drained_at = len(socket.sent)
+        await asyncio.sleep(0.25)
+        after_catch_up = len(socket.sent) - drained_at
+    finally:
+        await turn.release()
+        await conn.stop()
+
+    # A quantum each would cost the 15 stale frames 1.2 s; only the
+    # newest is the live edge and owes one.
+    assert caught_up < 0.4
+    # 0.25 s of synthesized quiet at 1x is ~3 appends, never a free run.
+    assert 1 <= after_catch_up <= 6
+    assert int(event_fields(caplog, "provider.turn_ended")["input_catchup_ms"]) == 1200
+
+
+async def test_a_mid_burst_discard_does_not_crash_the_sender():
+    """A mute or measurement hold can call `discard_input()` while the
+    burst loop is still draining the backlog it counted at tick start.
+
+    Regression: an unguarded `get_nowait()` let `QueueEmpty` escape the
+    sender task, and the done-callback then reported it as a lost
+    connection instead of the discard's own path.
+    """
+    frame = b"\xff\x7f" * 1280  # 80 ms at 16 kHz
+    backlog = 16  # the sender's whole input queue
+
+    class DiscardMidBurst(LiveSocket):
+        turn = None
+
+        async def send(self, event):
+            await super().send(event)
+            if event["type"] == "session.input_audio.append" and len(self.sent) == 2:
+                self.turn.discard_input()
+
+    socket = DiscardMidBurst()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    socket.turn = turn
+    try:
+        for _ in range(backlog):
+            await turn.send_audio(frame)
+        await wait_until(lambda: len(socket.sent) >= 2)
+        await asyncio.sleep(0.05)
+        assert not turn.turn_lost()
+    finally:
+        await turn.release()
+        await conn.stop()
+    assert turn._sender.cancelled()
+
+
+async def test_jitter_around_the_mic_cadence_never_splices_a_synthesized_frame():
+    """Real capture jitter must not read as a gap: the empty-queue branch
+    has to wait out ordinary jitter before it synthesizes quiet, or a
+    late mic frame gets a synthesized frame spliced in front of it in
+    the middle of one utterance."""
+    rng = random.Random(20260911)
+    frame_count = 25
+    socket = LiveSocket()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+
+    async def produce():
+        start = time.monotonic()
+        for i in range(1, frame_count + 1):
+            target = start + i * 0.080 + rng.uniform(-0.008, 0.008)
+            await asyncio.sleep(max(0.0, target - time.monotonic()))
+            await turn.send_audio(b"\xff\x7f" * 1280)
+
+    try:
+        await produce()
+        await asyncio.sleep(0.1)
+    finally:
+        await turn.release()
+        await conn.stop()
+
+    def is_real(event):
+        # A synthesized frame right after a real one carries the
+        # resampler's one-sample ring-down, so classify on level, not
+        # on whether any byte is nonzero.
+        return audioop.rms(base64.b64decode(event["audio"]), 2) > 16000
+
+    appends = [e for e in socket.sent if e["type"] == "session.input_audio.append"]
+    real = [is_real(e) for e in appends]
+    spliced = [i for i in range(1, len(real) - 1) if not real[i] and real[i - 1] and real[i + 1]]
+    assert spliced == []
 
 
 async def test_a_terminal_connect_failure_reports_the_outage_and_its_remedy():
