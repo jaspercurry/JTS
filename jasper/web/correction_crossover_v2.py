@@ -68,7 +68,7 @@ from pathlib import Path
 from jasper.active_speaker import preflight, preflight_live
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence,
-    TypeVar, cast,
+    TypeVar,
 )
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
@@ -1825,115 +1825,9 @@ _cloud_summary = _durable._cloud_summary
 _delta_probe_summary = _durable._delta_probe_summary
 verify_measured_curve_from_state = _durable.verify_measured_curve_from_state
 entry_baseline_prior_from_state = _durable.entry_baseline_prior_from_state
-alignment_prescription_prior_from_state = (
-    _durable.alignment_prescription_prior_from_state
-)
-topology_prescription_prior_from_state = (
-    _durable.topology_prescription_prior_from_state
-)
-blend_prescription_prior_from_state = _durable.blend_prescription_prior_from_state
-blend_prescription_sha256_from_state = _durable.blend_prescription_sha256_from_state
 pilot_transfer_prior_from_state = _durable.pilot_transfer_prior_from_state
 commanded_delta_prior_from_state = _durable.commanded_delta_prior_from_state
 declared_transfer_prior_from_state = _durable.declared_transfer_prior_from_state
-
-
-
-
-def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
-    """This round's staged prescription as ``(blend, driver)`` (A9).
-
-    The ONE place a staged prescription enters the flow, and the one place its
-    refusal is turned into a round that carries on without it. Named and
-    module-level for
-    :func:`alignment_prescription_prior_from_state`'s reason — the seeding path
-    is then drivable in a test without a capture.
-
-    **Both classes, one door (PR-B).** ``accepts`` is
-    :data:`~jasper.active_speaker.crossover_v2.prescription_spool.STAGEABLE_KINDS`
-    because this round now routes both: a blend document becomes the candidate's
-    ``blend_correction``, a per-driver one is merged by role onto the fit in its
-    ``linearization``. This function and its two journal slugs dropped ``blend``
-    from their names in the same edit — a name that is wrong for half the
-    documents it describes is worse than a churned one, and the class-neutral
-    spelling is the spool's own (``take_staged_prescription``,
-    ``StagedPrescription``), so the door has one vocabulary rather than two.
-
-    **The pair is returned already split, and the split is made HERE**, on the
-    envelope's own class field rather than by ``isinstance`` —
-    :class:`~jasper.active_speaker.crossover_v2.prescription_spool.StagedPrescription`
-    states that rule for a caller that accepted both classes. Here rather than at
-    the call site so the class vocabulary has ONE reader: a caller comparing
-    kinds itself would be a second place to keep in step the day a third class
-    exists. At most one arm is ever non-``None``; ``(None, None)`` is every
-    ordinary round and every refused one.
-
-    **Fail-open on the transport, fail-closed on the content.** A document that
-    is stale, corrupt, oversized, tampered, or aimed where its class may not
-    correct is REFUSED by name and never reaches the candidate; the round then
-    runs the deterministic answer for that class exactly as it would have with
-    no document at all — decision 10's banked instruction for the blend region,
-    the Layer-1a fit's own output per driver. Those two directions are not in
-    tension: the content gate protects the speaker from a correction nobody
-    vouched for, and the round proceeding protects the household from losing a
-    measurement session over an optional instruction it never asked for. The
-    refusal is journal-visible rather than silent, because an operator who
-    staged a prescription and got a deterministic round needs to be told which
-    of the two happened.
-
-    The take CONSUMES the document whether or not it is accepted — see
-    :func:`~jasper.active_speaker.crossover_v2.prescription_spool.take_staged_prescription`
-    — so a refusal here cannot repeat itself on the next round.
-    """
-    from jasper.active_speaker.crossover_v2.blend_prescription import (
-        BlendPrescriptionRefused,
-    )
-    from jasper.active_speaker.crossover_v2.driver_prescription import (
-        DRIVER_PRESCRIPTION_KIND,
-        DriverPrescription,
-    )
-    from jasper.active_speaker.crossover_v2.prescription_spool import (
-        STAGEABLE_KINDS,
-        take_staged_prescription,
-    )
-
-    try:
-        staged = take_staged_prescription(
-            round_ordinal=round_ordinal, accepts=STAGEABLE_KINDS,
-        )
-    except BlendPrescriptionRefused as exc:
-        log_event(
-            logger, "correction.crossover_v2_prescription_refused",
-            level=logging.WARNING, reason=exc.reason,
-            round_ordinal=round_ordinal, detail=exc.detail,
-        )
-        return None, None
-    if staged is None:
-        return None, None
-    is_driver = staged.prescription_kind == DRIVER_PRESCRIPTION_KIND
-    log_event(
-        logger, "correction.crossover_v2_prescription_taken",
-        round_ordinal=round_ordinal,
-        # WHICH CLASS was taken, under the spool's own field name.
-        # ``prescription_class`` beside it is cut-vs-boost and has meant that
-        # since the field shipped; naming the document's class with it too
-        # would put two facts on one key.
-        prescription_kind=staged.prescription_kind,
-        prescription_class=staged.prescription.prescription_class,
-        filters=len(staged.prescription.filters),
-        # The per-driver class's deciding number: WHICH branches this document
-        # replaces, and therefore which fitted ones it does not. Empty for the
-        # blend class, whose correction is one region rather than a set of
-        # roles — one event, one shape. The ``cast`` narrows, it does not
-        # decide: the envelope's class field above already settled which type
-        # this is, so an ``isinstance`` here would be a second opinion.
-        roles=",".join(
-            cast(DriverPrescription, staged.prescription).roles
-            if is_driver else ()
-        ),
-        prescription_sha256=staged.prescription_sha256,
-    )
-    return (None, staged) if is_driver else (staged, None)
 
 
 def _resolve_measurement_level_trims(
@@ -3859,9 +3753,6 @@ def prepare_v2_session(
         series_position_from_state,
     )
     from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        apply_topology_pin,
-    )
     from jasper.active_speaker.crossover_v2_flow import (
         CrossoverV2Session,
         attempt_history_from_state,
@@ -3911,27 +3802,12 @@ def prepare_v2_session(
         context = resolve_conductor_context(status)
     else:
         from jasper.active_speaker.branch_chain import confirmed_protection_sections
-        from jasper.active_speaker.branch_chain import beaming_onset_hz
-        from jasper.active_speaker.crossover_v2.alignment_prescription import (
-            ALIGNMENT_PRESCRIPTION_KEY,
-            AlignmentPrescriptionRefused,
-            read_alignment_prescription,
-        )
-        from jasper.active_speaker.crossover_v2.topology_prescription import (
-            TOPOLOGY_PRESCRIPTION_KEY,
-            TopologyPrescriptionRefused,
-            read_topology_prescription,
-        )
-        from jasper.active_speaker.excitation_safety_plan import (
-            resolve_driver_protection_slope_db_per_octave,
-        )
         from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
         from jasper.active_speaker.crossover_v2.journey import (
             LATERAL_CONSUMER_FORWARD_MODEL,
         )
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
-            alignment_delay_search_bounds_us,
         )
 
 
@@ -3966,55 +3842,6 @@ def prepare_v2_session(
         except ValueError as exc:
             raise CrossoverV2Refused(
                 "The confirmed driver protection cannot be used for this measurement."
-            ) from exc
-        raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
-        topology_prescription = None
-        if raw_topology is not None:
-            two_way = (
-                len(context.roles_bands) == 2
-                and "tweeter" in context.role_targets
-            )
-            tweeter_band = context.declared_band("tweeter") if two_way else None
-            woofer_band = context.declared_band("woofer") if two_way else None
-            woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
-            try:
-                topology_prescription = read_topology_prescription(
-                    raw_topology,
-                    declared_floor_hz=(
-                        None if tweeter_band is None else tweeter_band.lower_hz
-                    ),
-                    lower_driver_ceiling_hz=(
-                        None if woofer_band is None else woofer_band.upper_hz
-                    ),
-                    minimum_slope_db_per_octave=(
-                        resolve_driver_protection_slope_db_per_octave(
-                            context.safety_profile, context.role_targets["tweeter"],
-                        ) if two_way else None
-                    ),
-                    beaming_ceiling_hz=(
-                        None if woofer_diameter_mm is None
-                        else beaming_onset_hz(float(woofer_diameter_mm))
-                    ),
-                    way_count=getattr(context.preset, "way_count", None),
-                )
-            except TopologyPrescriptionRefused as exc:
-                raise CrossoverV2Refused(
-                    "the topology prescription was refused "
-                    f"({exc.reason}): {exc.detail}"
-                ) from exc
-        session_preset, session_fc_hz = apply_topology_pin(
-            topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
-        )
-        try:
-            alignment_prescription = read_alignment_prescription(
-                (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
-                fc_hz=session_fc_hz,
-                way_count=getattr(session_preset, "way_count", None),
-                declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
-            )
-        except AlignmentPrescriptionRefused as exc:
-            raise CrossoverV2Refused(
-                f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
             ) from exc
 
     wired_device = _resolve_prepare_wired_mic() if verify_only else None
@@ -4054,13 +3881,6 @@ def prepare_v2_session(
             if isinstance(priors_raw, Mapping) else ""
         )
         entry_baseline = entry_baseline_prior_from_state(state)
-        alignment_prescription = alignment_prescription_prior_from_state(state)
-        topology_prescription = topology_prescription_prior_from_state(state)
-        verify_preset, verify_fc_hz = apply_topology_pin(
-            topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
-        )
-        blend_prescription = blend_prescription_prior_from_state(state)
-        blend_prescription_sha256 = blend_prescription_sha256_from_state(state)
         alignment_objective = str(
             (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
              else "") or ""
@@ -4107,7 +3927,7 @@ def prepare_v2_session(
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        roles_bands=context.roles_bands, fc_hz=session_fc_hz,
+        roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         acknowledgement_binding=acknowledgement_binding,
         retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
         default_setup_calibration=default_setup_calibration_for_v2(),
@@ -4123,7 +3943,7 @@ def prepare_v2_session(
         assert device is not None
         if verify_only:
             spec = build_v2_verify_session_spec(
-                verify_fc_hz,
+                context.fc_hz,
                 measurement_band_hz=measurement_band_hz(context.roles_bands),
                 acknowledgement_binding=acknowledgement_binding,
                 plan_shape=plan_shape,
@@ -4192,10 +4012,10 @@ def prepare_v2_session(
         if verify_only:
             conductor = CrossoverV2Session(
                 session_id=session_id,
-                source_preset=verify_preset,
+                source_preset=context.preset,
                 positions_gated=bool(plan_shape and plan_shape.positions_gated),
                 roles_bands=context.roles_bands,
-                fc_hz=verify_fc_hz,
+                fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
                 session_volume_db=context.session_volume_db,
@@ -4215,10 +4035,6 @@ def prepare_v2_session(
                 measure_declared_transfer=declared_transfer,
                 measure_proposal_fingerprint=proposal_fingerprint,
                 measure_entry_baseline=entry_baseline,
-                alignment_prescription=alignment_prescription,
-                topology_prescription=topology_prescription,
-                blend_prescription=blend_prescription,
-                blend_prescription_sha256=blend_prescription_sha256,
                 measure_alignment_objective=alignment_objective,
                 measure_gate_window_ms=(
                     float(gate_ms) if isinstance(gate_ms, (int, float)) else None
@@ -4236,15 +4052,12 @@ def prepare_v2_session(
             )
         else:
             series_position = series_position_from_state(prior_raw)
-            staged_blend, staged_driver = _take_staged_prescription(
-                series_position.ordinal
-            )
             conductor = CrossoverV2Session.hydrate(
                 prior_snapshot,
                 session_id=session_id,
-                source_preset=session_preset,
+                source_preset=context.preset,
                 roles_bands=context.roles_bands,
-                fc_hz=session_fc_hz,
+                fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
                 session_volume_db=context.session_volume_db,
@@ -4263,18 +4076,7 @@ def prepare_v2_session(
                 tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
-                alignment_prescription=alignment_prescription,
-                topology_prescription=topology_prescription,
                 series_position=series_position,
-                blend_prescription=(
-                    None if staged_blend is None else staged_blend.prescription
-                ),
-                blend_prescription_sha256=(
-                    "" if staged_blend is None else staged_blend.prescription_sha256
-                ),
-                driver_prescription=(
-                    None if staged_driver is None else staged_driver.prescription
-                ),
             )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         from jasper.active_speaker.crossover_v2.session import TuningSession

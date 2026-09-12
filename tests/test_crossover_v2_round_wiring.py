@@ -1957,7 +1957,7 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
     """#2698 — the hop the test above stops one step short of.
 
     That test proves the receipt CARRIES the instruction and that the reader
-    parses it back. Neither fact iterates anything: ``_blend_prescription`` is
+    parses it back. Neither fact iterates anything: ``_candidate_blend_correction`` is
     read at candidate-build time, which runs in the MEASURE stage, so a series
     converges only if the MEASURING session is hydrated with its position too.
     Before #2698 it was not: the one ``series_position=`` line lived in
@@ -1993,7 +1993,7 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
     assert _hydrated_series_position(conductor).ordinal == 9
     # …and what ``_build_candidate`` hands the emitter is that instruction,
     # not the graph the speaker is already playing.
-    assert conductor._blend_prescription() == banked
+    assert conductor._candidate_blend_correction() == banked
     # The control that makes the assertion above mean something: the fallback
     # is reachable, readable, and a DIFFERENT answer.
     assert flow.CrossoverV2Session._applied_blend_correction(
@@ -2047,7 +2047,7 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
 ):
     """Panel ruling 2, at the hop that carries it out.
 
-    ``_blend_prescription`` is the only place the difference between "no
+    ``_candidate_blend_correction`` is the only place the difference between "no
     instruction" and "apply nothing" becomes a graph. A series instruction
     wins; its ABSENCE falls back to what the speaker is already playing, which
     is what stops a restored round — or a fresh series on an
@@ -2056,7 +2056,7 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
 
     from jasper.active_speaker import crossover_v2_flow as flow
 
-    prescribe = flow.CrossoverV2Session._blend_prescription
+    prescribe = flow.CrossoverV2Session._candidate_blend_correction
     applied = ({"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0,
                 "gain": -2.5},)
     monkeypatch.setattr(
@@ -2070,12 +2070,6 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
         # the same strict path the solve's incumbent does rather than a stub
         # that could disagree with it.
         return SimpleNamespace(
-            # A9's source 0, explicitly absent. Named rather than left off: the
-            # method reads it FIRST, so a stand-in without the field raises
-            # instead of exercising the two sources this test is about — and a
-            # stand-in that quietly carried one would be testing the
-            # prescription path under a name that says "no instruction".
-            _prescribed_blend=None,
             _series_position=(
                 None if instruction is _ABSENT
                 else SimpleNamespace(previous_blend_correction=instruction)

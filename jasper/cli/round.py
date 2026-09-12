@@ -34,7 +34,6 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, read_identity, speaker_u
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
-    read_json_source,
 )
 
 PROG = "jasper-round"
@@ -95,33 +94,6 @@ def _round_session_dir(capture_id: str) -> str:
     return found
 
 
-def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
-    """The alignment and topology documents, under the keys the host reads.
-
-    Passed through as read: the gate that judges a prescription is the session
-    open's own, and a second one here would be a weaker copy of it.
-    """
-    # The two key constants' modules pull numpy and scipy in, which is why both
-    # the guard and the deferred import are here: an ordinary open must not pay
-    # for a door it is not carrying (ADR-0226).
-    if not (args.alignment_prescription or args.topology_prescription):
-        return {}
-    from jasper.active_speaker.crossover_v2.alignment_prescription import (
-        ALIGNMENT_PRESCRIPTION_KEY,
-    )
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        TOPOLOGY_PRESCRIPTION_KEY,
-    )
-
-    return {
-        key: read_json_source(path)
-        for key, path in (
-            (ALIGNMENT_PRESCRIPTION_KEY, args.alignment_prescription),
-            (TOPOLOGY_PRESCRIPTION_KEY, args.topology_prescription),
-        )
-        if path
-    }
-
 
 def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> int:
     error = error_of(payload)
@@ -145,16 +117,9 @@ def _cmd_open(client: WizardClient, args: argparse.Namespace) -> int:
     post_apply = args.stage == STAGE_POST_APPLY
     if not post_apply and not args.tier:
         return failed(EXIT_REFUSED, REASON_TIER_REQUIRED, {"stage": args.stage})
-    try:
-        prescriptions = {} if post_apply else _prescription_doors(args)
-    except ValueError as exc:
-        return failed(
-            EXIT_REFUSED, REASON_OPEN_REFUSED,
-            {"stage": args.stage, "error": str(exc)},
-        )
     path = VERIFY_PATH if post_apply else SESSION_PATH
     http, payload = client.open_session(
-        args.tier or "", stage=args.stage, prescriptions=prescriptions
+        args.tier or "", stage=args.stage
     )
     if http != 200:
         return _wizard_failure(
@@ -366,17 +331,6 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: %%(default)s)" % (STAGE_MEASURE, STAGE_POST_APPLY)
         ),
     )
-    for door in ("alignment", "topology"):
-        opener.add_argument(
-            f"--{door}-prescription",
-            metavar="PATH",
-            default=None,
-            help=(
-                "a JSON document -- a file, or - for stdin -- posted verbatim "
-                f"as this session's {door} prescription. The open's own gate "
-                f"judges it, never this tool; ignored by --stage {STAGE_POST_APPLY}"
-            ),
-        )
     opener.set_defaults(func=_cmd_open)
 
     waiter = sub.add_parser(

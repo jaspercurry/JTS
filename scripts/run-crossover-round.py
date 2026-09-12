@@ -176,19 +176,12 @@ from jasper.active_speaker.wizard_client import (
     error_of,
     wait_for_round,
 )
-from jasper.active_speaker.crossover_v2.alignment_prescription import (
-    ALIGNMENT_PRESCRIPTION_KEY,
-)
 from jasper.active_speaker.crossover_v2.position_cycle import (
     PositionCycleError,
     expand_angle_spec,
     staged_stops,
     write_position_cycle,
 )
-from jasper.active_speaker.crossover_v2.topology_prescription import (
-    TOPOLOGY_PRESCRIPTION_KEY,
-)
-from jasper.cli._refusal import read_json_source
 # The seam's OWN composition table — how many stops one angle becomes at a given
 # regime. Imported rather than restated because a second copy is precisely the
 # defect the refusal below exists to prevent: this runner's stop count IS the
@@ -970,17 +963,6 @@ def _open_body(args: argparse.Namespace) -> tuple[str, dict[str, Any], int]:
     if args.stage == "verify":
         return VERIFY_PATH, {STAGE_KEY: STAGE_POST_APPLY}, EXIT_VERIFY
     body: dict[str, Any] = {"tier": args.tier}
-    if args.alignment_prescription is not None:
-        # Passed through as read. The gate that judges a prescription is the
-        # session open's own (shape, declared window, half-period lobe at Fc);
-        # checking it here would be a second, weaker one.
-        body[ALIGNMENT_PRESCRIPTION_KEY] = args.alignment_prescription
-    if args.topology_prescription is not None:
-        # Same rule as the alignment prescription above: passed through as
-        # read, never judged here. TOPOLOGY_PRESCRIPTION_KEY is
-        # topology_prescription.py's own constant, imported rather than
-        # respelled, so the two names can never drift apart.
-        body[TOPOLOGY_PRESCRIPTION_KEY] = args.topology_prescription
     return SESSION_PATH, body, EXIT_OPEN
 
 
@@ -1147,17 +1129,6 @@ def _say_bank_by_hand(dest: Path, since: str, target: Target) -> None:
     )
 
 
-def _json_document(raw: str) -> Any:
-    """A prescription document, read and parsed at parse time.
-
-    An unreadable path or malformed JSON is an argument the operator wrote
-    wrongly, so it ends as argparse's refusal — a sentence and the usage —
-    rather than a traceback from between a staged walk and an open.
-    """
-    try:
-        return read_json_source(raw)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1226,22 +1197,6 @@ def build_parser() -> argparse.ArgumentParser:
              "applied to the measurement graph, so branches of unequal "
              "sensitivity can null. The reverse-null confirmation needs it; a "
              "normal round does not.",
-    )
-    parser.add_argument(
-        "--alignment-prescription", type=_json_document, default=None,
-        metavar="PATH",
-        help=(
-            "a JSON document -- a file, or - for stdin -- posted verbatim as "
-            "the session's alignment prescription; the open's own gate judges it"
-        ),
-    )
-    parser.add_argument(
-        "--topology-prescription", type=_json_document, default=None,
-        metavar="PATH",
-        help=(
-            "a JSON document -- a file, or - for stdin -- posted verbatim as "
-            "the session's topology prescription; the open's own gate judges it"
-        ),
     )
     parser.add_argument(
         "--angles", default="",

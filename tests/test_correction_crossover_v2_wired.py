@@ -142,9 +142,6 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
     recovery gate (needs_recovery False) and the applied-state gate (state
     applied True); the evidence store is a bomb."""
     import jasper.active_speaker.branch_chain as branch_chain
-    from jasper.active_speaker.crossover_v2 import (
-        alignment_prescription as prescription_mod,
-    )
 
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
@@ -169,10 +166,6 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
         monkeypatch.setattr(
             branch_chain, "confirmed_protection_sections",
             lambda safety_profile, role_targets: {},
-        )
-        monkeypatch.setattr(
-            prescription_mod, "read_alignment_prescription",
-            lambda raw, *, fc_hz, declared_bounds_us, way_count=None: None,
         )
         if preparer == "verify":
             # Stage 2's own preceding gate: an applied durable state.

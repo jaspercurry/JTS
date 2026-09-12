@@ -31,14 +31,7 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
-from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
-from jasper.active_speaker.crossover_v2.alignment_prescription import (
-    ALIGNMENT_NO_CROSSOVER_REGION,
-)
-from jasper.active_speaker.crossover_v2.topology_prescription import (
-    TOPOLOGY_NO_CROSSOVER_REGION,
-)
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
 )
@@ -65,15 +58,6 @@ from tests.test_crossover_v2_driver_prescription import (
 #: --state/--drivers/--applied-profile, so none may read whatever sits at the
 #: on-Pi SSOT paths of the box running pytest.
 pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
-
-
-@pytest.fixture(autouse=True)
-def _isolated_spool(tmp_path: Path):
-    """No test may see, or leave, a document in the real speaker's slot."""
-    spool.set_prescription_spool_path_for_tests(tmp_path / "spool" / "pending.json")
-    (tmp_path / "spool").mkdir()
-    yield
-    spool.set_prescription_spool_path_for_tests(None)
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +111,7 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("banked", [False, True])
-def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
+def test_status_and_inventory_find_notes_and_current_evidence(
     tmp_path, capsys, monkeypatch, banked
 ):
     monkeypatch.chdir(tmp_path)
@@ -144,42 +128,32 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
         info_path.write_text(json.dumps(info))
         sessions.append((destination, bundle))
     note = sessions[0][0] / "agent_notes.md"
-    note.write_text("Question and next human action; evidence: r1/packet.json")
+    note.write_text("Question and next human action; evidence: r1/round_receipt.json")
     current, bundle = sessions[1]
     artifacts = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
     state = tmp_path / "flow state.json"
     state.write_text(json.dumps({"session_id": artifacts.name, "phase": "done"}))
     inputs = [str(current), "--state", str(state)]
-    assert cli.main(["packet", *inputs]) == cli.EXIT_OK
-    packet_summary = json.loads(capsys.readouterr().out)
-    packet_path = Path(packet_summary["out"])
-
-    recipe = shlex.split(packet_summary["rebuild_status_command"])
-    assert recipe[1:] == ["status", *inputs]
+    recipe = [cli.PROG, "status", *inputs]
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     status = json.loads(capsys.readouterr().out)
-    assert status["frozen_packet"]["path"] == str(packet_path)
-    assert status["frozen_packet"]["matches_current_evidence"] is True
-    _, without_state = _status([str(current)], capsys)
-    assert without_state["frozen_packet"]["matches_current_evidence"] is False
     assert status["latest_agent_note"] == {
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
     assert [shlex.split(command)[1] for command in status["next"][:3]] == [
-        "inventory", "classify-features", "packet",
+        "inventory", "classify-features", "contract",
     ]
     assert round_views.main(["inventory", str(current)]) == 0
     inventory = json.loads(capsys.readouterr().out)
     assert inventory["latest_agent_note"] == status["latest_agent_note"]
-    assert inventory["frozen_packet"]["path"] == str(packet_path)
+    assert "frozen_packet" not in inventory
+    assert "frozen_packet" not in status
 
     (artifacts / "feature_classification.json").write_text(json.dumps(_classification()))
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     enriched = json.loads(capsys.readouterr().out)
     assert enriched["banked"]["classification"]["available"] is True
-    assert enriched["frozen_packet"]["matches_current_evidence"] is False
     assert enriched["packet_fingerprint"] != status["packet_fingerprint"]
-    assert json.loads(packet_path.read_text())["packet_fingerprint"] == status["packet_fingerprint"]
 
 
 # --------------------------------------------------------------------------- #
@@ -187,7 +161,7 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
 # --------------------------------------------------------------------------- #
 
 
-def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
+def test_a_fully_evidenced_speaker_reports_retained_states(tmp_path, capsys):
     """Declared, banked, staged and applied, each from its own evidence."""
     session, draft = _speaker_dirs(
         tmp_path, draft=_draft(), classification=_classification()
@@ -219,8 +193,6 @@ def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
     assert payload["banked"]["round_id"] == "r1"
     assert payload["banked"]["region"]["available"] is True
     assert payload["banked"]["classification"]["n_verdicts"] == 2
-    # staged — nothing placed in the slot by this test.
-    assert payload["staged"]["pending"] is False
     # applied — both records the packet keeps side by side.
     assert payload["applied"]["from_round_receipt"] == {
         "available": True, "n_filters": 0
@@ -233,18 +205,6 @@ def test_a_fully_evidenced_speaker_reports_all_four_states(tmp_path, capsys):
 def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
     tmp_path, capsys, monkeypatch
 ):
-    """Where the two declared inputs live is the shared resolver's answer.
-
-    This CLI used to carry its own copy of the on-Pi paths, which is the
-    duplication ``jasper-round-views`` could not consume: pointed at a live
-    session directory with no overrides, the packet must be built from exactly
-    what ``round_inputs`` resolved.
-
-    The FLOW STATE is deliberately not among them: the host rewrites it as a
-    round runs, so a defaulted state would move a rebuilt packet's fingerprint
-    away from the one ``packet`` emitted and ``propose``/``stage`` judge
-    against.
-    """
     session, _ = _speaker_dirs(tmp_path)
     seen: dict[str, Any] = {}
     build = cli.build_crossover_evidence_packet
@@ -258,6 +218,7 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
 
     assert seen == {
         "session_dir": session,
+        "round_context": round_inputs_mod.round_inputs(session),
         "state_path": None,
         "driver_draft_path": round_inputs_mod.DRIVERS_DEFAULT_PATH,
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
@@ -377,25 +338,14 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
     )
 
-    artifact = tmp_path / "packet.json"
-    code = cli.main([
-        "packet", str(session),
-        "--state", str(state_path),
-        "--applied-profile", str(applied),
-        "--out", str(artifact),
-    ])
-    out, _ = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    trim = json.loads(artifact.read_text())["incumbent"]["trim"]["tweeter"]
+    packet = cli.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
+    trim = packet["incumbent"]["trim"]["tweeter"]
     assert trim == {
         "applied_db": -1.361,
         "round_resolved_db": -2.105,
         "delta_db": pytest.approx(-2.105 - (-1.361)),
         "pinned_this_round": False,
     }
-    # The same numbers reach the caller's stdout, not only the artifact.
-    assert json.loads(out)["trim"]["tweeter"] == trim
 
 
 def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
@@ -613,62 +563,6 @@ def test_each_state_comes_from_the_named_reader_its_gate_uses(
     assert section(payload) == expected
 
 
-def test_the_staged_state_comes_from_the_spools_own_predicate(
-    tmp_path, capsys, monkeypatch
-):
-    """Not a ``.is_file()`` spelled again here — the spool owns that question."""
-    session, _ = _speaker_dirs(tmp_path)
-    monkeypatch.setattr(cli, "staged_prescription_pending", lambda: True)
-
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["staged"]["pending"] is True
-
-
-def test_a_spool_this_user_cannot_stat_is_disclosed_rather_than_raised(
-    tmp_path, capsys, monkeypatch
-):
-    """Run as ``pi`` rather than root, the 0640 spool raises out of the stat.
-
-    That used to be a raw traceback, which is the one thing an orientation verb
-    may not do. The section now answers in the shape its three neighbours use —
-    unavailable, with the reason — and ``pending`` is ``None`` rather than
-    ``False``, because a prescriber told "nothing waiting" would stage over a
-    document nobody could see.
-
-    The spool's own predicate still raises: ``stage`` needs the real error, so
-    the catch is this verb's, not the module's.
-    """
-    session, _ = _speaker_dirs(tmp_path)
-
-    def _denied() -> bool:
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(cli, "staged_prescription_pending", _denied)
-
-    code, payload = _status([str(session)], capsys)
-
-    assert code == cli.EXIT_OK, "a partial answer still beats no answer"
-    assert payload["staged"]["available"] is False
-    assert payload["staged"]["pending"] is None
-    assert payload["staged"]["reason"] == cli.SPOOL_UNREADABLE_REASON
-    # The command that WOULD answer, against the same directory.
-    sudo = [command for command in payload["next"] if command.startswith("sudo ")]
-    assert sudo == [f"{cli.ORIENTATION_COMMAND} {session}"]
-    # …and nothing claims a document is or is not waiting.
-    assert cli.STAGED_LIFECYCLE_NOTE not in payload["staged"]["summary"]
-
-
-def test_the_staged_sentence_is_the_one_stage_itself_prints(tmp_path, capsys):
-    """Two wordings of "what becomes of this file" would be two answers."""
-    session, _ = _speaker_dirs(tmp_path)
-    spool.prescription_spool_path().write_text("{}")
-
-    _, payload = _status([str(session)], capsys)
-
-    assert cli.STAGED_LIFECYCLE_NOTE in payload["staged"]["summary"]
-
-
 # --------------------------------------------------------------------------- #
 # 3. hostname-derived handoff URLs
 # --------------------------------------------------------------------------- #
@@ -777,56 +671,9 @@ def test_the_status_verb_mutates_nothing_on_disk(tmp_path, capsys):
     assert _tree(tmp_path) == before
 
 
-def test_reporting_a_staged_prescription_does_not_consume_it(tmp_path, capsys):
-    """The one mutation this verb could plausibly cause, and must not.
-
-    ``take_staged_prescription`` is the only reader of the document and it
-    always consumes; a status verb that reached for it would spend the next
-    round's instruction to print one line about it.
-    """
-    pending = spool.prescription_spool_path()
-    pending.write_text('{"kind": "whatever"}')
-    session, _ = _speaker_dirs(tmp_path)
-
-    _status([str(session)], capsys)
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["staged"]["pending"] is True
-    assert pending.read_text() == '{"kind": "whatever"}'
-    assert spool.staged_prescription_pending() is True
-
-
 # --------------------------------------------------------------------------- #
 # 5. next actions, from artifact dependencies
 # --------------------------------------------------------------------------- #
-
-
-def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
-    tmp_path, capsys
-):
-    """A partial answer beats no answer, and it is still an answer.
-
-    This verb accepts nothing and refuses nothing, so what it could not read is
-    a FIELD — exit 0 with the sentence in ``packet_error`` — never a code that
-    would oblige it to publish a refusal record instead of the orientation the
-    caller ran it for. The spool lives on the speaker rather than in the
-    bundle, so a prescription waiting for the next round is a fact whichever
-    directory was named.
-    """
-    spool.prescription_spool_path().write_text("{}")
-
-    code, payload = _status([str(tmp_path / "not-a-bundle")], capsys)
-
-    assert code == cli.EXIT_OK
-    assert payload["packet_fingerprint"] is None
-    assert payload["packet_error"]
-    assert payload["staged"]["pending"] is True
-    assert payload["banked"]["available"] is False
-    assert payload["banked"]["reason"] == payload["packet_error"]
-    assert payload["speaker"]["crossover_url"].endswith("/sound/speaker/crossover/")
-    # Nothing is offered that would fail for the reason this report already
-    # gave: both round-reading commands read what this verb could not.
-    assert payload["next"] == ["jasper-seat-level"]
 
 
 def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
@@ -959,7 +806,7 @@ def test_both_prescription_classes_are_offered_when_both_have_a_bound(
     assert payload["banked"]["classification"]["available"] is True
     # The next verb, carrying the flag this report was read with: a rebuild
     # without it resolves --drivers against the machine and answers differently.
-    assert f"{cli.PROG} packet {session} --drivers {draft}" in payload["next"]
+    assert f"{cli.PROG} contract --round {session}" in payload["next"]
 
 
 def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
@@ -974,7 +821,6 @@ def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
     assert payload["banked"]["region"] == {
         "available": False, "band_hz": None, "reason": "not reported",
     }
-
 
 
 def _full_range_draft() -> dict[str, Any]:
@@ -1023,12 +869,6 @@ def _rebank_round_as_no_crossover(session: Path) -> None:
 def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     tmp_path, capsys
 ):
-    """Not "not yet" — "not ever", and the three shut doors say so by name.
-
-    A 1-way main's blend, alignment and topology doors all describe a handoff
-    between two branches; telling an operator no region "is banked" would send
-    them back to a measurement for a band that cannot exist.
-    """
     from jasper.audio_measurement.program_analysis import (
         ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
     )
@@ -1042,26 +882,8 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     packet = cli.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
-    for door in ("alignment", "topology"):
-        assert packet["request_time_prescriptions"][door]["available"] is False
-    assert (
-        packet["request_time_prescriptions"]["alignment"]["reason"]
-        == ALIGNMENT_NO_CROSSOVER_REGION
-    )
-    assert (
-        packet["request_time_prescriptions"]["topology"]["reason"]
-        == TOPOLOGY_NO_CROSSOVER_REGION
-    )
     not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
     assert not_evaluated["crossover_region.band_hz"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
-    assert (
-        not_evaluated["request_time_prescriptions.alignment"]
-        == ALIGNMENT_NO_CROSSOVER_REGION
-    )
-    assert (
-        not_evaluated["request_time_prescriptions.topology"]
-        == TOPOLOGY_NO_CROSSOVER_REGION
-    )
 
     assert payload["declared"]["roles"] == ["full_range"]
     # The SHAPE, not a measurement that has not happened yet.
@@ -1087,8 +909,8 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
 
     # Runnable as printed: the flag carries the file that was named, and is
     # absent when none was — a placeholder path would refuse on the read.
-    assert f"{cli.PROG} packet {session}" in without["next"]
-    assert f"{cli.PROG} packet {session} --state {state}" in with_state["next"]
+    assert f"{cli.PROG} contract --round {session}" in without["next"]
+    assert f"{cli.PROG} contract --round {session}" in with_state["next"]
 
 
 def test_the_banked_seat_level_reference_is_published_either_way(
@@ -1135,12 +957,10 @@ _STATUS_DOCUMENT_KEYS = {
     "packet_error",
     "selected_round",
     "recent_rounds",
-    "frozen_packet",
     "latest_agent_note",
     "context_error",
     "declared",
     "banked",
-    "staged",
     "applied",
     "seat_level_reference_volume_db",
     "reading_order",
@@ -1172,7 +992,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
 
     assert set(doc_payload) == _STATUS_DOCUMENT_KEYS
     assert set(doc_payload) == set(cli_payload)
-    for name in ("declared", "banked", "staged", "applied"):
+    for name in ("declared", "banked", "applied"):
         assert set(doc_payload[name]) == set(cli_payload[name])
 
 
