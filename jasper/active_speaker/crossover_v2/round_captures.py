@@ -228,11 +228,6 @@ def _capture_documents(round_dir: Path) -> tuple[Path, list[tuple[Path, Path, Ma
     return root, [(path, wav, doc) for wav, (path, doc) in documents.items()]
 
 
-def capture_documents(round_dir: Path) -> tuple[Mapping[str, Any], ...]:
-    """Capture metadata, without reading or hashing audio."""
-    return tuple(doc for _, _, doc in _capture_documents(Path(round_dir))[1])
-
-
 def document_capture_id(doc: Mapping[str, Any]) -> str | None:
     value = doc.get("take_id") or doc.get("position_id")
     return str(value) if value else None

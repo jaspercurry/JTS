@@ -174,5 +174,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
              f"{ARTIFACT_BY_VIEW['room-median'].artifact} beside the round, "
              f"else {ROOM_BOUNDARY_DEFAULT_HZ:g} Hz",
     )
-    prior.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    prior.add_argument("--out", default=None, help="write the result here")
     prior.set_defaults(func=_cmd_boundary_prior)

@@ -18,33 +18,31 @@ from ._common import (
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
     _write,
-    answer,
+    add_set_argument, answer,
     ARTIFACT_BY_VIEW,
-    resolved_out,
+    resolved_out, resolve_set, round_inputs,
 )
 
-ACCEPTANCE_RUNS = """\
-Replay an exact diagnostic capture, then compare a candidate forecast with its take:
+ACCEPTANCE_RUNS = """jasper-round-views forward-model <basis-round> --set <basis-set>
 
-  jasper-round-views forward-model <basis-round> --capture-id <basis-take>
-
-  jasper-round-views forward-model <basis-round> --capture-id <basis-take> \\
-      --candidate-json <candidate.json> --basis-candidate-json <basis-candidate.json> \\
-      --measured-round <candidate-round> \\
-      --measured-capture-id <candidate-take>
+jasper-round-views forward-model <basis-round> --set <basis-set> \
+    --candidate-json <candidate.json> --basis-candidate-json <basis-candidate.json> --measured-round <candidate-round> \
+    --measured-set <candidate-set>
 """
 
 
 def _cmd_forward_model(args: argparse.Namespace) -> int:
+    selected = resolve_set(round_inputs(Path(args.round_dir)), args.set)
+    measured = resolve_set(round_inputs(Path(args.measured_round)), args.measured_set) if args.measured_round else None
     try:
         exact_result = stage(
             EXIT_UNREADABLE, (OSError,), capture_prediction,
-            Path(args.round_dir), capture_id=args.capture_id, window_ms=args.window_ms,
+            Path(args.round_dir), capture_id=selected.take_id(args.take), window_ms=args.window_ms,
             candidate_path=Path(args.candidate_json) if args.candidate_json else None,
             basis_candidate_path=Path(args.basis_candidate_json) if args.basis_candidate_json else None,
             candidate_root=Path(args.candidate_root) if args.candidate_root else None,
             measured_round=Path(args.measured_round) if args.measured_round else None,
-            measured_capture_id=args.measured_capture_id,
+            measured_capture_id=measured.take_id(args.measured_take) if measured else None,
             expected_prediction_fingerprint=args.expected_prediction_fingerprint,
         )
     except ForwardModelError as exc:
@@ -52,7 +50,7 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
     except RoundCapturesRefused as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail)
     written = _write(exact_result, args.out, resolved_out(
-        Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact,
+        Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact, args.set,
     ))
     return answer(
         args.command, out=written, **exact_result["summary"],
@@ -73,15 +71,15 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     forward.add_argument(
         "--measured-round", default=None,
-        help="round containing --measured-capture-id",
+        help="round containing the measured set",
     )
     forward.add_argument(
         "--candidate-json", default=None,
         help="complete saved candidate.json; omit to reconstruct the recorded tune",
     )
-    forward.add_argument("--out", default=None, help="write the result here (- for stdout)")
-    forward.add_argument("--capture-id", required=True, help="exact complete-tune diagnostic take; without a candidate, check W+T against its own sum")
-    forward.add_argument("--measured-capture-id", help="exact changed-candidate diagnostic take to compare; never defaults to another take")
+    forward.add_argument("--out", default=None, help="write the result here")
+    add_set_argument(forward, take=True)
+    add_set_argument(forward, name="--measured-set", take=True)
     forward.add_argument("--basis-candidate-json", help="source candidate artifact, checked against the selected take; otherwise resolve its candidate ID from the bank")
     forward.add_argument("--candidate-root", help="candidate bank root for offline source-candidate lookup")
     forward.add_argument("--window-ms", type=float, help="one shared diagnostic window in ms; default is the shipped reference window")

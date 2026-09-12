@@ -20,6 +20,8 @@ real on-disk shape reaches this suite too.
 
 from __future__ import annotations
 
+from tests.run_manifest_fixture import write_manifest
+
 import json
 import shlex
 import shutil
@@ -81,8 +83,8 @@ def _speaker_dirs(
     draft: dict[str, Any] | None = None,
     classification: dict[str, Any] | None = None,
 ) -> tuple[Path, Path | None]:
-    """A bundle on disk, plus the design draft path when one was asked for."""
     session, _ = _bundle(tmp_path)
+    write_manifest(session)
     if classification is not None:
         round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
         (round_dir / "feature_classification.json").write_text(
@@ -96,7 +98,6 @@ def _speaker_dirs(
 
 
 def _status(argv: list[str], capsys) -> tuple[int, dict[str, Any]]:
-    """Run the verb and hand back the code and the document it answered with."""
     code = cli.main(["status", *argv])
     return code, json.loads(capsys.readouterr().out)
 

@@ -231,7 +231,12 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
     return [bundle for _started_at, bundle in sorted(sessions.values(), reverse=True)][:max(0, limit)]
 
 
-def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
+def set_artifact_name(name: str, set_id: str | None = None) -> str:
+    path = Path(name)
+    return f"{path.stem}-{set_id[:12]}{path.suffix}" if set_id else name
+
+
+def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | None = None) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
     A BANKED round tree is the operator's own directory, so its views stay
@@ -246,6 +251,7 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     caller instead, named by the session it came from so two sessions graded
     in one directory do not overwrite each other.
     """
+    name = set_artifact_name(name, set_id)
     root = round_dir if inputs.banked else banked_round_of(inputs.session_dir)
     return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
 

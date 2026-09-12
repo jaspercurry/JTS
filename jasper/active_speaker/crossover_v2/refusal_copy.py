@@ -424,6 +424,11 @@ def _retriable_reason(
 # The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
+    "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
+    "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
+    "round_take_unknown": ReasonSpec("round_take_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set."),
+    "round_take_selection_required": ReasonSpec("round_take_selection_required", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set with the take selector."),
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
         next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},

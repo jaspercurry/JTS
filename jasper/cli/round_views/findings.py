@@ -225,5 +225,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
              "then covers that phase alone, at the same path — name --out to "
              "keep an all-phases one",
     )
-    findings.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    findings.add_argument("--out", default=None, help="write the result here")
     findings.set_defaults(func=_cmd_findings)

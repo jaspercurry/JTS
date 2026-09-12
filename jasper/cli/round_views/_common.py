@@ -10,18 +10,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    RoundInputs, default_out as default_out,
+    RoundInputs, default_out as default_out, set_artifact_name as set_artifact_name,
+    round_artifact_dir,
     banked_round_of,
     recent_round_sessions,
     round_inputs,
@@ -32,7 +33,6 @@ from jasper.active_speaker.crossover_v2.round_views import (
     load_banked_round,
 )
 from jasper.cli._refusal import (
-    EXIT_OK,
     answered,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
@@ -40,7 +40,7 @@ from jasper.cli._refusal import (
     failed,
     stage,
 )
-from jasper.cli._report import write_report
+from jasper.cli._report import report_answer, write_report
 
 AUTHORITY_TIER = "advisory (analysis views save artifacts)"
 
@@ -58,7 +58,7 @@ PROG = "jasper-round-views"
 
 TAKES_THIS_ROUND = "<this-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
-TAKES_EXACT_CAPTURE = (TAKES_THIS_ROUND, "--capture-id", "<capture-id>")
+TAKES_SET = (TAKES_THIS_ROUND, "--set", "<set-id>")
 TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
 TAKES_FAR_AND_CLOSE = (
@@ -88,6 +88,7 @@ class ViewArtifact(NamedTuple):
 #: ``repeat-floor`` is absent because it publishes to ``--install`` or
 #: ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
+    "inventory": ViewArtifact("inventory.json", TAKES_SET),
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
@@ -101,23 +102,23 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "co-metrics": ViewArtifact("audibility_co_metrics.json"),
     "directivity": ViewArtifact("directivity.json"),
     "cloud-binding": ViewArtifact("cloud_binding.json"),
-    "forward-model": ViewArtifact("forward_model.json", TAKES_EXACT_CAPTURE),
-    "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
-    "gate-sweep": ViewArtifact("gate_sweep.json"),
-    "windows": ViewArtifact("window_view.json", (TAKES_THIS_ROUND, "--capture-id", "<take-id>")),
+    "forward-model": ViewArtifact("forward_model.json", TAKES_SET),
+    "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
+    "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
+    "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
     "frequency": ViewArtifact("frequency_view.json"),
-    "bass": ViewArtifact("bass_view.json"),
+    "bass": ViewArtifact("bass_view.json", TAKES_SET),
     "bass-compare": ViewArtifact("bass_comparison.json", (
-        "<before-bass-view>", "<after-bass-view>", "--before-take", "<before-take-id>",
-        "--after-take", "<after-take-id>", "--change", "<change>",
+        "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
+        "--after-set", "<set-id>", "--change", "<change>",
     )),
     "delay-landscape": ViewArtifact("delay_landscape.json"),
     "delay-confirm": ViewArtifact("delay_confirmation.json"),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
     "boundary-prior": ViewArtifact("boundary_prior.json"),
-    "room-ceiling": ViewArtifact("room_ceiling.json"),
-    "room-median": ViewArtifact("room_median.json"),
-    "room-persistence": ViewArtifact("room_persistence.json"),
+    "room-ceiling": ViewArtifact("room_ceiling.json", TAKES_SET),
+    "room-median": ViewArtifact("room_median.json", TAKES_SET),
+    "room-persistence": ViewArtifact("room_persistence.json", TAKES_SET),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(
@@ -127,7 +128,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True
     ),
     "findings": ViewArtifact("findings.json"),
-    "room-grade": ViewArtifact("room_grade.json"),
+    "room-grade": ViewArtifact("room_grade.json", TAKES_SET),
     # No view writes this one: the banker does, as it files the session. It is
     # inventoried anyway because "does this round carry its pose index" is the
     # same question as the rest, asked of the same directory.
@@ -136,8 +137,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     ),
 }
 
-#: ``inventory``'s own report, named apart from the views it reports on.
-INVENTORY_ARTIFACT = "inventory.json"
+INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
 
 #: A round directory is operator-pulled evidence, not a validated
 #: input — the documented failure shapes it can hand back are broader than
@@ -184,8 +184,8 @@ def _load_round(round_dir: str | Path) -> BankedRound:
 
 
 def _write(
-    payload: Any, out: str | None, default_path: Path, *, make_parents: bool = False,
-) -> Path | None:
+    payload: Any, out: str | Path | None, default_path: Path, *, make_parents: bool = False,
+) -> Path:
     """Publish one view. ``OSError`` only, and that is the whole rule.
 
     A ``ValueError`` out of the strict writer is a payload this run should not
@@ -200,28 +200,67 @@ def _write(
     )
 
 
-#: :func:`answer`'s ``out`` for a verb that writes no artifact at all, told
-#: apart from ``None`` — which is ``--out -``, where the artifact ITSELF is the
-#: document on stdout and no answer may be printed over it.
-_NO_ARTIFACT: Any = object()
+def answer(view: str, *, out: Path | None = None, line: str, **fields: Any) -> int:
+    """Print scalar results and an artifact pointer (ADR-0237)."""
+    return answered(report_answer(view, out, **fields), line)
 
 
-def answer(
-    view: str, *, out: Path | None = _NO_ARTIFACT, line: str, **fields: Any,
-) -> int:
-    """This view's ANSWER on stdout, its one human line on stderr (ADR-0237).
+class RoundSetRefused(ValueError):
+    def __init__(self, reason: str, **detail: Any) -> None:
+        self.reason, self.detail = reason, detail
+        super().__init__(reason)
 
-    The answer is what the human line says, as fields: scalars and
-    run-bounded records, never a curve or a grid — those stay in the artifact
-    at ``out``, whose path and size ride along so the next command can name it.
-    """
-    if out is None:
-        print(line, file=sys.stderr)
-        return EXIT_OK
-    if out is not _NO_ARTIFACT:
-        fields["out"] = str(out)
-        fields["bytes"] = out.stat().st_size
-    return answered({"view": view, **fields}, line)
+
+class SetTakes(NamedTuple):
+    set_id: str
+    capture_basis: Mapping[str, Any]
+    takes: tuple[Mapping[str, Any], ...]
+
+    @property
+    def selected_ids(self) -> tuple[str, ...]:
+        return tuple(take["take_id"] for take in self.takes if take["selected"])
+
+    def take_id(self, requested: str | None = None) -> str:
+        ids = self.selected_ids
+        if requested is not None:
+            if requested not in ids:
+                raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested, take_ids=ids)
+            return requested
+        if len(ids) == 1:
+            return ids[0]
+        on_axis = [take["take_id"] for take in self.takes if take["selected"]
+                   and take["pose"].get("kind") == POSE_KIND_BEARING
+                   and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0]
+        if len(on_axis) == 1:
+            return on_axis[0]
+        raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
+
+
+def read_run_manifest(
+    inputs: RoundInputs, *, manifest: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    if manifest is None:
+        directory, _ = round_artifact_dir(inputs.session_dir)
+        path = directory / RUN_MANIFEST_FILENAME if directory else inputs.session_dir / RUN_MANIFEST_FILENAME
+        if directory is None or not path.is_file():
+            raise RoundSetRefused("round_manifest_missing", path=str(path))
+        manifest = json.loads(path.read_text())
+    assert manifest is not None
+    if manifest.get("finalized") is not True:
+        raise RoundSetRefused("round_manifest_unfinalized", run_id=manifest.get("run_id"))
+    return manifest
+
+
+def resolve_set(
+    inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
+) -> SetTakes:
+    """Resolve the executor's set without rebuilding its identity (ADR-0299)."""
+    sets = read_run_manifest(inputs, manifest=manifest)["sets"]
+    matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
+    if len(matches) != 1:
+        raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])
+    row, = matches
+    return SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
 
 
 def refused_by_name(
@@ -256,22 +295,33 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
     }
 
 
-def resolved_out(round_dir: Path, artifact: str) -> Path:
+def resolved_out(round_dir: Path, artifact: str, set_id: str | None = None) -> Path:
     """Where a view lands beside a round it read WITHOUT the round resolver.
 
     A round the resolver cannot place still gets its artifact, beside itself.
     """
     try:
-        return default_out(round_inputs(round_dir), round_dir, artifact)
+        return default_out(round_inputs(round_dir), round_dir, artifact, set_id)
     except RoundViewsError:
-        return round_dir / artifact
+        return round_dir / set_artifact_name(artifact, set_id)
 
 
 def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
     """This subcommand's own artifact path, from :data:`ARTIFACT_BY_VIEW`."""
     return default_out(
-        round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact
+        round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact, getattr(args, "set", None)
     )
+
+
+def add_set_argument(
+    parser: argparse.ArgumentParser, *, name: str = "--set", required: bool = False,
+    take: bool = False,
+) -> None:
+    parser.add_argument(name, required=required, help="set in the run manifest; optional for a one-set round")
+    if not required:
+        parser.set_defaults(optional_set_flags=(*(parser.get_default("optional_set_flags") or ()), name))
+    if take:
+        parser.add_argument(name.removesuffix("set") + "take", help=f"selected take within {name}; defaults to the unique on-axis take")
 
 
 def add_rungs_ms_argument(
