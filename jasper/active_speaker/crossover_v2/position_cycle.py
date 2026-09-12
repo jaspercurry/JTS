@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 
 import numpy as np
 
@@ -27,7 +27,7 @@ from jasper.atomic_io import atomic_write_text
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
-from .record_index import bundle_measurements
+from .record_index import Measurement, bundle_measurements, measurement_documents
 
 #: The index's own name, so a reader that finds this document anywhere knows
 #: what it is holding without knowing which tool wrote it.
@@ -261,6 +261,10 @@ def read_take_curves(path: Path, *, phase: str) -> list[Mapping[str, Any]] | Non
         return None
     if raw.get("phase") != phase:
         return None
+    return _take_curves(raw)
+
+
+def _take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
     curves = raw.get("curves")
     if not isinstance(curves, list) or not curves:
         return None
@@ -307,62 +311,49 @@ def parse_curve_magnitude(
     return freqs, magnitude, swept
 
 
-def read_pose_curve_pair(
-    bundle_dir: Path,
-    *,
-    phase: str,
-    position_deg: int,
-    vertical_deg: int = 0,
-    roles: tuple[str, str],
-    take_path: str | None = None,
-) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
-    """The latest banked take carrying BOTH roles, and the take it came from.
+class PoseCurvePair(NamedTuple):
+    lower: Mapping[str, Any]
+    upper: Mapping[str, Any]
+    take: Measurement
+    document: Mapping[str, Any]
 
-    Selected through the measurement index — :func:`~.record_index.
-    bundle_measurements` narrows the candidates and :func:`read_take_curves`
-    decides — so the delay landscape and the forward model share one answer to
-    "which take speaks for this pose" instead of two that agree until they do
-    not.
 
-    Both roles must ride ONE take: the two transfers are summed against each
-    other, so curves from two different captures would be summed across
-    whatever moved between them.
+def select_pose_curve_pair(
+    bundle_dir: Path, *, phases: tuple[str, ...], position_deg: int | None,
+    roles: tuple[str, str], vertical_deg: int = 0, take_path: str | None = None,
+) -> PoseCurvePair | None:
+    """Newest matching take, with both curves and their recorded request facts.
 
-    **Latest attempt wins.** A superseded take stays on disk as the honest walk
-    record, and ``take_id`` is ``{position}_a{attempt:02d}`` zero-padded so the
-    index's path order is also chronological. The rows are therefore walked
-    newest-first and the first match returned, which is the retake rather than
-    what it replaced.
-
-    **A pose is a bearing AND a height.** ``vertical_deg`` is the signed
-    whole-degree elevation above mark height, defaulting to the mark: a
-    design-axis consumer asking for 0 deg gets the take measured at the mark,
-    never a raised one banked later in the same walk. Without it "latest
-    attempt wins" would walk right past the pose it was asked for.
-
-    ``None`` when no take at this pose carries both roles, never a raise: a
-    round that measured one driver is an ordinary shape.
+    Both roles must ride ONE take: combining transfers from different captures
+    would sum across whatever moved between them. Retake ids are zero-padded,
+    so the index's path order puts a retake after the take it supersedes.
+    Height stays part of the pose even when the bearing is unspecified: a newer
+    raised take cannot stand in for a measurement at mark height.
     """
-
-    for row in reversed(
-        bundle_measurements(
-            bundle_dir,
-            phase=phase,
-            position_deg=position_deg,
-            vertical_deg=vertical_deg,
-        )
-    ):
-        if take_path is not None and row.path != take_path:
+    for row, document in reversed(list(measurement_documents(bundle_dir))):
+        if (row.phase not in phases or row.vertical_deg != vertical_deg
+            or (position_deg is not None and row.position_deg != position_deg)
+            or (take_path is not None and row.path != take_path)):
             continue
-        curves = read_take_curves(
-            take_artifact_path(bundle_dir, row.path), phase=phase,
-        )
+        curves = _take_curves(document)
         if curves is None:
             continue
         by_role = {str(curve.get("role")): curve for curve in curves}
         if roles[0] in by_role and roles[1] in by_role:
-            return by_role[roles[0]], by_role[roles[1]], row.path
+            return PoseCurvePair(by_role[roles[0]], by_role[roles[1]], row, document)
     return None
+
+
+def read_pose_curve_pair(
+    bundle_dir: Path, *, phase: str, position_deg: int,
+    roles: tuple[str, str], vertical_deg: int = 0, take_path: str | None = None,
+) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
+    """The latest pair at this pose; see :func:`select_pose_curve_pair`."""
+    found = select_pose_curve_pair(
+        bundle_dir, phases=(phase,), position_deg=position_deg, roles=roles,
+        vertical_deg=vertical_deg, take_path=take_path,
+    )
+    return (found.lower, found.upper, found.take.path) if found else None
 
 
 def parse_curve_complex(

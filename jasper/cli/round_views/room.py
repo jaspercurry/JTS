@@ -18,7 +18,7 @@ from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    _write, answer, default_out, read_run_manifest, refused_by_name, resolve_set,
+    _write, add_set_argument, answer, default_out, read_run_manifest, refused_by_name, resolve_set,
 )
 
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
@@ -59,5 +59,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("room", help="ceiling, median, persistence, limits, incumbent and boundary")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     parser.add_argument("--applied-profile", metavar="PATH", help="applied profile for this room")
-    parser.add_argument("--set", help="set in the run manifest")
+    add_set_argument(parser)
     parser.set_defaults(func=_cmd_room)

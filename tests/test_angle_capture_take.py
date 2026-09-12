@@ -27,6 +27,7 @@ from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import candidate_bank
@@ -637,6 +638,7 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
         door, "bind_measurement_graph",
         lambda *a, **kw: SimpleNamespace(installed_graph_yaml=lambda: "graph: scoped\n"),
     )
+    monkeypatch.setattr("jasper.active_speaker.measurement_emit.measurement_bass_extension", lambda **kwargs: {})
     playback = v2host.bind_production_play(
         camilla_factory=object,
         evidence_store=SimpleNamespace(
@@ -651,8 +653,8 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
     lateral_indexes = [i for i, phase in index_phases.items() if phase == PHASE_LATERAL]
     for index, cid in zip(lateral_indexes, candidate_ids or ("",)):
         spec = replace(specs.get(index, MeasureSpec(kind="candidate")), program_phase=PHASE_LATERAL)
-        expected_scope = "drivers" if candidate_ids is None else "candidate" if cid else "base"
-        assert (spec.graph_scope, spec.candidate_id) == (expected_scope, cid)
+        expected_scope = "drivers" if candidate_ids is None else "candidate"
+        assert (spec.graph_scope, spec.candidate_id) == (expected_scope, cid or ("baseline-speaker" if candidate_ids is not None else ""))
         prepared = asyncio.run(playback.compose(spec=spec))
         verdict = _run_phase(conductor, index, 1)
         assert verdict["accepted"] is True
@@ -662,7 +664,7 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
         )
     expected_roles = {"woofer", "tweeter"} if candidate_ids is None else {"summed"}
     assert [{curve["role"] for curve in record["curves"]} for record in records] == [expected_roles] * len(lateral_indexes)
-    assert [record["candidate_id"] for record in records] == list(candidate_ids or ("",))
+    assert [record["candidate_id"] for record in records] == [cid or ("baseline-speaker" if candidate_ids is not None else "") for cid in (candidate_ids or ("",))]
     assert len(list((tmp_path / "crossover_v2/scope-walk").glob("*.wav"))) == len(lateral_indexes)
 
 
@@ -698,7 +700,7 @@ def test_a_seat_walk_reaches_the_session_and_plays_the_applied_tune_whole(slot):
          specs[index].pose_prompts)
         for index in lateral_indexes
     ] == [
-        (MEASURE_KIND_VERIFY, "speaker_tune", "", (prompt.text,))
+        (MEASURE_KIND_VERIFY, "candidate", "baseline-room", (prompt.text,))
         for prompt in prompts
     ]
 
@@ -781,10 +783,10 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
     assert {record["measurement_purpose"] for record in records} == {mp.PURPOSE_ROOM}
     assert len({doc_pose_key(record) for record in records}) == len(records)
     assert [specs[index].graph_scope for index in lateral_indexes] == [
-        "room_candidate" if room_candidate else "speaker_tune"
+        "candidate"
     ] * len(program.poses)
     assert [record["candidate_id"] for record in records] == [
-        "room-fp" if room_candidate else ""
+        "room-fp" if room_candidate else "baseline-room"
     ] * len(program.poses)
     assert {
         tuple(curve["band_hz"])
@@ -809,7 +811,7 @@ def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(
 
 @pytest.mark.parametrize("delay_us", [0.0, 250.0])
 @pytest.mark.parametrize("bass_extension,scope", [
-    ({}, "candidate"), (asdict(_descriptor()), "bass_candidate"),
+    ({}, "candidate"), (asdict(_descriptor()), "candidate"),
 ])
 def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(
     slot, monkeypatch, delay_us, bass_extension, scope,
@@ -918,7 +920,7 @@ def test_a_staged_stimulus_reaches_every_spec_the_walk_plays(slot, monkeypatch):
 
     # Both construction sites, named by the scope only each one builds: the
     # walk-level design-axis spec and the per-stop summed specs.
-    assert {spec.graph_scope for spec in specs.values()} == {"drivers", "base"}
+    assert {spec.graph_scope for spec in specs.values()} == {"drivers", "candidate"}
     assert {spec.level_ladder_dbfs for spec in specs.values()} == {ladder}
     assert _played_measure_spec(
         specs[_MEASURE_INDEX], monkeypatch
@@ -945,7 +947,7 @@ def test_a_summed_sweep_rides_the_summed_stops_only(slot):
     _prompts, _consumer, specs, _trims, _claims = _take()
 
     by_scope = {spec.graph_scope: spec for spec in specs.values()}
-    assert (by_scope["base"].sweep_band_hz, by_scope["base"].sweep_s) == (band, seconds)
+    assert (by_scope["candidate"].sweep_band_hz, by_scope["candidate"].sweep_s) == (band, seconds)
     assert (by_scope["drivers"].sweep_band_hz, by_scope["drivers"].sweep_s) == ((), None)
 
 
@@ -1322,7 +1324,7 @@ def test_complete_branch_batch_reaches_browser_and_banks_all_three_curves(slot, 
     assert record["branch_diagnostic"]["sample_rate_hz"] == SR
 
 
-@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "speaker_tune"), ("bass", mp.PURPOSE_BASS, "room_tune")])
+@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "candidate"), ("bass", mp.PURPOSE_BASS, "candidate")])
 def test_arm_plan_preserves_upstream_layers_without_changing_positions(slot, program, purpose, scope):
     request = ac.request_for_program(mp.program(program, "quick"), mover=ac.MOVER_ARM)
     spool.stage_angle_request(request)

@@ -28,7 +28,7 @@ from ._common import (
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
-    answer,
+    add_set_argument, answer,
     context_artifacts,
     default_out,
 )
@@ -40,15 +40,22 @@ def _runnable(
     round_dir: Path,
     inputs: RoundInputs,
     set_id: str | None = None,
+    optional_set_flags: tuple[str, ...] = (),
 ) -> tuple[str, list[str]]:
     bindings = {
         TAKES_THIS_ROUND: round_dir,
         TAKES_THIS_BUNDLE: inputs.session_dir,
         "<set-id>": set_id,
     }
-    takes = tuple(token for index, token in enumerate(spec.takes)
-                  if set_id is not None or (token != "<set-id>" and spec.takes[index:index + 2] not in
-                                           (("--set", "<set-id>"), ("--after-set", "<set-id>"))))
+    takes: list[str] = []
+    source = iter(spec.takes)
+    for token in source:
+        if token in optional_set_flags:
+            value = next(source)
+            if bindings.get(value):
+                takes.extend((token, value))
+        else:
+            takes.append(token)
     missing = [
         token for token in takes
         if token.startswith("<") and not bindings.get(token)
@@ -61,8 +68,8 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     manifest = read_run_manifest(inputs)
-    sets = [resolve_set(inputs, args.set)] if args.set else [
-        resolve_set(inputs, row["set_id"]) for row in manifest["sets"]
+    sets = [resolve_set(inputs, args.set, manifest=manifest)] if args.set else [
+        resolve_set(inputs, row["set_id"], manifest=manifest) for row in manifest["sets"]
     ]
     program = manifest["program"]
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
@@ -82,7 +89,9 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
                 else default_out(inputs, round_dir, spec.artifact, named)
             )
             stat = path.stat() if path.is_file() else None
-            produced_by, required_inputs = _runnable(view, spec, round_dir, inputs, named)
+            produced_by, required_inputs = _runnable(
+                view, spec, round_dir, inputs, named, args.set_flags_by_view.get(view.split()[0], ()),
+            )
             if selected and "<take-id>" in required_inputs and len(selected.selected_ids) == 1:
                 produced_by = produced_by.replace(shlex.quote("<take-id>"), shlex.quote(selected.take_id()))
                 required_inputs.remove("<take-id>")
@@ -137,6 +146,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     inventory.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
     )
-    inventory.add_argument("--set", help="inventory one set in the run manifest")
+    add_set_argument(inventory)
     inventory.add_argument("--out", default=None, help="write the result here")
     inventory.set_defaults(func=_cmd_inventory)

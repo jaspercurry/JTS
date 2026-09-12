@@ -94,7 +94,8 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     assert report.price["ceiling_min"] > 0
     assert report.spl_ceiling_db_spl == 85
     assert report.plan.level.resolved.anchor_db_spl == 75
-    assert report.plan.baseline_graph_scope == "base"
+    assert report.plan.baseline_graph_scope == "preset"
+    assert {row.graph_scope for row in report.schedule} == {"candidate"}
 
 
 @pytest.mark.parametrize("verb", ["plan", "stage"])
@@ -171,7 +172,7 @@ def test_candidates_are_proved_as_composed(tuning_profile, bass):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     assert report.issues == ()
-    assert report.schedule[0].graph_scope == ("bass_candidate" if bass else "room_candidate")
+    assert report.schedule[0].graph_scope == "candidate"
     assert report.to_dict()["baseline_graph_scope"] == plan.baseline_graph_scope
 
 

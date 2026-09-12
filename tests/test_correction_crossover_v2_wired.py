@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     INTEGRITY_COUNTER_KEYS,
@@ -1771,9 +1772,9 @@ def _leg(tuning=None, half=None, phase_map=None, run_async=None):
 
 @pytest.mark.parametrize("phase,scope,kind", [
     ("check", "drivers", "candidate"), ("measure", "drivers", "candidate"),
-    ("lateral", "drivers", "candidate"), ("cloud_measure", "base", "candidate"),
-    ("entry_baseline", "base", "candidate"), ("verify", "speaker_tune", "verify"),
-    ("cloud_verify", "speaker_tune", "verify"),
+    ("lateral", "drivers", "candidate"), ("cloud_measure", "candidate", "candidate"),
+    ("entry_baseline", "candidate", "candidate"), ("verify", "candidate", "verify"),
+    ("cloud_verify", "candidate", "verify"),
 ])
 def test_every_phase_selects_its_program_and_graph(_held_window, phase, scope, kind):
     tuning = _LegSession()

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.room_grade import (
     bundle_graph_scopes,
@@ -25,7 +27,7 @@ from ._common import (
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
-    answer,
+    add_set_argument, answer,
     default_out,
     refused_by_name,
     resolve_set, round_inputs,
@@ -37,6 +39,19 @@ def _document(path: Path) -> dict:
     if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
         raise StageFailed(EXIT_UNREADABLE, TypeError("room_document_malformed"))
     return document
+
+
+def _band_line(band: Mapping[str, Any]) -> str:
+    if band["rms_db"] is None:
+        return f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: unavailable"
+    spread = "n/a" if band["spread_db"] is None else f"{band['spread_db']:.1f} dB"
+    line = (
+        f"{band['lo_hz']:g}-{band['hi_hz']:g} Hz: rms {band['rms_db']:.1f} dB "
+        f"max {band['max_db']:.1f} dB spread {spread}"
+    )
+    if band["incumbent_rms_db"] is None:
+        return line
+    return f"{line} | incumbent rms {band['incumbent_rms_db']:.1f} (Δ {band['delta_rms_db']:+.1f})"
 
 
 def _cmd_room_grade(args: argparse.Namespace) -> int:
@@ -74,6 +89,9 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
                         else bundle_graph_scopes(inputs.session_dir),
         "graph_scopes_source": "selected_median" if median.evidence is not None else "round",
     }
+    # A grade survives an artifact write failure.
+    for band in artifact["bands"]:
+        print(_band_line(band), file=sys.stderr)
     written = _write(artifact, None, default_out(
         inputs, directory, ARTIFACT_BY_VIEW[args.command].artifact, args.set,
     ))
@@ -109,6 +127,6 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("room-grade", help="grade a room set against its incumbent in this run")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    parser.add_argument("--set", help="candidate set whose room document is graded")
+    add_set_argument(parser)
     parser.add_argument("--incumbent", help="override the incumbent with this set from the same run")
     parser.set_defaults(func=_cmd_room_grade)

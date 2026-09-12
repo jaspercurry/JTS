@@ -213,7 +213,7 @@ def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
             "candidate_id": graph,
             "submitted_graph_fingerprint": graph,
             "graph_fingerprint": graph,
-            "graph_scope": "room_candidate" if graph == "candidate" else "speaker_tune",
+            "graph_scope": "candidate" if graph == "candidate" else "candidate",
             "side": side,
             "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
             "level_db": -30.0,
@@ -249,7 +249,7 @@ def test_graph_change_is_the_intervention_not_an_incompatible_basis():
     assert comparison["basis_status"] == "compatible"
     assert comparison["incompatible_fields"] == []
     assert comparison["intervention_fields"] == [
-        "candidate_id", "graph_fingerprint", "graph_scope",
+        "candidate_id", "graph_fingerprint",
         "submitted_graph_fingerprint",
     ]
 
@@ -437,12 +437,12 @@ def _stamp_graph_scopes(round_dir: Path, scopes: Sequence[str]) -> None:
 def test_the_view_discloses_the_scopes_the_round_played_through(tmp_path, capsys):
     round_dir = bank_measure_round(tmp_path)
     write_room_median(round_dir)
-    _stamp_graph_scopes(round_dir, ("speaker_tune", "base"))
+    _stamp_graph_scopes(round_dir, ("candidate", "base"))
 
     assert round_views.main(["room-grade", str(round_dir)]) == EXIT_OK
 
     assert json.loads(capsys.readouterr().out)["graph_scopes"] == [
-        "base", "speaker_tune",
+        "base", "candidate",
     ]
 
 

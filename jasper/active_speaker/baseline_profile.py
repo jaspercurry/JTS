@@ -55,6 +55,8 @@ from .camilla_yaml import (
     emit_active_speaker_driver_domain_config,
     linearization_headroom_db,
 )
+from .candidate_trials import candidate_boost_issue
+from .boost_protection import config_graph_fingerprint
 from .crossover_contract import (
     TUNING_OWNERS,
     automatic_candidate_readiness,
@@ -3828,23 +3830,9 @@ async def _apply_baseline_profile_locked(
 
     reviewed_candidate = build_candidate(
         write=False,
-        compile_config=expected_tuning_graph_fingerprint is not None,
+        compile_config=measured_candidate is not None or expected_tuning_graph_fingerprint is not None,
     )
     graph_issue = None
-    if isinstance(measured_candidate, MeasuredCrossoverCandidate) and (
-        measured_candidate.room_correction or measured_candidate.bass_extension
-    ):
-        from .measurement_emit import (  # lazy: measurement emission consumes baseline recomposition
-            MeasurementGraphRefused,
-            candidate_upstream_snapshot,
-        )
-        try:
-            candidate_upstream_snapshot(
-                measured_candidate, topology=topology,
-                applied_profile=load_applied_baseline_profile_state(state_target) or {},
-            )
-        except MeasurementGraphRefused as exc:
-            graph_issue = _issue("blocker", exc.reason, str(exc))
     if expected_tuning_graph_fingerprint is not None and str(
         (reviewed_candidate.get("config") or {}).get("sha256") or ""
     )[:16] != expected_tuning_graph_fingerprint:
@@ -3852,6 +3840,8 @@ async def _apply_baseline_profile_locked(
             "blocker", "candidate_trial_graph_mismatch",
             "the captured tuning graph does not match the compiled graph",
         )
+    if measured_candidate is not None:
+        graph_issue = graph_issue or candidate_boost_issue(config_graph_fingerprint(reviewed_candidate))
     if graph_issue is not None:
         reviewed_candidate["permissions"]["may_apply"] = False
         reviewed_candidate["issues"] = [*reviewed_candidate.get("issues", []), graph_issue]

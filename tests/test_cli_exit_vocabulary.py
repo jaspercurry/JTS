@@ -111,9 +111,9 @@ def test_the_exempt_modules_are_real_and_in_the_menu(module_name: str) -> None:
 
 
 @pytest.mark.parametrize("fields", [
-    {}, {"code": "measurement_candidate_room_mismatch"},
+    {}, {"code": "measurement_candidate_speaker_mismatch"},
     {"next_action": {"id": "apply_matching_room_layer"}},
-    {"code": "measurement_candidate_room_mismatch",
+    {"code": "measurement_candidate_speaker_mismatch",
      "next_action": {"id": "apply_matching_room_layer"}},
 ])
 @pytest.mark.parametrize(("code", "status"), sorted(_refusal.STATUS_BY_CODE.items()))

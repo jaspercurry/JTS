@@ -10,10 +10,6 @@ must still do — so each is written against the production entry point
 (``authorize_begin``) rather than against the pure function, which is where a
 wiring mistake would actually show up.
 
-The kind-vocabulary trio below is the discipline ``spatial.SCREEN_KINDS`` and
-``coordinator.REFUSAL_KINDS`` already keep, applied to the decision this slice
-introduced: declared set, every member handled, and an unrecognised member loud
-and REFUSED rather than quietly admitted.
 """
 
 from dataclasses import replace

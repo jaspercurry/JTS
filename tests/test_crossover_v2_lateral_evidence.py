@@ -516,7 +516,7 @@ def test_a_pose_replays_the_anchors_own_program_object():
 
 
 @pytest.mark.parametrize("has_sum", [True, False])
-@pytest.mark.parametrize("candidate_id", ["", "candidate-a"])
+@pytest.mark.parametrize("candidate_id", ["baseline-fp", "candidate-a"])
 def test_summed_pose_retains_only_its_measured_sum(has_sum, candidate_id):
     from jasper.active_speaker.crossover_v2.spatial import TakeClaim
     from tests.crossover_v2_fixtures import _verify_analysis
@@ -531,7 +531,7 @@ def test_summed_pose_retains_only_its_measured_sum(has_sum, candidate_id):
         fakes, lateral_claims=(TakeClaim(candidate_id=candidate_id),) * LATERAL_COUNT,
         measure_specs_by_index={
             index: MeasureSpec(
-                kind="candidate", graph_scope="candidate" if candidate_id else "base",
+                kind="candidate", graph_scope="candidate",
                 candidate_id=candidate_id,
             )
             for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1)

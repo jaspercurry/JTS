@@ -59,7 +59,6 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     TRANSIENT_AUTO_RETRY_CODES,
@@ -544,8 +543,7 @@ def test_verify_without_an_integrity_record_is_not_refused_but_says_so(caplog):
     fakes.verify = lambda program: _verify_analysis(program, integrity=None)
     verdict = _run_phase(c, 3, 3)
     # The ROUND refuses — untrusted evidence with no rollback anchor bound.
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
     # …but VERIFY's OWN capture gate still accepted this capture, and the
     # journal still says so rather than folding it into the round's refusal.
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")

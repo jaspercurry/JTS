@@ -669,8 +669,8 @@ async def test_an_async_compose_is_awaited_rather_than_passed_through():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope, phase", [
-    ("drivers", "measure"), ("base", "entry_baseline"),
-    ("speaker_tune", "cloud_verify"), ("candidate", "lateral"),
+    ("drivers", "measure"), ("candidate", "entry_baseline"),
+    ("candidate", "cloud_verify"), ("candidate", "lateral"),
 ])
 async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock(tmp_path, monkeypatch, scope, phase):
     from contextlib import asynccontextmanager

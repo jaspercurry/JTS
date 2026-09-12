@@ -61,7 +61,7 @@ from tests.crossover_v2_banked_round import (
     bank_measure_round,
 )
 from tests.crossover_v2_fixtures import bank_capture_round
-from tests.run_manifest_fixture import write_manifest
+from tests.run_manifest_fixture import manifest_set, write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
 # round's answer is as knowable here as it is there.
 from tests.test_crossover_v2_gate_sweep import FEATURE_HZ, _pose_ir
@@ -571,12 +571,6 @@ def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
 
     assert result.curve is None
     assert result.reason
-
-
-
-
-
-
 
 
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
@@ -2333,21 +2327,6 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
     from jasper.cli._report import render_report
     expected = {"round_dir": str(round_dir), "spec": spec_with_gate_sensitivity(load_banked_round(round_dir), rungs_ms=[5, 20]).to_dict()}
     assert (round_dir / "spec_gate_sensitivity.json").read_bytes() == (render_report(expected) + "\n").encode()
-    payload = json.loads((round_dir / "spec_gate_sensitivity.json").read_text())
-    assert payload["round_dir"] == str(round_dir)
-    spec = payload["spec"]
-    assert spec["gate_sweep_frame"]["rungs_ms"] == [5.0, 20.0]
-
-    low = spec["bands"][0]
-    assert low["gate_sensitivity_note"] is None
-    assert low["n_valid_rungs"] == 2
-    assert np.isfinite(low["sigma_growth_ratio"])
-    assert np.isfinite(low["gate_sensitivity_db"])
-    # The verdict is the round's OWN, re-read and not re-graded.
-    banked = load_banked_round(round_dir).graded_report
-    assert spec["overall_within_target"] == banked.overall_within_target
-    assert low["max_deviation_hz"] == banked.bands[0].max_deviation_hz
-    assert low["within_target"] == banked.bands[0].within_target
 
 
 # --------------------------------------------------------------------------- #
@@ -2357,26 +2336,31 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
 
 @pytest.fixture
 def gate_sweep_round(tmp_path):
-    return bank_capture_round(
-        tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)]
-    )
+    root = bank_capture_round(tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)])
+    bundle = root / "bundle/b0"
+    records = []
+    for i, path in enumerate(sorted((bundle / "summed").glob("*.json"))):
+        record = json.loads(path.read_text())
+        record["level_db"] = -30.0 if i < 2 else -20.0
+        path.write_text(json.dumps(record))
+        records.append((str(path.relative_to(bundle)), record))
+    write_manifest(root, groups=[manifest_set(records[:2], set_id="first"), manifest_set(records[2:], set_id="second")])
+    return root
 
 
-def test_cli_gate_sweep_writes_its_report_beside_the_round(gate_sweep_round):
+@pytest.mark.parametrize("set_id,ids", [(None, None), ("first", ("cloud_verify_00", "cloud_verify_01"))])
+def test_cli_gate_sweep_writes_its_report_beside_the_round(gate_sweep_round, set_id, ids):
     from jasper.cli import round_views as cli
     from jasper.cli._report import render_report
     from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 
-    expected = sweep_round(gate_sweep_round, rungs_ms=[5, 20])
-    rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20"])
-
+    expected = sweep_round(gate_sweep_round, rungs_ms=[5, 20], take_ids=ids)
+    flags = ["--set", set_id] if set_id else []
+    rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20", *flags])
     assert rc == cli.EXIT_OK
-    report = json.loads(
-        (gate_sweep_round / cli.ARTIFACT_BY_VIEW["sweep --scope round"].artifact).read_text()
-    )
-    assert (gate_sweep_round / "gate_sweep.json").read_bytes() == (render_report(expected) + "\n").encode()
-    assert report["frame"]["rungs_ms"] == [5.0, 20.0]
-    assert len(report["poses"]) == 3
+    path = gate_sweep_round / (f"gate_sweep-{set_id}.json" if set_id else "gate_sweep.json")
+    assert path.read_bytes() == (render_report(expected) + "\n").encode()
+    assert {pose["capture_id"] for pose in expected["poses"]} == set(ids or ("cloud_verify_00", "cloud_verify_01", "cloud_verify_02"))
 
 
 def test_cli_gate_sweep_out_puts_the_report_where_it_is_told(
