@@ -21,6 +21,8 @@ from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measurement_bass import BASS_BANDS_HZ
 from .measurement_programs import PURPOSE_BASS, baseline_scope
 
+REFERENCE_BAND_HZ = (300.0, 1000.0)
+
 
 class BassFitCoverageUnavailable(CrossoverV2Refused):
     def __init__(self) -> None:
@@ -30,7 +32,7 @@ class BassFitCoverageUnavailable(CrossoverV2Refused):
 def fit_bass_shape(
     pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
     candidate_id: str, descriptor: Mapping[str, Any], target: Mapping[str, Any],
-    reference_band_hz: tuple[float, float] = (300.0, 1000.0),
+    reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ,
 ) -> dict[str, Any]:
     settings = validate_dynamic_bass_descriptor(descriptor)
     tf = np.asarray(target["freqs_hz"], dtype=float)

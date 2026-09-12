@@ -13,7 +13,7 @@ from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_
 from jasper.json_fields import finite_float
 
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
-from .bass_fit import BassFitCoverageUnavailable, fit_bass_shape
+from .bass_fit import REFERENCE_BAND_HZ, BassFitCoverageUnavailable, fit_bass_shape
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 
@@ -36,7 +36,7 @@ def level_key(basis: Mapping[str, Any], **identity: Any) -> tuple[float, float, 
 def fit_bass_table(
     pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
     candidate_id: str, descriptor: Mapping[str, Any], target: Mapping[str, Any],
-    tolerance_db: float, reference_band_hz: tuple[float, float] = (300.0, 1000.0),
+    tolerance_db: float, reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ,
 ) -> dict[str, Any]:
     tolerance = finite_float(tolerance_db)
     if tolerance is None or tolerance <= 0:

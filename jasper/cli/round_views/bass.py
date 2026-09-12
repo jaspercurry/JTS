@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from jasper.active_speaker.measurement_bass import bass_view
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed, stage
@@ -39,7 +40,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             parser.add_argument("--candidate", type=Path, action="append", required=True, help="measured candidate artifact; repeat for each candidate")
             parser.add_argument("--target", type=Path, required=True, help="target curve JSON: freqs_hz, magnitude_db")
             parser.add_argument("--tolerance-db", type=float, required=True)
-            parser.add_argument("--reference-band-hz", type=float, nargs=2, default=(300., 1000.))
+            parser.add_argument("--reference-band-hz", type=float, nargs=2, default=REFERENCE_BAND_HZ)
 
 
 def _cmd(args: argparse.Namespace) -> int:
