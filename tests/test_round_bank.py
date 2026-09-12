@@ -403,12 +403,13 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
     for purpose in ("speaker", "room", "bass")
     for view in bookkeeping_views(purpose)
 ])
-def test_every_bookkeeping_view_writes_from_one_run(tmp_path, request, purpose, view):
+def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
     from jasper.cli.round_views import run_bookkeeping
     from tests.crossover_v2_banked_round import bank_seat_round
     from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir, _flat_curve
     from tests.test_crossover_v2_feature_classifier import _bundle, _resonant_ir
 
+    monkeypatch.chdir(tmp_path)
     if view == "classify-features":
         target, _ = _bundle(tmp_path, _resonant_ir(3.0))
     elif view == "distortion":

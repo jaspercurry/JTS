@@ -753,10 +753,7 @@ def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
     the BEFORE-TUNING state, never as "how flat your speaker is now" (that claim
     needs a post-apply cloud). Carve-out lines render VERBATIM, unprefixed,
     because they are a distinct post-apply-persistent fact required on every
-    tier rather than a claim about the CURRENT state.
-
-    Two readers (#1965): Express takes this branch permanently, and Full takes
-    it on the STAGE-1 screens.
+    run rather than a claim about the CURRENT state (#1965).
 
     **The scope clause is a claim about the post-apply check, so it renders only
     where one has PASSED.** "The applied correction targets these; the result was
@@ -1166,8 +1163,8 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
 def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """The compact CLOUD-MEASURE entry of the ``cloud`` block, or empty.
 
-    Express's only cloud group, and every tier's only cloud group until the
-    post-apply walk closes (#1965) — see :func:`_pre_apply_flatness_lines`.
+    The only cloud group until the post-apply walk closes (#1965) — see
+    :func:`_pre_apply_flatness_lines`.
     """
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
 

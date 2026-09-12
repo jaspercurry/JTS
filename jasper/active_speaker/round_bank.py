@@ -8,8 +8,7 @@ The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
 on the box itself so a round outlives session retention (#3498, #2882). It is
 the tree
 :func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
-reads, plus the two files this path derives for whoever opens the round
-directory next::
+reads, plus the bookkeeping views declared by ``measurement_programs``::
 
     <campaign-root>/<round-id>/
       bundle/<session-id>/...    the live session bundle, hard-linked
@@ -312,7 +311,8 @@ def bank_round(
     """Bank one live session bundle and its SSOT documents into the campaign home.
 
     The bundle is hard-linked in, not copied byte-for-byte (falling back to a
-    copy across a filesystem boundary or when hard-link permissions deny it) — see :func:`_link_or_copy`.
+    copy across a filesystem boundary or when hard-link permissions deny it)
+    — see :func:`_link_or_copy`.
 
     Returns the banked round directory and the ``provenance.json`` payload
     written beside the bundle: when it was banked, which session it came from,

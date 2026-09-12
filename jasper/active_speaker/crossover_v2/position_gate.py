@@ -68,7 +68,6 @@ def _granted(
 
 
 class PositionGate:
-
     """Thread-safe capture admission shared by human and external movers.
 
     Reposted begins are idempotent. A placement grant carries only to the next

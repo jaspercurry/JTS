@@ -95,7 +95,6 @@ def validated_pose(
     seat_offset_m: Sequence[float] | None,
     distance_m: float | None = None,
 ) -> tuple[tuple[float, float, float] | None, float | None]:
-
     """The one rule every carrier of a pose category checks: ``kind`` is one
     of :data:`POSE_KINDS`; exactly a seat states three finite metres
     ``(right, forward, up)`` from the head; a distance, when stated, is a
@@ -333,7 +332,6 @@ CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 
 
 def available_programs() -> tuple[tuple[str, str], ...]:
-
     """The ``(program_id, size)`` pairs a menu may offer, sorted.
 
     ``spot`` is absent on purpose: it carries caller geometry, so it is reached
