@@ -3692,10 +3692,6 @@ def prepare_v2_session(
                 "this measured tuning is already applied; it does not "
                 "use the speaker-fit verification stage"
             )
-        attempt_store = _attempt_loop_store_snapshot()
-        attempts_loop = state.get("attempts_loop")
-        attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
-        prior_attempt_decision = attempts_loop.get("last_decision")
         tuning_attempt_id = (
             str(candidate_state.get("fingerprint") or "")
             if isinstance(candidate_state, Mapping) else ""
@@ -3793,15 +3789,6 @@ def prepare_v2_session(
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
-        attempt_store = _attempt_loop_store_snapshot()
-        prior_loop = (
-            prior_raw.get("attempts_loop")
-            if isinstance(prior_raw, Mapping) else None
-        )
-        prior_decision = (
-            prior_loop.get("last_decision")
-            if isinstance(prior_loop, Mapping) else None
-        )
         prior_snapshot = (
             V2ConductorSnapshot(
                 session_id=str(prior_raw.get("session_id") or ""),
@@ -3810,11 +3797,6 @@ def prepare_v2_session(
                 gain_plan_db=prior_raw.get("gain_plan_db"),
                 measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
                 attempt_history=attempt_history_from_state(prior_raw),
-                last_attempt_decision=(
-                    dict(prior_decision)
-                    if isinstance(prior_decision, Mapping)
-                    else None
-                ),
             )
             if isinstance(prior_raw, Mapping)
             else None
@@ -3944,11 +3926,6 @@ def prepare_v2_session(
                 verify_pilot_transfer_prior=pilot_transfer_prior,
                 attempt_history=attempt_history_from_state(state),
                 series_position=series_position_from_state(state),
-                attempt_floor=attempt_store.floor,
-                last_attempt_decision=(
-                    dict(prior_attempt_decision)
-                    if isinstance(prior_attempt_decision, Mapping) else None
-                ),
                 speaker_id=context.topology.topology_id,
                 tuning_attempt_id=tuning_attempt_id,
             )
@@ -3976,7 +3953,6 @@ def prepare_v2_session(
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
                 tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
-                attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
                 series_position=series_position,
             )

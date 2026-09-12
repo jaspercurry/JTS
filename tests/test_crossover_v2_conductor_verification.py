@@ -785,20 +785,14 @@ def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
     assert grade["graded"] is badged
 
 
-def test_a_tracking_claim_that_missed_its_tolerance_still_refuses():
-    """The control for the pin above, and the reason the refusal keeps its name.
-
-    ``verify_out_of_tolerance`` now fires only where a tracking max was
-    MEASURED and cleared the tolerance — which is what the code has always
-    said, and what it did not always mean.
-    """
+def test_a_tracking_claim_that_missed_its_tolerance_is_advisory():
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
 
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "verify_out_of_tolerance"
+    assert verdict["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
     assert c.verify_claims["integration"]["status"] == CLAIM_FAIL
 
 

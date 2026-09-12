@@ -25,6 +25,7 @@ import dataclasses
 import io
 import json
 import logging
+import math
 import re
 import secrets
 import threading
@@ -259,9 +260,6 @@ def test_remotes_stage_1_n_states_the_assumption_that_makes_it_safe(monkeypatch)
 
 
 def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
-    """One number, two statements of it, and they cannot disagree: the angle
-    comes from ``offset_cm`` at the nominal mark distance, and its sign from the
-    row's own LEFT/RIGHT word."""
     for prompt in flow.CLOUD_POSITION_PROMPTS + flow.LATERAL_POSE_PROMPTS:
         if prompt.role == POSITION_ROLE_XOVR:
             continue
@@ -275,8 +273,8 @@ def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
         assert ("RIGHT" in prompt.headline) == (degrees > 0)
         # The magnitude really is the bearing to that offset, not a table.
         expected = round(
-            flow.math.degrees(
-                flow.math.atan2(prompt.offset_cm / 100.0, flow.MARK_DISTANCE_M)
+            math.degrees(
+                math.atan2(prompt.offset_cm / 100.0, flow.MARK_DISTANCE_M)
             )
         )
         assert abs(degrees) == expected

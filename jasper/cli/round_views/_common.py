@@ -183,13 +183,7 @@ def _load_round(round_dir: str | Path) -> BankedRound:
 def _write(
     payload: Any, out: str | Path | None, default_path: Path, *, make_parents: bool = False,
 ) -> Path:
-    """Publish one view. ``OSError`` only, and that is the whole rule.
-
-    A ``ValueError`` out of the strict writer is a payload this run should not
-    have built — co-metrics over partial bearing coverage yields ``NaN``, which
-    ``allow_nan=False`` rejects — and sending that operator to fix the
-    filesystem sends them to the wrong place. It falls to :func:`main`.
-    """
+    """Publish one view; only filesystem errors become write refusals."""
 
     return stage(
         EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path,
@@ -217,6 +211,12 @@ class SetTakes(NamedTuple):
     def selected_ids(self) -> tuple[str, ...]:
         return tuple(take["take_id"] for take in self.takes if take["selected"])
 
+    @property
+    def on_axis(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(take for take in self.takes if take["selected"]
+                     and take["pose"].get("kind") == POSE_KIND_BEARING
+                     and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0)
+
     def take_id(self, requested: str | None = None) -> str:
         ids = self.selected_ids
         if requested is not None:
@@ -225,9 +225,7 @@ class SetTakes(NamedTuple):
             return requested
         if len(ids) == 1:
             return ids[0]
-        on_axis = [take["take_id"] for take in self.takes if take["selected"]
-                   and take["pose"].get("kind") == POSE_KIND_BEARING
-                   and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0]
+        on_axis = [take["take_id"] for take in self.on_axis]
         if len(on_axis) == 1:
             return on_axis[0]
         raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)

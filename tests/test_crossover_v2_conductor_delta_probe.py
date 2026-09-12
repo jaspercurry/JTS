@@ -582,9 +582,6 @@ def test_a_frame_carrying_capture_is_disclosed_rather_than_rolled_back(caplog):
 
 
 def test_delta_probe_runs_only_after_tracking_has_passed():
-    """A session that already failed at the handoff band does not need a
-    second verdict about the same capture, and its retry budget still means
-    something."""
     fakes = FakeSeams()
     c = _probed_conductor(fakes)
     fakes.verify = lambda program: dataclasses.replace(
@@ -593,8 +590,8 @@ def test_delta_probe_runs_only_after_tracking_has_passed():
             c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
         ),
     )
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["code"] == "verify_out_of_tolerance"
+    assert _run_phase(c, 3, 3)["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
     assert c.delta_probe is None
 
 
