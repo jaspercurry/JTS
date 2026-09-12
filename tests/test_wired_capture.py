@@ -35,6 +35,7 @@ import wave
 from dataclasses import replace
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.capture_source import (
@@ -314,9 +315,70 @@ def test_guarded_recorder_failure_is_visible_before_playback_can_start(stop):
 def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():
     monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
     quiet = (2 ** 26).to_bytes(4, "little", signed=True) * 32
-    monitor.observe(quiet, 32, 1)
+    monitor.observe(quiet, 32, 1, sample_rate_hz=RATE)
     assert not monitor.exceeded.is_set()
     assert monitor.max_window_db_spl == pytest.approx(69.9, abs=0.1)
+
+
+def test_spl_monitor_accepts_a_one_hz_sample_clock():
+    monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
+    monitor.observe((2 ** 26).to_bytes(4, "little", signed=True), 1, 1, sample_rate_hz=1)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(69.9, abs=0.1)
+
+
+@pytest.mark.parametrize("rate,block_frames,channel", [(48000, 1024, 0), (44100, 777, 1), (48000, 31001, 1)])
+def test_spl_level_follows_the_loud_region_and_resets(rate, block_frames, channel):
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, channel)
+    signal = np.full((6 * rate, 2), 0.001)
+    signal[:, 1 - channel] = 0.5
+    signal[2 * rate:4 * rate, channel] = 0.01
+    pcm = (signal * np.iinfo(np.int32).max).astype("<i4")
+    for offset in range(0, len(pcm), block_frames):
+        block = pcm[offset:offset + block_frames]
+        monitor.observe(block.tobytes(), len(block), 2, sample_rate_hz=rate)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(60, abs=0.1)
+    assert not monitor.exceeded.is_set()
+    hot = np.full((1024, 2), 0.5 * np.iinfo(np.int32).max, dtype="<i4")
+    monitor.observe(hot.tobytes(), len(hot), 2, sample_rate_hz=rate)
+    assert monitor.exceeded.is_set()
+    assert isinstance(monitor.error, WiredSplCeilingExceeded)
+    assert monitor.error.observed_db_spl == monitor.max_window_db_spl == pytest.approx(94, abs=0.1)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(60, abs=0.1)
+    monitor.reset()
+    assert monitor.loudest_half_second_db_spl == monitor.max_window_db_spl == -np.inf
+    assert monitor.error is None and not monitor.exceeded.is_set()
+    quiet = pcm[:rate // 2].copy()
+    monitor.observe(quiet.tobytes(), len(quiet), 2, sample_rate_hz=rate)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(40, abs=0.1)
+
+
+def test_spl_level_averages_sparse_clicks_over_the_room_floor():
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    signal = np.full(6 * 48000, 0.001)
+    signal[2400::48000] = 0.07
+    pcm = (signal * np.iinfo(np.int32).max).astype("<i4")
+    for offset in range(0, len(pcm), 1024):
+        block = pcm[offset:offset + 1024]
+        monitor.observe(block.tobytes(), len(block), 1, sample_rate_hz=48000)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(40, abs=1.0)
+    assert monitor.max_window_db_spl > 47
+
+
+@pytest.mark.parametrize("tail_frames,expected", [(11999, 40), (12000, 60), (23999, 60), (24000, 60)])
+def test_spl_level_counts_only_a_long_enough_final_window(tail_frames, expected):
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    for frames, amplitude in ((24000, .001), (tail_frames, .01)):
+        pcm = np.full(frames, amplitude * np.iinfo(np.int32).max, dtype="<i4")
+        monitor.observe(pcm.tobytes(), frames, 1, sample_rate_hz=48000)
+    assert monitor.loudest_half_second_db_spl == pytest.approx(expected, abs=.1)
+
+
+def test_reading_a_partial_level_does_not_bank_it_as_a_complete_window():
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    for amplitude, expected in ((.01, 60), (0, 57)):
+        pcm = np.full(12000, amplitude * np.iinfo(np.int32).max, dtype="<i4")
+        monitor.observe(pcm.tobytes(), len(pcm), 1, sample_rate_hz=48000)
+        assert monitor.loudest_half_second_db_spl == pytest.approx(expected, abs=.1)
 
 
 def test_budget_stops_the_reader_and_a_truncated_take_fails_the_ladder():

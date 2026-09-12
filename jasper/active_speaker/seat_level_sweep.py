@@ -33,7 +33,8 @@ READING_OVERHEAD_S = 6.0
 
 
 def watchdog_seconds(start: float, ceiling_db: float, sweep_s: float) -> float:
-    return reading_budget(start, ceiling_db) * (sweep_s + READING_OVERHEAD_S) + 30.0
+    # Ambient can be measured twice when the first sweep reads below the room floor.
+    return reading_budget(start, ceiling_db) * (sweep_s + READING_OVERHEAD_S) + 2 * sweep_s + 30.0
 
 
 class SweepLevelReader:
@@ -102,24 +103,25 @@ class SweepLevelReader:
             raise
         answer = self.capture.take_answer()
         spl = (answer.capture_integrity or {}).get("spl") or {} if answer is not None else {}
-        observed = spl.get("max_window_db_spl")
+        observed = spl.get("loudest_half_second_db_spl")
         if observed is None:
             raise StimulusCaptureStopped("mic_feed_lost", "The sweep produced no SPL observation", PlaybackObservation(emission="completed"))
         self.first = False
         return float(observed)
 
     async def read_ambient(self) -> float:
+        duration_s = self.program().total_samples / PROGRAM_SAMPLE_RATE_HZ
         recorder = make_wired_recorder(
-            self.device, sample_rate_hz=PROGRAM_SAMPLE_RATE_HZ, max_capture_s=READING_OVERHEAD_S,
+            self.device, sample_rate_hz=PROGRAM_SAMPLE_RATE_HZ, max_capture_s=duration_s + READING_OVERHEAD_S,
         )
         recorder.spl_monitor = self.monitor
         self.monitor.reset()
         try:
             # Drain startup before abort, including when a second cancel arrives.
             await resilient_restore(asyncio.to_thread(recorder.start))
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(duration_s)
         finally:
             await resilient_restore(asyncio.to_thread(recorder.abort))
         if recorder.failure is not None:
             raise recorder.failure
-        return self.monitor.max_window_db_spl
+        return self.monitor.loudest_half_second_db_spl

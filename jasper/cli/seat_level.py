@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Level with the room/bass summed sweep and the watch's loudest window.
+"""Level with the room/bass summed sweep and the watch's loudest half-second.
 
-The jts3 noise/sweep mismatch is recorded in ADR-0308. Each sweep now reads
-``max_window_db_spl``, the same statistic stamped on measurement takes.
+See ADR-0309 for the statistic shared with measurement takes.
 The mic's ``Sens Factor`` is quoted at its maximum capture volume.
 Confirm ``amixer -c <card>`` shows the capture control at 100% before trusting
 any absolute SPL this prints.
@@ -285,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jasper-seat-level",
         description=(
             "Play the room/bass summed measurement sweep and adjust the fader "
-            "until the calibrated mic's loudest window (max_window_db_spl) "
+            "until the calibrated mic's loudest half-second (loudest_half_second_db_spl) "
             "reads the target; bank the session gain. "
             "PRECONDITION: `amixer -c <card>` shows "
             "the mic's capture control at 100%, where its Sens Factor is "
