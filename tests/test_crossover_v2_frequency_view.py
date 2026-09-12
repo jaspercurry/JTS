@@ -20,6 +20,7 @@ import pytest
 
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
+from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
@@ -1107,7 +1108,7 @@ def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
 
 @pytest.mark.parametrize('case,reason', [
     ('one_level', None), ('same_main', None), ('repeat', None), ('two_candidates', None),
-    ('unselected', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
+    ('unselected', None), ('entry_baseline', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
     ('duplicate', 'bass_fit_pairs_unavailable'), ('run', 'bass_fit_run_mismatch'),
     ('candidate', 'bass_fit_candidate_unreadable'),
 ])
@@ -1119,6 +1120,11 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
     elif case == 'same_main':
         for take in takes[2:4]:
             take['record']['level_db'] = -10
+    elif case == 'entry_baseline':
+        entry = copy.deepcopy(takes[0])
+        entry['record'].update(take_id='entry', phase=PHASE_ENTRY_BASELINE)
+        entry['record_path'] = 'entry.json'
+        takes.append(entry)
     elif case in ('repeat', 'duplicate', 'two_candidates', 'unselected'):
         originals = takes[1::2] if case == 'two_candidates' else takes[:2]
         if case == 'unselected':
@@ -1155,9 +1161,15 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         assert not bass_run.out.exists()
     else:
         assert code == 0
-        tables = json.loads(bass_run.out.read_text())['tables']
+        run = json.loads(bass_run.out.read_text())
+        tables = run['tables']
         assert len(tables) == (2 if case == 'two_candidates' else 1)
         assert len(tables[0]['levels']) == (1 if case == 'one_level' else 3)
+        if case == 'entry_baseline':
+            assert run['schema'] == 'jts_bass_run_table/1'
+            assert [level['outcome'] for level in tables[0]['levels']] == [
+                'target_met', 'target_not_met', 'measurement_required',
+            ]
         if case == 'repeat':
             assert tables[0]['levels'][-1]['fit']['take_pair_count'] == 2
             assert tables[0]['levels'][-1]['fit']['position_count'] == 1
