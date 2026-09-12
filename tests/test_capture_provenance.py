@@ -531,6 +531,7 @@ def _drive_one_capture(
         program_phase=phase,
     )
     session = TuningSession(
+        allocate_take_id=lambda: "provenance_take",
         session_id="cap_provenance_probe", measurement_level_db=-20.0,
         seams=bind_engine_seams(
             session_graph=production.graph, records=records,

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from threading import Event
@@ -24,7 +26,7 @@ from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from .angle_capture import (
     BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED,
     WALK_CEILING_ABOVE_STOP, WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
-    WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED,
+    WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
@@ -37,6 +39,7 @@ from .crossover_v2.admission import (
 from .crossover_v2.capture_dispatch import assess
 from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
+from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
@@ -44,6 +47,7 @@ from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
+from .restore_wait import resilient_restore
 from .measurement_programs import POSE_KIND_BEARING
 from .run_manifest import RunManifest
 
@@ -194,6 +198,23 @@ def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
         raise LateralWalkRefused(exc.code, exc.detail) from exc
 
 
+@dataclass
+class LevelWindows:
+    hold: AbstractAsyncContextManager[IsolationHold]
+    build_session: Callable[[OpenMeasurementDoor, Callable[[], str]], TuningSession]
+    topology: Any
+    preset: Any
+    sensitivity: Any
+    device: Any
+    ceiling_db_spl: float | None
+    current: TuningSession | None = None
+    last_window: OpenMeasurementDoor | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.current is not None and self.current.is_open
+
+
 @dataclass(frozen=True)
 class _Work:
     spec: MeasureSpec
@@ -202,6 +223,7 @@ class _Work:
     config: int
     size: int
     entry: Any
+    level_db: float | None = None
 
 
 def _pose(stop: Any) -> dict[str, Any]:
@@ -210,7 +232,8 @@ def _pose(stop: Any) -> dict[str, Any]:
 
 
 async def run_plan(
-    request: AngleCaptureRequest, *, session: TuningSession, manifest: RunManifest,
+    request: AngleCaptureRequest, *, session: TuningSession | None = None, manifest: RunManifest,
+    windows: LevelWindows | None = None,
     analyze: Analyze, gate: PositionGate | None = None,
     candidate_scopes: Mapping[str, str], aborts: Mapping[type[BaseException], str],
     signals: RunSignals | None = None, spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
@@ -219,7 +242,7 @@ async def run_plan(
     captures: Sequence[PlanCapture] | None = None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
-    measure: Callable[[MeasureSpec], Awaitable[Any]] | None = None,
+    measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
     from .candidate_parts import baseline_candidate_ids  # lazy: baseline composition loads DSP analysis
 
@@ -231,7 +254,7 @@ async def run_plan(
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)), "ceiling": request.spl_ceiling_db_spl,
         "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
-        "retries_per_pose": request.retries_per_pose,
+        "retries_per_pose": request.retries_per_pose, "operating_levels_db": list(request.operating_levels_db),
     }
     manifest.planned = [{"index": index * request.repeats + repeat, "repeat": repeat,
                          "pose": _pose(stop), "candidate_id": stop.candidate_id}
@@ -270,19 +293,36 @@ async def run_plan(
                             for index, capture in enumerate(captures, 1)]
         places = [capture.stop.place for capture in captures]
     else:
-        stops = [resolved[offset // request.repeats] for offset, _spec in playable]
-        places = [request.stops[offset // request.repeats].place for offset, _spec in playable]
-    screens = pose_batch_screens(list(range(1, len(stops) + 1)),
-                                 [stop.prompt for stop in stops], [stop.candidate_id for stop in stops])
-    work: list[_Work] = []
-    for pose_index, (_place, batch) in enumerate(groupby(enumerate(playable), key=lambda row: places[row[0]])):
+        stops = [resolved[offset // request.repeats] for offset in range(len(specs))]
+        places = [request.stops[offset // request.repeats].place for offset in range(len(specs))]
+    levels = request.operating_levels_db or ((session.measurement_level_db,) if session else ())
+    if not levels or (windows is None and (session is None or levels != (session.measurement_level_db,))):
+        raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a session factory for its level windows")
+    expanded = []
+    planned: list[dict[str, Any]] = []
+    for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
         rows = list(batch)
-        for config, (index, (offset, spec)) in enumerate(rows, 1):
-            entry = SimpleNamespace(screen={**stops[index].screen,
-                                    "title": stops[index].prompt.headline, "body": stops[index].prompt.detail,
-                                    **position_screen_keys(stops[index].prompt), **screens.get(index + 1, {})})
-            work.append(_Work(spec, manifest.planned[offset], pose_index, config, len(rows), entry))
-    return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=gate,
+        for level_index, level in enumerate(levels):
+            for offset, spec in rows:
+                stop = {**manifest.planned[offset], "index": len(planned) + 1,
+                        "capture_index": manifest.planned[offset]["index"],
+                        "level_window_db": level, "level_window_index": level_index}
+                planned.append(stop)
+                if spec is not None:
+                    expanded.append((spec, stop, pose_index, level, stops[offset]))
+    manifest.planned = planned
+    screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
+                                 [row[4].prompt for row in expanded], [row[4].candidate_id for row in expanded])
+    work: list[_Work] = []
+    for _pose_index, expanded_batch in groupby(enumerate(expanded), key=lambda row: row[1][2]):
+        expanded_rows = list(expanded_batch)
+        for config, (index, (played_spec, stop, pose_index, level, resolved_stop)) in enumerate(expanded_rows, 1):
+            entry = SimpleNamespace(screen={**resolved_stop.screen,
+                                    "title": resolved_stop.prompt.headline, "body": resolved_stop.prompt.detail,
+                                    **position_screen_keys(resolved_stop.prompt), **screens.get(index + 1, {})})
+            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry, level))
+    return await _run(work, session=session, windows=windows, stated_ceiling=request.spl_ceiling_db_spl,
+                      manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
                       clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
 
@@ -332,17 +372,21 @@ async def _grant(gate: PositionGate | None, index: int, attempt: int, entry: Any
 
 
 async def _run(
-    work: Sequence[_Work], *, session: TuningSession, manifest: RunManifest, analyze: Analyze,
+    work: Sequence[_Work], *, session: TuningSession | None, manifest: RunManifest, analyze: Analyze,
+    windows: LevelWindows | None = None, stated_ceiling: float | None = None,
     gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
     retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
-    measure: Callable[[MeasureSpec], Awaitable[Any]] | None = None,
+    measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
     def default_admit(index: int, attempt: int, entry: Any, ledger: SlotAttempts) -> None:
         if ledger.charge != "none":
             ledger.spend(ledger.charge)
         ledger.admitted += 1
+
+    def attempt_records() -> list[tuple[Mapping[str, Any], str]]:
+        return manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]
 
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
@@ -358,8 +402,15 @@ async def _run(
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
     progress: dict[str, Any] = {}
+    outer, inner = AsyncExitStack(), AsyncExitStack()
+    active_window: tuple[int, int] | None = None
+    hold: IsolationHold | None = None
     try:
         await manifest.persist()
+        if windows is not None:
+            if windows.ceiling_db_spl is None:
+                raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
+            hold = await outer.enter_async_context(windows.hold)
         while offset < len(work):
             if signals.complete.is_set():
                 manifest.reason = "complete_requested"
@@ -370,6 +421,10 @@ async def _run(
                     resume, offset = max(offset, previous + 1), previous
                     retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
             item = work[offset]
+            window_key = (item.pose_index, item.stop.get("level_window_index", 0))
+            if windows is not None and active_window != window_key:
+                await resilient_restore(inner.aclose())
+                active_window = None
             ledger = ledgers[item.pose_index]
             if retry is not None:
                 if not ledger.can_retry(retry.charge):
@@ -409,6 +464,20 @@ async def _run(
                     if item.pose_index not in moved:
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
+                if windows is not None and active_window is None:
+                    assert hold is not None and item.level_db is not None
+                    monitor, manifest.spl_monitor = spl_watch(
+                        stated_ceiling, topology=windows.topology, preset=windows.preset,
+                        sensitivity=windows.sensitivity, device=windows.device,
+                        resolved_ceiling_db_spl=windows.ceiling_db_spl,
+                    )
+                    door = await inner.enter_async_context(level_window(item.level_db, hold=hold, spl_monitor=monitor))
+                    windows.last_window = door
+                    session = windows.build_session(door, manifest.allocate_take_id)
+                    windows.current = session
+                    await inner.enter_async_context(session)
+                    active_window = window_key
+                assert session is not None
                 take_started = clock()
                 if retry is not None:
                     progress["budget"] = ledger.to_payload()
@@ -416,10 +485,10 @@ async def _run(
                         gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
-                outcome = await (measure or session.measure)(spec)
+                outcome = await measure(session, spec) if measure else await session.measure(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
-                records = manifest.pending_records or [({}, "")]
+                records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
                     if record_id:
                         try:
@@ -478,7 +547,7 @@ async def _run(
                 fault = manifest.reason if manifest.reason in REASON_REGISTRY else REASON_INTERNAL_ERROR
                 already_banked = {take["artifacts"]["record_id"] for take in manifest.takes}
                 ended = clock()
-                for record, record_id in manifest.pending_records or [({}, "")]:
+                for record, record_id in attempt_records():
                     if record_id and record_id in already_banked:
                         continue
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
@@ -491,18 +560,37 @@ async def _run(
                     while len(manifest.wall_s) <= item.pose_index:
                         manifest.wall_s.append(0.0)
                     manifest.wall_s[item.pose_index] += clock() - take_started
+    except (MeasurementDoorRefused, LateralWalkRefused) as exc:
+        if not manifest.reason:
+            manifest.reason, manifest.detail = exc.reason, exc.detail
     except BaseException:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
         manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
         raise
     finally:
-        manifest.finalized = True
-        if gate:
-            gate.abandon_hold()
-            gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,
-                          "takes": manifest.takes_measured, "not_measured": manifest.takes_skipped,
-                          "fault": manifest.reason or (verdict.fault if verdict else None),
-                          "next_action": "accept" if manifest.status == "complete" else "stop"})
-        log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
-                  takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)
-        await manifest.persist()
+        try:
+            try:
+                await resilient_restore(inner.__aexit__(*sys.exc_info()))
+            except MeasurementDoorRefused as exc:
+                if not manifest.reason:
+                    manifest.reason, manifest.detail = exc.reason, exc.detail
+            except BaseException:  # noqa: BLE001 - preserve cleanup failures after finalizing
+                manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+                raise
+            finally:
+                try:
+                    await resilient_restore(outer.aclose())
+                except BaseException:  # noqa: BLE001 - isolation release is part of run completion
+                    manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+                    raise
+        finally:
+            manifest.finalized = True
+            if gate:
+                gate.abandon_hold()
+                gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,
+                              "takes": manifest.takes_measured, "not_measured": manifest.takes_skipped,
+                              "fault": manifest.reason or (verdict.fault if verdict else None),
+                              "next_action": "accept" if manifest.status == "complete" else "stop"})
+            log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
+                      takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)
+            await manifest.persist()
     return manifest

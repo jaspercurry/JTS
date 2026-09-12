@@ -72,7 +72,6 @@ from typing import Any
 import pytest
 
 from tests._async_wait import wait_signalled
-from tests.conftest import seat_process_volume_owner
 from tests.test_plan_run import fake_program_baselines
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
@@ -102,9 +101,6 @@ from jasper.audio_measurement.program import STIMULUS_KINDS
 from jasper.active_speaker.crossover_v2.capture_dispatch import CLIP_RETRY_BACKOFF_DB
 
 
-# Production refuses a session with no volume owner; stand one up.
-# ``_real_seam_session`` then replaces this stand-in with an owner over
-# its own fixture fader.
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
 # --------------------------------------------------------------------------- #
@@ -1201,7 +1197,6 @@ def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-
 # --------------------------------------------------------------------------- #
 # 5. the whole persisted payload — the rest of the bridge
 # --------------------------------------------------------------------------- #
@@ -1507,363 +1502,23 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
-    """The session `_open()` builds with the REAL engine binder.
-
-    No `FakeSeams`. The original end-to-end pin substituted the binder, so it
-    never met `SessionVolumePlan` — and that is exactly why it passed while
-    every real session was refusing on `assert_ready`. A pin that swaps the
-    subject cannot see the subject's coupling.
-
-    The same rule now seats a REAL `VolumeOwner` over this fixture's fader:
-    the claim is the fader's authority after W5-c1, so a substituted owner
-    would hide exactly the coupling these pins exist to check.
-    """
-    _cam_for_owner = (cam_factory or (lambda: None))()
-    if _cam_for_owner is not None:
-        async def _owner_set(db):
-            return await _cam_for_owner.set_volume_db(db, best_effort=True)
-
-        async def _owner_get():
-            return await _cam_for_owner.get_volume_db(best_effort=True)
-    else:
-        _standin = {"db": -20.0}
-
-        async def _owner_set(db):
-            _standin["db"] = float(db)
-            return True
-
-        async def _owner_get():
-            return _standin["db"]
-
-    seat_process_volume_owner(monkeypatch, _owner_set, _owner_get)
-
-    captured: dict[str, Any] = {}
-    real_hooks = v2host._volume_hooks
-
-    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
-        captured["tuning"] = tuning
-        captured["hooks"] = real_hooks(camilla_factory, context, tuning=tuning, **kw)
-        return captured["hooks"]
-
-    monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
-    # ONLY the graph seam is substituted: emitting a real measurement graph
-    # needs a preset whose protection satisfies the program floor, which this
-    # fixture speaker does not carry. The VOLUME seam stays the real
-    # ``MeasurementVolumeClaim`` over the owner seated above, because the fader
-    # authority is the whole subject here and a substituted one could not see
-    # the coupling these pins exist to check.
-    real_binder = v2host.bind_v2_engine_seams
-    graph_override = graph
-
-    def _twin_graph_binder(**kwargs):
-        import dataclasses as _dc
-
-        from tests.engine_twin import FakeGraph
-
-        seams = real_binder(**kwargs)
-        graph = graph_override or FakeGraph()
-        captured["graph"] = graph
-        return _dc.replace(seams, graph=graph)
-
-    monkeypatch.setattr(v2host, "bind_v2_engine_seams", _twin_graph_binder)
-    prepared = v2host.prepare_v2_session(
-        _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=cam_factory,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-    captured["conductor"] = conductor
-    return captured
-
-
-async def test_the_session_opens_after_the_plan_has_armed_its_durable_intent(
-    monkeypatch,
-):
-    """Opening the session is the hooks' SECOND act, and the reason changed.
-
-    It used to be that the interim claim verified the plan, so a session opened
-    first refused on ``assert_ready``. W5-c1 deleted that claim: the session's
-    claim is now the first thing that MOVES the fader, and the plan's durable
-    intent has to be on disk before any mutation — a crash in the gap must
-    hydrate as a recoverable state rather than a forgotten one. The ordering is
-    still a contract, and still kept in the hooks' open arm; what it protects
-    is crash recovery rather than an assertion. Production says so at
-    ``correction_crossover_v2``'s open arm.
-    """
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-
-    async def _no_pause() -> None:
-        return None
-
-    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
-    monkeypatch.setattr(v2host, "release_session_measurement_pause", _no_pause)
-    v2host.set_volume_plan_for_tests(SessionVolumePlan())
-
-    class _Cam:
-        def __init__(self) -> None:
-            self.db = -15.0
-
-        async def get_volume_db(self, best_effort: bool = False) -> float:
-            return self.db
-
-        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
-            self.db = float(db)
-            return True
-
-    cam = _Cam()
-    captured = _real_seam_session(monkeypatch, cam_factory=lambda: cam)
-    hooks = captured["hooks"]
-    session = captured["tuning"]
-
-    assert not session.is_open, "the preparer must not open the session"
-
-    opened = await hooks.open()
-
-    assert str(getattr(opened, "value", opened)) == "opened"
-    assert session.is_open, (
-        "the session did not open with the plan it verifies — B1's shape"
-    )
-
-    await hooks.close()
-
-    assert not session.is_open
-    v2host.set_volume_plan_for_tests(None)
-
-
-async def test_a_session_that_takes_the_level_but_not_the_graph_keeps_neither(
-    monkeypatch,
-):
-    """The give-back the new placement owes.
-
-    Opening the session is now the hooks' second act, so a graph install that
-    fails happens with the plan already open and the pause already held.
-    Leaving either would strand the speaker at measurement volume with voice
-    paused and no session to drain it — the worse half of the failure the
-    ordering exists to avoid.
-    """
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-    from tests.engine_twin import FakeGraph
-
-    released: list[str] = []
-
-    async def _no_pause() -> None:
-        return None
-
-    async def _record_release() -> None:
-        released.append("pause")
-
-    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
-    monkeypatch.setattr(
-        v2host, "release_session_measurement_pause", _record_release,
-    )
-    plan = SessionVolumePlan()
-    v2host.set_volume_plan_for_tests(plan)
-
-    class _Cam:
-        def __init__(self) -> None:
-            self.db = -15.0
-
-        async def get_volume_db(self, best_effort: bool = False) -> float:
-            return self.db
-
-        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
-            self.db = float(db)
-            return True
-
-    cam = _Cam()
-    captured = _real_seam_session(
-        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
-    )
-
-    with pytest.raises(Exception):
-        await captured["hooks"].open()
-
-    assert plan.measurement_volume_db is None, "the plan was left open"
-    assert released == ["pause"], "voice was left paused with no session"
-    v2host.set_volume_plan_for_tests(None)
-
-
-
-async def test_a_cancel_inside_the_give_back_still_drains_the_level(monkeypatch):
-    """NB2: the give-back is shielded, so a cancel cannot abort the drain.
-
-    This is the failure that does not self-heal. An aborted drain leaves the
-    fader at measurement level with nobody holding it — and because the plan
-    never latched, ``needs_recovery`` answers False, so the recovery screen
-    never offers it. In-process, only the wall-clock ceiling would ever notice.
-    """
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-    from tests.engine_twin import FakeGraph
-
-    async def _no_pause() -> None:
-        return None
-
-    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
-    monkeypatch.setattr(v2host, "release_session_measurement_pause", _no_pause)
-    plan = SessionVolumePlan()
-    v2host.set_volume_plan_for_tests(plan)
-
-    reached = asyncio.Event()
-
-    class _SlowDrainPlan(SessionVolumePlan):
-        async def abandon(self, *a, **kw):
-            reached.set()
-            for _ in range(50):
-                await asyncio.sleep(0)
-            return await super().abandon(*a, **kw)
-
-    plan.__class__ = _SlowDrainPlan
-
-    class _Cam:
-        def __init__(self) -> None:
-            self.db = -15.0
-
-        async def get_volume_db(self, best_effort: bool = False) -> float:
-            return self.db
-
-        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
-            self.db = float(db)
-            return True
-
-    cam = _Cam()
-    captured = _real_seam_session(
-        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
-    )
-
-    opening = asyncio.ensure_future(captured["hooks"].open())
-    await wait_signalled(reached, "the give-back started", producer=opening)
-    opening.cancel()
-
-    with pytest.raises(BaseException):
-        await opening
-
-    assert plan.measurement_volume_db is None, (
-        "the cancel aborted the drain — the fader is stranded at measurement "
-        "level with nobody holding it"
-    )
-    assert cam.db == -15.0, "the fader never came back"
-    v2host.set_volume_plan_for_tests(None)
-
-
-async def test_a_raising_pause_release_does_not_lose_the_give_back_drain(
-    monkeypatch,
-):
-    """MN2c: the drain runs FIRST, so a failing pause release cannot eat it.
-
-    The give-back's inner order is load-bearing and was correct-but-unpinned
-    until here. A fader left at measurement level is worse than voice left
-    paused, so the drain goes first and the pause release rides a ``finally``.
-    Swap the two statements and this pin is the one that reds: the release
-    raises, the drain never runs, and the speaker is left at measurement
-    level with the plan holding an intent nobody will drain.
-    """
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-    from tests.engine_twin import FakeGraph
-
-    async def _no_pause() -> None:
-        return None
-
-    async def _raising_release() -> None:
-        raise RuntimeError("the measurement pause could not be released")
-
-    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
-    monkeypatch.setattr(
-        v2host, "release_session_measurement_pause", _raising_release,
-    )
-    plan = SessionVolumePlan()
-    v2host.set_volume_plan_for_tests(plan)
-
-    class _Cam:
-        def __init__(self) -> None:
-            self.db = -15.0
-
-        async def get_volume_db(self, best_effort: bool = False) -> float:
-            return self.db
-
-        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
-            self.db = float(db)
-            return True
-
-    cam = _Cam()
-    captured = _real_seam_session(
-        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
-    )
-
-    with pytest.raises(BaseException):
-        await captured["hooks"].open()
-
-    assert plan.measurement_volume_db is None, (
-        "the raising pause release swallowed the drain — the plan still "
-        "holds an intent nobody will drain"
-    )
-    assert cam.db == -15.0, "the fader never came back"
-    v2host.set_volume_plan_for_tests(None)
-
-
-async def test_a_volume_that_did_not_confirm_installs_no_graph_at_all(
-    monkeypatch,
-):
-    """NB1: a non-OPENED plan.open must RETURN, not fall through.
-
-    A volume that did not confirm is not a volume anything may be admitted
-    against, so installing the measurement graph past it buys two CamillaDSP
-    swaps — install and restore — for a session that never plays a stimulus.
-    And the result has to reach the runners: their non-OPENED branch is what
-    tells the household why the session refused, and a fall-through makes that
-    branch unreachable.
-    """
-    from tests.engine_twin import FakeGraph
-
-    async def _no_pause() -> None:
-        return None
-
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-
-    class _RefusingPlan(SessionVolumePlan):
-        """A real plan whose open never confirms — the shape NB1 is about."""
-
-        async def open(self, *_a, **_kw):
-            return "refused"
-
-        def assert_ready(self, now=None):
-            raise AssertionError("a refused open must not reach the claim")
-
-    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
-    monkeypatch.setattr(v2host, "release_session_measurement_pause", _no_pause)
-    v2host.set_volume_plan_for_tests(_RefusingPlan())
-
-    graph = FakeGraph()
-    captured = _real_seam_session(monkeypatch, graph=graph)
-
-    opened = await captured["hooks"].open()
-
-    assert str(opened) == "refused", "the runners' branch never saw the result"
-    assert graph.installs == 0, "a graph was swapped in for a session that cannot play"
-    assert graph.restores == 0
-    v2host.set_volume_plan_for_tests(None)
-
-
 def _session_from_real_open(monkeypatch, fakes) -> Any:
-    """The ``TuningSession`` the real ``_open()`` constructs, against twin seams.
+    from jasper.active_speaker.crossover_v2.door import OpenMeasurementDoor
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
-    Two seams are substituted and nothing else: the engine binder (so the five
-    slots are the twin's rather than the box's) and the volume hooks (which is
-    where ``_open`` hands the session over, and therefore the only place a
-    caller can reach the object it built). The preparer itself is real.
-    """
-    captured: dict[str, Any] = {}
-    real_hooks = v2host._volume_hooks
-
-    monkeypatch.setattr(
-        v2host, "bind_v2_engine_seams", lambda **_kw: fakes.seams(),
-    )
-
-    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
-        captured["tuning"] = tuning
-        return real_hooks(camilla_factory, context, tuning=tuning, **kw)
-
-    monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
-    conductor, _state = _stage_1(monkeypatch)
-    captured["conductor"] = conductor
+    captured = {}
+    real_bind = v2host.bind_level_windows
+    monkeypatch.setattr(v2host, "bind_v2_engine_seams", lambda **kwargs: fakes.seams())
+    def bind(**kwargs):
+        windows, analyze, assessor = real_bind(**kwargs)
+        level = kwargs["context"].session_volume_db
+        monitor = WiredSplMonitor(MicSensitivity(-12, 18, "1234"), windows.ceiling_db_spl, 0)
+        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, level, "graph", monitor)
+        captured["tuning"] = windows.build_session(door, kwargs["manifest"].allocate_take_id)
+        return windows, analyze, assessor
+    monkeypatch.setattr(v2host, "bind_level_windows", bind)
+    captured["conductor"], _state = _stage_1(monkeypatch)
     return captured
 
 

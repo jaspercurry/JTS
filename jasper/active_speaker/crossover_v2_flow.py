@@ -850,8 +850,6 @@ class CrossoverV2Session:
         # frame the spec bands were graded in, and one residual per position.
         self._group_trusted_floor_hz: dict[str, float | None] = {}
         self._group_position_residuals: dict[str, tuple[Mapping[str, Any], ...]] = {}
-        # The group's most recent COMBINE, held until the household confirms past it
-        # (§2.6). Held rather than recomputed: a combine is 2.7-6 s of operator time.
 
         # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
