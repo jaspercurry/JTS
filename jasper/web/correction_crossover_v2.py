@@ -73,14 +73,11 @@ from typing import (
 )
 
 from jasper.atomic_io import atomic_write_text
-from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
-    TUNING_TRIAL_SCOPES,
-    tuning_trial_matches_candidate,
+    has_tuning_layers, tuning_trial_matches_candidate,
     tuning_trial_reference,
 )
-from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 # The stage-capability vocabulary this module publishes and binds (#2291 Phase
@@ -2033,6 +2030,7 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
+    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at run open
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
     try:
         spl_monitor, spl_note = spl_watch(
@@ -2062,11 +2060,11 @@ def _take_staged_angle_walk(
     try:
         placed = stop_specs(
             request, candidate_scopes=candidate_scopes, prompts=prompts,
+            baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
+                                                if stop.plays_summed and not stop.candidate_id),
         )
     except ValueError as exc:
-        # Only the stop's own pose is new on those constructions; the spec's own
-        # sentence names the field.
-        raise refused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+        raise refused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
     for index, spec in zip(
         sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
         placed,
@@ -2074,8 +2072,8 @@ def _take_staged_angle_walk(
         if spec is not None:
             specs_by_index[index] = spec
     lateral_claims = tuple(
-        TakeClaim(candidate_id=stop.candidate_id, measurement_purpose=stop.purpose or "")
-        for stop in request.stops
+        TakeClaim(candidate_id=spec.candidate_id if spec else stop.candidate_id, measurement_purpose=stop.purpose or "")
+        for stop, spec in zip(request.stops, placed)
     )
 
     log_event(
@@ -3300,18 +3298,15 @@ def bind_production_play(
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
     from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
-    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, measurement_bass_extension
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
     resolved_config_dir = config_dir or str(DEFAULT_CAMILLA_CONFIG_DIR)
-    applied_profile = load_applied_baseline_profile_state() or {}
-    speaker_candidate_id = (applied_profile.get("source") or {}).get("measured_candidate_fingerprint")
     session_graph = bind_measurement_graph(
         MeasurementGraphProfile(
             preset=preset, topology=topology, role_channels=role_channels,
             playback_device=playback_device,
             protection_sections_by_role=protection_sections_by_role,
-            applied_profile=applied_profile,
         ), camilla_factory=camilla_factory, config_dir=resolved_config_dir,
     )
 
@@ -3334,9 +3329,6 @@ def bind_production_play(
             graph_kind="tuning_measurement", program=program,
             phase=phase, artifact=artifact,
             read_volume_plan=session_volume_plan,
-            speaker_candidate_id=(
-                speaker_candidate_id if spec.graph_scope in {"speaker_tune", "room_candidate"} else None
-            ),
         )
 
     compose = bind_program_composer(
@@ -3347,6 +3339,7 @@ def bind_production_play(
         session_volume_db=session_volume_db,
         declared_sensitivities=declared_sensitivities,
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
+        bass_extension_for_spec=lambda spec: measurement_bass_extension(scope=spec.graph_scope, candidate_id=spec.candidate_id),
     )
 
     return ProductionPlay(graph=session_graph, compose=compose)
@@ -3488,7 +3481,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     candidate = v2.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
-    if candidate.get("trial_scope") in TUNING_TRIAL_SCOPES:
+    if candidate.get("tuning_layers"):
         v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
         return
     try:
@@ -4126,16 +4119,18 @@ def _bind_engine_measure_leg(
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
+    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at session open
+    purposes = {index: "room" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "speaker"
+                for index, phase in index_phase_map.items() if phase in SUMMED_SWEEP_PHASES and index not in (specs_by_index or {})}
+    baselines = baseline_candidate_ids(purposes.values())
     specs = {}
     for index, phase in index_phase_map.items():
-        scope = "speaker_tune" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "base"
-        default = MeasureSpec(
+        default = (specs_by_index or {}).get(index) or MeasureSpec(
             kind="verify" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "candidate",
-            graph_scope=scope if phase in SUMMED_SWEEP_PHASES else "drivers",
+            graph_scope="candidate" if phase in SUMMED_SWEEP_PHASES else "drivers",
+            candidate_id=baselines[purposes[index]] if index in purposes else "",
         )
-        specs[index] = dataclasses.replace(
-            (specs_by_index or {}).get(index, default), program_phase=phase,
-        )
+        specs[index] = dataclasses.replace(default, program_phase=phase)
 
     def _raise_incident(incident: str) -> NoReturn:
         if incident == STIMULUS_ADMISSION_REFUSED:
@@ -5411,7 +5406,7 @@ def handle_v2_apply(
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
     from jasper.active_speaker.candidate_trials import require_candidate_trial
 
-    tuning_apply = candidate_trial_scope(candidate) in TUNING_TRIAL_SCOPES
+    tuning_apply = has_tuning_layers(candidate)
     applied_tuning_trial = None
     if not tuning_apply:
         try:

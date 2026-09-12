@@ -41,7 +41,6 @@ from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
-from .measured_crossover_candidate import candidate_trial_scope
 from .run_manifest import RunManifest
 
 logger = logging.getLogger(__name__)
@@ -132,20 +131,13 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
 
 
 def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
-    """Each named candidate's scope: the one that compiles its complete graph.
-
-    ONE owner for both doors that play a stated walk, so a walk measures the
-    same graph whichever ran it. The bank's own vocabulary rides out UNWRAPPED
-    under this module's refusal type: a second slug for "no such candidate"
-    would send an operator looking in the wrong place.
-    """
+    """Verify named candidates at run open; every trial uses its composed graph."""
     try:
-        return {
-            candidate_id: candidate_trial_scope(
-                candidate_bank.find_banked_candidate(candidate_id).candidate
-            )
-            for candidate_id in sorted(set(candidate_ids) - {""})
-        }
+        scopes = {}
+        for candidate_id in sorted(set(candidate_ids) - {""}):
+            candidate_bank.find_banked_candidate(candidate_id)
+            scopes[candidate_id] = "candidate"
+        return scopes
     except candidate_bank.CandidateBankRefusal as exc:
         raise LateralWalkRefused(exc.code, exc.detail) from exc
 
@@ -173,6 +165,8 @@ async def run_plan(
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
 ) -> RunManifest:
+    from .candidate_parts import baseline_candidate_ids  # lazy: baseline composition loads DSP analysis
+
     manifest.request_fingerprint = request_fingerprint(request)
     manifest.program = request.program
     manifest.spl_monitor = spl_monitor
@@ -190,9 +184,11 @@ async def run_plan(
         resolved = resolve_request(request)
         try:
             specs = stop_specs(request, candidate_scopes=candidate_scopes,
-                               prompts=tuple(stop.prompt for stop in resolved))
+                               prompts=tuple(stop.prompt for stop in resolved),
+                               baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
+                                                                   if stop.plays_summed and not stop.candidate_id))
         except ValueError as exc:
-            raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+            raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
         playable = [(offset, spec) for offset, spec in enumerate(specs) if spec is not None]
         for offset, spec in enumerate(specs):
             if spec is None:

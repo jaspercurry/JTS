@@ -73,6 +73,7 @@ import pytest
 
 from tests._async_wait import wait_signalled
 from tests.conftest import seat_process_volume_owner
+from tests.test_plan_run import fake_program_baselines
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
@@ -255,6 +256,7 @@ def _production_host_seams(monkeypatch, tmp_path):
     Everything a preparer DECIDES — the plan shape, the index→phase map, the
     seam bindings, the conductor construction, the persist — runs for real.
     """
+    fake_program_baselines(monkeypatch)
     # The preparers' mic gate (#2662 W2b, gate fix round S3) resolves the
     # measurement mic BEFORE any evidence bundle opens; the disclosure it
     # raises with none plugged in has its own pin in

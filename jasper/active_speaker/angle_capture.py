@@ -293,7 +293,7 @@ class AngleStop:
 #: template's, since :func:`design_axis_spec` and :func:`stop_specs` each replace
 #: it with the scope their capture plays. A template's scope is therefore
 #: derived from its stimulus, never stated.
-TEMPLATE_SWEEP_SCOPE = "base"
+TEMPLATE_SWEEP_SCOPE = "candidate"
 
 
 def _states_summed_sweep(sweep_band_hz: object, sweep_s: object) -> bool:
@@ -332,6 +332,7 @@ def walk_template(**spec_fields: object) -> MeasureSpec:
     try:
         return MeasureSpec(
             graph_scope=TEMPLATE_SWEEP_SCOPE if summed else GRAPH_SCOPE_DRIVERS,
+            candidate_id=BASE_CANDIDATE if summed else "",
             **spec_fields,  # type: ignore[arg-type]
         )
     except (TypeError, ValueError) as exc:
@@ -532,7 +533,8 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(
                 WALK_TEMPLATE_NOT_ACCEPTED, f"template must be a MeasureSpec, got {self.template!r}",
             )
-        stated = [name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)]
+        stated = [name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
+                  and not (name == "candidate_id" and self.template.candidate_id == BASE_CANDIDATE)]
         if self.template.spl_ceiling_db_spl not in (None, self.spl_ceiling_db_spl):
             stated.append("spl_ceiling_db_spl")
         if stated:
@@ -655,7 +657,7 @@ def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
     return replace(
         request.template,
         kind=MEASURE_KIND_CANDIDATE,
-        graph_scope=GRAPH_SCOPE_DRIVERS,
+        graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
         sweep_band_hz=(),
         sweep_s=None,
         spl_ceiling_db_spl=request.spl_ceiling_db_spl,
@@ -667,18 +669,12 @@ def stop_specs(
     *,
     candidate_scopes: Mapping[str, str],
     prompts: Sequence[CloudPositionPrompt],
+    baseline_ids: Mapping[str, str],
 ) -> tuple[MeasureSpec | None, ...]:
-    """Repeat each stop's spec in walk order; ``None`` for each per-driver take.
+    """Place resolved candidate IDs; ``None`` for each per-driver take.
 
-    A per-driver stop plays the phase's own composed program object, so it names
-    no spec. A summed stop is the template placed: the pose it was moved to, the
-    prompt it was told, and the graph its regime and candidate select --
-    ``candidate_scopes`` maps a stop's candidate fingerprint to the scope that
-    compiles its complete graph, resolved by the caller that can read the bank.
-
-    Raises ``ValueError`` when a stop's pose and the template disagree (from
-    :class:`MeasureSpec`) or when no scope was resolved for a stop's candidate;
-    the caller attributes both.
+    ``baseline_ids`` is banked at run open, keyed by program purpose.
+    Raises ``ValueError`` when a candidate ID or its spec cannot be resolved.
     """
     placed: list[MeasureSpec | None] = []
     for stop, prompt in zip(request.stops, prompts):
@@ -697,17 +693,15 @@ def stop_specs(
             request.template,
             kind=(
                 MEASURE_KIND_VERIFY
-                if not stop.candidate_id and scope != "base"
+                if not stop.candidate_id and scope != "preset"
                 else MEASURE_KIND_CANDIDATE
             ),
             spl_ceiling_db_spl=request.spl_ceiling_db_spl,
             positions=(stop.angle_deg,),
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
-            candidate_id=stop.candidate_id,
-            graph_scope=(
-                "candidate_branches" if stop.regime == REGIME_BRANCHES else scope
-            ),
+            candidate_id=stop.candidate_id or baseline_ids.get(stop.purpose or "speaker", ""),
+            graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 

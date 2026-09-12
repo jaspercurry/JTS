@@ -349,7 +349,7 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         {"kind": MEASURE_KIND_BASELINE, "program_phase": "done"},
         *[
             {"kind": MEASURE_KIND_BASELINE, "graph_scope": scope, "candidate_id": "fp", **axis}
-            for scope in ("base", "speaker_tune", "candidate")
+            for scope in ("candidate", "candidate_branches")
             for axis in (
                 {"polarity": POLARITY_INVERTED, "inverted_role": DRIVER_ROLE_TWEETER},
                 {"delayed_role": DRIVER_ROLE_TWEETER, "delay_us": 100.0},
@@ -613,16 +613,16 @@ async def test_failed_open_cleanup_retains_the_graph_for_a_later_close():
 async def test_each_take_selects_and_records_its_graph_scope_and_program_phase():
     session, parts = _session(play=_Play(wav_path="summed/take.wav"))
     specs = [
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="base", program_phase="entry_baseline"),
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="entry_baseline"),
         MeasureSpec(kind=MEASURE_KIND_VERIFY, graph_scope="candidate", candidate_id="fp-a", positions=(0, 15), program_phase="verify"),
         MeasureSpec(kind=MEASURE_KIND_BASELINE),
     ]
     async with session:
         for spec in specs:
             await session.measure(spec)
-    assert parts["graph"].scopes == [("base", ""), ("candidate", "fp-a"), ("candidate", "fp-a"), ("drivers", "")]
+    assert parts["graph"].scopes == [("candidate", "baseline"), ("candidate", "fp-a"), ("candidate", "fp-a"), ("drivers", "")]
     records = parts["records"].banked
-    assert [record["graph_scope"] for record in records] == ["base", "candidate", "candidate", "drivers"]
+    assert [record["graph_scope"] for record in records] == ["candidate", "candidate", "candidate", "drivers"]
     assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
     assert len({record["graph_fingerprint"] for record in records}) == 3
     assert all(record["measurement_status"] == "captured" for record in records)

@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fit the amplitude of one measured native bass shape, without extrapolation."""
-
 from __future__ import annotations
 
 from collections import defaultdict
@@ -14,6 +12,7 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 
+from .candidate_bank import find_banked_candidate
 from .bass_comparison import bass_capture_context, common_bass_bins, compare_bass_takes
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key
@@ -39,7 +38,8 @@ def fit_bass_shape(
     sources = []
     first = bass_capture_context(pairs[0][0])
     for before, after in pairs:
-        if before["record"].get("graph_scope") != "room_tune" or after["record"].get("candidate_id") != candidate_id:
+        if (not before["record"].get("candidate_id") or after["record"].get("candidate_id") != candidate_id
+                or find_banked_candidate(before["record"]["candidate_id"]).candidate.bass_extension):
             raise ValueError("bass_fit_requires_room_baseline_and_exact_candidate")
         match = compare_bass_takes(before, after, change="candidate")
         context = bass_capture_context(before)
