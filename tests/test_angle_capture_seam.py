@@ -1564,3 +1564,11 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
 def test_v3_plan_round_trips_without_a_spool(candidates, repeats):
     request = ac.request_for_program(mp.program("room", "cloud"), candidates=candidates, repeats=repeats)
     assert ac.AngleCaptureRequest.from_mapping(request.to_dict()) == request
+
+
+def test_a_stale_banked_stop_keeps_its_registered_refusal_code():
+    doc = ac.summed_at([0]).to_dict()
+    doc["stops"][0]["angle_deg"] = ac.MAX_ANGLE_DEG + 1
+    with pytest.raises(ac.LateralWalkRefused) as refused:
+        ac.AngleCaptureRequest.from_mapping(doc)
+    assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID

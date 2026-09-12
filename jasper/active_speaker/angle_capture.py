@@ -505,14 +505,18 @@ class AngleCaptureRequest:
                 values[name] = read(values[name])
             except LateralWalkRefused:
                 raise
-            except (TypeError, ValueError, KeyError, CrossoverV2FlowError) as exc:
+            except CrossoverV2FlowError as exc:
+                if name != "stops":
+                    raise
+                raise LateralWalkRefused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
+            except (TypeError, ValueError, KeyError) as exc:
                 raise ValueError(f"{name}: {exc}") from exc
         try:
             return cls(**values)
         except LateralWalkRefused:
             raise
         except CrossoverV2FlowError as exc:
-            raise ValueError(str(exc)) from exc
+            raise LateralWalkRefused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
 
     def _refuse_bad_template(self) -> None:
         """The questions about a template that are the WALK's, not the spec's:
