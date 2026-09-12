@@ -25,6 +25,7 @@ class Chain:
         self.playing = False
         self.writes = []
         self.windows = 0
+        self.peak_observed = -math.inf
         monkeypatch.setattr(level, 'time', SimpleNamespace(monotonic=lambda: self.time))
         monkeypatch.setattr(level, 'asyncio', SimpleNamespace(
             sleep=self.sleep, timeout=asyncio.timeout,
@@ -59,6 +60,7 @@ class Chain:
                 observed += jitter * (-1) ** self.windows
             if self.unstable:
                 observed += 2.0 * (-1) ** self.windows
+        self.peak_observed = max(self.peak_observed, observed)
         self.windows += 1
         self.time += 0.501
         return [LevelSample(self.windows, 0, observed - 94.0, observed - 94.0, clip=self.clip)]
@@ -108,6 +110,35 @@ def test_a_loud_room_uses_small_buried_steps(monkeypatch):
     result = asyncio.run(Chain(monkeypatch, ambient=68.0).run())
     assert result.status == 'converged'
     assert max(reading for _, reading in result.readings) <= 77.0
+
+
+def test_an_unsettled_reading_above_target_steps_down(monkeypatch):
+    chain = Chain(monkeypatch, unstable=True, offset=85.0)
+    result = asyncio.run(chain.run())
+    assert any(reading > 75.0 for _, reading in result.readings)
+    for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
+        if reading > 75.0:
+            assert next_gain <= gain
+    assert chain.peak_observed < 75.0 + level.MAX_STEP_DB
+
+
+def test_random_non_hot_unsettled_climbs_never_step_up_when_high(monkeypatch):
+    rng = random.Random(212)
+    high_transitions = 0
+    for _ in range(500):
+        slope = rng.uniform(0.8, 2.0)
+        target_gain = rng.uniform(-28.0, -6.0)
+        chain = Chain(monkeypatch, slope=slope, offset=75.0 - slope * target_gain,
+                      ambient=rng.uniform(30.0, 60.0), unstable=True,
+                      jitter=(rng.uniform(0.6, 0.9), rng.uniform(0.1, 0.4)))
+        chain.windows = rng.randrange(2)
+        result = asyncio.run(chain.run())
+        assert result.reason != level.SPL_CEILING_EXCEEDED
+        for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
+            if reading > 76.0:
+                high_transitions += 1
+                assert next_gain <= gain
+    assert high_transitions > 0
 
 
 @pytest.mark.parametrize("slope,offset", [(1.0, 120.0), (1.0, 124.0), (1.2, 132.0)])

@@ -123,6 +123,7 @@ async def level_to(
         return LevelResult("refused", "spl_target_uncapturable")
     gain: float | None = None
     min_rise = bounded_env_float("JASPER_SEAT_LEVEL_MIN_RISE_DB", MIC_RESPONSE_MIN_RISE_DB, lo=1.0, hi=20.0)
+    max_rise = 0.0
 
     async def write(value: float) -> None:
         nonlocal gain
@@ -131,6 +132,12 @@ async def level_to(
             if not await set_and_confirm_volume(gain, set_main_volume_db, get_main_volume_db):
                 raise _Refused("volume_latch_unconfirmed")
         result.gain_db = gain
+        await asyncio.sleep(MIC_WINDOW_S)
+
+    def _cap_reason() -> str:
+        return REFUSE_MIC_NOT_OBSERVING if mic_is_not_observing(
+            max_rise_db=max_rise, min_rise_db=min_rise,
+        ) else REFUSE_LEVEL_UNREACHABLE
 
     async def stop() -> None:
         await stop_playback()
@@ -138,6 +145,7 @@ async def level_to(
     async def start() -> None:
         async with asyncio.timeout(SETTLE_TIMEOUT_S):
             await play()
+        await asyncio.sleep(MIC_WINDOW_S)
 
     try:
         await stop_playback()
@@ -156,9 +164,9 @@ async def level_to(
         await start()
         budget = 1
         in_band = 0
-        max_rise = 0.0
         remeasured = False
         last_settled = True
+        last_buried = False
         agree_db = _settled_agree_db()
         while len(result.readings) < budget:
             first = await _window_reading(
@@ -167,10 +175,11 @@ async def level_to(
             assert gain is not None
             observed = sensitivity.db_spl_from_dbfs(first)
             buried = observed < result.ambient_db_spl + min_rise
+            last_buried = buried
             if buried:
                 # Room noise does not settle; a buried reading is a floor, not a level.
                 result.readings.append((gain, observed))
-                last_settled = True
+                last_settled = False
             else:
                 observed, last_settled = await _settle_reading(
                     next_samples, sensitivity=sensitivity, spl_ceiling_db_spl=stop_db_spl, first=first,
@@ -192,18 +201,16 @@ async def level_to(
                 remeasured = True
                 await start()
                 in_band = 0
-                if last_settled and (not buried or observed >= result.ambient_db_spl + min_rise):
+                if last_settled or (last_buried and observed >= result.ambient_db_spl + min_rise):
                     continue
             max_rise = max(max_rise, observed - result.ambient_db_spl)
-            if buried or not last_settled:
+            if last_buried or not last_settled:
                 in_band = 0
                 if gain == cap:
-                    reason = (REFUSE_MIC_NOT_OBSERVING if mic_is_not_observing(
-                        max_rise_db=max_rise, min_rise_db=min_rise,
-                    ) else REFUSE_LEVEL_UNREACHABLE)
-                    raise _Refused(reason)
+                    raise _Refused(_cap_reason())
                 if len(result.readings) < budget:
-                    step_db = min(MAX_STEP_DB, max(1.0, DAMPING * (target_db_spl - observed)))
+                    gap = target_db_spl - observed
+                    step_db = math.copysign(min(MAX_STEP_DB, max(1.0, DAMPING * abs(gap))), gap)
                     await write(gain + step_db)
                 continue
             in_band = in_band + 1 if abs(observed - target_db_spl) <= tolerance_db and observed - result.ambient_db_spl >= min_rise else 0
@@ -213,20 +220,16 @@ async def level_to(
             if in_band:
                 continue
             if gain == cap and observed < target_db_spl - tolerance_db:
-                reason = (REFUSE_MIC_NOT_OBSERVING if mic_is_not_observing(
-                    max_rise_db=max_rise, min_rise_db=min_rise,
-                ) else REFUSE_LEVEL_UNREACHABLE)
-                raise _Refused(reason)
+                raise _Refused(_cap_reason())
             if len(result.readings) < budget:
                 await write(gain + capped_gap_step_db(
                     measured_db=observed, target_db=(target_db_spl if observed > target_db_spl else observed + DAMPING * (target_db_spl - observed)), cap_db=MAX_STEP_DB,
                 ))
+        if last_buried:
+            raise _Refused(_cap_reason())
         if not last_settled:
             raise _Refused(REFUSE_LEVEL_UNSETTLED)
-        reason = (REFUSE_MIC_NOT_OBSERVING if mic_is_not_observing(
-            max_rise_db=max_rise, min_rise_db=min_rise,
-        ) else REFUSE_LEVEL_UNREACHABLE)
-        raise _Refused(reason)
+        raise _Refused(_cap_reason())
     except WiredSplCeilingExceeded as exc:
         result.reason = SPL_CEILING_EXCEEDED
         if gain is not None:
