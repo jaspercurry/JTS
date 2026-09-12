@@ -1,24 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""The crossover flow's two "leave this where it is" routes.
-
-``POST /crossover/reset`` — scoped "start over". Pins the KEEP/CLEAR split for
-the in-flow reset that restarts the guided measurement journey without losing
-driver research or disturbing whatever audio graph is currently applied/loaded
-— see ``jasper.active_speaker.reset.clear_active_speaker_measurement_journey``.
-
-``POST /crossover/v2/decline`` — the review screen's "Keep current sound"
-(#2641). It shares this file rather than getting its own because it is the
-same question one screen over (what a household keeps when they decline to go
-further) and it is tested through the same ``flow`` handler and the same
-durable-state scaffold. Its own section pins both halves: the write records
-the decision without touching the speaker or the candidate, and the read stops
-serving a decision screen the household has already answered — bound to the
-candidate they answered, so a newer measurement brings the review back.
-"""
+"""Reset the measurement journey while preserving the speaker setup."""
 
 from __future__ import annotations
+
+import pytest
 
 from pathlib import Path
 
@@ -268,3 +255,24 @@ def test_active_group_member_reads_grouping_config(monkeypatch) -> None:
     assert flow._active_group_member() is False
 
 
+
+
+@pytest.mark.parametrize("terminal", ["complete", "stopped", "failed"])
+def test_reset_clears_the_terminal_capture_from_the_page(monkeypatch, terminal):
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+    from jasper.web import correction_capture, correction_handlers, correction_crossover_v2
+
+    _reset_scaffold(monkeypatch)
+    monkeypatch.setattr(correction_crossover_v2, "reset_v2_journey_state", lambda: None)
+    monkeypatch.setattr(correction_capture, "_pending_capture", None)
+    monkeypatch.setattr(correction_capture, "_capture_slot", {
+        "kind": "crossover_v2:session", "status": terminal,
+    })
+    monkeypatch.setattr(flow, "_build_envelope_logged", build_crossover_envelope_v2)
+    monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({
+        "active": True, "setup": {"active": True, "status": "ready"}, "capture": capture,
+    }, 200))
+    envelope, status = correction_handlers._handle_crossover_reset()
+    assert status == 200
+    assert envelope["screen"] == "awaiting_plan"
+    assert correction_capture._get_capture_slot_for("crossover_v2:") is None

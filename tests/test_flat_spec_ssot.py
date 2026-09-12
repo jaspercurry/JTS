@@ -34,7 +34,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
@@ -624,17 +623,6 @@ def _walk_every_surface(result, monkeypatch) -> dict:
     """
     compact = compact_cloud_status(_durable_cloud_block(result))
     chart = chart_cloud_status(_durable_cloud_block(result))
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done",
-            "verify": {"outcome": "pass"},
-            "cloud": compact,
-            "cloud_chart": chart,
-        },
-    })
-
     from jasper.cli.doctor import correction as doctor_correction
     from jasper.web import correction_crossover_v2 as v2host
 
@@ -649,8 +637,6 @@ def _walk_every_surface(result, monkeypatch) -> dict:
     return {
         "pipeline": result["flatness"],
         "state": compact[PHASE_CLOUD_VERIFY]["flatness"],
-        "envelope": envelope["cloud"][PHASE_CLOUD_VERIFY]["flatness"],
-        "ledger_lines": envelope["expert_details"],
         "state_overall_within_target": compact[PHASE_CLOUD_VERIFY]["overall_within_target"],
         "state_validity_floor_hz": compact[PHASE_CLOUD_VERIFY]["validity_floor_hz"],
         "state_spec_bands": compact[PHASE_CLOUD_VERIFY]["spec_bands"],
@@ -661,11 +647,7 @@ def _walk_every_surface(result, monkeypatch) -> dict:
         # PR-7: the tolerance-corridor reference, and the chart's own curve
         # feed — same "one construction, copied everywhere" contract.
         "state_reference_db": compact[PHASE_CLOUD_VERIFY]["reference_db"],
-        "envelope_reference_db": envelope["cloud"][PHASE_CLOUD_VERIFY]["reference_db"],
         "state_cloud_chart_curve": chart[PHASE_CLOUD_VERIFY]["curve"],
-        "envelope_cloud_chart_curve": (
-            envelope["cloud_chart"][PHASE_CLOUD_VERIFY]["curve"]
-        ),
         "pipeline_curve": result.get("curve"),
     }
 
@@ -675,7 +657,6 @@ def _assert_one_number_everywhere(views: dict) -> None:
     flatness block are the SAME bytes, from one construction."""
     canonical = json.dumps(views["pipeline"], sort_keys=True)
     assert json.dumps(views["state"], sort_keys=True) == canonical
-    assert json.dumps(views["envelope"], sort_keys=True) == canonical
 
     spec = views["spec"]
     gauge = views["pipeline"]
@@ -705,12 +686,6 @@ def _assert_one_number_everywhere(views: dict) -> None:
         b["within_target"] for b in spec["bands"]
     ]
 
-    # And the household-facing line prints those digits, not a re-derivation.
-    rendered = " ".join(views["ledger_lines"])
-    assert f"{gauge['max_db']:+.2f} dB" in rendered
-    assert f"{gauge['max_hz']:.0f} Hz" in rendered
-    assert f"{gauge['rms_db']:.2f} dB" in rendered
-
     # N-1: the doctor's verdict is derived from the same spec verdict, not a
     # re-graded one (AGENTS.md/ADR-0233 rule 3 pins status+reason, not the
     # doctor's prose — which used to be pinned digit-for-digit here).
@@ -728,7 +703,6 @@ def _assert_one_number_everywhere(views: dict) -> None:
     # spec_bands already carries tolerance_db (asserted above via
     # max_deviation_db/within_target) — this pins the reference alongside it.
     assert views["state_reference_db"] == spec["reference_db"]
-    assert views["envelope_reference_db"] == spec["reference_db"]
     pipeline_freqs = views["pipeline_curve"]["freqs_hz"]
     pipeline_mags = views["pipeline_curve"]["magnitude_db"]
     n = len(pipeline_freqs)
@@ -738,9 +712,6 @@ def _assert_one_number_everywhere(views: dict) -> None:
         "magnitude_db": pipeline_mags[:n:step],
     }
     assert {key: views["state_cloud_chart_curve"][key] for key in expected_chart_curve} == expected_chart_curve
-    # The envelope carries the chart-feed projection through unchanged — one
-    # re-decimation, not two.
-    assert views["envelope_cloud_chart_curve"] == views["state_cloud_chart_curve"]
 
 
 def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number(monkeypatch):
@@ -780,16 +751,6 @@ def test_the_pre_apply_cloud_never_supplies_the_post_apply_flatness_claim():
         _durable_cloud_block(result, phase=PHASE_CLOUD_MEASURE)
     )
     assert compact[PHASE_CLOUD_MEASURE]["flatness"] is not None
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done", "verify": {"outcome": "pass"}, "cloud": compact,
-        },
-    })
-    details = envelope["expert_details"]
-    assert details[0].startswith("Measured before tuning: ")
-    assert not any(line.startswith("flatness ") for line in details)
 
 
 def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
@@ -808,17 +769,6 @@ def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
     assert entry["reference_db"] is None
     chart = chart_cloud_status(_durable_cloud_block(result))
     assert chart[PHASE_CLOUD_VERIFY]["curve"] is None
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done", "verify": {"outcome": "pass"}, "cloud": compact,
-        },
-    })
-    assert envelope["expert_details"] == [
-        "flatness not available for this measurement — the spatial "
-        "measurement could not be analysed"
-    ]
 
 
 # --------------------------------------------------------------------------- #

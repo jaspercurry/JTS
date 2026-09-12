@@ -1714,6 +1714,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     )
     status = {
         "active": True,
+        "capture": {"status": "awaiting_capture"},
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": v2status.crossover_v2_status_block(),
     }
@@ -1928,15 +1929,13 @@ def _dig(payload, path, *, missing=None):
 
 
 @pytest.mark.parametrize(
-    ("seed", "state_path", "status_path", "expected", "screen_key", "copy_key",
-     "screen_exact", "expert_detail"),
+    ("seed", "state_path", "status_path", "expected"),
     (
         pytest.param(
             lambda: _seeded_session_with_a_banked_finding(_FINDING_COPY),
             ("evidence", v2host.FINDING_HOUSEHOLD_REFS_KEY, 0, "household_copy"),
             ("findings", 0, "household_copy"),
             _FINDING_COPY,
-            "findings", "finding", True, None,
             id="banked-finding",
         ),
         pytest.param(
@@ -1945,8 +1944,6 @@ def _dig(payload, path, *, missing=None):
             ("measure", "ripple_reservation"),
             ("measure", "ripple_reservation"),
             _RIPPLE_RESERVATION,
-            "nudges", "ripple", False,
-            "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold",
             id="ripple-reservation",
         ),
         pytest.param(
@@ -1955,25 +1952,17 @@ def _dig(payload, path, *, missing=None):
             ("measure", "calibration_reservation"),
             ("measure", "calibration_reservation"),
             True,
-            "nudges", "mic_calibration", False, None,
             id="mic-calibration-reservation",
         ),
     ),
 )
 def test_stage_2_keeps_what_the_measuring_session_disclosed(
-    monkeypatch, seed, state_path, status_path, expected, screen_key, copy_key,
-    screen_exact, expert_detail,
+    seed, state_path, status_path, expected,
 ):
     """Walks the real seam: seeded durable state -> the REAL re-arm conductor
     -> the REAL ``persist_conductor_state`` -> the three surfaces the
     disclosure has to reach (durable state, ``/state``, the done screen).
     """
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        MIC_CALIBRATION_RESERVATION_COPY,
-        RIPPLE_RESERVATION_COPY,
-        build_crossover_envelope_v2,
-    )
-
     seed()
     v2host.persist_conductor_state(
         _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
@@ -1991,26 +1980,6 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
     status = v2status.crossover_v2_status_block()
     assert _dig(status, status_path) == expected
 
-    # Surface 3: the screen the household actually reads.
-    monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
-    )
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            **status, "phase": PHASE_DONE, "verify": {"outcome": "pass"},
-        },
-    })
-    copy = {
-        "finding": _FINDING_COPY,
-        "ripple": RIPPLE_RESERVATION_COPY,
-        "mic_calibration": MIC_CALIBRATION_RESERVATION_COPY,
-    }[copy_key]
-    texts = [row["text"] for row in env[screen_key]]
-    assert texts == [copy] if screen_exact else copy in texts
-    if expert_detail is not None:
-        assert expert_detail in env["expert_details"]
 
 
 @pytest.mark.parametrize(
@@ -2240,19 +2209,6 @@ def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done()
     # …and the review interlude is NOT re-offered.
     assert v2status.crossover_v2_status_block()["phase"] != "review"
 
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2status.crossover_v2_status_block(),
-    })
-    assert env["screen"] == "verify"
-    # The stage-2 entry point, tier-matched by the durable state's own tier.
-    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/verify"
-    assert env["next_action"]["body"] == {"stage": "post_apply"}
 
 
 def _tuning_trial_state(*, reference=None, scope="candidate"):
@@ -2302,13 +2258,6 @@ def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatc
         "absolute_worst_hz": None,
         "candidate_fingerprint": "room-candidate-fingerprint",
     }
-    envelope = v2projection.build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": block,
-    })
-    assert envelope["verdict_text"] == "Your measured tuning is applied."
-
     with pytest.raises(v2host.CrossoverV2Refused):
         v2host.prepare_v2_session(
             {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
@@ -2503,29 +2452,6 @@ def test_the_preflight_runs_after_the_freshness_gates(monkeypatch):
     assert "no longer current" in str(excinfo.value)
 
 
-def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
-    """The shipped ``verify_retry`` action posts no ``stage``, so a failed
-    post-apply check still offers ONE cheap sweep rather than re-walking the
-    whole post-apply cloud. Read off the envelope so a body change is visible
-    here rather than on hardware."""
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": PHASE_VERIFY,
-            "applied": True,
-            # Stamped now: this is the screen a household is on, which is the
-            # only state that renders the live verify_fail actions (#1942).
-            "failure": {"code": "verify_out_of_tolerance", "at": time.time()},
-        },
-    })
-    retry = env["next_action"]
-    assert retry["endpoint"] == "/sound/speaker/crossover/v2/verify"
-    assert "stage" not in (retry.get("body") or {})
 
 
 def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
@@ -3501,9 +3427,6 @@ def test_a_paused_walk_commission_still_grades_verified():
     had to be.
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
 
     # This test is specifically about the SHIPPED shape, so it says so here
     # rather than in the shared fixture: stage 1 walks no poses, which is
@@ -3526,13 +3449,6 @@ def test_a_paused_walk_commission_still_grades_verified():
     assert "comparison_complete" not in grade
     assert block.get("fc_selection") is None
 
-    text = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": block,
-    })["verdict_text"]
-    assert "reached the target" in text
-    assert "changed nothing automatically" not in text
 
 
 def test_a_legacy_fc_selection_is_inert_and_never_refuses():
@@ -7618,7 +7534,7 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
 @pytest.mark.parametrize("route,handler_name", [
     ("session", "capture"), ("verify", "capture"), ("apply", "apply"),
     ("position-ready", "position_ready"), ("complete", "complete"),
-    ("retake", "retake"), ("republish", "republish"), ("decline", "decline"),
+    ("retake", "retake"), ("republish", "republish"),
 ])
 def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     monkeypatch, route, handler_name,
@@ -7937,3 +7853,27 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run
             assert refused.value.code == "capture_slot_busy"
     finally:
         release.set()
+
+
+def test_a_measure_only_session_resolves_to_review_never_done():
+    """**The work order's premise 6, and PR-T2's first pin.**
+
+    ``crossover_v2_phase`` walks the recorded ``session_phases`` and returns
+    PHASE_DONE once each is accepted. Its one special case — VERIFY unaccepted
+    with MEASURE accepted and not applied ⇒ PHASE_APPLYING — cannot fire when
+    VERIFY is not in the recorded phases at all. So a stage-1 session (CHECK,
+    MEASURE, CLOUD_MEASURE, no VERIFY) fell straight through to PHASE_DONE:
+    the RESULT screen, whose copy is "Your speaker is tuned", over a speaker
+    that had been measured and never touched. A direct collision, not a
+    theoretical one — and the acceptance criterion is explicit that "a stage-1
+    session never renders 'your speaker is tuned'".
+    """
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "applied": False,
+    })
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW

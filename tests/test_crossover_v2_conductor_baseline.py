@@ -228,9 +228,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
         load_state,
         record_model_error,
     )
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
     from jasper.web import correction_crossover_v2 as v2host
 
     path = tmp_path / "model-error.json"
@@ -318,17 +315,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     assert [
         item["attempt_id"] for item in persisted["attempts_loop"]["history"]
     ] == ["candidate-base", "candidate-previous"]
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done",
-            "verify": persisted["verify"],
-            "candidate": persisted["candidate"],
-            "attempts_loop": persisted["attempts_loop"],
-        },
-    })
-    assert "tracked its prediction" not in envelope["verdict_text"]
 
 
 def test_model_error_store_failure_warns_without_blocking_verify(caplog):

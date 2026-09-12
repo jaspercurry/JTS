@@ -747,41 +747,6 @@ def observe_apply_success(
 REVIEW_DECISION_DECLINED = "declined"
 
 
-def observe_review_decline(candidate_fingerprint: str) -> None:
-    """Record that the household chose to keep the current sound (#2641).
-
-    The write half of the review screen's decline, beside its
-    :func:`observe_apply_success` sibling and under the same lock, because
-    that is where every durable v2 write lives: a read-modify-write from the
-    HTTP layer would be a second writer racing this one on the state file.
-
-    **It clears nothing.** Declining changes nothing on the speaker and does
-    not delete the candidate — the review screen's own contract, and the reason
-    it holds is that an accidental tap would otherwise cost ten captures to
-    undo. The proposal stays reviewable until a newer measurement replaces it;
-    what this records is the DECISION.
-
-    ``candidate_fingerprint`` is stamped so the decline binds to the proposal
-    it answered. A later measurement mints a different candidate, and the
-    phase resolver compares the two — so a stale decline cannot close a review
-    the household has never seen. Durable, because the whole point is that a
-    household who has decided is not asked again after a power cut.
-    """
-    with _state_lock:
-        state = load_v2_state()
-        if state is None:
-            return
-        state["review_decision"] = {
-            "decision": REVIEW_DECISION_DECLINED,
-            "candidate_fingerprint": str(candidate_fingerprint or ""),
-        }
-        save_v2_state(state, durable=True)
-    log_event(
-        logger, "correction.crossover_v2_review_declined",
-        candidate_fingerprint=str(candidate_fingerprint or ""),
-    )
-
-
 def review_declined(state: Mapping[str, Any] | None) -> bool:
     """Has the household declined the candidate this state currently holds?
 
@@ -1787,8 +1752,6 @@ def _resolve_measurement_level_trims(
     )
 
 
-
-
 def _fc_hz_label(hz: float) -> str:
     """A crossover frequency as the household reads it: ``2250``, ``1787.5``.
 
@@ -1798,7 +1761,6 @@ def _fc_hz_label(hz: float) -> str:
     first to notice.
     """
     return f"{hz:.1f}".rstrip("0").rstrip(".")
-
 
 
 def persist_conductor_state(

@@ -616,7 +616,6 @@ _POST_ROUTES = {
     # single-valued and every measure session overwrites it; this is the lookup
     # it never had.
     "/crossover/v2/republish": _dispatch_crossover,
-    # The review screen's "Keep current sound", which #2641 found inert.
     # A GATED session's position release — the report that the microphone has
     # reached the angle the envelope named, from an EXTERNAL driver on the
     # remote tier or from the person holding the tape on a hand-walked wired

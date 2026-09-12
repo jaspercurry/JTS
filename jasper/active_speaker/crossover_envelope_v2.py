@@ -24,6 +24,7 @@ from .crossover_v2.journey import (
     PHASE_DONE,
     PHASE_LATERAL,
     PHASE_MEASURE,
+    PHASE_REVIEW,
     PHASE_CLOSING,
     PHASE_VERIFY,
     PRE_CLOUD_CAPTURE_PHASES,
@@ -64,10 +65,9 @@ _PHASE_STEP = {
     # #2291's entry baseline is the LAST thing stage 1 measures — still
     # measuring, nothing applied yet.
     PHASE_ENTRY_BASELINE: "measure",
-    # The review interlude sits on APPLY (shares the step with
-    # PHASE_APPLYING); the measuring session's tail stays on MEASURE.
     PHASE_CLOSING: "measure",
     PHASE_APPLYING: "measure",
+    PHASE_REVIEW: "measure",
     PHASE_VERIFY: "verify",
     PHASE_CLOUD_VERIFY: "verify",
     PHASE_DONE: "verify",
@@ -355,8 +355,6 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     NOT while a capture is held — a screen-level primary would suppress
     the walkthrough rendering the hold.
     """
-    from .arm_walk import SESSION_ENDED_STATUSES
-
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
     capture = _mapping(status.get("capture"))
@@ -407,8 +405,6 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         }] if ready else [],
         busy=running,
         status=status,
-        # Same measured evidence the review screen leads with, readable
-        # while the fit runs, with nothing to decide about it.
         expert_details=_flatness_details_lines(status),
     )
 
@@ -536,9 +532,6 @@ def _envelope(
         "busy": bool(busy),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
-        # WHICH adoption row the last graded round fired (#2537) — the
-        # stable thing to branch on, since outcomes are shared across rows.
-        # ``None`` until a round has been graded.
         "round": None,
         "candidate_review": None,
         # Compact per-group honesty verdict — the SAME projection
@@ -549,8 +542,6 @@ def _envelope(
         # the doctor (which reads only ``cloud``) never parses curve data.
         "cloud_chart": None if resting else _v2(status).get("cloud_chart"),
         "prediction": None,
-        # Banked findings as household-readable lines. ``[]`` on every
-        # screen that is not the apply decision or the result.
         "findings": [],
     }
 
@@ -683,15 +674,16 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             verdict="Measurement complete." if terminal == CAPTURE_COMPLETE else "Measurement stopped.",
             next_action=_reset_action(), status=status, advertise_capture=False,
         )
-    if failure_code and not capture:
-        return _failure_envelope(failure_code, status)
+    if not capture:
+        return _failure_envelope(failure_code, status) if failure_code else _awaiting_plan_envelope(status)
     if capture.get("join") or (phase == PHASE_CHECK and capture):
         phase = PHASE_MEASURE
+    active_step = _PHASE_STEP[phase]
     if phase == PHASE_CHECK:
         env = _awaiting_plan_envelope(status)
     elif phase == PHASE_MEASURE:
         env = _envelope(
-            screen="measure", active_step="measure",
+            screen="measure", active_step=active_step,
             verdict=(
                 "Keep the microphone still — JTS is measuring both drivers. Follow "
                 "the measurement page; it continues automatically."
@@ -703,7 +695,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # Same wizard screen as MEASURE; verdict copy changes since the
         # point of this phase is moving the microphone, not holding still.
         env = _envelope(
-            screen="measure", active_step="measure",
+            screen="measure", active_step=active_step,
             verdict=(
                 "JTS is measuring from a few different spots — follow the "
                 "step below. Moving the microphone between spots is what lets "
@@ -715,7 +707,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     elif phase == PHASE_LATERAL:
         # R16's walk (§4.4). Bespoke copy: must state the return to the mark.
         env = _envelope(
-            screen="measure", active_step="measure",
+            screen="measure", active_step=active_step,
             verdict=(
                 "JTS is measuring from a few spots either side of the mark, "
                 "and then back on it — follow the step below. Moving the "
@@ -729,7 +721,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # #2291's "before" capture. "on the mark", not "BACK on the mark":
         # this follows MEASURE, where the microphone never left.
         env = _envelope(
-            screen="measure", active_step="measure",
+            screen="measure", active_step=active_step,
             verdict=(
                 "One last measurement, on the mark and held still — this "
                 "is how your speaker sounds now, so JTS can tell you whether "
@@ -748,29 +740,15 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # extra here: its cloud walk follows.
         verdict += "."
         env = _envelope(
-            screen="verify", active_step="verify",
+            screen="verify", active_step=active_step,
             verdict=verdict,
-            # STAGE 2's entry point (D2). The measuring session ended at
-            # the review screen, so the post-apply check is a NEW session somebody
-            # has to start — deliberately, because the session TTL begins
-            # ticking at open while the household is still walking back to the
-            # microphone.
-            #
-            # No ``show_during_capture``: while stage 2's own capture IS in flight
-            # this screen renders the same copy with the action suppressed by the
-            # shared capture gate — one button to start it, none to start it twice.
-            next_action={
-                "id": "verify_start",
-                "label": "Check the result",
-                "endpoint": "/sound/speaker/crossover/v2/verify",
-                "body": {"stage": "post_apply"},
-            },
+            next_action=None,
             status=status,
             expert_details=_flatness_details_lines(status),
         )
     elif phase == PHASE_CLOUD_VERIFY:
         env = _envelope(
-            screen="verify", active_step="verify",
+            screen="verify", active_step=active_step,
             verdict=(
                 "Checking the result from the same few spots — follow the "
                 "prompts on the measurement page."
@@ -820,13 +798,21 @@ def crossover_v2_phase(
             return phase
     if PHASE_VERIFY not in phases:
         if applied:
-            candidate = _mapping((state or {}).get("candidate"))
-            if not tuning_trial_matches_candidate(
-                (state or {}).get("tuning_trial"), candidate.get("fingerprint"),
+            candidate = state.get("candidate") if isinstance(state, Mapping) else None
+            candidate_fingerprint = (
+                candidate.get("fingerprint")
+                if isinstance(candidate, Mapping) else None
+            )
+            if tuning_trial_matches_candidate(
+                (state or {}).get("tuning_trial"), candidate_fingerprint,
             ):
-                return PHASE_VERIFY
-        elif str((state or {}).get("cloud_close") or ""):
+                return PHASE_DONE
+            return PHASE_VERIFY
+        if str((state or {}).get("cloud_close") or ""):
             return PHASE_CLOSING
+        if review_declined:
+            return PHASE_CHECK
+        return PHASE_REVIEW
     return PHASE_DONE
 
 

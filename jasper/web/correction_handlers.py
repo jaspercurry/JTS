@@ -183,8 +183,6 @@ def _handle_crossover_v2_republish(
     return republish.handle_v2_republish(raw)
 
 
-
-
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: in-flow "start over" for the crossover flow.
 
@@ -204,6 +202,7 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
 
     from . import correction_crossover_flow
 
+    correction_capture._clear_terminal_capture("crossover_v2:")
     return correction_crossover_flow.handle_reset(
         capture=correction_capture._get_capture_slot_for("crossover_v2:"),
     )

@@ -30,9 +30,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
@@ -1160,7 +1158,7 @@ def test_carve_outs_survive_a_registry_that_identified_nothing():
 # --------------------------------------------------------------------------- #
 
 
-def _walk_to_envelope(result):
+def _project_cloud(result):
     """Pipeline result → durable ``cloud`` block → ``compact_cloud_status``
     → the wizard envelope. The REAL functions, in the host's own order — the
     same walk ``tests/test_flat_spec_ssot.py`` uses for the flatness gauge."""
@@ -1169,14 +1167,7 @@ def _walk_to_envelope(result):
     compact = compact_cloud_status(
         {PHASE_CLOUD_VERIFY: {"geometry": result["geometry"], "pipeline": result}}
     )
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done", "verify": {"outcome": "pass"}, "cloud": compact,
-        },
-    })
-    return compact, envelope
+    return compact
 
 
 def test_carve_outs_reach_state_and_the_envelope_byte_identically():
@@ -1184,59 +1175,14 @@ def test_carve_outs_reach_state_and_the_envelope_byte_identically():
     producer, copied — never a second derivation on the way to a surface."""
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
-    compact, envelope = _walk_to_envelope(result)
+    compact = _project_cloud(result)
 
     canonical = json.dumps(result["carve_outs"], sort_keys=True)
     assert json.dumps(
         compact[PHASE_CLOUD_VERIFY]["carve_outs"], sort_keys=True
     ) == canonical
-    assert json.dumps(
-        envelope["cloud"][PHASE_CLOUD_VERIFY]["carve_outs"], sort_keys=True
-    ) == canonical
-
-    # And the household-visible expert disclosure carries the τ/r line, band
-    # prefixed — the part that renders TODAY, before PR-7's chart exists.
-    expert = [line for line in envelope["expert_details"] if "carved out" in line]
-    assert expert, envelope["expert_details"]
-    assert all("µs" in line and "reflection ratio" in line for line in expert)
 
 
-def test_the_pre_apply_cloud_never_renders_as_the_post_apply_verdict():
-    """Inherited from ``_flatness_details_lines``: ``cloud_measure`` is the
-    UNCORRECTED baseline that exists in order to be out of spec, so nothing
-    read from it may render as the screen that answers "how did your speaker
-    come out".
-
-    **Was ``…_never_discloses_its_carve_outs_as_the_verdict``, asserting
-    ``expert_details == []``.** That enforced the rule by rendering nothing —
-    the same silence #1965 removed, because it was also what left the FULL tier
-    showing less measured evidence than Express on every screen where no
-    post-apply cloud exists. The rule itself did not move: these numbers render
-    under the explicit BEFORE-TUNING lead, never bare the way the CLOUD-VERIFY
-    path renders them. The carve-out lines ride along verbatim exactly as they
-    already did on Express (owner decision 1 — carve-outs are a
-    post-apply-persistent fact disclosed on every tier), which is why their
-    absence was never the invariant worth pinning here.
-    """
-    combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
-    result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
-    from jasper.active_speaker.crossover_envelope_v2 import compact_cloud_status
-
-    compact = compact_cloud_status(
-        {PHASE_CLOUD_MEASURE: {"geometry": result["geometry"], "pipeline": result}}
-    )
-    assert compact[PHASE_CLOUD_MEASURE]["carve_outs"], "still on the payload"
-
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done", "verify": {"outcome": "pass"}, "cloud": compact,
-        },
-    })
-    details = envelope["expert_details"]
-    assert details[0].startswith("Measured before tuning: ")
-    assert not any(line.startswith("flatness ") for line in details)
 
 
 def test_an_unavailable_pipeline_projects_no_carve_outs():

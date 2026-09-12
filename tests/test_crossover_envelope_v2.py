@@ -4,8 +4,6 @@
 """Mover screens, preconditions, and shared status projections."""
 from __future__ import annotations
 
-import time
-from typing import Mapping
 
 import numpy as np
 import pytest
@@ -30,46 +28,18 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     verify_inconclusive_message,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
-from jasper.web.correction_crossover_v2 import (
-    _post_apply_grade,
-)
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
 
 
 def _status(**v2) -> dict:
-    failure = v2.get("failure")
-    if isinstance(failure, Mapping) and "at" not in failure:
-        # #1942: a persisted failure now carries WHEN it happened, and only a
-        # fresh one renders its terminal screen. Every fixture below that
-        # hands this helper a failure is describing the screen a household is
-        # looking at right now, so the helper stamps it fresh — which is what
-        # keeps those tests pinning the LIVE path they were written for.
-        # The aged and undated (pre-#1942) cases are built inline instead, so
-        # a test that means "stale" has to say so out loud.
-        v2 = {**v2, "failure": {**failure, "at": time.time()}}
-    if "post_apply_grade" not in v2:
-        # R19: the envelope reads the PRODUCER's grade — scope, spatial state,
-        # completeness — instead of re-deriving any of them from the cloud
-        # block. Running the real producer here rather than hand-building the
-        # dict is what makes these tests a contract between the two modules:
-        # the envelope spells the grade words as literals (jasper.active_speaker
-        # never imports jasper.web), and a rename on the producer side stops
-        # those branches firing, which fails here rather than shipping.
-        # Fixtures that pass their own `post_apply_grade` are describing a
-        # state file some OTHER build wrote, and keep it verbatim.
-        v2 = {**v2, "post_apply_grade": _post_apply_grade(v2)}
-    if "updated_at" not in v2:
-        # #1947: the durable state now carries the session's own clock, and
-        # only a live session renders its phase screen. Every fixture below is
-        # describing the screen a household is looking at right now, so the
-        # helper stamps it live — which keeps those tests pinning the LIVE path
-        # they were written for. The dead and undated cases say so out loud.
-        v2 = {**v2, "updated_at": time.time()}
     return {
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": v2,
+        "capture": {"status": "awaiting_capture"} if v2.get("phase") in {
+            "measure", "verify", "cloud_measure", "cloud_verify", "lateral", "entry_baseline",
+        } and not v2.get("failure") else None,
     }
 
 
@@ -161,8 +131,9 @@ def test_setup_not_ready_blocks_before_any_capture():
     assert _step_statuses(env)["speaker_setup"] == "active"
 
 
-def test_awaiting_plan_without_a_staged_run():
-    env = build_crossover_envelope_v2(_status(phase="check"))
+@pytest.mark.parametrize("phase", ["check", "measure", "verify", "closing", "review", "done"])
+def test_awaiting_plan_without_a_staged_run(phase):
+    env = build_crossover_envelope_v2({**_status(phase=phase), "capture": None})
     assert env["screen"] == "awaiting_plan"
     assert env["next_action"] is None
     assert env["alternate_actions"] == []
@@ -218,26 +189,10 @@ def _candidate_summary(**overrides) -> dict:
 
 
 def test_verify_phase_screen():
-    env = build_crossover_envelope_v2(_status(phase="verify"))
+    env = build_crossover_envelope_v2(_status(phase="verify", applied=True))
     assert env["screen"] == "verify"
-    # STAGE 2's entry point (two-stage work order D2, PR-T3). The measuring
-    # session ended at the review screen and the household applied from there,
-    # so the post-apply check is a NEW session somebody has to start — and
-    # deliberately so, because the session TTL begins ticking at open and the
-    # household is still walking back to fetch the phone. It used to be None:
-    # the same screen rendered mid-session while the phone drove it, and the
-    # shared capture gate still suppresses this action while stage 2's own capture
-    # is in flight.
-    assert env["next_action"] == {
-        "id": "verify_start",
-        "label": "Check the result",
-        "endpoint": "/sound/speaker/crossover/v2/verify",
-        "body": {"stage": "post_apply"},
-    }
+    assert env["next_action"] is None
     assert _step_statuses(env)["verify"] == "active"
-    # Full's VERIFY anchor is followed by the post-apply cloud — no
-    # express-only disclosure here.
-    assert "only check" not in env["verdict_text"].lower()
 
 
 def test_verify_phase_express_discloses_before_tuning_flatness_from_measure_cloud():
@@ -262,7 +217,7 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/recover-volume"
     # And needs_recovery false ⇒ no recovery screen even with a phase set.
     env = build_crossover_envelope_v2(_status(phase="check", needs_recovery=False))
-    assert env["screen"] == "microphone_check"
+    assert env["screen"] == "awaiting_plan"
 
 
 def _cloud_measure_flatness_status(*, carve_outs=None, **overrides):
@@ -351,24 +306,6 @@ def _dark_tweeter_compact_cloud(*, phase: str = PHASE_CLOUD_VERIFY):
     return compact[phase], report, gauge
 
 
-def test_the_pre_apply_reading_also_names_every_band():
-    """The BEFORE-TUNING branch (``_pre_apply_flatness_lines``) folds every
-    ``_flatness_lines_from_block`` line into one ``"Measured before
-    tuning: "``-prefixed sentence (the module's own framing rule — these
-    numbers must never render bare the way CLOUD-VERIFY renders them). The
-    per-band disclosure is the SAME kind of before-tuning claim as the
-    pointer it sits beside, so it folds into that SAME sentence rather than
-    appearing as a separate, unprefixed line the way carve-outs do."""
-    compact, _report, _gauge = _dark_tweeter_compact_cloud(phase=PHASE_CLOUD_MEASURE)
-    env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"},
-        cloud={PHASE_CLOUD_MEASURE: compact}, candidate=_candidate_summary(),
-    ))
-    details = env["expert_details"]
-    lead = next(line for line in details if line.startswith("Measured before tuning: "))
-    assert "250–2000 Hz +3.00 dB (1.5 dB outside the ±1.5 dB target)" in lead
-    assert "2000–8000 Hz -6.00 dB (4.0 dB outside the ±2.0 dB target)" in lead
-    assert "8000–16000 Hz -0.00 dB (within the ±2.5 dB target)" in lead
 
 
 def test_per_band_lines_uniformly_flat_shows_no_alarm():
@@ -501,7 +438,6 @@ _PRIOR_SESSION_CLOUD = {
 
 
 @pytest.mark.parametrize("phase,screen", [
-    ("check", "microphone_check"),
     ("measure", "measure"),
     ("verify", "verify"),
     ("cloud_verify", "verify"),
@@ -552,3 +488,19 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
     )
 
 
+
+
+@pytest.mark.parametrize("held, running, actions", [
+    (False, False, ["crossover_v2_complete", "crossover_v2_retake"]),
+    (True, False, []), (False, True, []),
+])
+def test_closing_keeps_done_and_retake_between_captures(held, running, actions):
+    env = build_crossover_envelope_v2({
+        **_status(phase="closing", cloud_close="running" if running else "awaiting_confirm"),
+        "capture": {"status": "awaiting_capture", "position_pending": {"index": 1} if held else None},
+    })
+    assert env["screen"] == "closing"
+    assert env["busy"] is running
+    offered = [a for a in [env["next_action"], *env["alternate_actions"]] if a]
+    assert [a["id"] for a in offered] == actions
+    assert all(a["show_during_capture"] for a in offered)

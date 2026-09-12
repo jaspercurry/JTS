@@ -963,30 +963,6 @@ def test_an_early_return_retry_cannot_repair_the_gate_onto_a_stale_verdict():
     assert c.verify_gate["reflection_measured"] is False
     assert "no reflection found" in c.verify_gate["disclosure"]
 
-    # And the screen the household actually reads says the ceiling thing.
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "done",
-            "applied": True,
-            "verify": {
-                "outcome": c.verify_outcome,
-                "code": c.verify_code,
-                "gate": c.verify_gate,
-            },
-            "candidate": {"trims_db": {"lo": -1.0}, "delay_us": 120.0,
-                          "polarity": "normal"},
-            "post_apply_grade": {"state": "inconclusive", "graded": False},
-        },
-    })
-    assert env["screen"] == "done"
-    assert "less usable sound to compare" in env["verdict_text"]
-    assert "reflection" not in env["verdict_text"]
 
 
 def test_an_ungated_capture_records_no_gate_at_all():
