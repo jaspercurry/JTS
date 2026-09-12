@@ -245,9 +245,6 @@ def _fixture_round(root: Path) -> _FixtureRound:
 
 
 def _room_grade_argv(round_: _FixtureRound) -> list[str]:
-    """The one view whose input is another view's artifact: the seat-cube
-    median is written beside the round first, as ``room-median`` writes it."""
-
     write_room_median(round_.measured)
     return ["room-grade", str(round_.measured)]
 
@@ -279,10 +276,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "findings": lambda r: ["findings", str(r.measured)],
     "room-grade": _room_grade_argv,
     "close-reference": _NO_CAPTURES,
-    "boundary-prior": lambda r: ["boundary-prior", str(r.measured)],
-    "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
-    "room-median": lambda r: ["room-median", str(r.seat)],
-    "room-persistence": lambda r: ["room-persistence", str(r.seat)],
+    "room": lambda r: ["room", str(r.seat)],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],
