@@ -1255,11 +1255,15 @@ def _cloud_entry_screen(
     }
 
 
+def summed_sweep_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
+    return SUMMED_SWEEP_BAND_HZ[0], min(SUMMED_SWEEP_BAND_HZ[1], measurement_band_hz(roles)[1])
+
+
 def room_sweep_band_hz(
-    prompts: Sequence[CloudPositionPrompt],
+    roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
 ) -> tuple[float, float] | None:
     if any(gate_exemption(resolved_measurement_purpose(p.purpose, p.kind)) for p in prompts):
-        return SUMMED_SWEEP_BAND_HZ
+        return summed_sweep_band_hz(roles)
     return None
 
 
@@ -1315,7 +1319,7 @@ def build_v2_capture_plan(
     # is the verify program's even though stage 1 runs no VERIFY phase, and it
     # is the announced one because its program object is stage 2's anchor.
     band_hz = measurement_band_hz(roles)
-    summed_band = room_sweep_band_hz(lateral_prompts or ())
+    summed_band = room_sweep_band_hz(roles, lateral_prompts or ())
     verify = build_verify_program(
         fc_hz,
         measurement_band_hz=band_hz,

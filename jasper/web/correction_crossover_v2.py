@@ -74,6 +74,7 @@ from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequ
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
+    summed_sweep_band_hz,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.web.correction_run_host import bind_level_windows, compose_plan_program
@@ -3384,7 +3385,9 @@ def prepare_v2_session(
             raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
         request = report.plan
         assert request.level.resolved is not None
-        captures = prepare_plan_captures(request, candidate_scopes=report.candidate_scopes)
+        captures = prepare_plan_captures(
+            request, candidate_scopes=report.candidate_scopes, roles_bands=context.roles_bands,
+        )
         try:
             protection_sections = confirmed_protection_sections(
                 context.safety_profile, context.role_targets
@@ -3637,6 +3640,7 @@ def prepare_v2_session(
             run_captures = tuple(PlanCapture(stop, MeasureSpec(
                 kind="verify", graph_scope="candidate", candidate_id=BASE_CANDIDATE, positions=(stop.angle_deg,),
                 vertical_deg=stop.elevation_deg, program_phase=opening.plan.index_phase_map[index],
+                sweep_band_hz=summed_sweep_band_hz(context.roles_bands),
             )) for index, stop in enumerate(run_request.stops, 1))
         nonlocal held
         source_run = _build_wired_run(

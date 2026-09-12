@@ -295,7 +295,7 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         assert any(s.kind == KIND_COURTESY_TONE for s in first.segments)
         assert not any(s.kind == KIND_COURTESY_TONE for s in second.segments)
         assert len(first.stimulus_segments()) == len(second.stimulus_segments()) == 1
-        assert second.total_samples / second.sample_rate_hz <= 10.0
+        assert 7.5 <= second.total_samples / second.sample_rate_hz <= 10.0
         assert box.watchdog == sweep.watchdog_seconds(-40, 0, first.total_samples / first.sample_rate_hz) + 60
         provenance = box.bank.call_args.kwargs['stimulus'].to_dict()
         assert provenance == {'program_id': second.program_id, 'phase': second.phase,

@@ -47,6 +47,7 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.measurement_programs import program as measurement_program
 from jasper.active_speaker.plan_run import prepare_plan_captures
+from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt, room_sweep_band_hz
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
     COURTESY_PRELUDE_PHASES,
@@ -69,6 +70,7 @@ from tests.crossover_v2_fixtures import (
     FakeSeams,
     _preset,
     _roles,
+    _roles_way1,
 )
 
 #: The solved per-driver gains a CHECK pass would hand MEASURE.
@@ -500,7 +502,7 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 def test_prepared_summed_captures_keep_the_program_band(purpose, size):
     layout = measurement_program(purpose, size)
     request = request_for_program(layout, mover=layout.mover or "human")
-    captures = prepare_plan_captures(request, candidate_scopes={})
+    captures = prepare_plan_captures(request, candidate_scopes={}, roles_bands=_roles())
     excitation = _excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0})
     host = SimpleNamespace(_excitation=excitation)
     for capture in captures:
@@ -521,3 +523,9 @@ def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     assert {
         s.role: (s.f1_hz, s.f2_hz) for s in program.stimulus_segments() if s.kind == "sweep"
     } == {rb.role: (rb.band.lower_hz, rb.band.upper_hz) for rb in excitation.roles}
+
+
+def test_summed_room_band_stops_at_the_declared_hard_top():
+    assert room_sweep_band_hz(
+        _roles_way1(), (CloudPositionPrompt("room", purpose="room"),)
+    ) == (20.0, 18000.0)

@@ -803,7 +803,7 @@ class CrossoverV2Session:
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
             sweep_duration_limits_s=self._sweep_duration_limits_s,
-            summed_sweep_band_hz=_plan.room_sweep_band_hz(self._lateral_prompts),
+            summed_sweep_band_hz=_plan.room_sweep_band_hz(self._roles, self._lateral_prompts),
         )
         # Composed ONCE and held: ``program_for_phase`` answers by OBJECT IDENTITY, and
         # #2291's before→after comparability depends on it.
