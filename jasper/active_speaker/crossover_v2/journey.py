@@ -51,12 +51,6 @@ PHASE_LATERAL = "lateral"
 # comparability check ``verification.evaluate_benefit`` runs. Deliberately NOT a
 # :data:`GROUP_PHASES` member: one capture at one mark, not a walk.
 PHASE_ENTRY_BASELINE = "entry_baseline"
-# The two-stage commission flow's untimed INTERLUDE (issue #1806): a
-# measure-only session has closed, a candidate exists, and NOTHING has been
-# applied. Like PHASE_APPLYING and PHASE_DONE it is a control-page phase with no
-# capture index, and deliberately NOT in ``CAPTURE_PHASES``: no excitation plays
-# and no evidence is bound while it renders.
-PHASE_REVIEW = "review"
 # The measuring session's own tail: every stage-1 phase is accepted and the
 # pre-apply cloud's close has NOT produced a candidate yet — the household has
 # not confirmed, or the fit is running. Also a control-page phase with no
