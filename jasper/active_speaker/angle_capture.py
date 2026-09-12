@@ -34,6 +34,7 @@ from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
+from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
@@ -100,7 +101,6 @@ __all__ = [
     "BASE_CANDIDATE",
     "candidate_identity",
     "WALK_REPEATS_UNSUPPORTED_YET",
-    "WALK_LEVEL_WINDOWS_UNSUPPORTED_YET",
     "WALK_SCHEMA_VERSION_UNSUPPORTED",
     "AngleStop",
     "AngleCaptureRequest",
@@ -141,12 +141,6 @@ __all__ = [
     "session_lateral_walk",
 ]
 
-
-MOVER_ARM = "arm"
-MOVER_HUMAN = "human"
-MOVER_CONFIRMED = "confirmed"
-
-MOVERS = (MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED)
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
 REQUEST_SCHEMA_VERSION = 3
@@ -439,11 +433,9 @@ class AngleCaptureRequest:
         levels = self.operating_levels_db
         if not isinstance(levels, (tuple, list)) or any(finite_float(v) is None for v in levels):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "operating levels must be finite numbers")
-        if len(levels) > 1:
-            raise LateralWalkRefused(WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, "only one level window can play")
         reference = self.level.resolved.reference_volume_db if self.level.resolved is not None else None
-        if levels and (levels[0] > 0 or (reference is not None and levels[0] != reference)):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "the window must hold the reference volume")
+        if any(level > 0 for level in levels):
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "window levels must be non-positive")
         object.__setattr__(self, "operating_levels_db", tuple(levels) or (
             () if reference is None else (reference,)
         ))
@@ -804,7 +796,7 @@ def walk_price(
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
     takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
+    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats * max(1, len(request.operating_levels_db))
     return {
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
@@ -928,10 +920,6 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
 
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 
-#: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
-#: with no hand moving, or a tap-wait from an arm with none to give). NOT a
-#: comparison against the session's GATE.
-
 #: A stop is outside the stated mover's own reach on one AXIS
 #: (:data:`MOVER_MAX_ANGLE_DEG`, :data:`MOVER_MAX_ELEVATION_DEG`). Decided by
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.
@@ -940,7 +928,6 @@ WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
 # Remove with PR 28b, level windows.
-WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
 WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 # Remove when W1-13 hosts run_plan in the wizard.
 WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
@@ -1019,7 +1006,6 @@ WALK_REFUSAL_REASONS = frozenset({
     REASON_WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
-    WALK_LEVEL_WINDOWS_UNSUPPORTED_YET,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
     WALK_REPEATS_UNSUPPORTED_YET,
     WALK_CEILING_ABOVE_STOP,

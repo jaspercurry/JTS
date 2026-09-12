@@ -54,7 +54,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from jasper.log_event import log_event
 
-from .angle_capture import ARM_ENVELOPE_DEG, MOVER_ARM
+from .angle_capture import ARM_ENVELOPE_DEG
+from .movers import MOVER_ARM
 from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READY_PATH
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .wizard_client import STATUS_PATH, WizardClient

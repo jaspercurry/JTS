@@ -24,6 +24,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import re
 import secrets
 import threading
@@ -62,6 +63,8 @@ from jasper.active_speaker.crossover_v2.position_gate import (
     POSITION_HOLD_CODE,
     POSITION_HOLD_EXPIRED_CODE,
     POSITION_READY_ENDPOINT,
+    RETAKE_ENDPOINT,
+    COMPLETE_ENDPOINT,
     POSITION_TARGET_MISSING_CODE,
     REMOTE_POSITION_HOLD_BUDGET_S,
     SESSION_CEILING_EXPIRED_CODE,
@@ -141,9 +144,6 @@ def _entry(degrees, role=POSITION_ROLE_ONAX):
 
 
 def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
-    """One number, two statements of it, and they cannot disagree: the angle
-    comes from ``offset_cm`` at the nominal mark distance, and its sign from the
-    row's own LEFT/RIGHT word."""
     for prompt in flow.CLOUD_POSITION_PROMPTS + flow.LATERAL_POSE_PROMPTS:
         if prompt.role == POSITION_ROLE_XOVR:
             continue
@@ -157,8 +157,8 @@ def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
         assert ("RIGHT" in prompt.headline) == (degrees > 0)
         # The magnitude really is the bearing to that offset, not a table.
         expected = round(
-            flow.math.degrees(
-                flow.math.atan2(prompt.offset_cm / 100.0, flow.MARK_DISTANCE_M)
+            math.degrees(
+                math.atan2(prompt.offset_cm / 100.0, flow.MARK_DISTANCE_M)
             )
         )
         assert abs(degrees) == expected
@@ -418,12 +418,11 @@ def test_pending_and_join_actions_belong_to_the_mover(mover, policy):
     pending = gate.published()["pending"]
     assert invitation == {**pending, "actions": pending["actions"][:1]}
     assert pending["mover"] == mover
-    assert pending["hand_released"] is (mover != ac.MOVER_ARM)
     assert [(a["id"], a["endpoint"], a["body"]) for a in pending["actions"]] == ([
         ("position_ready", POSITION_READY_ENDPOINT,
          {"index": 1, "attempt": 1, "degrees": 0, "vertical_deg": 0}),
-        ("retake", "/sound/speaker/crossover/v2/retake", {}),
-        ("done", "/sound/speaker/crossover/v2/complete", {}),
+        ("retake", RETAKE_ENDPOINT, {}),
+        ("done", COMPLETE_ENDPOINT, {}),
     ] if mover == ac.MOVER_HUMAN else [])
 
 

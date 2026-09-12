@@ -7,17 +7,33 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 import urllib.error
 
 import pytest
 
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.movers import MOVERS
 from jasper.cli import round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
+
+
+def test_round_parser_does_not_import_numpy():
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import json, sys\n"
+            "from jasper.cli import round as cli\n"
+            "imported = 'numpy' in sys.modules\n"
+            "cli.build_parser()\n"
+            "print(json.dumps([imported, 'numpy' in sys.modules]))\n"
+        )], capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert json.loads(result.stdout) == [False, False]
 
 
 class _FakeResponse:
@@ -86,7 +102,6 @@ def _opener(*, v2=None, envelopes=None, raises=None, **pages) -> _FakeOpener:
             wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok-abcd1234">',
             wc.STATUS_PATH: _envelope(**(v2 or {})),
             wc.SESSION_PATH: pages.get("session", "{}"),
-            wc.VERIFY_PATH: pages.get("verify", "{}"),
             wc.APPLY_PATH: pages.get("apply", '{"status": "applied"}'),
             cli.REPUBLISH_PATH: pages.get("republish", '{"status": "republished"}'),
         },
@@ -253,16 +268,41 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
 
 
-@pytest.mark.parametrize("ceiling,code", [(80, 0), (90, 1)])
-def test_dry_run_prints_preflight_without_posting(preflight_ready, monkeypatch, capsys, ceiling, code):
+@pytest.mark.parametrize("dry_run,ceiling,code", [(True, 80, 0), (True, 90, 1), (False, 90, 1)])
+def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys, dry_run, ceiling, code):
     opener = _opener()
-    actual, body = _run(["run", "--dry-run", "--ceiling", str(ceiling)], opener, monkeypatch, capsys)
+    argv = ["run", "--ceiling", str(ceiling)] + (["--dry-run"] if dry_run else [])
+    actual, body = _run(argv, opener, monkeypatch, capsys)
     assert actual == code
-    assert body["dry_run"] is True
-    assert bool(body["issues"]) == bool(code)
-    if code:
-        assert body["issues"][0]["code"] == "walk_ceiling_above_stop"
+    if dry_run:
+        assert body["dry_run"] is True
+        assert bool(body["issues"]) == bool(code)
+        if code:
+            assert body["issues"][0]["code"] == "walk_ceiling_above_stop"
+    else:
+        assert body["status"] == STATUS_BY_CODE[code]
+        assert body["reason"] == "walk_ceiling_above_stop"
     assert not opener.requests
+
+
+@pytest.mark.parametrize("repeats", [None, 1, 2])
+def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsys, repeats):
+    from collections import Counter
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest
+    from jasper.active_speaker.measurement_programs import run_program
+
+    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+    argv = ["run", "--program", "speaker", "--poses", "baseline_express"]
+    if repeats is not None:
+        argv += ["--repeats", str(repeats)]
+    code, _ = _run(argv, opener, monkeypatch, capsys)
+    assert code == 0
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    assert plan.repeats == 1
+    assert Counter(stop.place for stop in plan.stops) == {
+        pose.place: pose.repeats if repeats is None else repeats
+        for pose in run_program("speaker", "baseline_express").poses
+    }
 
 
 def _run_opener(capture):
@@ -272,7 +312,7 @@ def _run_opener(capture):
 
 
 @pytest.mark.parametrize("joining", [True, False])
-@pytest.mark.parametrize("mover", ["confirmed", "human", "arm"])
+@pytest.mark.parametrize("mover", MOVERS)
 def test_placed_releases_only_confirmed_holds(joining, mover, monkeypatch, capsys):
     from jasper.active_speaker.crossover_v2.position_gate import POSITION_READY_ENDPOINT
     opener = _run_opener({"status": "awaiting_join" if joining else "running",

@@ -1,15 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""The banked repeat floor: the record's math, its writer/loader round trip,
-and the stopping thresholds derived from it (issue #3488).
-
-The ``derive_repeat_floor`` vectors ride the REAL
-:func:`~jasper.active_speaker.crossover_v2.round_views.repeatability_spread`
-over rounds built by the round-views suite's own ``_make_round_dir`` builder,
-so this file never hand-types a packet the product would have to keep in step.
-"""
 
 from __future__ import annotations
 
@@ -60,11 +51,6 @@ def _record(p95: float) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# pairwise_abs_deltas
-# --------------------------------------------------------------------------- #
-
-
 def test_pairwise_abs_deltas_over_a_hand_derivable_set():
     """[0, 1, 2, 3] -> |delta| = sorted [1,1,1,2,2,3]; the linear-interpolated
     95th percentile of that set is 2.75."""
@@ -76,11 +62,6 @@ def test_pairwise_abs_deltas_over_a_hand_derivable_set():
 @pytest.mark.parametrize("values", [[], [1.0]])
 def test_pairwise_abs_deltas_needs_two_values_to_have_a_difference(values):
     assert pairwise_abs_deltas(values) == []
-
-
-# --------------------------------------------------------------------------- #
-# stopping_thresholds
-# --------------------------------------------------------------------------- #
 
 
 def test_stopping_thresholds_derive_plateau_and_margin_from_the_aggregate_p95():
@@ -104,11 +85,6 @@ def test_stopping_thresholds_refuse_a_record_with_no_aggregate_row():
     record = _record(0.4)
     record["metrics"] = {}
     assert stopping_thresholds(record) is None
-
-
-# --------------------------------------------------------------------------- #
-# write / load
-# --------------------------------------------------------------------------- #
 
 
 def test_write_then_load_round_trips_the_record(tmp_path):
@@ -139,11 +115,6 @@ def test_load_answers_none_for_anything_it_does_not_own(tmp_path, on_disk):
     if on_disk is not None:
         path.write_text(on_disk, encoding="utf-8")
     assert load_repeat_floor(state_path=path) is None
-
-
-# --------------------------------------------------------------------------- #
-# derive_repeat_floor — over the REAL repeatability view
-# --------------------------------------------------------------------------- #
 
 
 def _rounds(tmp_path, names):
@@ -187,3 +158,15 @@ def test_derive_refuses_a_single_round_which_has_no_spread(tmp_path):
     result = repeatability_spread(rounds)
     with pytest.raises(ValueError):
         derive_repeat_floor(result, rounds=[])
+
+@pytest.mark.parametrize("unit", ["db", "us"])
+def test_floor_accepts_per_take_samples_in_native_units(unit):
+    values = [1.0, 2.0, 4.0]
+    record = derive_repeat_floor(samples={"role_metric": values}, units={"role_metric": unit},
+                                 rounds=[{"take_id": str(i)} for i in range(3)])
+    assert record["kind"] == REPEAT_FLOOR_KIND
+    assert record["artifact_schema_version"] == SCHEMA_VERSION
+    row = record["metrics"]["role_metric"]
+    assert row["n"] == record["n_repeats"] == 3
+    assert row[f"pairwise_abs_delta_p95_{unit}"] == percentile(pairwise_abs_deltas(values), 95)
+    assert row[f"mean_{unit}"] == pytest.approx(7 / 3)

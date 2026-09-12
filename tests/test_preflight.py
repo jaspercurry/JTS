@@ -179,3 +179,18 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     issue, = report.issues
     assert issue.code == "measurement_candidate_invalid"
     assert issue.blocking and issue.next_action
+
+
+@pytest.mark.parametrize("levels, ceiling, rejected", [
+    ((-20, -14), 80, False), ((-20, -12), 80, True),
+    ((-20, -7), None, True), ((-20, -8), None, False),
+])
+def test_each_level_is_resolved_under_the_stated_and_commissioning_stop(levels, ceiling, rejected):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED), AngleStop(20, REGIME_SUMMED)),
+                               operating_levels_db=levels, spl_ceiling_db_spl=ceiling)
+    report = preflight(plan, ready_facts(plan))
+    assert report.blocking is rejected
+    assert [issue.code for issue in report.issues] == (["level_over_ceiling"] if rejected else [])
+    assert [(row.pose, row.level_window_db) for row in report.schedule] == [
+        (stop.place, level) for stop in plan.stops for level in levels]
+    assert report.price["captures"] == 4

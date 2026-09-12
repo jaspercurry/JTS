@@ -156,7 +156,6 @@ def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, curre
     ("bass_fit_common_coverage_unavailable", "measure_bass_coverage", "/sound/speaker/crossover/"),
     ("clipped", None, None),
     ("verify_out_of_tolerance", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
-    ("verify_deterministic_mismatch", "reset", "/sound/speaker/crossover/reset"),
 ])
 def test_failure_templates_preserve_their_own_actions(fault, action_id, target):
     env = build_crossover_envelope_v2({

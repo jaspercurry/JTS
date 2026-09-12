@@ -115,46 +115,6 @@ def test_live_model_error_binding_reports_identity_conflict_to_conductor():
     ) is False
 
 
-class _NoGraphSession:
-    """A tuning session that holds no graph, for the pause-lifecycle tests.
-
-    ``_volume_hooks`` opens the session after the plan confirms and closes it
-    where the graph used to go back. These tests are about the PAUSE, not the
-    graph, so the session they pass holds no graph — which is also the real
-    no-op shape for a session that never played a routed stimulus.
-
-    It DOES give the claim back, and that is the session's real contract
-    rather than a convenience: ``TuningSession.close`` releases the volume
-    slot, and the plan's drain runs after it precisely so the claim is gone by
-    then. A double that kept the claim would model a session that never closed.
-
-    The drain it runs after would DEFER, not fail — a rank-1 claim outranking
-    the household level means the level is recorded and lands on release. That
-    is the code's behaviour, not the double's; the adversarial review's B1
-    found this comment asserting the opposite, and the drains that genuinely
-    run without a claim now stop on a deferral instead of walking to their
-    emergency rung.
-    """
-
-    def __init__(self) -> None:
-        # The hooks build the plan's door over THIS session's claim, so a
-        # double standing in for a session carries a real one over the
-        # process's owner — the same object the door establishes through.
-        # Exposed as ``claim`` because the caller injects it into both, the
-        # way production's composition root does; nothing reads it back out
-        # of ``seams`` (that would be the engine-internal reach the
-        # verification suite forbids).
-        self.claim = _session_claim()
-        self.seams = SimpleNamespace(volume=self.claim)
-
-    async def open(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        if self.seams.volume is not None:
-            await self.seams.volume.release()
-
-
 def _own_the_fader(monkeypatch, cam) -> None:
     """Seat a real ``VolumeOwner`` over ``cam`` for the drain paths.
 
@@ -166,17 +126,6 @@ def _own_the_fader(monkeypatch, cam) -> None:
         lambda db: cam.set_volume_db(db, best_effort=True),
         lambda: cam.get_volume_db(best_effort=True),
     )
-
-
-def _session_claim():
-    """The session's one claim over whatever owner this test installed."""
-    from jasper.active_speaker.crossover_v2.volume_claim import (
-        MeasurementVolumeClaim,
-    )
-    from jasper.volume_owner import volume_owner
-
-    owner = volume_owner()
-    return None if owner is None else MeasurementVolumeClaim(owner)
 
 
 class _FakeVolCam:
@@ -3141,13 +3090,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
                 "grade_db": 0.9,
             }
         ],
-        "last_decision": {
-            "decision": "continue",
-            "reason": "baseline_established",
-            "basis_attempt_ids": ["candidate-a"],
-            "provenance": "realized",
-            "floor": {"claim_floor_db": 0.17},
-        },
     }
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3169,7 +3111,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     block = v2status.crossover_v2_status_block()
     assert block["attempts_loop"] == {
-        "last_decision": loop["last_decision"],
         "store_count": 7,
     }
     assert "history" not in block["attempts_loop"]
@@ -3625,14 +3566,39 @@ def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
 
 
-def test_an_express_session_verified_at_the_mark_is_complete_and_scoped():
-    """Express structurally never walks a post-apply group, so the mark IS its
-    whole promise. Judging it against Full's would warn every express session
-    ever run — the mirror of the defect."""
-    v2host.save_v2_state(_applied_state(tier="express"))
+@pytest.mark.parametrize("storage", ["live", "banked", "recovery"])
+@pytest.mark.parametrize("poses,complete", [
+    ([{"kind": "bearing", "deg": 0, "elevation_deg": 0}], True),
+    ([{"kind": "bearing", "deg": 0}, {"kind": "bearing", "deg": 20}], False),
+    ([{"kind": "bearing", "deg": 0, "elevation_deg": 10}], False),
+    ([{"kind": "seat", "deg": 0, "seat_offset_m": [0.3, 0, 0]}], False),
+])
+def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
+    tmp_path, monkeypatch, poses, complete, storage,
+):
+    import shutil
+    from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
+    from tests.run_manifest_fixture import write_asked_poses
+
+    state = _applied_state()
+    root = write_asked_poses(tmp_path, state, poses)
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
+    if storage == "banked":
+        target = tmp_path / "campaigns" / "banked-run" / "bundle"
+        target.mkdir(parents=True)
+        shutil.move(root / "asked-run", target)
+    elif storage == "recovery":
+        original = root / "asked-run/evidence/v1/artifacts/crossover_v2" / state["session_id"]
+        state["candidate"] = {"fingerprint": "applied-candidate"}
+        state["session_id"] = "recovery"
+        write_asked_poses(tmp_path, state, [{"deg": 0}])
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
+                            lambda fingerprint: SimpleNamespace(path=original / "candidate.json"))
+    v2host.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2host.GRADE_SCOPE_MARK
-    assert grade["complete"] is True
+    assert grade["complete"] is complete
+    assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
 
 
 _PASSING_GROUP = {"passed": True, "flatness": {
@@ -4656,153 +4622,7 @@ def test_session_measurement_pause_is_idempotent(monkeypatch):
     assert log == ["enter", "exit"]  # exactly one enter, one exit
 
 
-def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
-    """The pause is held from volume open through the drain, for BOTH the close
-    and abandon paths; a per-play in between (which nest-SKIPS while held) does
-    not release it. The failed-open path releases it so voice never strands."""
-    from jasper.active_speaker.session_volume_plan import (
-        SessionVolumeOpenResult,
-        SessionVolumePlan,
-    )
-
-    class _Ctx:
-        session_volume_db = -20.0
-
-    for drain in ("close", "abandon"):
-        log: list = []
-        _patch_measurement_window(monkeypatch, log)
-        v2host.reset_session_measurement_pause_for_tests()
-        v2host.set_volume_plan_for_tests(SessionVolumePlan())
-        cam = _FakeVolCam(-15.0)
-        _own_the_fader(monkeypatch, cam)
-
-        async def scenario():
-            _sess = _NoGraphSession()
-            hooks = v2host._volume_hooks(
-                lambda: cam, _Ctx(), tuning=_sess, volume_claim=_sess.claim,
-            )
-            opened = await hooks.open()
-            assert opened is SessionVolumeOpenResult.OPENED
-            assert cam.vol == -20.0
-            # Held for the whole session; a per-play sees this and skips.
-            assert v2host.session_measurement_pause_held()
-            await getattr(hooks, drain)()
-            assert not v2host.session_measurement_pause_held()
-            assert cam.vol == -15.0  # restored
-
-        asyncio.run(scenario())
-        assert log == ["enter", "exit"], drain
-        v2host.set_volume_plan_for_tests(None)
-
-
-@pytest.mark.parametrize("drain", ["close", "abandon"])
-@pytest.mark.parametrize("restore_fails", [False, True])
-def test_the_graph_goes_back_before_the_fader_does(monkeypatch, drain, restore_fails):
-    """A derived safety property, pinned because it is no longer an accident.
-
-    Before this wave the order was implicit in ``_put_the_graph_back``'s
-    position in one function's statement list. Now the graph restore is the
-    SESSION's and the fader restore is the plan's, so nothing but this pin
-    stops a later edit inverting them — and inverted, the household level lands
-    through a still-installed measurement graph, which is the condition an
-    un-ducked swap is only safe in the absence of.
-
-    Both halves write into one log, so the assertion is an order and not two
-    independent facts.
-    """
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-
-    order: list[str] = []
-
-    class _LoggingSession:
-        def __init__(self) -> None:
-            self.claim = _session_claim()
-            self.seams = SimpleNamespace(volume=self.claim)
-
-        async def open(self) -> None:
-            return None
-
-        async def close(self) -> None:
-            # The real session restores the graph and THEN releases the claim
-            # (reverse order of taking, after W5-c1's setup reorder). Both
-            # halves land in the one log, which is what makes this an order.
-            order.append("graph")
-            if self.seams.volume is not None:
-                await self.seams.volume.release()
-            if restore_fails:
-                raise RuntimeError("restore failed")
-
-    class _LoggingCam(_FakeVolCam):
-        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
-            order.append("fader")
-            return await super().set_volume_db(db, best_effort=best_effort)
-
-    _patch_measurement_window(monkeypatch, [])
-    v2host.reset_session_measurement_pause_for_tests()
-    v2host.set_volume_plan_for_tests(SessionVolumePlan())
-
-    class _Ctx:
-        session_volume_db = -20.0
-
-    cam = _LoggingCam(-15.0)
-    _own_the_fader(monkeypatch, cam)
-
-    async def scenario():
-        _sess = _LoggingSession()
-        hooks = v2host._volume_hooks(
-            lambda: cam, _Ctx(), tuning=_sess, volume_claim=_sess.claim,
-        )
-        await hooks.open()
-        order.clear()
-        if restore_fails:
-            with pytest.raises(RuntimeError):
-                await getattr(hooks, drain)()
-        else:
-            await getattr(hooks, drain)()
-        assert cam.vol == -15.0
-        assert not v2host.session_measurement_pause_held()
-
-    asyncio.run(scenario())
-    v2host.set_volume_plan_for_tests(None)
-
-    assert order and order[0] == "graph", (
-        f"the fader was restored before the graph went back: {order}"
-    )
-    assert "fader" in order, "anti-vacuity: the drain really did write the fader"
-
-
-def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
-    """If plan.open() drains itself (does not return OPENED), the pause is
-    released — a failed open must never leave voice paused with no session."""
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
-    v2host.reset_session_measurement_pause_for_tests()
-
-    class _DrainedPlan:
-        async def open(self, vol, door):
-            return "failed"
-
-    # The hooks build their door before calling the plan, and a door needs an
-    # owner; production always has one.
-    _own_the_fader(monkeypatch, _FakeVolCam(-15.0))
-
-    v2host.set_volume_plan_for_tests(_DrainedPlan())
-
-    class _Ctx:
-        session_volume_db = -20.0
-
-    async def scenario():
-        _sess = _NoGraphSession()
-        hooks = v2host._volume_hooks(
-            lambda: _FakeVolCam(-15.0), _Ctx(), tuning=_sess,
-            volume_claim=_sess.claim,
-        )
-        result = await hooks.open()
-        assert result == "failed"
-        assert not v2host.session_measurement_pause_held()
-
-    asyncio.run(scenario())
-    assert log == []
+# --- W6.1 Finding E: recovery paths actually recover -----------------------------
 
 
 def test_reconcile_drains_residual_owned_active_before_new_session(monkeypatch):
@@ -7601,7 +7421,7 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     monkeypatch.setattr(correction_capture, "_capture_slot", prior_capture)
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: pytest.fail("live mic admission before join"))
-    monkeypatch.setattr(v2host, "_session_volume_claim", lambda: pytest.fail("claim before join"))
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.door._measurement_claim", lambda: pytest.fail("claim before join"))
     before = v2host.load_v2_state()
     prepared, store = _inline_prepared(monkeypatch, tmp_path)
     kind = correction_capture.CaptureKind(
@@ -7619,102 +7439,6 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert plan["stops"] == _inline_body()["plan"]["stops"]
     assert v2host.load_v2_state() == before
-
-
-@pytest.mark.parametrize("terminal", ["complete", "failed", "stopped"])
-def test_join_opens_resources_in_order_and_drains_to_a_shared_terminal_state(monkeypatch, terminal):
-    from jasper.active_speaker.crossover_v2.session import TuningSession
-    from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-    from jasper.active_speaker.crossover_v2.position_gate import PositionGate
-    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
-    from jasper.web import correction_capture, correction_handlers, correction_runtime
-    from jasper.platform.systemd import no_hold
-    from jasper.volume_owner import volume_owner, ClaimKind
-    from tests.engine_twin import FakeGraph, FakePlay, FakeRecords
-    from tests.test_correction_crossover_v2_wired import _fake_handler
-
-    from jasper.active_speaker.capture_status import SESSION_ENDED_STATUSES
-
-    graph_fails = terminal == "failed"
-    events, gate = [], PositionGate()
-    cam = _FakeVolCam(-30)
-    _own_the_fader(monkeypatch, cam)
-    owner = volume_owner()
-    claim = MeasurementVolumeClaim(owner)
-    plan = SessionVolumePlan()
-    v2host.set_volume_plan_for_tests(plan)
-    opening = plan.open
-    async def open_level(*args):
-        events.append("claim")
-        return await opening(*args)
-    monkeypatch.setattr(plan, "open", open_level)
-    async def pause():
-        events.append("window")
-    async def unpause():
-        events.append("release_window")
-    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", pause)
-    monkeypatch.setattr(v2host, "release_session_measurement_pause", unpause)
-    class Graph(FakeGraph):
-        async def install(self, *args, **kwargs):
-            events.append("graph")
-            if graph_fails:
-                from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
-                raise SessionGraphError("graph failed")
-            return await super().install(*args, **kwargs)
-    graph = Graph()
-    tuning = TuningSession("joined", EngineSeams(graph, claim, FakeRecords(), FakePlay()), -18)
-    hooks = v2host._volume_hooks(lambda: cam, SimpleNamespace(session_volume_db=-18),
-                                 tuning=tuning, volume_claim=claim)
-    def opened():
-        assert correction_capture._get_capture_slot()["status"] == "starting"
-        events.extend(["slot", "mic"])
-        return SimpleNamespace(pi_session=tuning)
-    from jasper.active_speaker import plan_run
-    from jasper.web.correction_crossover_v2_wired import build_v2_wired_run_and_consume
-    import threading
-
-    async def execute(*args, **kwargs):
-        events.append("run")
-        return SimpleNamespace(reason="user_stopped" if terminal == "stopped" else "", cancelled=False)
-    monkeypatch.setattr(plan_run, "run_plan", execute)
-    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
-    run = build_v2_wired_run_and_consume(
-        SimpleNamespace(_measure_gain_ceiling_db={}), volume=hooks,
-        stop_event=threading.Event(), stop_lock=threading.Lock(), ceiling_s=30,
-        complete_event=threading.Event(), retake_event=threading.Event(),
-        tuning=tuning, manifest=None, request=None, captures=None,
-        analyze=None, assessor=None, candidate_scopes={}, spl_monitor="test", position_gate=gate,
-    )
-    entry = SimpleNamespace(screen={"position_deg": "0"})
-    kind = correction_capture.CaptureKind("crossover_v2:session", opened, run,
-                                           position_gate=gate, session_id="joined", join_entry=entry)
-    monkeypatch.setattr(correction_capture, "_capture_slot", None)
-    monkeypatch.setattr(correction_capture, "_pending_capture", None)
-    with contextlib.ExitStack():
-        correction_capture._stage_capture(kind, idle_hold=no_hold)
-        correction_handlers._handle_crossover_v2_position_ready(
-            _fake_handler(b'{"index":1,"attempt":1}'))
-        async def finished():
-            for _ in range(200):
-                capture = correction_capture._get_capture_slot()
-                if capture["status"] in SESSION_ENDED_STATUSES:
-                    return capture
-                await asyncio.sleep(.01)
-            pytest.fail("joined capture did not finish")
-        result = correction_runtime.run_async(finished())
-    assert events[:4] == ["slot", "mic", "claim", "window"]
-    assert events[4] == "graph"
-    assert ("run" in events) is not graph_fails
-    assert not owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
-    assert cam.vol == -30
-    assert result["status"] == terminal
-    assert result["status"] in SESSION_ENDED_STATUSES
-    if graph_fails:
-        assert gate.published()["run"]["fault"] == "measurement_graph_unavailable"
-        assert gate.published()["run"]["next_action"]["id"] == "new_measurement_session"
 
 
 def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path):
@@ -7737,7 +7461,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     monkeypatch.setattr(v2host, "_build_wired_run", build)
     opened = prepared.open()
     assert opened.pi_session.session_id == prepared.session_id
-    assert not bound["tuning"].is_open
+    assert not bound["windows"].is_open
     assert bound["request"].to_dict() == store.reopen_json_artifact(
         store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert bound["conductor"]._candidate is None

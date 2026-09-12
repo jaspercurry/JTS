@@ -16,6 +16,8 @@ never joined to a cloud seat: they are different captures.
 
 from __future__ import annotations
 
+from ..repeat_floor import sample_spread
+
 import json
 import warnings
 from dataclasses import dataclass, field, replace
@@ -947,19 +949,7 @@ class RepeatabilityMetric:
         return len(set(known)) == 1
 
     def spread(self) -> dict[str, float] | None:
-        vs = list(self.values.values())
-        if len(vs) < 2:
-            return None
-        mean = sum(vs) / len(vs)
-        variance = sum((v - mean) ** 2 for v in vs) / (len(vs) - 1)
-        return {
-            "n": float(len(vs)),
-            "mean": mean,
-            "range": max(vs) - min(vs),
-            "sd": variance**0.5,
-            "min": min(vs),
-            "max": max(vs),
-        }
+        return sample_spread(list(self.values.values()))
 
     def to_dict(self) -> dict[str, Any]:
         return {

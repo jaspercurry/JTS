@@ -73,17 +73,8 @@ __all__ = [
 
 #: dB. How much flatter the speaker must measure before the round may say so.
 #:
-#: Provisionally equal to
-#: :func:`~jasper.active_speaker.attempts_loop.material_improvement_db` (0.5 dB)
-#: and deliberately NOT that constant: that one bounds a PREDICTION's
-#: model-vs-hardware error, this one bounds two MEASUREMENTS of the same speaker
-#: minutes apart through the same program, mic and analyzer — capture
-#: repeatability, a different quantity. No repeat study has measured a floor for
-#: this metric (the 2026-07-31 jts3 study grades ``max_db_notch_excluded``, not
-#: the pooled spec residual); the nearest pooled pairs agreed to 0.040 dB and
-#: 0.006 dB, so 0.5 dB is conservative rather than calibrated. THE FALLBACK: a
-#: rig with a banked repeat floor takes the margin from
-#: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` instead.
+#: Fallback until a pooled repeat study is banked; the frozen tracking study
+#: measured a different metric. See repeat_floor.stopping_thresholds.
 MEASURED_BENEFIT_MARGIN_DB = 0.5
 
 #: dB. Advisory threshold for objective size and inter-round movement.

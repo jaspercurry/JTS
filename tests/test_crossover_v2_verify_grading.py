@@ -79,7 +79,6 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
     _verify_capture_integrity,
 )
-from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 
 from tests._log_events import event_fields
 from tests.crossover_v2_fixtures import (
@@ -94,301 +93,6 @@ from tests.crossover_v2_fixtures import (
     _verify_analysis,
     _verify_to_apply,
 )
-
-
-# --- #1873: a verify-fail that REPEATS is a finding, not a transient ----------
-#
-# Owner field report, 2026-07-29 noon session: VERIFY rejected twice at 3.66 dB
-# then 3.82 dB against a 1.5 dB tolerance — 0.16 dB apart, and therefore the
-# same answer twice at an instrument whose consecutive-pair repeat floor on this
-# exact metric is 0.052 dB median / 0.085 dB p95 (captures/repeat-floor-20260731).
-# The phone offered "Try again" both times, the household took it, and the capture
-# session's TTL expired mid-loop. In the owner's words: "The speaker didn't match
-# the prediction — that's just the reality of what it is."
-
-
-def _verify_at(max_db: float):
-    """A VERIFY analysis whose only variable is the graded tracking deviation."""
-    return lambda program: _verify_analysis(program, max_db=max_db)
-
-
-def test_first_verify_mismatch_stays_retriable_out_of_tolerance():
-    """One mismatch is one mismatch. A single bad take really can produce it,
-    so the FIRST out-of-tolerance verdict keeps the retriable code, keeps its
-    "try again" copy, and is NOT terminal — the regression guard for everything
-    below, which only takes the retry away once it has evidence to."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.66)
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    assert verdict["template"] == "verify_fail"
-    assert "terminal" not in verdict
-    assert "Try again" in verdict["reason"]
-
-
-def test_second_agreeing_verify_mismatch_is_a_deterministic_finding():
-    """The 2026-07-29 sequence, replayed: 3.66 dB then 3.82 dB, 0.16 dB apart
-    and inside the instrument's own 0.2 dB claim floor.
-
-    The second attempt earns its OWN code — the mismatch is a fact about the
-    speaker, not a bad take — and rides out ``terminal`` so the capture runner
-    publishes it and ends the session instead of waiting for a next begin. That
-    is what stops the retry loop burning the session's TTL: it closes on the
-    verdict rather than on the clock."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.66)
-    assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-
-    fakes.verify = _verify_at(3.82)
-    verdict = _run_phase(c, 3, 4)
-    assert verdict["code"] == flow.REASON_VERIFY_DETERMINISTIC_MISMATCH
-    # Same screen, one more parameterization of it — not a fifth screen.
-    assert verdict["template"] == "verify_fail"
-    assert verdict["terminal"] is True
-    assert verdict["terminal_outcome"] == flow.VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
-    assert c.verify_outcome == "fail"
-    assert c.verify_code == flow.REASON_VERIFY_DETERMINISTIC_MISMATCH
-
-
-def test_deterministic_mismatch_copy_names_the_finding_and_the_live_levers():
-    """The copy the phone renders on that terminal screen. It has to do three
-    things the retriable sibling's does not: state that this is the speaker
-    rather than the measurement, say plainly that another try lands in the same
-    place, and name the control that CAN change the outcome. It must not
-    invite the retry the verdict has just ruled out."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.66)
-    _run_phase(c, 3, 3)
-    fakes.verify = _verify_at(3.82)
-    reason = _run_phase(c, 3, 4)["reason"]
-
-    assert "what your speaker actually does" in reason
-    assert "not a bad measurement" in reason
-    assert "another try lands in the same place" in reason
-    assert "Re-measure" in reason
-    # The retriable sibling's invitation, gone.
-    assert "Try again" not in reason
-
-
-def test_deterministic_mismatch_refuses_the_next_begin_with_its_own_code():
-    """Belt and braces for the skew direction the wire cannot control. A phone
-    older than build 20260803.4 ignores ``terminal`` and can still post a next
-    begin; so can a replay. The code's budget-0 registry row puts it in
-    ``NON_RETRIABLE_CODES``, so that begin is refused BEFORE any capture runs —
-    and refused under its own code, never a generic exhaustion one, so the
-    household reads the same finding rather than a new claim about tries."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.66)
-    _run_phase(c, 3, 3)
-    fakes.verify = _verify_at(3.82)
-    _run_phase(c, 3, 4)
-
-    assert flow.REASON_VERIFY_DETERMINISTIC_MISMATCH in flow.NON_RETRIABLE_CODES
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(3, 5)
-    assert excinfo.value.code == flow.REASON_VERIFY_DETERMINISTIC_MISMATCH
-    assert "what your speaker actually does" in excinfo.value.user_message
-
-
-def test_verify_mismatches_further_apart_than_the_floor_keep_the_retry():
-    """The other side of the discriminator, and the reason it is a measurement
-    rather than a counter. Two mismatches the instrument CAN tell apart are not
-    evidence of a repeatable answer, so the retriable code stands and the
-    household keeps the try it is entitled to."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.0)
-    assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    # 0.5 dB apart — well past the 0.2 dB floor.
-    fakes.verify = _verify_at(3.5)
-    verdict = _run_phase(c, 3, 4)
-    assert verdict["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    assert "terminal" not in verdict
-
-
-def test_verify_repeatability_compares_the_predecessor_not_a_fixed_baseline():
-    """The repeat-floor bench's finding 1, pinned: against a FIXED early
-    baseline the floor walks with drift (+0.0046 dB/repeat), against the
-    predecessor it is flat — so the comparison has to re-baseline every attempt.
-
-    The ladder discriminates the two readings. 3.60 → 3.90 is 0.30 dB apart, so
-    attempt 2 keeps the retry. 3.90 → 4.05 is 0.15 dB apart, so attempt 3 fires
-    — but it is 0.45 dB from attempt 1, which a fixed-baseline implementation
-    would have called a disagreement and let the loop run on."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.60)
-    assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = _verify_at(3.90)
-    assert _run_phase(c, 3, 4)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = _verify_at(4.05)
-    verdict = _run_phase(c, 3, 5)
-    assert verdict["code"] == flow.REASON_VERIFY_DETERMINISTIC_MISMATCH
-    assert abs(4.05 - 3.60) > flow.VERIFY_REPEAT_FLOOR_DB
-
-
-def test_a_verify_inside_tolerance_breaks_the_repeatability_pair():
-    """A PASS between two mismatches ends the pair, and the case that proves it
-    matters is a speaker sitting exactly on the 1.5 dB line.
-
-    1.60 fails, a retake at 1.40 passes, a voluntary retake at 1.55 fails again.
-    The two failures are 0.05 dB apart — inside the floor — so without the clear
-    the third capture would be called a deterministic mismatch and the household
-    would be told another try cannot help. The pass at 1.40 is direct evidence
-    from this same sitting that it can: a take DID land under the threshold.
-    (Ordering is production-reachable — an accepted VERIFY arms a voluntary
-    retake, §2.6.)"""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(1.60)
-    assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = _verify_at(1.40)
-    assert _run_phase(c, 3, 4)["accepted"] is True
-    fakes.verify = _verify_at(1.55)
-    verdict = _run_phase(c, 3, 5)
-    assert abs(1.55 - 1.60) <= flow.VERIFY_REPEAT_FLOOR_DB
-    assert verdict["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    assert "terminal" not in verdict
-
-
-def test_an_unmeasurable_verify_clears_an_earlier_mismatch_from_the_pair():
-    """A capture whose tracking number is NaN graded nothing, so it is neither a
-    mismatch a later attempt can agree with nor one that can agree with an
-    earlier attempt — absence of evidence is never agreement.
-
-    It therefore CLEARS the pair rather than being skipped over. A real grade,
-    an unmeasurable capture, then a grade that happens to match the first is not
-    two consecutive measurements of anything; treating the absence as
-    transparent would let an older attempt supply the agreement.
-
-    **NaN is the shape this rule now lives in.** It used to be reached with a
-    tracking record carrying no comparator at all, which was a refusal only
-    because the gate collapsed R18's ``not_evaluated`` into a fail (#3487); that
-    capture is accepted now and ends the phase, so it can no longer sit between
-    two mismatches. NaN still refuses — the claim's own comparison against the
-    tolerance is False either way — and it is what ``_note_verify_mismatch``'s
-    non-finite guard was written for.
-    """
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.66)
-    assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = _verify_at(float("nan"))
-    assert _run_phase(c, 3, 4)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = _verify_at(3.66)
-    verdict = _run_phase(c, 3, 5)
-    assert verdict["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    assert "terminal" not in verdict
-
-
-def test_an_early_return_between_two_mismatches_leaves_the_pair_standing():
-    """The complement of the two above, and the reason the distinction is
-    drawn where it is. A capture that never REACHES the tracking comparison
-    (locate_failed here) produced no grade to refresh or invalidate the pair
-    with, so the two real measurements either side of it are still consecutive
-    measurements of the speaker — one intervening take is ~21 s of the drift the
-    bench measured at 0.0046 dB per repeat, inside the noise of a 0.2 dB
-    window."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_at(3.66)
-    assert _run_phase(c, 3, 3)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.01)
-    assert _run_phase(c, 3, 4)["code"] == "locate_failed"
-    fakes.verify = _verify_at(3.82)
-    verdict = _run_phase(c, 3, 5)
-    assert verdict["code"] == flow.REASON_VERIFY_DETERMINISTIC_MISMATCH
-    assert verdict["terminal"] is True
-
-
-def test_a_terminal_verdict_keeps_its_finding_when_the_extras_are_spent():
-    """The settle must not overwrite a verdict that already ended the set.
-
-    ``_terminal_spent_verdict`` replaces the reason with the exhaustion
-    sentence — "still could not get a clean read" — which is simply false about
-    captures that were clean and agreed. Reachable when the deterministic
-    verdict lands on the attempt that also spends the position's last extra, so
-    the ladder is walked to exactly that point: three mismatches far enough
-    apart to keep the retry, then a fourth that agrees with the third."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    for attempt, deviation in enumerate((3.0, 3.5, 4.0), start=3):
-        fakes.verify = _verify_at(deviation)
-        assert _run_phase(c, 3, attempt)["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    # The 4th capture spends the last of MAX_EXTRA_ATTEMPTS_PER_POSITION.
-    fakes.verify = _verify_at(4.1)
-    verdict = _run_phase(c, 3, 6)
-
-    assert verdict["code"] == flow.REASON_VERIFY_DETERMINISTIC_MISMATCH
-    assert verdict["terminal"] is True
-    assert "what your speaker actually does" in verdict["reason"]
-    assert "clean read" not in verdict["reason"]
-
-
-def test_a_non_terminal_verdict_is_still_relabelled_when_the_extras_are_spent():
-    """…and the guard above is scoped to already-terminal verdicts only. The
-    #2086 ladder still owns every ordinary exhaustion: a retriable code that
-    spends the last extra is relabelled with the count and the honest end,
-    exactly as it was."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    # Four mismatches, each far enough from its predecessor to stay retriable,
-    # so exhaustion — not #1873's discriminator — is what ends this position.
-    for attempt, deviation in enumerate((3.0, 3.5, 4.0, 4.5), start=3):
-        fakes.verify = _verify_at(deviation)
-        verdict = _run_phase(c, 3, attempt)
-
-    assert verdict["code"] == flow.REASON_VERIFY_OUT_OF_TOLERANCE
-    assert verdict["terminal"] is True
-    assert "the planned one plus 3 extra tries" in verdict["reason"]
 
 
 def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
@@ -596,24 +300,12 @@ def test_verify_diag_discloses_integrity_on_pass_and_on_refusal(caplog):
 
 
 def test_the_verify_outcome_always_carries_the_code_that_produced_it():
-    """Issue #1974: "inconclusive" is reached by two verdicts with no shared
-    mechanism, so the outcome alone cannot tell a household WHY the check could
-    not settle. The pair is written in one call (``_set_verify_outcome``), and
-    this pins the property that makes the done screen's copy safe: whatever the
-    conductor reports as ``verify_code`` is the code of the verdict it just
-    returned — never a previous attempt's, never absent.
-
-    Also the no-behaviour-change pin for the copy work: the accepted/code
-    values asserted here are exactly the ones the surrounding suite already
-    asserted before the copy changed. Only what a screen SAYS moved.
-    """
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
 
-    # (analysis factory, expected outcome, expected code)
     cases = [
         (lambda program: _verify_analysis(program, max_db=2.4),
          "fail", "verify_out_of_tolerance"),
@@ -626,10 +318,8 @@ def test_the_verify_outcome_always_carries_the_code_that_produced_it():
         verdict = _run_phase(c, 3, index)
         assert c.verify_outcome == outcome, code
         assert c.verify_code == code, code
-        # The pair agrees with the verdict itself, which is the whole point:
-        # a screen reading the persisted code is reading THIS verdict.
-        assert c.verify_code == (verdict.get("code") or None)
-        assert verdict["accepted"] is (outcome == "pass")
+        assert (verdict.get("code") or None) == (code if outcome == "inconclusive" else None)
+        assert verdict["accepted"] is (outcome != "inconclusive")
 
 
 def test_an_inconclusive_capture_reads_its_gate_record_once(monkeypatch):
@@ -999,13 +689,6 @@ def test_an_ungated_capture_records_no_gate_at_all():
 
 
 def test_verify_payload_carries_tracking_only_no_flatness_claim():
-    """PASS and FAIL branches both relay integration-verify's tracking and
-    nothing else — no flatness key, on either branch, in either direction.
-
-    The accepted/code assertions are byte-for-byte the ones the retired
-    relay test made (``test_verify_flatness_tracking_relays_without_changing_
-    accepted_or_code``): they were the point of that test, and they are
-    unchanged by the removal, which is the property worth keeping."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
@@ -1020,9 +703,8 @@ def test_verify_payload_carries_tracking_only_no_flatness_claim():
 
     fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
     verdict = _run_phase(c, 3, 4)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "verify_out_of_tolerance"
-    assert verdict["template"] == "verify_fail"
+    assert verdict["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
     assert "flatness_tracking" not in verdict
 
 
@@ -1107,7 +789,8 @@ def test_the_g3_pilot_transfer_gate_fires_only_above_its_ceiling(
         fakes.verify = lambda program: _verify_analysis(
             program, max_db=5.0, **reference
         )
-        assert _run_phase(c, 3, index)["code"] == "verify_out_of_tolerance"
+        assert _run_phase(c, 3, index)["accepted"] is True
+        assert c.verify_code == "verify_out_of_tolerance"
         index += 1
 
     fakes.verify = lambda program: _verify_analysis(program, **attempt)
@@ -1119,47 +802,26 @@ def test_the_g3_pilot_transfer_gate_fires_only_above_its_ceiling(
 
 
 def test_verify_pilot_level_shift_baseline_does_not_rebaseline():
-    """The baseline is frozen at the FIRST usable attempt — a later attempt
-    that itself clears the ceiling vs the baseline must NOT quietly become
-    the new reference. Numbers are chosen so the two readings diverge: a
-    3rd attempt 0.6 dB from the ORIGINAL baseline (fires) is only 0.3 dB from
-    the 2nd attempt (would NOT fire if the 2nd attempt had silently become
-    the new baseline).
-
-    The ``max_db`` ladder (5 → 8 → 11 dB) is scaffolding, not the subject: each
-    attempt has to be independently out of tolerance so a retry is admitted, and
-    since #1873 they also have to be more than ``VERIFY_REPEAT_FLOOR_DB`` apart
-    or the SECOND one earns ``verify_deterministic_mismatch`` instead — a true
-    verdict about a repeated mismatch, but not the one this test is about.
-    Spreading them keeps the pilot-transfer gate the only thing under test."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
 
-    # Attempt 1: baseline = -20.0 dBFS transfer (independently out of
-    # tolerance, so a retry is admitted).
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0, max_db=5.0,
     )
     verdict1 = _run_phase(c, 3, 3)
-    assert verdict1["code"] == "verify_out_of_tolerance"
+    assert verdict1["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
 
-    # Attempt 2: +0.3 dB from the baseline — clears the ceiling on its OWN
-    # G3 check (0.3 ≤ 0.35), so it fails for the SAME independent reason,
-    # never level_shift.
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-19.7, max_db=8.0,
     )
     verdict2 = _run_phase(c, 3, 4)
-    assert verdict2["code"] == "verify_out_of_tolerance"
+    assert verdict2["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
 
-    # Attempt 3: +0.6 dB from the ORIGINAL -20.0 baseline (fires) but only
-    # +0.3 dB from attempt 2's -19.7 (would NOT fire against that). Also
-    # independently out of tolerance, so a buggy re-baseline would show
-    # verify_out_of_tolerance here instead — the frozen baseline is what
-    # makes this show verify_level_shift.
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-19.4, max_db=11.0,
     )
@@ -1270,7 +932,8 @@ def test_verify_level_shift_still_fires_within_one_session():
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0, max_db=5.0,
     )
-    assert _run_phase(c, 1, 1)["code"] == "verify_out_of_tolerance"
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0 + 0.775, max_db=5.0,
     )

@@ -92,14 +92,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Read a round's measured evidence. Select standalone views or "
-            "per-seat --include agreement directivity co-metrics to share a "
-            "round read. Answers use stdout; details use files."
+            "Read measured round evidence, including repeat --set spread across takes. "
+            "Answers use stdout; detailed reports use files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "WHEN NOT TO USE\n"
-            "  - frozen/repeat/repeat-floor need MULTIPLE round directories\n"
+            "  - frozen/repeat-floor need MULTIPLE round directories\n"
             "    (a baseline plus a target, or two-or-more rounds);\n"
             "    entry/per-seat/agreement grade a single round\n"
             "\n"

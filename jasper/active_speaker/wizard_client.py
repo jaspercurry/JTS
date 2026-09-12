@@ -13,6 +13,7 @@ import urllib.request
 from typing import Any, Callable, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
+from .movers import MOVER_CONFIRMED
 
 #: Page that mints the CSRF cookie + meta token pair, and this client's default. A
 #: caller POSTing to a DIFFERENT wizard daemon passes that daemon's own page as
@@ -21,7 +22,6 @@ CSRF_PAGE_PATH = "/sound/speaker/crossover/"
 STATUS_PATH = "/sound/speaker/crossover/status"
 
 SESSION_PATH = "/sound/speaker/crossover/v2/session"
-VERIFY_PATH = "/sound/speaker/crossover/v2/verify"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
 
 #: Why a round verb refused, as a slug a script can branch on. First four are this
@@ -151,7 +151,6 @@ class WizardClient:
                       "faults": progress.get("faults", [])}
 
     def placed(self, run_id: str, pose: int | None = None) -> tuple[int, Any]:
-        from .angle_capture import MOVER_CONFIRMED  # lazy: placement-only measurement imports
         from .crossover_v2.position_gate import POSITION_READY_ENDPOINT  # lazy: placement-only measurement imports
         from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH  # lazy: placement-only measurement imports
 
@@ -169,6 +168,10 @@ class WizardClient:
                               "attempt": pending["attempt"], "run_id": run_id})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
+        """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline
+        ``candidate`` override sent -- the host reopens the artifact from the recorded
+        evidence bundle.
+        """
         return self.post_json(
             APPLY_PATH, {"expected_candidate_fingerprint": expected_fingerprint}
         )
