@@ -310,24 +310,10 @@ def _resolve_radiating_diameter_by_role(draft: Mapping[str, Any]) -> dict[str, f
     return out
 
 
-def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
-    """Resolve preset/bands/caps/targets/volume from live status + topology.
-
-    Fail-closed: every missing input is a :class:`CrossoverV2Refused` naming
-    what to finish first — never a guessed default.
-
-    This runs at SESSION OPEN — ``prepare_v2_session`` calls it before the
-    capture session is registered, and before a
-    verify-only re-arm — which is what makes the driver-safety-profile gate
-    below a pre-flight rather than a surprise (issue
-    #1821). Before that gate existed, this function checked only that a
-    profile object was PRESENT while its refusal text claimed confirmation had
-    been checked; the real confirmation gate lived four screens later inside
-    ``prepare_driver_excitation_plan`` at CHECK-phase program admission. A
-    household with an un-confirmed profile therefore burned a link, walked to
-    the phone, and hit a deterministic refusal that was knowable before any of
-    it — the exact 2026-07-28 JTS3 dead-end.
-    """
+def resolve_conductor_context(
+    status: Mapping[str, Any], *, topology: Any = None, session_volume_db: float | None = None,
+) -> V2ConductorContext:
+    """Resolve the speaker inputs; leveling supplies a gain before one is banked."""
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.design_draft import (
@@ -353,7 +339,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         topology_is_subless_passive_mains,
     )
 
-    topology = load_output_topology()
+    topology = topology if topology is not None else load_output_topology()
     # A subless passive main has no active crossover, so the gates below — all
     # asking whether an ACTIVE one is commissioned — are not questions about it.
     passive_mains = topology_is_subless_passive_mains(topology)
@@ -499,14 +485,16 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         float(preset.crossover_regions[0].fc_hz)
         if preset.crossover_regions else None
     )
-    try:
-        session_volume_db = session_measurement_volume_db(
-            safety_profile,
-            [role_targets[role] for role in roles],
-            declared_sensitivities=declared_sensitivities,
-        )
-    except LevelUnresolved as exc:
-        raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
+    if session_volume_db is None:
+        try:
+            session_volume_db = session_measurement_volume_db(
+                safety_profile, [role_targets[role] for role in roles],
+                declared_sensitivities=declared_sensitivities,
+            )
+        except LevelUnresolved as exc:
+            raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
+    elif not math.isfinite(session_volume_db) or session_volume_db > 0:
+        raise ValueError("measurement volume must be finite and non-positive")
     playback_device, _playback_device_source = resolve_active_playback_device(
         topology
     )

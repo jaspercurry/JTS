@@ -16,6 +16,7 @@ from jasper.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from ..candidate_bank import find_banked_candidate
+from ..measured_crossover_candidate import MeasuredCrossoverCandidate
 from ..measurement_emit import (
     MeasurementGraphProfile, TuningGraphScope, compile_tuning_graph,
     emit_measurement_graph,
@@ -115,6 +116,16 @@ async def isolation_hold(
                     body_error.__context__ = exc
 
 
+async def set_measurement_loudness(camilla: Any, db: float) -> float:
+    """Set and confirm the bass reference used by a measurement sweep."""
+    if not await camilla.set_loudness_volume_db(db, immediate=True):
+        raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference write failed")
+    actual = await camilla.get_loudness_volume_db()
+    if actual is None or not math.isfinite(actual) or abs(actual - db) > 0.01:
+        raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference did not confirm")
+    return float(actual)
+
+
 @asynccontextmanager
 async def level_window(
     level_db: float, *, hold: IsolationHold, spl_monitor: WiredSplMonitor | None,
@@ -132,17 +143,9 @@ async def level_window(
     loudness_entry: float | None = None
     opened_door: OpenMeasurementDoor | None = None
 
-    async def set_loudness(db: float) -> float:
-        if not await camilla.set_loudness_volume_db(db, immediate=True):
-            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference write failed")
-        actual = await camilla.get_loudness_volume_db()
-        if actual is None or not math.isfinite(actual) or abs(actual - db) > 0.01:
-            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference did not confirm")
-        return float(actual)
-
     async def restore_loudness() -> None:
         if loudness_changed and loudness_entry is not None:
-            await set_loudness(loudness_entry)
+            await set_measurement_loudness(camilla, loudness_entry)
 
     try:
         loudness_entry = await camilla.get_loudness_volume_db()
@@ -155,7 +158,7 @@ async def level_window(
         if opened is not SessionVolumeOpenResult.OPENED:
             raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, opened.value)
         volume_open = loudness_changed = True
-        held_loudness = await set_loudness(level_db)
+        held_loudness = await set_measurement_loudness(camilla, level_db)
         fingerprint = await graph.install()
         opened_door = OpenMeasurementDoor(graph, claim, plan, level_db, held_loudness,
                                          fingerprint, spl_monitor, graph.entry_scope_fingerprint)
@@ -287,6 +290,7 @@ def bind_measurement_graph(
     *,
     camilla_factory: Callable[[], Any],
     config_dir: str | Path,
+    candidate: MeasuredCrossoverCandidate | None = None,
 ) -> Any:
     """Bind neutral driver and complete tuning graphs to one session owner."""
     from jasper.dsp_apply import dsp_writer_lock
@@ -299,7 +303,8 @@ def bind_measurement_graph(
             profile,
             scope=cast(TuningGraphScope, scope),
             candidate=(
-                find_banked_candidate(candidate_id).candidate
+                candidate if candidate is not None and candidate.fingerprint == candidate_id
+                else find_banked_candidate(candidate_id).candidate
                 if scope in CANDIDATE_SCOPES else None
             ),
         )

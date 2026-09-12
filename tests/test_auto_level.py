@@ -1,39 +1,30 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
-"""Closed-loop behavior with a calibrated, clocked microphone feed."""
+"""Closed-loop behavior with one watched sweep per reading."""
 import asyncio
 import math
 import random
-from types import SimpleNamespace
 
 import pytest
 
 from jasper.active_speaker import auto_level as level
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.ramp import LevelSample, SPL_CEILING_EXCEEDED
+from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
+from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
 
 class Chain:
     def __init__(self, monkeypatch, *, slope=1.0, offset=95.0, limiter=math.inf,
-                 current=-10.0, ambient=30.0, cap=0.0, unstable=False, clip=False,
+                 current=-10.0, ambient=30.0, cap=0.0, unstable=False,
                  jitter=None, jitter_floor_margin=0.0):
         self.slope, self.offset, self.limiter = slope, offset, limiter
         self.gain, self.ambient, self.cap = current, ambient, cap
-        self.unstable, self.clip = unstable, clip
+        self.unstable = unstable
         self.jitter, self.jitter_floor_margin = jitter, jitter_floor_margin
-        self.time = 0.0
         self.playing = False
         self.writes = []
         self.windows = 0
         self.peak_observed = -math.inf
-        monkeypatch.setattr(level, 'time', SimpleNamespace(monotonic=lambda: self.time))
-        monkeypatch.setattr(level, 'asyncio', SimpleNamespace(
-            sleep=self.sleep, timeout=asyncio.timeout,
-        ))
-
-    async def sleep(self, seconds):
-        self.time += seconds
-
     async def get(self):
         return self.gain
 
@@ -42,17 +33,15 @@ class Chain:
         self.gain = gain
         return True
 
-    async def play(self):
+    async def read_ambient(self):
+        assert not self.playing
+        return self.ambient
+
+    async def read_level(self):
         self.playing = True
-
-    async def stop(self):
-        self.playing = False
-
-    async def samples(self):
-        observed = self.ambient
-        if self.playing:
+        try:
             signal = min(self.limiter, self.offset + self.slope * self.gain)
-            observed = max(observed, signal)
+            observed = max(self.ambient, signal)
             if self.jitter:
                 buried, clear = self.jitter
                 floor = self.ambient + level.MIC_RESPONSE_MIN_RISE_DB
@@ -60,16 +49,19 @@ class Chain:
                 observed += jitter * (-1) ** self.windows
             if self.unstable:
                 observed += 2.0 * (-1) ** self.windows
-        self.peak_observed = max(self.peak_observed, observed)
-        self.windows += 1
-        self.time += 0.501
-        return [LevelSample(self.windows, 0, observed - 94.0, observed - 94.0, clip=self.clip)]
+            self.peak_observed = max(self.peak_observed, observed)
+            self.windows += 1
+            if observed > 85.0:
+                raise WiredSplCeilingExceeded(observed, 85.0)
+            return observed
+        finally:
+            self.playing = False
 
     async def run(self):
         return await level.level_to(75.0, tolerance_db=1.0, stop_db_spl=85.0,
             max_main_volume_db=self.cap, sensitivity=MicSensitivity(0.0),
-            next_samples=self.samples, get_main_volume_db=self.get,
-            set_main_volume_db=self.set, play=self.play, stop_playback=self.stop)
+            read_level=self.read_level, read_ambient=self.read_ambient, get_main_volume_db=self.get,
+            set_main_volume_db=self.set)
 
 
 @pytest.mark.parametrize('slope', [0.8, 1.0, 1.2])
@@ -82,7 +74,7 @@ def test_converges_from_below_within_reading_budget(monkeypatch, slope, offset):
     assert len(result.readings) <= math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
     assert result.gain_db == chain.gain
     assert not chain.playing
-    assert all(b - a <= level.MAX_STEP_DB for a, b in zip(chain.writes, chain.writes[1:]))
+    assert all(abs(b - a) <= level.MAX_STEP_DB for a, b in zip(chain.writes, chain.writes[1:]))
 
 
 @pytest.mark.parametrize('offset,jitter_floor_margin', [
@@ -112,26 +104,18 @@ def test_a_loud_room_uses_small_buried_steps(monkeypatch):
     assert max(reading for _, reading in result.readings) <= 77.0
 
 
-def test_an_in_band_unsettled_reading_nudges_once_then_refuses(monkeypatch):
-    chain = Chain(monkeypatch, unstable=True, offset=85.0)
+@pytest.mark.parametrize("second,status", [(75.5, "converged"), (75.51, "refused"), (74.49, "refused")])
+def test_two_in_band_sweeps_hold_the_fader_and_must_agree(monkeypatch, second, status):
+    chain = Chain(monkeypatch)
+    readings = iter((75.0, second))
+    async def read_level():
+        return next(readings)
+    chain.read_level = read_level
     result = asyncio.run(chain.run())
-    first_in_band = next(i for i, (_, reading) in enumerate(result.readings) if abs(reading - 75.0) <= 1.0)
-    first_in_band_gain = result.readings[first_in_band][0]
-    assert result.reason == level.REFUSE_LEVEL_UNSETTLED
-    assert len(result.readings) - first_in_band <= 4
-    assert max(chain.writes) <= first_in_band_gain + 1.0
-    for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
-        if reading > 75.0:
-            assert next_gain <= gain
-    assert chain.peak_observed < 75.0 + level.MAX_STEP_DB
-
-
-def test_a_noisy_loud_room_can_nudge_clear_of_the_floor(monkeypatch):
-    chain = Chain(monkeypatch, ambient=66.83, slope=1.786, offset=91.40,
-                  jitter=(0.699, 0.1186), jitter_floor_margin=2.0)
-    result = asyncio.run(chain.run())
-    assert result.status == 'converged'
-    assert abs(result.leveled_db_spl - 75.0) <= 1.0
+    assert result.status == status
+    assert result.reason == (None if status == "converged" else level.REFUSE_LEVEL_UNSETTLED)
+    assert result.readings == [(-40.0, 75.0), (-40.0, second)]
+    assert chain.writes == [-40.0]
 
 
 def test_random_non_hot_unsettled_climbs_never_step_up_when_high(monkeypatch):
@@ -182,7 +166,6 @@ def test_random_linear_and_limiter_chains_respect_both_stops(monkeypatch):
     ({'slope': 0.0, 'offset': 30.0, 'cap': -20.0}, level.REFUSE_MIC_NOT_OBSERVING),
     ({'unstable': True, 'ambient': 68.0, 'offset': 114.0}, level.REFUSE_LEVEL_UNSETTLED),
     ({'ambient': 69.0}, level.REFUSE_AMBIENT_TOO_HIGH),
-    ({'clip': True}, 'mic_clipping'),
     ({'offset': 140.0}, SPL_CEILING_EXCEEDED),
 ])
 def test_coded_refusals_stop_playback(monkeypatch, kwargs, reason):
@@ -194,70 +177,28 @@ def test_coded_refusals_stop_playback(monkeypatch, kwargs, reason):
     assert not chain.playing
 
 
-def test_one_loud_sample_cannot_hide_in_a_window_median(monkeypatch):
-    chain = Chain(monkeypatch)
-    original = chain.samples
-    async def samples():
-        normal = await original()
-        return normal * 9 + ([LevelSample(100, 0, -8.0, -8.0)] if chain.playing else [])
-    chain.samples = samples
-    result = asyncio.run(chain.run())
-    assert result.reason == SPL_CEILING_EXCEEDED
-    assert result.readings[-1][1] == 86.0
-
-
 @pytest.mark.parametrize('reading', [math.nan, math.inf, -math.inf])
-def test_nonfinite_feed_cannot_drive_the_fader(monkeypatch, reading):
+@pytest.mark.parametrize('source', ['read_level', 'read_ambient'])
+def test_nonfinite_feed_cannot_drive_the_fader(monkeypatch, reading, source):
     chain = Chain(monkeypatch)
-    async def samples():
-        chain.time += 0.501
-        return [LevelSample(1, 0, reading, reading)]
-    chain.samples = samples
+    async def read():
+        return reading
+    setattr(chain, source, read)
     result = asyncio.run(chain.run())
     assert result.reason == 'mic_feed_lost'
     assert len(chain.writes) == 1
-    assert not chain.playing
-
-
-def test_cancellation_stops_playback(monkeypatch):
-    chain = Chain(monkeypatch)
-    original = chain.samples
-    async def samples():
-        if chain.playing:
-            raise asyncio.CancelledError
-        return await original()
-    chain.samples = samples
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(chain.run())
-    assert not chain.playing
 
 
 def test_a_quieter_room_is_remeasured_in_silence(monkeypatch):
     chain = Chain(monkeypatch, ambient=60.0)
-    original = chain.samples
-    silent = []
-    async def samples():
-        if chain.playing:
-            chain.ambient = 30.0
-        else:
-            silent.append(chain.ambient)
+    original = chain.read_level
+    async def read_level():
+        chain.ambient = 30.0
         return await original()
-    chain.samples = samples
+    chain.read_level = read_level
     result = asyncio.run(chain.run())
     assert result.status == 'converged'
     assert result.ambient_db_spl == 30.0
-    assert 60.0 in silent and 30.0 in silent
-
-
-def test_a_stalled_feed_is_bounded_and_stops_playback(monkeypatch):
-    chain = Chain(monkeypatch)
-    monkeypatch.setattr(level, 'MIC_WINDOW_S', 0.01)
-    async def samples():
-        await asyncio.Future()
-    chain.samples = samples
-    result = asyncio.run(chain.run())
-    assert result.reason == 'mic_feed_lost'
-    assert not chain.playing
 
 
 @pytest.mark.parametrize('current,cap', [(-55.0, -40.0), (-10.0, -55.0)])

@@ -46,8 +46,7 @@ _OVERLAP_SAMPLES = 8192
 
 # Longest renderable stimulus, in FRAMES; bounds peak memory (~55 MiB at this bound, 2
 # channels, on a 1 GB box). Checked against the decoded shape BEFORE the float64
-# conversion. PUBLIC: ``jasper.cli.seat_level.default_stimulus_wav`` generates exactly
-# this many frames.
+# conversion.
 MAX_STIMULUS_SAMPLES = 48_000 * 60
 
 # Types modelled from configuration alone; FIR convolution needs external data.
@@ -116,8 +115,7 @@ def _delay_seconds(params: Mapping[str, Any], name: str) -> float:
 
 def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
     """``(float64 samples shaped (frames, channels), sample_rate_hz)``. Integer PCM is
-    normalised by its dtype's own maximum, the SAME convention
-    :func:`jasper.cli.seat_level.stimulus_provenance` uses. Length bound is enforced
+    normalised by its dtype's own maximum. Length bound is enforced
     against the DECODED SHAPE, before the float64 conversion.
     """
     import numpy as np

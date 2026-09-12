@@ -2,27 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pins the W6 hardware-run bug: ``resolve_conductor_context`` must resolve
-the active playback device through
-:func:`jasper.active_speaker.playback_route.resolve_active_playback_device`,
-never a nonexistent ``topology.playback_device`` attribute.
-
-Before this fix, ``OutputTopology`` (a frozen dataclass with no
-``playback_device`` field) always made
-``getattr(topology, "playback_device", None)`` resolve to ``None``, so every
-call to ``resolve_conductor_context`` — the shared context builder behind
-both ``POST /crossover/v2/session`` and ``POST /crossover/v2/verify`` —
-refused unconditionally with "the active output device is not declared".
-This was 100% reproducible on real hardware and had zero test coverage: every
-existing endpoint test short-circuits before reaching this code (an empty or
-inactive ``status`` refuses earlier), so the dead seam shipped silently.
-
-These tests build a REAL, verified :class:`~jasper.output_topology.OutputTopology`
-(mirroring the fixture builder in ``tests/test_active_speaker_playback_route.py``)
-rather than a mock with a hand-set ``playback_device`` attribute — a mock
-would not have caught the original bug, since the mock would happily answer
-whatever attribute the test author set on it.
-"""
+"""Conductor inputs come from declared hardware, caps and the session gain."""
 
 from __future__ import annotations
 
@@ -802,3 +782,23 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     )
 
     assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
+
+
+@pytest.mark.parametrize("gain", [-40.0, None, 1.0, float("nan")])
+def test_leveling_resolves_hardware_before_a_session_gain_is_banked(monkeypatch, gain):
+    topology = _topology(HIFIBERRY_DAC8X.id, 8)
+    monkeypatch.setenv(ACTIVE_PLAYBACK_DEVICE_ENV, "hw:Lab")
+    def missing(*args, **kwargs):
+        raise session_volume_plan_mod.LevelUnresolved("seat_anchor_unusable", "missing")
+    monkeypatch.setattr(session_volume_plan_mod, "session_measurement_volume_db", missing)
+    if gain is None:
+        with pytest.raises(CrossoverV2Refused) as caught:
+            v2ctx.resolve_conductor_context(_status(), topology=topology)
+        assert caught.value.code == "seat_anchor_unusable"
+    elif gain == -40.0:
+        context = v2ctx.resolve_conductor_context(_status(), topology=topology, session_volume_db=gain)
+        assert context.session_volume_db == gain
+        assert set(context.driver_caps_dbfs) == {"woofer", "tweeter"}
+    else:
+        with pytest.raises(ValueError):
+            v2ctx.resolve_conductor_context(_status(), topology=topology, session_volume_db=gain)
