@@ -252,6 +252,8 @@ def _room_grade_argv(round_: _FixtureRound) -> list[str]:
     return ["room-grade", str(round_.measured)]
 
 
+#: How each view is run against that round -- or, for a view this fixture
+#: cannot feed, why not.
 _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "entry": lambda r: ["entry", str(r.measured)],
     "frozen": _NO_CLOUD_GROUP,

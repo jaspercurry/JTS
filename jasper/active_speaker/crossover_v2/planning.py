@@ -30,7 +30,7 @@ from jasper.log_event import log_event
 from ..branch_chain import CrossoverSection, branch_headroom_db, sections_by_role
 from ..linearization_fit import linearization_filters_by_role
 from .candidates import CloudFitEvidence, LinearizationState
-from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP
+from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP, detached_json
 from .driver_prescription import (
     LINEARIZATION_CANDIDATE_FIELD,
     DriverPrescription,
@@ -184,11 +184,10 @@ def analysis_json(
             round(float(align.delay_us - align.seed_delay_us), 3)
             if align and align.seed_delay_us is not None else None
         ),
-        "trim_decision": {
+        "trim_decision": detached_json({
             **asdict(trim), "strategy": trim.strategy.value,
-            "committed_match": trim.committed_match.to_dict(),
             "outcome": trim.outcome, "committed_side": trim.committed_side,
-        } if trim is not None else None,
+        }) if trim is not None else None,
         "polarity": align.polarity if align else None,
         "alignment_objective": cand.alignment_objective if cand else None,
         "seed_polarity": (

@@ -94,6 +94,7 @@ legacy; this is it restated on the wired path.
 """
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -101,6 +102,8 @@ from typing import Any
 
 import numpy as np
 import pytest
+
+from tests._log_events import event_fields
 
 from jasper.active_speaker.branch_chain import (
     CrossoverSection,
@@ -793,6 +796,22 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
 # --------------------------------------------------------------------------- #
 # the two sites the pre-cutover replay could NOT pin
 # --------------------------------------------------------------------------- #
+
+
+def test_the_rejection_journal_names_the_committed_pair_and_its_strategy(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
+    replay = _run_replay(monkeypatch)
+    decision = replay.candidate.analysis["trim_decision"]
+    fields = event_fields(caplog, "correction.crossover_v2_linearization_trim_rejected")
+    assert fields["committed"] == decision["committed_side"] == "anchored"
+    assert fields["strategy"] == decision["strategy"]
+    assert float(fields["margin_db"]) == round(decision["sanity_margin_db"], 3)
+    assert float(fields["resolved_ripple_db"]) == round(decision["ripple_db"], 3)
+    for field, key in (("anchored_trim_db", "anchored_db"), ("resolved_trim_db", "resolved_db")):
+        assert ast.literal_eval(fields[field]) == {role: round(value, 3) for role, value in decision[key].items()}
+    assert ast.literal_eval(fields["fallback_trim_db"]) == {
+        role: round(value, 3) for role, value in replay.candidate.role_attenuations_db.items()
+    }
 
 
 def test_the_straddle_and_its_skip_journal_read_the_candidates_corner(

@@ -12,20 +12,22 @@ from typing import Any
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import sections_by_role
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
-from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
+from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
+from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, boost_allowed, fit_branches
+from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError, round_artifact_dir
-from jasper.active_speaker.crossover_v2.round_views import _response_from_banked_curve
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, round_artifact_dir
+from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import EnvelopeCurve
 from jasper.active_speaker.linearization_fit import FitVocabulary
-from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
+
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, answer, read_run_manifest, resolve_set, round_inputs,
@@ -45,6 +47,32 @@ def _envelope_answer(envelope: EnvelopeCurve) -> dict[str, Any]:
     return {"bands": bands, "sigma_source": "paired_repeats" if envelope.sigma_db is not None else "unavailable"}
 
 
+def _read_candidate(path: Path) -> dict[str, Any]:
+    candidate = json.loads(path.read_text())
+    if not isinstance(candidate, dict) or not all(
+        isinstance(candidate.get(key), dict) for key in ("source_preset", "analysis")
+    ):
+        raise RoundViewsError("candidate requires source_preset and analysis objects")
+    return candidate
+
+
+def _production_vocabulary(inputs: RoundInputs, candidate: dict[str, Any]) -> str:
+    if inputs.state_path is None:
+        raise RoundViewsError("production vocabulary requires the capture's journey state")
+    state = json.loads(inputs.state_path.read_text())
+    shape = resolve_plan_shape(state["tier"]) if state.get("tier") else None
+    plan = open_stage(
+        STAGE_MEASURE_CAPABILITIES, index_phase_map=dict(enumerate(state["session_phases"])),
+        verify_capture_target=shape.verify_capture_target if shape else None,
+    ).plan
+    allowed = boost_allowed(
+        post_apply_verifies=plan.post_apply_verifies,
+        cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
+        cloud_present=bool(candidate.get("exclusion_evidence")),
+    )
+    return "bounded_boost" if allowed else "cut_only"
+
+
 def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     inputs = round_inputs(Path(args.round_dir))
     selected = resolve_set(inputs, args.set)
@@ -61,7 +89,10 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
         raise RoundViewsError("selected take does not match its manifest")
     directory, _ = round_artifact_dir(inputs.session_dir)
     assert directory is not None
-    candidate = json.loads((directory / "candidate.json").read_text())
+    candidate = stage(EXIT_UNREADABLE, (OSError, ValueError, TypeError), _read_candidate, directory / "candidate.json")
+    vocabulary = args.vocabulary or stage(
+        EXIT_UNREADABLE, (OSError, ValueError, KeyError, TypeError), _production_vocabulary, inputs, candidate,
+    )
     analysis = candidate["analysis"]
     if analysis["program_id"] != program.program_id:
         raise RoundViewsError("banked analysis does not match the selected program")
@@ -86,25 +117,21 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     curves = {curve["role"]: curve for curve in record["curves"]}
     drivers = []
     for role, band in bands.items():
-        response = _response_from_banked_curve(curves[role])
+        response = response_from_banked_curve(curves[role])
         if response is None:
             raise RoundViewsError(f"fit inputs are not banked for {role}")
         drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown")))
-    sections = sections_by_role(
-        CrossoverRegion.from_mapping(region)
-        for region in candidate["source_preset"].get("crossover_regions") or ()
-    )
-    envelopes, fits, _ = fit_branches(
-        drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},
-        vocabulary=FitVocabulary(allow_boost=args.vocabulary == "bounded_boost"),
+    branches = fit_branches(
+        drivers, source_preset=candidate["source_preset"], mic_tiers={driver.role: tier for driver in drivers},
+        vocabulary=FitVocabulary(allow_boost=vocabulary == "bounded_boost"),
     )
     return answer(
         args.command, line=f"speaker-fit: {len(drivers)} driver proposals",
-        set_id=selected.set_id, take_id=take_id, vocabulary=args.vocabulary,
+        set_id=selected.set_id, take_id=take_id, vocabulary=vocabulary,
         linearization={driver.role: {
             "excited_band_hz": list(driver.excited_band_hz),
-            "envelope": _envelope_answer(envelopes[driver.role]),
-            "fit": fits[driver.role].to_dict(),
+            "envelope": _envelope_answer(branches.envelopes[driver.role]),
+            "fit": branches.fits[driver.role].to_dict(),
         } for driver in drivers},
         alignment={
             "committed": {"delay_us": analysis.get("delay_us"), "polarity": analysis.get("polarity"),
@@ -125,5 +152,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     parser.add_argument("--set", required=True, help="manifest set containing the Speaker take")
     parser.add_argument("--take", help="selected take ID when the set holds several takes")
-    parser.add_argument("--vocabulary", choices=("cut_only", "bounded_boost"), default="bounded_boost")
+    parser.add_argument("--vocabulary", choices=("cut_only", "bounded_boost"), help="override this round's production vocabulary")
     parser.set_defaults(func=_cmd_speaker_fit)

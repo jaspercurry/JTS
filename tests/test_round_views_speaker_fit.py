@@ -15,7 +15,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
-from jasper.active_speaker.crossover_v2.round_views import _response_from_banked_curve
+from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands, analysis_curve_records
 from jasper.active_speaker.linearization_envelope import compose_envelope
 from jasper.active_speaker.linearization_fit import (
@@ -37,6 +37,9 @@ def speaker_round(tmp_path):
     root = bank_measure_round(tmp_path)
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
+    state = json.loads(inputs.state_path.read_text())
+    state.update(session_phases=["check", "measure"], tier="full")
+    inputs.state_path.write_text(json.dumps(state))
     row, record = next((row, dict(doc)) for row, doc in measurement_documents(inputs.session_dir) if row.phase == "measure")
     program = build_measure_program(
         {"woofer": -20.0, "tweeter": -24.0},
@@ -82,17 +85,37 @@ def speaker_round(tmp_path):
     return root, record, program, classes, region, trim
 
 
-@pytest.mark.parametrize("vocabulary", [None, "cut_only", "bounded_boost"])
-def test_speaker_fit_matches_explicit_math_and_banked_decisions(speaker_round, vocabulary, capsys):
+@pytest.mark.parametrize("vocabulary,cloud_planned,cloud_present,tier,expected", [
+    (None, False, False, "full", "bounded_boost"),
+    (None, True, False, "full", "cut_only"),
+    (None, True, True, "full", "bounded_boost"),
+    (None, False, False, "", "cut_only"),
+    ("cut_only", False, False, "full", "cut_only"),
+    ("bounded_boost", True, False, "full", "bounded_boost"),
+])
+def test_speaker_fit_matches_explicit_math_and_banked_decisions(
+    speaker_round, vocabulary, cloud_planned, cloud_present, tier, expected, capsys,
+):
     root, record, program, classes, region, trim = speaker_round
+    inputs = round_inputs(root)
+    state = json.loads(inputs.state_path.read_text())
+    state["tier"] = tier
+    if cloud_planned:
+        state["session_phases"].insert(1, "cloud_measure")
+    inputs.state_path.write_text(json.dumps(state))
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    candidate_path = directory / "candidate.json"
+    candidate = json.loads(candidate_path.read_text())
+    candidate["exclusion_evidence"] = {"n_positions": 3, "excluded_bands_hz": [], "band_spread": []} if cloud_present else {}
+    candidate_path.write_text(json.dumps(candidate))
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     flags = [] if vocabulary is None else ["--vocabulary", vocabulary]
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", *flags]) == 0
     result = json.loads(capsys.readouterr().out)
     assert {"linearization", "alignment", "trim"} <= result.keys()
-    assert result["vocabulary"] == (vocabulary or "bounded_boost")
+    assert result["vocabulary"] == expected
     bands = _primary_sweep_bands(program)
-    responses = {curve["role"]: _response_from_banked_curve(curve)[0] for curve in record["curves"]}
+    responses = {curve["role"]: response_from_banked_curve(curve)[0] for curve in record["curves"]}
     sections = sections_by_role([CrossoverRegion.from_mapping(region)])
     envelopes = {role: compose_envelope(
         role, response, excited_band_hz=bands[role], mic_tier="reference", driver_class=classes[role],
@@ -105,7 +128,7 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(speaker_round, v
     ])
     for role, response in responses.items():
         fit = fit_driver_linearization(response, envelopes[role],
-                                       vocabulary=FitVocabulary(allow_boost=vocabulary != "cut_only"),
+                                       vocabulary=FitVocabulary(allow_boost=expected == "bounded_boost"),
                                        radiating_band_hz=radiating[role], blind_bands_hz=blind,
                                        target=branch_target(sections[role], envelopes[role].freqs_hz))
         assert result["linearization"][role]["fit"] == json.loads(json.dumps(fit.to_dict()))
@@ -159,3 +182,20 @@ def test_a_program_shared_by_takes_cannot_identify_the_banked_analysis(speaker_r
     write_manifest(root, groups=[group, second])
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["reason"] == round_views.REASON_REFUSED
+
+
+@pytest.mark.parametrize("source_preset", ["missing", None, []])
+def test_unreadable_candidate_uses_registry_code(speaker_round, source_preset, capsys):
+    root, *_ = speaker_round
+    directory, _ = round_artifact_dir(round_inputs(root).session_dir)
+    path = directory / "candidate.json"
+    candidate = json.loads(path.read_text())
+    if source_preset == "missing":
+        del candidate["source_preset"]
+    else:
+        candidate["source_preset"] = source_preset
+    path.write_text(json.dumps(candidate))
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_UNREADABLE
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "unreadable"
+    assert result["reason"] == round_views.REASON_UNREADABLE

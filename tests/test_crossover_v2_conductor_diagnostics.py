@@ -727,6 +727,10 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog, monkeypatch):
     assert fields["max_residual_samples"] == "0.2"
     assert fields["repeat_level_delta_db"] == "0.05"
     assert fields["delay_role"] == "tweeter"  # positive delay_us ⇒ tweeter delayed
+    # ``polarity`` here is the candidate-facing keep/invert action
+    # (``alignment_to_candidate_fields``'s third return value), not the raw
+    # AlignmentEstimate.polarity ("normal"/"inverted") — "normal" maps to
+    # POLARITY_KEEP ("keep").
     assert fields["polarity"] == "keep"
     assert fields["predicted_ripple_db"] == "1.23"
     assert fields["alignment_seed_ripple_db"] == "4.56"
