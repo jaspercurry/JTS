@@ -80,9 +80,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     """
     state = _host.load_v2_state()
     session_id = (state or {}).get("session_id")
-    attempts = (state or {}).get("attempts_loop")
-    attempts = attempts if isinstance(attempts, Mapping) else {}
-    last_attempt_decision = attempts.get("last_decision")
     # Count is derived from its persistence owner on every state read. Keeping
     # a second copy in journey state made crash recovery and offline store
     # repair observable as two contradictory counts.
@@ -146,14 +143,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # answer and the action.
         "previous_candidate_fingerprint": _offerable_previous_candidate(state),
         "session_id": session_id,
-        # Minimal live-loop observability: no attempt curves/history on the
-        # household polling path, only the kernel output the envelope formats
-        # and the durable model-error record count.
         "attempts_loop": {
-            "last_decision": (
-                dict(last_attempt_decision)
-                if isinstance(last_attempt_decision, Mapping) else None
-            ),
             "store_count": store_count,
         },
         "cloud": _projection.compact_cloud_status(

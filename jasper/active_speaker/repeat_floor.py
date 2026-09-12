@@ -2,33 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The measured repeat floor — one writer, one durable file the packet reads.
-
-Calibration experiment E2 asks one question: repeat a program touching
-nothing, and how far does the aggregate metric move? That spread is the
-instrument's own random noise (ADR-0202), and until it is banked somewhere a
-reader can find, every threshold derived from it is an assumption
-(``round_evidence.MEASURED_BENEFIT_MARGIN_DB`` and ``ITERATION_PLATEAU_DB``
-both say so about themselves).
-
-Ownership, deliberately narrow:
-
-* **one writer** — ``jasper-round-views repeat-floor``, over N banked
-  touched-nothing repeat rounds;
-* **one reader** — the evidence packet's
-  ``accuracy_budget.components.in_capture_repeat_floor``;
-* **absent is normal.** A rig that never ran the repeats has no floor, and
-  the packet reports that rather than defaulting one.
-
-This module imports nothing from ``crossover_v2``: the packet imports it, and
-the CLI hands it a duck-typed ``RepeatabilityResult`` the round views own.
-"""
+"""Repeat spread arithmetic and the floor record read by the evidence builder."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence, TypeGuard
+from statistics import mean, stdev
+from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float
@@ -51,76 +32,89 @@ def _state_path(path: str | Path | None) -> Path:
 
 
 def pairwise_abs_deltas(values: Sequence[float]) -> list[float]:
-    """Every pair's absolute difference — ``MEASURED_BENEFIT_MARGIN_DB``'s own
-    recipe: difference the two pooled values, repeat. Empty below two values —
-    one measurement has no difference to take.
-    """
     vs = [float(v) for v in values]
     if len(vs) < 2:
         return []
     return [abs(a - b) for i, a in enumerate(vs) for b in vs[i + 1:]]
 
 
+def sample_spread(values: Sequence[float]) -> dict[str, float] | None:
+    if len(values) < 2:
+        return None
+    return {"n": float(len(values)), "mean": mean(values), "sd": stdev(values),
+            "range": max(values) - min(values), "min": min(values), "max": max(values)}
+
+
 def derive_repeat_floor(
-    result: Any, *, rounds: Sequence[Mapping[str, Any]]
+    result: Any = None, *, rounds: Sequence[Mapping[str, Any]],
+    samples: Mapping[str, Sequence[float]] | None = None,
+    units: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Turn one repeatability view into the durable record.
+    """Round metrics or per-take samples, with one provenance row per observation.
 
-    ``result`` is duck-typed on the round views' ``RepeatabilityResult``
-    (``round_labels``, and ``metrics`` each with ``name``/``values``/
-    ``spread()``); ``rounds`` is one provenance row per repeat, built by the
-    caller from each round's packet.
-
-    Raises :class:`ValueError` when the aggregate metric has no spread: a
-    floor with no aggregate row is not a floor.
+    Existing dB columns stay unchanged; non-dB metrics carry their native unit.
     """
-    metrics: dict[str, dict[str, float | None]] = {}
-    for metric in result.metrics:
-        spread = metric.spread()
+    round_axis = samples is None
+    if samples is None:
+        samples = {metric.name: list(metric.values.values()) for metric in result.metrics}
+    metrics = {}
+    for name, values in samples.items():
+        if any(finite_float(value) is None for value in values):
+            raise ValueError("repeat samples must be finite")
+        spread = sample_spread(values)
         if spread is None:
             continue
-        deltas = pairwise_abs_deltas(list(metric.values.values()))
-        metrics[metric.name] = {
+        unit = (units or {}).get(name, "db")
+        deltas = pairwise_abs_deltas(values)
+        metrics[name] = {
             "n": int(spread["n"]),
-            "mean_db": spread["mean"],
-            "sd_db": spread["sd"],
-            "range_db": spread["range"],
-            "min_db": spread["min"],
-            "max_db": spread["max"],
-            "pairwise_abs_delta_p95_db": percentile(deltas, 95.0) if deltas else None,
-            "pairwise_abs_delta_median_db": percentile(deltas, 50.0) if deltas else None,
+            **{f"{key}_{unit}": spread[key] for key in ("mean", "sd", "range", "min", "max")},
+            f"pairwise_abs_delta_p95_{unit}": percentile(deltas, 95.0),
+            f"pairwise_abs_delta_median_{unit}": percentile(deltas, 50.0),
+            **({"unit": unit} if unit != "db" else {}),
         }
-    if SHIPPED_POOL_METRIC not in metrics:
-        raise ValueError(
-            f"no spread for {SHIPPED_POOL_METRIC}: a repeat floor needs at "
-            "least two rounds that graded the aggregate metric"
-        )
+    if not metrics or (round_axis and SHIPPED_POOL_METRIC not in metrics):
+        raise ValueError("a repeat floor needs at least two observations of its metric")
     return {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": REPEAT_FLOOR_KIND,
+        "artifact_schema_version": SCHEMA_VERSION, "kind": REPEAT_FLOOR_KIND,
         "measured_at": _utc_now(),
-        "n_repeats": len(result.round_labels),
-        "aggregate_metric": SHIPPED_POOL_METRIC,
-        "rounds": [dict(row) for row in rounds],
-        "metrics": metrics,
-        "note": (
-            "touched-nothing fixed-pose repeats; the spread is the RANDOM "
-            "term only (ADR-0202) and the systematic bounds — mic-calibration "
-            "tier, gate leakage — live elsewhere in the accuracy budget"
-        ),
+        "n_repeats": len(result.round_labels) if round_axis else len(rounds),
+        "aggregate_metric": SHIPPED_POOL_METRIC if round_axis else None,
+        "rounds": [dict(row) for row in rounds], "metrics": metrics,
+        "note": "touched-nothing fixed-pose repeats; random error only (ADR-0202)",
     }
+
+
+def repeat_pair(
+    take: Mapping[str, Sequence[float]], trims: Mapping[str, Sequence[float]], floor: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Compare the first two takes against a previously banked floor (ADR-0302)."""
+    disagreements, unmeasured = [], []
+    limits: dict[str, float] = {}
+    metrics = [(name, values, {"scope": "take", "metric": name}) for name, values in take.items()]
+    metrics += [(f"{role}_trim_db", values, {"role": role, "metric": "trim_db"}) for role, values in trims.items()]
+    for name, values, finding in metrics:
+        delta = abs(values[0] - values[1])
+        if name == "polarity":
+            if delta:
+                disagreements.append(finding)
+            continue
+        thresholds = stopping_thresholds({**(floor or {}), "aggregate_metric": name})
+        unit = "us" if name == "delay_us" else "db"
+        threshold = thresholds.get(f"margin_{unit}") if thresholds else None
+        if threshold is None:
+            unmeasured.append(finding)
+        else:
+            limits[name] = threshold
+            if delta > threshold:
+                disagreements.append(finding)
+    return {"pair": "disagrees" if disagreements else "unmeasured" if unmeasured else "agrees",
+            "disagreements": disagreements, "unmeasured": unmeasured, "pair_limits": limits}
 
 
 def write_repeat_floor(
     payload: Mapping[str, Any], *, state_path: str | Path | None = None
 ) -> dict[str, Any]:
-    """Publish one floor at ``state_path`` and return the record as written.
-
-    The path is NOT part of the record: it is written on a laptop and read on
-    the speaker, so a local path is nobody's provenance — the reader names the
-    file it actually read. World-readable and un-chowned: the writer's
-    directory says nothing about the speaker's group.
-    """
     record = dict(payload)
     atomic_write_json(_state_path(state_path), record)
     return record
@@ -129,13 +123,6 @@ def write_repeat_floor(
 def load_repeat_floor(
     *, state_path: str | Path | None = None
 ) -> dict[str, Any] | None:
-    """The persisted floor, or ``None`` when there is none.
-
-    Absent-tolerant and never raises: unreadable, malformed, wrong-kind and
-    wrong-schema are all indistinguishable from no file, because the reader's
-    fallback — report the floor unmeasured — is the honest answer in every one
-    of those cases.
-    """
     path = _state_path(state_path)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -150,28 +137,17 @@ def load_repeat_floor(
     return raw
 
 
-def _finite(value: Any) -> TypeGuard[float]:
-    return finite_float(value) is not None
-
-
 def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The plateau and benefit margin this floor implies, or ``None``.
-
-    Built through :meth:`~jasper.active_speaker.attempts_loop.FloorStats.from_repeat_study`,
-    the one place the formula lives: plateau = the p95 itself
-    (``ITERATION_PLATEAU_DB``'s own TODO), margin = the derived claim floor
-    (``MEASURED_BENEFIT_MARGIN_DB``'s own house rule), so plateau = margin/2
-    by construction.
-    """
     aggregate = record.get("metrics")
     if not isinstance(aggregate, Mapping):
         return None
     row = aggregate.get(record.get("aggregate_metric"))
     if not isinstance(row, Mapping):
         return None
-    p95 = row.get("pairwise_abs_delta_p95_db")
-    median = row.get("pairwise_abs_delta_median_db")
-    if not _finite(p95) or not _finite(median):
+    unit = row.get("unit", "db")
+    p95 = finite_float(row.get(f"pairwise_abs_delta_p95_{unit}"))
+    median = finite_float(row.get(f"pairwise_abs_delta_median_{unit}"))
+    if p95 is None or median is None:
         return None
     try:
         floor = FloorStats.from_repeat_study(
@@ -184,11 +160,11 @@ def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
     except ValueError:  # from_repeat_study refuses p95 <= 0 and an empty metric name
         return None
     return {
-        "plateau_db": floor.p95_db,
-        "margin_db": floor.claim_floor_db,
+        f"plateau_{unit}": floor.p95_db,
+        f"margin_{unit}": floor.claim_floor_db,
         "formula": (
-            "plateau_db = p95(|delta| between two touched-nothing repeats of "
-            "the aggregate metric); margin_db = CLAIM_FLOOR_P95_MULTIPLE * "
-            "plateau_db"
+            f"plateau_{unit} = p95(|delta| between two touched-nothing repeats of "
+            f"the aggregate metric); margin_{unit} = CLAIM_FLOOR_P95_MULTIPLE * "
+            f"plateau_{unit}"
         ),
     }

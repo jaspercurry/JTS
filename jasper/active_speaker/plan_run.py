@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""One plan walk and retry owner, with evidence kept by RunManifest."""
+"""Execute planned captures with one retry owner and one evidence manifest (ADR-0296)."""
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
+from .crossover_v2.planning import analysis_json
 from .restore_wait import resilient_restore
 from .measurement_programs import POSE_KIND_BEARING
 from .run_manifest import RunManifest
@@ -495,7 +496,8 @@ async def _run(
                             assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
                                               program=program, gain_ceiling_db=gain_ceiling_db)
                             if program is not None:
-                                record = {**record, "curves": analysis_curve_records(analysis, program)}
+                                record = {**record, "curves": analysis_curve_records(analysis, program),
+                                          "analysis": analysis_json(analysis)}
                         except (ValueError, KeyError, OSError) as exc:
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
                                                    evidence={"error_type": type(exc).__name__})
