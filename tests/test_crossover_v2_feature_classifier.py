@@ -1878,7 +1878,11 @@ def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, ca
     assert "bank-crossover-round.sh" not in err
 
 
-def test_an_unreadable_round_returns_the_cli_failure_code(tmp_path, capsys):
-    code = cli.main(["classify-features", str(tmp_path)])
+def test_the_wav_leaf_directory_is_not_a_readable_round(tmp_path, capsys):
+    """The WAV leaf was mistaken for the bundle during a real round replay."""
+    bundle, _ = _bundle(tmp_path, _flat_ir(), bank_shape=True)
+    programs_leaf = bundle / "crossover_v2/wired-TEST"
+    assert programs_leaf.is_dir()
+    code = cli.main(["classify-features", str(programs_leaf)])
     assert code == cli.EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == cli.REASON_UNREADABLE

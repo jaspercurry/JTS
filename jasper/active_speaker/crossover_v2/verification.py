@@ -27,11 +27,11 @@ import numpy as np
 from jasper.log_event import log_event
 
 from ..delta_probe import (
-    DELTA_PROBE_ROLLBACK_VERDICTS,
+    DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS,
     VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_SAFETY_ONLY,
-    seam_rollback_deferral,
+    advice_deferral,
 )
 from ..flat_spec import (
     FlatSpecReport,
@@ -269,7 +269,7 @@ def evaluate_realization(
     Absent evidence is not a failure: a missing mapping, or a
     missing/non-numeric/non-finite comparator, is
     :attr:`~.contracts.RealizationStatus.UNAVAILABLE` rather than
-    :attr:`~.contracts.RealizationStatus.FAILED`, because ``failed`` restores.
+    :attr:`~.contracts.RealizationStatus.FAILED`, because ``failed`` advises restore.
     ``bool`` is rejected as a comparator because ``True`` is an ``int`` and
     would silently grade as 1.0 dB.
 
@@ -739,7 +739,7 @@ def evaluate_evidence_trust(
 
 
 # --------------------------------------------------------------------------
-# 6. safety — the only axis that pulls a measured graph off
+# 6. measured safety findings
 # --------------------------------------------------------------------------
 
 #: A boost measured MORE lift across the apply than the graph declared
@@ -777,8 +777,7 @@ def evaluate_applied_safety(
 ) -> Verdict[SafetyStatus]:
     """Is the applied state safe to leave on a household's speaker?
 
-    The adoption table's hard stop, and the only axis that pulls a MEASURED
-    graph off for something other than the absence of evidence. Three findings,
+    Three findings,
     each read from a shipped instrument and none re-derived here:
 
     * a boost realized above the probe's tolerance
@@ -878,7 +877,7 @@ def evaluate_applied_safety(
         "max_signed_error_db": (
             getattr(probe, "max_signed_error_db", None) if probe is not None else None
         ),
-        "seam_deferred": seam_rollback_deferral(probe),
+        "seam_deferred": advice_deferral(probe),
     }
 
     if boost_over_bound:
@@ -913,15 +912,8 @@ def evaluate_applied_safety(
 # --------------------------------------------------------------------------
 
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
-#: The delta probe measured the emitted filters not doing what the fit's model
-#: of them says, in one of the classes the project reverts — realized-vs-
-#: commanded, where :data:`ADOPTION_MEASURED_REGRESSION` is before/after.
-#:
-#: The cause carries the CLASS as ``<prefix>:<verdict>``, because the three
-#: rollback classes have three different household sentences
-#: (:data:`~.refusal_copy.DELTA_PROBE_REASON_BY_VERDICT`) that
-#: :func:`~.refusal_copy.round_restore_reason` reads back off it.
-ADOPTION_PROBE_ROLLBACK_CLASS = "delta_probe_rollback_class"
+# Persisted reason and evidence keys remain readable by existing round consumers.
+ADOPTION_PROBE_ADVICE_CLASS = "delta_probe_rollback_class"
 ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
 ADOPTION_REALIZATION_FAILED = "realization_failed"
 ADOPTION_UNPROVEN = "benefit_unproven"
@@ -982,8 +974,8 @@ def evaluate_round_quality(
 
     The STATUS is :data:`_QUALITY_TABLE`, keyed on ``(realization, benefit)``.
     A probe verdict in
-    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
-    that the probe's own seam did not defer overrides it to
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
+    that was not deferred overrides it to
     :attr:`~.contracts.QualityStatus.REGRESSED`.
 
     The TARGETS are disclosure and move no status. Spec is an outcome, not a
@@ -1006,17 +998,17 @@ def evaluate_round_quality(
             f"delta_probe:{str(getattr(probe, 'reason', '') or probe_verdict)}"
         )
     targets.extend(_model_departure_target(probe))
-    probe_rollback = _probe_rollback_class(probe, probe_verdict)
-    if probe_rollback:
+    probe_advice = _probe_advice_class(probe, probe_verdict)
+    if probe_advice:
         quality = QualityStatus.REGRESSED
-        reason = f"{ADOPTION_PROBE_ROLLBACK_CLASS}:{probe_rollback}"
+        reason = f"{ADOPTION_PROBE_ADVICE_CLASS}:{probe_advice}"
 
     return Verdict(quality, reason, {
         "targets": targets,
         "spec_bands": _failing_spec_bands(spec_report),
         # WHICH probe class escalated, or ``""``. Named rather than
         # re-derived from ``targets``: the row's reason is a constant.
-        "probe_rollback_class": probe_rollback,
+        "probe_rollback_class": probe_advice,
     })
 
 
@@ -1054,19 +1046,19 @@ def _model_departure_target(probe: Any | None) -> list[str]:
     return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
 
-def _probe_rollback_class(probe: Any | None, verdict: str) -> str:
-    """The probe verdict that takes this graph off, or ``""``.
+def _probe_advice_class(probe: Any | None, verdict: str) -> str:
+    """The probe verdict that advises against keeping this graph, or ``""``.
 
     Two owners consulted, neither re-derived here:
-    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`
-    for which classes restore, and
-    :func:`~jasper.active_speaker.delta_probe.seam_rollback_deferral` for the
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS`
+    for which classes advise against keeping, and
+    :func:`~jasper.active_speaker.delta_probe.advice_deferral` for the
     ones that are spared.
     """
 
-    if not verdict or verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
+    if not verdict or verdict not in DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS:
         return ""
-    return "" if seam_rollback_deferral(probe) else verdict
+    return "" if advice_deferral(probe) else verdict
 
 
 def spec_band_rows(report: FlatSpecReport | None) -> list[dict[str, Any]]:
@@ -1346,7 +1338,7 @@ def decide_adoption(
     rollback_available: bool,
     restore_failed: bool = False,
 ) -> AdoptionDecision:
-    """Keep an acceptable tune; restore a measured regression or invalid apply.
+    """Advise whether to keep a tune or restore a previous candidate.
 
     The headroom verdict changes advice only. Neither kept outcome starts or
     prevents another round. A failed restore takes precedence over all grades.
@@ -1370,40 +1362,32 @@ def decide_adoption(
             row=ADOPTION_ROW_RESTORE_FAILED,
         )
     if safety.status is SafetyStatus.UNSAFE:
-        return _restore_or_recover(
+        return _restore_advice(
             safety.reason,
             row=ADOPTION_ROW_RESTORE_UNSAFE,
             rollback_available=rollback_available,
         )
     if trust.status is EvidenceTrust.UNTRUSTED:
-        return _restore_or_recover(
+        return _restore_advice(
             ADOPTION_UNPROVEN_BOOST if boosted else trust.reason,
             row=ADOPTION_ROW_RESTORE_UNTRUSTED,
             rollback_available=rollback_available,
         )
     outcome, row = _QUALITY_ROWS[quality.status]
     if outcome is AdoptionOutcome.RESTORE:
-        return _restore_or_recover(
+        return _restore_advice(
             quality.reason, row=row, rollback_available=rollback_available,
         )
     if outcome is AdoptionOutcome.KEEP:
-        # Keyed off the OUTCOME the table above resolved to rather than off
-        # ``quality.status`` directly, so the passing cell has exactly one
-        # definition and this branch cannot drift from it.
         outcome, row = _PASSED_ROWS[headroom.status]
         return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
     return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
 
 
-def _restore_or_recover(
+def _restore_advice(
     reason: str, *, row: str, rollback_available: bool
 ) -> AdoptionDecision:
-    """A restore the host can run, or the escalation when it cannot.
-
-    The branch is taken before the attempt: a decision to restore with no
-    anchor to restore TO is not one the host can carry out. The ROW is the same
-    either way — the rule fired, and only its execution was impossible.
-    """
+    """Advise restore when a previous candidate exists, otherwise recovery."""
 
     if rollback_available:
         return AdoptionDecision(

@@ -23,10 +23,10 @@ from ._common import (
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _load_round,
-    resolve_set, round_inputs,
+    resolve_set, read_run_manifest, round_inputs,
     _write,
     add_rungs_ms_argument,
-    answer,
+    add_set_argument, answer,
     refused_by_name,
     resolved_out,
 )
@@ -83,12 +83,14 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
 
 def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
-    selected = resolve_set(round_inputs(round_dir), args.set)
+    inputs = round_inputs(round_dir)
+    manifest = read_run_manifest(inputs)
+    selected = resolve_set(inputs, args.set, manifest=manifest) if args.set else None
     try:
         report = stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
             rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
-            candidate_id=args.candidate, graph_fingerprint=args.graph, take_ids=selected.selected_ids,
+            candidate_id=args.candidate, graph_fingerprint=args.graph, take_ids=selected.selected_ids if selected else None,
         )
     except RoundCapturesRefused as exc:
         # The ladder's own named refusal, never the resolver's coarser bucket.
@@ -140,10 +142,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser("sweep", help="read the window ladder over a verdict, round set, or take")
+    parser = sub.add_parser("sweep", help="read the window ladder over a verdict, round, or take")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     parser.add_argument("--scope", required=True, choices=("verdict", "round", "take"))
-    parser.add_argument("--set", help="set in the run manifest")
+    add_set_argument(parser)
     parser.add_argument("--take", help="selected take ID within the set; required for take scope")
     parser.add_argument("--role", choices=("summed", "woofer", "tweeter"), default="summed")
     parser.add_argument("--candidate", help="round scope: candidate ID")

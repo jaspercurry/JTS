@@ -485,8 +485,9 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
     assert np.percentile(magnitude_error_db[crossover], 95) < 0.2
 
 
+@pytest.mark.parametrize("override", [False, True])
 def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exists(
-    diagnostic_round: Path, tmp_path: Path, tuning_profile,
+    diagnostic_round: Path, tmp_path: Path, tuning_profile, override: bool,
 ) -> None:
     source = _trial_candidate(tuning_profile, trim=-3.0, gain=-2.0)
     target = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
@@ -496,6 +497,20 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     target_path.write_text(json.dumps(target.to_dict()))
     _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
     _bind_candidate_take(diagnostic_round, "new-shape", target, tuning_profile)
+    bundle = diagnostic_round / "bundle/b0"
+    groups = []
+    for name in ("old", "new-shape"):
+        path = bundle / "summed" / f"summed_{name}.json"
+        document = json.loads(path.read_text())
+        extra = dict(document, take_id=f"{name}-off", position_id=f"{name}-off", position_deg=15.0,
+                     wav_path=f"summed/summed_{name}-off.wav")
+        extra_path = path.with_stem(f"summed_{name}-off")
+        extra_path.write_text(json.dumps(extra))
+        shutil.copyfile(path.with_suffix(".wav"), extra_path.with_suffix(".wav"))
+        groups.append(manifest_set([(str(path.relative_to(bundle)), document),
+                                    (str(extra_path.relative_to(bundle)), extra)], set_id=name))
+    write_manifest(diagnostic_round, groups=groups)
+    source_id, measured_id = ("old-off", "new-shape-off") if override else ("old", "new-shape")
     command = [
         "forward-model", str(diagnostic_round),
         "--set", "old",
@@ -504,8 +519,11 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
         "--window-ms", "7",
     ]
 
+    if override:
+        command += ["--take", source_id]
     assert cli_main(command) == 0
     forecast = json.loads((diagnostic_round / "forward_model-old.json").read_text())
+    assert forecast["summary"]["basis"]["capture_id"] == source_id
     assert forecast["summary"]["candidate_id"] == target.fingerprint
     assert forecast["summary"]["comparison_kind"] == "unmeasured_forecast"
     assert forecast["summary"]["acceptance"]["status"] == ACCEPTANCE_NOT_RUN
@@ -518,9 +536,9 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     relocated = tmp_path / "relocated"
     shutil.copytree(diagnostic_round, relocated)
     bundle = relocated / "bundle" / "b0"
-    source_record = bundle / "summed" / "summed_old.json"
+    source_record = bundle / "summed" / f"summed_{source_id}.json"
     document = json.loads(source_record.read_text())
-    document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
+    document.update(kind=POSITION_EVIDENCE_KIND, wav_path=f"summed/summed_{source_id}.wav",
                     wav_sha256=round_captures.sha256_file(source_record.with_suffix(".wav")))
     canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/source.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
@@ -530,6 +548,7 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     assert cli_main(command + [
         "--measured-round", str(diagnostic_round),
         "--measured-set", "new-shape",
+        *(["--measured-take", measured_id] if override else []),
         "--expected-prediction-fingerprint", fingerprint,
     ]) == 0
     judged = json.loads((relocated / "forward_model-old.json").read_text())
@@ -541,7 +560,7 @@ def test_the_cli_forecast_is_unjudged_until_the_exact_changed_candidate_take_exi
     }
     assert judged["summary"]["comparison_kind"] == "changed_candidate"
     assert judged["summary"]["acceptance"]["status"] == ACCEPTANCE_JUDGED
-    assert judged["summary"]["measured"]["capture_id"] == "new-shape"
+    assert judged["summary"]["measured"]["capture_id"] == measured_id
     assert judged["predicted_minus_measured"]["compared_points"] > 0
 
 

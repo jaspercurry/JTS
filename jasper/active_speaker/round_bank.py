@@ -65,6 +65,11 @@ __all__ = [
     "bank_round",
     "bundle_session_id",
     "CAPTURE_RING_DIR",
+    "SKIP_NO_CAPTURED_AT",
+    "SKIP_NO_PHASE",
+    "SKIP_NO_WAV_PATH",
+    "SKIP_WAV_ESCAPES_BUNDLE",
+    "SKIP_WAV_MISSING",
 ]
 
 #: The on-box campaign home: banked rounds, one directory each. A sibling of
@@ -73,6 +78,11 @@ __all__ = [
 DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
 
 CAPTURE_RING_DIR = "ring"
+SKIP_NO_CAPTURED_AT = "no_captured_at"
+SKIP_NO_PHASE = "no_phase"
+SKIP_NO_WAV_PATH = "no_wav_path"
+SKIP_WAV_ESCAPES_BUNDLE = "wav_escapes_bundle"
+SKIP_WAV_MISSING = "wav_missing"
 
 REASON_NOT_A_BUNDLE = "not_a_bundle"
 REASON_ALREADY_BANKED = "already_banked"
@@ -218,7 +228,7 @@ def bundle_session_id(bundle_dir: Path) -> str:
     return session_id
 
 
-def _bank_capture_ring(bundle: Path, session_id: str) -> dict[str, Any]:
+def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> dict[str, Any]:
     from .crossover_v2.record_index import measurement_documents  # lazy: keep bank constants cheap
 
     ring = bundle / CAPTURE_RING_DIR
@@ -234,17 +244,17 @@ def _bank_capture_ring(bundle: Path, session_id: str) -> dict[str, Any]:
                 moment = moment.replace(tzinfo=timezone.utc)
             stamp = int(moment.timestamp() * 1e6)
         except (ValueError, OverflowError):
-            reason = "no_captured_at"
+            reason = SKIP_NO_CAPTURED_AT
         raw = document.get("wav_path")
         source = (bundle / str(raw or "")).resolve()
         if not row.phase:
-            reason = "no_phase"
+            reason = SKIP_NO_PHASE
         elif not isinstance(raw, str) or not raw:
-            reason = "no_wav_path"
+            reason = SKIP_NO_WAV_PATH
         elif not source.is_relative_to(bundle.resolve()):
-            reason = "wav_escapes_bundle"
+            reason = SKIP_WAV_ESCAPES_BUNDLE
         elif not source.is_file():
-            reason = "wav_missing"
+            reason = SKIP_WAV_MISSING
         if reason:
             skipped.append({"path": row.path, "reason": reason})
             continue
@@ -252,6 +262,7 @@ def _bank_capture_ring(bundle: Path, session_id: str) -> dict[str, Any]:
         stem = f"{stamp}_{Path(row.path).stem}"
         _link_or_copy(str(source), str(ring / "wav" / f"{stem}.wav"))
         sidecar = dict(document)
+        sidecar["setup_calibration_id"] = calibration_id
         identity = SessionIdentity(session_id=session_id)
         try:
             identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, row.session_id)
@@ -346,7 +357,8 @@ def bank_round(
                 shutil.copy2(source, target / name)
             else:
                 missing.append(name)
-        ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id)
+        calibration_id = str(((info.get("fingerprints") or {}).get("mic") or {}).get("calibration_id") or "")
+        ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {

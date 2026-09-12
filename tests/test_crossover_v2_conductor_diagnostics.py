@@ -16,7 +16,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_CORRECTION_ROLLBACK_FAILED
 from jasper.active_speaker.crossover_v2 import diagnostics
 from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
@@ -1007,16 +1006,7 @@ def test_measure_diag_logs_guard_field_on_sweep_schedule_fire(caplog):
 
 
 def test_verify_diag_logs_full_numbers_on_accept(caplog):
-    """The ``verify_diag`` line logs the full disclosure ON ACCEPT — accept
-    meaning VERIFY's OWN capture gate, asserted straight off the line's own
-    ``accepted=true`` field below.
-
-    This fixture is a raw ``ProgramAnalysis`` with no ``capture_integrity``
-    set (a "legacy-shaped" capture, see the ``pilot_transfer_db=null`` note
-    below), so it is unusable evidence for the ROUND (#2537): the overall
-    verdict is a refusal (untrusted evidence, no rollback anchor bound on
-    this bare conductor), asserted first so the numbers-disclosure claim below
-    it is not mistaken for "and therefore the round kept it"."""
+    """VERIFY discloses its numbers even when round trust cannot be established."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.verify = lambda program: ProgramAnalysis(
@@ -1035,9 +1025,7 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    # The round refuses (untrusted evidence, no rollback anchor) — #2537.
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
     assert fields["accepted"] == "true"
     assert fields["max_db_notch_excluded"] == "0.9"

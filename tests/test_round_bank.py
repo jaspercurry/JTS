@@ -35,6 +35,11 @@ from jasper.active_speaker.round_bank import (
     REASON_ALREADY_BANKED,
     REASON_NOT_A_BUNDLE,
     REASON_SESSION_UNFINISHED,
+    SKIP_NO_CAPTURED_AT,
+    SKIP_NO_PHASE,
+    SKIP_NO_WAV_PATH,
+    SKIP_WAV_ESCAPES_BUNDLE,
+    SKIP_WAV_MISSING,
     RoundBankError,
     bank_round,
 )
@@ -380,8 +385,9 @@ def test_banking_writes_the_ring_both_instruments_read(tmp_path, monkeypatch, fa
 
 
 @pytest.mark.parametrize("fault,reason", [
-    ("timestamp", "no_captured_at"), ("path", "no_wav_path"),
-    ("escape", "wav_escapes_bundle"), ("missing", "wav_missing"),
+    ("timestamp", SKIP_NO_CAPTURED_AT), ("phase", SKIP_NO_PHASE),
+    ("path", SKIP_NO_WAV_PATH), ("escape", SKIP_WAV_ESCAPES_BUNDLE),
+    ("missing", SKIP_WAV_MISSING),
 ])
 def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reason):
     session = _capture_bundle(tmp_path / "live", takes=(("take", "verify", "2026-08-31T00:19:52Z"),))
@@ -389,6 +395,8 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
     document = json.loads(take.read_text())
     if fault == "timestamp":
         document["captured_at"] = "invalid"
+    elif fault == "phase":
+        document.pop("phase")
     elif fault == "path":
         document.pop("wav_path")
     elif fault == "escape":

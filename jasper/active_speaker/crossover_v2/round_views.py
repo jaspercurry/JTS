@@ -801,7 +801,6 @@ def _banked_verify_curve(
 ) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
     """``((freqs_hz, measured_db), "")`` off the round's flow state, or
     ``(None, reason)``.
-
     """
     state_path = inputs.state_path
     if state_path is None or not state_path.is_file():

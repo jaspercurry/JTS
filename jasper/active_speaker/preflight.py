@@ -18,10 +18,9 @@ from .angle_capture import (
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.refusal_copy import REASON_REGISTRY
 from .measured_crossover_candidate import (
-    MeasuredCrossoverCandidate, candidate_room_peqs, candidate_trial_scope,
+    MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
-from .measurement_programs import baseline_scope
 from .plan_run import take_spl_ceiling
 from .seat_level_reference import AnchorFacts, LevelUnresolved, resolve_anchor_level
 
@@ -134,7 +133,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                 candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
             )
             prove_candidate_config(candidate, graph)
-            scopes[name] = candidate_trial_scope(candidate)
+            scopes[name] = "candidate"
         except ValueError as exc:
             add("measurement_candidate_invalid", f"{name}: {exc}")
 
@@ -165,8 +164,9 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
 
     schedule = tuple(
         ScheduledCapture(index + 1, pose.place, level, candidate_identity(pose.candidate_id), repeat,
-                         ("candidate_branches" if pose.regime == REGIME_BRANCHES else scopes.get(pose.candidate_id))
-                         if candidate_identity(pose.candidate_id) != BASE_CANDIDATE else baseline_scope(pose.purpose), pose.regime)
+                         ("candidate_branches" if pose.regime == REGIME_BRANCHES else
+                          scopes.get(pose.candidate_id) if pose.candidate_id else
+                          "candidate" if pose.plays_summed else "drivers"), pose.regime)
         for index, (pose, level, repeat) in enumerate(
             (pose, level, repeat)
             for pose in plan.stops

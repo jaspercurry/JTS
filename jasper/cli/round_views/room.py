@@ -2,7 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room views over the selected manifest set, below the round's ceiling."""
+"""The room, read off a round's seat-cube takes below the ceiling.
+
+* ``room-ceiling <round-dir>`` — where the room layer stops. Writes
+  ``room_ceiling.json``.
+* ``room-median <round-dir>`` — the cube's median, spread and per-position
+  deviation, 20 Hz to the ceiling. Writes ``room_median.json``.
+* ``room-persistence <round-dir>`` — which peaks and dips hold across the
+  cube, and at what fraction of positions. Writes ``room_persistence.json``.
+
+The reading is :mod:`jasper.active_speaker.crossover_v2.room_views`'; this is
+its door. The ceiling is read from the round's own applied profile (the banked
+copy for a banked round, the box's for a live bundle) unless
+``--applied-profile`` names another.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +47,7 @@ from ._common import (
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
     _write,
-    answer,
+    add_set_argument, answer,
     default_out,
     refused_by_name, resolve_set,
 )
@@ -184,6 +197,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "--applied-profile", default=None, metavar="PATH",
             help="read the ceiling from this applied profile instead of the round's own",
         )
-        parser.add_argument("--set", help="set in the run manifest")
+        add_set_argument(parser)
         parser.add_argument("--out", default=None, help="write the result here")
         parser.set_defaults(func=func)
