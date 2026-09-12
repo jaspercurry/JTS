@@ -709,7 +709,6 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
         },
     })
     assert env["screen"] == "verify_fail"
-    # The household still reads the honest reason and still has the way back.
     assert env["verdict_text"] == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )

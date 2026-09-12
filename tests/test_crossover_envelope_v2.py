@@ -2314,11 +2314,6 @@ def test_verify_fail_one_default_screen():
     assert env["next_action"]["label"] == "Try again"
     expert = [a for a in env["alternate_actions"] if a.get("expert")]
     assert [a["id"] for a in expert] == ["verify_remeasure"]
-    # W6.12: the way back and Re-measure must survive the JS action-row's
-    # capture-in-flight gate (a real window right after a failed capture,
-    # before the phone side has fully wound down) — the same show_during_capture
-    # escape hatch W6.10 gave the review screen's Apply. "Try again" starts a
-    # brand new capture session, so it deliberately does NOT carry the flag.
     way_back = next(
         a for a in env["alternate_actions"] if a["id"] == "apply_previous"
     )
@@ -4125,7 +4120,7 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
     way_back = [a for a in offered if a["id"] == "apply_previous"]
     assert len(way_back) == 1
     assert way_back[0]["endpoint"] == "/sound/speaker/crossover/v2/apply"
-    assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
+    assert way_back[0]["body"] == {"expected_candidate_fingerprint": _WAY_BACK_FP}
     # Survives the JS capture-in-flight gate (W6.12): a get-me-out affordance
     # must stay visible while a failed capture is still winding down.
     assert way_back[0]["show_during_capture"] is True
@@ -4188,7 +4183,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
             "id": "apply_previous",
             "label": "Go back to the previous tuning",
             "endpoint": "/sound/speaker/crossover/v2/apply",
-            "body": {"fingerprint": _WAY_BACK_FP},
+            "body": {"expected_candidate_fingerprint": _WAY_BACK_FP},
             "show_during_capture": True,
         },
     ]
@@ -4213,7 +4208,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
     ))
     assert [a for a in second["alternate_actions"]
             if a["id"] == "apply_previous"][0]["body"] == {
-        "fingerprint": _WAY_BACK_FP,
+        "expected_candidate_fingerprint": _WAY_BACK_FP,
     }
     # The live verify-fail screen shares the same factory, so it is covered
     # by the same guarantee.
@@ -4224,7 +4219,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
     ))
     assert [a for a in live["alternate_actions"]
             if a["id"] == "apply_previous"][0]["body"] == {
-        "fingerprint": _WAY_BACK_FP,
+        "expected_candidate_fingerprint": _WAY_BACK_FP,
     }
 
 

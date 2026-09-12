@@ -1183,6 +1183,7 @@ def _frozen_applied_profile(
         # view that dropped it would describe a measured profile unable to
         # name its own measured groups.
         "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
+        "trial_verification": applied.get("trial_verification"),
         # Layer-1a driver linearization (#1668 PR-D). Mirrors "corrections"'s
         # own top-level convenience copy — the authoritative copy consumed by
         # recompose_applied_baseline_yaml lives inside recomposition_snapshot

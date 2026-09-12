@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.program_analysis import CaptureIntegrity, IntegrityCheck, MeasurementGeometry, analyze_program_capture
@@ -18,7 +20,7 @@ from ..commissioning_evidence_store import EVIDENCE_ROOT, CommissioningEvidenceS
 from ..flat_spec import FlatSpecReport, evaluate_flat_spec
 from ..measured_crossover_candidate import MeasuredCrossoverCandidate
 from ..run_manifest import RUN_MANIFEST_FILENAME, TAKE_MEASURED
-from .contracts import VERIFY_TOLERANCE_DB, CaptureValidity
+from .contracts import VERIFY_TOLERANCE_DB, BenefitStatus, CaptureValidity, RealizationStatus, SpecStatus
 from .record_index import reopen_measurement_capture
 from .round_evidence import MEASURED_BENEFIT_MARGIN_DB, EntryBaseline, benefit_comparands, measured_response_from_analysis
 from .round_inputs import iter_round_sessions, round_artifact_dir
@@ -30,7 +32,7 @@ from .verification import (
 
 def candidate_trial_manifest(fingerprint: str, profile: Mapping[str, Any]) -> dict[str, Any] | None:
     graph = str((profile.get("config") or {}).get("sha256") or "")[:16]
-    found: list[tuple[bool, float, dict[str, Any]]] = []
+    found: list[tuple[bool, bool, float, dict[str, Any]]] = []
     for bundle in iter_round_sessions(bundles.sessions_dir() / "apply"):
         directory, _ = round_artifact_dir(bundle)
         if directory is None:
@@ -43,10 +45,10 @@ def candidate_trial_manifest(fingerprint: str, profile: Mapping[str, Any]) -> di
                 if basis.get("candidate_id") == fingerprint and basis.get("role") == "summed":
                     trial = {**document, "set": group, "bundle": str(bundle), "manifest_path": str(path)}
                     found.append((document.get("status") == "complete" and basis.get("submitted_graph_fingerprint") == graph,
-                                  path.stat().st_mtime, trial))
+                                  trial_is_intact(trial), path.stat().st_mtime, trial))
         except (OSError, ValueError, TypeError, AttributeError):
             continue
-    return max(found, key=lambda row: row[:2])[2] if found else None
+    return max(found, key=lambda row: row[:-1])[-1] if found else None
 
 
 def trial_records(trial: Mapping[str, Any]):
@@ -94,7 +96,7 @@ def verification_disclosure(
     takes = []
     for take, record, wav in trial_records(trial):
         raw_integrity = record.get("capture_integrity") or {}
-        integrity = CaptureIntegrity(checks=tuple(IntegrityCheck(**check) for check in raw_integrity.get("checks", ())))
+        integrity = CaptureIntegrity(checks=tuple(IntegrityCheck(**check) for check in raw_integrity.get("checks", ()))) if raw_integrity else None
         capture = evaluate_capture_validity(integrity)
         realization = evaluate_realization(tracking=record.get("verify_tracking"), tolerance_db=VERIFY_TOLERANCE_DB)
         raw_spec = record.get("spec_report") or {}
@@ -114,8 +116,8 @@ def verification_disclosure(
                 realization = evaluate_realization(tracking=analysis.verify_tracking, tolerance_db=VERIFY_TOLERANCE_DB)
                 post = measured_response_from_analysis(analysis, reference_mark=str(take.get("pose_index", "")))
                 if post is not None:
-                    spec = evaluate_spec(evaluate_flat_spec(post.curve.freqs_hz, post.curve.magnitude_db,
-                                                           exclusion_mask=post.excluded))
+                    spec = evaluate_spec(evaluate_flat_spec(np.asarray(post.curve.hz), np.asarray(post.curve.db),
+                                                           exclusion_mask=np.asarray(post.excluded)))
             except (ValueError, KeyError, OSError) as exc:
                 analysis_error = type(exc).__name__
         before, after = benefit_comparands(baseline=baseline.as_measurement() if baseline else None, post=post)
@@ -123,13 +125,19 @@ def verification_disclosure(
         if reuse:
             evidence = previous["speaker_evidence"]
             capture = Verdict(CaptureValidity(evidence["capture_validity"]), "speaker_trial_reused", evidence)
-            realization = Verdict(type(realization.status)(evidence["realization"]), "speaker_trial_reused", evidence)
+            realization = Verdict(RealizationStatus(evidence["realization"]), "speaker_trial_reused", evidence)
         result = verification_result(capture=capture, realization=realization, benefit=benefit, spec=spec)
         takes.append({"take_id": take["take_id"], **result.to_dict(), "analysis_error": analysis_error})
-    # Preserve every take's advice; disagreement is explicit, never a selected best take.
-    dimensions = {key: next(iter(values)) if len(values) == 1 else "mixed"
-                  for key in ("capture_validity", "realization", "benefit", "spec")
-                  for values in ({row[key] for row in takes},)}
+    def set_verdict(key, priority):
+        return Verdict(next(status for status in priority if any(row[key] == status.value for row in takes)),
+                       "trial_set", {"takes": [row["take_id"] for row in takes]})
+
+    dimensions = verification_result(
+        capture=set_verdict("capture_validity", (CaptureValidity.UNUSABLE, CaptureValidity.USABLE)),
+        realization=set_verdict("realization", (RealizationStatus.FAILED, RealizationStatus.UNAVAILABLE, RealizationStatus.MATCHED)),
+        benefit=set_verdict("benefit", (BenefitStatus.REGRESSED, BenefitStatus.INDETERMINATE, BenefitStatus.IMPROVED)),
+        spec=set_verdict("spec", (SpecStatus.FAILED, SpecStatus.UNEVALUABLE, SpecStatus.PASSED)),
+    ).to_dict()
     speaker_evidence = previous["speaker_evidence"] if reuse else {
         **{key: dimensions[key] for key in ("capture_validity", "realization")},
         "candidate_fingerprint": candidate.fingerprint, "manifest_path": trial["manifest_path"],

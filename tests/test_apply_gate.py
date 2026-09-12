@@ -45,7 +45,7 @@ def apply_facts(tmp_path, monkeypatch):
     (None, None), ("unbanked", "not_found"), ("partial", "candidate_trial_required"),
     ("integrity", "candidate_trial_evidence_invalid"), ("identity", "candidate_fingerprint_mismatch"),
     ("layers", "baseline_graph_safety_proof_failed"), ("graph", "candidate_trial_graph_mismatch"),
-    ("wav", "candidate_trial_evidence_invalid"),
+    ("wav", "candidate_trial_evidence_invalid"), ("second_take", "candidate_trial_evidence_invalid"),
 ])
 def test_apply_preconditions_fail_independently(apply_facts, fault, code):
     candidate, bank, trial = apply_facts
@@ -56,6 +56,10 @@ def test_apply_preconditions_fail_independently(apply_facts, fault, code):
         trial["status"] = "partial"
     elif fault == "integrity":
         trial["set"]["takes"][0]["quality"]["status"] = "refused"
+    elif fault == "second_take":
+        failed_take = copy.deepcopy(trial["set"]["takes"][0])
+        failed_take["quality"]["status"] = "refused"
+        trial["set"]["takes"].append(failed_take)
     elif fault == "identity":
         candidate = replace(candidate, expected_fingerprint="0" * 64)
     elif fault == "layers":
@@ -74,3 +78,56 @@ def test_apply_preconditions_fail_independently(apply_facts, fault, code):
     if issues:
         assert issues[0].next_action == REASON_REGISTRY[code].next_action
         assert issues[0].next_action
+
+
+@pytest.mark.parametrize("tracking,expected", [([0., 99.], "failed"), ([0., None], "unavailable")])
+def test_multi_take_advice_survives_speaker_evidence_reuse(apply_facts, tracking, expected):
+    from jasper.active_speaker.crossover_v2.apply_evidence import verification_disclosure
+
+    candidate, _, _ = apply_facts
+    bank_trial(candidate.measured, candidate.profile, candidate.topology, record_fields=[
+        {"verify_tracking": {"max_db_notch_excluded": value}} for value in tracking
+    ])
+    trial = candidate_trial_manifest(candidate.measured.fingerprint, candidate.profile)
+    advice = verification_disclosure(candidate.measured, trial, None, profile=candidate.profile)
+    assert advice["realization"] == expected
+    assert len(advice["takes"]) == 2
+    applied = {**candidate.profile, "trial_verification": advice}
+    room = copy.deepcopy(candidate.profile)
+    room["recomposition_snapshot"]["room_correction"] = {"changed": True}
+    reused = verification_disclosure(candidate.measured, trial, applied, profile=room)
+    assert reused["speaker_evidence_reused"]
+    assert reused["realization"] == expected
+    assert reused["layers_changed"] == ["room"]
+
+
+def test_an_intact_trial_remains_usable_after_a_damaged_repeat(apply_facts):
+    from pathlib import Path
+
+    candidate, bank, original = apply_facts
+    bundle, _ = bank_trial(candidate.measured, candidate.profile, candidate.topology)
+    (bundle / "capture.wav").write_bytes(b"damaged")
+    selected = candidate_trial_manifest(candidate.measured.fingerprint, candidate.profile)
+    assert Path(selected["bundle"]) == Path(original["bundle"])
+    assert apply_preconditions(candidate, bank, selected, None) == ()
+
+
+def test_trial_wav_is_graded_at_apply_time(apply_facts):
+    import io
+    import numpy as np
+    from scipy.io import wavfile
+    from jasper.audio_measurement.program import build_verify_program, render_program_pcm
+    from jasper.active_speaker.crossover_v2.apply_evidence import verification_disclosure
+
+    candidate, _, _ = apply_facts
+    program = build_verify_program(1600., sweep_s=0.6)
+    samples = np.concatenate((np.zeros(800), render_program_pcm(program)[:, 0], np.zeros(5000)))
+    buffer = io.BytesIO()
+    wavfile.write(buffer, program.sample_rate_hz, samples.astype(np.float32))
+    bank_trial(candidate.measured, candidate.profile, candidate.topology,
+               record_fields={"program": program.to_dict()}, wav_bytes=buffer.getvalue())
+    trial = candidate_trial_manifest(candidate.measured.fingerprint, candidate.profile)
+    advice = verification_disclosure(candidate.measured, trial, None, profile=candidate.profile)
+    assert advice["takes"][0]["analysis_error"] is None
+    assert advice["capture_validity"] == "usable"
+    assert advice["spec"] == "passed"

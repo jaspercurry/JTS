@@ -277,7 +277,7 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
 def _stub_restore_doors(monkeypatch) -> list[int]:
     """Expose the operator's restore doors and count every apply attempt."""
     from jasper.web import correction_crossover_backend
-    from jasper.web import correction_crossover_v2_republish as republish_door
+    from jasper.web import correction_crossover_v2_status as v2status
 
     attempts: list[int] = []
 
@@ -291,15 +291,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
         lambda *a, **k: None,
     )
 
-    def _preflight(fingerprint: str) -> str | None:
-        return None if fingerprint == _PREVIOUS_CANDIDATE_FINGERPRINT else "not_found"
-
-    monkeypatch.setattr(republish_door, "republish_preflight", _preflight)
-
-    def _republish(raw: Any, **_kwargs: Any) -> dict[str, Any]:
-        if str(raw.get("fingerprint") or "") != _PREVIOUS_CANDIDATE_FINGERPRINT:
-            raise v2host.CrossoverV2Refused("that candidate cannot be republished")
-        return {"status": "republished"}
+    monkeypatch.setattr(v2status, "_offerable_previous_candidate", lambda state: _PREVIOUS_CANDIDATE_FINGERPRINT)
 
     def _apply(raw: Any, _run_async: Any, _camilla: Any, *, status: Any,
                ) -> dict[str, Any]:
@@ -312,7 +304,6 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
             )
         return {"status": "applied"}
 
-    monkeypatch.setattr(republish_door, "handle_v2_republish", _republish)
     monkeypatch.setattr(v2host, "handle_v2_apply", _apply)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", _status)
     return attempts

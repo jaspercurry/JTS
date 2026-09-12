@@ -76,11 +76,6 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # transport death (``capture_timeout``). Terminal: a play-time refusal is a bug,
 # a tampered readback, or a genuinely infeasible profile.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
-# #2059: a plan-shape request the household's link/client sent that this build
-# does not recognize -- an unknown tier, or a position count outside its
-# tier's range. Owner ruling (2026-08-13): distinct from
-# ``program_unplayable`` -- that copy's "re-check the driver details" advice
-# is a loose fit for a malformed request, which no driver recheck fixes.
 REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
 # The main fader was not at the volume this session declared when a stimulus
 # was about to play, and re-asserting it could not be proven. The program was
@@ -162,14 +157,6 @@ REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 # escape with the volume active and the phone frozen. Terminal.
 REASON_INTERNAL_ERROR = "internal_error"
 REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
-# The SAME out-of-tolerance observation, once a second graded attempt has shown
-# it REPEATS. When consecutive attempts agree inside the instrument's own
-# repeat floor the mismatch is a FINDING about the speaker, and every further
-# retry re-measures the same applied graph into the same answer. Terminal
-# (budget 0, so ``NON_RETRIABLE_CODES``), on the same "deterministic ⇒
-# terminal" rule the two codes above state. Renders through the SAME
-# ``verify_fail`` template as its siblings — one more parameterization of that
-# screen, not a new screen.
 REASON_VERIFY_DETERMINISTIC_MISMATCH = "verify_deterministic_mismatch"
 # §5.2's "inconclusive — re-verify" verdict: VERIFY's own detected first
 # reflection forced a shorter gate than MEASURE's, so the overlay difference is

@@ -2888,7 +2888,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     """Compute the stage-2 openability DISCLOSURE for the REVIEW screen (D3).
 
     Runs ``resolve_conductor_context`` — the SAME fail-closed predicate the
-    apply transaction re-runs in :func:`_assert_stage_2_can_open` and stage 2
+    stage 2
     itself will run, never a cheaper lookalike free to disagree with either —
     and stamps the refusal's own sentence under ``STAGE2_PREFLIGHT_KEY`` for
     the envelope to render as a warning. It does NOT gate the Apply control;
@@ -3986,59 +3986,6 @@ def prepare_v2_session(
 # --------------------------------------------------------------------------- #
 
 
-def _assert_stage_2_can_open(status: Mapping[str, Any]) -> None:
-    """Refuse an apply this speaker could not then verify (D3, PR-T3's half).
-
-    The pre-POST half of the stage-2 openability preflight. PR-T2 shipped the
-    render-time half — the review screen disables Apply and shows the refusal's
-    own sentence — and deliberately left this one to T3, because until T3
-    removed auto-apply ``handle_v2_apply`` was ALSO the automatic path and a
-    refusal here would have newly refused a shipped automatic flow.
-
-    It closes the hole work-order premise 5 was hiding: a verify-only prepare
-    reaches ``resolve_conductor_context(status)``, which is fail-closed and
-    carries seven refusal sites of its own plus
-    ``ensure_crossover_preview_ready()``'s. So a box can be applied and still
-    be unable to open stage 2 — the household applies, stage 2 refuses at open,
-    and the speaker sits corrected with no verdict. That applied-and-ungraded
-    end state is the one this whole work order exists to eliminate.
-
-    **The SAME predicate the render-time half runs and stage 2 itself will
-    run**, not a cheaper lookalike free to disagree with either. A disabled
-    control is not a security boundary — a stale page, a second tab, or a
-    direct POST all reach this endpoint — so the screen's honesty layer and
-    this refusal are two halves of one guarantee, and neither is redundant.
-
-    Fail-closed in both directions: an unexpected exception refuses too,
-    because "we could not check" and "we checked and it is fine" must never
-    produce the same outcome on the one action that touches the speaker.
-    """
-    try:
-        resolve_conductor_context(status)
-    except CrossoverV2Refused as exc:
-        log_event(
-            logger,
-            "correction.crossover_v2_apply_stage2_preflight_refused",
-            level=logging.WARNING,
-            reason=str(exc),
-        )
-        raise CrossoverV2Refused(
-            f"{exc} Applying now would leave this speaker corrected but "
-            "unchecked, so the apply was not run."
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 — fail closed, see the docstring
-        log_event(
-            logger,
-            "correction.crossover_v2_apply_stage2_preflight_failed",
-            level=logging.ERROR,
-            error_type=type(exc).__name__,
-        )
-        raise CrossoverV2Refused(
-            "the speaker could not confirm it is ready to check this "
-            "correction afterwards, so the apply was not run"
-        ) from exc
-
-
 def handle_v2_apply(
     raw: Mapping[str, Any],
     run_async: Any,
@@ -4151,7 +4098,10 @@ def handle_v2_apply(
             raise _saved_not_applied(exc) from exc
         raise
     if not (reviewed_baseline.get("config") or {}).get("sha256"):
-        return {"status": "blocked", "profile": reviewed_baseline, "apply": None, "issues": reviewed_baseline.get("issues", [])}
+        issue = _blocking_apply_issue(reviewed_baseline)
+        _persist_apply_blocked(issue)
+        return {"status": "blocked", "profile": reviewed_baseline, "apply": None,
+                "issues": reviewed_baseline.get("issues", []), "issue": issue}
     manifest = candidate_trial_manifest(expected, reviewed_baseline)
     issues = apply_preconditions(
         ApplyGraph(reviewed_baseline, topology, candidate, expected), banked, manifest,

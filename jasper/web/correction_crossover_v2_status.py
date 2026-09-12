@@ -8,7 +8,7 @@ The derivations live in
 :mod:`jasper.active_speaker.crossover_envelope_v2`'s status-projection
 section, which may not import this layer. This module supplies the answers
 only the web host holds — the loaded state, the volume plan, the review
-decision, the republish door's admission — and shapes what comes back into
+decision, the banked candidate — and shapes what comes back into
 ``status["crossover_v2"]``.
 
 The host (:mod:`jasper.web.correction_crossover_v2`) is reached through the

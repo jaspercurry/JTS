@@ -81,7 +81,7 @@ band supports the claim. Choose the order from the next question.
 8. **Decide.** Compare measured outcomes for the stated goal. Finish with the
    least-bad measured candidate, or compile another candidate and reuse the same
    measurement tools. The latest round may already supply enough evidence.
-9. **Adopt when chosen.** `jasper-round apply --expected-fingerprint <fp>` is
+9. **Adopt when chosen.** `jasper-round apply <fp>` is
    explicit persistence of the selected candidate. If a later capture would
    answer a remaining question, start another `jasper-round run`.
 
@@ -120,10 +120,9 @@ Author the `driver` section against the current round's evidence; its judge
 checks each filter again. Filters are not copied from other candidates.
 A new composition is unmeasured; measure its complete graph.
 
-`jasper-round apply --expected-fingerprint <fp>` selects a banked same-design
-candidate when needed, then uses the normal apply path. An authored candidate
-needs an intact capture of its own complete graph. Selecting it does not copy
-its parents' measurement claims. The basic
+`jasper-round apply <fp>` applies a banked candidate with a complete, intact
+trial of its exact graph. The saved trial advice reports capture validity,
+realization, benefit and specification, plus which layers changed. The basic
 profile has its own explicit `jasper-basic-profile review|apply` door; replacing
 a saved tune is not necessary just to make a temporary baseline measurement.
 
@@ -278,7 +277,7 @@ higher-frequency deficits need separate speaker-informed evidence. In order:
    disclose their level alignment and capture compatibility. A regressed band
    is a disclosure; restore follows the same adoption path.
 7. Save the chosen measured candidate through `jasper-round apply
-   --expected-fingerprint <fingerprint>`; inspect the saved stack and its evidence links.
+   <fingerprint>`; inspect the saved stack and its evidence links.
    Confirm that Speaker filters and alignment remain as accepted. Use
    [Evidence and recovery](#evidence-and-recovery) to resume or restore.
 
@@ -325,7 +324,7 @@ Room peaks in Room before fitting extension.
    varying-demand signal, a full-band capture and listening for transitions.
    Record the tested levels, positions, gain and harmonic tradeoffs. Uncertain
    results suggest a next measurement, not a physical output limit.
-5. Save the chosen measured candidate with `jasper-round apply --expected-fingerprint
+5. Save the chosen measured candidate with `jasper-round apply
    <fingerprint>`. Check the saved Speaker and Room layers, normal playback,
    restored volume and microphone position. Reuse sufficient existing evidence;
    another full round is optional. Recovery uses the shared section below.
@@ -476,7 +475,7 @@ browser wizard — its steps are the CLI walk above.
 
 Backend paths in tool output use `127.0.0.1:8770` on the Pi. Through nginx,
 prefix crossover paths with `/sound/speaker`, for example
-`POST https://<speaker>/sound/speaker/crossover/v2/republish`.
+`POST https://<speaker>/sound/speaker/crossover/v2/apply`.
 The laptop runner resolves `.env.local`; `--hostname` selects an explicit host.
 
 ## Debugging — where to look first
