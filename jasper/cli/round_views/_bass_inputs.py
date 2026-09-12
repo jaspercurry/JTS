@@ -21,7 +21,7 @@ from ._common import ARTIFACT_BY_VIEW, RoundInputs, RoundSetRefused, SetTakes, d
 
 
 def compare_sets(inputs: RoundInputs, args) -> tuple[dict[str, Any], Path]:
-    set_ids = args.set or ()
+    set_ids: list[str] = args.set or []
     if len(set_ids) != 2:
         raise CrossoverV2Refused(code="bass_fit_pairs_unavailable")
     sets = {row["set_id"]: SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
