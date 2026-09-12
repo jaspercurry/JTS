@@ -608,7 +608,22 @@ async def _measure(
     mic_serial: str | None = None,
     volume_db: float | None = None,
 ) -> dict[str, Any]:
-    """Measure a spec batch at one microphone placement."""
+    """Open the door once, run the plan through it, close, and report.
+
+    The spec batch is the plan at one placement. Its loop is
+    :mod:`~jasper.active_speaker.plan_run`'s, so what ends a run and what a take
+    reports have one owner.
+
+    One session hold for the whole batch: the physical cost is the microphone
+    move, and the graph's variant emit-cache makes each swap a single
+    ``SetConfig``. The engine's give-back runs inside the door's, so the door's
+    ``finally`` finds idempotent no-ops and lands the durable snapshot last.
+
+    The bundle is opened INSIDE the door, and that ordering is a safety
+    property: ``open_bundle`` marks every prior ``open`` bundle ``abandoned``,
+    stripping retention protection off a wizard session's evidence — doing that
+    before the interlock would hit a LIVE session and then be refused.
+    """
     from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints  # lazy: measurement stack
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
     from jasper.active_speaker.bundles import mark_state, open_bundle

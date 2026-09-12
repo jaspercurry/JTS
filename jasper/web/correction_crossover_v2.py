@@ -82,6 +82,7 @@ from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures, spl_watch
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
+from jasper.active_speaker.grade_coverage import REASON_APPLIED_GRADE_MARK_ONLY
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
@@ -1389,11 +1390,7 @@ def reconcile_session_volume_for_new_session(
 # an unknown state must degrade to "not graded" rather than to a crash.
 GRADE_NOT_APPLIED = "not_applied"
 GRADE_GRADED = "graded"
-# Express's passing grade. Distinct from GRADE_GRADED so a `/state` reader can
-# tell the two claims apart WITHOUT cross-referencing `tier` (PR-L4 review):
-# express verifies at the mark only — it never walks a post-apply position
-# group — so "graded" and "confirmed at one spot" are materially different
-# promises and were rendering as the same word.
+# A local pass is distinct from a spatial grade (#2098).
 GRADE_MARK_VERIFIED = "mark_verified"
 GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
@@ -1409,12 +1406,10 @@ GRADE_TUNING_TRIAL_MEASURED = "tuning_trial_measured"
 #
 # ``state`` above answers "was it checked". These answer the two questions a
 # surface needed and had to guess at: how WIDE is the evidence behind that
-# answer, and does that width meet what the commission tier promised.
+# answer, and does that width meet what the run asked for.
 # --------------------------------------------------------------------------- #
 
-#: How far the evidence behind ``state`` reaches. Never a tier — a tier is what
-#: was PROMISED, this is what was DELIVERED, and conflating them is the #2098
-#: defect (a Full session's mark-only pass rendered as the full claim).
+#: Delivered coverage, compared below with the run's asked poses (#2098).
 GRADE_SCOPE_NONE = "none"
 GRADE_SCOPE_MARK = "mark"
 GRADE_SCOPE_SPATIAL = "spatial"
@@ -1468,8 +1463,65 @@ def _spatial_grade(post_apply: Any) -> str:
     return GRADE_SPATIAL_FAILED
 
 
-def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
-    """Report measured grade and coverage; missing coverage stays unknown (ADR-0298)."""
+def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = False) -> dict[str, Any]:
+    """Was the correction now ON the speaker ever checked after it landed?
+
+    **Applied implies graded** (linearization-integrity PR-L4 item 4). A
+    session can end ``applied: true`` with no passing post-apply grade — VERIFY
+    inconclusive, VERIFY failed and never retried, or a session that simply
+    stopped after the apply — and before this the only trace was a phase name
+    and an empty ``verify`` block that every surface read as "nothing to
+    report". That is how a 10 dB-dark profile sat on JTS3 with a green tick
+    over it.
+
+    **Surface, not auto-restore.** The work order allowed either; this is the
+    deliberate choice and the reason is that the two failure modes are not
+    distinguishable at this seam. A missing grade means "we do not know", and
+    the commonest way to reach it is a household that closed the phone after
+    the apply — auto-restoring would silently undo a correction that is very
+    probably fine, on evidence that says nothing about the correction at all.
+    The way back already exists on the done screen,
+    and it is the household's call. What was missing is being told.
+
+    The returned ``state`` is one of the ``GRADE_*`` constants above;
+    ``graded`` answers only "was it checked" — since R19 it is no longer a
+    boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
+    ``complete`` below carry the verdict it cannot. Both a passing VERIFY
+    outcome and a graded post-apply cloud count — either instrument is a real
+    check. A mark-VERIFY that
+    FAILED caps ``state`` whatever the cloud group says (#2464); the
+    derivation below owns that rule and states why.
+
+    **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
+    answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
+    three are why this returns more than a state name. ``state`` alone cannot
+    carry either fact, and both were being guessed at downstream:
+
+    * a run that asked for poses beyond the mark but whose post-apply group
+      never closed reaches ``mark_verified`` — a true local result, short of
+      what its plan asked. It rendered as "applied and graded".
+    * a post-apply group that closed with ``overall_within_target=False`` reaches
+      ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
+      rendered as "applied and graded" — measured on jts3 2026-08-07, a
+      −4.63 dB spatial miss under a green tick.
+
+    ``scope`` is what the evidence DELIVERED; the persisted run manifest's
+    asked poses state what the run PROMISED. ``complete`` compares the two,
+    so the wizard, ``/state`` and doctor do not each derive that fact. Records
+    without a plan retain delivery-only grading (ADR-0298): an old session
+    never made a spatial promise merely because a later build knows one.
+
+    ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
+    the doctor's cloud-pipeline line prints, never re-derived, so "the grade
+    failed" and "by how much" cannot drift apart. ``None`` whenever the gauge
+    reports no number, including a failed grade whose gauge is absent.
+
+    **Grades and discloses; never gates** (#2160 ruling). A failed spatial
+    grade is a COMPLETED grade: the session completes, the applied tune stays,
+    the failure is loud. Nothing here reverts anything — see the
+    surface-not-auto-restore paragraph above, which this extends rather than
+    revisits.
+    """
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
@@ -1667,9 +1719,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     elif no_claim_graded:
         state = GRADE_INCONCLUSIVE
     elif outcome == "pass":
-        # Verified at the mark only. On express that is the whole grade by
-        # design; on full it means VERIFY passed but the post-apply group has
-        # not closed yet.
+        # Completeness below compares this measured scope with the asked poses.
         state = GRADE_MARK_VERIFIED
     else:
         state = GRADE_UNVERIFIED
@@ -1683,7 +1733,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         scope = GRADE_SCOPE_MARK
     else:
         scope = GRADE_SCOPE_NONE
-    complete = scope != GRADE_SCOPE_NONE
+    complete = scope == GRADE_SCOPE_SPATIAL if spatial_required else scope != GRADE_SCOPE_NONE
     flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
     flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
@@ -1705,6 +1755,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
             if spatial == GRADE_SPATIAL_FAILED else None
         ),
         "complete": complete,
+        **({"reason": REASON_APPLIED_GRADE_MARK_ONLY} if scope == GRADE_SCOPE_MARK and not complete else {}),
         "improvement_db": improvement_db,
         "tracking_passed": True if tracking_status == CLAIM_PASS else False if tracking_status == CLAIM_FAIL else None,
         "absolute_passed": True if absolute_status == CLAIM_PASS else False if absolute_status == CLAIM_FAIL else None,
@@ -3619,21 +3670,10 @@ VERIFY_STAGE_RECOVERY = "recovery"
 
 
 def _verify_plan_shape(
-    raw: Mapping[str, Any] | None, state: Mapping[str, Any] | None,
+    raw: Mapping[str, Any] | None,
 ) -> Any:
-    """Resolve the post-apply plan shape, or ``None`` for the 1-entry recovery.
-
-    Explicit rather than inferred. A shape could be guessed from the durable
-    state (has VERIFY been walked? has it been accepted?), but every such
-    inference has a case where it silently downgrades Full's multi-position
-    post-apply walk to one sweep — a household who opened stage 2 and let the
-    link expire before the first capture would get the recovery instrument on
-    their next tap and lose the spatial "after" evidence with no way to know.
-    The caller says which instrument it wants; the tier still comes from the
-    durable state, so the household's tier choice governs both stages.
-    """
+    """The caller chooses a full post-apply walk or one recovery sweep."""
     from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
-    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
     stage = str((raw or {}).get(VERIFY_STAGE_KEY) or VERIFY_STAGE_RECOVERY).strip()
     if stage == VERIFY_STAGE_RECOVERY:
@@ -3643,10 +3683,7 @@ def _verify_plan_shape(
             f"unknown verify stage {stage!r} (expected "
             f"{VERIFY_STAGE_POST_APPLY!r} or {VERIFY_STAGE_RECOVERY!r})"
         )
-    try:
-        return resolve_plan_shape()
-    except CrossoverV2FlowError as exc:
-        raise refused_from_flow_error(exc) from exc
+    return resolve_plan_shape()
 
 
 def prepare_v2_session(
@@ -3710,7 +3747,7 @@ def prepare_v2_session(
             str(candidate_state.get("fingerprint") or "")
             if isinstance(candidate_state, Mapping) else ""
         )
-        plan_shape = _verify_plan_shape(raw, state)
+        plan_shape = _verify_plan_shape(raw)
         context = resolve_conductor_context(status)
     else:
         from jasper.active_speaker.branch_chain import confirmed_protection_sections

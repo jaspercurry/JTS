@@ -125,10 +125,9 @@ def spl_watch(
 
 
 def request_fingerprint(request: AngleCaptureRequest) -> str:
-    """This walk's identity: sha256 over the document the spool banks it as.
+    """This walk's identity: sha256 over ``AngleCaptureRequest.to_dict()``.
 
-    Asked of :func:`~.angle_capture_spool.angle_request_document` so a run's
-    manifest names the same shape a staged walk has on disk, minus the clock --
+    The inline plan and manifest use the same document without a clock, so
     two runs of one walk fingerprint alike, and an edited stop does not.
     """
     return json_fingerprint(request.to_dict())

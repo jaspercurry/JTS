@@ -2,7 +2,37 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bank a completed run and its program bookkeeping views."""
+"""Bank one live commissioning session into the on-box campaign home.
+
+The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
+on the box itself so a round outlives session retention (#3498, #2882). It is
+the tree
+:func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
+reads, plus the two files this path derives for whoever opens the round
+directory next::
+
+    <campaign-root>/<round-id>/
+      bundle/<session-id>/...    the live session bundle, hard-linked
+      state.json                 crossover-v2 flow state (optional)
+      design-draft.json          active-speaker design draft (optional)
+      applied-profile.json       applied baseline profile SSOT (optional)
+      repeat-floor.json          measured repeat floor SSOT (optional)
+      declared-geometry.json     declared rig geometry SSOT (optional)
+      position_cycle.json        which take was measured at which pose,
+                                 derived here from the bundle (optional)
+      bundle/<session-id>/ring/  capture sidecars and hard-linked WAVs
+      provenance.json            when it was banked, off which build
+
+``provenance.json``'s key set is owned here: ``banked_at_utc`` is spelled and
+formatted as ``scripts/bank-crossover-round.sh`` writes it, and each path adds
+only what it alone knows. Nothing here evicts — the campaign store is
+operator-pruned.
+
+The banked names and their SSOT paths belong to the reader
+(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`) and are imported
+inside the function that needs them, so importing this module for
+:data:`DEFAULT_CAMPAIGN_ROOT` alone stays cheap.
+"""
 
 from __future__ import annotations
 
@@ -279,6 +309,32 @@ def bank_round(
     declared_geometry_path: Path | None = None,
     statefile_path: Path | None = None,
 ) -> BankedRound:
+    """Bank one live session bundle and its SSOT documents into the campaign home.
+
+    The bundle is hard-linked in, not copied byte-for-byte (falling back to a
+    copy across a filesystem boundary or when hard-link permissions deny it) — see :func:`_link_or_copy`.
+
+    Returns the banked round directory and the ``provenance.json`` payload
+    written beside the bundle: when it was banked, which session it came from,
+    and the installed build's SHA (``None`` with ``git_absent`` when the box
+    records none).
+
+    The pose index is derived from the bundle just banked (:func:`_index_poses`)
+    rather than left to whoever reads the round next, so a banked round answers
+    "which take is which pose" without a second tool.
+
+    Raises :class:`RoundBankError` with ``reason`` :data:`REASON_NOT_A_BUNDLE`,
+    :data:`REASON_SESSION_UNFINISHED` (banking an ``open``/``proposal_ready``
+    session would claim its round id mid-flight, and an id is never re-banked)
+    or :data:`REASON_ALREADY_BANKED` — a banked round is never overwritten. An
+    SSOT document that was absent, and a pose index that could not be derived,
+    are both named in ``provenance.json``'s ``missing``: a partially banked
+    round is a normal thing to read.
+
+    A filesystem failure is not a refusal: the :class:`OSError` propagates, so
+    the CLI exits on its filesystem-failure code rather than telling the
+    operator this was not a bundle.
+    """
     session_dir = Path(session_dir)
     try:
         info: Any = json.loads(

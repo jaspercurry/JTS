@@ -7,7 +7,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_program
+from jasper.active_speaker.angle_capture import (
+    AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID, request_for_program,
+)
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.preflight import PreflightReport, preflight
 from jasper.active_speaker.preflight_live import read_preflight_facts
@@ -25,13 +27,15 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport:
         return preflight(request, read_preflight_facts(request))
     program = run_program(args.program or "speaker", args.poses)
     if args.repeats is not None:
-        program = replace(program, poses=tuple(replace(pose, repeats=1) for pose in program.poses))
+        try:
+            program = replace(program, poses=tuple(replace(pose, repeats=args.repeats) for pose in program.poses))
+        except ValueError as exc:
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, str(exc)) from exc
     candidates = tuple(value.strip() for value in args.candidates.split(",")) if args.candidates is not None else ()
     if any(not value for value in candidates):
         raise ValueError("candidates must name a fingerprint or base")
     request = request_for_program(
         program, candidates=candidates, mover="arm" if args.mover == "arm" else "human",
-        repeats=args.repeats if args.repeats is not None else 1,
         spl_ceiling_db_spl=args.ceiling,
         operating_levels_db=() if args.level is None else (args.level,),
     )

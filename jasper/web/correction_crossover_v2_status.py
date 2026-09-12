@@ -25,6 +25,7 @@ import logging
 from typing import Any, Mapping
 
 from jasper.active_speaker import crossover_envelope_v2 as _projection
+from jasper.active_speaker.grade_coverage import asked_beyond_mark
 from jasper.log_event import log_event
 from jasper.web import correction_crossover_v2 as _host
 
@@ -173,7 +174,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
-    block["post_apply_grade"] = _host._post_apply_grade(block)
+    block["post_apply_grade"] = _host._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
     return block
 
 

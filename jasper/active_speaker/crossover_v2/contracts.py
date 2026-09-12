@@ -97,8 +97,7 @@ class CrossoverV2FlowError(RuntimeError):
     """The v2 session could not form a safe phase transition.
 
     Here rather than in the flow because two modules raise it and neither may
-    import the other. ``angle_capture_spool.AngleRequestRefused`` subclasses it,
-    which is what lets one ``except`` clause cover both.
+    import the other. Callers can catch all flow refusals at this boundary.
     """
 
 

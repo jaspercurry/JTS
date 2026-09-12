@@ -932,10 +932,6 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
 
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 
-#: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
-#: with no hand moving, or a tap-wait from an arm with none to give). NOT a
-#: comparison against the session's GATE.
-
 #: A stop is outside the stated mover's own reach on one AXIS
 #: (:data:`MOVER_MAX_ANGLE_DEG`, :data:`MOVER_MAX_ELEVATION_DEG`). Decided by
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.

@@ -4053,14 +4053,39 @@ def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
 
 
-def test_an_express_session_verified_at_the_mark_is_complete_and_scoped():
-    """Express structurally never walks a post-apply group, so the mark IS its
-    whole promise. Judging it against Full's would warn every express session
-    ever run — the mirror of the defect."""
-    v2host.save_v2_state(_applied_state(tier="express"))
+@pytest.mark.parametrize("storage", ["live", "banked", "recovery"])
+@pytest.mark.parametrize("poses,complete", [
+    ([{"kind": "bearing", "deg": 0, "elevation_deg": 0}], True),
+    ([{"kind": "bearing", "deg": 0}, {"kind": "bearing", "deg": 20}], False),
+    ([{"kind": "bearing", "deg": 0, "elevation_deg": 10}], False),
+    ([{"kind": "seat", "deg": 0, "seat_offset_m": [0.3, 0, 0]}], False),
+])
+def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
+    tmp_path, monkeypatch, poses, complete, storage,
+):
+    import shutil
+    from jasper.active_speaker.grade_coverage import REASON_APPLIED_GRADE_MARK_ONLY
+    from tests.run_manifest_fixture import write_asked_poses
+
+    state = _applied_state()
+    root = write_asked_poses(tmp_path, state, poses)
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
+    if storage == "banked":
+        target = tmp_path / "campaigns" / "banked-run" / "bundle"
+        target.mkdir(parents=True)
+        shutil.move(root / "asked-run", target)
+    elif storage == "recovery":
+        original = root / "asked-run/evidence/v1/artifacts/crossover_v2" / state["session_id"]
+        state["candidate"] = {"fingerprint": "applied-candidate"}
+        state["session_id"] = "recovery"
+        write_asked_poses(tmp_path, state, [{"deg": 0}])
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
+                            lambda fingerprint: SimpleNamespace(path=original / "candidate.json"))
+    v2host.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2host.GRADE_SCOPE_MARK
-    assert grade["complete"] is True
+    assert grade["complete"] is complete
+    assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
 
 
 _PASSING_GROUP = {"passed": True, "flatness": {
