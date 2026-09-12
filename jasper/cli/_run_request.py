@@ -18,7 +18,7 @@ from ._refusal import read_json_source
 
 def resolve_run(args: argparse.Namespace) -> PreflightReport:
     if args.plan:
-        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "level", "ceiling", "repeats", "mover")):
+        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "level_offsets_db", "repeats", "mover")):
             raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
@@ -36,7 +36,6 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport:
         raise ValueError("candidates must name a fingerprint or base")
     request = request_for_program(
         program, candidates=candidates, mover="arm" if args.mover == "arm" else "human",
-        spl_ceiling_db_spl=args.ceiling,
-        operating_levels_db=() if args.level is None else (args.level,),
+        level_offsets_db=tuple(float(value) for value in (args.level_offsets_db or "0").split(",")),
     )
     return preflight(request, read_preflight_facts(request))

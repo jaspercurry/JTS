@@ -17,7 +17,7 @@ import argparse
 from typing import Any
 
 def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
-    """Add the four ``MeasureSpec`` stimulus flags, under their one spelling."""
+    """Add the ``MeasureSpec`` stimulus flags, under their one spelling."""
     parser.add_argument(
         "--level-dbfs", type=float, action="append", default=[], metavar="DBFS",
         help="one stimulus level per ladder rung, repeatable",
@@ -25,10 +25,6 @@ def add_stimulus_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sweep-band-hz", type=float, nargs=2, default=[], metavar=("LOW", "HIGH"),
         help="summed-sweep bounds in Hz; protected graph admission still applies",
-    )
-    parser.add_argument(
-        "--spl-ceiling-db-spl", type=float, default=None,
-        help="bounds measured SPL at the mic, must be <= the box's commissioning stop; absent means watched at the stop",
     )
     parser.add_argument(
         "--sweep-s", type=float,
@@ -47,5 +43,4 @@ def spec_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "level_ladder_dbfs": tuple(args.level_dbfs),
         "sweep_band_hz": tuple(args.sweep_band_hz),
         "sweep_s": args.sweep_s,
-        "spl_ceiling_db_spl": args.spl_ceiling_db_spl,
     }

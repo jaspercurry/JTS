@@ -123,7 +123,6 @@ __all__ = [
     "WALK_REGIME_UNSUPPORTED",
     "WALK_OVER_MOVER_ENVELOPE",
     "WALK_LEVEL_POLICY_INVALID",
-    "WALK_CEILING_ABOVE_STOP",
     "WALK_SPL_CALIBRATION_REQUIRED",
     "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
@@ -393,9 +392,8 @@ class AngleCaptureRequest:
     template: MeasureSpec = DEFAULT_TEMPLATE
     program: str = ""
     candidates: tuple[str, ...] = ()
-    spl_ceiling_db_spl: float | None = None
     level: LevelPolicy = LevelPolicy()
-    operating_levels_db: tuple[float, ...] = ()
+    level_offsets_db: tuple[float, ...] = ()
     repeats: int = 1
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
@@ -430,19 +428,12 @@ class AngleCaptureRequest:
     def _validate_policy(self) -> None:
         if not isinstance(self.level, LevelPolicy):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
-        levels = self.operating_levels_db
+        levels = self.level_offsets_db
         if not isinstance(levels, (tuple, list)) or any(finite_float(v) is None for v in levels):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "operating levels must be finite numbers")
-        reference = self.level.resolved.reference_volume_db if self.level.resolved is not None else None
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level offsets must be finite numbers")
         if any(level > 0 for level in levels):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "window levels must be non-positive")
-        object.__setattr__(self, "operating_levels_db", tuple(levels) or (
-            () if reference is None else (reference,)
-        ))
-        if self.spl_ceiling_db_spl is not None and (
-            finite_float(self.spl_ceiling_db_spl) is None or self.spl_ceiling_db_spl <= 0
-        ):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "SPL ceiling must be finite and positive")
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "window offsets must be non-positive")
+        object.__setattr__(self, "level_offsets_db", tuple(levels) or (0.0,))
         for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -473,7 +464,7 @@ class AngleCaptureRequest:
                  or getattr(stop, f.name) != f.default}
                 for stop in self.stops
             ],
-            "candidates": list(self.candidates), "operating_levels_db": list(self.operating_levels_db),
+            "candidates": list(self.candidates), "level_offsets_db": list(self.level_offsets_db),
             "artifact_schema_version": REQUEST_SCHEMA_VERSION, "kind": REQUEST_KIND,
         }
 
@@ -527,8 +518,6 @@ class AngleCaptureRequest:
             )
         stated = [name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
                   and not (name == "candidate_id" and self.template.candidate_id == BASE_CANDIDATE)]
-        if self.template.spl_ceiling_db_spl not in (None, self.spl_ceiling_db_spl):
-            stated.append("spl_ceiling_db_spl")
         if stated:
             raise LateralWalkRefused(
                 WALK_TEMPLATE_NOT_ACCEPTED,
@@ -652,7 +641,6 @@ def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
         graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
         sweep_band_hz=(),
         sweep_s=None,
-        spl_ceiling_db_spl=request.spl_ceiling_db_spl,
     )
 
 
@@ -688,7 +676,6 @@ def stop_specs(
                 if not stop.candidate_id and scope != "preset"
                 else MEASURE_KIND_CANDIDATE
             ),
-            spl_ceiling_db_spl=request.spl_ceiling_db_spl,
             positions=(stop.angle_deg,),
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
@@ -745,9 +732,8 @@ def request_for_program(
     candidates: tuple[str, ...] = (),
     mover: str = MOVER_HUMAN,
     template: MeasureSpec = DEFAULT_TEMPLATE,
-    spl_ceiling_db_spl: float | None = None,
     level: LevelPolicy = LevelPolicy(),
-    operating_levels_db: tuple[float, ...] = (),
+    level_offsets_db: tuple[float, ...] = (),
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
 ) -> AngleCaptureRequest:
@@ -779,8 +765,7 @@ def request_for_program(
         mover=mover,
         template=template,
         candidates=candidates,
-        spl_ceiling_db_spl=spl_ceiling_db_spl,
-        level=level, operating_levels_db=operating_levels_db,
+        level=level, level_offsets_db=level_offsets_db,
         repeats=repeats, retries_per_pose=retries_per_pose,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
@@ -800,7 +785,7 @@ def walk_price(
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
     takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats * max(1, len(request.operating_levels_db))
+    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats * max(1, len(request.level_offsets_db))
     return {
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
@@ -936,12 +921,6 @@ WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 # Remove when W1-13 hosts run_plan in the wizard.
 WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 
-#: The walk states an SPL ceiling ABOVE this box's commissioning
-#: stop, so honouring the walk would mean playing past the stop. Decided where
-#: the ceiling is resolved (:func:`~.plan_run.take_spl_ceiling`), which is the
-#: only place that reads the box's own number.
-WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
-
 #: The walk states an SPL ceiling and no microphone sensitivity resolves, so
 #: nothing could turn a recording into dB SPL to watch it. Decided beside the
 #: ceiling, where the watch is built (:func:`~.plan_run.spl_watch`). The value
@@ -1012,7 +991,6 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LEVEL_POLICY_INVALID,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
     WALK_REPEATS_UNSUPPORTED_YET,
-    WALK_CEILING_ABOVE_STOP,
     WALK_SPL_CALIBRATION_REQUIRED,
     WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,

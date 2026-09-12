@@ -167,7 +167,6 @@ class MeasureSpec:
     level_ladder_dbfs: tuple[float, ...] = ()
     sweep_band_hz: tuple[float, float] | tuple[()] = ()
     sweep_s: float | None = None
-    spl_ceiling_db_spl: float | None = None
     candidate_id: str = ""
     #: R-1's delay coordinate: which branch carries it, and how much. The pair
     #: behaves like ``polarity``/``inverted_role`` — stating one without the
@@ -201,10 +200,6 @@ class MeasureSpec:
                 raise ValueError("sweep_s requires a summed graph_scope")
             if isinstance(self.sweep_s, bool) or not math.isfinite(self.sweep_s) or self.sweep_s <= 0:
                 raise ValueError("sweep_s must be finite and positive")
-        if self.spl_ceiling_db_spl is not None and (
-            not math.isfinite(self.spl_ceiling_db_spl) or self.spl_ceiling_db_spl <= 0
-        ):
-            raise ValueError("spl_ceiling_db_spl must be finite and positive")
         if self.graph_scope != GRAPH_SCOPE_DRIVERS and (
             self.polarity != POLARITY_NORMAL or self.inverted_role
             or self.delayed_role or self.delay_us or self.level_matched
@@ -351,8 +346,8 @@ _TRIMMED_STRINGS = frozenset({
     "candidate_id", "delayed_role", "graph_scope", "program_phase",
 })
 _ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz"})
-#: ``sweep_s``/``spl_ceiling_db_spl`` read ``None`` back as the statement it is.
-_NUMBERS = frozenset({"delay_us", "sweep_s", "spl_ceiling_db_spl"})
+#: ``sweep_s`` read ``None`` back as the statement it is.
+_NUMBERS = frozenset({"delay_us", "sweep_s"})
 #: Read back as banked; the dataclass judges them.
 _PASSTHROUGH = _FIELD_NAMES - _TRIMMED_STRINGS - _ARRAYS - _NUMBERS
 

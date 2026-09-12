@@ -2,15 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Live RMS/peak meter over a wired measurement mic -- the level ramp's feed.
-
-:mod:`jasper.audio_measurement.wired_capture` answers what the mic captured
-during an excitation; this answers what it is hearing right now, which is what
-a closed-loop level ramp needs. Same device, same PCM seam, same loud-failure
-contract -- the ALSA open, the S32_LE format facts, and the bounded-wait
-constants all come from that module. Output is
-:class:`jasper.audio_measurement.ramp.LevelSample` batches.
-"""
+"""Live level batches from the shared wired capture PCM seam."""
 
 from __future__ import annotations
 

@@ -21,6 +21,8 @@ import logging
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("banked_session_level")
+
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     effective_sweep_duration_limit_s,

@@ -17,6 +17,8 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.usefixtures("banked_session_level")
 import yaml
 from scipy.io import wavfile
 

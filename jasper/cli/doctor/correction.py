@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import time
-from datetime import datetime as _datetime, timezone
+from datetime import datetime as _datetime
 from pathlib import Path
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -40,7 +40,6 @@ from ...active_speaker.seat_level_reference import (
 from ...active_speaker.session_volume_plan import (
     DEFAULT_SESSION_VOLUME_STATE_PATH,
     MAX_WALL_CLOCK_CEILING_S,
-    MEASUREMENT_REFERENCE_VOLUME_DB,
     SessionVolumePlan,
 )
 from ...control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
@@ -778,56 +777,23 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
 def _classify_seat_level_reference(
     path: Path, *, now: float | None = None
 ) -> CheckResult:
-    """Classify the banked seat-SPL measurement reference at ``path``.
-
-    Granular on purpose: the runtime reader
-    (``session_volume_plan.measurement_reference_volume_db``) collapses
-    missing, unreadable and implausible into the codified default, so this is
-    the only surface that says which state the file is in and what number the
-    next session will hold.
-    """
-    label = "seat-SPL measurement reference"
-    now = time.time() if now is None else now
-    if not path.exists():
-        # A box that never ran `jasper-seat-level`. Not a warning: the session
-        # falls back to the codified reference and measures exactly as before.
-        return CheckResult(
-            label, "ok",
-            f"not measured — sessions use the codified "
-            f"{MEASUREMENT_REFERENCE_VOLUME_DB:g} dB reference "
-            "(run jasper-seat-level to measure this room)",
-            reason=REASON_SEAT_LEVEL_NOT_MEASURED,
-        )
+    label = "session level"
     record = load_seat_level_reference(state_path=path)
-    volume_db = seat_level_reference_volume_db(state_path=path)
-    if record is None or volume_db is None:
-        return CheckResult(
-            label, "warn",
-            f"present but unusable — sessions silently fall back to "
-            f"{MEASUREMENT_REFERENCE_VOLUME_DB:g} dB. Re-run jasper-seat-level, "
-            f"or delete {path}",
-            reason=REASON_SEAT_LEVEL_UNUSABLE,
-        )
-    serial = (record.get("mic_sensitivity") or {}).get("serial")
-    measured = record.get("measured_db_spl")
-    detail = (
-        f"{volume_db:.2f} dB"
-        + (f" measured {float(measured):.1f} dB SPL" if measured is not None else "")
-        + f" (mic {serial or 'serial unknown'})"
-    )
-    raw_ts = record.get("updated_at")
+    volume = seat_level_reference_volume_db(state_path=path)
+    if record is None or volume is None:
+        return CheckResult(label, "warn", "Run jasper-seat-level with the current microphone, then measure",
+                           reason=REASON_SEAT_LEVEL_UNUSABLE if path.exists() else REASON_SEAT_LEVEL_NOT_MEASURED)
+    identity = (f" (mic {(record.get('mic_sensitivity') or {}).get('serial') or 'serial unknown'}, "
+                f"session {str(record.get('session_id') or '')[:8]})")
     try:
-        stamped = _datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-        age_days = (
-            _datetime.now(timezone.utc) - stamped
-        ).total_seconds() / 86400.0
-        detail += f", measured {age_days:.0f}d ago"
-    except (TypeError, ValueError):
-        return CheckResult(
-            label, "ok", detail + f", unparseable updated_at: {raw_ts!r}",
-            reason=REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE,
-        )
-    return CheckResult(label, "ok", detail)
+        measured = float(record.get("measured_db_spl"))
+        stamp = _datetime.fromisoformat(str(record["leveled_at"]).replace("Z", "+00:00"))
+        age = ((time.time() if now is None else now) - stamp.timestamp()) / 86400
+    except (KeyError, TypeError, ValueError):
+        return CheckResult(label, "ok", f"gain {volume:.1f} dB, age unknown{identity}",
+                           reason=REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE)
+    return CheckResult(label, "ok", f"{measured:.1f} dB SPL at gain {volume:.1f} dB, "
+                       f"leveled {age:.0f}d ago, reused{identity}")
 
 
 @doctor_check()

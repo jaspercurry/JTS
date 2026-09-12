@@ -1371,14 +1371,14 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     """
     template = ac.walk_template(
         kind=MEASURE_KIND_CANDIDATE, sweep_band_hz=(200.0, 3000.0), sweep_s=2.5,
-        level_ladder_dbfs=(-20.0, -14.0), spl_ceiling_db_spl=100.0,
+        level_ladder_dbfs=(-20.0, -14.0),
     )
     request = ac.AngleCaptureRequest(
         stops=(
             ac.AngleStop(0, ac.REGIME_PER_DRIVER),
             ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),
         ),
-        candidates=("base", "fp-a"), template=template, spl_ceiling_db_spl=100.0,
+        candidates=("base", "fp-a"), template=template,
     )
     prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
 
@@ -1444,17 +1444,17 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
 def test_v3_request_round_trip_and_capture_schedule(repeats, candidates, levels):
     request = ac.request_for_program(
         mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
-        spl_ceiling_db_spl=80.0, retries_per_pose=2, operating_levels_db=levels,
+        retries_per_pose=2, level_offsets_db=levels,
         level=ac.LevelPolicy(resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
     doc = request.to_dict()
     assert doc["artifact_schema_version"] == 3
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
-    assert doc["spl_ceiling_db_spl"] == 80.0
     assert doc["level"] == {"mode": "hold_reference", "anchor_db_spl": 75.8,
-                            "reference_volume_db": -12.7, "mic_serial": "8108494"}
-    assert (doc["operating_levels_db"], doc["repeats"], doc["retries_per_pose"]) == (list(levels), repeats, 2)
+                            "reference_volume_db": -12.7, "mic_serial": "8108494",
+                            "session_id": "", "leveled_at": "", "target_db_spl": 75.0}
+    assert (doc["level_offsets_db"], doc["repeats"], doc["retries_per_pose"]) == (list(levels), repeats, 2)
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
     specs = ac.stop_specs(request, baseline_ids={"room": "baseline-room"}, candidate_scopes={"room-fp": "candidate"},
                           prompts=[s.prompt for s in ac.resolve_request(request)])
@@ -1462,8 +1462,6 @@ def test_v3_request_round_trip_and_capture_schedule(repeats, candidates, levels)
     assert [spec.positions for spec in specs] == [
         (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
     ]
-    assert {spec.spl_ceiling_db_spl for spec in specs} == {80.0}
-    assert ac.design_axis_spec(request).spl_ceiling_db_spl == 80.0
     assert ac.walk_price(request)["captures"] == len(specs) * len(levels)
     assert ac.walk_price(request)["mic_moves"] == 3
 
@@ -1483,10 +1481,10 @@ def test_invalid_level_policy_refuses_at_construction(fields):
 
 
 @pytest.mark.parametrize("fields, reason", [
+    ({"level_offsets_db": (1.0,)}, ac.WALK_LEVEL_POLICY_INVALID),
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
-    *[({"spl_ceiling_db_spl": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, "80", math.nan, math.inf)],
 ])
 def test_invalid_walk_fields_refuse_by_name(fields, reason):
     with pytest.raises(ac.LateralWalkRefused) as refused:

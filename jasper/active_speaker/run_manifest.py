@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from statistics import median
 from typing import Any, Mapping
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
 
 from .crossover_v2.measure_spec import MeasureSpec
@@ -44,6 +46,7 @@ class RunManifest:
     program: str = ""
     request_fingerprint: str = ""
     asked: dict[str, Any] = field(default_factory=dict)
+    level: dict[str, Any] = field(default_factory=dict)
     baseline_graph: str | None = None
     planned: list[dict[str, Any]] = field(default_factory=list)
     specs: dict[int, MeasureSpec] = field(default_factory=dict, repr=False)
@@ -76,6 +79,7 @@ class RunManifest:
     def stops_planned(self) -> int:
         return len(self.planned)
 
+
     @property
     def takes_measured(self) -> int:
         return len({t["artifacts"]["record_id"] for t in self.takes if t["artifacts"]["record_id"]})
@@ -83,6 +87,7 @@ class RunManifest:
     @property
     def takes_skipped(self) -> int:
         return len(self.not_measured)
+
 
     @property
     def not_measured(self) -> list[dict[str, Any]]:
@@ -110,7 +115,6 @@ class RunManifest:
         return f"{self.run_id}_take_{self._ordinal:04d}"
 
     async def bank(self, record: Mapping[str, Any]) -> str:
-        """Bind inside the host's capture annotation seam, before its raw store."""
         pose = self._context["pose"]
         payload: dict[str, Any] = {**record, **{key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                               if key in self._context}, "pose_kind": pose["kind"],
@@ -119,9 +123,22 @@ class RunManifest:
         self.pending_records.append((payload, record_id))
         return record_id
 
+    def level_observation(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        observed = finite_float(((record.get("capture_integrity") or {}).get("spl") or {}).get("max_window_db_spl"))
+        gain = capture_basis(record).get("level_db")
+        # Offsets deliberately change the gain; compare only takes at this fader.
+        accepted = {take["take_id"]: take for take in self.takes
+                    if take["quality"]["status"] == TAKE_MEASURED
+                    and take["level"].get("level_db") == gain
+                    and take["level"]["max_window_db_spl"] is not None}
+        same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
+        reference = [take["level"]["max_window_db_spl"] for take in (same or list(accepted.values()))]
+        return {"max_window_db_spl": observed,
+                "level_reference_db_spl": median(reference) if reference else None, "same_pose": bool(same)}
+
     async def append(
         self, record: Mapping[str, Any], record_id: str, verdict: TakeVerdict, *,
-        complete: bool, started_s: float, ended_s: float, ordinal: int = 0,
+        complete: bool, started_s: float, ended_s: float, level_observation: Mapping[str, Any], ordinal: int = 0,
     ) -> None:
         record = {"candidate_id": self._context.get("candidate_id"), **record}
         curves = {curve["role"]: curve for curve in record.get("curves", [])}
@@ -148,8 +165,10 @@ class RunManifest:
                 band = [lower, band[1]] if lower < band[1] else None
             row = {**self._context, "take_id": take_id, "stimulus_ordinal": ordinal,
                    "side": basis["side"], "role": role,
-                   "level": {key: basis.get(key) for key in
+                   "level": {**{key: basis.get(key) for key in
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
+                             "max_window_db_spl": level_observation.get("max_window_db_spl"),
+                             "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"),
                    "quality": {"status": status, "fault": verdict.fault,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
@@ -172,7 +191,7 @@ class RunManifest:
             "kind": RUN_MANIFEST_KIND, "schema_version": 1, "run_id": self.run_id,
             "program": self.program, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
-            "baseline_graph": self.baseline_graph,
+            "baseline_graph": self.baseline_graph, "level": self.level,
             "honoured": {"spl_monitor": self.spl_monitor, "mic_moves": self.mic_moves,
                          "stops_planned": self.stops_planned, "takes_measured": self.takes_measured,
                          "takes_refused": len({t["take_id"] for t in self.takes if t["quality"]["status"] != TAKE_MEASURED})},

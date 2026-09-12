@@ -4427,20 +4427,17 @@ def test_a_same_level_landed_holds_the_pause_under_a_live_claim(monkeypatch):
     When the household level already equals the measurement level, the door's
     deferral test (level in effect vs level being restored) does not fire, so
     a LIVE session reads as a completed restore. Reachable on defaults: both
-    sides sit at ``MEASUREMENT_REFERENCE_VOLUME_DB`` on a box that never ran
+    sides sit at ``-20.0`` on a box that never ran
     seat-SPL. No error anywhere — which is what makes an outcome-gated release
     unsafe even on the happy path.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        MEASUREMENT_REFERENCE_VOLUME_DB,
-    )
 
     log: list = []
     _patch_measurement_window(monkeypatch, log)
     plan, cam, _claim, clock = _live_measurement_session(
         monkeypatch,
-        household_db=MEASUREMENT_REFERENCE_VOLUME_DB,
-        measurement_db=MEASUREMENT_REFERENCE_VOLUME_DB,
+        household_db=-20.0,
+        measurement_db=-20.0,
     )
     asyncio.run(v2host.acquire_session_measurement_pause())
     clock[0] += 3600.0

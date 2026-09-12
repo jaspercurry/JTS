@@ -249,20 +249,10 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
 
 
-@pytest.mark.parametrize("dry_run,ceiling,code", [(True, 80, 0), (True, 90, 1), (False, 90, 1)])
-def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys, dry_run, ceiling, code):
+def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys):
     opener = _opener()
-    argv = ["run", "--ceiling", str(ceiling)] + (["--dry-run"] if dry_run else [])
-    actual, body = _run(argv, opener, monkeypatch, capsys)
-    assert actual == code
-    if dry_run:
-        assert body["dry_run"] is True
-        assert bool(body["issues"]) == bool(code)
-        if code:
-            assert body["issues"][0]["code"] == "walk_ceiling_above_stop"
-    else:
-        assert body["status"] == STATUS_BY_CODE[code]
-        assert body["reason"] == "walk_ceiling_above_stop"
+    code, body = _run(["run", "--dry-run"], opener, monkeypatch, capsys)
+    assert code == 0 and body["dry_run"] is True and not body["issues"]
     assert not opener.requests
 
 

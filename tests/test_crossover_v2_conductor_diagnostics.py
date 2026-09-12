@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.usefixtures("banked_session_level")
 from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_MIN_PAIRED_OCCURRENCES
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db as _compose_sigma_db
 from jasper.active_speaker.crossover_v2.journey import (

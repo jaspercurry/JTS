@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fit retained bass comparisons at their captured operating levels."""
+"""Fit retained bass comparisons at their captured resolved window gains."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def level_key(basis: Mapping[str, Any], **identity: Any) -> tuple[float, float, 
     if not isinstance(program, str) or not program.strip():
         missing.append("program_id")
     if missing:
-        raise CrossoverV2Refused({**identity, "fields": missing}, code="bass_table_operating_level_missing")
+        raise CrossoverV2Refused({**identity, "fields": missing}, code="bass_table_window_gain_missing")
     assert volume is not None and reference is not None and isinstance(program, str)
     return volume, reference, program
 
@@ -97,5 +97,5 @@ def fit_bass_table(
             "tested_volume_range_db": [min(key[0] for key in groups), max(key[0] for key in groups)],
             "stimulus_dbfs": first["stimulus_dbfs"], "capture_context": contexts, "levels": levels,
             "limits": ["This table fits the recorded stimulus and bass-reference settings; it is not a runtime schedule.",
-                       "No extrapolation beyond measured boost or operating levels. Hardware headroom is not established.",
+                       "No extrapolation beyond measured boost or resolved window gains. Hardware headroom is not established.",
                        "Intermediate descriptors require measurement before application. Missing frequency bins remain unproven."]}

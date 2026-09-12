@@ -17,6 +17,8 @@ import json
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("banked_session_level")
+
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
@@ -31,14 +33,12 @@ from jasper.active_speaker.session_volume_plan import (
     FaderVolumeDoor,
     RestoreOutcome,
     MAX_WALL_CLOCK_CEILING_S,
-    MEASUREMENT_REFERENCE_VOLUME_DB,
     SessionVolumeOpenResult,
     SessionVolumePlan,
     SessionVolumePlanError,
     SessionVolumeRestoreResult,
     loudest_driver_cap_dbfs,
     unsegmented_stimulus_ceiling_db,
-    measurement_reference_volume_db,
     session_measurement_volume_db,
 )
 from tests.active_speaker_fixtures import mono_output_topology
@@ -144,23 +144,6 @@ def test_session_measurement_volume_targets_the_least_sensitive_driver():
     profile2, targets2 = _profile_and_targets(woofer_peak=-30.0, tweeter_peak=-70.0)
     # caps: woofer -30, tweeter -70; max = -30 -> V = min(-20, -30) = -30.
     assert session_measurement_volume_db(profile2, targets2.values()) == -30.0
-
-
-def test_absent_seat_level_reference_keeps_the_codified_default(tmp_path):
-    """Regression pin: a box that never ran the seat-SPL leveling step behaves
-    EXACTLY as it did before the step existed."""
-    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
-    assert measurement_reference_volume_db(
-        reference_state_path=tmp_path / "absent.json"
-    ) == MEASUREMENT_REFERENCE_VOLUME_DB
-    assert (
-        session_measurement_volume_db(
-            profile,
-            targets.values(),
-            reference_state_path=tmp_path / "absent.json",
-        )
-        == -20.0
-    )
 
 
 def _bank_reference(path, volume_db):

@@ -345,7 +345,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.playback_route import resolve_active_playback_device
     from jasper.active_speaker.profile import required_driver_roles
     from jasper.active_speaker.session_volume_plan import (
-        session_measurement_volume_db,
+        LevelUnresolved, session_measurement_volume_db,
     )
     from jasper.audio_measurement.program import RoleBand
     from jasper.output_topology import (
@@ -499,11 +499,14 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         float(preset.crossover_regions[0].fc_hz)
         if preset.crossover_regions else None
     )
-    session_volume_db = session_measurement_volume_db(
-        safety_profile,
-        [role_targets[role] for role in roles],
-        declared_sensitivities=declared_sensitivities,
-    )
+    try:
+        session_volume_db = session_measurement_volume_db(
+            safety_profile,
+            [role_targets[role] for role in roles],
+            declared_sensitivities=declared_sensitivities,
+        )
+    except LevelUnresolved as exc:
+        raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
     playback_device, _playback_device_source = resolve_active_playback_device(
         topology
     )

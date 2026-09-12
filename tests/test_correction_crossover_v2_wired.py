@@ -612,7 +612,7 @@ def _windows(tmp_path, box, fakes, manifest, records=None):
     return LevelWindows(
         isolation_hold(graph=fakes.graph, camilla_factory=lambda: box, action="test",
                        volume_state_path=tmp_path / "volume.json"),
-        build, None, None, MicSensitivity(-12, 18, "1234"), _device(), 80,
+        build, None, None, MicSensitivity(-12, 18, "1234"), _device(), 85, gain_db=-20,
     )
 
 
@@ -635,7 +635,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
-    request = replace(_walk([0, 20]), operating_levels_db=(-20,))
+    request = replace(_walk([0, 20]), level_offsets_db=(0,))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
         for stop in request.stops) if phase else None
@@ -768,7 +768,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
         monkeypatch.setattr(conductor, "_consume_verify", grade)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records,
-        manifest=SimpleNamespace(calibration={}), evidence={}, verify_only=phase == "verify")
+        manifest=SimpleNamespace(calibration={}, level_observation=lambda record: {}), evidence={}, verify_only=phase == "verify")
     spec = MeasureSpec(kind="baseline", graph_scope="candidate" if phase == "verify" else "drivers",
                        candidate_id="baseline-room" if phase == "verify" else "", program_phase=phase)
     gain = None
@@ -782,7 +782,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
         records.enrich(None, record)
         records.after_bank(record, "take")
         analysis = await asyncio.to_thread(analyze, record, "take")
-        verdict = assessor(analysis, phase=phase, program=program, gain_ceiling_db=ceilings)
+        verdict = await asyncio.to_thread(assessor, analysis, phase=phase, program=program, gain_ceiling_db=ceilings)
         if clipped_take:
             assert verdict.fault == "clipped"
             assert verdict.next == "retake_quieter"
@@ -821,7 +821,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = replace(_walk([0]), operating_levels_db=(-20,))
+    request = replace(_walk([0]), level_offsets_db=(0,))
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
                        program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
     manifest = RunManifest("two-rungs", _Store(fakes.records))

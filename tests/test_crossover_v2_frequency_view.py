@@ -1015,10 +1015,10 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     (None, None), ('coverage', None), ('zero_coverage', None), ('measured_pass', None),
     ('stimulus', 'bass_table_capture_context_changed'),
     ('integrity', 'bass_table_capture_integrity_failed'),
-    ('reference', 'bass_table_operating_level_missing'),
-    ('after_reference', 'bass_table_operating_level_missing'),
-    ('after_level', 'bass_table_operating_level_missing'),
-    ('program', 'bass_table_operating_level_missing'),
+    ('reference', 'bass_table_window_gain_missing'),
+    ('after_reference', 'bass_table_window_gain_missing'),
+    ('after_level', 'bass_table_window_gain_missing'),
+    ('program', 'bass_table_window_gain_missing'),
     ('pair_level', 'bass_fit_pairs_unavailable'),
     ('reference_band', 'bass_fit_reference_band_unavailable'),
     ('pair_context', 'bass_fit_capture_context_changed'),
@@ -1089,7 +1089,7 @@ def test_bass_table_requires_the_manifest_level_key(bass_run, capsys, field):
     bass_run.write(change_basis=lambda row: row['capture_basis'].pop(field))
     assert round_views_main(bass_run.argv) == 1
     answer = json.loads(capsys.readouterr().out)
-    assert answer['code'] == 'bass_table_operating_level_missing'
+    assert answer['code'] == 'bass_table_window_gain_missing'
     assert answer['detail']['fields'] == [field]
     assert answer['detail']['set_id']
 

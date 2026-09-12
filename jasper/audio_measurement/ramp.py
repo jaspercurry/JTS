@@ -23,14 +23,10 @@ CEILING_MARGIN_DB = 3.0
 def capped_gap_step_db(
     *, measured_db: float, target_db: float, cap_db: float = math.inf
 ) -> float:
-    """How far one measured level step moves the level: the remaining gap.
+    """The measured gap, capped upward only; downwards attenuation is uncapped.
 
-    The one climb policy in the tree. Every step re-measures, so the policy
-    needs the chain to be only LOCALLY monotone in dB, never globally linear.
-    ``cap_db`` saturates the step UPWARD only -- downward motion reduces risk,
-    the same asymmetry :mod:`jasper.active_speaker.calibration_level` states for
-    its ``upward_step_limit_db``. Returns the step in dB, to be ADDED to the
-    current commanded level; the caller still clamps against its own ceiling.
+    Re-read after every step: the chain need only be locally monotone.
+    The caller must still clamp the resulting fader against its own ceiling.
     """
     return min(float(target_db) - float(measured_db), float(cap_db))
 

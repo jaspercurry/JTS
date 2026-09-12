@@ -19,7 +19,8 @@ from tests.test_crossover_v2_tuning_scope import (
 def ready_facts(plan, **changes):
     return replace(PreflightFacts(
         candidates={}, mic_present=True, mic_identified=True,
-        anchor=AnchorFacts({"measured_db_spl": 75.0, "reference_volume_db": -18.0,
+        anchor=AnchorFacts({"artifact_schema_version": 2, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
+                            "target": {"target_db_spl": 75.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
                             "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
                            MicSensitivity(-12.0, 18.0, "1234")),
         commissioning_stop_db_spl=85.0, mover=plan.mover,
@@ -27,7 +28,6 @@ def ready_facts(plan, **changes):
 
 
 @pytest.mark.parametrize("change,code", [
-    ("ceiling", "walk_ceiling_above_stop"),
     ("calibration", "measure_spl_calibration_required"),
     ("mover", "walk_over_mover_envelope"),
     ("mic", "wired_mic_missing"),
@@ -35,18 +35,15 @@ def ready_facts(plan, **changes):
     ("anchor", "seat_anchor_unusable"),
     ("serial", "seat_anchor_unusable"),
     ("sensitivity", "seat_anchor_unusable"),
-    ("anchor_over_stop", "level_over_ceiling"),
     ("stop", "walk_commissioning_stop_unset"),
     ("candidate", "not_found"),
     ("capacity", "walk_over_capture_capacity"),
 ])
 def test_preflight_issues(change, code):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, kind="seat", seat_offset_m=(0, 0, 0)),), spl_ceiling_db_spl=80)
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, kind="seat", seat_offset_m=(0, 0, 0)),))
     facts = ready_facts(plan)
     if change == "candidate":
         plan = replace(plan, candidates=("missing",), stops=(replace(plan.stops[0], candidate_id="missing"),))
-    elif change == "ceiling":
-        plan = replace(plan, spl_ceiling_db_spl=86)
     elif change == "calibration":
         facts = replace(facts, anchor=replace(facts.anchor, sensitivity=None))
     elif change == "mover":
@@ -60,8 +57,6 @@ def test_preflight_issues(change, code):
     elif change in {"serial", "sensitivity"}:
         sensitivity = replace(facts.anchor.sensitivity, **({"serial": "other"} if change == "serial" else {"sens_factor_db": -10}))
         facts = replace(facts, anchor=replace(facts.anchor, sensitivity=sensitivity))
-    elif change == "anchor_over_stop":
-        facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "measured_db_spl": 90}))
     elif change == "stop":
         facts = replace(facts, commissioning_stop_db_spl=None)
     elif change == "capacity":
@@ -83,8 +78,8 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     )
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     assert report.issues == ()
-    assert [(row.pose, row.level_window_db, row.candidate_id, row.repeat) for row in report.schedule] == [
-        (stop.place, -18.0, stop.candidate_id or "base", repeat)
+    assert [(row.pose, row.offset_db, row.candidate_id, row.repeat) for row in report.schedule] == [
+        (stop.place, 0.0, stop.candidate_id or "base", repeat)
         for stop in plan.stops for repeat in (1, 2)
     ]
     assert report.mic_moves == report.price["mic_moves"] == 3
@@ -103,7 +98,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault):
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement import calibration, household_mic
 
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), spl_ceiling_db_spl=80)
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
     facts = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
@@ -139,9 +134,8 @@ def test_supplied_facts_do_not_read_files(monkeypatch):
     assert preflight(plan, facts).issues == ()
 
 
-@pytest.mark.parametrize("ceiling", [None, 80])
-def test_missing_calibration_is_one_blocking_cause(ceiling):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), spl_ceiling_db_spl=ceiling)
+def test_missing_calibration_is_one_blocking_cause():
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
     facts = ready_facts(plan)
     report = preflight(plan, replace(facts, anchor=replace(facts.anchor, sensitivity=None)))
     assert [(issue.code, issue.blocking) for issue in report.issues] == [
@@ -179,18 +173,3 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     issue, = report.issues
     assert issue.code == "measurement_candidate_invalid"
     assert issue.blocking and issue.next_action
-
-
-@pytest.mark.parametrize("levels, ceiling, rejected", [
-    ((-20, -14), 80, False), ((-20, -12), 80, True),
-    ((-20, -7), None, True), ((-20, -8), None, False),
-])
-def test_each_level_is_resolved_under_the_stated_and_commissioning_stop(levels, ceiling, rejected):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED), AngleStop(20, REGIME_SUMMED)),
-                               operating_levels_db=levels, spl_ceiling_db_spl=ceiling)
-    report = preflight(plan, ready_facts(plan))
-    assert report.blocking is rejected
-    assert [issue.code for issue in report.issues] == (["level_over_ceiling"] if rejected else [])
-    assert [(row.pose, row.level_window_db) for row in report.schedule] == [
-        (stop.place, level) for stop in plan.stops for level in levels]
-    assert report.price["captures"] == 4
