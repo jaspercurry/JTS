@@ -299,17 +299,16 @@ def bind_measurement_graph(
     from .session_graph import MeasurementSessionGraph
 
     def emit_scoped(scope: str, candidate_id: str) -> str:
+        selected = None
+        if scope in CANDIDATE_SCOPES:
+            selected = candidate if candidate is not None else find_banked_candidate(candidate_id).candidate
         return compile_tuning_graph(
             profile,
             scope=cast(TuningGraphScope, scope),
-            candidate=(
-                candidate if candidate is not None and candidate.fingerprint == candidate_id
-                else find_banked_candidate(candidate_id).candidate
-                if scope in CANDIDATE_SCOPES else None
-            ),
+            candidate=selected,
         )
 
-    return MeasurementSessionGraph(
+    graph = MeasurementSessionGraph(
         emit=partial(emit_measurement_graph, profile),
         emit_scoped=emit_scoped,
         cam_factory=camilla_factory,
@@ -318,3 +317,6 @@ def bind_measurement_graph(
         ),
         confirm_live=confirm_graph_is_live,
     )
+    if candidate is not None:
+        graph.select_scope("candidate", candidate.fingerprint)
+    return graph

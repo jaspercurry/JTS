@@ -24,7 +24,7 @@ from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, S
 from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
-from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
+from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
 from jasper.cli import seat_level
 from tests._log_events import event_fields
 
@@ -48,17 +48,15 @@ def test_resolve_sensitivity_is_none_without_absolute_reference(tmp_path, text):
     assert resolve_mic_sensitivity(calibration_file=str(path)) is None
 
 
-@pytest.mark.parametrize("mic_present", [True, False])
-def test_missing_calibration_refuses_before_hardware(tmp_path, monkeypatch, capsys, mic_present):
-    cal = tmp_path / "curve.txt"
-    cal.write_text(CAL_CURVE_ONLY)
-    monkeypatch.setattr(seat_level, "resolve_wired_mic", lambda: object() if mic_present else None)
+@pytest.mark.parametrize("argv", [["--calibration-file", "curve.txt"], ["--mic-serial", "no-such-serial"]])
+def test_missing_calibration_refuses_before_hardware(tmp_path, monkeypatch, capsys, argv):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "curve.txt").write_text(CAL_CURVE_ONLY)
     hardware = Mock(side_effect=AssertionError("hardware touched"))
+    monkeypatch.setattr(seat_level, "resolve_wired_mic", hardware)
     monkeypatch.setattr(seat_level, "primary_controller", hardware)
-    assert seat_level.main(["--calibration-file", str(cal)]) == 1
-    assert json.loads(capsys.readouterr().out)["reason"] == (
-        seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE if mic_present else seat_level.REFUSE_MIC_ABSENT
-    )
+    assert seat_level.main(argv) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == seat_level.REFUSE_MIC_CALIBRATION_UNAVAILABLE
     hardware.assert_not_called()
 
 
@@ -82,7 +80,8 @@ def test_watchdog_covers_the_sweep_and_loop_budget(start, cap, duration):
 @pytest.fixture
 def box(tmp_path, monkeypatch):
     state = SimpleNamespace(gain=-8.0, loudness=-15.0, level=75.0, ambient=35.0, events=[], programs=[], admissions=[],
-                            playback_failure=None, ambient_failure=None, bundle_failed=False)
+                            playback_failure=None, ambient_failure=None, ambient_start_fails=True, bundle_failed=False,
+                            missing_spl=False, loudness_failure=None, renders=[])
     async def get(**kwargs):
         return state.gain
     async def set_gain(gain):
@@ -91,6 +90,8 @@ def box(tmp_path, monkeypatch):
     async def get_loudness():
         return state.loudness
     async def set_loudness(gain, **kwargs):
+        if state.loudness_failure and gain != -15.0:
+            raise state.loudness_failure
         state.loudness = gain
         return True
     cam = SimpleNamespace(get_volume_db=get, set_volume_db=set_gain,
@@ -127,7 +128,7 @@ def box(tmp_path, monkeypatch):
         state.events.append("graph")
     async def restore():
         state.events.append("restore_graph")
-    graph = SimpleNamespace(select_scope=Mock(), installed_graph_yaml=lambda: "accepted graph",
+    graph = SimpleNamespace(installed_graph_yaml=lambda: "accepted graph",
                             install=install, restore=restore)
     candidate = SimpleNamespace(fingerprint="accepted", bass_extension={"enabled": False})
     context = SimpleNamespace(topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
@@ -136,17 +137,20 @@ def box(tmp_path, monkeypatch):
                                              RoleBand("tweeter", 1, FrequencyBand(500, 20000))),
         driver_caps_dbfs={"woofer": -8, "tweeter": -12}, driver_sweep_duration_limits_s={}, fc_hz=1600.)
     def resolve(status, **kwargs):
-        assert kwargs == {"topology": context.topology, "session_volume_db": -40.0}
+        assert kwargs == {"topology": context.topology, "require_banked_level": False}
         return context
     class Store:
         bundle_dir = tmp_path
         def identify_artifact(self, relative):
+            state.renders.append(relative)
             return SimpleNamespace(sha256=hashlib.sha256((tmp_path / relative).read_bytes()).hexdigest(), path=relative)
         def bank(self, *args):
             raise AssertionError("a take was banked")
     def open_bundle(*args, **kwargs):
         assert state.events[:2] == ["gate", "open"]
         state.events.append("bundle")
+        (tmp_path / "info.json").write_text('{"session_id": "level-bundle"}')
+        (tmp_path / "artifacts.json").write_text('{"artifacts": []}')
         return None if state.bundle_failed else {"bundle_dir": tmp_path, "session_id": "level-bundle"}
     def observe(monitor, spl):
         amplitude = 10 ** ((spl - 94.0) / 20)
@@ -159,7 +163,7 @@ def box(tmp_path, monkeypatch):
             state.events.append("ambient")
             observe(self.spl_monitor, state.ambient)
             self.failure = state.ambient_failure or self.spl_monitor.error
-            if self.failure:
+            if self.failure and state.ambient_start_fails:
                 raise self.failure
         def abort(self):
             state.events.append("abort")
@@ -175,6 +179,8 @@ def box(tmp_path, monkeypatch):
             finally:
                 state.events.append("capture_stopped")
         def take_answer(self):
+            if state.missing_spl:
+                return SimpleNamespace(capture_integrity={})
             return SimpleNamespace(capture_integrity={"spl": {"max_window_db_spl": round(self.monitor.max_window_db_spl, 2)}})
     def readmit(program, path, **kwargs):
         assert kwargs["graph_yaml"] == "accepted graph"
@@ -187,6 +193,7 @@ def box(tmp_path, monkeypatch):
     async def player(bundle_dir, artifact, **kwargs):
         assert state.loudness == state.gain
         state.artifact = artifact
+        (tmp_path / "capture.wav").write_bytes(b"raw")
         observe(state.capture.monitor, state.level)
         if state.capture.monitor.error:
             raise StimulusCaptureStopped("spl_ceiling_exceeded", "stop", PlaybackObservation(emission="partial"))
@@ -219,16 +226,25 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr('jasper.active_speaker.program_playback.verified_program_aplay', player)
     monkeypatch.setattr('jasper.dsp_apply.dsp_writer_lock', writer_lock)
     monkeypatch.setattr(composition, 'confirm_graph_is_live', AsyncMock())
-    state.bank, state.graph = bank, graph
+    state.bank, state.graph, state.context, state.bundle_dir = bank, graph, context, tmp_path
     return state
 
 
-@pytest.mark.parametrize('outcome', ['converged', 'stop', 'ambient_stop', 'cancelled', 'error', 'bundle_failed'])
+@pytest.mark.parametrize('outcome', ['converged', 'stop', 'ambient_stop', 'ambient_start_lost', 'ambient_reads_lost', 'missing_spl',
+                                            'loudness_refused', 'cancelled', 'error', 'bundle_failed'])
 def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     if outcome == 'stop':
         box.level = 86.0
     elif outcome == 'ambient_stop':
         box.ambient_failure = WiredSplCeilingExceeded(86.0, 85.0)
+    elif outcome.startswith('ambient_') and outcome.endswith('_lost'):
+        box.ambient_failure = WiredCaptureError("failed N consecutive reads")
+        box.ambient_start_fails = outcome == 'ambient_start_lost'
+    elif outcome == 'missing_spl':
+        box.missing_spl = True
+    elif outcome == 'loudness_refused':
+        from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
+        box.loudness_failure = MeasurementDoorRefused("measurement_door_volume_not_open", "unconfirmed")
     elif outcome == 'cancelled':
         box.playback_failure = asyncio.CancelledError()
     elif outcome == 'error':
@@ -244,7 +260,12 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
             result, _ = asyncio.run(seat_level._run(args))
             assert result['status'] == ('converged' if outcome == 'converged' else 'refused')
             assert result['restored'] is True
+            if outcome in ('ambient_start_lost', 'ambient_reads_lost', 'missing_spl'):
+                assert result['reason'] == 'mic_feed_lost'
+            if outcome == 'loudness_refused':
+                assert result['reason'] == 'measurement_door_volume_not_open'
             if 'stop' in outcome:
+
                 assert result['reason'] == 'spl_ceiling_exceeded'
                 assert result['readings'][-1][1] == pytest.approx(86.0)
                 assert event_fields(caplog, 'active_speaker.seat_level_result')['reason'] == 'spl_ceiling_exceeded'
@@ -257,7 +278,9 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         assert box.events[-4:] == ['restore_graph', 'close', 'closed_bundle', 'ungate']
         assert 'abort' in box.events
     assert box.bank.call_count == int(outcome == 'converged')
-    box.graph.select_scope.assert_called_once_with('candidate', 'accepted')
+    assert not list(box.bundle_dir.rglob('*.wav'))
+    assert json.loads((box.bundle_dir / 'info.json').read_text())['session_id'] == 'level-bundle'
+    assert (box.bundle_dir / 'artifacts.json').is_file()
     if outcome == 'converged':
         assert len(box.programs) == len(box.admissions) == 2
         first, second = box.programs
@@ -268,18 +291,10 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         assert box.watchdog == sweep.watchdog_seconds(-40, 0, first.total_samples / first.sample_rate_hz) + 60
         provenance = box.bank.call_args.kwargs['stimulus'].to_dict()
         assert provenance == {'program_id': second.program_id, 'phase': second.phase,
-            'wav_sha256': box.artifact.sha256, 'peak_dbfs': second.stimulus_segments()[0].gain_db,
+            'wav_sha256': box.artifact.sha256, 'peak_dbfs': round(second.stimulus_segments()[0].gain_db, 2),
             'statistic': 'max_window_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
         assert json.loads(box.reference_path.read_text())['stimulus'] == provenance
         assert box.bank.call_args.kwargs['measured_db_spl'] == 75.0
-
-
-def test_retired_stimulus_override_refuses_before_hardware(monkeypatch, capsys):
-    hardware = Mock(side_effect=AssertionError("hardware touched"))
-    monkeypatch.setattr(seat_level, "resolve_wired_mic", hardware)
-    assert seat_level.main(["--stimulus-wav", "noise.wav"]) == 1
-    assert json.loads(capsys.readouterr().out)["reason"] == "seat_level_stimulus_fixed"
-    hardware.assert_not_called()
 
 
 def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch):
@@ -295,6 +310,58 @@ def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, 
     lookup = Mock(side_effect=AssertionError("accepted candidate went to the bank"))
     monkeypatch.setattr(door, "find_banked_candidate", lookup)
     graph = door.bind_measurement_graph(profile, candidate=candidate, camilla_factory=Mock(), config_dir=tmp_path)
-    graph.select_scope("candidate", candidate.fingerprint)
     assert graph.graph_yaml() == compile_tuning_graph(profile, scope="candidate", candidate=candidate)
+    graph.select_scope("drivers")
+    from jasper.active_speaker.measurement_emit import emit_measurement_graph
+    assert graph.graph_yaml() == emit_measurement_graph(profile)
     lookup.assert_not_called()
+
+
+def test_unapplied_baseline_refuses_with_its_code(box, monkeypatch, capsys):
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    monkeypatch.setattr(seat_level, 'candidate_from_applied_profile', candidate_from_applied_profile)
+    assert seat_level.main([]) == 1
+    assert json.loads(capsys.readouterr().out)['reason'] == 'applied_baseline_snapshot_unavailable'
+    assert not box.events
+    box.bank.assert_not_called()
+
+
+def test_binding_driver_cap_refuses_an_unreachable_target_early(box):
+    box.context.driver_caps_dbfs['tweeter'] = -30.0
+    box.level = 65.0
+    result, _ = asyncio.run(seat_level._run(seat_level.build_parser().parse_args([])))
+    assert result['reason'] == 'level_unreachable'
+    assert result['gain_db'] == -30.0 - seat_level.BASE_STIMULUS_PEAK_DBFS
+    assert [gain for gain, _ in result['readings']] == [-40, -34, -28, -22, -18]
+    box.bank.assert_not_called()
+
+
+@pytest.mark.parametrize('gain,reason', [(None, 'volume_latch_unconfirmed'), (0.1, 'fader_above_cap')])
+def test_sweep_fader_readback_refusals_are_distinct(box, monkeypatch, capsys, gain, reason):
+    async def read_once(*args, read_level, **kwargs):
+        monkeypatch.setattr(sweep, 'read_fader_db', AsyncMock(return_value=gain))
+        await read_level()
+        pytest.fail('invalid fader was accepted')
+    monkeypatch.setattr(seat_level, 'level_to', read_once)
+    assert seat_level.main([]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['reason'] == reason
+    assert result['detail']['restored'] is True
+    assert reason in seat_level.REASON_REGISTRY
+    assert not box.admissions
+
+
+def test_repeated_sweep_reuses_render_but_installs_and_admits_each_time(box, monkeypatch):
+    async def readings(*args, read_level, set_main_volume_db, **kwargs):
+        for _ in range(3):
+            assert await read_level() == 75.0
+        await set_main_volume_db(-39.0)
+        assert await read_level() == 75.0
+        return seat_level.LevelResult('refused', 'level_unreachable')
+    monkeypatch.setattr(seat_level, 'level_to', readings)
+    asyncio.run(seat_level._run(seat_level.build_parser().parse_args([])))
+    assert len(box.renders) == 3  # First prelude, no prelude, changed gain.
+    assert len(box.admissions) == 4
+    assert box.programs[1] is box.programs[2]
+    assert box.events.count('graph') == 5  # Initial hold plus every reading.
+    assert not list(box.bundle_dir.rglob('*.wav'))

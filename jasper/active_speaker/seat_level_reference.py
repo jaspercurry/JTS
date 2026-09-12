@@ -52,7 +52,7 @@ class StimulusProvenance:
             "program_id": self.program_id,
             "phase": self.phase,
             "wav_sha256": self.wav_sha256,
-            "peak_dbfs": self.peak_dbfs,
+            "peak_dbfs": round(float(self.peak_dbfs), 2),
             "statistic": "max_window_db_spl",
             "graph_scope": "candidate",
             "bundle_id": self.bundle_id,

@@ -53,6 +53,8 @@ from jasper.audio_measurement.calibration import (
     MIC_CALIBRATION_UNAVAILABLE_DETAIL, REFUSE_MIC_CALIBRATION_UNAVAILABLE, resolve_mic_sensitivity,
 )
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
 from jasper.audio_measurement.wired_capture import WiredSplMonitor, resolve_wired_mic
 from jasper.log_event import log_event
 from jasper.measurement_window import measurement_window
@@ -125,21 +127,21 @@ async def _stoppable(pass_coro: Any) -> LevelResult:
                 loop.remove_signal_handler(signal.SIGINT)
 
 async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
-    if args.stimulus_wav is not None:
-        return _refused("seat_level_stimulus_fixed", "Leveling uses the room/bass sweep. Run without --stimulus-wav.")
+    explicit_calibration = bool(args.calibration_file or args.mic_serial)
+    sensitivity = resolve_mic_sensitivity(
+        calibration_file=args.calibration_file, mic_serial=args.mic_serial,
+        mic_provider=args.mic_provider, mic_model=args.mic_model,
+    ) if explicit_calibration else None
+    if explicit_calibration and sensitivity is None:
+        return _refused(REFUSE_MIC_CALIBRATION_UNAVAILABLE, MIC_CALIBRATION_UNAVAILABLE_DETAIL)
     mic = resolve_wired_mic()
     if mic is None:
         return _refused(
             REFUSE_MIC_ABSENT,
             "no measurement-class capture card is present; plug the mic in",
         )
-    sensitivity = (
-        resolve_mic_sensitivity(
-            calibration_file=args.calibration_file, mic_serial=args.mic_serial,
-            mic_provider=args.mic_provider, mic_model=args.mic_model,
-        ) if args.calibration_file or args.mic_serial
-        else resolved_household_sensitivity(mic)
-    )
+    if not explicit_calibration:
+        sensitivity = resolved_household_sensitivity(mic)
     if sensitivity is None:
         return _refused(
             REFUSE_MIC_CALIBRATION_UNAVAILABLE, MIC_CALIBRATION_UNAVAILABLE_DETAIL
@@ -148,7 +150,7 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     try:
         context = resolve_conductor_context(
             conductor_status(), topology=load_output_topology_strict(args.topology),
-            session_volume_db=START_FADER_DB,
+            require_banked_level=False,
         )
         spl_ceiling = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
         candidate = candidate_from_applied_profile(
@@ -159,9 +161,12 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             playback_device=context.playback_device,
             protection_sections_by_role=confirmed_protection_sections(context.safety_profile, context.role_targets),
         )
-    except (OSError, RuntimeError, ValueError, KeyError) as exc:
-        return _refused(getattr(exc, "code", REFUSE_CEILING_UNDERIVABLE), str(exc))
-    ceiling_db = 0.0
+    except (OSError, RuntimeError, ValueError, LookupError) as exc:
+        code = getattr(exc, "code", REFUSE_CEILING_UNDERIVABLE)
+        if code == "composition_saved_tune_unavailable":
+            code = "applied_baseline_snapshot_unavailable"
+        return _refused(code, str(exc))
+    ceiling_db = min(min(context.driver_caps_dbfs.values()) - BASE_STIMULUS_PEAK_DBFS, HARD_CEILING_DBFS)
 
     target = SeatLevelTarget(
         target_db_spl=args.target_db_spl, tolerance_db=args.tolerance_db
@@ -185,7 +190,6 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     graph = bind_measurement_graph(
         profile, camilla_factory=lambda: cam, config_dir=DEFAULT_CAMILLA_CONFIG_DIR, candidate=candidate,
     )
-    graph.select_scope("candidate", candidate.fingerprint)
 
     async def _restore() -> None:
         nonlocal restored
@@ -245,6 +249,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                     finally:
                         if bundle_dir is not None:
                             mark_state(bundle_dir, "closed")
+                            for audio in bundle_dir.rglob("*.wav"):
+                                audio.unlink(missing_ok=True)
 
     try:
         result = await _stoppable(_pass())
@@ -253,7 +259,7 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     except _OperatorStopped:
         return _refused(REFUSE_INTERRUPTED, "Stopped by the operator", restored=restored)
     except (OSError, RuntimeError, ValueError) as exc:
-        return _refused(getattr(exc, "code", "ramp_error"), str(exc), restored=restored)
+        return _refused(getattr(exc, "code", getattr(exc, "reason", "ramp_error")), str(exc), restored=restored)
     log_event(logger, "active_speaker.seat_level_result", status=result.status, reason=result.reason,
               gain_db=result.gain_db, leveled_db_spl=result.leveled_db_spl,
               ambient_db_spl=result.ambient_db_spl, readings=len(result.readings))
@@ -302,7 +308,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  2  usage error (argparse)"
         ),
     )
-    parser.add_argument("--stimulus-wav", help=argparse.SUPPRESS)
     parser.add_argument(
         "--target-db-spl",
         type=float,

@@ -168,7 +168,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
     "jasper.cli.basic_profile": _basic_profile_argv,
     "jasper.cli.mic_calibration": _mic_calibration_argv,
     "jasper.cli.seat_level": lambda tmp, mp: [
-        "--mic-serial", "no-such-serial", "--stimulus-wav", str(tmp / "absent.wav"),
+        "--mic-serial", "no-such-serial",
     ],
     "jasper.cli.angle_capture": lambda tmp, mp: [
         "serve", "--attest-rig-clear", "--hostname", "jts.local", "--settle-s", "-1",

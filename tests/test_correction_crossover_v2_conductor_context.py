@@ -784,21 +784,18 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
 
 
-@pytest.mark.parametrize("gain", [-40.0, None, 1.0, float("nan")])
-def test_leveling_resolves_hardware_before_a_session_gain_is_banked(monkeypatch, gain):
+@pytest.mark.parametrize("require_banked_level", [True, False])
+def test_leveling_resolves_hardware_before_a_session_gain_is_banked(monkeypatch, require_banked_level):
     topology = _topology(HIFIBERRY_DAC8X.id, 8)
     monkeypatch.setenv(ACTIVE_PLAYBACK_DEVICE_ENV, "hw:Lab")
     def missing(*args, **kwargs):
         raise session_volume_plan_mod.LevelUnresolved("seat_anchor_unusable", "missing")
     monkeypatch.setattr(session_volume_plan_mod, "session_measurement_volume_db", missing)
-    if gain is None:
+    if require_banked_level:
         with pytest.raises(CrossoverV2Refused) as caught:
             v2ctx.resolve_conductor_context(_status(), topology=topology)
         assert caught.value.code == "seat_anchor_unusable"
-    elif gain == -40.0:
-        context = v2ctx.resolve_conductor_context(_status(), topology=topology, session_volume_db=gain)
-        assert context.session_volume_db == gain
-        assert set(context.driver_caps_dbfs) == {"woofer", "tweeter"}
     else:
-        with pytest.raises(ValueError):
-            v2ctx.resolve_conductor_context(_status(), topology=topology, session_volume_db=gain)
+        context = v2ctx.resolve_conductor_context(_status(), topology=topology, require_banked_level=False)
+        assert context.session_volume_db is None
+        assert set(context.driver_caps_dbfs) == {"woofer", "tweeter"}

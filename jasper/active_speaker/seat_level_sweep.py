@@ -15,11 +15,12 @@ from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ, ExcitationP
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder
 
 from .auto_level import reading_budget
-from .capture_provenance import _stimulus_peak_dbfs
+from .capture_provenance import stimulus_peak_dbfs
 from .crossover_v2.composition import bind_program_composer
+from .crossover_v2.contracts import MEASURE_KIND_BASELINE
 from .crossover_v2.door import set_measurement_loudness
 from .crossover_v2.measure_spec import MeasureSpec
-from .crossover_v2.program_transaction import StimulusCaptureError, StimulusCaptureStopped
+from .crossover_v2.program_transaction import ProgramForStimulus, StimulusCaptureStopped
 from .crossover_v2.programs import SessionExcitation
 from .crossover_v2.wired_stimulus import WiredStimulusCapture
 from .program_playback import play_program
@@ -46,10 +47,11 @@ class SweepLevelReader:
         self.bundle_id = bundle_id
         self.provenance: StimulusProvenance | None = None
         self.first = True
+        self._last: tuple[tuple[bool, float], ProgramForStimulus] | None = None
         self.capture = WiredStimulusCapture(
             device=device, bundle_dir=Path(store.bundle_dir), spl_monitor=monitor,
         )
-        self.spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id=candidate.fingerprint)
+        self.spec = MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id=candidate.fingerprint)
         self.compose: Any = bind_program_composer(
             program_for_spec=lambda _spec, _peak: self.program(), store=store,
             capture_session_id=bundle_id, cam_factory=lambda: cam,
@@ -67,7 +69,7 @@ class SweepLevelReader:
     async def _before_play(self, spec: Any, program: Any, artifact: Any, phase: str) -> None:
         await hold_fader_at(self.excitation.session_volume_db, self.cam.get_volume_db,
                             context="seat_level_sweep")
-        peak = _stimulus_peak_dbfs(program)
+        peak = stimulus_peak_dbfs(program)
         assert peak is not None
         self.provenance = StimulusProvenance(
             program_id=program.program_id, phase=phase, wav_sha256=artifact.sha256,
@@ -76,12 +78,17 @@ class SweepLevelReader:
 
     async def read_level(self) -> float:
         gain = await read_fader_db(self.cam.get_volume_db)
-        if gain is None or gain > 0.0:
+        if gain is None:
             raise StimulusCaptureStopped("volume_latch_unconfirmed", "The fader is unreadable", PlaybackObservation(emission="not_started"))
+        if gain > 0.0:
+            raise StimulusCaptureStopped("fader_above_cap", "The fader is above the 0 dB cap", PlaybackObservation(emission="not_started"))
         self.excitation = replace(self.excitation, session_volume_db=gain)
         await set_measurement_loudness(self.cam, gain)
         await self.graph.install()
-        stimulus = await self.compose(spec=self.spec, level_db=gain)
+        key = (self.first, gain)
+        if self._last is None or self._last[0] != key:
+            self._last = (key, await self.compose(spec=self.spec, level_db=gain))
+        stimulus = self._last[1]
 
         async def play() -> None:
             await play_program(stimulus.program, session_volume_plan=self.plan, **stimulus.seams)
@@ -94,10 +101,12 @@ class SweepLevelReader:
                 raise self.monitor.error
             raise
         answer = self.capture.take_answer()
-        if answer is None:
-            raise StimulusCaptureError("The sweep produced no SPL observation")
+        spl = (answer.capture_integrity or {}).get("spl") or {} if answer is not None else {}
+        observed = spl.get("max_window_db_spl")
+        if observed is None:
+            raise StimulusCaptureStopped("mic_feed_lost", "The sweep produced no SPL observation", PlaybackObservation(emission="completed"))
         self.first = False
-        return float((answer.capture_integrity or {})["spl"]["max_window_db_spl"])
+        return float(observed)
 
     async def read_ambient(self) -> float:
         recorder = make_wired_recorder(

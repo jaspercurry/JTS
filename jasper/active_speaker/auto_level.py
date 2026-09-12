@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED, capped_gap_step_db
-from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
+from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
 from jasper.env_load import bounded_env_float
 
 from .volume_latch import read_fader_db, set_and_confirm_volume
@@ -61,6 +61,7 @@ async def level_to(
     get_main_volume_db: Callable[[], Awaitable[float | None]],
     set_main_volume_db: Callable[[float], Awaitable[object]],
 ) -> LevelResult:
+    """The watched reader enforces the SPL stop; an unwatched reader has no stop."""
     if not all(math.isfinite(value) for value in (
         target_db_spl, tolerance_db, stop_db_spl, max_main_volume_db, sensitivity.sens_factor_db,
     )) or tolerance_db <= 0 or target_db_spl + tolerance_db > stop_db_spl - MAX_STEP_DB - CEILING_MARGIN_DB:
@@ -108,7 +109,7 @@ async def level_to(
         result.ambient_db_spl = await ambient()
         budget = 1
         in_band: float | None = None
-        remeasured = ever_in_band = last_buried = False
+        remeasured = ever_unsettled = last_buried = False
         agree_db = bounded_env_float("JASPER_SEAT_LEVEL_SETTLED_AGREE_DB", AGREE_DB, lo=0.1, hi=3.0)
         while len(result.readings) < budget:
             observed = await reading(read_level)
@@ -130,7 +131,6 @@ async def level_to(
             max_rise = max(max_rise, observed - result.ambient_db_spl)
             gap = target_db_spl - observed
             if not buried and abs(gap) <= tolerance_db:
-                ever_in_band = True
                 if in_band is not None:
                     if abs(observed - in_band) > agree_db:
                         raise _Refused(REFUSE_LEVEL_UNSETTLED)
@@ -139,8 +139,9 @@ async def level_to(
                 in_band = observed
                 continue
             unsettled = in_band is not None
+            ever_unsettled |= unsettled
             in_band = None
-            if gain == cap and (buried or gap > tolerance_db):
+            if gain >= cap - 1e-9 and (buried or unsettled or gap > tolerance_db):
                 raise _Refused(_cap_reason())
             if len(result.readings) < budget:
                 if buried or unsettled:
@@ -153,11 +154,14 @@ async def level_to(
                         cap_db=MAX_STEP_DB,
                     )
                 await write(gain + step_db)
-        raise _Refused(REFUSE_LEVEL_UNSETTLED if ever_in_band and not last_buried else _cap_reason())
+        raise _Refused(REFUSE_LEVEL_UNSETTLED if ever_unsettled and not last_buried else _cap_reason())
     except WiredSplCeilingExceeded as exc:
         result.reason = SPL_CEILING_EXCEEDED
         if gain is not None:
             result.readings.append((gain, exc.observed_db_spl))
+        return result
+    except WiredCaptureError:
+        result.reason = "mic_feed_lost"
         return result
     except _Refused as exc:
         result.reason = exc.reason

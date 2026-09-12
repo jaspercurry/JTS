@@ -67,7 +67,10 @@ def pilot_gains(hi_gain_db: float) -> tuple[float, float]:
 
 
 def courtesy_prelude_for_phase(phase: str) -> bool:
-    """Shared by composers and capture duration budgets; see ADR-0308."""
+    """Announce a session, not every take (#1677).
+
+    Capture budgets share this decision so the prelude cannot overrun recording.
+    """
     return phase in COURTESY_PRELUDE_PHASES
 
 

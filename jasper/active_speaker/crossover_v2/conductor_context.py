@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
 
 from jasper.log_event import log_event
 
@@ -44,6 +44,7 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+_Level = TypeVar("_Level", bound=float | None)
 
 
 def conductor_status() -> dict[str, Any]:
@@ -72,7 +73,7 @@ def conductor_status() -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class V2ConductorContext:
+class V2ConductorContext(Generic[_Level]):
     """Everything the production conductor needs, resolved from live status."""
 
     preset: Any
@@ -87,7 +88,7 @@ class V2ConductorContext:
     driver_sweep_duration_limits_s: dict[str, float]
     role_targets: dict[str, str]
     safety_profile: Mapping[str, Any]
-    session_volume_db: float
+    session_volume_db: _Level
     #: The declared woofer<->tweeter acoustic-center spacing, in metres,
     #: or ``None`` when undeclared -- see ``design_draft.declared_driver_spacing_m``,
     #: the ONE owner of this fact. ``MeasurementGeometry.parallax_us`` treats
@@ -310,10 +311,25 @@ def _resolve_radiating_diameter_by_role(draft: Mapping[str, Any]) -> dict[str, f
     return out
 
 
+@overload
 def resolve_conductor_context(
-    status: Mapping[str, Any], *, topology: Any = None, session_volume_db: float | None = None,
+    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[True] = True,
+) -> V2ConductorContext[float]: ...
+
+
+@overload
+def resolve_conductor_context(
+    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[False],
+) -> V2ConductorContext[None]: ...
+
+
+def resolve_conductor_context(
+    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: bool = True,
 ) -> V2ConductorContext:
-    """Resolve the speaker inputs; leveling supplies a gain before one is banked."""
+    """Resolve confirmed limits before capture starts, not at play time (#1821).
+
+    Leveling resolves the speaker inputs before a session level can be banked.
+    """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.design_draft import (
@@ -485,7 +501,8 @@ def resolve_conductor_context(
         float(preset.crossover_regions[0].fc_hz)
         if preset.crossover_regions else None
     )
-    if session_volume_db is None:
+    session_volume_db = None
+    if require_banked_level:
         try:
             session_volume_db = session_measurement_volume_db(
                 safety_profile, [role_targets[role] for role in roles],
@@ -493,8 +510,6 @@ def resolve_conductor_context(
             )
         except LevelUnresolved as exc:
             raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
-    elif not math.isfinite(session_volume_db) or session_volume_db > 0:
-        raise ValueError("measurement volume must be finite and non-positive")
     playback_device, _playback_device_source = resolve_active_playback_device(
         topology
     )
