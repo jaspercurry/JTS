@@ -167,8 +167,8 @@ def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:
         f"plateau_{unit}": floor.p95_db,
         f"margin_{unit}": floor.claim_floor_db,
         "formula": (
-            "plateau_db = p95(|delta| between two touched-nothing repeats of "
-            "the aggregate metric); margin_db = CLAIM_FLOOR_P95_MULTIPLE * "
-            "plateau_db"
+            f"plateau_{unit} = p95(|delta| between two touched-nothing repeats of "
+            f"the aggregate metric); margin_{unit} = CLAIM_FLOOR_P95_MULTIPLE * "
+            f"plateau_{unit}"
         ),
     }

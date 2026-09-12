@@ -29,10 +29,7 @@ from jasper.cli._refusal import EXIT_WRITE_FAILED, StageFailed
 from ._common import (
     PROG,
     _ROUND_DIR_HELP,
-    _ROUND_DIR_METAVAR,
-    _load_round,
-    _view_out,
-    _write,
+    _ROUND_DIR_METAVAR, _load_round, _view_out, _write,
     answer, resolve_set, round_inputs, RoundViewsError, default_out,
 )
 
@@ -59,7 +56,7 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
             if not isinstance(analysis, dict) or not isinstance(analysis.get("trim_db"), dict):
                 raise RoundViewsError("take analysis is unavailable")
             for role, trim in analysis["trim_db"].items():
-                polarity = {"normal": 1.0, "inverted": -1.0}.get(analysis.get("polarity"))
+                polarity = {"normal": 1.0, "inverted": -1.0}.get(str(analysis.get("polarity")))
                 values = {"delay_us": analysis.get("delay_us"), "polarity": polarity,
                           "trim_db": trim, "ripple_db": analysis.get("predicted_ripple_db")}
                 for metric, value in values.items():

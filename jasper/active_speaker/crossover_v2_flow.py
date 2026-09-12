@@ -978,9 +978,6 @@ class CrossoverV2Session:
         # setup identity — the 2026-07-30 bench measured 0.775 dB of ordinary mic
         # replacement.
         self._verify_pilot_baseline: dict[str, float] | None = None
-        # #1873's discriminator: the PREVIOUS VERIFY attempt's out-of-tolerance
-        # ``max_db_notch_excluded``, in this session only. A MISMATCH, not a
-        # grade — an attempt inside tolerance clears it. SESSION-SCOPED because
         # WHEN this session set the reference above (epoch float), stamped in the same
         # statement so the two cannot disagree.
         self._verify_pilot_baseline_at: float | None = None
@@ -3728,7 +3725,6 @@ class CrossoverV2Session:
 
         if verdict.accepted and record.integrity.comparable:
             self._attempt_history = [*self._attempt_history, record][-MAX_ATTEMPT_HISTORY:]
-
 
     def _set_verify_outcome(
         self, outcome: str, code: str | None, gate: dict[str, Any] | None,

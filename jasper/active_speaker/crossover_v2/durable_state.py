@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-
 from jasper.active_speaker.candidate_trials import has_tuning_layers
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
@@ -33,7 +32,6 @@ PROVENANCE_REALIZED = "realized"
 
 @dataclass(frozen=True)
 class AttemptIntegrity:
-
     comparable: bool
     reasons: tuple[str, ...] = ()
 
@@ -43,7 +41,6 @@ class AttemptIntegrity:
 
 @dataclass(frozen=True)
 class AttemptRecord:
-
     attempt_id: str
     metric: str
     provenance: str
@@ -51,10 +48,7 @@ class AttemptRecord:
     sitting_id: str = ""
     repeats_used: int = 1
     grade_db: float | None = None
-    deviation_from_predecessor_db: float | None = None
     n_graded_bins: int | None = None
-    predicted_remaining_improvement_db: float | None = None
-    in_spec: bool | None = None
     curve_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -66,14 +60,6 @@ class AttemptRecord:
             raise ValueError(f"unknown provenance {self.provenance!r}")
         if self.repeats_used < 1:
             raise ValueError("repeats_used must be at least 1")
-        if (
-            self.deviation_from_predecessor_db is not None
-            and self.deviation_from_predecessor_db < 0.0
-        ):
-            raise ValueError(
-                "deviation_from_predecessor_db is a magnitude and cannot be "
-                "negative",
-            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,12 +70,7 @@ class AttemptRecord:
             "integrity": self.integrity.to_dict(),
             "repeats_used": self.repeats_used,
             "grade_db": self.grade_db,
-            "deviation_from_predecessor_db": self.deviation_from_predecessor_db,
             "n_graded_bins": self.n_graded_bins,
-            "predicted_remaining_improvement_db": (
-                self.predicted_remaining_improvement_db
-            ),
-            "in_spec": self.in_spec,
             "curve_refs": list(self.curve_refs),
         }
 
@@ -419,18 +400,8 @@ def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
                     else 1
                 ),
                 grade_db=_attempt_optional_float(row.get("grade_db")),
-                deviation_from_predecessor_db=_attempt_optional_float(
-                    row.get("deviation_from_predecessor_db")
-                ),
                 n_graded_bins=(
                     _attempt_optional_positive_int(row.get("n_graded_bins"))
-                ),
-                predicted_remaining_improvement_db=_attempt_optional_float(
-                    row.get("predicted_remaining_improvement_db")
-                ),
-                in_spec=(
-                    row.get("in_spec")
-                    if isinstance(row.get("in_spec"), bool) else None
                 ),
                 curve_refs=tuple(
                     str(ref) for ref in row.get("curve_refs", ())
