@@ -186,6 +186,7 @@ def analysis_json(
         ),
         "trim_decision": {
             **asdict(trim), "strategy": trim.strategy.value,
+            "committed_match": trim.committed_match.to_dict(),
             "outcome": trim.outcome, "committed_side": trim.committed_side,
         } if trim is not None else None,
         "polarity": align.polarity if align else None,

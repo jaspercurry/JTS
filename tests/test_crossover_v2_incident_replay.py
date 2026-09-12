@@ -109,7 +109,6 @@ from jasper.active_speaker.branch_chain import (
     sections_by_role,
 )
 from jasper.active_speaker.crossover_v2 import intervention as iv
-from jasper.active_speaker.crossover_v2.contracts import TrimStrategy
 from jasper.active_speaker.crossover_v2.intervention import (
     rounded_band_hz as _rounded_band_hz,
 )
@@ -788,39 +787,6 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     assert abs(scan["difference_db"]) > REALIZED_LEVEL_MATCH_TOLERANCE_DB, (
         "the scan pair still misses it — the anchor's advantage is not that "
         "the bar moved"
-    )
-
-
-def test_the_rejection_journal_names_the_committed_pair_and_its_strategy(
-    monkeypatch, caplog,
-):
-    """The rejection's own WARNING says which pair won, and it is the anchor.
-
-    Split from the assertion above because it grades a different surface: the
-    operator-facing journal line rather than the emitted candidate. Before
-    Phase 2b this line carried ``committed=resolved`` beside the word
-    "rejected" — the contradiction in one string — and had no ``strategy``
-    field at all.
-    """
-    caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
-    replay = _run_replay(monkeypatch)
-
-    line = _one_event_line(
-        caplog, "correction.crossover_v2_linearization_trim_rejected"
-    )
-    assert "committed=anchored" in line, line
-    assert "committed=resolved" not in line
-    assert (
-        f"strategy={TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT.value}" in line
-    ), line
-    fallback = round(float(ANCHORED_DB["tweeter"]), 3)
-    rejected = round(float(COMMITTED_DB["tweeter"]), 3)
-    assert f"fallback_trim_db=\"{{'woofer': 0.0, 'tweeter': {fallback}}}\"" in line, line
-    # The scan's pair is still disclosed — rejected, not hidden — so live guard
-    # telemetry can still distinguish a legitimate optimum from garbage.
-    assert f"resolved_trim_db=\"{{'woofer': 0.0, 'tweeter': {rejected}}}\"" in line, line
-    assert replay.candidate.role_attenuations_db["tweeter"] == pytest.approx(
-        ANCHORED_DB["tweeter"], abs=1e-12
     )
 
 

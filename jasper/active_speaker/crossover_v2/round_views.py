@@ -37,6 +37,10 @@ from jasper.active_speaker.flat_spec_views import (
     _pool,
 )
 from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
+from jasper.active_speaker.branch_chain import sections_by_role
+from jasper.active_speaker.linearization_fit import FitVocabulary
+from jasper.active_speaker.profile import CrossoverRegion
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches
 from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.driver_prescription import (
@@ -1788,18 +1792,6 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
 
     Observed only; no grade moves and ``round_receipt.json`` is untouched.
     """
-    from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
-    from jasper.active_speaker.branch_target import branch_target
-    from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db
-    from jasper.active_speaker.linearization_envelope import compose_envelope
-    from jasper.active_speaker.linearization_fit import (
-        FitVocabulary,
-        core_level_band_hz,
-        fit_driver_linearization,
-        measurement_hole_bands_hz,
-    )
-    from jasper.active_speaker.profile import CrossoverRegion
-
     round_dir = banked.round_dir
     candidate = _round_candidate(banked)
     linearization = _mapping(candidate.get("linearization"))
@@ -1852,47 +1844,16 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
             "crossover_regions"
         ) or ()
     )
-    role_sections = {role: sections.get(role, ()) for role in roles}
-    radiating = {role: radiating_band_hz(role_sections[role]) for role in roles}
-
-    def _fit_pair(*, wired: bool) -> dict[str, Any]:
-        """Both branches, composed before either is fitted."""
-        envelopes = {
-            role: compose_envelope(
-                role, responses[role],
-                excited_band_hz=excited[role],
-                mic_tier=tiers[role],
-                driver_class=classes[role],
-                sigma_db=compose_sigma_db(
-                    responses[role],
-                    responses[next(other for other in roles if other != role)],
-                    tier=tiers[role],
-                    valid_band_hz=excited[role],
-                ),
-                excluded_bands_hz=cloud_bands if wired else None,
-                band_spread=band_spread if wired else None,
-                n_positions=n_positions if wired else None,
-            )
-            for role in roles
-        }
-        # A hole belongs to the PAIR, so it is derived from both core bands and
-        # handed to each fit, exactly as the composer does it.
-        blind = measurement_hole_bands_hz([
-            core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role])
-            for role in roles
-        ])
-        return {
-            role: fit_driver_linearization(
-                responses[role], envelopes[role],
-                vocabulary=FitVocabulary(allow_boost=True),
-                radiating_band_hz=radiating[role],
-                blind_bands_hz=blind,
-                target=branch_target(role_sections[role], envelopes[role].freqs_hz),
-            )
-            for role in roles
-        }
-
-    wired_fits, severed_fits = _fit_pair(wired=True), _fit_pair(wired=False)
+    drivers = tuple(DriverEvidence(role, responses[role], excited[role], classes[role]) for role in roles)
+    _, wired_fits, _ = fit_branches(
+        drivers, sections=sections, mic_tiers=tiers,
+        vocabulary=FitVocabulary(allow_boost=True),
+        cloud=CloudFitTerms(cloud_bands, band_spread, n_positions),
+    )
+    _, severed_fits, _ = fit_branches(
+        drivers, sections=sections, mic_tiers=tiers,
+        vocabulary=FitVocabulary(allow_boost=True),
+    )
 
     grid_hz = DEFAULT_ENVELOPE_GRID_HZ
     octaves = octave_bands_hz(float(grid_hz[0]), float(grid_hz[-1]))
