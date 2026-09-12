@@ -47,7 +47,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from jasper.active_speaker.auto_level import SETTLE_TIMEOUT_S, START_FADER_DB, LevelResult, level_to
+from jasper.active_speaker.auto_level import MIC_WINDOW_S, SETTLE_TIMEOUT_S, START_FADER_DB, LevelResult, level_to
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TARGET_DB_SPL, DEFAULT_TOLERANCE_DB, SeatLevelTarget, SeatLevelTargetError,
@@ -426,7 +426,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                     return LevelResult("refused", "volume_latch_unconfirmed")
                 start = min(current, START_FADER_DB, ceiling_db, 0.0)
                 settle_s = bounded_env_float("JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S", SETTLE_TIMEOUT_S, lo=2.0, hi=30.0)
-                watchdog_s = (math.ceil((min(ceiling_db, 0.0) - start) / MAX_STEP_DB) + 7) * settle_s
+                readings = math.ceil((min(ceiling_db, 0.0) - start) / MAX_STEP_DB) + 7
+                watchdog_s = readings * (settle_s + 3 * MIC_WINDOW_S) + 4 * settle_s
                 plan.set_wall_clock_ceiling_s(watchdog_s + 60.0)
                 opened = await plan.open(start, door)
                 if opened is not SessionVolumeOpenResult.OPENED:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -831,11 +832,14 @@ def test_session_banks_only_a_level_and_always_restores(tmp_path, monkeypatch, c
         return True
     cam.get_volume_db, cam.set_volume_db = get, set_gain
     closed = []
+    watchdog_s = (math.ceil(40.0 / seat_level.MAX_STEP_DB) + 7) * (
+        8.0 + 3 * seat_level.MIC_WINDOW_S
+    ) + 4 * 8.0
     class Plan:
         def __init__(self, *, state_path):
             assert state_path == seat_level.DEFAULT_SESSION_VOLUME_STATE_PATH
         def set_wall_clock_ceiling_s(self, seconds):
-            assert seconds > 60
+            assert seconds - 60.0 == watchdog_s
         async def open(self, gain, door):
             self.entry = cam.gain
             await set_gain(gain)

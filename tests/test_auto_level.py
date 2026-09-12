@@ -15,14 +15,17 @@ from jasper.audio_measurement.ramp import LevelSample, SPL_CEILING_EXCEEDED
 
 class Chain:
     def __init__(self, monkeypatch, *, slope=1.0, offset=95.0, limiter=math.inf,
-                 current=-10.0, ambient=30.0, cap=0.0, unstable=False, clip=False):
+                 current=-10.0, ambient=30.0, cap=0.0, unstable=False, clip=False,
+                 jitter=None, jitter_floor_margin=0.0):
         self.slope, self.offset, self.limiter = slope, offset, limiter
         self.gain, self.ambient, self.cap = current, ambient, cap
         self.unstable, self.clip = unstable, clip
+        self.jitter, self.jitter_floor_margin = jitter, jitter_floor_margin
         self.time = 0.0
         self.playing = False
         self.writes = []
         self.windows = 0
+        self.peak_observed = -math.inf
         monkeypatch.setattr(level, 'time', SimpleNamespace(monotonic=lambda: self.time))
         monkeypatch.setattr(level, 'asyncio', SimpleNamespace(
             sleep=self.sleep, timeout=asyncio.timeout,
@@ -48,9 +51,16 @@ class Chain:
     async def samples(self):
         observed = self.ambient
         if self.playing:
-            observed = max(observed, min(self.limiter, self.offset + self.slope * self.gain))
+            signal = min(self.limiter, self.offset + self.slope * self.gain)
+            observed = max(observed, signal)
+            if self.jitter:
+                buried, clear = self.jitter
+                floor = self.ambient + level.MIC_RESPONSE_MIN_RISE_DB
+                jitter = buried if signal < floor + self.jitter_floor_margin else clear
+                observed += jitter * (-1) ** self.windows
             if self.unstable:
-                observed += 2.0 * self.windows
+                observed += 2.0 * (-1) ** self.windows
+        self.peak_observed = max(self.peak_observed, observed)
         self.windows += 1
         self.time += 0.501
         return [LevelSample(self.windows, 0, observed - 94.0, observed - 94.0, clip=self.clip)]
@@ -73,6 +83,74 @@ def test_converges_from_below_within_reading_budget(monkeypatch, slope, offset):
     assert result.gain_db == chain.gain
     assert not chain.playing
     assert all(b - a <= level.MAX_STEP_DB for a, b in zip(chain.writes, chain.writes[1:]))
+
+
+@pytest.mark.parametrize('offset,jitter_floor_margin', [
+    (78.0, 0.0), (80.0, 0.0), (82.0, 0.0), (84.0, 0.0), (90.0, 0.0),
+    (80.0, 2.0),
+])
+@pytest.mark.parametrize('phase', [0, 1])
+def test_buried_jitter_steps_up_without_settling(monkeypatch, phase, offset, jitter_floor_margin):
+    chain = Chain(monkeypatch, ambient=52.0, offset=offset, jitter=(0.8, 0.2),
+                  jitter_floor_margin=jitter_floor_margin)
+    chain.windows = phase
+    result = asyncio.run(chain.run())
+    floor = chain.ambient + level.MIC_RESPONSE_MIN_RISE_DB
+    buried = [(gain, reading) for gain, reading in result.readings if reading < floor]
+    assert result.status == 'converged'
+    assert abs(result.leveled_db_spl - 75.0) <= 1.0
+    budget = math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4 + len(buried)
+    assert len(result.readings) <= budget
+    assert len(buried) >= 2
+    assert result.readings[:len(buried)] == buried
+    assert all(b[0] - a[0] == level.MAX_STEP_DB for a, b in zip(buried, buried[1:]))
+
+
+def test_a_loud_room_uses_small_buried_steps(monkeypatch):
+    result = asyncio.run(Chain(monkeypatch, ambient=68.0).run())
+    assert result.status == 'converged'
+    assert max(reading for _, reading in result.readings) <= 77.0
+
+
+def test_an_in_band_unsettled_reading_nudges_once_then_refuses(monkeypatch):
+    chain = Chain(monkeypatch, unstable=True, offset=85.0)
+    result = asyncio.run(chain.run())
+    first_in_band = next(i for i, (_, reading) in enumerate(result.readings) if abs(reading - 75.0) <= 1.0)
+    first_in_band_gain = result.readings[first_in_band][0]
+    assert result.reason == level.REFUSE_LEVEL_UNSETTLED
+    assert len(result.readings) - first_in_band <= 4
+    assert max(chain.writes) <= first_in_band_gain + 1.0
+    for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
+        if reading > 75.0:
+            assert next_gain <= gain
+    assert chain.peak_observed < 75.0 + level.MAX_STEP_DB
+
+
+def test_a_noisy_loud_room_can_nudge_clear_of_the_floor(monkeypatch):
+    chain = Chain(monkeypatch, ambient=66.83, slope=1.786, offset=91.40,
+                  jitter=(0.699, 0.1186), jitter_floor_margin=2.0)
+    result = asyncio.run(chain.run())
+    assert result.status == 'converged'
+    assert abs(result.leveled_db_spl - 75.0) <= 1.0
+
+
+def test_random_non_hot_unsettled_climbs_never_step_up_when_high(monkeypatch):
+    rng = random.Random(212)
+    high_transitions = 0
+    for _ in range(500):
+        slope = rng.uniform(0.8, 2.0)
+        target_gain = rng.uniform(-28.0, -6.0)
+        chain = Chain(monkeypatch, slope=slope, offset=75.0 - slope * target_gain,
+                      ambient=rng.uniform(30.0, 60.0), unstable=True,
+                      jitter=(rng.uniform(0.6, 0.9), rng.uniform(0.1, 0.4)))
+        chain.windows = rng.randrange(2)
+        result = asyncio.run(chain.run())
+        assert result.reason != level.SPL_CEILING_EXCEEDED
+        for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
+            if reading > 76.0:
+                high_transitions += 1
+                assert next_gain <= gain
+    assert high_transitions > 0
 
 
 @pytest.mark.parametrize("slope,offset", [(1.0, 120.0), (1.0, 124.0), (1.2, 132.0)])
@@ -102,7 +180,7 @@ def test_random_linear_and_limiter_chains_respect_both_stops(monkeypatch):
 @pytest.mark.parametrize('kwargs,reason', [
     ({'limiter': 65.0}, level.REFUSE_LEVEL_UNREACHABLE),
     ({'slope': 0.0, 'offset': 30.0, 'cap': -20.0}, level.REFUSE_MIC_NOT_OBSERVING),
-    ({'unstable': True, 'offset': 70.0}, level.REFUSE_LEVEL_UNSETTLED),
+    ({'unstable': True, 'ambient': 68.0, 'offset': 114.0}, level.REFUSE_LEVEL_UNSETTLED),
     ({'ambient': 69.0}, level.REFUSE_AMBIENT_TOO_HIGH),
     ({'clip': True}, 'mic_clipping'),
     ({'offset': 140.0}, SPL_CEILING_EXCEEDED),
