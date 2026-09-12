@@ -166,14 +166,7 @@ def _rejected_plan(monkeypatch):
 
 
 def test_the_rejection_logs_the_ripple_at_the_trim_that_actually_ships(monkeypatch):
-    """``anchored_ripple_db`` is the linearized pair's ripple at the ANCHOR.
-
-    Not at the rejected trim, and not the raw pre-fit number — the two values
-    already in the event, and the two a mis-wiring would most plausibly log.
-    The expectation is re-derived from the branches the planner handed the
-    scan, so this fails on any change of curve family, band, statistic, or
-    trim.
-    """
+    """The anchor ripple uses the same branches and band as the scan."""
     plan, call = _rejected_plan(monkeypatch)
     fields = _rejection_fields(plan)
     anchored_t = float(plan.trim.anchored_db["tweeter"])
@@ -201,9 +194,6 @@ def test_the_rejection_logs_the_ripple_at_the_trim_that_actually_ships(monkeypat
     )
     assert len(set(trio)) == 3, trio
 
-    # The question the pair now answers, asserted as the reading it enables:
-    # on this fixture the rejected optimum is WORSE, so the guard threw away
-    # nothing — "garbage correctly caught", legible from the event alone.
     assert plan.trim.ripple_db > fields["anchored_ripple_db"]
 
 

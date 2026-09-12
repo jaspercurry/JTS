@@ -54,7 +54,8 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     relative_artifact_path(inputs.session_dir, path)
     record = json.loads(path.read_text())
     program = ExcitationProgram.from_dict(record["program"])
-    if read_run_manifest(inputs)["program"] != "speaker" or program.phase != "measure":
+    manifest = read_run_manifest(inputs)
+    if manifest["program"] != "speaker" or program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
     if program.program_id != selected.capture_basis["program_id"] or record["take_id"] != take_id:
         raise RoundViewsError("selected take does not match its manifest")
@@ -64,6 +65,12 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     analysis = candidate["analysis"]
     if analysis["program_id"] != program.program_id:
         raise RoundViewsError("banked analysis does not match the selected program")
+    # Remove this ambiguity check when candidate analysis carries a take ID.
+    matching_takes = {take["take_id"] for group in manifest["sets"]
+                      if group["capture_basis"].get("program_id") == program.program_id
+                      for take in group["takes"] if take["selected"]}
+    if matching_takes != {take_id}:
+        raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
     classes = _resolve_driver_class_by_role(json.loads(inputs.design_draft_path.read_text()))

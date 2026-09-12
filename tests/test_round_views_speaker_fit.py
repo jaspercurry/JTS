@@ -11,6 +11,7 @@ from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_ro
 from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db, decide_trim
 from jasper.active_speaker.crossover_v2.planning import analysis_json
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
@@ -65,7 +66,7 @@ def speaker_round(tmp_path):
                   curves=analysis_curve_records(analysis, program),
                   capture_setup={"calibration": {"model": "minidsp_umik2", "calibration_id": "mic-1"}},
                   capture_calibration={"applied": True, "calibration_id": "mic-1", "curve_fingerprint": "curve-1"})
-    record_path = inputs.session_dir / "evidence/v1/artifacts" / row.path
+    record_path = take_artifact_path(inputs.session_dir, row.path)
     record_path.write_text(json.dumps(record))
     classes = {"woofer": "unknown", "tweeter": "soft_dome"}
     (root / "design-draft.json").write_text(json.dumps({"manual_settings": {
@@ -115,6 +116,14 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(speaker_round, v
     assert alignment["committed"] == {"delay_us": 157.5, "polarity": "inverted", "ripple_db": 1.25}
     assert alignment["seed"] == {"delay_us": 120, "polarity": "normal", "ripple_db": 3.5}
     assert result["trim"] == json.loads(json.dumps({**asdict(trim), "outcome": trim.outcome, "committed_side": trim.committed_side}))
+    pending = [result]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            assert len(value) <= 16
+            pending.extend(value)
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
@@ -126,3 +135,27 @@ def test_unknown_set_uses_registry_refusal(speaker_round, capsys):
     assert result["reason"] in REASON_REGISTRY
     assert result["status"] == "refused"
     assert result["detail"]["set_id"] == "unknown"
+
+
+@pytest.mark.parametrize("applied", [False, True])
+def test_mic_tier_uses_the_recorded_calibration(speaker_round, capsys, applied):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    record["capture_setup"]["calibration"]["model"] = "dayton_umm6"
+    record["capture_calibration"]["applied"] = applied
+    take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert {entry["fit"]["mic_tier"] for entry in result["linearization"].values()} == {"consumer" if applied else "phone"}
+
+
+def test_a_program_shared_by_takes_cannot_identify_the_banked_analysis(speaker_round, capsys):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    group = manifest_set([(row.path, record)], set_id="speaker-set")
+    second = manifest_set([(row.path, {**record, "take_id": "second-take"})], set_id="second-set")
+    write_manifest(root, groups=[group, second])
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == round_views.REASON_REFUSED
