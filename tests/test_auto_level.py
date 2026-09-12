@@ -115,7 +115,11 @@ def test_a_loud_room_uses_small_buried_steps(monkeypatch):
 def test_an_unsettled_reading_above_target_steps_down(monkeypatch):
     chain = Chain(monkeypatch, unstable=True, offset=85.0)
     result = asyncio.run(chain.run())
-    assert any(reading > 75.0 for _, reading in result.readings)
+    first_in_band = next(i for i, (_, reading) in enumerate(result.readings) if abs(reading - 75.0) <= 1.0)
+    first_in_band_gain = result.readings[first_in_band][0]
+    assert result.reason == level.REFUSE_LEVEL_UNSETTLED
+    assert len(result.readings) - first_in_band <= 4
+    assert max(chain.writes) <= first_in_band_gain
     for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
         if reading > 75.0:
             assert next_gain <= gain

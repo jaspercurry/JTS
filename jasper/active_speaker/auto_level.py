@@ -167,6 +167,7 @@ async def level_to(
         remeasured = False
         last_settled = True
         last_buried = False
+        unsettled_in_band = 0
         agree_db = _settled_agree_db()
         while len(result.readings) < budget:
             first = await _window_reading(
@@ -201,16 +202,25 @@ async def level_to(
                 remeasured = True
                 await start()
                 in_band = 0
+                unsettled_in_band = 0
                 if last_settled or (last_buried and observed >= result.ambient_db_spl + min_rise):
                     continue
             max_rise = max(max_rise, observed - result.ambient_db_spl)
-            if last_buried or not last_settled:
+            gap = target_db_spl - observed
+            if not last_buried and not last_settled and abs(gap) <= tolerance_db:
+                in_band = 0
+                unsettled_in_band += 1
+                if unsettled_in_band >= 2:
+                    raise _Refused(REFUSE_LEVEL_UNSETTLED)
+                continue
+            unsettled_in_band = 0
+            if not last_settled:
                 in_band = 0
                 if gain == cap:
                     raise _Refused(_cap_reason())
                 if len(result.readings) < budget:
-                    gap = target_db_spl - observed
-                    step_db = math.copysign(min(MAX_STEP_DB, max(1.0, DAMPING * abs(gap))), gap)
+                    magnitude = min(MAX_STEP_DB, max(1.0, DAMPING * abs(gap)))
+                    step_db = magnitude if gap >= 0 else -magnitude
                     await write(gain + step_db)
                 continue
             in_band = in_band + 1 if abs(observed - target_db_spl) <= tolerance_db and observed - result.ambient_db_spl >= min_rise else 0
