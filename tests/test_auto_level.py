@@ -15,10 +15,12 @@ from jasper.audio_measurement.ramp import LevelSample, SPL_CEILING_EXCEEDED
 
 class Chain:
     def __init__(self, monkeypatch, *, slope=1.0, offset=95.0, limiter=math.inf,
-                 current=-10.0, ambient=30.0, cap=0.0, unstable=False, clip=False):
+                 current=-10.0, ambient=30.0, cap=0.0, unstable=False, clip=False,
+                 jitter=None):
         self.slope, self.offset, self.limiter = slope, offset, limiter
         self.gain, self.ambient, self.cap = current, ambient, cap
         self.unstable, self.clip = unstable, clip
+        self.jitter = jitter
         self.time = 0.0
         self.playing = False
         self.writes = []
@@ -48,7 +50,12 @@ class Chain:
     async def samples(self):
         observed = self.ambient
         if self.playing:
-            observed = max(observed, min(self.limiter, self.offset + self.slope * self.gain))
+            signal = min(self.limiter, self.offset + self.slope * self.gain)
+            observed = max(observed, signal)
+            if self.jitter:
+                buried, clear = self.jitter
+                floor = self.ambient + level.MIC_RESPONSE_MIN_RISE_DB
+                observed += (buried if signal < floor else clear) * (-1) ** self.windows
             if self.unstable:
                 observed += 2.0 * self.windows
         self.windows += 1
@@ -73,6 +80,21 @@ def test_converges_from_below_within_reading_budget(monkeypatch, slope, offset):
     assert result.gain_db == chain.gain
     assert not chain.playing
     assert all(b - a <= level.MAX_STEP_DB for a, b in zip(chain.writes, chain.writes[1:]))
+
+
+@pytest.mark.parametrize('phase', [0, 1])
+def test_buried_jitter_steps_up_without_settling(monkeypatch, phase):
+    chain = Chain(monkeypatch, ambient=52.0, offset=84.0, jitter=(0.8, 0.2))
+    chain.windows = phase
+    result = asyncio.run(chain.run())
+    floor = chain.ambient + level.MIC_RESPONSE_MIN_RISE_DB
+    buried = [(gain, reading) for gain, reading in result.readings if reading < floor]
+    assert result.status == 'converged'
+    assert abs(result.leveled_db_spl - 75.0) <= 1.0
+    assert len(result.readings) <= math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
+    assert len(buried) >= 2
+    assert result.readings[:len(buried)] == buried
+    assert all(b[0] - a[0] == level.MAX_STEP_DB for a, b in zip(buried, buried[1:]))
 
 
 @pytest.mark.parametrize("slope,offset", [(1.0, 120.0), (1.0, 124.0), (1.2, 132.0)])
