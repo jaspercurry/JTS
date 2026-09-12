@@ -445,7 +445,7 @@ class _FakeEvidenceStore:
 
 def _drive_one_capture(
     monkeypatch, tmp_path, *, phase: str, cam: _FakeCam,
-    graph_scope: str | None = None, plan: _FakePlan | None = None,
+    graph_scope: str | None = None, plan: _FakePlan | None = None, bass_extension=None,
 ) -> dict[str, Any] | None:
     """Run the shared session, composer and analyzer with hardware stand-ins."""
     from jasper import dsp_apply
@@ -457,7 +457,7 @@ def _drive_one_capture(
     from jasper.audio_measurement import program_analysis as pa_mod
     from tests.engine_twin import FakeGraph, FakeRecords, FakeVolume
 
-    scope = graph_scope or ("drivers" if phase == PHASE_CHECK else "speaker_tune")
+    scope = graph_scope or ("drivers" if phase == PHASE_CHECK else "candidate")
     program = _program() if scope == "drivers" else build_verify_program(2000.0, sweep_s=0.3)
     plan = plan or _FakePlan()
     entry_graph = cam.active_raw
@@ -493,18 +493,21 @@ def _drive_one_capture(
             return "capture.wav"
 
     graph, records = Graph(), FakeRecords()
-    monkeypatch.setattr(
-        v2host,
-        "load_applied_baseline_profile_state",
-        lambda: {
-            "source": {"measured_candidate_fingerprint": "speaker-candidate-fp"}
-        },
-    )
     monkeypatch.setattr(door, "bind_measurement_graph", lambda *a, **kw: graph)
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _FakeWindow(cam))
     monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
+    from dataclasses import replace
+    from jasper.active_speaker import candidate_bank
+    from tests.test_active_speaker_measured_crossover_candidate import _candidate
+
+    candidate = replace(_candidate(), bass_extension=bass_extension or {})
+    monkeypatch.setattr(candidate_bank, "find_banked_candidate", lambda *_: SimpleNamespace(candidate=candidate))
+    def readmit(*args, **kwargs):
+        if scope != "drivers":
+            assert kwargs["bass_extension"] == candidate.bass_extension
+        return SimpleNamespace(allowed=True)
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
-        monkeypatch.setattr(program_admission, name, lambda *a, **kw: SimpleNamespace(allowed=True))
+        monkeypatch.setattr(program_admission, name, readmit)
     monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
     v2host.set_volume_plan_for_tests(plan)
     recorder, carry = CaptureProvenanceRecorder(), CaptureProvenanceRecorder()
@@ -522,7 +525,7 @@ def _drive_one_capture(
         graph_scope=scope,
         candidate_id=(
             "candidate-fp"
-            if scope in {"candidate", "room_candidate"}
+            if scope == "candidate"
             else ""
         ),
         program_phase=phase,
@@ -694,20 +697,20 @@ def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "scope", ["drivers", "base", "speaker_tune", "candidate", "room_candidate"]
+    "scope", ["drivers", "candidate"]
 )
-def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_path, scope):
+@pytest.mark.parametrize("bass", [False, True])
+def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_path, scope, bass):
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
     phase = PHASE_CHECK if scope == "drivers" else PHASE_CLOUD_VERIFY
     cam, plan = _FakeCam(volume_db=-20.0), _FakePlan()
     carried = _drive_one_capture(
         monkeypatch, tmp_path, phase=phase, cam=cam, graph_scope=scope, plan=plan,
+        bass_extension=BASS_EXTENSION if bass else {},
     )
     assert carried is not None
     assert carried["main_volume_db"] == -20.0
     assert carried["stimulus"]["phase"] == phase
-    if scope in {"speaker_tune", "room_candidate"}:
-        assert carried["graph"]["speaker_candidate_id"] == "speaker-candidate-fp"
-    else:
-        assert "speaker_candidate_id" not in carried["graph"]
+    assert "speaker_candidate_id" not in carried["graph"]
     assert plan.holds == [f"capture:{phase}"]
     assert cam.volume_writes == []

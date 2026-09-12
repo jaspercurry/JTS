@@ -20,8 +20,8 @@
 > [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); the layer
 > architecture is
 > [`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md);
-> the program's planning authority is
-> [`tuning-master-plan.md`](../tuning-master-plan.md). Where a ruling below has
+> the program's decisions are in the
+> [ADR index](../adr/README.md). Where a ruling below has
 > since been amended, the amendment is stated inline rather than the ruling
 > being rewritten. Frozen: no further edits.
 

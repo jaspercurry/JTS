@@ -72,11 +72,11 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 
 def baseline_scope(purpose: str | None) -> str:
     if _validated_purpose(purpose) == PURPOSE_BASS:
-        return "room_tune"
+        return "room"
     return (
-        "speaker_tune"
+        "speaker"
         if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_REFERENCE)
-        else "base"
+        else "preset"
     )
 
 

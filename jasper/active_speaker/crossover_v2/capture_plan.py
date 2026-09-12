@@ -93,8 +93,9 @@ def prepare_plan_captures(
     )
 
     resolved = resolve_request(request)
+    baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
     placed = stop_specs(request, candidate_scopes=candidate_scopes,
-                        prompts=tuple(stop.prompt for stop in resolved))
+                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids)
     captures: list[PlanCapture] = []
     if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
         captures.append(PlanCapture(
@@ -108,7 +109,7 @@ def prepare_plan_captures(
             headline="", detail="", regime=REGIME_SUMMED),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request, candidate_scopes={},
-                                prompts=(resolve_request(base_request)[0].prompt,))
+                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids)
         assert base_spec is not None
         captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
     for offset, spec in enumerate(placed):

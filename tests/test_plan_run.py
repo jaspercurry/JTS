@@ -42,6 +42,16 @@ def _analysis(_record, _record_id):
     return ProgramAnalysis(phase="verify", program_id="test", locations=(_loc("sweep"),))
 
 
+def fake_program_baselines(monkeypatch):
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids",
+                        lambda purposes: {purpose or "speaker": "baseline-" + (purpose or "speaker") for purpose in purposes})
+
+
+@pytest.fixture(autouse=True)
+def banked_program_baselines(monkeypatch):
+    fake_program_baselines(monkeypatch)
+
+
 @dataclass
 class _StoppingGraph(FakeGraph):
     stop_after: int = 0
@@ -84,12 +94,12 @@ class _Store:
         return await self.records.bank(record)
 
 
-async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None):
+async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None):
     fakes = seams or FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     async with open_session(replace(fakes, records=manifest)) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                         gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, signals=signals)
+                                         gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, signals=signals, captures=captures)
     return result, fakes
 
 
@@ -521,3 +531,31 @@ def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
     result, _ = asyncio.run(_run_gated(request, seams=FakeSeams(graph=_StoppingGraph(stop_after=1))))
     assert result.stopped_at["index"] == 2
     assert result.specs[result.stopped_at["index"]].candidate_id == "fp-a"
+
+
+@pytest.mark.parametrize("available", [True, False])
+@pytest.mark.parametrize("prepared", [True, False])
+def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepared):
+    from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
+    from jasper.active_speaker.crossover_v2.capture_plan import prepare_plan_captures
+    calls = []
+    def baselines(purposes):
+        calls.append(tuple(purposes))
+        if not available:
+            raise MeasurementGraphRefused("measurement_baseline_unavailable", {})
+        return {"speaker": "banked-base"}
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids", baselines)
+    monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
+    request = replace(_walk([0, 20, -20], ("base",)), repeats=2)
+    captures = prepare_plan_captures(request, candidate_scopes={}) if prepared else None
+    assert calls == []
+    result, fakes = asyncio.run(_run_gated(request, captures=captures))
+    assert len(calls) == 1
+    if available:
+        assert result.status == "complete"
+        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * (6 + prepared)
+        assert fakes.graph.scopes == [("candidate", "banked-base")] * (6 + prepared)
+    else:
+        assert result.reason == "measurement_baseline_unavailable"
+        assert result.finalized and not result.attempts
+        assert not fakes.banked

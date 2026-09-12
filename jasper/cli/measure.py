@@ -594,7 +594,7 @@ def _bind_compose(
             if spec.graph_scope in CANDIDATE_SCOPES else None
         )
         return measurement_bass_extension(
-            measurement_profile, scope=spec.graph_scope, candidate=candidate,
+            scope=spec.graph_scope, candidate=candidate,
         )
 
     return bind_program_composer(
@@ -758,7 +758,6 @@ async def _measure(
             role_channels={"woofer": 0, "tweeter": 1},
             playback_device=box.playback_device,
             protection_sections_by_role=box.protection_sections_by_role,
-            applied_profile=load_applied_baseline_profile_state(),
         )
         async with measurement_door(
             profile=measurement_profile,
@@ -781,7 +780,7 @@ async def _measure(
                 expected_session_id=str(info["session_id"]),
             )
             manifest = RunManifest(session_id, BankedRecordStore(store, session_id),
-                                   incumbent=incumbent_fingerprints(measurement_profile.applied_profile))
+                                   incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
                 setup_reference=_wired_setup_reference,

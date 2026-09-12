@@ -45,7 +45,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     AdoptionOutcome,
     BenefitStatus,
     CaptureValidity,
-    CrossoverV2ContractError,
     EvidenceTrust,
     QualityStatus,
     RealizationStatus,
@@ -834,16 +833,8 @@ def test_the_rounds_residual_is_the_union_masked_number_the_benefit_axis_graded(
     assert evaluation.benefit.evidence["n_bins"] == union[1]
 
 
-#: Every production read of :attr:`RoundEvaluation.post_residual_db` /
-#: ``post_residual_bins``, as ``<module path>::<enclosing scope>``. The field's
-#: docstring says its readership IS the round's journal line; #2433 exists
-#: because the neighbouring claim about a SECOND consumer was never pinned by
-#: anything, and shipped wrong. ``to_dict``'s own sole production caller is
-#: ``_log_round``, and ``_regrade_after_failed_restore`` copies the pair onto
-#: the re-graded evaluation it then re-logs — so all three are the journal.
 POST_RESIDUAL_FIELD_READERS = frozenset({
     "jasper/active_speaker/crossover_v2/coordinator.py::_log_round",
-    "jasper/active_speaker/crossover_v2/coordinator.py::_regrade_after_failed_restore",
     "jasper/active_speaker/crossover_v2/round_evidence.py::RoundEvaluation.to_dict",
 })
 
@@ -1056,7 +1047,7 @@ def _receipt_kwargs(evaluation, baseline, **overrides):
         proposal_fingerprint_kind="intervention_proposal",
         applied_graph_fingerprint="applied-fp",
         post_measurement={"program_id": "prog-a"},
-        restore_result=None,
+        advice=None,
         evidence_identities={"commanded_delta": "delta-fp"},
         created_at="2026-08-11T00:05:00Z",
     )
@@ -1115,31 +1106,6 @@ def test_the_receipt_fingerprint_moves_when_a_committed_value_moves():
         assert (
             round_evidence.build_round_receipt(**moved).fingerprint != reference
         ), f"{field} is committed and must reach the fingerprint"
-
-
-def test_a_recovery_required_round_must_record_what_the_restore_did():
-    """The contract's own invariant, reached through the assembler.
-
-    A recovery that cannot say what the restore did is not a receipt — and
-    the assembler must not be a way around that.
-    """
-
-    flat_baseline = _baseline_from(_flatter(_post(), factor=0.2))
-    worse_post = _flatter(_post(tracking_db=0.4), factor=2.0)
-    evaluation = _round(worse_post, flat_baseline, restore_failed=True)
-
-    with pytest.raises(CrossoverV2ContractError):
-        round_evidence.build_round_receipt(
-            **_receipt_kwargs(evaluation, flat_baseline, restore_result=None)
-        )
-
-    assert round_evidence.build_round_receipt(
-        **_receipt_kwargs(
-            evaluation,
-            flat_baseline,
-            restore_result={"restored": False, "error": "socket"},
-        )
-    ).fingerprint
 
 
 def test_the_margin_is_positive_and_the_evaluator_accepts_it():

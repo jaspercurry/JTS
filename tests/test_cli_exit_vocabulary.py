@@ -111,9 +111,9 @@ def test_the_exempt_modules_are_real_and_in_the_menu(module_name: str) -> None:
 
 
 @pytest.mark.parametrize("fields", [
-    {}, {"code": "measurement_candidate_room_mismatch"},
+    {}, {"code": "measurement_candidate_speaker_mismatch"},
     {"next_action": {"id": "apply_matching_room_layer"}},
-    {"code": "measurement_candidate_room_mismatch",
+    {"code": "measurement_candidate_speaker_mismatch",
      "next_action": {"id": "apply_matching_room_layer"}},
 ])
 @pytest.mark.parametrize(("code", "status"), sorted(_refusal.STATUS_BY_CODE.items()))
@@ -265,9 +265,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "co-metrics": _NO_CLOUD_GROUP,
     "directivity": _NO_CLOUD_GROUP,
     "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
-    "forward-model": lambda r: [
-        "forward-model", str(r.measured), "--measured-round", str(r.verified),
-    ],
+    "forward-model": _NO_CAPTURES,
     "spec-sweep": _NO_CLOUD_GROUP,
     "gate-sweep": _NO_CAPTURES,
     "windows": _NO_CAPTURES,

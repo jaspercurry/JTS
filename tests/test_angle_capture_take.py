@@ -22,6 +22,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import candidate_bank

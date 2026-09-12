@@ -188,8 +188,8 @@ def test_capture_holds_the_idle_exit_for_the_whole_background_session():
 
 @pytest.mark.parametrize("exc,code", [
     (RuntimeError("link timeout"), None),
-    (MeasurementGraphRefused("measurement_candidate_room_mismatch", {}),
-     "measurement_candidate_room_mismatch"),
+    (MeasurementGraphRefused("measurement_candidate_required", {}),
+     "measurement_candidate_required"),
     (MeasurementGraphRefused("measurement_unregistered", {}), "measurement_unregistered"),
 ])
 def test_capture_releases_the_idle_hold_when_the_runner_fails(exc, code):
@@ -217,8 +217,8 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails(exc, code):
         failure = correction_capture._get_capture_slot()
         assert failure["code"] == code
         assert failure["ok"] is False
-        if code == "measurement_candidate_room_mismatch":
-            assert failure["next_action"]["id"] == "apply_matching_room_layer"
+        if code == "measurement_candidate_required":
+            assert failure["next_action"]["id"] == "select_candidate"
         else:
             assert failure["next_action"] is None
         if code == "measurement_unregistered":

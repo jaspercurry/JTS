@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
 from jasper.log_event import log_event
 from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
+from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY, PHASE_CLOUD_VERIFY
 from jasper.web._common import refusal_envelope
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,8 @@ def build_v2_wired_run_and_consume(
             async def body() -> None:
                 measured.append(await tuning.measure(spec))
             await host._play_under_session_pause(body)
+            if spec.program_phase in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
+                await tuning.restore_graph()
             return measured[0]
 
         def publish_failure(exc: BaseException) -> str:

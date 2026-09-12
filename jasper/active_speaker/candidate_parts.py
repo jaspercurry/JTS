@@ -6,18 +6,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, cast
 
 import yaml
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import OutputTopology, load_output_topology_strict
 
 from .branch_chain import branch_headroom_db, sections_by_role
-from .candidate_bank import BankedCandidate, CandidateBankRefusal
-from .baseline_profile import applied_baseline_hardware_match, recompose_applied_baseline_yaml
+from .candidate_bank import BankedCandidate, CandidateBankRefusal, publish_authored_candidate
+from .baseline_profile import applied_baseline_hardware_match, load_applied_baseline_profile_state, recompose_applied_baseline_yaml
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
@@ -29,7 +29,9 @@ from .measured_crossover_candidate import (
     prove_candidate_config,
 )
 
+from .measurement_emit import MeasurementGraphRefused
 from .profile import ActiveSpeakerPreset
+from .measurement_programs import baseline_scope
 
 COMPOSITION_KIND = "jts_candidate_composition"
 _INHERIT = object()
@@ -52,9 +54,9 @@ def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any]
 
 
 def candidate_from_applied_profile(
-    topology: OutputTopology, applied_profile: Mapping[str, Any],
+    topology: OutputTopology, applied_profile: Mapping[str, Any], *, purpose: str | None = None,
 ) -> MeasuredCrossoverCandidate:
-    """Recover an authored candidate only when it reproduces the saved tune."""
+    """Compose the saved tune or a program baseline from the applied layers."""
     snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
     if snapshot is None:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
@@ -100,7 +102,24 @@ def candidate_from_applied_profile(
     if any(desired.get(key) != actual.get(key) for key in ("filters", "mixers", "processors", "pipeline")):
         raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "candidate would change saved processing or protection")
     prove_candidate_config(candidate, emitted)
-    return candidate
+    scope = baseline_scope(purpose) if purpose is not None else None
+    return candidate if scope is None else replace(candidate, bass_extension={},
+                   room_correction=candidate.room_correction if scope == "room" else {},
+                   linearization={} if scope == "preset" else candidate.linearization,
+                   blend_correction=() if scope == "preset" else candidate.blend_correction)
+
+
+def baseline_candidate_ids(purposes: Iterable[str | None]) -> dict[str, str]:
+    programs = set(purpose or "speaker" for purpose in purposes)
+    if not programs:
+        return {}
+    try:
+        topology, applied = load_output_topology_strict(), load_applied_baseline_profile_state() or {}
+        return {purpose: publish_authored_candidate(candidate_from_applied_profile(
+            topology, applied, purpose=purpose,
+        )).fingerprint for purpose in sorted(programs)}
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
 
 
 def compose_candidate(
@@ -109,20 +128,13 @@ def compose_candidate(
     *,
     alignment: BankedCandidate | None = None,
     blend: BankedCandidate | None = None,
-    expected_effect: str = "",
-    observation_refs: Sequence[str] = (),
-    rationale: str = "",
+    expected_effect: str = "", observation_refs: Sequence[str] = (), rationale: str = "",
     room_correction: Mapping[str, Any] | None = None,
     room_prescription_sha256: str = "",
     room_measured_basis: Mapping[str, Any] | None = None,
     bass_extension: Mapping[str, Any] | object = _INHERIT,
 ) -> MeasuredCrossoverCandidate:
-    """Replace selected parts and preserve downstream layers when the tune stays.
-
-    A speaker-layer change drops inherited Room and bass settings. An explicit
-    room prescription beside a speaker change is refused because its measured
-    basis no longer matches.
-    """
+    """Replace selected parts without inheriting their measurement claims."""
     tune_changed = bool(roles or alignment is not None or blend is not None)
     if bass_extension is not _INHERIT and not isinstance(bass_extension, Mapping):
         raise CandidateBankRefusal("composition_bass_invalid", "bass extension must be an object")
@@ -151,14 +163,8 @@ def compose_candidate(
             continue
         entry = source.candidate.linearization[role]
         filters = entry.get("filters", []) if isinstance(entry, Mapping) else None
-        linearization[role] = _linearization_entry(
-            filters, role=role, sections=sections, trim_db=trims[role],
-        )
-    room = dict(
-        room_correction
-        if room_correction is not None
-        else ({} if tune_changed else base.candidate.room_correction)
-    )
+        linearization[role] = _linearization_entry(filters, role=role, sections=sections, trim_db=trims[role])
+    room = dict(room_correction if room_correction is not None else ({} if tune_changed else base.candidate.room_correction))
     bass = dict(
         base.candidate.bass_extension
         if bass_extension is _INHERIT and not tune_changed and room_correction is None
@@ -171,9 +177,7 @@ def compose_candidate(
         "role_sources": {role: _source(source) for role, source in sources.items()},
         "alignment_source": _source(alignment),
         "blend_source": _source(blend),
-        "expected_effect": expected_effect,
-        "observation_refs": list(observation_refs),
-        "rationale": rationale,
+        "expected_effect": expected_effect, "observation_refs": list(observation_refs), "rationale": rationale,
     }
     if room:
         measured_basis = dict(room_measured_basis or {})
@@ -190,15 +194,11 @@ def compose_candidate(
     elif tune_changed and base.candidate.room_correction:
         analysis["room_source"] = {"dropped_from_base": base.fingerprint}
     candidate = MeasuredCrossoverCandidate(
-        program_id=COMPOSITION_KIND,
-        analysis=analysis,
-        source_preset=preset,
-        role_attenuations_db=trims,
+        program_id=COMPOSITION_KIND, analysis=analysis, source_preset=preset, role_attenuations_db=trims,
         alignment=alignment.candidate.alignment,
         linearization=linearization,
         blend_correction=blend.candidate.blend_correction,
-        room_correction=room,
-        bass_extension=bass,
+        room_correction=room, bass_extension=bass,
     )
     # The room set is emitted here so the emitter's headroom charge runs at
     # compose rather than at apply.

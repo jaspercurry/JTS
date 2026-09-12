@@ -16,6 +16,7 @@ must be present, by name, when one is not.
 from __future__ import annotations
 
 import json
+import shutil
 import math
 import wave
 from collections.abc import Mapping, Sequence
@@ -24,6 +25,11 @@ from typing import Any
 
 import numpy as np
 import pytest
+from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
+from jasper.cli.round_views import main
+from jasper.active_speaker.round_bank import bank_round
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
 from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
 from jasper.active_speaker.crossover_v2.feature_classifier import (
@@ -35,6 +41,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
 )
 from jasper.audio_measurement.bundles import sha256_file
+from jasper.audio_measurement.calibration import SUPPORTED_MODELS
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading
 from jasper.audio_measurement.program import (
     FrequencyBand, RoleBand, build_measure_program, render_program_pcm, write_program_wav,
@@ -265,19 +272,9 @@ def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
     assert "harmonics" in _not_evaluated_fields(packet)
 
 
-
-
 # --------------------------------------------------------------------------- #
 # the enrichment rule — every published field is declared
 # --------------------------------------------------------------------------- #
-
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------------- #
@@ -895,7 +892,7 @@ def _ring(tmp_path: Path, rows: Sequence[tuple[str, str, str | None]]) -> Path:
 
 
 def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
-    """``--dumps`` means ONE directory across two tools, proven on one ring.
+    """Both instruments read one sidecar and WAV layout.
 
     ``jasper-round-views distortion`` and ``classify-features`` both take the
     ring ROOT — the ``dumps/wav/`` beside ``dumps/sidecar/`` split a
@@ -1092,11 +1089,10 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     bundle = tmp_path / "bundle"
     (bundle / "evidence/v1/artifacts/crossover_v2/cap-1").mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": "s-1"}))
-    flow_state = tmp_path / "flow_state.json"
-    flow_state.write_text(json.dumps({"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}))
+    flow_state = bundle / "crossover-v2-state.json"
+    flow_state.write_text(json.dumps({"session_id": "cap-1", "gain_plan_db": {"woofer": -6.0, "horn": -31.2}}))
     assert main([
-        "distortion", str(bundle), "--dumps", str(tmp_path),
-        "--state", str(flow_state),
+        "distortion", str(bundle),
     ]) == EXIT_REFUSED
 
     program = build_measure_program(
@@ -1121,7 +1117,7 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     # A 1-way round measured on a non-default band gets an operator remedy,
     # same as the pair's --woofer-band / --tweeter-band.
     args = build_parser().parse_args(
-        ["distortion", "bundle", "--dumps", "d", "--state", "s",
+        ["distortion", "bundle",
          "--full-range-band", "45:18000"],
     )
     assert args.full_range_band == (45.0, 18000.0)
@@ -1506,3 +1502,65 @@ def test_harmonics_output_directory_name_is_not_capture_identity(harmonic_captur
     assert sha256_file(wav) == document["wav_sha256"]
     assert json.loads(sidecar.read_text()) == document
     assert json.loads(output.read_text()) == original
+
+
+@pytest.mark.parametrize("first", ["distortion", "classify-features"])
+@pytest.mark.parametrize("convention", ["response", "correction"])
+def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_path, capsys, monkeypatch, first, convention):
+    monkeypatch.setitem(SUPPORTED_MODELS, "test_mic", {"sign_convention": convention})
+    calibration_id = "vendor-test_mic-hash"
+    calibration = tmp_path / "mic.txt"
+    calibration.write_text("20 2\n20000 4\n")
+    _, compose, _, wav, document = harmonic_capture
+    session = tmp_path / "session"
+    info = json.loads((session / "info.json").read_text())
+    info["fingerprints"] = {"mic": {"calibration_id": calibration_id}}
+    (session / "info.json").write_text(json.dumps(info))
+    capture_id = document["jts_session_identity"]["aliases"]["capture_session_id"]
+    artifacts = session / f"evidence/v1/artifacts/crossover_v2/{capture_id}"
+    positions = artifacts / "positions"
+    positions.mkdir()
+    captured = session / "summed" / "measure.wav"
+    captured.parent.mkdir()
+    shutil.copyfile(wav, captured)
+    document.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id,
+                    captured_at="2026-08-31T00:19:52Z", wav_path="summed/measure.wav")
+    (positions / "measure.json").write_text(json.dumps(document))
+    program, state = compose(-16.0)
+    write_program_wav(artifacts / "measure_program.wav", program)
+    (session / "crossover-v2-state.json").write_text(json.dumps(state))
+    feature, ring = feature_bundle(tmp_path / "feature", _resonant_ir(3.0), phases=("lateral",))
+    feature_program = next(feature.glob("evidence/v1/artifacts/**/lateral_program.wav"))
+    shutil.copyfile(feature_program, artifacts / "lateral_program.wav")
+    feature_doc = json.loads(next((ring / "sidecar").glob("*.json")).read_text())
+    feature_doc.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id, take_id="lateral",
+                       captured_at=1788135641.4, wav_path="summed/lateral.wav", position_deg=15)
+    (positions / "lateral.json").write_text(json.dumps(feature_doc))
+    shutil.copyfile(next((ring / "wav").glob("*.wav")), captured.with_name("lateral.wav"))
+    bank = bank_round(session, campaign_root=tmp_path / "bank",
+                      applied_profile_path=tmp_path / "applied-profile.json")
+    shutil.rmtree(session)
+    (tmp_path / "applied-profile.json").unlink()
+    inputs = round_inputs(bank.path)
+    before = {p.relative_to(inputs.session_dir): p.read_bytes()
+              for p in (inputs.session_dir / "ring").rglob("*") if p.is_file()}
+    assert {json.loads(raw)["setup_calibration_id"] for path, raw in before.items()
+            if path.suffix == ".json"} == {calibration_id}
+    commands = [first, "classify-features" if first == "distortion" else "distortion"]
+    for command in commands:
+        flags = ["--at", str(RESONANCE_HZ)] if command == "classify-features" else ["--calibration", str(calibration)]
+        assert main([command, str(bank.path), *flags]) == 0
+        assert json.loads(capsys.readouterr().out)["view"] == command
+    output = inputs.session_dir / artifacts.relative_to(session)
+    harmonic = json.loads((output / "harmonic_distortion.json").read_text())
+    feature_result = json.loads((output / "feature_classification.json").read_text())
+    assert harmonic["captures"]["n_read"] == 1
+    assert harmonic["calibration"] == {
+        "applied": True, "sign_convention": convention,
+        "setup_calibration_id": calibration_id, "n_points": 2,
+    }
+    assert {row["role"] for row in harmonic["roles"]} == {"woofer", "tweeter"}
+    assert feature_result["measurement"]["n_captures"] == 1
+    assert feature_result["timing_scatter"]["available"] is False
+    assert before == {p.relative_to(inputs.session_dir): p.read_bytes()
+                      for p in (inputs.session_dir / "ring").rglob("*") if p.is_file()}

@@ -19,6 +19,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     answer: Any = None
     index = attempt = 0
     phase = ""
+    verdict: Any = None
 
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         nonlocal answer
@@ -28,7 +29,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     records.enrich = enrich
 
     def analyze(record: Any, record_id: str) -> Any:
-        nonlocal index, attempt, phase
+        nonlocal index, attempt, phase, verdict
         index, attempt = record["index"], record["attempt"]
         phase = conductor._phase_of_index(index)
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
@@ -38,19 +39,21 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             ExcitationProgram.from_dict(record["program"]), answer, priors,
             conductor._capture_geometry(phase, index), phase=phase,
         )
-        calibration = evidence.get("calibration", {}).get(phase, {})
-        manifest.calibration = {"id": calibration.get("calibration_id"),
-                                "curve_fingerprint": calibration.get("curve_fingerprint")}
-        return analysis
-
-    def assessor(analysis: Any, **kwargs: Any) -> TakeVerdict:
+        # Legacy grading crosses the loop bridge, so it must stay in the analyzer's worker.
+        verdict = None
         if phase == PHASE_CHECK:
             verdict = conductor._check_verdict(analysis)
         elif verify_only:
             verdict = (conductor._consume_verify(index, attempt, analysis, answer, phase=phase)
                        if phase == PHASE_VERIFY else
                        conductor._consume_cloud_position(PHASE_CLOUD_VERIFY, index, attempt, analysis, answer))
-        else:
+        calibration = evidence.get("calibration", {}).get(phase, {})
+        manifest.calibration = {"id": calibration.get("calibration_id"),
+                                "curve_fingerprint": calibration.get("curve_fingerprint")}
+        return analysis
+
+    def assessor(analysis: Any, **kwargs: Any) -> TakeVerdict:
+        if verdict is None:
             assessed = assess(analysis, **{**kwargs, "gain_ceiling_db": conductor._measure_gain_ceiling_db})
             if phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
                 conductor._rearm_measure_after_transient(assessed)

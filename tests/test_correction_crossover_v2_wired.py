@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureAnswer,
@@ -671,13 +672,15 @@ def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp
     assert state["execution"]["cleanup_fault_code"] == "internal_error"
 
 
-def _plan_host(monkeypatch, *, gate=None, signals=None):
+def _plan_host(monkeypatch, *, gate=None, signals=None, phase=None):
     from dataclasses import replace
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.run_manifest import RunManifest
     from tests.engine_twin import FakeSeams as EngineSeams, tuning_session
     from tests.test_plan_run import _Store, _analysis, _walk, _SCOPES
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
+    from jasper.active_speaker.crossover_v2.capture_plan import PlanCapture
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
     fakes, flow = EngineSeams(), FlowSeams()
     manifest = RunManifest("host-run", _Store(fakes.records))
@@ -687,27 +690,40 @@ def _plan_host(monkeypatch, *, gate=None, signals=None):
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
+    request = _walk([0, 20])
+    captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
+        candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
+        for stop in request.stops) if phase else None
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, volume=v2host.V2VolumeHooks(session.open, session.close, session.close),
         stop_event=control.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=control.complete, retake_event=control.retake,
-        tuning=session, manifest=manifest, request=_walk([0, 20]), captures=None,
+        tuning=session, manifest=manifest, request=request, captures=captures,
         analyze=_analysis, assessor=None, candidate_scopes=_SCOPES, spl_monitor="test",
         position_gate=gate,
     )
     return runner, session, fakes, manifest, control, flow
 
 
-def test_plan_host_banks_captures_and_publishes_no_candidate(monkeypatch):
+@pytest.mark.parametrize("phase", [None, "verify", "cloud_verify"])
+def test_plan_host_banks_captures_and_publishes_no_candidate(monkeypatch, phase):
     from tests.test_plan_run import AnsweredGate
+    from jasper.active_speaker import plan_run
+    from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 
     gate = AnsweredGate()
-    runner, session, fakes, manifest, _, flow = _plan_host(monkeypatch, gate=gate)
+    runner, session, fakes, manifest, _, flow = _plan_host(monkeypatch, gate=gate, phase=phase)
+    def assessed(*args, **kwargs):
+        assert fakes.graph.restores == (len(fakes.play.calls) if phase else 0)
+        assert fakes.volume.held
+        return TakeVerdict(True, next="accept")
+    monkeypatch.setattr(plan_run, "assess", assessed)
     asyncio.run(runner(session))
     assert manifest.status == "complete"
     assert manifest.takes_measured == 2
     assert len(gate.grants) == 2
-    assert fakes.graph.restores == fakes.volume.releases == 1
+    assert fakes.graph.restores == 1 + (2 if phase else 0)
+    assert fakes.volume.releases == 1
     assert flow.published_candidates == []
 
 
@@ -774,7 +790,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
 @pytest.mark.parametrize("clipped_take", [False, True])
-def test_host_binds_assessment_and_applies_its_retry_level(phase, clipped_take):
+async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, phase, clipped_take):
     from dataclasses import replace
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.audio_measurement.program import STIMULUS_KINDS
@@ -788,16 +804,25 @@ def test_host_binds_assessment_and_applies_its_retry_level(phase, clipped_take):
     fakes = FakeSeams(**{phase: clipped})
     conductor = _conductor(fakes, index_phase_map={1: phase},
                            gain_plan_db={"woofer": -11.0, "tweeter": -13.0})
+    if phase == "verify":
+        loop, consume = asyncio.get_running_loop(), conductor._consume_verify
+        async def bridge():
+            return True
+        def grade(*args, **kwargs):
+            assert asyncio.run_coroutine_threadsafe(bridge(), loop).result(timeout=1)
+            return consume(*args, **kwargs)
+        monkeypatch.setattr(conductor, "_consume_verify", grade)
     analyze, assessor = bind_plan_analysis(conductor, SimpleNamespace(enrich=None),
         manifest=SimpleNamespace(calibration={}), evidence={}, verify_only=phase == "verify")
-    spec = MeasureSpec(kind="baseline", graph_scope="speaker_tune" if phase == "verify" else "drivers", program_phase=phase)
+    spec = MeasureSpec(kind="baseline", graph_scope="candidate" if phase == "verify" else "drivers",
+                       candidate_id="baseline-room" if phase == "verify" else "", program_phase=phase)
     gain = None
     for attempt in range(1, 4 if clipped_take else 2):
         program = compose_plan_program(conductor, spec, gain)
         peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
         if gain is not None:
             assert peak == pytest.approx(gain)
-        analysis = analyze({"index": 1, "attempt": attempt, "program": program.to_dict()}, "take")
+        analysis = await asyncio.to_thread(analyze, {"index": 1, "attempt": attempt, "program": program.to_dict()}, "take")
         verdict = assessor(analysis, phase=phase, program=program)
         if clipped_take:
             assert verdict.fault == "clipped"

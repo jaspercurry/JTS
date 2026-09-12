@@ -72,21 +72,14 @@ _Poses = dict[tuple[int, int], dict[str, dict[str, _Curve]]]
 
 
 def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
-    """Latest retained curve per pose, role and complete configuration.
-
-    An explicit base scope is named by its played graph hash. Legacy unnamed
-    takes remain unattributed; a blank candidate id alone proves no baseline.
-    """
+    """Latest retained curve per pose, role and named candidate."""
     poses: _Poses = {}
     unattributed = 0
     for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
         if row.position_deg is None:
             continue
         by_role = poses.setdefault((row.position_deg, row.vertical_deg), {})
-        config_id = row.candidate_id or (
-            f"base:{row.graph_fingerprint}"
-            if row.graph_scope == "base" and row.graph_fingerprint else ""
-        )
+        config_id = row.candidate_id
         if not config_id:
             unattributed += 1
             continue

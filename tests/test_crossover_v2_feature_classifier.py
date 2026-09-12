@@ -154,7 +154,7 @@ def _bundle(
     bundle = root / "bundle"
     round_dir = bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST"
     programs_dir = (bundle / "crossover_v2/wired-TEST") if bank_shape else round_dir
-    dumps = root / "dumps"
+    dumps = bundle / "ring"
     round_dir.mkdir(parents=True, exist_ok=True)
     shas: dict[str, str] = {}
     for phase in set(phases) | {"verify", "cloud_verify"}:
@@ -487,7 +487,7 @@ def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
-        "classify-features", str(bundle), "--dumps", str(dumps),
+        "classify-features", str(bundle),
         "--at", str(RESONANCE_HZ),
         "--gates-ms", "3", "--gates-ms", "9", "--gates-ms", "11",
     ])
@@ -511,7 +511,7 @@ def test_a_single_rung_ladder_refuses_the_ladder_by_name_and_still_classifies(
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
-        "classify-features", str(bundle), "--dumps", str(dumps),
+        "classify-features", str(bundle),
         "--at", str(RESONANCE_HZ), "--gates-ms", "7",
     ])
     assert code == cli.EXIT_OK
@@ -910,21 +910,21 @@ def test_failing_controls_withhold_the_phase_class_and_nothing_else(
 # --------------------------------------------------------------------------- #
 
 
-def test_a_lateral_round_is_refused_by_name(tmp_path):
-    """A per-driver capture carries no summed response to classify."""
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    _write_wav(round_dir / "lateral_program.wav", _sweep())
-    (dumps / "sidecar" / "1787000000999999_lateral_mic.json").write_text(
-        json.dumps(
-            {"phase": "lateral", "jts_session_identity": {"session_id": SESSION_ID}}
-        )
-    )
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
-        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    assert caught.value.reason == fx.LATERAL_CAPTURE_SHAPE
-    assert caught.value.detail["lateral_captures"] == 1
+@pytest.mark.parametrize("repeated", [False, True])
+def test_lateral_per_driver_capture_classifies_without_inventing_timing(tmp_path, repeated):
+    bundle, ring = _bundle(tmp_path, _resonant_ir(+3.0), phases=("lateral",) * (2 if repeated else 1))
+    for sidecar in (ring / "sidecar").glob("*.json"):
+        doc = json.loads(sidecar.read_text())
+        doc["position_deg"] = 15
+        doc["curves"][0]["role"] = "woofer"
+        sidecar.write_text(json.dumps(doc))
+    directory, _ = round_artifact_dir(bundle)
+    captures = fx.load_round_captures(directory, ring, session_id=SESSION_ID)
+    result = fx.classify_round(captures, at=[RESONANCE_HZ])
+    assert result["rows"]
+    assert all("egd_verdict" in row and "gate_verdict" in row for row in result["rows"])
+    assert result["timing_scatter"]["available"] is repeated
+    assert result["timing_scatter"]["n_pairs"] == int(repeated)
 
 
 @pytest.mark.parametrize(
@@ -1122,14 +1122,6 @@ def test_a_stimulus_hash_that_binds_to_no_program_refuses_by_name(
     assert not any(row["admissible"] for row in census)
 
 
-def _bind_a_lateral_capture(round_dir: Path, dumps: Path) -> None:
-    (dumps / "sidecar" / "1787000000999999_lateral_mic.json").write_text(
-        json.dumps(
-            {"phase": "lateral", "jts_session_identity": {"session_id": SESSION_ID}}
-        )
-    )
-
-
 def _lose_a_program(round_dir: Path, dumps: Path) -> None:
     (round_dir / "cloud_verify_program.wav").unlink()
 
@@ -1137,12 +1129,6 @@ def _lose_a_program(round_dir: Path, dumps: Path) -> None:
 @pytest.mark.parametrize(
     ("break_round", "expected_reason", "expected_capture_reason"),
     [
-        pytest.param(
-            _bind_a_lateral_capture,
-            fx.LATERAL_CAPTURE_SHAPE,
-            fx.CAPTURE_LATERAL_SHAPE,
-            id="lateral",
-        ),
         pytest.param(
             _lose_a_program,
             fx.PROGRAM_MISSING,
@@ -1513,7 +1499,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
             }],
         )
     code = cli.main(
-        ["classify-features", str(bundle), "--dumps", str(dumps), "--at", str(RESONANCE_HZ)]
+        ["classify-features", str(bundle), "--at", str(RESONANCE_HZ)]
     )
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
@@ -1708,7 +1694,7 @@ def test_a_quiet_delayed_copy_stays_minimum_phase():
 
 def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
     answer = json.loads(capsys.readouterr().out)
     round_dir, _ = round_artifact_dir(bundle)
@@ -1732,7 +1718,7 @@ def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys, ordinal_names):
         assert programs
         for path in programs:
             path.rename(path.with_name(path.name.replace("_program.wav", "_00_program.wav")))
-    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1826,7 +1812,7 @@ def test_a_program_missing_refusal_names_the_directory_it_actually_read(
     """
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
     (bundle / "crossover_v2/wired-TEST/cloud_verify_program.wav").unlink()
-    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_REFUSED
     captured = capsys.readouterr()
     assert "crossover_v2/wired-TEST" in captured.err
@@ -1843,7 +1829,7 @@ def test_a_program_missing_refusal_names_the_directory_it_actually_read(
 def test_a_refusal_exits_two_and_banks_nothing(tmp_path, capsys):
     """A refusal must not leave a file a later reader would act on."""
     bundle, dumps = _bundle(tmp_path, _flat_ir())
-    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_REFUSED
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1865,7 +1851,7 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
     """
     monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -1882,7 +1868,7 @@ def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, ca
     bundle, dumps = _bundle(tmp_path, _flat_ir())
     (bundle / "evidence/v1/artifacts/crossover_v2/wired-OTHER").mkdir(parents=True)
     assert cli.main(
-        ["classify-features", str(bundle), "--dumps", str(dumps)]
+        ["classify-features", str(bundle)]
     ) == cli.EXIT_UNREADABLE
     err = capsys.readouterr().err
     # Nit from the #2796 gate: the both-shapes guidance belongs on the
@@ -1892,21 +1878,11 @@ def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, ca
     assert "bank-crossover-round.sh" not in err
 
 
-def test_a_dir_matching_neither_shape_names_both_in_its_refusal(tmp_path, capsys):
-    """Point the CLI at the WAV leaf itself -- the second real failure tonight.
-
-    Neither shape's ``evidence/v1/artifacts/crossover_v2/<capture>/`` exists
-    anywhere under this path, so the pre-existing "round could not be read"
-    refusal fires -- but its message must name BOTH accepted shapes, not
-    only the receipts one, so an operator who just banked a round with
-    bank-crossover-round.sh is pointed at the bundle directory instead of
-    guessing through a symlink shim, as tonight's real debugging session did.
-    """
-    bundle, dumps = _bundle(tmp_path, _flat_ir(), bank_shape=True)
+def test_the_wav_leaf_directory_is_not_a_readable_round(tmp_path, capsys):
+    """The WAV leaf was mistaken for the bundle during a real round replay."""
+    bundle, _ = _bundle(tmp_path, _flat_ir(), bank_shape=True)
     programs_leaf = bundle / "crossover_v2/wired-TEST"
     assert programs_leaf.is_dir()
-    code = cli.main(["classify-features", str(programs_leaf), "--dumps", str(dumps)])
+    code = cli.main(["classify-features", str(programs_leaf)])
     assert code == cli.EXIT_UNREADABLE
-    err = capsys.readouterr().err
-    assert "evidence/v1/artifacts/crossover_v2" in err
-    assert "bank-crossover-round.sh" in err
+    assert json.loads(capsys.readouterr().out)["reason"] == cli.REASON_UNREADABLE

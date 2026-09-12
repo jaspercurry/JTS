@@ -16,6 +16,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.test_active_speaker_audition import _applied_profile
+from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
@@ -482,3 +485,28 @@ def test_delay_landscape_reads_only_the_common_gate_coverage(tmp_path, capsys):
     code, payload, _err = _propose(tmp_path, capsys)
     assert code == 1
     assert payload["reason"] == "shoulder_overlap_excludes_fc"
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_delay_defaults_come_from_the_selected_banked_take(tmp_path, capsys, override):
+
+    bundle = _bank(tmp_path / "round" / "bundle" / "session", curves=[_curve("woofer"), _curve("tweeter")],
+                   phase=PHASE_LATERAL, position_deg=15, take_id="lateral")
+    _bank(bundle, curves=[_curve("woofer"), _curve("tweeter")], phase=PHASE_MEASURE, position_deg=0, take_id="measure")
+    (bundle / "info.json").write_text(json.dumps({"session_id": "session"}))
+    take = next(bundle.glob("evidence/v1/artifacts/**/positions/measure.json"))
+    document = json.loads(take.read_text())
+    document["inverted_role"] = "woofer"
+    take.write_text(json.dumps(document))
+    profile = _applied_profile(_active_topology("mono", "active_2_way"))
+    profile.update(kind=BASELINE_PROFILE_KIND, artifact_schema_version=SCHEMA_VERSION)
+    profile["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = FC_HZ
+    bank = bundle.parent.parent
+    (bank / "applied-profile.json").write_text(json.dumps(profile))
+    flags = ["--fc-hz", "2000", "--position-deg", "15", "--inverted-role", "tweeter", "--phase", "lateral"] if override else []
+    assert main(["delay-landscape", str(bank), *flags]) == 0
+    output = _banked(json.loads(capsys.readouterr().out))
+    assert output["phase"] == ("lateral" if override else "measure")
+    assert output["landscape"]["inverted_role"] == ("tweeter" if override else "woofer")
+    assert output["landscape"]["spec"]["crossover_fc_hz"] == (2000 if override else FC_HZ)
+    assert output["take_path"].endswith("lateral.json" if override else "measure.json")

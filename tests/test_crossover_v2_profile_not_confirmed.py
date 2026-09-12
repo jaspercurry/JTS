@@ -736,5 +736,5 @@ def test_verify_plan_shape_refusal_keeps_its_code():
 def test_graph_refusal_retains_its_classifier_code():
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
 
-    exc = MeasurementGraphRefused("measurement_candidate_room_mismatch", "candidate-1")
+    exc = MeasurementGraphRefused("measurement_candidate_speaker_mismatch", "candidate-1")
     assert v2host.classify_program_failure(exc) == (exc.reason, ())

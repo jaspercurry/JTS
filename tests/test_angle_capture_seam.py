@@ -31,6 +31,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
@@ -1525,14 +1526,14 @@ def test_a_template_field_the_spec_refuses_names_the_half_it_refused(
         ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields)
 
     assert excinfo.value.reason == reason
-    with pytest.raises(ValueError) as spec_refusal:
+    with pytest.raises(ValueError):
         MeasureSpec(
             kind=MEASURE_KIND_CANDIDATE, graph_scope=ac.TEMPLATE_SWEEP_SCOPE
             if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None
             else "drivers",
+            candidate_id="base" if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None else "",
             **fields,
         )
-    assert excinfo.value.detail == str(spec_refusal.value)
 
 
 @pytest.mark.parametrize(
@@ -1594,10 +1595,10 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
 
     assert ac.design_axis_spec(request) == replace(
-        template, graph_scope="drivers", sweep_band_hz=(), sweep_s=None,
+        template, graph_scope="drivers", candidate_id="", sweep_band_hz=(), sweep_s=None,
     )
     assert ac.stop_specs(
-        request, candidate_scopes={"fp-a": "candidate"}, prompts=prompts,
+        request, baseline_ids={"speaker": "baseline-speaker", "room": "baseline-room", "bass": "baseline-bass"}, candidate_scopes={"fp-a": "candidate"}, prompts=prompts,
     ) == (
         None,
         replace(
@@ -1755,6 +1756,17 @@ def test_a_template_that_is_not_a_spec_is_refused() -> None:
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
+@pytest.mark.parametrize("candidate_id", ["base", "BASE", "base:room", "fp-a"])
+def test_template_accepts_only_the_base_candidate_token(candidate_id):
+    template = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id=candidate_id)
+    if candidate_id == "base":
+        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), template=template).template == template
+    else:
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), template=template)
+        assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
+
+
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
 def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candidates):
@@ -1774,7 +1786,7 @@ def test_v3_request_round_trip_and_capture_schedule(spool_slot, repeats, candida
     spool.stage_angle_request(request)
     assert spool.peek_staged_angle_request() == spool.take_staged_angle_request() == request
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
-    specs = ac.stop_specs(request, candidate_scopes={"room-fp": "room_candidate"},
+    specs = ac.stop_specs(request, baseline_ids={"room": "baseline-room"}, candidate_scopes={"room-fp": "candidate"},
                           prompts=[s.prompt for s in ac.resolve_request(request)])
     assert len(specs) == 3 * max(1, len(candidates)) * repeats
     assert [spec.positions for spec in specs] == [
@@ -1827,7 +1839,7 @@ def test_invalid_walk_fields_refuse_by_name(fields, reason):
     assert refused.value.reason == reason
 
 
-@pytest.mark.parametrize("program, scope", [("baseline", "base"), ("room", "speaker_tune"), ("bass", "room_tune")])
+@pytest.mark.parametrize("program, scope", [("baseline", "preset"), ("room", "speaker"), ("bass", "room")])
 def test_request_names_the_program_baseline(program, scope):
     assert ac.request_for_program(mp.program(program)).baseline_graph_scope == scope
 
@@ -1868,3 +1880,14 @@ def test_program_mover_constraints_refuse_by_name(program, size, mover, reason):
         with pytest.raises(ac.LateralWalkRefused) as refused:
             ac.request_for_program(row, mover=mover)
         assert refused.value.reason == reason
+
+
+def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("pure planning opened the candidate bank")
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids", unexpected)
+    request = ac.summed_at([0, 20])
+    specs = ac.stop_specs(request, candidate_scopes={}, baseline_ids={"speaker": "banked-base"},
+                          prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    assert [spec.candidate_id for spec in specs] == ["banked-base", "banked-base"]
+    assert {spec.graph_scope for spec in specs} == {"candidate"}

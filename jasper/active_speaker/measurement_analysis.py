@@ -73,9 +73,7 @@ def analyzed_measurements(
         if not record.get("program"):
             raise MeasurementAnalysisRefused("measurement_program_manifest_missing")
         program = ExcitationProgram.from_dict(record["program"])
-        if program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1 or record.get("graph_scope") not in {
-            "speaker_tune", "room_tune", "room_candidate", "bass_candidate", "applied",
-        }:
+        if program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1 or (record.get("graph_scope") != "candidate" or not record.get("candidate_id")):
             raise MeasurementAnalysisRefused("measurement_analysis_program_unsupported")
         samples, rate = decode_wav_to_mono(wav)
         calibration = resolve_setup_calibration(

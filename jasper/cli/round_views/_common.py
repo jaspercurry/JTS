@@ -42,7 +42,7 @@ from jasper.cli._refusal import (
 )
 from jasper.cli._report import write_report
 
-AUTHORITY_TIER = "advisory (analysis views save artifacts; `classify-features` also updates the bundle)"
+AUTHORITY_TIER = "advisory (analysis views save artifacts)"
 
 #: What every round-directory positional takes, said once. Both shapes, named
 #: in the order an operator meets them: the live one is what a round leaves on
@@ -61,15 +61,10 @@ TAKES_THIS_BUNDLE = "<this-round's bundle>"
 TAKES_EXACT_CAPTURE = (TAKES_THIS_ROUND, "--capture-id", "<capture-id>")
 TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
-TAKES_BUNDLE_AND_RING = (
-    TAKES_THIS_BUNDLE, "--dumps", "<ring>", "--state", "<flow-state>",
-    "--applied-profile", "<applied-profile>",
-)
 TAKES_FAR_AND_CLOSE = (
     "--far-round", TAKES_THIS_ROUND, "--close-round", "<other-round>",
     "--close-m", "<distance-m>",
 )
-TAKES_BUNDLE_AND_FC = (TAKES_THIS_BUNDLE, "--fc-hz", "<applied-corner>")
 
 
 class ViewArtifact(NamedTuple):
@@ -107,7 +102,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "co-metrics": ViewArtifact("audibility_co_metrics.json"),
     "directivity": ViewArtifact("directivity.json"),
     "cloud-binding": ViewArtifact("cloud_binding.json"),
-    "forward-model": ViewArtifact("forward_model.json"),
+    "forward-model": ViewArtifact("forward_model.json", TAKES_EXACT_CAPTURE),
     "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
     "gate-sweep": ViewArtifact("gate_sweep.json"),
     "windows": ViewArtifact("window_view.json", (TAKES_THIS_ROUND, "--capture-id", "<take-id>")),
@@ -117,8 +112,8 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         "<before-bass-view>", "<after-bass-view>", "--before-take", "<before-take-id>",
         "--after-take", "<after-take-id>", "--change", "<change>",
     )),
-    "delay-landscape": ViewArtifact("delay_landscape.json", TAKES_BUNDLE_AND_FC),
-    "delay-confirm": ViewArtifact("delay_confirmation.json", TAKES_BUNDLE_AND_FC),
+    "delay-landscape": ViewArtifact("delay_landscape.json"),
+    "delay-confirm": ViewArtifact("delay_confirmation.json"),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
     "boundary-prior": ViewArtifact("boundary_prior.json"),
     "room-ceiling": ViewArtifact("room_ceiling.json"),
@@ -127,10 +122,10 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(
-        HARMONICS_ARTIFACT, TAKES_BUNDLE_AND_RING, in_artifact_dir=True
+        HARMONICS_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True
     ),
     "classify-features": ViewArtifact(
-        CLASSIFICATION_ARTIFACT, (TAKES_THIS_BUNDLE,), in_artifact_dir=True
+        CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True
     ),
     "findings": ViewArtifact("findings.json"),
     "room-grade": ViewArtifact("room_grade.json"),

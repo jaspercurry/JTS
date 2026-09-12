@@ -4,7 +4,7 @@ Start with the [tuning runbook](tuning-operator-runbook.md). This document
 explains the crossover's product boundary and measurement reasoning.
 [Measurement loop doctrine](measurement-loop-doctrine.md) owns authority;
 [tuning methodology](tuning-methodology.md) is optional science guidance.
-The [master plan](tuning-master-plan.md) owns scope, and command help owns the
+The [ADR index](adr/README.md) records stable scope, and command help owns the
 supported calls and inputs.
 
 The old commissioning capture host and summed-graph lane are retired
@@ -181,7 +181,7 @@ measurement deliberately retains reflections because they are its subject.
 Near-field pressure is not a free-field response. The earlier
 `sealed_single_radiator_v1` proposal described a restricted reconstruction, not
 a currently supported automatic campaign step. Near-field splicing remains
-outside the current [toolbox scope](tuning-master-plan.md). Its useful physical
+outside ADR-0260's toolbox scope. Its useful physical
 limits are retained here without claiming that its proposed artifact schemas,
 refusal codes, or capture host are implemented.
 

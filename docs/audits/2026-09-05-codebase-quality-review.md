@@ -493,7 +493,7 @@ in code) and the previous audit's prose sweep held outside the tuning zone. Rema
   "rescued plan, not executed", 235 commits behind); `install-hardware-tier-and-staleness.md`
   (self-declares "not ongoing operational truth", pointed at three times from `install.sh`);
   `PROMPT-subwoofer-deletion.md` (fully landed, duplicates ADR-0236). The no-orphan-doc test globs only
-  top-level `docs/*.md`, so `docs/bass-extension-waves/` (16 files) and `docs/ux-audit-2026-09-03/`
+  top-level `docs/*.md`, so the 16-file bass-wave directory and `docs/ux-audit-2026-09-03/`
   (9) are structurally invisible to it. `docs/DEEP-AUDIT-2026-08-25.md` is stale on host_compliance
   (deleted the next day).
 - **Comments:** 34–43% of lines in the voice, DSP-control, deploy-unit and install tiles; the worst

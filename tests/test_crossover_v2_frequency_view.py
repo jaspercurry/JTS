@@ -710,7 +710,7 @@ def summed_capture_bundle(tmp_path, request):
         WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
         bundle, recorder_factory=lambda *_: Recorder(),
     )
-    async def bank(take_id, *, setup=None, scope="room_tune", candidate="", retain_program=True, wav_hash=None):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None):
         async def play():
             pass
         configured = replace(capture, setup_reference=lambda: setup)
@@ -738,7 +738,7 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
 ):
     bundle, calibration_root, program, bank = summed_capture_bundle
     first = asyncio.run(bank("baseline"))
-    asyncio.run(bank("bass", scope="bass_candidate", candidate="bass-6db", setup={
+    asyncio.run(bank("bass", scope="candidate", candidate="bass-6db", setup={
         "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
     }))
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
@@ -760,9 +760,9 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     baseline, bass = view["runs"][0]["series"]
     assert view["runs"][0]["metadata"]["position_count"] == 1
     assert view["runs"][0]["metadata"]["take_count"] == 2
-    assert baseline["candidate_id"] == ""
+    assert baseline["candidate_id"] == "baseline-fp"
     assert bass["candidate_id"] == "bass-6db"
-    assert [s["graph_scope"] for s in (baseline, bass)] == ["room_tune", "bass_candidate"]
+    assert [s["graph_scope"] for s in (baseline, bass)] == ["candidate", "candidate"]
     assert [s["level_db"] for s in (baseline, bass)] == [-20, -20]
     assert [s["stimulus_dbfs"] for s in (baseline, bass)] == [-14, -14]
     assert bass["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
@@ -801,7 +801,7 @@ def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_
 def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle, fault, code, tmp_path):
     bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank(
-        "take", scope="drivers" if fault == "scope" else "room_tune",
+        "take", scope="drivers" if fault == "scope" else "candidate",
         retain_program=fault != "program", wav_hash="0" * 64 if fault == "wav_hash" else None,
     ))
     if fault == "dependency":
@@ -855,7 +855,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
 def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta, mismatch, field):
     before = {
         'record_path': 'before.json',
-        'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'bass_candidate',
+        'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
                    'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0', 'loudness_volume_db': -20},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
@@ -886,12 +886,16 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert field in diagnostic['context']['incompatible_fields']
 
 
+@pytest.mark.parametrize('has_bass', [False, True])
 @pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
-def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale):
+def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale, has_bass, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
+                        lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension={"low_boost_db": 6} if has_bass else {})))
     grid = np.geomspace(50, 200, 100)
     baseline = {
         'record_path': 'off.json',
-        'record': {'graph_scope': 'room_tune', 'graph_fingerprint': 'baseline',
+        'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
                    'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
         'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),
@@ -904,12 +908,16 @@ def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(targ
         before['record']['position_deg'] = pose
         after = copy.deepcopy(before)
         after['record_path'] = f'boost-{pose}.json'
-        after['record'].update(graph_scope='bass_candidate', candidate_id='boost', graph_fingerprint='boosted')
+        after['record'].update(graph_scope='candidate', candidate_id='boost', graph_fingerprint='boosted')
         after['fundamental_db'] = [-20 + gain] * len(grid)
         pairs.append((before, after))
     kwargs = {'candidate_id': 'boost', 'descriptor': {'low_boost_db': 12, 'reference_level_db': 0,
               'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30},
               'target': {'freqs_hz': [50, 200], 'magnitude_db': [target_db, target_db]}}
+    if has_bass:
+        with pytest.raises(ValueError):
+            fit_bass_shape(pairs, **kwargs)
+        return
     result = fit_bass_shape(pairs, **kwargs)
     repeated = fit_bass_shape([pairs[0]] * 5 + pairs[1:], **kwargs)
     assert result['selected_scale'] == pytest.approx(expected_scale)
