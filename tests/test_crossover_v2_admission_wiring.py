@@ -19,6 +19,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import admission
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -532,3 +533,218 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
     # The two spellings of "no attempts yet" are the same decision, field for
     # field — including the initiator, which must not be attributed to anyone.
     assert from_fresh_ledger == from_no_ledger
+
+
+def _lateral_conductor(fakes):
+    return _conductor(fakes, index_phase_map=flow.build_v2_cloud_index_phase_map(
+        tier="full", include_lateral=True,
+    ))
+
+
+def _settled_conductor(index):
+    conductor = _lateral_conductor(FakeSeams())
+    conductor._slot_attempts[conductor._slot_of_index(index)] = _spent()
+    return conductor
+
+
+@pytest.mark.parametrize("unresolved,retained,reads", [
+    (False, False, ["unresolved", "retained"]),
+    (False, True, ["unresolved", "retained"]),
+    (True, False, ["unresolved"]),
+    (True, True, ["unresolved"]),
+])
+def test_the_spent_slot_outcome_tells_left_out_from_kept(monkeypatch, unresolved, retained, reads):
+    conductor = _lateral_conductor(FakeSeams())
+    seen = []
+
+    class Membership:
+        def __init__(self, name, present):
+            self.name, self.present = name, present
+
+        def __contains__(self, index):
+            seen.append(self.name)
+            assert index == 3
+            return self.present
+
+    conductor._group_unresolved[PHASE_LATERAL] = Membership("unresolved", unresolved)
+    monkeypatch.setattr(conductor, "_retained_group_indexes", lambda phase: Membership("retained", retained))
+    conductor._spent_slot_outcome(PHASE_LATERAL, 3)
+    assert seen == reads
+
+
+def test_the_conductor_passes_the_group_ness_port_rather_than_resolving_it(monkeypatch):
+    index = 3
+    c = _lateral_conductor(FakeSeams())
+    slot = c._slot_of_index(index)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)
+
+    asked = []
+    real = c._journey.plan.is_group
+    monkeypatch.setattr(
+        type(c._journey.plan), "is_group",
+        lambda self, phase: asked.append(phase) or real(phase),
+    )
+
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    settled = c._resolve_spent_slot(PHASE_LATERAL, index, slot, verdict)
+
+    assert settled is verdict, "a slot with tries left must settle nothing"
+    assert asked == [], (
+        "the conductor resolved the group-ness of a phase whose slot still has tries"
+    )
+
+
+def test_the_conductor_passes_the_unwalked_port_rather_than_resolving_it(monkeypatch):
+    index = 3
+    c = _settled_conductor(index)
+    slot = c._slot_of_index(index)
+
+    walked = []
+    real = c._journey.unresolved_in_group
+    monkeypatch.setattr(
+        type(c._journey), "unresolved_in_group",
+        lambda self, phase, *, excluding: (
+            walked.append(phase) or real(phase, excluding=excluding)
+        ),
+    )
+
+    monkeypatch.setattr(
+        type(c), "_retained_group_indexes", lambda self, phase: {index},
+    )
+
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    settled = c._resolve_spent_slot(PHASE_LATERAL, index, slot, verdict)
+
+    assert settled.payload["kept_earlier_take"] is True
+    assert walked == [], (
+        "the conductor walked the journey for a position rung 1 had already answered"
+    )
+
+
+@pytest.mark.parametrize(
+    "half,declared",
+    [
+        ("settle_spent_slot", admission.SETTLE_SLOT_KINDS),
+        ("settle_group_position", admission.SETTLE_GROUP_KINDS),
+    ],
+)
+def test_every_settle_kind_is_handled(caplog, half, declared):
+    index = 3
+
+    with caplog.at_level("INFO"):
+        for kind in sorted(declared):
+            c = _settled_conductor(index)
+            verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(flow._admission, half, lambda kind=kind, **_: kind)
+                c._resolve_spent_slot(
+                    PHASE_LATERAL, index, c._slot_of_index(index), verdict,
+                )
+
+    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
+    assert unmapped == [], (
+        "a declared settle kind reached a fallback instead of its own arm: "
+        f"{[r.getMessage() for r in unmapped]}"
+    )
+
+
+def test_an_unrecognised_settle_kind_ends_the_phase_rather_than_retrying(caplog):
+    index = 3
+    c = _settled_conductor(index)
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+
+    with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow._admission, "settle_spent_slot",
+            lambda **_: "a_kind_from_the_future",
+        )
+        settled = c._resolve_spent_slot(
+            PHASE_LATERAL, index, c._slot_of_index(index), verdict,
+        )
+
+    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
+    assert [r.levelname for r in unmapped] == ["ERROR"]
+    assert settled.payload["terminal"] is True
+    assert settled.payload["terminal_outcome"] == admission.SETTLE_PHASE_CANNOT_PROCEED
+    assert settled.to_capture_dict()["next"] == "stop"
+
+    assert settled is not verdict
+
+
+def test_an_unrecognised_group_settle_kind_ends_the_phase_rather_than_advancing(caplog):
+    index = 3
+    c = _settled_conductor(index)
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+
+    with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow._admission, "settle_group_position",
+            lambda **_: "a_kind_from_the_future",
+        )
+        settled = c._resolve_spent_slot(
+            PHASE_LATERAL, index, c._slot_of_index(index), verdict,
+        )
+
+    unmapped = event_records(caplog, SETTLE_UNMAPPED_EVENT)
+    assert [r.levelname for r in unmapped] == ["ERROR"]
+    assert settled.payload["terminal"] is True
+    assert settled.payload["terminal_outcome"] == admission.SETTLE_BELOW_POSITION_FLOOR
+
+    assert index not in c._group_unresolved[PHASE_LATERAL]
+
+
+@pytest.mark.parametrize("code", sorted(flow.NON_RETRIABLE_CODES))
+def test_a_non_retriable_capture_verdict_rides_out_terminal(code):
+    c = _lateral_conductor(FakeSeams())
+    index = 3
+    slot = c._slot_of_index(index)
+
+    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+
+    settled = c._resolve_spent_slot(
+        PHASE_LATERAL, index, slot, flow.PhaseVerdict(False, code=code),
+    )
+
+    assert settled.payload["terminal"] is True
+    assert settled.payload["terminal_outcome"] == (
+        admission.SETTLE_CONDITION_NOT_RETRIABLE
+    )
+
+    assert settled.code == code
+    assert settled.to_capture_dict()["next"] == "stop"
+    assert c._slot_attempts[slot].extras_used == 0
+    assert index not in c._group_unresolved[PHASE_LATERAL]
+
+
+def test_the_flow_states_the_condition_inputs_the_ladder_needs():
+    c = _lateral_conductor(FakeSeams())
+    index = 3
+    slot = c._slot_of_index(index)
+    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    seen: list[dict] = []
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow._admission, "settle_spent_slot",
+            lambda **kw: seen.append(kw) or admission.SETTLE_RETRY_REMAINS,
+        )
+        c._resolve_spent_slot(
+            PHASE_LATERAL, index, slot,
+            flow.PhaseVerdict(False, code=refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
+        )
+
+    assert seen[0]["code"] == refusal_copy.REASON_CHANNEL_MAP_MISMATCH
+    assert seen[0]["non_retriable"] is flow.NON_RETRIABLE_CODES
+
+
+def test_a_retriable_rejection_on_a_fresh_slot_still_offers_the_retry():
+    c = _lateral_conductor(FakeSeams())
+    index = 3
+    slot = c._slot_of_index(index)
+    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+
+    settled = c._resolve_spent_slot(PHASE_LATERAL, index, slot, verdict)
+
+    assert settled is verdict
+    assert "terminal" not in settled.payload

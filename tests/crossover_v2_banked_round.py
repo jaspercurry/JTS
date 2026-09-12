@@ -26,8 +26,8 @@ bundle under a new capture session id"*. So one ``bank-crossover-round.sh`` run
 banks ONE stage, and:
 
 * :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
-  carrying both per-driver solos, and the lateral walk pose(s). Its flow state
-  carries no VERIFY curve because stage 1 measures no VERIFY.
+  carrying both per-driver solos, the lateral walk pose(s), and the ENTRY BASELINE.
+  Its flow state carries no VERIFY curve because stage 1 measures no VERIFY.
 * :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state
   carrying ``verify_priors.verify_measured``. No per-driver solos: a verify
   stage walks none.

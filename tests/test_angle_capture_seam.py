@@ -54,6 +54,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpecError, _validate_capture_plan
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
@@ -1811,3 +1812,35 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
                           prompts=[stop.prompt for stop in ac.resolve_request(request)])
     assert [spec.candidate_id for spec in specs] == ["banked-base", "banked-base"]
     assert {spec.graph_scope for spec in specs} == {"candidate"}
+
+
+@pytest.mark.parametrize("stops", [1, 24, 33, 99, 110, 111, 120, 121, 128, 129, 140])
+def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
+    shape = flow.resolve_plan_shape()
+    base_entries = len(flow.build_v2_cloud_index_phase_map(
+        plan_shape=shape, include_lateral=False,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    ))
+    plan = flow.build_v2_capture_plan(
+        _ROLES_BANDS, _FC_HZ, plan_shape=shape, include_lateral=True,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        lateral_prompts=tuple(ac.pose_at_angle(0) for _ in range(stops)),
+    )
+    try:
+        _validate_capture_plan(plan)
+        plan_accepts = True
+    except CaptureSpecError:
+        plan_accepts = False
+    try:
+        poses = ac.session_lateral_walk(
+            ac.per_driver_at([0] * stops), externally_positioned=False,
+            base_entries=base_entries,
+        )
+        assert len(poses) == stops
+        gate_accepts = True
+    except ac.LateralWalkRefused as refused:
+        assert refused.reason == ac.WALK_OVER_CAPTURE_CAPACITY
+        gate_accepts = False
+    assert gate_accepts == plan_accepts
+    if stops in (1, 140):
+        assert plan_accepts == (stops == 1)
