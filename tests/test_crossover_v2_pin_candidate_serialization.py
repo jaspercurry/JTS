@@ -30,9 +30,8 @@ properties that file does not reach:
 2. **A fully-populated candidate round trips.** The existing round trips vary
    one optional field at a time; a real session's candidate carries alignment,
    linearization, linearization outcome, and exclusion evidence at once.
-3. **The round trip survives real JSON text.** ``handle_v2_apply`` reopens the
-   candidate through ``_reopen_candidate_artifact``, which is
-   ``json.loads(candidate.json)`` — so the live apply path compares a
+3. **The round trip survives real JSON text.** The candidate bank reopens
+   ``candidate.json`` with ``json.loads`` — so the live apply path compares a
    text-decoded payload against a freshly-computed ``to_dict()``. Every
    existing round-trip test hands ``from_mapping`` the in-memory dict and never
    crosses that encode/decode boundary.
@@ -230,8 +229,7 @@ def test_a_fully_populated_candidate_round_trips_through_from_mapping():
 def test_a_fully_populated_candidate_round_trips_through_real_json_text():
     """The live apply path's own boundary: ``json.dumps`` → ``json.loads``.
 
-    ``jasper.web.correction_crossover_v2._reopen_candidate_artifact`` reads
-    ``candidate.json`` off disk with ``json.loads`` and hands the decoded
+    The candidate bank reads ``candidate.json`` with ``json.loads`` and hands the decoded
     mapping to ``from_mapping``, which compares it against a freshly-computed
     ``to_dict()`` and refuses ``candidate_tampered`` on any difference. So the
     encode/decode step is inside the tamper check's blast radius, and no

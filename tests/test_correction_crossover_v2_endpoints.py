@@ -5886,7 +5886,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     so a ``candidate.json`` published by a build that predates the field fails
     ``from_mapping``'s reopen comparison unless it is setdefaulted — and that
     comparison is on the apply path (``handle_v2_apply`` →
-    ``_reopen_candidate_artifact`` → ``from_mapping``). The household-visible
+    ``find_banked_candidate`` → ``from_mapping``). The household-visible
     symptom was a ``candidate_tampered`` refusal telling them their persisted
     correction had been altered when the file was merely older than the field.
 

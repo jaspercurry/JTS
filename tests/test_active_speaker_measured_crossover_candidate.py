@@ -417,8 +417,8 @@ def test_linearization_must_be_exact_json_data():
 #
 # Every candidate persisted before #1668 PR-C landed lacks the
 # "linearization" key entirely — the field, and even the possibility of a
-# non-empty value, did not exist yet. jasper.web.correction_crossover_v2's
-# _reopen_candidate_artifact reads candidate.json straight off disk, so a
+# non-empty value, did not exist yet. The candidate bank reads candidate.json
+# straight off disk, so a
 # candidate published moments before a deploy can be reopened moments after
 # it by code that now expects the newer shape. from_mapping must treat
 # "linearization" as OPTIONAL on read (absent -> {}), and the fingerprint of
@@ -459,8 +459,7 @@ def test_empty_linearization_is_omitted_from_the_fingerprinted_core():
 
 
 def test_from_mapping_accepts_pre_prc_shape_missing_linearization_key():
-    """Era tolerance (the P1 blocker): _reopen_candidate_artifact
-    (jasper/web/correction_crossover_v2.py) can hand from_mapping a
+    """Era tolerance (the P1 blocker): the candidate bank can hand from_mapping a
     candidate.json published by a build that predates the "linearization"
     field. That payload must load cleanly — not refuse candidate_malformed
     — default to linearization=={}, and its RECOMPUTED fingerprint must
@@ -616,7 +615,7 @@ def test_from_mapping_accepts_shape_missing_exclusion_evidence_key():
     The tampered refusal is the sharp edge: ``to_dict()`` always writes the
     key, so an older ``raw`` that omits it fails the equality check in
     ``from_mapping`` unless the comparison setdefaults it. That route is LIVE
-    (``handle_v2_apply`` → ``_reopen_candidate_artifact``), and its failure
+    (``handle_v2_apply`` → ``find_banked_candidate``), and its failure
     tells a household their persisted correction was tampered with when the
     file is merely older than the field."""
     candidate = _candidate()

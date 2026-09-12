@@ -33,10 +33,10 @@ def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], 
                 return dict(outcome)
             outcome.update(status="restore_failed", restored=False)
             state = host.load_v2_state()
-            previous = status._previous_candidate_fingerprint(state)
+            previous = status.previous_candidate_fingerprint(state)
             if not graph_fingerprint or current_graph_fingerprint() != graph_fingerprint:
                 outcome["status"] = "graph_displaced"
-            elif previous is None or not host._previous_candidate_paired(state):
+            elif previous is None or not host.previous_candidate_paired(state):
                 outcome["status"] = "previous_profile_unavailable"
             else:
                 try:
