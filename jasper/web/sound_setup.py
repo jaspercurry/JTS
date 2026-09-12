@@ -1205,6 +1205,7 @@ def _make_handler(
         "/active-speaker/commissioning-view": Handler._dispatch_get_route,
         "/active-speaker/staged-config": Handler._dispatch_get_route,
         "/active-speaker/channel-identity": Handler._dispatch_get_route,
+        "/active-speaker/seat-level/status": Handler._dispatch_get_route,
     }
 
     _POST_ROUTES = {
