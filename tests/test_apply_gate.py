@@ -1,46 +1,61 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import copy
 from dataclasses import replace
 
 import pytest
 
-from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate, compile_preset_from_crossover_preview
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.crossover_v2.apply_gate import candidate_trial_manifest
 from jasper.active_speaker.crossover_v2.apply_gate import ApplyGraph, apply_preconditions
+from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from tests.active_speaker_fixtures import valid_camilla_config
 from tests.apply_fixtures import bank_trial
+from tests.crossover_v2_fixtures import FakeCam
 from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology, _MEASURE_EVIDENCE
-from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 
 
 @pytest.fixture
-def apply_facts(tmp_path, monkeypatch):
-    from jasper.active_speaker.baseline_profile import compile_preset_from_crossover_preview
-
+def apply_facts(tmp_path, monkeypatch, request):
     monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
     preset, _, _ = compile_preset_from_crossover_preview(topology, preview)
-    measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)
+    measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE,
+                       **getattr(request, "param", {}))
     profile = build_baseline_profile_candidate(
         topology, design_draft=draft, crossover_preview=preview, measurements={},
         measured_candidate=measured, tuning_owner="automatic", write=True,
         state_path=tmp_path / "profile.json", config_path=tmp_path / "graph.yml", validate=valid_camilla_config,
     )
     assert profile["permissions"]["may_apply"], profile["issues"]
-    bank_trial(measured, profile, topology)
+    cam = FakeCam(entry_path=profile["config"]["path"])
+    graph = bind_measurement_graph(MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, profile["config"]["playback_device"],
+    ), camilla_factory=lambda: cam, config_dir=tmp_path, candidate=measured)
+    bank_trial(measured, profile, topology, record_fields={"graph_fingerprint": asyncio.run(graph.install())})
     bank = find_banked_candidate(measured.fingerprint)
     manifest = candidate_trial_manifest(measured.fingerprint, profile)
     assert manifest
     return ApplyGraph(profile, topology, measured), bank, manifest
 
 
+@pytest.mark.parametrize("apply_facts", [
+    pytest.param({}, id="speaker"),
+    pytest.param({"room_correction": _room_correction()}, id="room"),
+    pytest.param({"room_correction": _room_correction(), "bass_extension": {
+        "low_boost_db": 4., "reference_level_db": 0., "detector_lowpass_hz": 120.,
+        "compressor_threshold_dbfs": -30.,
+    }}, id="room-bass"),
+], indirect=True)
 @pytest.mark.parametrize("fault,code", [
     (None, None), ("unbanked", "not_found"), ("partial", "candidate_trial_required"),
     ("integrity", "candidate_trial_evidence_invalid"),
@@ -67,9 +82,7 @@ def test_apply_preconditions_fail_independently(apply_facts, fault, code):
         profile["recomposition_snapshot"]["schema_version"] = 999
         candidate = replace(candidate, profile=profile)
     elif fault == "graph":
-        profile = copy.deepcopy(candidate.profile)
-        profile["config"]["sha256"] = "0" * 64
-        candidate = replace(candidate, profile=profile)
+        trial["set"]["capture_basis"]["submitted_graph_fingerprint"] = "0" * 16
     elif fault == "digest":
         trial["records"][0]["wav_sha256"] = "0" * 64
         from jasper.active_speaker.crossover_v2.apply_gate import trial_is_intact
