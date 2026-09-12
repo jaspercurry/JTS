@@ -1,210 +1,51 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""A raising persist still gives the fader back — the wired runner.
-
-Every terminal arm of the runner records the failure to durable state and
-THEN drains the measurement volume. The persist ends in ``save_v2_state`` ->
-``atomic_write_text``, so disk pressure (ENOSPC, EROFS) raises ``OSError`` out
-of it, and an unprotected raise skipped the drain entirely. The stranded
-``SESSION_MEASUREMENT`` claim has NO TTL and all three out-of-runner drains
-gate on ``VolumeOwner.holds_kind``, so the leak wedges the measurement pause
-until the process restarts.
-
-Pinned at the PROVIDER altitude with the OWNER's own answer as the
-observable: a real :class:`~jasper.volume_owner.VolumeOwner` holds a real
-measurement claim, the hooks release it the way production's
-``_abandon``/``_close`` do, and after the arm the owner must report it gone.
-One row per protected call site — the post-walk rows split by ``done``
-because that site's ``finally`` drains through ``close`` on one branch and
-``abandon`` on the other.
-"""
+"""The host persists this run's restore fact on every terminal arm."""
 from __future__ import annotations
 
 import asyncio
 import threading
-from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Callable
 
 import pytest
 
-from jasper.volume_owner import ClaimKind, VolumeOwner
-from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_wired as v2wired
-
-MEASUREMENT_DB = -12.5
-
-#: What a full disk raises out of ``atomic_write_text``. Identity-checked in
-#: the assertion, so a row dying of some OTHER OSError cannot pass as this one.
-DISK_FULL = OSError(28, "No space left on device")
+from jasper.active_speaker import plan_run
+from jasper.active_speaker.crossover_v2.capture_source import CaptureStopped
+from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+from jasper.web import correction_crossover_v2 as host
+from jasper.web.correction_crossover_v2_wired import build_v2_wired_run_and_consume
 
 
-class _Fader:
-    """A compliant fader: every write reads back exactly."""
+@pytest.mark.parametrize("failure", [None, CaptureStopped, RuntimeError, asyncio.CancelledError, OSError])
+@pytest.mark.parametrize("restore", [None, *SessionVolumeRestoreResult])
+async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, restore):
+    state = {"session_id": "run", "execution": {"volume_restore": "stale"}}
+    saved = []
+    windows = SimpleNamespace(last_window=None)
+    monkeypatch.setattr(host, "load_v2_state", lambda: state)
+    monkeypatch.setattr(host, "save_v2_state", lambda value, **kw: saved.append(value["execution"].copy()))
+    monkeypatch.setattr(host, "_persist_terminal_failure", lambda *a, **kw: None)
+    def persist(*args, **kwargs):
+        if failure is OSError:
+            raise OSError(28, "disk full")
+    monkeypatch.setattr(host, "persist_conductor_state", persist)
 
-    def __init__(self, db: float = -30.0) -> None:
-        self.db = db
-
-    async def set(self, db: float) -> bool:
-        self.db = float(db)
-        return True
-
-    async def get(self) -> float:
-        return self.db
-
-
-@dataclass(frozen=True)
-class _Row:
-    """One arm of one provider, and how to steer a runner into it."""
-
-    id: str
-    #: Which host persist the arm calls — the one this row makes raise.
-    persist: str
-    drive: Callable[[Any, Any], Any]
-
-
-def _wired_row(
-    id: str, persist: str, *, awaiting: Any = False, ceiling_s: float = 30.0,
-    done: bool = False,
-) -> _Row:
-    async def _drive(hooks: Any, monkeypatch: Any) -> None:
-        from jasper.active_speaker import plan_run
-        from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
-
-        async def execute(*args, **kwargs):
-            if isinstance(awaiting, Exception):
-                raise awaiting
-            if awaiting:
-                raise CaptureBeginRefused("session_ceiling_expired", "expired")
-            return SimpleNamespace(reason="", cancelled=False)
-
-        monkeypatch.setattr(plan_run, "run_plan", execute)
-        runner = v2wired.build_v2_wired_run_and_consume(
-            SimpleNamespace(_measure_gain_ceiling_db={}), volume=hooks,
-            stop_event=threading.Event(), stop_lock=threading.Lock(),
-            ceiling_s=ceiling_s, complete_event=threading.Event(), retake_event=threading.Event(),
-            tuning=None, manifest=None, request=None, captures=None, analyze=None, assessor=None,
-            candidate_scopes={}, spl_monitor="test",
-        )
-        await runner(SimpleNamespace(session_id="drain-test"))
-
-    return _Row(id=id, persist=persist, drive=_drive)
-
-
-ROWS = (
-    # The ceiling expiry is what raises its CaptureBeginRefused with no
-    # capture — the wired walk has no transport to die of.
-    _wired_row(
-        "wired-refused", "_persist_terminal_failure",
-        awaiting=True, ceiling_s=0.0,
-    ),
-    _wired_row(
-        "wired-catch-all", "_persist_terminal_failure",
-        awaiting=RuntimeError("a capture-chain fault"),
-    ),
-    _wired_row("wired-complete-close", "persist_conductor_state", done=True),
-)
-
-
-async def _opened() -> str:
-    return "opened"
-
-
-@pytest.mark.parametrize("row", ROWS, ids=lambda row: row.id)
-def test_a_raising_persist_still_gives_the_fader_back(row, monkeypatch):
-    def _raise(*a: Any, **k: Any) -> None:
-        raise DISK_FULL
-
-    monkeypatch.setattr(v2host, row.persist, _raise)
-
-    async def _drive() -> list[str]:
-        fader = _Fader()
-        owner = VolumeOwner(
-            set_fader_db=lambda db: fader.set(db),
-            get_fader_db=lambda: fader.get(),
-        )
-        handle = await owner.acquire_level(
-            ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
-        )
-        assert owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
-        drained: list[str] = []
-
-        async def _give_back(how: str) -> None:
-            drained.append(how)
-            await owner.release(handle)
-
-        with pytest.raises(OSError) as caught:
-            await row.drive(
-                v2host.V2VolumeHooks(
-                    open=_opened,
-                    close=lambda: _give_back("close"),
-                    abandon=lambda: _give_back("abandon"),
-                ),
-                monkeypatch,
-            )
-        assert caught.value is DISK_FULL, "the row died of the wrong failure"
-        # THE PIN: the owner's own answer, not a spy, and not the drain's
-        # outcome — an outcome cannot tell a released claim from a deferred one.
-        assert not owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
-        return drained
-
-    assert asyncio.run(_drive()) == [
-        "close" if row.id.endswith("-close") else "abandon"
-    ]
-
-
-#: The two post-walk sites, whose ``finally`` holds a whole ``if done/else``.
-POST_WALK = tuple(row for row in ROWS if "-complete-" in row.id)
-
-
-@pytest.mark.parametrize("row", POST_WALK, ids=lambda row: row.id)
-def test_a_failing_drain_keeps_the_persist_failure_in_its_exception_chain(row, monkeypatch):
-    """Cleanup failure stays visible, with the failed write retained as context."""
-    def _raise(*a: Any, **k: Any) -> None:
-        raise DISK_FULL
-
-    monkeypatch.setattr(v2host, row.persist, _raise)
-
-    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *_a, **_kw: None)
-    drain_error = ValueError("the fader would not answer")
-    async def _drain_fails() -> None:
-        raise drain_error
-
-    async def _drive() -> None:
-        with pytest.raises(ValueError) as caught:
-            await row.drive(
-                v2host.V2VolumeHooks(
-                    open=_opened, close=_drain_fails, abandon=_drain_fails,
-                ),
-                monkeypatch,
-            )
-        assert caught.value is drain_error
-        assert caught.value.__context__ is DISK_FULL
-
-    asyncio.run(_drive())
-
-
-@pytest.mark.parametrize("row", POST_WALK, ids=lambda row: row.id)
-@pytest.mark.parametrize("result", ["failed", "deferred", "emergency_attenuated", "exact_restored", "already_resolved"])
-def test_typed_volume_cleanup_is_not_a_false_success(row, result, monkeypatch):
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlanError, SessionVolumeRestoreResult
-    observed = []
-    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_execution_result", lambda sid, **facts: observed.append(facts))
-
-    async def cleanup():
-        return SessionVolumeRestoreResult(result)
-
-    async def drive():
-        hooks = v2host.V2VolumeHooks(open=_opened, close=cleanup, abandon=cleanup)
-        if result == "failed":
-            with pytest.raises(SessionVolumePlanError):
-                await row.drive(hooks, monkeypatch)
-        else:
-            await row.drive(hooks, monkeypatch)
-
-    asyncio.run(drive())
-    assert observed[-1]["volume_restore"] == result
+    async def execute(*args, **kwargs):
+        windows.last_window = SimpleNamespace(restore_result=restore) if restore else None
+        if failure is not None and failure is not OSError:
+            raise failure()
+        return SimpleNamespace(reason="", cancelled=False)
+    monkeypatch.setattr(plan_run, "run_plan", execute)
+    runner = build_v2_wired_run_and_consume(
+        SimpleNamespace(_measure_gain_ceiling_db={}), windows=windows,
+        stop_event=threading.Event(), stop_lock=threading.Lock(), ceiling_s=30,
+        complete_event=threading.Event(), retake_event=threading.Event(),
+        manifest=None, request=None, captures=None, analyze=None, assessor=None, candidate_scopes={},
+    )
+    if failure:
+        with pytest.raises(failure):
+            await runner(SimpleNamespace(session_id="run"))
+    else:
+        await runner(SimpleNamespace(session_id="run"))
+    assert saved == [{"volume_restore": restore.value if restore else "failed"}]

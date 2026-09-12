@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from tests.test_active_speaker_measurement_door import box as box
 
 from jasper.active_speaker.program_admission import (
     ProgramAdmissionRefusal,
@@ -730,6 +731,9 @@ def test_a_missing_microphone_exits_as_json_not_a_traceback(tmp_path, monkeypatc
     the absence of output. The sibling door renders the same case as refusal
     JSON; this matches it.
     """
+    from jasper.audio_measurement.calibration import MicSensitivity
+    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity",
+                        lambda _: MicSensitivity(-12, 18, "1234"))
     monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
@@ -747,14 +751,16 @@ def test_a_missing_microphone_exits_as_json_not_a_traceback(tmp_path, monkeypatc
 
 
 def _fake_context():
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.crossover_v2_fixtures import _preset
     return SimpleNamespace(
         fc_hz=FC_HZ,
         roles_bands=_roles(),
         driver_caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
         driver_sweep_duration_limits_s={"woofer": 6.0, "tweeter": 2.0},
         session_volume_db=-30.0,
-        preset=object(),
-        topology=object(),
+        preset=_preset(),
+        topology=mono_output_topology(),
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device="plughw:CARD=Loopback,DEV=0",
         safety_profile={},
@@ -781,12 +787,15 @@ def _hardware_free_walk(
     The box declaration, the microphone, the emission and the depth read; the
     door is the caller's, because how it ends is what each test is about.
     """
+    from jasper.audio_measurement.calibration import MicSensitivity
+    monkeypatch.setattr("jasper.cli.measurement_watch.resolved_household_sensitivity",
+                        lambda _: MicSensitivity(-12, 18, "1234"))
     monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
     monkeypatch.setattr(
         "jasper.audio_measurement.wired_capture.require_wired_mic",
-        lambda **kw: SimpleNamespace(pcm=None),
+        lambda **kw: SimpleNamespace(pcm=None, model_key="minidsp_umik2"),
     )
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
 
@@ -803,7 +812,8 @@ def _install_door(monkeypatch, *, restore_error: Exception | None = None) -> Non
     from jasper.active_speaker.crossover_v2 import door as door_mod
 
     class _Open:
-        def __init__(self) -> None:
+        def __init__(self, monitor) -> None:
+            self.spl_monitor = monitor
             self.plan = None
             self.graph = SimpleNamespace(
                 install=self._install, installed_graph_yaml=lambda: "installed-graph",
@@ -813,15 +823,52 @@ def _install_door(monkeypatch, *, restore_error: Exception | None = None) -> Non
             return "fingerprint-1"
 
     class _Door:
+        def __init__(self, monitor):
+            self.monitor = monitor
+
         async def __aenter__(self) -> _Open:
-            return _Open()
+            return _Open(self.monitor)
 
         async def __aexit__(self, exc_type, _exc, _tb) -> bool:
             if exc_type is None and restore_error is not None:
                 raise restore_error
             return False
 
-    monkeypatch.setattr(door_mod, "measurement_door", lambda **_kw: _Door())
+    def door(*, profile, measurement_volume_db, spl_monitor, camilla_factory, action,
+             config_dir=None, volume_state_path=None, wall_clock_ceiling_s=None, gate_owner=None):
+        from jasper.audio_measurement.wired_capture import WiredSplMonitor
+        assert isinstance(spl_monitor, WiredSplMonitor)
+        return _Door(spl_monitor)
+
+    monkeypatch.setattr(door_mod, "measurement_door", door)
+
+
+def test_null_opens_with_the_same_watch_bound_to_capture(tmp_path, monkeypatch, capsys, box):
+    from jasper.active_speaker.crossover_v2 import door as door_mod
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+    from tests.test_active_speaker_measurement_door import _profile
+
+    _hardware_free_walk(monkeypatch)
+    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: box)
+    entered, captured = [], []
+    real_door = door_mod.measurement_door
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def observe(**kwargs):
+        kwargs.update(profile=_profile(), config_dir=tmp_path, volume_state_path=tmp_path / "volume.json")
+        async with real_door(**kwargs) as window:
+            entered.append(window.spl_monitor)
+            yield window
+    monkeypatch.setattr(door_mod, "measurement_door", observe)
+    async def play(*args, graph_yaml, spl_monitor):
+        captured.append(spl_monitor)
+        return _answer()
+    monkeypatch.setattr(null_door, "_play_and_capture", play)
+    args = null_door.build_parser().parse_args(["--bundle-dir", str(tmp_path), "--delays", "0", "--fc-hz", "2000"])
+    assert asyncio.run(null_door._run(args)) == null_door.EXIT_OK
+    assert len(entered) == 1 and isinstance(entered[0], WiredSplMonitor)
+    assert captured and all(monitor is entered[0] for monitor in captured)
+    assert entered[0].ceiling_db_spl == _fake_context().preset.safety.max_commissioning_level_db_spl
 
 
 def test_a_clean_walk_answers_with_the_scalars_and_the_path(
@@ -983,29 +1030,10 @@ def test_a_refused_run_writes_no_stimulus(tmp_path, monkeypatch):
     """A refused run must leave the bundle exactly as it found it."""
     from jasper.active_speaker.crossover_v2 import door as door_mod
 
-    context = SimpleNamespace(
-        fc_hz=FC_HZ,
-        roles_bands=_roles(),
-        driver_caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
-        driver_sweep_duration_limits_s={"woofer": 6.0, "tweeter": 2.0},
-        session_volume_db=-30.0,
-        preset=object(),
-        topology=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="plughw:CARD=Loopback,DEV=0",
-        safety_profile={},
-        role_targets={},
-        declared_sensitivities={},
-    )
-    monkeypatch.setattr(null_door, "_context", lambda: context)
-    monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
-    monkeypatch.setattr(
-        "jasper.audio_measurement.wired_capture.require_wired_mic",
-        lambda **kw: object(),
-    )
-    monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
+    _hardware_free_walk(monkeypatch)
 
-    def _refuse(**_kw):
+    def _refuse(*, profile, measurement_volume_db, spl_monitor, camilla_factory, action,
+                config_dir=None, volume_state_path=None, wall_clock_ceiling_s=None, gate_owner=None):
         raise door_mod.MeasurementDoorRefused(
             door_mod.REFUSE_SESSION_LIVE, "a measurement session is running"
         )

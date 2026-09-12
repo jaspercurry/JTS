@@ -99,7 +99,6 @@ __all__ = [
     "BASE_CANDIDATE",
     "candidate_identity",
     "WALK_REPEATS_UNSUPPORTED_YET",
-    "WALK_LEVEL_WINDOWS_UNSUPPORTED_YET",
     "WALK_SCHEMA_VERSION_UNSUPPORTED",
     "AngleStop",
     "AngleCaptureRequest",
@@ -443,11 +442,9 @@ class AngleCaptureRequest:
         levels = self.operating_levels_db
         if not isinstance(levels, (tuple, list)) or any(finite_float(v) is None for v in levels):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "operating levels must be finite numbers")
-        if len(levels) > 1:
-            raise LateralWalkRefused(WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, "only one level window can play")
         reference = self.level.resolved.reference_volume_db if self.level.resolved is not None else None
-        if levels and (levels[0] > 0 or (reference is not None and levels[0] != reference)):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "the window must hold the reference volume")
+        if any(level > 0 for level in levels):
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "window levels must be non-positive")
         object.__setattr__(self, "operating_levels_db", tuple(levels) or (
             () if reference is None else (reference,)
         ))
@@ -808,7 +805,7 @@ def walk_price(
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
     takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
+    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats * max(1, len(request.operating_levels_db))
     return {
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
@@ -940,7 +937,6 @@ WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
 # Remove with PR 28b, level windows.
-WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
 WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 # Remove when W1-13 hosts run_plan in the wizard.
 WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
@@ -1019,7 +1015,6 @@ WALK_REFUSAL_REASONS = frozenset({
     REASON_WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
-    WALK_LEVEL_WINDOWS_UNSUPPORTED_YET,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
     WALK_REPEATS_UNSUPPORTED_YET,
     WALK_CEILING_ABOVE_STOP,

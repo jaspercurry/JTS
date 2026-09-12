@@ -35,7 +35,6 @@ from .measure_spec import (
 from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
 from .session_seams import EngineSeams
 from .program_transaction import StimulusCaptureStopped
-from .spatial import take_id_for
 
 __all__ = [
     "MeasureOutcome",
@@ -203,6 +202,7 @@ class TuningSession:
     #: voltage across every per-driver measurement; no gain is touched between
     #: them."* A level ladder moves the stimulus, never this.
     measurement_level_db: float
+    allocate_take_id: Callable[[], str]
     #: The per-role attenuation a ``level_matched`` spec's graph carries, in dB
     #: and never positive. Resolved ONCE by the host that opened this session,
     #: from the box's own banked evidence — the session applies it and never
@@ -218,11 +218,6 @@ class TuningSession:
     _graph_fingerprint: str = field(default="", init=False)
     last_playback: PlaybackObservation = field(default_factory=PlaybackObservation, init=False)
     _banked: list[str] = field(default_factory=list, init=False)
-    #: How many takes this session has minted an id for, in memory only: a
-    #: persisted registry of minted ids would be a second index over the bank,
-    #: which the one-index rule forbids.
-    _takes_minted: int = field(default=0, init=False)
-
     # ---------------------------------------------------------------- lifetime
 
     async def open(self) -> None:
@@ -510,7 +505,7 @@ class TuningSession:
                 async def _bank() -> str:
                     written = await self.seams.records.bank(self._record(
                         spec, bearing, prompt, stimulus_dbfs, outcome,
-                        proven_level_db, self._next_take_id(spec.kind),
+                        proven_level_db, self.allocate_take_id(),
                     ))
                     self._banked.append(written)
                     return written
@@ -523,27 +518,6 @@ class TuningSession:
             level_db=proven_level_db, record_id=record_id, incident=incident,
             playback=outcome.playback,
         )
-
-    def _next_take_id(self, kind: str) -> str:
-        """This session's next take id — the name the store files a record by.
-
-        **The engine holds no position identity, and this is the consequence.**
-        :class:`~.measure_spec.MeasureSpec` names bearings, prompts and rungs and
-        carries no take id, and :meth:`measure`'s ``enumerate`` is per POSITION,
-        not per record. So the id is minted on ``entry_baseline_record``'s
-        precedent — WHAT the take is plus an ordinal, ``f"{kind}_{n:02d}"``,
-        through :func:`~.spatial.take_id_for`, the repo's one spelling of a take
-        id.
-
-        ``n`` counts takes minted by THIS session, in memory, so two records of
-        one session never collide however many specs or rungs produced them.
-        Uniqueness across sessions is the store's capture-scoped path, not a name.
-        The attempt is ``0`` on every engine take: the suffix exists because a
-        geometry RETAKE reuses its position id.
-        """
-        ordinal = self._takes_minted
-        self._takes_minted += 1
-        return take_id_for(f"{kind}_{ordinal:02d}", 0)
 
     async def _proven_level(self) -> float | None:
         """This stimulus's fader level, or ``None`` when it is not proven.
@@ -603,9 +577,6 @@ class TuningSession:
         bundle-relative capture path is NOT derivable from the take id
         (``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex). ``""``
         when no bytes were placed.
-
-        ``take_id`` is what the store files this record BY, minted by
-        :meth:`_next_take_id` at bank time rather than derived here.
         """
         # Asked through the ONE translation the install used, never re-derived
         # from the flag: the record then states the trims the stimulus actually
