@@ -159,9 +159,9 @@ def box(tmp_path, monkeypatch):
         (tmp_path / "info.json").write_text('{"session_id": "level-bundle"}')
         (tmp_path / "artifacts.json").write_text('{"artifacts": []}')
         return None if state.bundle_failed else {"bundle_dir": tmp_path, "session_id": "level-bundle"}
-    def observe(monitor, spl):
+    def observe(monitor, spl, frames=24000):
         amplitude = 10 ** ((spl - 94.0) / 20)
-        data = np.full(24000, amplitude * np.iinfo(np.int32).max, dtype="<i4")
+        data = np.full(frames, amplitude * np.iinfo(np.int32).max, dtype="<i4")
         monitor.observe(data.tobytes(), len(data), 1, sample_rate_hz=48000)
     class Recorder:
         failure = None
@@ -171,6 +171,8 @@ def box(tmp_path, monkeypatch):
             assert 'graph' in state.events and state.gain <= -40.0
             state.events.append("ambient")
             observe(self.spl_monitor, state.ambient)
+            if state.room_floor:
+                observe(self.spl_monitor, 72.5, frames=1024)
             self.failure = state.ambient_failure or self.spl_monitor.error
             if self.failure and state.ambient_start_fails:
                 raise self.failure
