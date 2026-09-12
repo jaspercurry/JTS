@@ -37,6 +37,8 @@ from jasper.active_speaker.flat_spec_views import (
     _pool,
 )
 from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
+from jasper.active_speaker.linearization_fit import FitVocabulary
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches
 from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.driver_prescription import (
@@ -121,6 +123,7 @@ __all__ = [
     "agreement_table",
     "audibility_co_metrics",
     "cloud_binding_view",
+    "response_from_banked_curve",
     "default_agreement_lo_hz",
     "directivity_view",
     "entry_state_grade",
@@ -1673,7 +1676,7 @@ def _not_evaluated(round_dir: Path, reason: str) -> CloudBindingView:
     )
 
 
-def _response_from_banked_curve(curve: Mapping[str, Any]):
+def response_from_banked_curve(curve: Mapping[str, Any]):
     """One banked MEASURE curve as ``(DriverResponse, driven_band_hz)``, or
     ``None`` when the take predates the two inputs the fit needs.
 
@@ -1701,7 +1704,7 @@ def _response_from_banked_curve(curve: Mapping[str, Any]):
         return None
     repeats = []
     for occurrence in curve["repeat_curves"] or ():
-        repeat = _response_from_banked_curve(occurrence)
+        repeat = response_from_banked_curve(occurrence)
         if repeat is None:
             return None
         repeats.append(repeat[0])
@@ -1787,18 +1790,6 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
 
     Observed only; no grade moves and ``round_receipt.json`` is untouched.
     """
-    from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
-    from jasper.active_speaker.branch_target import branch_target
-    from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db
-    from jasper.active_speaker.linearization_envelope import compose_envelope
-    from jasper.active_speaker.linearization_fit import (
-        FitVocabulary,
-        core_level_band_hz,
-        fit_driver_linearization,
-        measurement_hole_bands_hz,
-    )
-    from jasper.active_speaker.profile import CrossoverRegion
-
     round_dir = banked.round_dir
     candidate = _round_candidate(banked)
     linearization = _mapping(candidate.get("linearization"))
@@ -1836,7 +1827,7 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
     if pair is None:
         return _not_evaluated(round_dir, CLOUD_BINDING_FIT_INPUTS_NOT_BANKED)
     read = {
-        role: _response_from_banked_curve(curve)
+        role: response_from_banked_curve(curve)
         for role, curve in zip(roles, pair[:2])
     }
     if any(entry is None for entry in read.values()):
@@ -1845,53 +1836,16 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
     # The band each role was DRIVEN over, as the curve recorded it — so the
     # envelope is composed over the span the session composed it over.
     excited = {role: entry[1] for role, entry in read.items()}
-    sections = sections_by_role(
-        CrossoverRegion.from_mapping(region)
-        for region in _mapping(candidate.get("source_preset")).get(
-            "crossover_regions"
-        ) or ()
+    drivers = tuple(DriverEvidence(role, responses[role], excited[role], classes[role]) for role in roles)
+    wired = fit_branches(
+        drivers, source_preset=_mapping(candidate.get("source_preset")), mic_tiers=tiers,
+        vocabulary=FitVocabulary(allow_boost=True),
+        cloud=CloudFitTerms(cloud_bands, band_spread, n_positions),
     )
-    role_sections = {role: sections.get(role, ()) for role in roles}
-    radiating = {role: radiating_band_hz(role_sections[role]) for role in roles}
-
-    def _fit_pair(*, wired: bool) -> dict[str, Any]:
-        """Both branches, composed before either is fitted."""
-        envelopes = {
-            role: compose_envelope(
-                role, responses[role],
-                excited_band_hz=excited[role],
-                mic_tier=tiers[role],
-                driver_class=classes[role],
-                sigma_db=compose_sigma_db(
-                    responses[role],
-                    responses[next(other for other in roles if other != role)],
-                    tier=tiers[role],
-                    valid_band_hz=excited[role],
-                ),
-                excluded_bands_hz=cloud_bands if wired else None,
-                band_spread=band_spread if wired else None,
-                n_positions=n_positions if wired else None,
-            )
-            for role in roles
-        }
-        # A hole belongs to the PAIR, so it is derived from both core bands and
-        # handed to each fit, exactly as the composer does it.
-        blind = measurement_hole_bands_hz([
-            core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role])
-            for role in roles
-        ])
-        return {
-            role: fit_driver_linearization(
-                responses[role], envelopes[role],
-                vocabulary=FitVocabulary(allow_boost=True),
-                radiating_band_hz=radiating[role],
-                blind_bands_hz=blind,
-                target=branch_target(role_sections[role], envelopes[role].freqs_hz),
-            )
-            for role in roles
-        }
-
-    wired_fits, severed_fits = _fit_pair(wired=True), _fit_pair(wired=False)
+    severed = fit_branches(
+        drivers, source_preset=_mapping(candidate.get("source_preset")), mic_tiers=tiers,
+        vocabulary=FitVocabulary(allow_boost=True),
+    )
 
     grid_hz = DEFAULT_ENVELOPE_GRID_HZ
     octaves = octave_bands_hz(float(grid_hz[0]), float(grid_hz[-1]))
@@ -1899,10 +1853,10 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
     worst_reconstruction = 0.0
     for role in roles:
         wired_db = _correction_db(
-            [f.to_dict() for f in wired_fits[role].filters], grid_hz
+            [f.to_dict() for f in wired.fits[role].filters], grid_hz
         )
         severed_db = _correction_db(
-            [f.to_dict() for f in severed_fits[role].filters], grid_hz
+            [f.to_dict() for f in severed.fits[role].filters], grid_hz
         )
         banked_db = _correction_db(entries[role].get("filters") or (), grid_hz)
         reconstruction = float(np.max(np.abs(wired_db - banked_db)))
@@ -1930,8 +1884,8 @@ def cloud_binding_view(banked: BankedRound) -> CloudBindingView:
             bound=max_delta > max(reconstruction, BOUND_FLOOR_DB),
             max_delta_db=max_delta,
             refit_vs_banked_db=reconstruction,
-            n_filters_wired=len(wired_fits[role].filters),
-            n_filters_severed=len(severed_fits[role].filters),
+            n_filters_wired=len(wired.fits[role].filters),
+            n_filters_severed=len(severed.fits[role].filters),
             bands=bands,
         ))
 
