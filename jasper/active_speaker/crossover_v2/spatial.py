@@ -717,7 +717,6 @@ class TakeClaim:
     #: ``""`` where it says neither, and ABSENT from the record there: an
     #: unstated composition must not read as either one.
     phase_composition: str = ""
-    measurement_purpose: str = ""
 
 
 def _take_identity(
@@ -764,7 +763,6 @@ def _take_identity(
         "graph_fingerprint": graph_fingerprint,
         "baseline_record_id": claim.baseline_record_id,
         "candidate_id": claim.candidate_id,
-        **({"measurement_purpose": claim.measurement_purpose} if claim.measurement_purpose else {}),
         "polarity": claim.polarity,
         "level_matched": claim.level_matched,
         # The numbers only when there ARE numbers: an absent key reads as an

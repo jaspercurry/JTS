@@ -18,6 +18,7 @@ from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session import MeasureOutcome
 from .crossover_v2.session_seams import RecordStore
+from .measurement_programs import resolved_measurement_purpose
 
 RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -118,6 +119,7 @@ class RunManifest:
         pose = self._context["pose"]
         payload: dict[str, Any] = {**record, **{key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                               if key in self._context}, "pose_kind": pose["kind"],
+                   "measurement_purpose": resolved_measurement_purpose(self._context.get("purpose"), pose["kind"]),
                    "mark_distance_m": pose["distance_m"], "seat_offset_m": pose.get("seat_offset_m")}
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
