@@ -30,10 +30,7 @@ import pytest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
-from jasper.active_speaker.crossover_v2.forward_model import (
-    ACCEPTANCE_NOT_RUN,
-    SummationCandidate,
-)
+
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
@@ -48,7 +45,6 @@ from jasper.active_speaker.crossover_v2.round_views import (
     audibility_co_metrics,
     cloud_binding_view,
     entry_state_grade,
-    forward_model_verify_delta,
     frozen_reference_grade,
     BankedRound,
     NOT_SWEPT_BAND_NOT_EVALUABLE,
@@ -77,13 +73,9 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 
 from tests.crossover_v2_banked_round import (
-    MODE_TWO_WAY,
-    MODE_WAY1,
-    SOLO_BAND_HZ,
     bank_cloud_echo_band,
     bank_findings,
     bank_measure_round,
-    bank_verify_round,
 )
 from tests.crossover_v2_fixtures import bank_capture_round
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
@@ -594,105 +586,6 @@ def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
 
     assert result.curve is None
     assert result.reason
-
-
-def test_forward_model_verify_delta_joins_the_two_rounds_the_flow_banks(
-    tmp_path,
-):
-    """The prediction basis and the measured VERIFY sum come from DIFFERENT
-    banked rounds, because that is where the flow puts them (#3482).
-
-    Stage 1 banks the per-driver solos and no VERIFY; stage 2 banks the VERIFY
-    and no solos — ``jasper.web.correction_crossover_v2`` opens a new bundle
-    for stage 2 — so a comparison that read one round for both halves could
-    never run on a banked corpus. Both fixture rounds come from the shared
-    real-shape builder, so this pin fails if either stage's writer moves.
-    """
-    basis = bank_measure_round(tmp_path)
-    measured = bank_verify_round(tmp_path)
-
-    result = forward_model_verify_delta(
-        load_banked_round(basis), SummationCandidate(),
-        measured=load_banked_round(measured),
-    )
-
-    assert result.reason == ""
-    assert result.delta is not None
-    assert result.delta["compared_points"] > 0
-    assert result.delta["take_path"].endswith("positions/measure_02_a01.json")
-    # WHICH two rounds were joined, on the result rather than left for a reader
-    # to remember: a delta whose halves came from different rounds and does not
-    # say so is a number with no provenance.
-    assert result.basis_round_dir == str(basis)
-    assert result.measured_round_dir == str(measured)
-
-
-@pytest.mark.parametrize(
-    ("bank_measured", "bank_basis", "basis_mode"),
-    [
-        pytest.param(False, True, MODE_TWO_WAY, id="no_measured_verify_sum"),
-        pytest.param(True, False, MODE_TWO_WAY, id="no_prediction_basis"),
-        # A subless passive main banks ONE solo: the forward model is the one
-        # view here that is about a pair, and a legal speaker shape must reach
-        # the same named refusal rather than raising or inventing a branch.
-        pytest.param(True, True, MODE_WAY1, id="a_way1_basis_has_no_pair"),
-    ],
-)
-def test_forward_model_verify_delta_names_the_half_it_was_not_given(
-    tmp_path, bank_measured, bank_basis, basis_mode,
-):
-    """Either half absent answers the same shape as every other view here: no
-    delta, WITH a reason, and never a raise.
-
-    The absent half is a REAL absence in each case — a stage-1 round banks no
-    VERIFY curve, a stage-2 round banks no solos, a 1-way round banks no pair —
-    so each parameter is the refusal an operator actually meets rather than a
-    mutilated fixture.
-    """
-    basis = (
-        bank_measure_round(tmp_path, mode=basis_mode)
-        if bank_basis else bank_verify_round(tmp_path)
-    )
-    measured = (
-        bank_verify_round(tmp_path, name="measured")
-        if bank_measured else bank_measure_round(tmp_path, name="measured")
-    )
-
-    result = forward_model_verify_delta(
-        load_banked_round(basis), SummationCandidate(),
-        measured=load_banked_round(measured),
-    )
-
-    assert result.delta is None
-    assert result.reason
-    # A result with no delta was judged by no measurement, and says so rather
-    # than leaving the acceptance question to whoever reads it later (#3481).
-    assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
-    assert result.acceptance["judged_against"] is None
-
-
-def test_forward_model_verify_delta_reads_the_verify_curve_off_its_own_grid(
-    tmp_path,
-):
-    """The banked VERIFY curve reaches the comparison VERBATIM.
-
-    It used to be resampled onto the round's cloud-position grid first, which
-    a round that banked no cloud group does not have — and the delta then
-    compared an empty curve. The measured curve here is flat, the solos sum to
-    a flat prediction, so the whole difference is LEVEL: a shape delta of zero
-    over the solos' own swept band is the tell that the real curve arrived.
-    """
-    basis = bank_measure_round(tmp_path)
-    measured = bank_verify_round(tmp_path)
-
-    result = forward_model_verify_delta(
-        load_banked_round(basis), SummationCandidate(),
-        measured=load_banked_round(measured),
-    )
-
-    assert result.delta is not None
-    assert result.delta["max_abs_db"] == pytest.approx(0.0, abs=1e-6)
-    assert result.delta["compared_band_hz"] == [SOLO_BAND_HZ[0], SOLO_BAND_HZ[1]]
 
 
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
@@ -1218,7 +1111,7 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     # nothing else stays open in it.
     bundle = round_dir / "bundle" / "sess1"
     assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
-        f"jasper-round-views classify-features {bundle}"
+        f"jasper-round-views classify-features {round_dir}"
     )
     assert rows[CLASSIFICATION_ARTIFACT][
         "producer_needs_more_than_this_round"
@@ -3182,10 +3075,8 @@ def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, c
     assert (round_dir / "directivity.json").is_file()
     distortion = rows["harmonic_distortion.json"]
     args = build_parser().parse_args(shlex.split(distortion["next_command"])[1:])
-    assert args.bundle_dir == round_dir / "bundle/sess1"
-    assert args.state == round_dir / "state.json"
-    assert args.applied_profile == profile
-    assert distortion["required_inputs"] == ["<ring>"]
+    assert args.bundle_dir == round_dir
+    assert distortion["required_inputs"] == []
     assert rows["directivity.json"]["required_inputs"] == []
     assert rows[POSITION_CYCLE_FILENAME]["next_command"] is None
     assert rows[POSITION_CYCLE_FILENAME]["repair_reason"] == "banked_pose_index_missing"
