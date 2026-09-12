@@ -112,7 +112,7 @@ class RunManifest:
     async def bank(self, record: Mapping[str, Any]) -> str:
         """Bind inside the host's capture annotation seam, before its raw store."""
         pose = self._context["pose"]
-        payload = {**record, **{key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
+        payload: dict[str, Any] = {**record, **{key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                               if key in self._context}, "pose_kind": pose["kind"],
                    "mark_distance_m": pose["distance_m"], "seat_offset_m": pose.get("seat_offset_m")}
         record_id = await self.records.bank(payload)
