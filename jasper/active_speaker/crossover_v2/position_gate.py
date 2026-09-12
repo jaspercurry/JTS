@@ -69,7 +69,12 @@ def _granted(
 
 
 class PositionGate:
+    """Thread-safe capture admission shared by human and external movers.
 
+    Reposted begins are idempotent. A placement grant carries only to the next
+    capture and attempt within the same declared pose batch. A skipped index,
+    repeated index, changed pose or abandoned hold needs a fresh grant.
+    """
     def __init__(self, *, mover: str = MOVER_HUMAN, clock: Callable[[], float] | None = None) -> None:
         self._mover = mover
         self._lock = threading.Lock()
@@ -193,6 +198,12 @@ class PositionGate:
             self._progress = deepcopy({**progress, "faults": self._faults})
 
     def published(self) -> dict[str, dict[str, Any] | None]:
+        """The hold awaiting a release and the entry a grant is executing.
+
+        Never both set, and read under one acquisition: read separately, a
+        runner re-entering its grant between them pairs a stale hold with a
+        fresh executing entry, a state the gate itself never holds.
+        """
         with self._lock:
             result = {"pending": deepcopy(self._pending), "current": deepcopy(self._current)}
             if self._progress is not None:

@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from tests.test_active_speaker_measurement_door import box as box
+from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
@@ -212,7 +214,7 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
 
     assert v2host._build_wired_run(
         "conductor",
-        volume="vol", stop_event=threading.Event(), stop_lock=threading.Lock(),
+        stop_event=threading.Event(), stop_lock=threading.Lock(),
         position_gate=None, evidence_refs={},
         ceiling_s=42.0, complete_event=complete, retake_event=retake,
     ) == "wired-run"
@@ -224,25 +226,6 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
 # --------------------------------------------------------------------------- #
 # 3. the wired runner (fake conductor)
 # --------------------------------------------------------------------------- #
-
-class VolumeRecorder:
-    def __init__(self, open_result="opened"):
-        self.events: list[str] = []
-        self._open_result = open_result
-
-    def hooks(self):
-        async def _open():
-            self.events.append("open")
-            return self._open_result
-
-        async def _close():
-            self.events.append("close")
-
-        async def _abandon():
-            self.events.append("abandon")
-
-        return v2host.V2VolumeHooks(open=_open, close=_close, abandon=_abandon)
-
 
 # --------------------------------------------------------------------------- #
 # 5. hosting: the local kind + the completion endpoint
@@ -557,48 +540,6 @@ async def test_the_capture_half_records_into_this_sessions_bundle(source, level,
     assert [event["reason"] for event in events] == ([reason] if reason else [])
 
 
-class _FakeAbortTarget:
-    """The pause's abort target: latched or not, registrations recorded."""
-
-    def __init__(self, failed=False):
-        self.failed = failed
-        self.registered: list = []
-        self.cleared = 0
-
-    def register(self, task):
-        self.registered.append(task)
-
-    def clear(self):
-        self.cleared += 1
-
-
-@pytest.mark.parametrize("when", ["before", "during", "none"])
-def test_plan_host_registers_and_honors_the_window_abort(monkeypatch, when):
-    from jasper.measurement_window import MeasurementWindowError
-
-    target = _FakeAbortTarget(failed=when == "before")
-    monkeypatch.setattr(v2host, "_session_abort_target", target)
-    runner, session, fakes, _, _, _ = _plan_host(monkeypatch)
-    if when == "during":
-        async def aborted(spec):
-            target.failed = True
-            raise asyncio.CancelledError()
-        monkeypatch.setattr(session, "measure", aborted)
-    async def drive():
-        if when == "none":
-            await runner(session)
-        else:
-            with pytest.raises(MeasurementWindowError):
-                await runner(session)
-    asyncio.run(drive())
-    assert not session.is_open
-    if when == "before":
-        assert fakes.play.calls == []
-    else:
-        assert target.registered
-        assert target.cleared == len(target.registered)
-
-
 def test_take_answer_is_take_and_clear(tmp_path):
     """An answer serves exactly one consume; a stale one is never re-served."""
     half = _capture_half(tmp_path)
@@ -655,11 +596,31 @@ def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp
     assert state["execution"]["cleanup_fault_code"] == "internal_error"
 
 
-def _plan_host(monkeypatch, *, gate=None, signals=None, phase=None):
+def _windows(tmp_path, box, fakes, manifest, records=None):
+    from dataclasses import replace
+    from jasper.active_speaker.crossover_v2.door import isolation_hold
+    from jasper.active_speaker.plan_run import LevelWindows
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from tests.engine_twin import tuning_session
+
+    fakes.graph.entry_scope_fingerprint = "entry"
+    def build(door, allocate):
+        return tuning_session(replace(fakes, graph=door.graph, volume=door.claim,
+                                      records=manifest if records is None else records),
+                              session_id=manifest.run_id, measurement_level_db=door.measurement_volume_db,
+                              allocate_take_id=allocate)[0]
+    return LevelWindows(
+        isolation_hold(graph=fakes.graph, camilla_factory=lambda: box, action="test",
+                       volume_state_path=tmp_path / "volume.json"),
+        build, None, None, MicSensitivity(-12, 18, "1234"), _device(), 80,
+    )
+
+
+def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=None):
     from dataclasses import replace
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.run_manifest import RunManifest
-    from tests.engine_twin import FakeSeams as EngineSeams, tuning_session
+    from tests.engine_twin import FakeSeams as EngineSeams
     from tests.test_plan_run import _Store, _analysis, _walk, _SCOPES
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from jasper.active_speaker.plan_run import PlanCapture
@@ -667,29 +628,30 @@ def _plan_host(monkeypatch, *, gate=None, signals=None, phase=None):
 
     fakes, flow = EngineSeams(), FlowSeams()
     manifest = RunManifest("host-run", _Store(fakes.records))
-    session, _ = tuning_session(replace(fakes, records=manifest), session_id=manifest.run_id)
+    session = SimpleNamespace(session_id=manifest.run_id)
+    windows = _windows(tmp_path, box, fakes, manifest)
     conductor = _conductor(flow)
     control = signals or plan_run.RunSignals()
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
-    request = _walk([0, 20])
+    request = replace(_walk([0, 20]), operating_levels_db=(-20,))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
         for stop in request.stops) if phase else None
     runner = v2wired.build_v2_wired_run_and_consume(
-        conductor, volume=v2host.V2VolumeHooks(session.open, session.close, session.close),
+        conductor, windows=windows,
         stop_event=control.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=control.complete, retake_event=control.retake,
-        tuning=session, manifest=manifest, request=request, captures=captures,
-        analyze=_analysis, assessor=None, candidate_scopes=_SCOPES, spl_monitor="test",
+        manifest=manifest, request=request, captures=captures,
+        analyze=_analysis, assessor=None, candidate_scopes=_SCOPES,
         position_gate=gate,
     )
     return runner, session, fakes, manifest, control, flow
 
 
 @pytest.mark.parametrize("phase", [None, "verify", "cloud_verify"])
-def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypatch, phase):
+def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypatch, tmp_path, box, phase):
     from tests.test_plan_run import AnsweredGate
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
@@ -700,26 +662,26 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     monkeypatch.setattr(v2host, "handle_v2_apply", apply_route)
     monkeypatch.setattr(dsp_apply, "apply_dsp_config", apply_dsp)
     gate = AnsweredGate()
-    runner, session, fakes, manifest, _, flow = _plan_host(monkeypatch, gate=gate, phase=phase)
+    runner, session, fakes, manifest, _, flow = _plan_host(monkeypatch, tmp_path, box, gate=gate, phase=phase)
     def assessed(*args, **kwargs):
-        assert fakes.graph.restores == (len(fakes.play.calls) if phase else 0)
-        assert fakes.volume.held
+        assert fakes.graph.restores == 0
+        assert box.volume_db == -20
         return TakeVerdict(True, next="accept")
     monkeypatch.setattr(plan_run, "assess", assessed)
     asyncio.run(runner(session))
     assert manifest.status == "complete"
     assert manifest.takes_measured == 2
     assert len(gate.grants) == 2
-    assert fakes.graph.restores == 1 + (2 if phase else 0)
-    assert fakes.volume.releases == 1
+    assert fakes.graph.restores == 1
+    assert box.volume_db == HOUSEHOLD_DB
     assert flow.published_candidates == []
     apply_route.assert_not_called()
     apply_dsp.assert_not_called()
 
 
 @pytest.mark.parametrize("signal", ["complete", "stop"])
-def test_plan_host_controls_drain_the_session(monkeypatch, signal):
-    runner, session, fakes, manifest, signals, _ = _plan_host(monkeypatch)
+def test_plan_host_controls_drain_the_session(monkeypatch, tmp_path, box, signal):
+    runner, session, fakes, manifest, signals, _ = _plan_host(monkeypatch, tmp_path, box)
     getattr(signals, signal).set()
     async def drive():
         if signal == "stop":
@@ -729,17 +691,18 @@ def test_plan_host_controls_drain_the_session(monkeypatch, signal):
             await runner(session)
     asyncio.run(drive())
     assert fakes.play.calls == []
-    assert fakes.volume.releases == fakes.graph.restores == 1
+    assert fakes.graph.restores == 1
+    assert box.volume_db == HOUSEHOLD_DB
     assert manifest.finalized
 
 
-async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeypatch):
+async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeypatch, tmp_path, box):
     from jasper.active_speaker.crossover_v2.position_gate import PositionGate
     from jasper.active_speaker import plan_run
 
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     gate = PositionGate()
-    runner, session, fakes, manifest, signals, _ = _plan_host(monkeypatch, gate=gate)
+    runner, session, fakes, manifest, signals, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate)
     task = asyncio.create_task(runner(session))
     for _ in range(100):
         if gate.published()["pending"]:
@@ -750,10 +713,10 @@ async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeyp
     signals.complete.set()
     await task
     assert manifest.reason == "complete_requested"
-    assert fakes.volume.releases == 1
+    assert box.volume_db == HOUSEHOLD_DB
 
 
-async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monkeypatch):
+async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monkeypatch, tmp_path, box):
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
     from tests.test_plan_run import AnsweredGate
@@ -769,13 +732,14 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
                 raise CaptureBeginDeferred("awaiting_position", "placement")
             return super().gate(index, attempt, entry)
     gate = RetakingGate()
-    runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, gate=gate, signals=signals)
+    runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate, signals=signals)
     await runner(session)
     assert manifest.status == "complete"
     assert manifest.takes_measured == 3
     assert [call[0] for call in gate.grants] == [1, 1, 2]
     assert max(progress["budget"]["by_household"] for progress in gate.progress) == 1
-    assert fakes.volume.releases == fakes.graph.restores == 1
+    assert fakes.graph.restores == 1
+    assert box.volume_db == HOUSEHOLD_DB
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
@@ -844,7 +808,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
     assert program.segment("sweep_t").gain_db == pytest.approx(-57.0 + delta)
 
 
-async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch):
+async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_path, box):
     from dataclasses import replace
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.plan_run import PlanCapture
@@ -852,12 +816,12 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch):
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
-    from tests.engine_twin import FakeSeams, tuning_session
+    from tests.engine_twin import FakeSeams
     from tests.test_plan_run import _Store, _walk, _SCOPES
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = _walk([0])
+    request = replace(_walk([0]), operating_levels_db=(-20,))
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
                        program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
     manifest = RunManifest("two-rungs", _Store(fakes.records))
@@ -867,16 +831,17 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch):
         return WiredCaptureAnswer(wav=b"", program=program.to_dict(), device={"rung_dbfs": rung})
     records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
-    session, _ = tuning_session(replace(fakes, records=records), session_id=manifest.run_id)
+    session = SimpleNamespace(session_id=manifest.run_id)
+    windows = _windows(tmp_path, box, fakes, manifest, records)
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
-        conductor, volume=v2host.V2VolumeHooks(session.open, session.close, session.close),
+        conductor, windows=windows,
         stop_event=signals.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=signals.complete, retake_event=signals.retake,
-        tuning=session, manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
-        analyze=analyze, assessor=assessor, candidate_scopes=_SCOPES, spl_monitor="test",
+        manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
+        analyze=analyze, assessor=assessor, candidate_scopes=_SCOPES,
     )
     await run(session)
     assert manifest.status == "complete"

@@ -31,6 +31,7 @@ from jasper.active_speaker.session_volume_plan import (
     live_measurement_session,
 )
 from jasper.volume_owner import VolumeOwner, install_volume_owner
+from jasper.measurement_window import measurement_window as real_window
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import _preset
 from tests._async_wait import wait_signalled
@@ -91,6 +92,7 @@ def _profile() -> MeasurementGraphProfile:
 def _door(tmp_path, cam, **overrides: Any):
     kwargs: dict[str, Any] = {
         "profile": _profile(),
+        "spl_monitor": object(),
         "measurement_volume_db": -20.0,
         "camilla_factory": lambda: cam,
         "action": "measuring",
@@ -446,3 +448,89 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
     actual = playback.graph.graph_yaml(inverted, delays, trims)
     expected = emit_measurement_graph(profile, inverted, delays, trims)
     assert actual == expected
+
+
+async def test_level_window_needs_a_watch_before_any_volume_write(tmp_path, box):
+    with pytest.raises(MeasurementDoorRefused) as refused:
+        async with _door(tmp_path, box, spl_monitor=None):
+            pytest.fail("unwatched window yielded")
+    assert refused.value.reason == "measure_spl_calibration_required"
+    assert box.volume_db == HOUSEHOLD_DB
+    assert box.loaded == []
+
+
+async def test_one_hold_renews_all_three_leases_across_two_level_windows(tmp_path, box, monkeypatch):
+    from jasper import measurement_window as coordinator
+    from jasper.active_speaker.crossover_v2.door import bind_measurement_graph, isolation_hold, level_window
+
+    counts = dict(voice=0, gate=0, hold=0, resume=0, gate_release=0, hold_release=0)
+    renewed, target = asyncio.Event(), 2
+    def note(key):
+        counts[key] += 1
+        if min(counts[key] for key in ("voice", "gate", "hold")) >= target:
+            renewed.set()
+    async def voice(_path, command, **kwargs):
+        if command == "MEASURE_PAUSE":
+            note("voice")
+        elif command == "MEASURE_RESUME":
+            note("resume")
+        return {"result": "ok", "state": "WAKE"}
+    async def gate(**kwargs):
+        note("gate")
+    async def release_gate(**kwargs):
+        note("gate_release")
+    async def hold_command(path, body):
+        note("hold" if path == "/measurement/hold" else "hold_release")
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+    monkeypatch.setattr(coordinator, "measurement_window", real_window)
+    monkeypatch.setattr(coordinator, "_voice_uds_command", voice)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", gate)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release_gate)
+    monkeypatch.setattr(coordinator, "_measurement_hold_command", hold_command)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", .001)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", .001)
+    graph = bind_measurement_graph(_profile(), camilla_factory=lambda: box, config_dir=tmp_path)
+    async with isolation_hold(graph=graph, camilla_factory=lambda: box, action="test",
+                              volume_state_path=tmp_path / VOLUME_STATE) as held:
+        for level in (-20, -14):
+            async with level_window(level, hold=held, spl_monitor=object()):
+                await wait_signalled(renewed, "all three leases renewed")
+            assert counts["resume"] == counts["gate_release"] == counts["hold_release"] == 0
+            target = max(counts[key] for key in ("voice", "gate", "hold")) + 1
+            renewed.clear()
+            await wait_signalled(renewed, "leases renewed between windows")
+    assert counts["resume"] == counts["gate_release"] == counts["hold_release"] == 1
+    assert box.volume_db == HOUSEHOLD_DB
+
+
+@pytest.mark.parametrize("fail_body", [False, True])
+async def test_graph_is_restored_only_after_all_sessions_leave_the_hold(tmp_path, box, fail_body):
+    from jasper.active_speaker.crossover_v2.door import bind_measurement_graph, isolation_hold, level_window
+    from jasper.active_speaker.crossover_v2.session import TuningSession
+    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.audio_measurement.wired_capture import WiredSplMonitor
+    from tests.engine_twin import FakePlay, FakeRecords
+
+    graph = bind_measurement_graph(_profile(), camilla_factory=lambda: box, config_dir=tmp_path)
+    async def run():
+        async with isolation_hold(graph=graph, camilla_factory=lambda: box, action="test",
+                                  volume_state_path=tmp_path / VOLUME_STATE) as hold:
+            for level in (-20, -14):
+                monitor = WiredSplMonitor(MicSensitivity(-12, 18, "1234"), 80, 0)
+                async with level_window(level, hold=hold, spl_monitor=monitor) as door:
+                    assert door.spl_monitor is monitor
+                    async with TuningSession("test", EngineSeams(door.graph, door.claim, FakeRecords(), FakePlay()),
+                                             level, lambda: "unused"):
+                        assert len(box.loaded) == 1
+                assert len(box.loaded) == 1
+            if fail_body:
+                raise RuntimeError()
+    if fail_body:
+        with pytest.raises(RuntimeError):
+            await run()
+    else:
+        await run()
+    assert len(box.loaded) == 2
+    assert box.volume_db == HOUSEHOLD_DB
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()

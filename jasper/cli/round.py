@@ -70,9 +70,11 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         report = resolve_run(args)
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
-    if args.dry_run or report.blocking:
+    if args.dry_run:
         answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
+    if report.blocking:
+        return failed(EXIT_REFUSED, report.issues[0].code, report.to_dict())
     http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,

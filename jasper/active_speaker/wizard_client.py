@@ -22,7 +22,6 @@ CSRF_PAGE_PATH = "/sound/speaker/crossover/"
 STATUS_PATH = "/sound/speaker/crossover/status"
 
 SESSION_PATH = "/sound/speaker/crossover/v2/session"
-VERIFY_PATH = "/sound/speaker/crossover/v2/verify"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
 
 #: Why a round verb refused, as a slug a script can branch on. First four are this

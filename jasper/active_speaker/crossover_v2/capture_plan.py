@@ -3,6 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+"""The walk a session will do, decided before anything plays: where the
+microphone goes, in what order, with what words on the screen, how many attempts
+each pose is allowed, and which excitation program each capture index runs.
+
+It decides; it does not act — no I/O, no session state, no fader, no graph. Mover-agnostic
+(MS-17): positions are degrees and centimetres, and nothing here knows whether a
+human or an arm moves the microphone.
+"""
 from __future__ import annotations
 
 import logging
@@ -826,7 +834,7 @@ class V2PlanShape:
 
 
 class PlanShapeError(CrossoverV2FlowError):
-    """#2059: an unknown tier or an out-of-range position count.
+    """#2059: an out-of-range position count.
 
     A distinct subclass, not a new top-level exception, so every existing
     ``except CrossoverV2FlowError`` still catches it. Lets

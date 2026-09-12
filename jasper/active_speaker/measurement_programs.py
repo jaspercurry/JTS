@@ -49,6 +49,7 @@ def _validated_purpose(purpose: str | None) -> str:
 
 
 def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
+    """Resolve explicit purpose, or infer the purpose of an old pose."""
     if purpose is not None:
         return _validated_purpose(purpose)
     try:
@@ -58,6 +59,7 @@ def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
 
 
 def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
+    """Resolve purpose and validate the capture mode supported by the runner."""
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
@@ -68,9 +70,9 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 
 def bookkeeping_views(program: str) -> tuple[str, ...]:
     return {
-        PURPOSE_SPEAKER: ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat"),
+        PURPOSE_SPEAKER: ("inventory", "classify-features", "distortion", "directivity", "per-seat"),
         PURPOSE_ROOM: ("room", "room-grade"),
-        PURPOSE_BASS: ("bass", "bass-compare"),
+        PURPOSE_BASS: ("bass",),
     }.get(program, ())
 
 
@@ -93,7 +95,11 @@ def validated_pose(
     seat_offset_m: Sequence[float] | None,
     distance_m: float | None = None,
 ) -> tuple[tuple[float, float, float] | None, float | None]:
-
+    """The one rule every carrier of a pose category checks: ``kind`` is one
+    of :data:`POSE_KINDS`; exactly a seat states three finite metres
+    ``(right, forward, up)`` from the head; a distance, when stated, is a
+    positive length. Returns the offset and distance normalized to floats;
+    raises ``ValueError``."""
     if kind not in POSE_KINDS:
         raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}")
     if (seat_offset_m is not None) != (kind == POSE_KIND_SEAT):
@@ -124,11 +130,13 @@ def pose_place(
     distance_m: float | None,
     seat_offset_m: tuple[float, float, float] | None,
 ) -> tuple[object, ...]:
+    """What distinguishes one microphone position from another."""
     return (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
 
 
 @dataclass(frozen=True)
 class ProgramPose:
+    """One place to measure, its take count, and optional prompt text."""
     azimuth_deg: int
     elevation_deg: int
     repeats: int = 1
@@ -159,6 +167,7 @@ class ProgramPose:
 
 @dataclass(frozen=True)
 class MeasurementProgram:
+    """One named menu item: an ordered pose list and capture purpose."""
     program_id: str
     size: str
     poses: tuple[ProgramPose, ...]
@@ -323,11 +332,16 @@ CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 
 
 def available_programs() -> tuple[tuple[str, str], ...]:
+    """The ``(program_id, size)`` pairs a menu may offer, sorted.
 
+    ``spot`` is absent on purpose: it carries caller geometry, so it is reached
+    through :func:`spot_program` rather than looked up by name.
+    """
     return tuple(sorted(_PROGRAMS))
 
 
 def program(program_id: str, size: str | None = None) -> MeasurementProgram:
+    """Return a named program, using its configured size when omitted."""
     requested_size = size
     if size is None:
         size = _DEFAULT_SIZES.get(program_id)
@@ -338,6 +352,7 @@ def program(program_id: str, size: str | None = None) -> MeasurementProgram:
 
 
 def spot_program(azimuth_deg: int, elevation_deg: int) -> MeasurementProgram:
+    """One take at one caller-supplied bearing."""
     return MeasurementProgram(
         "spot", "express", (ProgramPose(azimuth_deg, elevation_deg),)
     )

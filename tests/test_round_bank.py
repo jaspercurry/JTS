@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import shutil
 import json
 import hashlib
 import wave
@@ -31,6 +33,9 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_c
 from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
 from tests.run_manifest_fixture import write_manifest
+from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
+from tests.test_crossover_v2_frequency_view import summed_capture_bundle  # noqa: F401
+from jasper.active_speaker.measurement_programs import bookkeeping_views
 
 from jasper.active_speaker.round_bank import (
     CAPTURE_RING_DIR,
@@ -388,5 +393,47 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
             assert Path(row["out"]).is_file()
         else:
             assert row["status"] == "unavailable" and row["reason"]
+            assert row["reason"] not in {"inputs_required", "verb_not_registered"}
     if purpose == "speaker":
         assert views[0]["status"] == "written"
+
+
+@pytest.mark.parametrize("purpose,view", [
+    (purpose, view)
+    for purpose in ("speaker", "room", "bass")
+    for view in bookkeeping_views(purpose)
+])
+def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
+    from jasper.cli.round_views import run_bookkeeping
+    from tests.crossover_v2_banked_round import bank_seat_round
+    from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir, _flat_curve
+    from tests.test_crossover_v2_feature_classifier import _bundle, _resonant_ir
+
+    monkeypatch.chdir(tmp_path)
+    if view == "classify-features":
+        target, _ = _bundle(tmp_path, _resonant_ir(3.0))
+    elif view == "distortion":
+        _, compose, sidecar, _, _ = request.getfixturevalue("harmonic_capture")
+        session = tmp_path / "session"
+        shutil.copytree(sidecar.parent.parent, session / "ring")
+        _, state = compose(-16.0)
+        (session / CAPTURE_STATE_FILENAME).write_text(json.dumps(state))
+        target = bank_round(session, campaign_root=tmp_path / "bank",
+                            applied_profile_path=tmp_path / "applied-profile.json").path
+    elif purpose == "bass":
+        target, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+        asyncio.run(bank("baseline"))
+        write_manifest(target, program=purpose)
+    elif purpose == "room":
+        target = bank_seat_round(tmp_path)
+        if view == "room-grade":
+            assert run_bookkeeping("room", target)["status"] == "written"
+    else:
+        target = _make_round_dir(tmp_path, "run", position_curves={
+            "cloud_verify_02": ("onax", _flat_curve()),
+            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3)),
+        }, position_degrees={"cloud_verify_02": 0, "cloud_verify_04": 20})
+        write_manifest(target, program=purpose)
+    answer = run_bookkeeping(view, target)
+    assert answer["status"] == "written", answer
+    assert Path(answer["out"]).is_file()

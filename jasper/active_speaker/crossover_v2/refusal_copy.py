@@ -135,10 +135,13 @@ REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
 REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
 REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
+#: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
+#: with no hand moving, or a tap-wait from an arm with none to give). NOT a
+#: comparison against the session's GATE.
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
-REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
+REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
 REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
@@ -826,9 +829,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
                      "href": '/sound/speaker/crossover/'},
     ),
-    REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET: ReasonSpec(
-        REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
-        'Use one fixed reference level for this measurement.',
+    REASON_VOLUME_RESTORE_DEFERRED: ReasonSpec(
+        REASON_VOLUME_RESTORE_DEFERRED, TEMPLATE_HARD_STOP, 0, "",
+        'Measurement stopped because another volume claim is active.',
+        next_action={"id": "new_measurement_session", "label": "Start a new measurement after playback settles",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_REPEATS_UNSUPPORTED_YET: ReasonSpec(
         REASON_WALK_REPEATS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",

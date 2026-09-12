@@ -1,18 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""The kernel path onto a held speaker: consult, claim, install, yield, restore.
-
-One linear ``async with``, spelled once so two operator doors cannot disagree
-about the give-back. ``measurement_window()`` wraps the WHOLE session:
-without it jasper-voice's idle reconciler reverts the opened measurement volume
-toward the household level within ~200 ms, and cap
-enforcement then silently understates. The install is ``set_active_config_raw``,
-so a restart or ``kill -9`` restores the applied graph by doing nothing
-(ADR-0193).
-"""
-
+"""One run isolation hold, with sequential fixed-level windows (ADR-0305)."""
 from __future__ import annotations
 
 import logging
@@ -24,6 +13,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, cast
 
 from jasper.log_event import log_event
+from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from ..candidate_bank import find_banked_candidate
 from ..measurement_emit import (
@@ -31,267 +21,224 @@ from ..measurement_emit import (
     emit_measurement_graph,
 )
 from ..restore_wait import resilient_restore
+from ..session_volume_plan import SessionVolumeRestoreResult
 from .measure_spec import CANDIDATE_SCOPES
+from .refusal_copy import REASON_MEASURE_SPL_CALIBRATION_REQUIRED, REASON_VOLUME_RESTORE_DEFERRED
 
 logger = logging.getLogger(__name__)
-
-__all__ = [
-    "REFUSE_NO_VOLUME_OWNER",
-    "REFUSE_SESSION_LIVE",
-    "REFUSE_VOLUME_NOT_OPEN",
-    "MeasurementDoorRefused",
-    "OpenMeasurementDoor",
-    "measurement_door",
-    "bind_measurement_graph",
-]
-
-#: Another measurement holds the speaker, or a previous one left its volume
-#: unresolved. The interlock's own sentence rides in ``detail``.
 REFUSE_SESSION_LIVE = "measurement_door_session_live"
-#: This process registered no :class:`~jasper.volume_owner.VolumeOwner`. A
-#: wiring defect in the door's ``main``, not a state the speaker can be in.
 REFUSE_NO_VOLUME_OWNER = "measurement_door_no_volume_owner"
-#: The plan could not establish the declared measurement volume. The speaker was
-#: put back by the plan's own drain before this refusal was raised.
 REFUSE_VOLUME_NOT_OPEN = "measurement_door_volume_not_open"
 
 
 class MeasurementDoorRefused(RuntimeError):
-    """The door did not open. Carries a code and the sentence behind it."""
-
     def __init__(self, reason: str, detail: str) -> None:
-        self.reason = reason
-        self.detail = detail
+        self.reason, self.detail = reason, detail
         super().__init__(f"{reason}: {detail}")
 
 
-@dataclass(frozen=True)
+@dataclass
+class _HeldGraph:
+    """Sessions borrow the graph; only the isolation hold restores it (ADR-0305)."""
+
+    inner: Any
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def restore(self) -> None:
+        pass
+
+
+@dataclass
+class IsolationHold:
+    graph: Any
+    claim: Any
+    plan: Any
+    volume_door: Any
+    camilla: Any
+    window_open: bool = False
+
+
+@dataclass
 class OpenMeasurementDoor:
-    """What a held speaker hands the body of the ``async with``.
-
-    Re-taking the claim or the install through :class:`~.session.TuningSession`
-    is not double work: the claim is contracted idempotent for the SAME level,
-    and the install is contracted idempotent and costs one liveness read when
-    nothing moved.
-    """
-
     graph: Any
     claim: Any
     plan: Any
     measurement_volume_db: float
     measurement_loudness_volume_db: float
     graph_fingerprint: str
-    #: The tuning-scope hash of the graph this door opened ON — the round's
-    #: comparability anchor, banked at entry (#3489). Distinct from
-    #: ``graph_fingerprint``, which names the MEASUREMENT graph the door then
-    #: installed. ``""`` when the entry graph could not be named; the live
-    #: verdict is ``graph.comparability_boundary``.
+    spl_monitor: WiredSplMonitor
     entry_scope_fingerprint: str = ""
+    restore_result: SessionVolumeRestoreResult | None = None
+
+
+@asynccontextmanager
+async def isolation_hold(
+    *, graph: Any, camilla_factory: Callable[[], Any], action: str,
+    volume_state_path: str | Path | None = None,
+    wall_clock_ceiling_s: float | None = None, gate_owner: str | None = None,
+    plan: Any = None,
+) -> AsyncIterator[IsolationHold]:
+    from jasper.measurement_window import MEASUREMENT_GATE_OWNER, measurement_window  # lazy: coordinator boundary
+    from ..session_volume_plan import (  # lazy: live plan binding
+        DEFAULT_SESSION_VOLUME_STATE_PATH, SessionVolumePlan, live_measurement_session,
+    )
+
+    state_path = DEFAULT_SESSION_VOLUME_STATE_PATH if volume_state_path is None else Path(volume_state_path)
+    busy = live_measurement_session(state_path=state_path, action=action)
+    if busy is not None:
+        raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, busy)
+    owner, claim = _measurement_claim()
+    volume_door = _volume_door(owner, camilla_factory, claim=claim)
+    plan = plan if plan is not None else SessionVolumePlan(state_path=state_path)
+    if wall_clock_ceiling_s is not None:
+        plan.set_wall_clock_ceiling_s(wall_clock_ceiling_s)
+    # The coordinator renews all three leases across windows and poses (ADR-0305).
+    # The window wraps the open, because the latch's first write is a fader
+    # write like any other.
+    async with measurement_window(gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner):
+        await plan.enforce_ceiling(volume_door)
+        body_error: BaseException | None = None
+        try:
+            yield IsolationHold(_HeldGraph(graph), claim, plan, volume_door, camilla_factory())
+        except BaseException as exc:  # noqa: BLE001 - preserve cancellation through cleanup
+            body_error = exc
+            raise
+        finally:
+            try:
+                await resilient_restore(graph.restore())
+            except BaseException as exc:  # noqa: BLE001 - keep the original failure
+                if body_error is None:
+                    raise
+                if body_error.__context__ is None:
+                    body_error.__context__ = exc
+
+
+@asynccontextmanager
+async def level_window(
+    level_db: float, *, hold: IsolationHold, spl_monitor: WiredSplMonitor | None,
+) -> AsyncIterator[OpenMeasurementDoor]:
+    from ..session_volume_plan import SessionVolumeOpenResult, SessionVolumePlanError  # lazy: live plan binding
+
+    if spl_monitor is None:
+        raise MeasurementDoorRefused(REASON_MEASURE_SPL_CALIBRATION_REQUIRED, "A level window needs an SPL watch")
+    if hold.window_open:
+        raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, "A level window is already open")
+    hold.window_open = True
+    graph, claim, plan, camilla = hold.graph, hold.claim, hold.plan, hold.camilla
+    body_error: BaseException | None = None
+    volume_open = loudness_changed = False
+    loudness_entry: float | None = None
+    opened_door: OpenMeasurementDoor | None = None
+
+    async def set_loudness(db: float) -> float:
+        if not await camilla.set_loudness_volume_db(db, immediate=True):
+            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference write failed")
+        actual = await camilla.get_loudness_volume_db()
+        if actual is None or not math.isfinite(actual) or abs(actual - db) > 0.01:
+            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference did not confirm")
+        return float(actual)
+
+    async def restore_loudness() -> None:
+        if loudness_changed and loudness_entry is not None:
+            await set_loudness(loudness_entry)
+
+    try:
+        loudness_entry = await camilla.get_loudness_volume_db()
+        if loudness_entry is None or not math.isfinite(loudness_entry):
+            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference is unreadable")
+        try:
+            opened = await plan.open(level_db, hold.volume_door)
+        except SessionVolumePlanError as exc:
+            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, str(exc)) from exc
+        if opened is not SessionVolumeOpenResult.OPENED:
+            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, opened.value)
+        volume_open = loudness_changed = True
+        held_loudness = await set_loudness(level_db)
+        fingerprint = await graph.install()
+        opened_door = OpenMeasurementDoor(graph, claim, plan, level_db, held_loudness,
+                                         fingerprint, spl_monitor, graph.entry_scope_fingerprint)
+        log_event(logger, "active_speaker.measurement_door", action="open",
+                  fingerprint=fingerprint, measurement_volume_db=level_db,
+                  measurement_loudness_volume_db=held_loudness)
+        yield opened_door
+    except BaseException as raised:  # noqa: BLE001 - preserve cancellation through cleanup
+        body_error = raised
+        raise
+    finally:
+        # ``plan.open`` is INSIDE this guard: it persists its durable
+        # ``active`` intent before the first volume mutation, so a
+        # cancellation landing in that gap would otherwise leave a record no
+        # later process drains, and every operator door would read a live
+        # measurement for the whole wall-clock ceiling. A ``finally`` on a
+        # flag rather than an ``except``, because a ``CancelledError`` is not
+        # an ``Exception``. SHIELDED: a cancel inside the give-back would
+        # strand the fader at measurement level with nothing latched.
+        try:
+            result = await resilient_restore(_give_back(
+                claim, plan, hold.volume_door,
+                reason="measurement_door_closed" if volume_open else "measurement_door_open_failed",
+                body_error=body_error, restore_loudness=restore_loudness,
+            ))
+            if opened_door is not None:
+                opened_door.restore_result = result
+            if body_error is None:
+                if result is SessionVolumeRestoreResult.DEFERRED:
+                    raise MeasurementDoorRefused(REASON_VOLUME_RESTORE_DEFERRED, "Household volume restore is pending")
+                if result is SessionVolumeRestoreResult.FAILED:
+                    raise SessionVolumePlanError("Household volume restore failed")
+        finally:
+            hold.window_open = False
 
 
 @asynccontextmanager
 async def measurement_door(
-    *,
-    profile: MeasurementGraphProfile,
-    measurement_volume_db: float,
-    camilla_factory: Callable[[], Any],
-    action: str,
-    config_dir: str | Path | None = None,
-    volume_state_path: str | Path | None = None,
-    wall_clock_ceiling_s: float | None = None,
-    gate_owner: str | None = None,
+    *, profile: MeasurementGraphProfile, measurement_volume_db: float,
+    spl_monitor: WiredSplMonitor | None, camilla_factory: Callable[[], Any], action: str,
+    config_dir: str | Path | None = None, volume_state_path: str | Path | None = None,
+    wall_clock_ceiling_s: float | None = None, gate_owner: str | None = None,
 ) -> AsyncIterator[OpenMeasurementDoor]:
-    """Hold this speaker for one measurement session, and give it back.
+    from ..staging import DEFAULT_CAMILLA_CONFIG_DIR  # lazy: graph binding
 
-    ``action`` closes the interlock's refusal sentence (*"…before <action>"*).
-
-    ``config_dir`` defaults to the SAME
-    :data:`~..staging.DEFAULT_CAMILLA_CONFIG_DIR` every sibling DSP writer locks
-    against. A different directory is a different lock identity and would not
-    serialize against them at all.
-
-    ``gate_owner`` is this door's identity on the mux diagnostic gate.
-    ``mux.FANIN_TEST_OWNERS`` is a CLOSED allowlist, so an owner missing from it
-    is refused the gate, the correction lane never carries, and the door
-    measures silence with every daemon healthy. ``None`` keeps
-    ``MEASUREMENT_GATE_OWNER``, the wizard's.
-
-    Raises :class:`MeasurementDoorRefused` before yielding when the door cannot
-    open, and leaves the speaker as it found it on every such path.
-    """
-    from jasper.measurement_window import (
-        MEASUREMENT_GATE_OWNER,
-        measurement_window,
-    )
-
-    from ..session_volume_plan import (
-        DEFAULT_SESSION_VOLUME_STATE_PATH,
-        SessionVolumeOpenResult,
-        SessionVolumePlan,
-        SessionVolumePlanError,
-        live_measurement_session,
-    )
-    from ..staging import DEFAULT_CAMILLA_CONFIG_DIR
-
-    state_path = (
-        DEFAULT_SESSION_VOLUME_STATE_PATH
-        if volume_state_path is None
-        else Path(volume_state_path)
-    )
-    busy = live_measurement_session(state_path=state_path, action=action)
-    if busy is not None:
-        raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, busy)
-
-    owner, claim = _measurement_claim()
-    volume_door = _volume_door(owner, camilla_factory, claim=claim)
-    plan = SessionVolumePlan(state_path=state_path)
-    if wall_clock_ceiling_s is not None:
-        plan.set_wall_clock_ceiling_s(wall_clock_ceiling_s)
-    graph = bind_measurement_graph(
-        profile,
-        camilla_factory=camilla_factory,
-        config_dir=(
-            DEFAULT_CAMILLA_CONFIG_DIR if config_dir is None else config_dir
-        ),
-    )
-
-    # The window wraps the open, because the latch's first write is a fader
-    # write like any other.
-    async with measurement_window(
-        gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner
-    ):
-        # A leftover ACTIVE record past its own wall-clock ceiling is a crashed
-        # run, not a live one: `live_measurement_session` deliberately lets it
-        # through, and `plan.open` then refuses over it. A no-op when nothing
-        # is stale.
-        await plan.enforce_ceiling(volume_door)
-        body_error: BaseException | None = None
-        volume_open = False
-        camilla = camilla_factory()
-        loudness_entry: float | None = None
-        loudness_changed = False
-
-        async def set_loudness(db: float) -> float:
-            if not await camilla.set_loudness_volume_db(db, immediate=True):
-                raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference write failed")
-            actual = await camilla.get_loudness_volume_db()
-            if actual is None or not math.isfinite(actual) or abs(actual - db) > 0.01:
-                raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference did not confirm")
-            return actual
-
-        async def restore_loudness() -> None:
-            if loudness_changed and loudness_entry is not None:
-                await set_loudness(loudness_entry)
-
-        try:
-            loudness_entry = await camilla.get_loudness_volume_db()
-            if loudness_entry is None or not math.isfinite(loudness_entry):
-                raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference is unreadable")
-            try:
-                opened = await plan.open(measurement_volume_db, volume_door)
-            except SessionVolumePlanError as exc:
-                raise MeasurementDoorRefused(
-                    REFUSE_VOLUME_NOT_OPEN, str(exc)
-                ) from exc
-            if opened is not SessionVolumeOpenResult.OPENED:
-                raise MeasurementDoorRefused(
-                    REFUSE_VOLUME_NOT_OPEN,
-                    f"the measurement volume did not confirm at "
-                    f"{measurement_volume_db:.2f} dB ({opened.value}); the "
-                    "speaker was put back",
-                )
-            volume_open = True
-            loudness_changed = True
-            held_loudness = await set_loudness(measurement_volume_db)
-            fingerprint = await graph.install()
-            log_event(
-                logger,
-                "active_speaker.measurement_door",
-                action="open",
-                fingerprint=fingerprint,
-                measurement_volume_db=f"{measurement_volume_db:.2f}",
-                measurement_loudness_volume_db=f"{held_loudness:.2f}",
-            )
-            yield OpenMeasurementDoor(
-                graph=graph,
-                claim=claim,
-                plan=plan,
-                measurement_volume_db=measurement_volume_db,
-                graph_fingerprint=fingerprint,
-                entry_scope_fingerprint=graph.entry_scope_fingerprint,
-                measurement_loudness_volume_db=held_loudness,
-            )
-        except BaseException as raised:  # noqa: BLE001 - CancelledError is the point
-            # Held so the give-back can ATTACH its own failures to it rather
-            # than raise over it. ``BaseException`` and not ``Exception``: a
-            # ``CancelledError`` is the commonest arrival here and is not an
-            # ``Exception``.
-            body_error = raised
-            raise
-        finally:
-            # ``plan.open`` is INSIDE this guard: it persists its durable
-            # ``active`` intent before the first volume mutation, so a
-            # cancellation landing in that gap would otherwise leave a record no
-            # later process drains, and every operator door would read a live
-            # measurement for the whole wall-clock ceiling. A ``finally`` on a
-            # flag rather than an ``except``, because a ``CancelledError`` is not
-            # an ``Exception``. SHIELDED: a cancel inside the give-back would
-            # strand the fader at measurement level with nothing latched.
-            await resilient_restore(
-                _give_back(
-                    graph, claim, plan, volume_door,
-                    reason=(
-                        "measurement_door_closed" if volume_open
-                        else "measurement_door_open_failed"
-                    ),
-                    body_error=body_error,
-                    restore_loudness=restore_loudness,
-                )
-            )
+    graph = bind_measurement_graph(profile, camilla_factory=camilla_factory,
+                                  config_dir=DEFAULT_CAMILLA_CONFIG_DIR if config_dir is None else config_dir)
+    async with isolation_hold(graph=graph, camilla_factory=camilla_factory, action=action,
+                              volume_state_path=volume_state_path, wall_clock_ceiling_s=wall_clock_ceiling_s,
+                              gate_owner=gate_owner) as hold:
+        async with level_window(measurement_volume_db, hold=hold, spl_monitor=spl_monitor) as window:
+            yield window
 
 
 async def _give_back(
-    graph: Any,
-    claim: Any,
-    plan: Any,
-    volume_door: Any,
-    *,
-    reason: str,
-    restore_loudness: Callable[[], Awaitable[None]],
-    body_error: BaseException | None = None,
-) -> None:
-    """Restore the graph and loudness reference, then release the Main claim.
+    claim: Any, plan: Any, volume_door: Any, *, reason: str,
+    restore_loudness: Callable[[], Awaitable[None]], body_error: BaseException | None = None,
+) -> SessionVolumeRestoreResult | None:
+    """Restore the loudness reference and Main claim inside the graph hold.
 
-    Every step runs even when an earlier one raises: a graph that will not come
-    back must not strand the fader at measurement level. Cleanup is idempotent.
-
-    ``body_error`` is the exception already in flight, if any. A cleanup failure
-    is ATTACHED to it rather than raised over it, because an ``__aexit__`` that
-    raised would demote the real cause to ``__context__`` and report the
-    symptom. With nothing in flight a give-back failure IS the failure and
-    propagates.
+    Every step runs even when an earlier one raises. A cleanup failure is
+    attached to the body error, so the original cause remains visible.
     """
     first: BaseException | None = None
-    for step in (
-        graph.restore,
-        restore_loudness,
-        claim.release,
-        lambda: plan.close(volume_door, reason=reason),
-    ):
+    result: SessionVolumeRestoreResult | None = None
+
+    async def close_plan() -> None:
+        nonlocal result
+        result = await plan.close(volume_door, reason=reason)
+
+    # Restore every slot even after a failure; keep the original failure (ADR-0179).
+    for step in (restore_loudness, claim.release, close_plan):
         try:
             await step()
-        except BaseException as failure:  # noqa: BLE001 - see the docstring
-            # EVERY step still runs: a graph that will not come back must not
-            # stop the fader coming down. The FIRST failure is the one kept, as
-            # it is the one nearest the cause.
+        except BaseException as failure:  # noqa: BLE001 - cleanup must survive cancellation
             if first is None:
                 first = failure
-    if first is None:
-        return
-    if body_error is None:
-        raise first
-    if body_error.__context__ is None:
-        body_error.__context__ = first
+    if first is not None:
+        if body_error is None:
+            raise first
+        if body_error.__context__ is None:
+            body_error.__context__ = first
+    return result
 
 
 def _measurement_claim() -> tuple[Any, Any]:
