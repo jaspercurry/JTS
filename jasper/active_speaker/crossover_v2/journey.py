@@ -24,8 +24,7 @@ from typing import AbstractSet, Iterable, Mapping
 
 PHASE_CHECK = "check"
 PHASE_MEASURE = "measure"
-# The brief machine-paced window between "MEASURE accepted" and "apply
-# observed": a control-page phase with no capture index.
+# An apply in progress: a control-page phase with no capture index.
 PHASE_APPLYING = "applying"
 PHASE_VERIFY = "verify"
 # The two POSITION-GROUP phases (flat-linearization PR-3b). Each spans MANY
@@ -51,16 +50,9 @@ PHASE_LATERAL = "lateral"
 # comparability check ``verification.evaluate_benefit`` runs. Deliberately NOT a
 # :data:`GROUP_PHASES` member: one capture at one mark, not a walk.
 PHASE_ENTRY_BASELINE = "entry_baseline"
-# The two-stage commission flow's untimed INTERLUDE (issue #1806): a
-# measure-only session has closed, a candidate exists, and NOTHING has been
-# applied. Like PHASE_APPLYING and PHASE_DONE it is a control-page phase with no
-# capture index, and deliberately NOT in ``CAPTURE_PHASES``: no excitation plays
-# and no evidence is bound while it renders.
+# Measured, awaiting an explicit candidate decision; nothing has been applied.
 PHASE_REVIEW = "review"
-# The measuring session's own tail: every stage-1 phase is accepted and the
-# pre-apply cloud's close has NOT produced a candidate yet — the household has
-# not confirmed, or the fit is running. Also a control-page phase with no
-# capture index.
+# Every capture in an applied or measurement-free session has finished.
 PHASE_DONE = "done"
 
 # The capturing phases in CANONICAL ORDER — the ones bound to the capture
@@ -308,20 +300,14 @@ class CommissionJourney:
     def current_phase(self) -> str:
         for phase in self.plan.phases:
             if phase not in self._accepted:
-                # Everything before VERIFY accepted but not yet applied ⇒ an
-                # apply is pending. Unreached by any shipped session since the
-                # two-stage split: stage 1 has no VERIFY in its plan and stage 2
-                # is constructed applied; the wizard's
-                # ``crossover_envelope_v2.crossover_v2_phase`` routes those two
-                # shapes.
                 if (
                     phase == PHASE_VERIFY
                     and PHASE_MEASURE in self._accepted
                     and not self._applied
                 ):
-                    return PHASE_APPLYING
+                    return PHASE_REVIEW
                 return phase
-        return PHASE_DONE
+        return PHASE_REVIEW if PHASE_MEASURE in self._accepted and not self._applied else PHASE_DONE
 
     def unresolved_in_group(self, phase: str, *, excluding: int) -> tuple[int, ...]:
         """The group's positions still unwalked, ignoring the one being decided.

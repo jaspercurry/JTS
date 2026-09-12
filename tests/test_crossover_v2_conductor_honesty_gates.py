@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: measurement-honesty gates, alignment/phase wiring, and the eager cloud fit."""
+"""Conductor W5a: measurement-honesty gates, alignment/phase wiring, and measured completion."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_P
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
+    PHASE_REVIEW,
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -700,3 +701,18 @@ def test_new_session_invalidates_check_and_measure_evidence():
     )
     assert fresh.accepted_phases == frozenset()
     assert fresh.current_phase == PHASE_CHECK
+
+
+@pytest.mark.parametrize("phases", [(PHASE_CHECK, PHASE_MEASURE), (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)])
+def test_measure_accept_finishes_measured_without_publishing_a_candidate(phases):
+    fakes = FakeSeams()
+    conductor = _conductor(fakes, index_phase_map=dict(enumerate(phases, 1)))
+    _run_phase(conductor, 1, 1)
+    verdict = _run_phase(conductor, 2, 1)
+
+    assert verdict["accepted"] is True
+    assert verdict["next"] == "accept"
+    assert conductor.current_phase == PHASE_REVIEW
+    assert conductor.candidate is None
+    assert conductor.applied is False
+    assert fakes.published_candidates == []

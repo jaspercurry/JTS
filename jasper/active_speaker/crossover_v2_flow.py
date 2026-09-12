@@ -2293,8 +2293,6 @@ class CrossoverV2Session:
         pair_claim: dict[str, Any] = {}
         solo_reason = analysis.measure_pair_not_evaluated
         if solo_reason is not None:
-            # A candidate is still built and published below: the solo's own
-            # evidence is what the linearization is fitted from.
             log_event(
                 logger, "correction.crossover_v2_measure_solo",
                 session_id=self.session_id,
@@ -2799,9 +2797,7 @@ class CrossoverV2Session:
     def _publish_accountability_finding(
         self, record: Mapping[str, Any] | None,
     ) -> None:
-        """Persist the banked accountability finding, or say why it was not.
-
-        """
+        """Persist the banked accountability finding, or say why it was not."""
 
         if record is None or self._seams.records.findings is None:
             return

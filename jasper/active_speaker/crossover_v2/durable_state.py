@@ -1028,10 +1028,6 @@ def build_conductor_state(
         # express makes no cross-position post-apply claim, so guessing would
         # attach a claim the measurement never made.
         "tier": snap.tier,
-        # WHERE the pre-apply cloud's close has got to. The wizard renders
-        # from this file alone, and "every stage-1 phase accepted, no
-        # candidate" is true at the confirm screen, during the fit, and after a
-        # session that produced nothing.
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(getattr(snap, "measure_gain_ceiling_db", None) or {}),
