@@ -17,14 +17,17 @@ Nothing here reads a file, knows what a candidate is, or decides policy: a
 caller supplies the median, the spread and the ceiling, and gets arrays and
 findings back.
 """
+
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 
 __all__ = [
@@ -50,6 +53,7 @@ __all__ = [
     "boost_cap_db",
     "ceiling_taper",
     "cut_floor_db",
+    "cloud_trusted_floor_hz",
     "depth_fraction",
     "spatial_support",
 ]
@@ -92,6 +96,32 @@ ROOM_BOOST_MAX_DIP_DB: float = 10.0
 ROOM_MAX_FILTER_BOOST_DB: float = 6.0
 ROOM_MAX_TOTAL_BOOST_DB: float = 6.0
 ROOM_MAX_FILTERS_PER_SIDE: int = 8
+
+
+def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
+    """The group's TRUSTED floor (``2.5/T``) from its validity floor (``1/T``)
+    — the number the flat spec is graded above (#2551).
+
+    ``1/T`` is where a reflection-free window of ``T`` has one full cycle of
+    resolution; ``2.5/T`` is where the gated magnitude is actually trustworthy.
+    The E4 gate-stability sweep is why the distinction is not academic: the
+    1-4 kHz band moved 2.1 dB across 3/5/7/10 ms gates purely because part of it
+    sat below the shorter windows' trusted floor, while everything above held to
+    <=0.006 dB (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
+
+    Derived rather than plumbed: the multiplier is monotonic, so the trusted
+    floor of the group's worst validity floor is the worst of the positions'
+    trusted floors, and no caller passing one floor can forget the other.
+
+    ``None`` in, ``None`` out, likewise for a non-finite or non-positive floor,
+    which is "no floor was established" and never "a floor of zero".
+    """
+    if validity_floor_hz is None:
+        return None
+    floor = float(validity_floor_hz)
+    if not math.isfinite(floor) or floor <= 0.0:
+        return None
+    return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
 def spatial_support(n_positions: int) -> dict[str, Any]:
