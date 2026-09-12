@@ -65,6 +65,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `delay_exceeds_search_window` | The microphone may be off the spot in the picture. Re-check its placement, then try again. | Re-check its placement, then try again. | `fix_and_retry` |
 | `delay_implausible` | The delay JTS measured between the drivers isn't one this speaker's geometry can produce. Measure again — if it repeats, check that nothing moved during the sweep. | Measure again — if it repeats, check that nothing moved during the sweep. | `fix_and_retry` |
 | `drift_baselines_disagree` | The capture glitched — measuring again. | measuring again. | `silent_auto_retry` |
+| `dry_run_requires_local_host` | Dry-run reads this machine's facts. Run it on the speaker. |  | `hard_stop` |
 | `fingerprint_required` | Supply a candidate fingerprint. | Supply a candidate fingerprint | `hard_stop` |
 | `geometry_retake_unreachable` | The room needs the microphone measured from a wider spot, and from above the mark, than this measurement can ask for. Run a Full measurement that prompts each spot on screen, and walk those spots by hand, to finish tuning this speaker. |  | `session_restart` |
 | `internal_error` | Something went wrong on the speaker during that measurement. Try again. |  | `fix_and_retry` |

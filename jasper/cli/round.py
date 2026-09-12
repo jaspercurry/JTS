@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import argparse
 import math
-from jasper.json_fields import age_seconds, parse_utc_iso
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlsplit
+
+from jasper.net.http_security import _is_loopback_name
+from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.wizard_client import (
@@ -189,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
-    run.add_argument("--dry-run", action="store_true", help="print preflight; play nothing")
+    run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run.set_defaults(func=_cmd_run)
     for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):
         command = sub.add_parser(verb, help=function.__name__.removeprefix("_cmd_"))
@@ -209,6 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
+        from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
+        return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
     client = WizardClient(host_header=args.hostname or read_identity().hostname,
                           base_url=args.base_url, csrf_page_path=CSRF_PAGE_PATH, opener=opener)
     return int(args.func(client, args))

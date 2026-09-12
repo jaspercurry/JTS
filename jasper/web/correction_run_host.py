@@ -21,7 +21,7 @@ from jasper.audio_measurement.branch_program import build_branch_program
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
-                       verify_only: bool = False) -> tuple[Any, Any]:
+                       verify_only: bool = False, provenance: Any = None) -> tuple[Any, Any]:
     answers: dict[str, Any] = {}
     index = attempt = 0
     phase = ""
@@ -29,7 +29,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         answers[record["take_id"]] = capture
-        return {}
+        captured = provenance.take() if provenance is not None else None
+        return {"phase": record.get("program_phase"),
+                **({"provenance": captured.to_dict()} if captured is not None else {})}
 
     def after_bank(record: Any, record_id: str) -> None:
         answers[record_id] = answers.pop(record["take_id"])
@@ -111,10 +113,10 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
 def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: Any,
                        manifest: Any, production: Any, conductor: Any, refs: Any,
                        trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
-                       camilla_factory: Any, verify_only: bool) -> tuple[LevelWindows, Any, Any]:
+                       camilla_factory: Any, verify_only: bool, provenance: Any = None) -> tuple[LevelWindows, Any, Any]:
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
-                                          evidence=refs, verify_only=verify_only)
+                                          evidence=refs, verify_only=verify_only, provenance=provenance)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(

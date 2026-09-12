@@ -3621,7 +3621,7 @@ def prepare_v2_session(
         from jasper.web import correction_crossover_v2 as host  # lazy: bind this host's seams
         tuning, analyze, assessor = bind_level_windows(
             host=host, context=context, device=device, evidence_store=evidence_store,
-            manifest=manifest, production=production_play, conductor=conductor, refs=refs,
+            manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
             ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
                             if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,

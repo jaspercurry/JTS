@@ -404,3 +404,17 @@ def test_status_fault_history_keeps_each_code_once():
     gate.publish({"fault": "capture_clipped", "attempt": 2})
     gate.publish({"fault": None, "attempt": 2})
     assert gate.published()["run"]["faults"] == ["capture_clipped"]
+
+
+@pytest.mark.parametrize("address", ["http://jts3.local", "http://192.168.1.8", "http://[2001:db8::1]"])
+def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, address):
+    from jasper.cli import _run_request
+    def no_facts(*args, **kwargs):
+        pytest.fail("remote dry-run read local facts")
+    monkeypatch.setattr(_run_request, "read_preflight_facts", no_facts)
+    opener = _opener()
+    monkeypatch.setattr(cli, "read_identity", no_facts)
+    code = cli.main(["run", "--dry-run", "--base-url", address], opener=opener)
+    body = json.loads(capsys.readouterr().out)
+    assert code == 1 and body["reason"] == "dry_run_requires_local_host"
+    assert not opener.requests

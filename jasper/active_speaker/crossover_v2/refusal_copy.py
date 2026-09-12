@@ -422,6 +422,8 @@ def _retriable_reason(
 # The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    "dry_run_requires_local_host": ReasonSpec("dry_run_requires_local_host", TEMPLATE_HARD_STOP, 0, "",
+        "Dry-run reads this machine's facts. Run it on the speaker."),
     **{code: ReasonSpec(code, TEMPLATE_FIX_AND_RETRY, 0, "", message)
        for code, message in (
            ("level_unreachable", "The target level is unreachable at this gain. Check the amplifier and microphone."),
