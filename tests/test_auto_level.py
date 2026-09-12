@@ -16,11 +16,11 @@ from jasper.audio_measurement.ramp import LevelSample, SPL_CEILING_EXCEEDED
 class Chain:
     def __init__(self, monkeypatch, *, slope=1.0, offset=95.0, limiter=math.inf,
                  current=-10.0, ambient=30.0, cap=0.0, unstable=False, clip=False,
-                 jitter=None):
+                 jitter=None, jitter_floor_margin=0.0):
         self.slope, self.offset, self.limiter = slope, offset, limiter
         self.gain, self.ambient, self.cap = current, ambient, cap
         self.unstable, self.clip = unstable, clip
-        self.jitter = jitter
+        self.jitter, self.jitter_floor_margin = jitter, jitter_floor_margin
         self.time = 0.0
         self.playing = False
         self.writes = []
@@ -55,9 +55,10 @@ class Chain:
             if self.jitter:
                 buried, clear = self.jitter
                 floor = self.ambient + level.MIC_RESPONSE_MIN_RISE_DB
-                observed += (buried if signal < floor else clear) * (-1) ** self.windows
+                jitter = buried if signal < floor + self.jitter_floor_margin else clear
+                observed += jitter * (-1) ** self.windows
             if self.unstable:
-                observed += 2.0 * self.windows
+                observed += 2.0 * (-1) ** self.windows
         self.windows += 1
         self.time += 0.501
         return [LevelSample(self.windows, 0, observed - 94.0, observed - 94.0, clip=self.clip)]
@@ -82,19 +83,31 @@ def test_converges_from_below_within_reading_budget(monkeypatch, slope, offset):
     assert all(b - a <= level.MAX_STEP_DB for a, b in zip(chain.writes, chain.writes[1:]))
 
 
+@pytest.mark.parametrize('offset,jitter_floor_margin', [
+    (78.0, 0.0), (80.0, 0.0), (82.0, 0.0), (84.0, 0.0), (90.0, 0.0),
+    (80.0, 2.0),
+])
 @pytest.mark.parametrize('phase', [0, 1])
-def test_buried_jitter_steps_up_without_settling(monkeypatch, phase):
-    chain = Chain(monkeypatch, ambient=52.0, offset=84.0, jitter=(0.8, 0.2))
+def test_buried_jitter_steps_up_without_settling(monkeypatch, phase, offset, jitter_floor_margin):
+    chain = Chain(monkeypatch, ambient=52.0, offset=offset, jitter=(0.8, 0.2),
+                  jitter_floor_margin=jitter_floor_margin)
     chain.windows = phase
     result = asyncio.run(chain.run())
     floor = chain.ambient + level.MIC_RESPONSE_MIN_RISE_DB
     buried = [(gain, reading) for gain, reading in result.readings if reading < floor]
     assert result.status == 'converged'
     assert abs(result.leveled_db_spl - 75.0) <= 1.0
-    assert len(result.readings) <= math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
+    budget = math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4 + len(buried)
+    assert len(result.readings) <= budget
     assert len(buried) >= 2
     assert result.readings[:len(buried)] == buried
     assert all(b[0] - a[0] == level.MAX_STEP_DB for a, b in zip(buried, buried[1:]))
+
+
+def test_a_loud_room_uses_small_buried_steps(monkeypatch):
+    result = asyncio.run(Chain(monkeypatch, ambient=68.0).run())
+    assert result.status == 'converged'
+    assert max(reading for _, reading in result.readings) <= 77.0
 
 
 @pytest.mark.parametrize("slope,offset", [(1.0, 120.0), (1.0, 124.0), (1.2, 132.0)])
@@ -124,7 +137,7 @@ def test_random_linear_and_limiter_chains_respect_both_stops(monkeypatch):
 @pytest.mark.parametrize('kwargs,reason', [
     ({'limiter': 65.0}, level.REFUSE_LEVEL_UNREACHABLE),
     ({'slope': 0.0, 'offset': 30.0, 'cap': -20.0}, level.REFUSE_MIC_NOT_OBSERVING),
-    ({'unstable': True, 'offset': 70.0}, level.REFUSE_LEVEL_UNSETTLED),
+    ({'unstable': True, 'ambient': 68.0, 'offset': 114.0}, level.REFUSE_LEVEL_UNSETTLED),
     ({'ambient': 69.0}, level.REFUSE_AMBIENT_TOO_HIGH),
     ({'clip': True}, 'mic_clipping'),
     ({'offset': 140.0}, SPL_CEILING_EXCEEDED),
