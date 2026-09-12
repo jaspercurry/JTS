@@ -9147,7 +9147,7 @@ def test_join_opens_resources_in_order_and_drains_to_a_shared_terminal_state(mon
     from tests.engine_twin import FakeGraph, FakePlay, FakeRecords
     from tests.test_correction_crossover_v2_wired import _fake_handler
 
-    from jasper.active_speaker.arm_walk import SESSION_ENDED_STATUSES
+    from jasper.active_speaker.capture_status import SESSION_ENDED_STATUSES
 
     graph_fails = terminal == "failed"
     events, gate = [], PositionGate()
@@ -9298,13 +9298,12 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     import threading
     from jasper.active_speaker.crossover_v2.position_gate import PositionGate
-    from jasper.platform.systemd import no_hold
     from jasper.web import correction_capture as capture, correction_handlers as handlers
     from tests.test_correction_crossover_v2_wired import _fake_handler
 
     monkeypatch.setattr(capture, "_capture_slot", None)
     monkeypatch.setattr(capture, "_pending_capture", None)
-    entered, release, second = threading.Event(), threading.Event(), threading.Event()
+    entered, release, second, drained = (threading.Event() for _ in range(4))
     opens = []
     def opened():
         opens.append(True)
@@ -9313,10 +9312,16 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
         return SimpleNamespace(pi_session=None)
     async def run(_):
         pass
+    @contextlib.contextmanager
+    def idle_hold(_):
+        try:
+            yield
+        finally:
+            drained.set()
     gate = PositionGate()
     kind = capture.CaptureKind("crossover_v2:session", opened, run, position_gate=gate,
                               session_id="same", join_entry=SimpleNamespace(screen={"position_deg": "0"}))
-    capture._stage_capture(kind, idle_hold=no_hold)
+    capture._stage_capture(kind, idle_hold=idle_hold)
     def join(mark=None):
         if mark:
             mark.set()
@@ -9330,6 +9335,7 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch):
             release.set()
             assert first.result(timeout=2) == other.result(timeout=2) == {
                 "ok": True, "capture": {"status": "awaiting_capture"}}
+        assert drained.wait(2)
         assert opens == [True]
         assert gate.join(kind.join_entry)["index"] == 1
         with pytest.raises(v2host.CrossoverV2Refused) as refused:
