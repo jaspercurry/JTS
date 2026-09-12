@@ -130,7 +130,7 @@ async def level_to(
             gap = target_db_spl - observed
             if not buried and abs(gap) <= tolerance_db:
                 if in_band is not None:
-                    # The band bounds the pair; a tighter gate refuses ordinary rooms (jts3 2026-09-12).
+                    # The tolerance band bounds the pair; see ADR-0310.
                     result.status, result.leveled_db_spl = "converged", (in_band + observed) / 2
                     return result
                 in_band = observed
