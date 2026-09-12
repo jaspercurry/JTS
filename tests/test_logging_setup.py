@@ -243,7 +243,6 @@ _ALLOWLIST = frozenset({
     "jasper/cli/active_speaker_emit_bench.py",
     "jasper/cli/angle_capture.py",
     "jasper/cli/audition.py",
-    "jasper/cli/crossover_prescriber.py",
     "jasper/cli/measure.py",
     "jasper/cli/seat_level.py",
     "jasper/web/correction_setup.py",

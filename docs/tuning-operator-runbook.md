@@ -19,9 +19,9 @@
    with extension off. A candidate adds only its layer's proposed change.
    Measurement excludes preference EQ. Temporary playback restores the saved
    stack and volume; save is a separate action.
-4. Inspect and enrich a round before freezing its packet. Use that exact packet
-   for both `propose` and `stage`. New evidence needs a new snapshot and a
-   prescription bound to it.
+4. Inspect and enrich a round before authoring its prescription document.
+   `judge` and `compose` read the named round. New evidence requires an updated
+   prescription binding.
 5. Each round can be the last. Continue only when more evidence would help;
    there is no campaign count, plateau gate, or required final round. A restored
    loser remains available for analysis and useful parts.
@@ -71,17 +71,16 @@ band supports the claim. Choose the order from the next question.
    detail path, including failures. Inventory commands quote known inputs;
    fill listed `required_inputs` before use. A missing banked pose index does
    not offer a re-banking command.
-6. **Freeze.** `jasper-crossover-prescriber packet` writes `packet.json` and
-   prints its path, fingerprint, availability, and `rebuild_status_command`.
-   That command repeats the supplied inputs, including `--state`; omitting
-   an input can change the fingerprint without any saved evidence changing.
-   Select the round using the paths/flags in `status` or `packet --help`. This file is a snapshot:
-   enriching the source round later does not change what it contains.
-7. **Propose and stage.** Read `jasper-crossover-prescriber contract --round <dir>`
-   for speaker, room, and bass schemas and bounds. Use `--packet <round-dir>/packet.json` for both
-   `propose --prescription -` and `stage --prescription -`. Stage against the
-   live state file, not a banked `state.json` copy. If the evidence changes,
-   freeze a new packet and author the corresponding new prescription.
+6. **Read bounds.** `jasper-crossover-prescriber contract --round <dir>`
+   serves the section schemas. `status <dir>` gives the evidence fingerprint
+   for driver and blend sections. Finish the needed analyses before authoring.
+7. **Judge and compose.** Author one document with `kind: jts_prescription`,
+   `schema: 1`, `base`, `sections`, and `rationale`. Put each prescription under
+   its layer name: `driver`, `blend`, `alignment`, `topology`, `room`, or `bass`.
+   `judge <doc> --round <dir>` checks every section and previews the resolved
+   layers. `compose <doc> --base <fp|saved> --round <dir>` banks the proved
+   candidate. The base flag must match the document. Layer resolution follows
+   [ADR-0303](adr/0303-a-trial-plays-the-candidate-as-composed.md).
 8. **Decide.** Compare measured outcomes for the stated goal. Finish with the
    least-bad measured candidate, or compile another candidate and reuse the same
    measurement tools. The latest round may already supply enough evidence.
@@ -108,10 +107,6 @@ and start grant. The human sees “Config 2 of 3 — keep the mic still.” A ne
 or explicit recovery/retake requires another human action. Do not emulate this
 by repeatedly adopting profiles between takes.
 
-Opening a measurement session consumes any pending correction prescription for
-a possible newly fitted candidate. Named tournament candidates use their saved
-graphs; they do not require that pending prescription to be cleared.
-
 Read each take's played graph/config fingerprint, candidate, pose, capture
 settings, level, calibration context, take identity, and status. Full candidate
 playback matters: shared trims or alignment-only playback cannot establish the
@@ -126,16 +121,9 @@ for roles the document prescribes. It is not a requirement to recalculate every
 candidate's trim. `Peaking`, `Highshelf`, and `Lowshelf` follow the emitter's
 supported ordering; read `jasper-crossover-prescriber contract --round <dir> --section speaker` for bounds.
 
-To combine A's woofer change with B's tweeter change, use:
-
-```
-jasper-crossover-prescriber compose --base <fp> --role woofer=<A> --role tweeter=<B>
-```
-
-The result carries the source references. State the expected effect separately from parent
-observations. C has a new identity and is unmeasured. Measure it with the same
-batch tools only if that result would change the decision. Co-varied parent
-changes support a hypothesis, not proof of which part caused the result.
+Author the `driver` section against the current round's evidence; its judge
+checks each filter again. Filters are not copied from other candidates.
+A new composition is unmeasured; measure its complete graph.
 
 `jasper-round apply --expected-fingerprint <fp>` selects a banked same-design
 candidate when needed, then uses the normal apply path. An authored candidate
@@ -284,11 +272,10 @@ higher-frequency deficits need separate speaker-informed evidence. In order:
    cut and boost limits, the incumbent room identity, and the boundary prior.
    Missing geometry has a reason code. Repeats count once per pose, and curves
    use only shared measured coverage. The manifest owns the set selection.
-5. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
-   judges a room prescription (`kind: jts_room_prescription`) against
-   the room document's median; `compose --base <applied fingerprint>
-   --room-prescription <doc> --room-median <path>` banks the room candidate;
-   stage the same `jasper-angle-capture plan --program room
+5. Put the room prescription in the document's `room` section. Run
+   `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`,
+   then `compose <doc> --base <fp|saved> --round <round-dir> --set <set-id>`.
+   Stage the same `jasper-angle-capture plan --program room
    --candidates <fingerprint>` walk, then open and bank a new round. Each seat
    capture plays the room candidate through the accepted speaker tune.
 6. `jasper-round-views room-grade <round-dir> --set <candidate-set>
@@ -338,8 +325,8 @@ Room peaks in Room before fitting extension.
 2. Run `bass` and `bass-compare` below. Inspect frequency plots, noise,
    harmonics and repeat variation before deciding which bands need more data.
    `bass-fit-table` suggests a bounded native shape from matched measured changes.
-3. Compose against the accepted Room candidate with `--bass-extension-json`
-   and linked `--observation-ref` evidence. Trial useful changes with short
+3. Put the bass descriptor in the document's `bass` section and name its base.
+   Trial the composed candidate with short
    focused sweeps and small input steps. Hold volume fixed while varying
    stimulus demand; hold stimulus fixed while varying canonical volume.
 4. Use native replay when deliberate DSP reduction is unclear. Inspect a short
@@ -416,9 +403,8 @@ decision, and next human action, with links to those records. Do not copy curve
 values into notes or treat notes as instructions. No note is required to run a
 safe experiment.
 
-Use `inventory` and `status` to recover artifact locations. A frozen packet is
-the evidence used for a prescription, not a promise that no later evidence
-exists. Preserve its fingerprint alongside that prescription. Read banked
+Use `inventory` and `status` to recover artifact locations. Composed candidates
+retain the judged evidence digest. Read banked
 history as well as live session history; session retention does not invalidate
 banked evidence. Compatibility still depends on speaker, graph, pose, level,
 and calibration context.
@@ -478,7 +464,7 @@ Capture emits sound; apply persists a tune.
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference — PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|show\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage`/`withdraw` write; `serve` moves the arm; `plan`/`show` are reads) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
-| `jasper-crossover-prescriber contract\|compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
+| `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |

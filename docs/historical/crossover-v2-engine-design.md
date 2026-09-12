@@ -481,7 +481,7 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
     `jasper-crossover-prescriber`; alignment and topology arrive as request-body
     keys on session open and refuse the WHOLE session at the tap. The four
     classes, the two entry surfaces and the severity split are tabulated once, in
-    [`testing-tooling.md`](../testing-tooling.md#the-other-two-prescriptions-do-not-come-through-this-door-2773).
+    [`testing-tooling.md`](../testing-tooling.md#crossover-prescriber-harness).
     Two consequences are this document's: a **topology** pin replaces the
     session's own corner *and* preset at both stages (via
     `fc_sweep.recornered_preset`), so the fit, the de-embedding, the emitted
