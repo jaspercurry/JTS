@@ -3709,10 +3709,6 @@ class CrossoverV2Session:
                 )
             else:
                 if not identity_accepted:
-                    # The store already owns this identity with different numbers. Clear
-                    # the hydrated decision too, or the done screen calls a prior basis
-                    # "the latest applied result".
-                    self._last_attempt_decision = None
                     log_event(
                         logger,
                         "correction.crossover_v2_model_error_identity_conflict",
@@ -3776,8 +3772,6 @@ class CrossoverV2Session:
             tracking
         )
         self._verify_frame = _verification._verify_frame_from_tracking(tracking)
-        # Every §7 claim, graded BEFORE any of them gates, so a capture that fails one
-        # still discloses the others.
         self._verify_claims = _verification._verify_claims(
             tracking, analysis.verify_absolute
         )
