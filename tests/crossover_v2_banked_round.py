@@ -50,8 +50,8 @@ builder that already lives with them. :func:`bank_cloud_echo_band` is the one
 exception and stays one: it banks that group's echo BAND and nothing else of
 it, for the readers that ask only which band the null detector ran on.
 
-**No WAVs.** ``bank-crossover-round.sh`` stopped pulling the capture-dump ring
-when the ring was removed, and no reader on these paths opens one.
+Measure and verify fixtures carry no WAVs. Seat fixtures retain captures for
+the room analyzer; room statistics tests supply documents at its output.
 """
 
 from __future__ import annotations
@@ -66,6 +66,9 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.bundles import record_artifact
+from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
+from jasper.audio_measurement.wired_capture import encode_wav_s32
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import (
     EVIDENCE_ROOT,
@@ -425,6 +428,23 @@ def bank_verify_round(
     return round_dir
 
 
+def _seat_capture(
+    store: BankedRecordStore, program: ExcitationProgram, index: int, magnitude: np.ndarray,
+) -> dict[str, Any]:
+    stimulus = render_program_pcm(program)[:, 0]
+    spectrum = np.fft.rfft(stimulus)
+    freqs = np.fft.rfftfreq(len(stimulus), 1 / program.sample_rate_hz)
+    signal = np.fft.irfft(spectrum * 10 ** (np.interp(freqs, SEAT_GRID_HZ, magnitude) / 20), n=len(stimulus))
+    signal = np.concatenate((np.zeros(800), signal, np.zeros(5000)))
+    wav, _ = encode_wav_s32((signal * (2**31 - 1)).astype(np.int32), sample_rate_hz=program.sample_rate_hz)
+    artifact = store.evidence.publish_raw_artifact(f"seat-{index}.wav", wav)
+    record_artifact(store.evidence.bundle_dir, artifact.relative_path, kind="jts_measurement_capture",
+                    sensitivity="raw_audio", recomputable=False, generated_by=__name__)
+    return {"wav_path": artifact.relative_path, "wav_sha256": artifact.sha256,
+            "program": program.to_dict(), "measurement_status": "captured",
+            "graph_scope": "candidate", "candidate_id": "fixture-speaker"}
+
+
 def bank_seat_round(
     root: Path,
     *,
@@ -456,10 +476,11 @@ def bank_seat_round(
         "captured_at": "2026-09-01T00:00:00Z",
         "wav_sha256": "d" * 64,
     }
+    program = build_verify_program(2500, sweep_band_hz=SEAT_BAND_HZ, sweep_s=0.5)
     _bank(
         store,
         *(
-            spatial.lateral_pose_record(
+            {**spatial.lateral_pose_record(
                 spatial.LateralPose(
                     pose_id=f"lateral_{stop.index:02d}", index=stop.index, attempt=1,
                     prompt=stop.prompt.text, role=stop.prompt.role,
@@ -476,7 +497,7 @@ def bank_seat_round(
                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 gating_applied=False,
                 **stamp,
-            )
+            ), **_seat_capture(store, program, stop.index, magnitude)}
             for stop, magnitude in zip(stops, magnitudes)
         ),
         _receipt("r3"),

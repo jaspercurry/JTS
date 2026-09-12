@@ -27,6 +27,7 @@ from jasper.cli.round_views._common import RoundSetRefused, resolve_set
 from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 
 
 @pytest.fixture
