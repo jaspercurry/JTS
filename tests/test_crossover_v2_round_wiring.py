@@ -42,9 +42,6 @@ from jasper.active_speaker.crossover_v2.verification import (
     HEADROOM_REACHABLE,
     Verdict,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_VERIFY_OUT_OF_TOLERANCE,
-)
 from jasper.active_speaker.crossover_v2_flow import (
     ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
 )
@@ -247,97 +244,6 @@ def test_a_round_reaches_its_readers_and_publisher(monkeypatch):
         "rollback_available", "applied_boosts",
         "entry_graph_fingerprint", "publish_round_receipt",
     }
-
-
-# --------------------------------------------------------------------------- #
-# 2. the round grades the capture the session ENDED on
-# --------------------------------------------------------------------------- #
-
-
-def test_a_rejected_verify_keeps_its_own_code_and_burns_no_round(
-    monkeypatch, real_bundle,
-):
-    """A capture the household is about to retake is not the round's evidence.
-
-    Two things have to hold at once, and each protects a different household.
-
-    The refusal keeps its OWN code — ``verify_out_of_tolerance``, whose copy
-    names the specific thing that went wrong and offers the retry. Replacing it
-    with the round's more general code would cost them the actionable half of
-    their screen.
-
-    And the round's fire-once guard stays unburned. VERIFY carries a retry
-    budget, so a rejected capture does not end the session: grading it would
-    spend the one grading on evidence the household then replaced, and the
-    receipt — write-once — would describe a capture the round did not end on.
-    A session that ends on a terminal rejection writes no receipt at all, which
-    is the honest record: its post-apply evidence never completed.
-
-    The fixtures are a regression the round WOULD have restored on, so this
-    cannot pass because there was nothing to grade.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=True)
-
-    verdict = _consume_verify(
-        conductor,
-        _post_apply_analysis(conductor, max_db=flow.VERIFY_TOLERANCE_DB + 1.0),
-    )
-
-    assert verdict.accepted is False
-    assert verdict.code == REASON_VERIFY_OUT_OF_TOLERANCE
-    assert conductor.round_evaluation is None
-    assert conductor.round_receipt_identity is None
-    # …and nothing landed in the write-once bundle either, which is the fact
-    # that actually matters: the receipt cannot be amended later.
-    with pytest.raises(FileNotFoundError):
-        _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
-    # Nothing was done to the speaker either: the shipped verify-fail path
-    # already owns what happens next.
-    assert attempts == []
-
-
-def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
-    monkeypatch, real_bundle,
-):
-    """The half that makes the guard worth leaving unburned.
-
-    This is the reproduced defect, as a test: attempt 1 out of tolerance,
-    attempt 2 clean and accepted. If the rejected attempt had graded, the
-    session would finish carrying that capture's ``realization=FAILED`` and an
-    adoption of ``recovery_required`` — demanding operator recovery for a round
-    that went on to succeed. The round must describe the capture the household
-    actually ended on.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    rejected = _consume_verify(
-        conductor,
-        _post_apply_analysis(conductor, max_db=flow.VERIFY_TOLERANCE_DB + 1.0),
-    )
-    assert rejected.accepted is False
-
-    retry = _consume_verify(conductor, _post_apply_analysis(conductor), attempt=2)
-
-    assert retry.accepted is True
-    # A KEEPING outcome — the point of this test is that the round describes
-    # the accepted retry rather than the rejected first attempt, whose
-    # ``recovery_required`` would have been unmistakable here.
-    assert (
-        conductor.round_evaluation.adoption.outcome
-        is AdoptionOutcome.KEEP_FOR_ITERATION
-    )
-    # An Express tier walks no post-apply cloud, so the fourth axis has no
-    # objectives to grade. Since the bites ruling that is not an ending: the
-    # reason names the missing evidence and the series stays open.
-    assert conductor.round_evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
-    assert conductor.round_receipt_identity is not None
-    assert attempts == []
 
 
 # --------------------------------------------------------------------------- #

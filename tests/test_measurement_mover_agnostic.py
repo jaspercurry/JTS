@@ -41,9 +41,8 @@ ENGINE_ROOTS: tuple[str, ...] = (
 # on the module's own name at any position in the dotted path, never on a
 # single package prefix.
 #
-# `angle_capture` is matched by prefix because the tooling is two modules today
-# (`angle_capture` and `angle_capture_spool`) and a third would otherwise walk
-# straight through the guard.
+# `angle_capture` is matched by prefix so a new helper cannot walk straight
+# through the guard.
 ARM_MODULE_NAMES: tuple[str, ...] = ("arm_walk",)
 ARM_MODULE_PREFIXES: tuple[str, ...] = ("angle_capture",)
 FORBIDDEN_HEADS: tuple[tuple[str, ...], ...] = (("experiments",), ("jasper", "web"))

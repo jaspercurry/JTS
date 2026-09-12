@@ -1025,12 +1025,10 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         if offset % 3 == 0:
             with pytest.raises(CaptureBeginDeferred):
                 gate.gate(index, index, entry)
-            # A fresh hold is the end of the batch before it: the entry that
-            # batch was executing must not still be the one published.
             assert gate.published()["current"] is None
             pending = gate.published()["pending"]
             grants.append((pending["degrees"], pending["vertical_deg"]))
-            gate.release(**{name: pending["action"]["body"][name] for name in ("index", "attempt")})
+            gate.release(**{name: pending["actions"][0]["body"][name] for name in ("index", "attempt")})
         gate.gate(index, index, entry)
         # Every grant publishes what it is recording — the released config and
         # the ones the batch shortcut admits under it alike, since only this
@@ -1063,7 +1061,7 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
     gate.gate(4, 4, second)
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(4, 5, second)
-    assert gate.published()["pending"]["hand_released"] is True
+    assert gate.published()["pending"]["mover"] == ac.MOVER_HUMAN
     for index, attempt in ((3, 3), (4, 4), (4, None)):
         with pytest.raises(ValueError):
             gate.release(index, attempt)
@@ -1519,6 +1517,36 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
         assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
+@pytest.mark.parametrize("levels", [(-12.7,), (-20, -14)])
+@pytest.mark.parametrize("repeats", [1, 3])
+@pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
+def test_v3_request_round_trip_and_capture_schedule(repeats, candidates, levels):
+    request = ac.request_for_program(
+        mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
+        spl_ceiling_db_spl=80.0, retries_per_pose=2, operating_levels_db=levels,
+        level=ac.LevelPolicy(resolved=ResolvedLevel(75.8, -12.7, "8108494")),
+    )
+    doc = request.to_dict()
+    assert doc["artifact_schema_version"] == 3
+    assert doc["candidates"] == list(candidates)
+    assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
+    assert doc["spl_ceiling_db_spl"] == 80.0
+    assert doc["level"] == {"mode": "hold_reference", "anchor_db_spl": 75.8,
+                            "reference_volume_db": -12.7, "mic_serial": "8108494"}
+    assert (doc["operating_levels_db"], doc["repeats"], doc["retries_per_pose"]) == (list(levels), repeats, 2)
+    assert ac.AngleCaptureRequest.from_mapping(doc) == request
+    specs = ac.stop_specs(request, baseline_ids={"room": "baseline-room"}, candidate_scopes={"room-fp": "candidate"},
+                          prompts=[s.prompt for s in ac.resolve_request(request)])
+    assert len(specs) == 3 * max(1, len(candidates)) * repeats
+    assert [spec.positions for spec in specs] == [
+        (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
+    ]
+    assert {spec.spl_ceiling_db_spl for spec in specs} == {80.0}
+    assert ac.design_axis_spec(request).spl_ceiling_db_spl == 80.0
+    assert ac.walk_price(request)["captures"] == len(specs) * len(levels)
+    assert ac.walk_price(request)["mic_moves"] == 3
+
+
 @pytest.mark.parametrize("fields", [
     *[{"mode": mode} for mode in ("acquire_at_anchor", "series", "loud")],
     {"anchor_db_spl": math.nan}, {"reference_volume_db": math.inf},
@@ -1534,7 +1562,6 @@ def test_invalid_level_policy_refuses_at_construction(fields):
 
 
 @pytest.mark.parametrize("fields, reason", [
-    ({"operating_levels_db": (-20., -14.)}, ac.WALK_LEVEL_WINDOWS_UNSUPPORTED_YET),
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],

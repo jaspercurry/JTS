@@ -2,27 +2,38 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-round``: the four round verbs, driven from the speaker.
-
-Every request is served by a fake opener -- :class:`WizardClient`'s own
-transport seam -- so these pin what the CLI SENDS, what it ANSWERS on stdout
-and what it EXITS with, without a wizard, a network or a speaker.
-"""
+"""Round CLI responses and requests through the wizard's fake HTTP transport."""
 from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 import urllib.error
 
 import pytest
 
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.movers import MOVERS
 from jasper.cli import round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
+
+
+def test_round_parser_does_not_import_numpy():
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import json, sys\n"
+            "from jasper.cli import round as cli\n"
+            "imported = 'numpy' in sys.modules\n"
+            "cli.build_parser()\n"
+            "print(json.dumps([imported, 'numpy' in sys.modules]))\n"
+        )], capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert json.loads(result.stdout) == [False, False]
 
 
 class _FakeResponse:
@@ -91,7 +102,6 @@ def _opener(*, v2=None, envelopes=None, raises=None, **pages) -> _FakeOpener:
             wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok-abcd1234">',
             wc.STATUS_PATH: _envelope(**(v2 or {})),
             wc.SESSION_PATH: pages.get("session", "{}"),
-            wc.VERIFY_PATH: pages.get("verify", "{}"),
             wc.APPLY_PATH: pages.get("apply", '{"status": "applied"}'),
         },
         envelopes=envelopes,
@@ -118,22 +128,6 @@ def _run(argv, opener, monkeypatch, capsys):
 
 class _Identity:
     hostname = "jts3.local"
-
-
-# --------------------------------------------------------------------------- #
-# the vocabulary is the product's own
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# open
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# apply
-# --------------------------------------------------------------------------- #
-
 
 @pytest.mark.parametrize(
     "live",
@@ -197,7 +191,6 @@ def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
     assert receipt["reason"] == wc.REASON_NOT_APPLIED
     assert receipt["detail"]["refused_by"] == "wizard"
 
-
 # --------------------------------------------------------------------------- #
 # wait
 # --------------------------------------------------------------------------- #
@@ -256,16 +249,41 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
 
 
-@pytest.mark.parametrize("ceiling,code", [(80, 0), (90, 1)])
-def test_dry_run_prints_preflight_without_posting(preflight_ready, monkeypatch, capsys, ceiling, code):
+@pytest.mark.parametrize("dry_run,ceiling,code", [(True, 80, 0), (True, 90, 1), (False, 90, 1)])
+def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys, dry_run, ceiling, code):
     opener = _opener()
-    actual, body = _run(["run", "--dry-run", "--ceiling", str(ceiling)], opener, monkeypatch, capsys)
+    argv = ["run", "--ceiling", str(ceiling)] + (["--dry-run"] if dry_run else [])
+    actual, body = _run(argv, opener, monkeypatch, capsys)
     assert actual == code
-    assert body["dry_run"] is True
-    assert bool(body["issues"]) == bool(code)
-    if code:
-        assert body["issues"][0]["code"] == "walk_ceiling_above_stop"
+    if dry_run:
+        assert body["dry_run"] is True
+        assert bool(body["issues"]) == bool(code)
+        if code:
+            assert body["issues"][0]["code"] == "walk_ceiling_above_stop"
+    else:
+        assert body["status"] == STATUS_BY_CODE[code]
+        assert body["reason"] == "walk_ceiling_above_stop"
     assert not opener.requests
+
+
+@pytest.mark.parametrize("repeats", [None, 1, 2])
+def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsys, repeats):
+    from collections import Counter
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest
+    from jasper.active_speaker.measurement_programs import run_program
+
+    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+    argv = ["run", "--program", "speaker", "--poses", "baseline_express"]
+    if repeats is not None:
+        argv += ["--repeats", str(repeats)]
+    code, _ = _run(argv, opener, monkeypatch, capsys)
+    assert code == 0
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    assert plan.repeats == 1
+    assert Counter(stop.place for stop in plan.stops) == {
+        pose.place: pose.repeats if repeats is None else repeats
+        for pose in run_program("speaker", "baseline_express").poses
+    }
 
 
 def _run_opener(capture):
@@ -275,15 +293,20 @@ def _run_opener(capture):
 
 
 @pytest.mark.parametrize("joining", [True, False])
-def test_placed_releases_the_pending_gate(joining, monkeypatch, capsys):
+@pytest.mark.parametrize("mover", MOVERS)
+def test_placed_releases_only_confirmed_holds(joining, mover, monkeypatch, capsys):
     from jasper.active_speaker.crossover_v2.position_gate import POSITION_READY_ENDPOINT
-    action = {"endpoint": POSITION_READY_ENDPOINT, "body": {"index": 1, "attempt": 1}}
     opener = _run_opener({"status": "awaiting_join" if joining else "running",
-                          "join" if joining else "position_pending": {"action": action}})
+                          "join" if joining else "position_pending": {"index": 1, "attempt": 1, "mover": mover}})
     opener.pages[POSITION_READY_ENDPOINT] = '{"ok": true}'
     code, body = _run(["placed", "--run", "run-1", "--pose", "1"], opener, monkeypatch, capsys)
-    assert code == 0 and body["ok"] is True
-    assert json.loads(opener.posted_to(POSITION_READY_ENDPOINT)[0].data) == {"index": 1, "attempt": 1, "run_id": "run-1"}
+    posts = opener.posted_to(POSITION_READY_ENDPOINT)
+    if mover == "confirmed":
+        assert code == 0 and body["ok"] is True
+        assert json.loads(posts[0].data) == {"index": 1, "attempt": 1, "run_id": "run-1"}
+    else:
+        assert code == 1 and body["code"] == "walk_mover_mismatch"
+        assert not posts
 
 
 def test_status_reads_progress_once(monkeypatch, capsys):
@@ -366,7 +389,6 @@ def test_capture_slot_keeps_the_run_id_through_completion(monkeypatch):
     assert capture._get_capture_slot()["session_id"] == "run-1"
 
 
-
 def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, capsys):
     from jasper.cli import _run_request
     from tests.test_preflight import ready_facts
@@ -383,7 +405,6 @@ def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, c
 def test_run_names_a_lost_response(preflight_ready, monkeypatch, capsys):
     code, body = _run(["run"], _opener(session="bad json"), monkeypatch, capsys)
     assert code == 2 and body["reason"] == "run_answer_invalid"
-
 
 
 def test_status_fault_history_keeps_each_code_once():

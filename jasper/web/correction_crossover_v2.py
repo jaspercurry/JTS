@@ -27,8 +27,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   deaths into the flow's reason vocabulary. It is reached LAZILY. This host
   stays the single writer of the persisted failure state those reasons land in
   (``status["crossover_v2"]["failure"]`` — ``capture_timeout``,
-  ``user_stopped``, …), and of the walked-away volume guarantee the provider
-  drives through ``V2VolumeHooks``.
+  ``user_stopped``, …). ``door.isolation_hold`` and ``door.level_window`` own the volume give-back.
 
 Session binding (§5.6): the durable state is keyed to the capture session id. A
 new ``/v2/session`` POST hydrates through
@@ -77,11 +76,12 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+from jasper.web.correction_run_host import bind_level_windows, compose_plan_program
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
-from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures, spl_watch
-from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
+from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
+from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
@@ -126,7 +126,6 @@ from jasper.active_speaker.capture_provenance import (
     record_capture_provenance,
 )
 from jasper.active_speaker.crossover_v2.conductor_context import (
-    V2ConductorContext,
     ensure_crossover_preview_ready,
     resolve_conductor_context,
 )
@@ -971,23 +970,6 @@ def _refuse_without_a_volume_owner(where: str) -> "CrossoverV2Refused":
     )
 
 
-def _session_volume_claim() -> Any:
-    """This session's ONE fader claim, or ``None`` when no owner is installed.
-
-    Minted at the composition root and injected into the two things that hold
-    it — the engine's volume seam and the plan's door — because they are one
-    claim, not two. ``None`` is the no-owner registration defect, and the
-    binder turns it into the household refusal above.
-    """
-    from jasper.active_speaker.crossover_v2.volume_claim import (
-        MeasurementVolumeClaim,
-    )
-    from jasper.volume_owner import volume_owner
-
-    owner = volume_owner()
-    return None if owner is None else MeasurementVolumeClaim(owner)
-
-
 def _volume_door(
     camilla_factory: Any, *, claim: Any = None, reason: str = "drain",
 ) -> "VolumeDoor":
@@ -1254,11 +1236,7 @@ def reconcile_session_volume_for_new_session(
 # an unknown state must degrade to "not graded" rather than to a crash.
 GRADE_NOT_APPLIED = "not_applied"
 GRADE_GRADED = "graded"
-# Express's passing grade. Distinct from GRADE_GRADED so a `/state` reader can
-# tell the two claims apart WITHOUT cross-referencing `tier` (PR-L4 review):
-# express verifies at the mark only — it never walks a post-apply position
-# group — so "graded" and "confirmed at one spot" are materially different
-# promises and were rendering as the same word.
+# A local pass is distinct from a spatial grade (#2098).
 GRADE_MARK_VERIFIED = "mark_verified"
 GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
@@ -1274,12 +1252,10 @@ GRADE_TUNING_TRIAL_MEASURED = "tuning_trial_measured"
 #
 # ``state`` above answers "was it checked". These answer the two questions a
 # surface needed and had to guess at: how WIDE is the evidence behind that
-# answer, and does that width meet what the commission tier promised.
+# answer, and does that width meet what the run asked for.
 # --------------------------------------------------------------------------- #
 
-#: How far the evidence behind ``state`` reaches. Never a tier — a tier is what
-#: was PROMISED, this is what was DELIVERED, and conflating them is the #2098
-#: defect (a Full session's mark-only pass rendered as the full claim).
+#: Delivered coverage, compared below with the run's asked poses (#2098).
 GRADE_SCOPE_NONE = "none"
 GRADE_SCOPE_MARK = "mark"
 GRADE_SCOPE_SPATIAL = "spatial"
@@ -1333,8 +1309,65 @@ def _spatial_grade(post_apply: Any) -> str:
     return GRADE_SPATIAL_FAILED
 
 
-def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
-    """Report measured grade and coverage; missing coverage stays unknown (ADR-0298)."""
+def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = False) -> dict[str, Any]:
+    """Was the correction now ON the speaker ever checked after it landed?
+
+    **Applied implies graded** (linearization-integrity PR-L4 item 4). A
+    session can end ``applied: true`` with no passing post-apply grade — VERIFY
+    inconclusive, VERIFY failed and never retried, or a session that simply
+    stopped after the apply — and before this the only trace was a phase name
+    and an empty ``verify`` block that every surface read as "nothing to
+    report". That is how a 10 dB-dark profile sat on JTS3 with a green tick
+    over it.
+
+    **Surface, not auto-restore.** The work order allowed either; this is the
+    deliberate choice and the reason is that the two failure modes are not
+    distinguishable at this seam. A missing grade means "we do not know", and
+    the commonest way to reach it is a household that closed the phone after
+    the apply — auto-restoring would silently undo a correction that is very
+    probably fine, on evidence that says nothing about the correction at all.
+    The way back already exists on the done screen,
+    and it is the household's call. What was missing is being told.
+
+    The returned ``state`` is one of the ``GRADE_*`` constants above;
+    ``graded`` answers only "was it checked" — since R19 it is no longer a
+    boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
+    ``complete`` below carry the verdict it cannot. Both a passing VERIFY
+    outcome and a graded post-apply cloud count — either instrument is a real
+    check. A mark-VERIFY that
+    FAILED caps ``state`` whatever the cloud group says (#2464); the
+    derivation below owns that rule and states why.
+
+    **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
+    answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
+    three are why this returns more than a state name. ``state`` alone cannot
+    carry either fact, and both were being guessed at downstream:
+
+    * a run that asked for poses beyond the mark but whose post-apply group
+      never closed reaches ``mark_verified`` — a true local result, short of
+      what its plan asked. It rendered as "applied and graded".
+    * a post-apply group that closed with ``overall_within_target=False`` reaches
+      ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
+      rendered as "applied and graded" — measured on jts3 2026-08-07, a
+      −4.63 dB spatial miss under a green tick.
+
+    ``scope`` is what the evidence DELIVERED; the persisted run manifest's
+    asked poses state what the run PROMISED. ``complete`` compares the two,
+    so the wizard, ``/state`` and doctor do not each derive that fact. Records
+    without a plan retain delivery-only grading (ADR-0298): an old session
+    never made a spatial promise merely because a later build knows one.
+
+    ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
+    the doctor's cloud-pipeline line prints, never re-derived, so "the grade
+    failed" and "by how much" cannot drift apart. ``None`` whenever the gauge
+    reports no number, including a failed grade whose gauge is absent.
+
+    **Grades and discloses; never gates** (#2160 ruling). A failed spatial
+    grade is a COMPLETED grade: the session completes, the applied tune stays,
+    the failure is loud. Nothing here reverts anything — see the
+    surface-not-auto-restore paragraph above, which this extends rather than
+    revisits.
+    """
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
@@ -1521,9 +1554,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     elif no_claim_graded:
         state = GRADE_INCONCLUSIVE
     elif outcome == "pass":
-        # Verified at the mark only. On express that is the whole grade by
-        # design; on full it means VERIFY passed but the post-apply group has
-        # not closed yet.
+        # Completeness below compares this measured scope with the asked poses.
         state = GRADE_MARK_VERIFIED
     else:
         state = GRADE_UNVERIFIED
@@ -1537,7 +1568,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         scope = GRADE_SCOPE_MARK
     else:
         scope = GRADE_SCOPE_NONE
-    complete = scope != GRADE_SCOPE_NONE
+    complete = scope == GRADE_SCOPE_SPATIAL if spatial_required else scope != GRADE_SCOPE_NONE
     flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
     flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
@@ -1559,6 +1590,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
             if spatial == GRADE_SPATIAL_FAILED else None
         ),
         "complete": complete,
+        **({"reason": REASON_APPLIED_GRADE_MARK_ONLY} if scope == GRADE_SCOPE_MARK and not complete else {}),
         "improvement_db": improvement_db,
         "tracking_passed": True if tracking_status == CLAIM_PASS else False if tracking_status == CLAIM_FAIL else None,
         "absolute_passed": True if absolute_status == CLAIM_PASS else False if absolute_status == CLAIM_FAIL else None,
@@ -2820,22 +2852,12 @@ def bind_production_play(
         capture_session_id=capture_session_id, cam_factory=camilla_factory,
         config_dir=resolved_config_dir, topology=topology,
         safety_profile=safety_profile, role_targets=role_targets,
-        session_volume_db=session_volume_db,
         declared_sensitivities=declared_sensitivities,
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
         bass_extension_for_spec=lambda spec: measurement_bass_extension(scope=spec.graph_scope, candidate_id=spec.candidate_id),
     )
 
     return ProductionPlay(graph=session_graph, compose=compose)
-
-
-@dataclass(frozen=True)
-class V2VolumeHooks:
-    """The session-volume lifecycle the runner drives (§5.5)."""
-
-    open: Callable[[], Any]      # async
-    close: Callable[[], Any]     # async
-    abandon: Callable[[], Any]   # async
 
 
 # The key :func:`attach_stage2_preflight` writes onto ``status["crossover_v2"]``
@@ -2940,73 +2962,6 @@ class V2PreparedSession:
     request_retake: Callable[[], None] | None = None
     join_spec: Any = None
     session_id: str = ""
-
-
-def _volume_hooks(
-    camilla_factory: Any,
-    context: V2ConductorContext,
-    *,
-    tuning: Any,
-    volume_claim: Any = None,
-) -> V2VolumeHooks:
-    plan = session_volume_plan()
-    # THE SAME CLAIM the engine session holds, not a second one. The plan's
-    # door establishes through it and ``TuningSession.open`` takes the session
-    # slot through it; two ``MeasurementVolumeClaim`` objects over one owner
-    # would collide on the owner's same-kind rule, and that rule is there for
-    # OTHER holders — level-match, autolevel, the balance guard — not for a
-    # session arguing with itself.
-    door = _volume_door(camilla_factory, claim=volume_claim, reason="session")
-
-    async def _open() -> Any:
-        opened = await plan.open(context.session_volume_db, door)
-        if str(getattr(opened, "value", opened)) != "opened":
-            return opened
-
-        async def _give_back_the_level() -> None:
-            try:
-                await plan.abandon(door, reason="session_open_failed")
-            finally:
-                await release_session_measurement_pause()
-
-        session_open = False
-        try:
-            await acquire_session_measurement_pause()
-            await tuning.open()
-            session_open = True
-        finally:
-            if not session_open:
-                giving_back = asyncio.ensure_future(_give_back_the_level())
-                try:
-                    await asyncio.shield(giving_back)
-                except asyncio.CancelledError:
-                    while not giving_back.done():
-                        try:
-                            await asyncio.shield(giving_back)
-                        except asyncio.CancelledError:
-                            continue
-                        except (OSError, RuntimeError, TimeoutError, ValueError):
-                            break
-                    raise
-        return opened
-
-    async def _drain(operation: Any) -> Any:
-        try:
-            try:
-                await tuning.close()
-            finally:
-                result = await operation(door)
-        finally:
-            await release_session_measurement_pause()
-        return result
-
-    async def _close() -> Any:
-        return await _drain(plan.close)
-
-    async def _abandon() -> Any:
-        return await _drain(plan.abandon)
-
-    return V2VolumeHooks(open=_open, close=_close, abandon=_abandon)
 
 
 # --------------------------------------------------------------------------- #
@@ -3419,7 +3374,6 @@ def _wired_stimulus_capture(
 def _build_wired_run(
     conductor: Any,
     *,
-    volume: "V2VolumeHooks",
     stop_event: threading.Event,
     stop_lock: Any,
     position_gate: "PositionGate | None",
@@ -3438,7 +3392,6 @@ def _build_wired_run(
 
     return wired.build_v2_wired_run_and_consume(
         conductor,
-        volume=volume,
         stop_event=stop_event,
         stop_lock=stop_lock,
         ceiling_s=ceiling_s,
@@ -3458,21 +3411,10 @@ VERIFY_STAGE_RECOVERY = "recovery"
 
 
 def _verify_plan_shape(
-    raw: Mapping[str, Any] | None, state: Mapping[str, Any] | None,
+    raw: Mapping[str, Any] | None,
 ) -> Any:
-    """Resolve the post-apply plan shape, or ``None`` for the 1-entry recovery.
-
-    Explicit rather than inferred. A shape could be guessed from the durable
-    state (has VERIFY been walked? has it been accepted?), but every such
-    inference has a case where it silently downgrades Full's multi-position
-    post-apply walk to one sweep — a household who opened stage 2 and let the
-    link expire before the first capture would get the recovery instrument on
-    their next tap and lose the spatial "after" evidence with no way to know.
-    The caller says which instrument it wants; the tier still comes from the
-    durable state, so the household's tier choice governs both stages.
-    """
+    """The caller chooses a full post-apply walk or one recovery sweep."""
     from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
-    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
     stage = str((raw or {}).get(VERIFY_STAGE_KEY) or VERIFY_STAGE_RECOVERY).strip()
     if stage == VERIFY_STAGE_RECOVERY:
@@ -3482,10 +3424,7 @@ def _verify_plan_shape(
             f"unknown verify stage {stage!r} (expected "
             f"{VERIFY_STAGE_POST_APPLY!r} or {VERIFY_STAGE_RECOVERY!r})"
         )
-    try:
-        return resolve_plan_shape()
-    except CrossoverV2FlowError as exc:
-        raise refused_from_flow_error(exc) from exc
+    return resolve_plan_shape()
 
 
 def prepare_v2_session(
@@ -3498,7 +3437,7 @@ def prepare_v2_session(
 ) -> V2PreparedSession:
     """Prepare the inline run or the existing post-apply verification."""
     from jasper.active_speaker.crossover_v2.capture_plan import (
-        session_wall_clock_ceiling_s,
+        wall_clock_ceiling_s,
     )
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
@@ -3541,15 +3480,11 @@ def prepare_v2_session(
                 "this measured tuning is already applied; it does not "
                 "use the speaker-fit verification stage"
             )
-        attempt_store = _attempt_loop_store_snapshot()
-        attempts_loop = state.get("attempts_loop")
-        attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
-        prior_attempt_decision = attempts_loop.get("last_decision")
         tuning_attempt_id = (
             str(candidate_state.get("fingerprint") or "")
             if isinstance(candidate_state, Mapping) else ""
         )
-        plan_shape = _verify_plan_shape(raw, state)
+        plan_shape = _verify_plan_shape(raw)
         context = resolve_conductor_context(status)
     else:
         from jasper.active_speaker.branch_chain import confirmed_protection_sections
@@ -3560,7 +3495,6 @@ def prepare_v2_session(
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
         )
-
 
         if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
             raise CrossoverV2Refused("An inline v3 plan is required", code="program_plan_shape_invalid")
@@ -3642,15 +3576,6 @@ def prepare_v2_session(
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
-        attempt_store = _attempt_loop_store_snapshot()
-        prior_loop = (
-            prior_raw.get("attempts_loop")
-            if isinstance(prior_raw, Mapping) else None
-        )
-        prior_decision = (
-            prior_loop.get("last_decision")
-            if isinstance(prior_loop, Mapping) else None
-        )
         prior_snapshot = (
             V2ConductorSnapshot(
                 session_id=str(prior_raw.get("session_id") or ""),
@@ -3659,11 +3584,6 @@ def prepare_v2_session(
                 gain_plan_db=prior_raw.get("gain_plan_db"),
                 measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
                 attempt_history=attempt_history_from_state(prior_raw),
-                last_attempt_decision=(
-                    dict(prior_decision)
-                    if isinstance(prior_decision, Mapping)
-                    else None
-                ),
             )
             if isinstance(prior_raw, Mapping)
             else None
@@ -3674,13 +3594,13 @@ def prepare_v2_session(
     stop_lock = threading.Lock()
     complete_event = threading.Event()
     retake_event = threading.Event()
-    position_gate = PositionGate() if not verify_only or (plan_shape and plan_shape.positions_gated) else None
+    position_gate = PositionGate(mover=request.mover) if not verify_only else PositionGate() if plan_shape and plan_shape.positions_gated else None
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         acknowledgement_binding=acknowledgement_binding,
-        retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
+        retries_per_pose=request.retries_per_pose,
         default_setup_calibration=default_setup_calibration_for_v2(),
     )
     if not verify_only:
@@ -3701,7 +3621,8 @@ def prepare_v2_session(
                 default_setup_calibration=default_setup_calibration_for_v2(),
             )
         assert spec is not None
-        ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
+        ceiling_s = wall_clock_ceiling_s(spec.capture_plan.capture_target * (
+            1 if verify_only else max(1, len(request.operating_levels_db))))
         rc = _mint_wired_session(device, spec)
         if not verify_only:
             rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
@@ -3732,7 +3653,6 @@ def prepare_v2_session(
                 conductor.program_for_phase(spec.program_phase) if verify_only and gain is None
                 else compose_plan_program(conductor, spec, gain)),
         )
-        session_graph = production_play.graph
         if verify_only:
             opening = open_stage(
                 STAGE_VERIFY_CAPABILITIES,
@@ -3793,11 +3713,6 @@ def prepare_v2_session(
                 verify_pilot_transfer_prior=pilot_transfer_prior,
                 attempt_history=attempt_history_from_state(state),
                 series_position=series_position_from_state(state),
-                attempt_floor=attempt_store.floor,
-                last_attempt_decision=(
-                    dict(prior_attempt_decision)
-                    if isinstance(prior_attempt_decision, Mapping) else None
-                ),
                 speaker_id=context.topology.topology_id,
                 tuning_attempt_id=tuning_attempt_id,
             )
@@ -3825,46 +3740,24 @@ def prepare_v2_session(
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
                 tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
-                attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
                 series_position=series_position,
             )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        from jasper.active_speaker.crossover_v2.session import TuningSession
-
-        volume_claim = _session_volume_claim()
-        engine_spl_monitor, spl_note = spl_watch(
-            None if verify_only else request.spl_ceiling_db_spl,
-            topology=context.topology, preset=context.preset, device=device,
-            sensitivity=resolved_household_sensitivity(device),
-            resolved_ceiling_db_spl=None if verify_only else report.spl_ceiling_db_spl,
-        )
-        stimulus_capture = _wired_stimulus_capture(
-            device, evidence_store, spl_monitor=engine_spl_monitor, read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
-        )
-        from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
         manifest = RunManifest(session_id, _record_store(evidence_store, session_id),
                                incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
-        captured_records = CapturedRecordStore(manifest, stimulus_capture)
-
-        tuning = TuningSession(
-            session_id=session_id,
-            seams=bind_v2_engine_seams(
-                session_graph=session_graph,
-                compose_stimulus=production_play.compose,
-                capture_stimulus=stimulus_capture,
-                records=captured_records,
-                volume_claim=volume_claim,
-            ),
-            measurement_level_db=context.session_volume_db,
-            level_match_trims_db=engine_level_trims,
+        from jasper.web import correction_crossover_v2 as host  # lazy: bind this host's seams
+        tuning, analyze, assessor = bind_level_windows(
+            host=host, context=context, device=device, evidence_store=evidence_store,
+            manifest=manifest, production=production_play, conductor=conductor, refs=refs,
+            trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
+            ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
+                            if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
         )
-        analyze, assessor = bind_plan_analysis(conductor, captured_records, manifest=manifest,
-                                              evidence=refs, verify_only=verify_only)
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
         if verify_only:
-            run_request = AngleCaptureRequest(stops=tuple(
+            run_request = AngleCaptureRequest(operating_levels_db=(context.session_volume_db,), stops=tuple(
                 AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
                           elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
                 for entry in spec.capture_plan.entries
@@ -3876,10 +3769,7 @@ def prepare_v2_session(
         nonlocal held
         source_run = _build_wired_run(
             conductor,
-            volume=_volume_hooks(
-                camilla_factory, context, tuning=tuning,
-                volume_claim=volume_claim,
-            ),
+            windows=tuning,
             stop_event=stop_event,
             stop_lock=stop_lock,
             position_gate=position_gate,
@@ -3887,10 +3777,9 @@ def prepare_v2_session(
             ceiling_s=ceiling_s,
             complete_event=complete_event,
             retake_event=retake_event,
-            tuning=tuning, manifest=manifest, analyze=analyze, assessor=assessor,
+            manifest=manifest, analyze=analyze, assessor=assessor,
             request=run_request, captures=run_captures,
             candidate_scopes={} if verify_only else report.candidate_scopes,
-            spl_monitor=spl_note,
         )
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc

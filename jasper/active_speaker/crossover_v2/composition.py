@@ -180,7 +180,6 @@ def bind_program_composer(
     topology: Any,
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
-    session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
@@ -200,7 +199,7 @@ def bind_program_composer(
 
     async def compose(
         *, spec: Any, position_deg: int | None = None, prompt: str = "",
-        level_db: float = 0.0, stimulus_dbfs: float | None = None,
+        level_db: float, stimulus_dbfs: float | None = None,
     ) -> ProgramForStimulus:
         program = program_for_spec(spec, stimulus_dbfs)
         expected_graph = graph_yaml()
@@ -223,7 +222,7 @@ def bind_program_composer(
             cam_factory(), bundle_dir=str(bundle_dir), artifact=artifact,
             config_dir=config_dir, program=program, wav_path=str(wav_path),
             topology=topology, safety_profile=safety_profile,
-            role_targets=role_targets, session_volume_db=session_volume_db,
+            role_targets=role_targets, session_volume_db=level_db,
             declared_sensitivities=declared_sensitivities,
             graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
             bass_extension=bass_extension_for_spec(spec) if bass_extension_for_spec else None,

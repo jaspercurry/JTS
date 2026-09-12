@@ -19,6 +19,7 @@ from ._common import REGION_FC_MATCH_TOLERANCE_HZ, finite_float as _finite_float
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 TUNING_OWNERS = frozenset({"manual", "automatic"})
+REASON_APPLIED_GRADE_MARK_ONLY = "applied_grade_mark_only"
 DRIVER_EXCITATION_MATCH_TOLERANCE_DB = 0.05
 _DRIVER_EXCITATION_SCOPES = frozenset({
     "sweep_plus_role_varying_commission_gain",

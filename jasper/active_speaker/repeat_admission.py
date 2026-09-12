@@ -31,7 +31,6 @@ STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE"
 DEFAULT_LOCK_TIMEOUT_S = 2.0
 OWNER_ID = uuid.uuid4().hex
 _THREAD_LOCK = threading.RLock()
-_CLAIM_ERROR: str | None = None
 logger = logging.getLogger(__name__)
 _UUID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -40,35 +39,8 @@ def state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
 
 
-def result_emitted_audio(result: Mapping[str, Any]) -> bool:
-    """Whether one stored attempt consumed the audible measurement budget.
-
-    A transport/infra failure that provably never played a tone records
-    ``audio_emitted is False`` and is refunded from the budget. Every other
-    attempt — a real acoustic capture (``audio_emitted is True``) OR one whose
-    audio state is unknown/absent — consumes it, so an uncertain write fails
-    closed with acoustic semantics rather than reopening the audio gate.
-    """
-
-    return result.get("audio_emitted") is not False
 
 
-def measurement_attempts(results: Any) -> int:
-    """Count durable results that consumed the audible measurement budget.
-
-    A PURE projection of the durable ``results`` ledger — never a second
-    mutable counter — so the audio-gate budget can never drift from the
-    attempts actually recorded. Transport/infra results (``audio_emitted is
-    False``) are excluded; unknown audio fails closed and is counted.
-    """
-
-    if not isinstance(results, (list, tuple)):
-        return 0
-    return sum(
-        1
-        for item in results
-        if isinstance(item, Mapping) and result_emitted_audio(item)
-    )
 
 
 def _now() -> str:
@@ -184,7 +156,6 @@ def _write(path: Path, state: Mapping[str, Any]) -> None:
 
 @contextmanager
 def _locked(path: Path):
-    # WRITE paths only: ``snapshot`` reads lock-free (ADR-0196 decision 1).
     lock_path = path.with_name(f".{path.name}.lock")
     with _THREAD_LOCK:
         with advisory_file_lock(
@@ -203,77 +174,40 @@ def claim_owner(*, path: str | Path | None = None) -> dict[str, Any]:
     process cannot destructively steal an inflight reservation.
     """
 
-    global _CLAIM_ERROR
     target = state_path(path)
-    try:
-        with _locked(target):
-            state = _load(target)
-            targets = dict(state["targets"])
-            aborted: list[tuple[str, dict[str, Any]]] = []
-            for key, raw in targets.items():
-                entry = dict(raw)
-                prior_status = entry.get("status")
-                if (
-                    entry.get("owner_id") != OWNER_ID
-                    and prior_status in {"active", "ready"}
-                ):
-                    reason = (
-                        "service_restarted_during_finalization"
-                        if prior_status == "ready"
-                        else "service_restarted"
-                    )
-                    entry.update({
-                        "status": "aborted",
-                        "reason": reason,
-                        "inflight": None,
-                        "updated_at": _now(),
-                    })
-                    targets[key] = entry
-                    aborted.append((key, entry))
-            if aborted:
-                state.update({"targets": targets, "updated_at": _now()})
-                _write(target, state)
-                for target_id, entry in aborted:
-                    log_event(
-                        logger,
-                        "correction.crossover_repeat_aborted",
-                        target=target_id,
-                        attempts=entry.get("attempts"),
-                        reason=entry.get("reason"),
-                    )
-            _CLAIM_ERROR = None
-            return state
-    except (OSError, RuntimeError, ValueError) as exc:
-        _CLAIM_ERROR = type(exc).__name__
-        raise
-
-
-def _assert_comparison(state: Mapping[str, Any], expected: Mapping[str, Any]) -> None:
-    actual = state.get("comparison")
-    if not isinstance(actual, Mapping) or any(
-        str(actual.get(key) or "") != str(expected.get(key) or "")
-        for key in ("comparison_set_id", "fingerprint")
-    ):
-        raise ValueError("the crossover repeat comparison context changed")
-
-
-def snapshot(
-    comparison_set: Mapping[str, Any] | None = None,
-    *,
-    path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Read compact state without changing admission decisions."""
-
-    if _CLAIM_ERROR is not None:
-        raise RuntimeError(
-            "crossover repeat admission ownership claim failed at service start"
-        )
-    target = state_path(path)
-    # LOCK-FREE (ADR-0196 decision 1): ``_write`` publishes atomically, so this
-    # status read -- on the crossover poll path -- sees a whole record or none
-    # and never needs WRITE on the sibling lock. ``_load`` answers a missing
-    # record as the empty base, not an error.
-    state = _load(target)
-    if comparison_set is not None:
-        _assert_comparison(state, comparison_set)
-    return state
+    with _locked(target):
+        state = _load(target)
+        targets = dict(state["targets"])
+        aborted: list[tuple[str, dict[str, Any]]] = []
+        for key, raw in targets.items():
+            entry = dict(raw)
+            prior_status = entry.get("status")
+            if (
+                entry.get("owner_id") != OWNER_ID
+                and prior_status in {"active", "ready"}
+            ):
+                reason = (
+                    "service_restarted_during_finalization"
+                    if prior_status == "ready"
+                    else "service_restarted"
+                )
+                entry.update({
+                    "status": "aborted",
+                    "reason": reason,
+                    "inflight": None,
+                    "updated_at": _now(),
+                })
+                targets[key] = entry
+                aborted.append((key, entry))
+        if aborted:
+            state.update({"targets": targets, "updated_at": _now()})
+            _write(target, state)
+            for target_id, entry in aborted:
+                log_event(
+                    logger,
+                    "correction.crossover_repeat_aborted",
+                    target=target_id,
+                    attempts=entry.get("attempts"),
+                    reason=entry.get("reason"),
+                )
+        return state

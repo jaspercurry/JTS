@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
+from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -68,9 +69,11 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         report = resolve_run(args)
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
-    if args.dry_run or report.blocking:
+    if args.dry_run:
         answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
+    if report.blocking:
+        return failed(EXIT_REFUSED, report.issues[0].code, report.to_dict())
     http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
@@ -181,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--level", type=float, help="reference volume in dB; must match the banked level")
     run.add_argument("--ceiling", "--ceiling-db-spl", dest="ceiling", type=float, help="SPL ceiling in dB SPL")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
-    run.add_argument("--mover", choices=("human", "arm", "confirmed"))
+    run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="print preflight; play nothing")
     run.set_defaults(func=_cmd_run)

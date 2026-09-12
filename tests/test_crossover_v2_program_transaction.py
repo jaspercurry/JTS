@@ -745,15 +745,15 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
         ),
         store=Store(), capture_session_id="same-pose", cam_factory=Cam,
         config_dir=str(tmp_path), topology=None, safety_profile={}, role_targets={},
-        session_volume_db=-20, before_play=before_play, graph_yaml=lambda: graph,
+        before_play=before_play, graph_yaml=lambda: graph,
         bass_extension_for_spec=lambda spec: {"low_boost_db": 4.0},
     )
     spec = MeasureSpec(
         kind="baseline", graph_scope=scope, program_phase=phase,
         candidate_id="banked" if scope == "candidate" else "",
     )
-    first = await compose(spec=spec)
-    second = await compose(spec=spec)
+    first = await compose(spec=spec, level_db=-20)
+    second = await compose(spec=spec, level_db=-20)
     assert paths == [f"crossover_v2/same-pose/{phase}_{ordinal:02d}_program.wav" for ordinal in range(2)]
     assert len(list((tmp_path / "crossover_v2/same-pose").glob("*_program.wav"))) == 2
     assert all((tmp_path / relative).is_file() for relative in paths)

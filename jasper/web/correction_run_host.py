@@ -7,6 +7,12 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from jasper.active_speaker.crossover_v2.door import isolation_hold
+from jasper.active_speaker.crossover_v2.session import TuningSession
+from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
+from jasper.active_speaker.plan_run import LevelWindows
+from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
@@ -33,7 +39,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     def analyze(record: Any, record_id: str) -> Any:
         nonlocal index, attempt, phase, verdict
         answer = answers.pop(record_id)
-        index, attempt = record["index"], record["attempt"]
+        index, attempt = record.get("capture_index", record["index"]), record["attempt"]
         phase = conductor._phase_of_index(index)
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
                   conductor._measure_priors() if phase == PHASE_MEASURE else
@@ -98,3 +104,32 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
     if spec.graph_scope == "candidate_branches":
         program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
     return program
+
+
+def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: Any,
+                       manifest: Any, production: Any, conductor: Any, refs: Any,
+                       trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
+                       camilla_factory: Any, verify_only: bool) -> tuple[LevelWindows, Any, Any]:
+    records = CapturedRecordStore(manifest, None)
+    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
+                                          evidence=refs, verify_only=verify_only)
+
+    def build(door: Any, allocate_take_id: Any) -> TuningSession:
+        capture = host._wired_stimulus_capture(
+            device, evidence_store, spl_monitor=door.spl_monitor,
+            read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
+        )
+        records.capture = capture
+        conductor._excitation = replace(conductor._excitation, session_volume_db=door.measurement_volume_db)
+        return TuningSession(
+            manifest.run_id, host.bind_v2_engine_seams(
+                session_graph=door.graph, compose_stimulus=production.compose,
+                capture_stimulus=capture, records=records, volume_claim=door.claim,
+            ), door.measurement_volume_db, allocate_take_id, level_match_trims_db=trims,
+        )
+
+    return LevelWindows(
+        isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
+                       action="measuring", plan=host.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
+        build, context.topology, context.preset, resolved_household_sensitivity(device), device, ceiling_db_spl,
+    ), analyze, assessor

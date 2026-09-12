@@ -41,28 +41,8 @@ from typing import Any, Mapping
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from .frequency_display import prepare_frequency_curve
-from .attempts_loop import (
-    PROVENANCE_MODEL_GRADED,
-    PROVENANCE_REALIZED,
-    REASON_ATTEMPT_NOT_COMPARABLE,
-    REASON_AWAITING_FIRST_ATTEMPT,
-    REASON_BASELINE_ESTABLISHED,
-    REASON_BELOW_CLAIM_FLOOR,
-    REASON_BUDGET_EXHAUSTED,
-    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR,
-    REASON_FLOOR_METRIC_MISMATCH,
-    REASON_GRADED_BINS_SHRANK,
-    REASON_IMPROVEMENT_ABOVE_FLOOR,
-    REASON_IN_SPEC,
-    REASON_NO_DEVIATION_AVAILABLE,
-    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED,
-    REASON_PREDECESSOR_NOT_COMPARABLE,
-    REASON_PROVENANCE_MISMATCH,
-    REASON_REGRESSION_FROM_PREDECESSOR,
-    REASON_SITTING_MISMATCH,
-    REASON_SITTING_UNRECORDED,
-)
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
+from .crossover_v2.position_gate import RETAKE_ENDPOINT, COMPLETE_ENDPOINT
 from .candidate_trials import tuning_trial_matches_candidate
 from .crossover_v2.journey import (
     CAPTURE_PHASES,
@@ -91,7 +71,6 @@ from .crossover_v2.refusal_copy import (
     verify_inconclusive_cause,
 )
 from .crossover_v2_flow import (
-    ATTEMPT_REASON_NO_FLOOR,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLOUD_CLOSE_RUNNING,
 )
@@ -702,6 +681,29 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
 
 
 def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
+    """The spec-facing flatness disclosure — "how flat is the speaker" —
+    distinctly labeled from :func:`_verify_expert_details`'s integration-verify
+    lines, which answer "did the crossover integrate as predicted" and gate.
+
+    Reads the cloud group's spec gauge — ``spec_flatness_gauge`` of the same
+    ``evaluate_flat_spec`` report ``/state``, the doctor check and the bundle
+    artifact read — copied through :func:`compact_cloud_status` below, so the
+    number here and the number in the report are the same bytes.
+
+    **The choice is WHICH CLOUD EXISTS, not which tier** (#1965): post-apply
+    cloud if there is one, otherwise the pre-apply cloud. The pre-apply cloud
+    is the UNCORRECTED baseline, so its branch reads it under an
+    explicit BEFORE-TUNING frame and never as "how flat your speaker is now".
+
+    Empty when neither group has closed. The fallback vocabulary for a
+    post-apply group that closed but produced no usable gauge lives in
+    :func:`_flatness_unavailable_line`.
+
+    The carve-out lines close the sentence (PR-6b, owner decision 1): the
+    excluded-bin count says how much of the spectrum left grading,
+    :func:`_carve_out_expert_lines` says which ranges and why, with τ/r — on
+    every run, since carve-outs are a post-apply-persistent fact.
+    """
     block = _cloud_verify_block(status)
     if not block:
         return _pre_apply_flatness_lines(status)
@@ -723,6 +725,21 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
 
 
 def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
+    """The BEFORE-TUNING flatness/carve-out disclosure — the branch
+    :func:`_flatness_details_lines` takes whenever no post-apply cloud exists.
+
+    Reads the CLOUD-MEASURE compact block and frames its numbers explicitly as
+    the BEFORE-TUNING state, never as "how flat your speaker is now" (that claim
+    needs a post-apply cloud). Carve-out lines render VERBATIM, unprefixed,
+    because they are a distinct post-apply-persistent fact required on every
+    run rather than a claim about the CURRENT state (#1965).
+
+    **The scope clause is a claim about the post-apply check, so it renders only
+    where one has PASSED.** "The applied correction targets these; the result was
+    confirmed at the mark only" says a correction is applied AND that the only
+    confirmation was the single anchor sweep, and a passing post-apply tracking
+    verify is exactly the state where both are true.
+    """
     block = _cloud_measure_block(status)
     flatness = _mapping(block.get("flatness"))
     if not flatness:
@@ -953,14 +970,14 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         next_action={
             "id": "crossover_v2_complete",
             "label": "Save this measurement",
-            "endpoint": "/sound/speaker/crossover/v2/complete",
+            "endpoint": COMPLETE_ENDPOINT,
             "body": {},
             "show_during_capture": True,
         } if ready else None,
         alternate_actions=[{
             "id": "crossover_v2_retake",
             "label": "Record the last spot again",
-            "endpoint": "/sound/speaker/crossover/v2/retake",
+            "endpoint": RETAKE_ENDPOINT,
             "body": {},
             "show_during_capture": True,
         }] if ready else [],
@@ -1123,6 +1140,11 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The compact CLOUD-MEASURE entry of the ``cloud`` block, or empty.
+
+    The only cloud group until the post-apply walk closes (#1965) — see
+    :func:`_pre_apply_flatness_lines`.
+    """
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
 
 
@@ -1443,147 +1465,6 @@ def _calibration_reservation_nudges(status: Mapping[str, Any]) -> list[dict[str,
         "severity": "warn",
         "text": MIC_CALIBRATION_RESERVATION_COPY,
     }]
-
-
-def _attempt_db(value: Any) -> str | None:
-    number = _finite(value)
-    if number is None:
-        return None
-    return f"{number:.2f}".rstrip("0").rstrip(".")
-
-
-def _attempt_provenance(decision: Mapping[str, Any]) -> str | None:
-    provenance = decision.get("provenance")
-    if provenance == PROVENANCE_REALIZED:
-        return f"{PROVENANCE_REALIZED} vs {PROVENANCE_REALIZED}"
-    if provenance == PROVENANCE_MODEL_GRADED:
-        return f"{PROVENANCE_MODEL_GRADED} vs {PROVENANCE_MODEL_GRADED}"
-    return None
-
-
-def _attempt_first_sentence(decision: Mapping[str, Any]) -> str:
-    provenance = decision.get("provenance")
-    if provenance not in {PROVENANCE_REALIZED, PROVENANCE_MODEL_GRADED}:
-        return "Recorded the first tracking result without an improvement claim."
-    return (
-        f"Recorded the first {provenance} tracking result; another attempt is "
-        "needed before improvement can be judged."
-    )
-
-
-def _attempt_improved_sentence(decision: Mapping[str, Any]) -> str:
-    amount = _attempt_db(decision.get("improvement_db"))
-    provenance = _attempt_provenance(decision)
-    if amount is None or provenance is None:
-        return "The latest attempt was recorded without an improvement claim."
-    return (
-        "The latest applied result tracked its prediction "
-        f"{amount} dB more closely ({provenance})."
-    )
-
-
-def _attempt_floor_sentence(decision: Mapping[str, Any]) -> str:
-    magnitude = _attempt_db(decision.get("magnitude_db"))
-    floor = _mapping(decision.get("floor"))
-    floor_db = _attempt_db(floor.get("claim_floor_db"))
-    if magnitude is None or floor_db is None:
-        return "The instrument cannot resolve the change."
-    return (
-        "The change in prediction tracking from the previous attempt "
-        f"({magnitude} dB) is below what this instrument can distinguish "
-        f"(floor {floor_db} dB)."
-    )
-
-
-def _attempt_evidence_sentence(decision: Mapping[str, Any]) -> str:
-    return "No reliable comparison is available for the latest attempt."
-
-
-def _attempt_sitting_sentence(decision: Mapping[str, Any]) -> str:
-    """The #2081 refusal, in household terms: the microphone moved. Free
-    of ENGINE words ("floor", "scope", "sitting"); the actor is the
-    MICROPHONE, never "the phone" (#1941 R4, guarded by
-    ``tests/test_measurement_vocabulary.py``).
-    """
-    return (
-        "The previous result was measured with the microphone in a different "
-        "position, so this attempt is recorded without comparing the two."
-    )
-
-
-def _attempt_regression_sentence(decision: Mapping[str, Any]) -> str:
-    improvement = _finite(decision.get("improvement_db"))
-    provenance = _attempt_provenance(decision)
-    if improvement is None or provenance is None:
-        return "The latest attempt did not support an improvement claim."
-    amount = _attempt_db(abs(improvement))
-    return (
-        "The latest applied result tracked its prediction "
-        f"{amount} dB less closely ({provenance})."
-    )
-
-
-def _attempt_budget_sentence(decision: Mapping[str, Any]) -> str:
-    attempts = decision.get("attempts_used")
-    count = (
-        int(attempts)
-        if isinstance(attempts, int) and not isinstance(attempts, bool) else None
-    )
-    return (
-        f"Attempts recorded: {count}."
-        if count is not None
-        else "The latest attempt was recorded."
-    )
-
-
-def _attempt_converged_sentence(decision: Mapping[str, Any]) -> str:
-    return "The model predicts little further improvement."
-
-
-def _attempt_in_spec_sentence(decision: Mapping[str, Any]) -> str:
-    return "The latest result meets the target."
-
-
-# The household sentence has one writer. It dispatches on the kernel's reason
-# vocabulary and formats the kernel/store numbers; it never recomputes a
-# decision or substitutes a literal floor.
-_ATTEMPT_SENTENCE_BY_REASON = {
-    REASON_AWAITING_FIRST_ATTEMPT: _attempt_first_sentence,
-    REASON_BASELINE_ESTABLISHED: _attempt_first_sentence,
-    REASON_IMPROVEMENT_ABOVE_FLOOR: _attempt_improved_sentence,
-    REASON_BELOW_CLAIM_FLOOR: _attempt_floor_sentence,
-    REASON_ATTEMPT_NOT_COMPARABLE: _attempt_evidence_sentence,
-    REASON_PREDECESSOR_NOT_COMPARABLE: _attempt_evidence_sentence,
-    REASON_FLOOR_METRIC_MISMATCH: _attempt_evidence_sentence,
-    REASON_PROVENANCE_MISMATCH: _attempt_evidence_sentence,
-    # #2081's two refusals differ: MISMATCH is a fact about the two
-    # measurements; UNRECORDED cannot say where the older one was measured.
-    REASON_SITTING_MISMATCH: _attempt_sitting_sentence,
-    REASON_SITTING_UNRECORDED: _attempt_evidence_sentence,
-    REASON_NO_DEVIATION_AVAILABLE: _attempt_evidence_sentence,
-    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR: _attempt_evidence_sentence,
-    REASON_GRADED_BINS_SHRANK: _attempt_evidence_sentence,
-    REASON_REGRESSION_FROM_PREDECESSOR: _attempt_regression_sentence,
-    REASON_BUDGET_EXHAUSTED: _attempt_budget_sentence,
-    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED: _attempt_converged_sentence,
-    REASON_IN_SPEC: _attempt_in_spec_sentence,
-}
-
-
-def attempt_loop_verdict_sentence(status: Mapping[str, Any]) -> str:
-    """One household sentence from the session/kernel's last S3 output."""
-    attempts = _mapping(_v2(status).get("attempts_loop"))
-    decision = _mapping(attempts.get("last_decision"))
-    reason = decision.get("reason")
-    if not isinstance(reason, str):
-        return ""
-    if reason == ATTEMPT_REASON_NO_FLOOR:
-        return (
-            "No improvement claim was made because this speaker has no "
-            "adopted measurement floor."
-        )
-    renderer = _ATTEMPT_SENTENCE_BY_REASON.get(reason)
-    return renderer(decision) if renderer is not None else ""
 
 
 def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
@@ -1924,11 +1805,7 @@ def _verify_fail_envelope(
     back. Shared by ``REASON_VERIFY_OUT_OF_TOLERANCE`` /
     ``REASON_VERIFY_INCONCLUSIVE`` and the VERIFY-phase override in
     :func:`_failure_envelope` for any other code once the candidate is
-    applied. A code no retry can clear does not get "Try again" (#1873):
-    for ``verify_deterministic_mismatch``, whose verdict IS that a
-    second attempt agreed with the first, Re-measure is promoted to
-    primary instead — keyed on the code's own registry row, template AND
-    budget. ``show_during_capture`` on the alternates keeps them
+    applied. ``show_during_capture`` on the alternates keeps them
     reachable while a capture is still transitioning (``stopping``);
     ``verify_retry`` deliberately omits it, since starting a brand-new
     session during teardown is the race the gate prevents.
@@ -1941,12 +1818,6 @@ def _verify_fail_envelope(
         "expert": True,
         "show_during_capture": True,
     }
-    own_spec = REASON_REGISTRY.get(code)
-    retriable = not (
-        own_spec is not None
-        and own_spec.template == TEMPLATE_VERIFY_FAIL
-        and own_spec.retry_budget == 0
-    )
     return _envelope(
         screen="verify_fail", active_step="verify",
         verdict=message,
@@ -1956,17 +1827,10 @@ def _verify_fail_envelope(
             "label": "Try again",
             "endpoint": "/sound/speaker/crossover/v2/verify",
             "body": {},
-        } if retriable else {
-            # Promoted, not duplicated — leaves the alternate list below.
-            # ``show_during_capture`` is KEPT: on a primary the wizard reads
-            # it as ``suppressConnectAffordance`` and hides the phone QR,
-            # which is wanted since this verdict ENDS the capture session.
-            **{k: v for k, v in remeasure.items() if k != "expert"},
-            "label": "Re-measure this speaker",
         },
         alternate_actions=[
             *_way_back_action(status),
-            *([remeasure] if retriable else []),
+            remeasure,
         ],
         status=status,
         # Flatness lines are a SIBLING claim to the integration-verify
@@ -2496,9 +2360,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     f"This matched its prediction, but it still misses the "
                     f"target{miss_text}."
                 )
-        attempt_sentence = attempt_loop_verdict_sentence(status)
-        if attempt_sentence:
-            done_verdict = f"{done_verdict} {attempt_sentence}"
         alternate_actions = []
         if _round_can_continue(v2):
             alternate_actions.append({

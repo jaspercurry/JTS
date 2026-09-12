@@ -76,6 +76,11 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # transport death (``capture_timeout``). Terminal: a play-time refusal is a bug,
 # a tampered readback, or a genuinely infeasible profile.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# #2059: a plan-shape request the household's link/client sent that this build
+# does not recognize -- an unknown tier, or a position count outside its
+# tier's range. Owner ruling (2026-08-13): distinct from
+# ``program_unplayable`` -- that copy's "re-check the driver details" advice
+# is a loose fit for a malformed request, which no driver recheck fixes.
 REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
 # The main fader was not at the volume this session declared when a stimulus
 # was about to play, and re-asserting it could not be proven. The program was
@@ -130,10 +135,13 @@ REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
 REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
 REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
+#: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
+#: with no hand moving, or a tap-wait from an arm with none to give). NOT a
+#: comparison against the session's GATE.
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
-REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET = "walk_level_windows_unsupported_yet"
+REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
 REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 REASON_WALK_CEILING_ABOVE_STOP = "walk_ceiling_above_stop"
@@ -157,7 +165,14 @@ REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 # escape with the volume active and the phone frozen. Terminal.
 REASON_INTERNAL_ERROR = "internal_error"
 REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
-REASON_VERIFY_DETERMINISTIC_MISMATCH = "verify_deterministic_mismatch"
+# The SAME out-of-tolerance observation, once a second graded attempt has shown
+# it REPEATS. When consecutive attempts agree inside the instrument's own
+# repeat floor the mismatch is a FINDING about the speaker, and every further
+# retry re-measures the same applied graph into the same answer. Terminal
+# (budget 0, so ``NON_RETRIABLE_CODES``), on the same "deterministic ⇒
+# terminal" rule the two codes above state. Renders through the SAME
+# ``verify_fail`` template as its siblings — one more parameterization of that
+# screen, not a new screen.
 # §5.2's "inconclusive — re-verify" verdict: VERIFY's own detected first
 # reflection forced a shorter gate than MEASURE's, so the overlay difference is
 # not evidence about driver alignment.
@@ -823,9 +838,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
                      "href": '/sound/speaker/crossover/'},
     ),
-    REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET: ReasonSpec(
-        REASON_WALK_LEVEL_WINDOWS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
-        'Use one fixed reference level for this measurement.',
+    REASON_VOLUME_RESTORE_DEFERRED: ReasonSpec(
+        REASON_VOLUME_RESTORE_DEFERRED, TEMPLATE_HARD_STOP, 0, "",
+        'Measurement stopped because another volume claim is active.',
+        next_action={"id": "new_measurement_session", "label": "Start a new measurement after playback settles",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_REPEATS_UNSUPPORTED_YET: ReasonSpec(
         REASON_WALK_REPEATS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
@@ -953,18 +970,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "The result didn't quite match the prediction.",
             "Try again.",
         ),
-    ),
-    # Budget 0 — the ONE verify_fail row that is not retriable: a second
-    # graded attempt already agreed with the first inside the instrument's
-    # repeat floor, so a third lands in the same place. For a non-retriable
-    # code ``_verify_fail_envelope`` promotes Re-measure to the primary rather
-    # than offering a "Try again" this row has ruled out.
-    REASON_VERIFY_DETERMINISTIC_MISMATCH: ReasonSpec(
-        REASON_VERIFY_DETERMINISTIC_MISMATCH, TEMPLATE_VERIFY_FAIL, 0, "",
-        "JTS checked twice and measured the same difference both times, so "
-        "this is what your speaker actually does — not a bad measurement, and "
-        "another try lands in the same place. Re-measure to fit the crossover "
-        "again.",
     ),
     REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
         REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,

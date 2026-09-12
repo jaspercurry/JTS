@@ -45,3 +45,16 @@ def manifest_set(records, *, set_id=None, selected=None) -> dict:
                       "artifacts": {"record_id": path, "wav_path": record.get("wav_path"), "wav_sha256": record.get("wav_sha256")},
                       "selected": selected is None or take_id in selected})
     return {"set_id": set_id or json_fingerprint(basis), "capture_basis": basis, "takes": takes}
+
+
+def write_asked_poses(root: Path, state: dict, poses: list[dict]) -> Path:
+    from jasper.active_speaker.run_manifest import RunManifest
+
+    bundle = root / "sessions" / "asked-run"
+    directory = bundle / "evidence/v1/artifacts/crossover_v2" / state["session_id"]
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = RunManifest(state["session_id"], None, asked={"poses": poses})
+    (directory / RUN_MANIFEST_FILENAME).write_text(json.dumps(manifest.to_dict()))
+    (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
+    state["evidence"] = {"bundle_session_id": bundle.name}
+    return bundle.parent

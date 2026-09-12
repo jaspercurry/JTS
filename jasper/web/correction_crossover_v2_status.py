@@ -24,9 +24,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
-from jasper.log_event import log_event
-
 from jasper.active_speaker import crossover_envelope_v2 as _projection
+from jasper.active_speaker.grade_coverage import asked_beyond_mark
+from jasper.log_event import log_event
 from jasper.web import correction_crossover_v2 as _host
 
 
@@ -61,9 +61,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     """
     state = _host.load_v2_state()
     session_id = (state or {}).get("session_id")
-    attempts = (state or {}).get("attempts_loop")
-    attempts = attempts if isinstance(attempts, Mapping) else {}
-    last_attempt_decision = attempts.get("last_decision")
     # Count is derived from its persistence owner on every state read. Keeping
     # a second copy in journey state made crash recovery and offline store
     # repair observable as two contradictory counts.
@@ -118,14 +115,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "applied": bool(state and state.get("applied")),
         "previous_candidate_fingerprint": _offerable_previous_candidate(state),
         "session_id": session_id,
-        # Minimal live-loop observability: no attempt curves/history on the
-        # household polling path, only the kernel output the envelope formats
-        # and the durable model-error record count.
         "attempts_loop": {
-            "last_decision": (
-                dict(last_attempt_decision)
-                if isinstance(last_attempt_decision, Mapping) else None
-            ),
             "store_count": store_count,
         },
         "cloud": _projection.compact_cloud_status(
@@ -150,7 +140,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
 
     applied = load_applied_baseline_profile_state() or {}
     block["trial_verification"] = applied.get("trial_verification")
-    block["post_apply_grade"] = _host._post_apply_grade(block)
+    block["post_apply_grade"] = _host._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
     return block
 
 

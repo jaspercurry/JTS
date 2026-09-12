@@ -112,9 +112,8 @@ class RunManifest:
     async def bank(self, record: Mapping[str, Any]) -> str:
         """Bind inside the host's capture annotation seam, before its raw store."""
         pose = self._context["pose"]
-        payload = {**record, "take_id": self.allocate_take_id(),
-                   "index": self._context["index"], "attempt": self._context["attempt"],
-                   "repeat": self._context["repeat"], "pose_kind": pose["kind"],
+        payload: dict[str, Any] = {**record, **{key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
+                              if key in self._context}, "pose_kind": pose["kind"],
                    "mark_distance_m": pose["distance_m"], "seat_offset_m": pose.get("seat_offset_m")}
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
@@ -129,7 +128,7 @@ class RunManifest:
         sweeps = [segment for segment in (record.get("program") or {}).get("segments", [])
                   if segment.get("kind") in {KIND_SWEEP, KIND_SUMMED_SWEEP}]
         roles = (set(curves) | {str(segment.get("role") or "summed") for segment in sweeps}) or {record.get("role", "summed")}
-        take_id = str(record.get("take_id") or self.allocate_take_id())
+        take_id = str(record["take_id"])
         status = TAKE_MEASURED if complete and verdict.ok else TAKE_INCOMPLETE if not complete else "refused"
         for role in sorted(roles):
             basis = capture_basis(record)
@@ -151,6 +150,7 @@ class RunManifest:
                    "side": basis["side"], "role": role,
                    "level": {key: basis.get(key) for key in
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
+                   "analysis": record.get("analysis"),
                    "quality": {"status": status, "fault": verdict.fault,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},
@@ -164,8 +164,6 @@ class RunManifest:
         await self.persist()
 
     async def persist(self) -> None:
-        # Tens to low hundreds of takes fit full atomic snapshots (ADR-0017);
-        # revisit the write cost if walks grow to thousands of takes.
         self.path = await self.records.bank(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:

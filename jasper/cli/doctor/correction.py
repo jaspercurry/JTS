@@ -26,6 +26,7 @@ from ._shared import (
     _systemctl_unavailable_result,
 )
 from ...identity import identity_state
+from ...active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from ...active_speaker.environment import (
     camilla_statefile_path,
     classify_camilla_config_text,
@@ -90,7 +91,6 @@ REASON_CLOUD_VERIFY_SPEC_FAILED = "cloud_verify_spec_failed"
 REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED = "applied_grade_spatial_unrecognized"
 REASON_APPLIED_GRADE_SPATIAL_FAILED = "applied_grade_spatial_failed"
 REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE = "applied_grade_spatial_unmeasurable"
-REASON_APPLIED_GRADE_MARK_ONLY = "applied_grade_mark_only"
 REASON_APPLIED_GRADE_VERIFY_FAILED = "applied_grade_verify_failed"
 REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE = "applied_grade_verify_inconclusive"
 REASON_APPLIED_GRADE_NEVER_GRADED = "applied_grade_never_graded"
@@ -587,7 +587,9 @@ def _crossover_v2_status_block() -> dict | None:
 
 
 def _applied_grade_finding(block: dict) -> tuple[str, str]:
-    """Disclose the applied trial's four independent quality dimensions."""
+    """Read trial advice and plan-derived coverage from the status owners."""
+    grade = block.get("post_apply_grade")
+    grade = grade if isinstance(grade, dict) else {}
     advice = block.get("trial_verification")
     if isinstance(advice, dict):
         dimensions = ", ".join(f"{key}={advice.get(key, 'unavailable')}" for key in
@@ -596,7 +598,8 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
         reused = "; speaker trial reused" if advice.get("speaker_evidence_reused") else ""
         return (f"applied trial: {dimensions}; layers_changed={layers}{reused}",
                 REASON_APPLIED_GRADE_VERIFY_FAILED if any(advice.get(key) == value for key, value in
-                (("capture_validity", "unusable"), ("realization", "failed"), ("benefit", "regressed"), ("spec", "failed"))) else "")
+                (("capture_validity", "unusable"), ("realization", "failed"), ("benefit", "regressed"), ("spec", "failed")))
+                else grade.get("reason", ""))
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
         GRADE_GRADED,
@@ -609,8 +612,6 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
         GRADE_SPATIAL_PASSED,
         GRADE_SPATIAL_UNMEASURABLE,
     )
-    grade = block.get("post_apply_grade")
-    grade = grade if isinstance(grade, dict) else {}
     # `.get` with a default rather than a lookup: a durable state written by a
     # future build could carry a state name this one has never heard of, and
     # inventing a warning about it would be worse than saying what it said.
@@ -673,8 +674,8 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
         if grade.get("complete") is False:
             return (
                 f"applied and verified at the mark, but no "
-                f"{block.get('tier') or 'this'}-tier spatial grade exists "
-                f"for this session, so it is unproven away from the mark "
+                f"spatial grade covers the poses this run asked for, "
+                f"so it is unproven away from the mark "
                 f"({verify_text}) — finish the measurement at /sound/speaker/crossover/, "
                 "or undo",
                 REASON_APPLIED_GRADE_MARK_ONLY,
