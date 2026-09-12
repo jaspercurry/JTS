@@ -35,7 +35,8 @@ class _FakeCompleted:
         self.stderr = stderr
 
 
-def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path):
+@pytest.mark.parametrize("bands", [None, ((55., 65.),)])
+def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path, bands):
     rate = 48000
     tone = np.sin(2 * np.pi * 60 * np.arange(rate) / rate)
     signal = np.concatenate([tone * .1, tone * .2])
@@ -44,8 +45,11 @@ def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path):
     manifest = {'schema': 'jts_dsp_replay/1', 'render': {'output_sha256': sha256_file(raw)},
                 'sample_rate_hz': rate, 'channels': 2, 'graph_sha256': 'graph', 'stimulus_sha256': 'stimulus',
                 'main_db': -20, 'bass_reference_db': -20}
-    result = replay_levels(manifest, raw, (1, 2))
-    band = next(b for b in result['channels'][0]['bands'] if b['band_hz'] == [50., 63.])
+    result = replay_levels(manifest, raw, (1, 2), **({"bands": bands} if bands else {}))
+    expected = list(bands[0]) if bands else [50., 63.]
+    band = next(b for b in result['channels'][0]['bands'] if b['band_hz'] == expected)
+    if bands:
+        assert len(result["channels"][0]["bands"]) == 1
     assert band['level_dbfs'] == pytest.approx(20 * np.log10(.2 / np.sqrt(2)), abs=.01)
     assert result['window_s'] == [1, 2]
     raw.write_bytes(b'changed')

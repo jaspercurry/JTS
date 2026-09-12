@@ -51,6 +51,7 @@ from jasper.output_topology import load_output_topology_strict
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.audio_measurement.bundles import BundleError
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
+from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -237,19 +238,20 @@ def _cmd_compose(args: argparse.Namespace) -> int:
 def _room_median(path: Path) -> tuple[RoomMedian, str]:
     """The median at ``path`` and the digest a prescription must echo.
 
-    The digest is over the BYTES read, not a re-serialization, so it names the
-    document this round was actually judged against. Every way the file can
+    The digest names only the canonical median section, so refreshing the
+    document's incumbent does not change the evidence. Every way the file can
     fail to be evidence -- absent, unreadable, not JSON, not a median -- is
     the door's own one reason.
     """
     try:
         payload = read_source_bytes(str(path))
         document = json.loads(payload)
+        median = document.get("median", document) if isinstance(document, Mapping) else document
+        return read_room_median(median), room_median_sha256(median)
     except (OSError, ValueError, RecursionError) as exc:
         raise RoomPrescriptionRefused(
             ROOM_MEDIAN_UNAVAILABLE, f"{path}: {exc}"
         ) from exc
-    return read_room_median(document), prescription_sha256(payload)
 
 
 def _room_median_path(args: argparse.Namespace, resolved: Path | None = None) -> Path:
@@ -450,8 +452,8 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
 
 
 PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
-#: The seat cube's median, written by ``jasper-round-views room-median``.
-ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
+#: The seat cube's median, written by ``jasper-round-views room``.
+ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room"].artifact
 
 
 def _cmd_contract(args: argparse.Namespace) -> int:

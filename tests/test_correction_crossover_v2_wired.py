@@ -252,16 +252,6 @@ class VolumeRecorder:
 
 
 # --------------------------------------------------------------------------- #
-# 3b. the per-take RETAKE (#2879) — the capture's own §2.6 terms, locally
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# 4. fake-ALSA end-to-end through the REAL host consume path
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
 # 5. hosting: the local kind + the completion endpoint
 # --------------------------------------------------------------------------- #
 
@@ -706,11 +696,16 @@ def _plan_host(monkeypatch, *, gate=None, signals=None, phase=None):
 
 
 @pytest.mark.parametrize("phase", [None, "verify", "cloud_verify"])
-def test_plan_host_banks_captures_and_publishes_no_candidate(monkeypatch, phase):
+def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypatch, phase):
     from tests.test_plan_run import AnsweredGate
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 
+    import jasper.dsp_apply as dsp_apply
+
+    apply_route, apply_dsp = Mock(), AsyncMock()
+    monkeypatch.setattr(v2host, "handle_v2_apply", apply_route)
+    monkeypatch.setattr(dsp_apply, "apply_dsp_config", apply_dsp)
     gate = AnsweredGate()
     runner, session, fakes, manifest, _, flow = _plan_host(monkeypatch, gate=gate, phase=phase)
     def assessed(*args, **kwargs):
@@ -725,6 +720,8 @@ def test_plan_host_banks_captures_and_publishes_no_candidate(monkeypatch, phase)
     assert fakes.graph.restores == 1 + (2 if phase else 0)
     assert fakes.volume.releases == 1
     assert flow.published_candidates == []
+    apply_route.assert_not_called()
+    apply_dsp.assert_not_called()
 
 
 @pytest.mark.parametrize("signal", ["complete", "stop"])
@@ -794,7 +791,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     from dataclasses import replace
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.audio_measurement.program import STIMULUS_KINDS
-    from jasper.web.correction_plan_capture import bind_plan_analysis, compose_plan_program
+    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams, _conductor, _check_analysis, _measure_analysis, _verify_analysis
 
     factory = {"check": _check_analysis, "measure": _measure_analysis, "verify": _verify_analysis}[phase]
@@ -812,18 +809,23 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
             assert asyncio.run_coroutine_threadsafe(bridge(), loop).result(timeout=1)
             return consume(*args, **kwargs)
         monkeypatch.setattr(conductor, "_consume_verify", grade)
-    analyze, assessor = bind_plan_analysis(conductor, SimpleNamespace(enrich=None),
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    analyze, assessor = bind_plan_analysis(conductor, records,
         manifest=SimpleNamespace(calibration={}), evidence={}, verify_only=phase == "verify")
     spec = MeasureSpec(kind="baseline", graph_scope="candidate" if phase == "verify" else "drivers",
                        candidate_id="baseline-room" if phase == "verify" else "", program_phase=phase)
     gain = None
+    ceilings = conductor._measure_gain_ceiling_db
     for attempt in range(1, 4 if clipped_take else 2):
         program = compose_plan_program(conductor, spec, gain)
         peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
         if gain is not None:
             assert peak == pytest.approx(gain)
-        analysis = await asyncio.to_thread(analyze, {"index": 1, "attempt": attempt, "program": program.to_dict()}, "take")
-        verdict = assessor(analysis, phase=phase, program=program)
+        record = {"take_id": "engine", "index": 1, "attempt": attempt, "program": program.to_dict()}
+        records.enrich(None, record)
+        records.after_bank(record, "take")
+        analysis = await asyncio.to_thread(analyze, record, "take")
+        verdict = assessor(analysis, phase=phase, program=program, gain_ceiling_db=ceilings)
         if clipped_take:
             assert verdict.fault == "clipped"
             assert verdict.next == "retake_quieter"
@@ -832,4 +834,57 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
             assert gain < peak
         else:
             assert verdict.ok
+    assert ceilings is conductor._measure_gain_ceiling_db
     assert fakes.published_candidates == []
+
+
+@pytest.mark.parametrize("target", [None, -48.0, -60.0])
+def test_driver_retry_program_preserves_the_solved_role_levels(target):
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.web.correction_run_host import compose_plan_program
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor
+
+    conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
+    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target)
+    delta = 0 if target is None else target + 50.0
+    assert program.segment("sweep_w").gain_db == pytest.approx(-50.0 + delta)
+    assert program.segment("sweep_t").gain_db == pytest.approx(-57.0 + delta)
+
+
+async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch):
+    from dataclasses import replace
+    from jasper.active_speaker import plan_run
+    from jasper.active_speaker.crossover_v2.capture_plan import PlanCapture
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.active_speaker.run_manifest import RunManifest
+    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+    from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
+    from tests.engine_twin import FakeSeams, tuning_session
+    from tests.test_plan_run import _Store, _walk, _SCOPES
+
+    flow, fakes = FlowSeams(), FakeSeams()
+    conductor = _conductor(flow, index_phase_map={1: "verify"})
+    request = _walk([0])
+    spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
+                       program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
+    manifest = RunManifest("two-rungs", _Store(fakes.records))
+    def answer():
+        rung = fakes.play.calls[-1]["stimulus_dbfs"]
+        program = compose_plan_program(conductor, spec, rung)
+        return WiredCaptureAnswer(wav=b"", program=program.to_dict(), device={"rung_dbfs": rung})
+    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
+    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    session, _ = tuning_session(replace(fakes, records=records), session_id=manifest.run_id)
+    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
+    monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
+    signals = plan_run.RunSignals()
+    run = v2wired.build_v2_wired_run_and_consume(
+        conductor, volume=v2host.V2VolumeHooks(session.open, session.close, session.close),
+        stop_event=signals.stop, stop_lock=threading.Lock(), ceiling_s=30,
+        complete_event=signals.complete, retake_event=signals.retake,
+        tuning=session, manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
+        analyze=analyze, assessor=assessor, candidate_scopes=_SCOPES, spl_monitor="test",
+    )
+    await run(session)
+    assert manifest.status == "complete"
+    assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]

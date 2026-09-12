@@ -30,6 +30,8 @@ from jasper.active_speaker.crossover_v2.feature_classifier import load_round_cap
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
 from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
+from tests.run_manifest_fixture import write_manifest
+
 from jasper.active_speaker.round_bank import (
     CAPTURE_RING_DIR,
     REASON_NOT_A_BUNDLE,
@@ -358,7 +360,7 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
     }]
 
 
-@pytest.mark.parametrize("view,reason", [("room", "verb_not_registered"), ("bass-compare", "inputs_required")])
+@pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("bass-compare", "inputs_required")])
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
     from jasper.active_speaker import measurement_programs
     from jasper.cli.round_views import run_bookkeeping
@@ -375,11 +377,9 @@ def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, v
 @pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
 def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
     from jasper.active_speaker.measurement_programs import bookkeeping_views
-    from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
     from jasper.cli.round_views import run_bookkeeping
     session, state = _live_session(tmp_path)
-    artifacts, _ = round_artifact_dir(session)
-    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": purpose, "run_id": session.name}))
+    write_manifest(session, program=purpose)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     views = banked.provenance["views"]
     assert tuple(row["view"] for row in views) == bookkeeping_views(purpose)

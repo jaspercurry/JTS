@@ -21,19 +21,16 @@ from jasper.active_speaker.crossover_v2.room_grade import (
     grade_room_median,
     read_room_median,
 )
-from jasper.active_speaker.crossover_v2.room_views import (
-    ROOM_BAND_SPLITS_HZ,
-    band_edges,
-    band_masks,
-)
-from jasper.active_speaker.crossover_v2.room_prescription import (
-    ROOM_MEDIAN_UNAVAILABLE,
-)
+from jasper.active_speaker.crossover_v2.room_views import ROOM_BAND_SPLITS_HZ, band_edges, band_masks
+from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_MIN_HZ
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_UNREADABLE
 
 from tests.crossover_v2_banked_round import bank_measure_round
+from tests.run_manifest_fixture import write_manifest
+from jasper.active_speaker.crossover_v2.round_inputs import set_artifact_name
+
 from tests.room_median_fixture import (
     BAND_BINS,
     BAND_EDGES_HZ,
@@ -391,19 +388,18 @@ def test_the_view_keeps_response_grades_when_spread_is_unknown(
     document = room_median_document(n_positions=n_positions)
     if unknown != "incumbent":
         document["spread_db"] = None
-    (round_dir / "room_median.json").write_text(json.dumps(document))
+    (round_dir / "room.json").write_text(json.dumps({"median": document}))
     args = ["room-grade", str(round_dir)]
     if with_baseline:
-        baseline_dir = bank_measure_round(tmp_path, name="r0-baseline")
         baseline = room_median_document(n_positions=n_positions, **INCUMBENT)
         if unknown != "candidate":
             baseline["spread_db"] = None
-        (baseline_dir / "room_median.json").write_text(json.dumps(baseline))
-        args += ["--baseline", str(baseline_dir)]
+        _write_room_sets(round_dir, candidate=document, incumbent=baseline)
+        args += ["--set", "candidate"]
 
     assert round_views.main(args) == EXIT_OK
     answer = json.loads(capsys.readouterr().out)
-    artifact = json.loads((round_dir / "room_grade.json").read_text())
+    artifact = json.loads(Path(answer["out"]).read_text())
     assert answer["spatial_support"] == artifact["spatial_support"] == document["spatial_support"]
     assert artifact["spatial_support"]["sufficient"] is (n_positions != 1)
     assert answer["bands"] == artifact["bands"]
@@ -450,52 +446,48 @@ def test_the_view_discloses_the_scopes_the_round_played_through(tmp_path, capsys
     ]
 
 
-def test_the_baseline_round_names_the_regressed_band(tmp_path, capsys):
+def _write_room_sets(round_dir, **medians):
+    groups = [{"set_id": key, "capture_basis": value.get("evidence", {}).get("basis", {}), "takes": []}
+              for key, value in medians.items()]
+    write_manifest(round_dir, program="room", groups=groups)
+    for key, value in medians.items():
+        (round_dir / set_artifact_name("room.json", key)).write_text(json.dumps({
+            "median": {**value, "set_id": key}, "incumbent": {"set_id": "incumbent"},
+        }))
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_the_incumbent_set_names_the_regressed_band(tmp_path, capsys, named):
     round_dir = bank_measure_round(tmp_path)
-    baseline_dir = bank_measure_round(tmp_path, name="r0-baseline")
-    write_room_median(round_dir)
-    write_room_median(baseline_dir, **INCUMBENT)
-
-    assert round_views.main([
-        "room-grade", str(round_dir), "--baseline", str(baseline_dir),
-    ]) == EXIT_OK
-
+    _write_room_sets(round_dir, candidate=room_median_document(),
+                    incumbent=room_median_document(**INCUMBENT))
+    assert round_views.main(["room-grade", str(round_dir), "--set", "candidate",
+                             *(["--incumbent", "incumbent"] if named else [])]) == EXIT_OK
     answer = json.loads(capsys.readouterr().out)
     assert answer["regressed_bands"] == [60.0]
-    assert answer["incumbent"]["n_positions"] == N_POSITIONS
-    assert answer["bands"][1]["incumbent_rms_db"] == pytest.approx(
-        INCUMBENT["ripple_db"][1]
-    )
+    assert answer["incumbent_set_id"] == "incumbent"
+    assert answer["bands"][1]["incumbent_rms_db"] == pytest.approx(INCUMBENT["ripple_db"][1])
 
 
-def test_both_medians_can_be_named_away_from_their_rounds(tmp_path, capsys):
-    round_dir = bank_measure_round(tmp_path)
-    candidate = tmp_path / "candidate-median.json"
-    candidate.write_text(json.dumps(room_median_document()))
-    incumbent = tmp_path / "incumbent-median.json"
-    incumbent.write_text(json.dumps(room_median_document(**INCUMBENT)))
-
-    assert round_views.main([
-        "room-grade", str(round_dir),
-        "--room-median", str(candidate),
-        "--baseline-room-median", str(incumbent),
-    ]) == EXIT_OK
-
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["regressed_bands"] == [60.0]
-    assert answer["out"] == str(round_dir / "room_grade.json")
+@pytest.mark.parametrize("flag", ["--room-median", "--baseline-room-median", "--baseline", "--baseline-set"])
+def test_room_grade_rejects_median_path_flags(flag):
+    with pytest.raises(SystemExit) as exc:
+        round_views.build_parser().parse_args(["room-grade", "round", flag, "median.json"])
+    assert exc.value.code == 2
 
 
 @pytest.mark.parametrize(("write_median", "reason"), [
     (None, round_views.REASON_UNREADABLE),
-    (lambda path: path.write_text(json.dumps({"freqs_hz": []})), ROOM_MEDIAN_UNAVAILABLE),
+    (lambda path: path.write_text("[]"), round_views.REASON_UNREADABLE),
+    (lambda path: path.write_text("{}"), ROOM_MEDIAN_UNAVAILABLE),
+    (lambda path: path.write_text(json.dumps({"median": {"freqs_hz": []}})), ROOM_MEDIAN_UNAVAILABLE),
 ])
 def test_a_median_the_view_cannot_read_is_unreadable(
     tmp_path, capsys, write_median, reason
 ):
     round_dir = bank_measure_round(tmp_path)
     if write_median is not None:
-        write_median(round_dir / "room_median.json")
+        write_median(round_dir / "room.json")
 
     code = round_views.main(["room-grade", str(round_dir)])
 
@@ -503,3 +495,22 @@ def test_a_median_the_view_cannot_read_is_unreadable(
     document = json.loads(capsys.readouterr().out)
     assert document["reason"] == reason
     assert document["status"] == "unreadable"
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_campaign_room_sets_preserve_the_60_to_120_hz_grade(tmp_path, capsys, named):
+    fixture = Path(__file__).parent / "fixtures/room_campaign"
+    medians = {key: json.loads((fixture / filename).read_text()) for key, filename in (
+        ("incumbent", "0c3d5db4fb3e.json"), ("candidate", "a5688899542a.json"),
+    )}
+    root = bank_measure_round(tmp_path)
+    _write_room_sets(root, **medians)
+    assert round_views.main(["room-grade", str(root), "--set", "candidate",
+                             *(["--incumbent", "incumbent"] if named else [])]) == EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
+    band = next(row for row in answer["bands"] if row["lo_hz"] == 60.0)
+    assert band["rms_db"] == pytest.approx(5.123918344665255)
+    assert band["incumbent_rms_db"] == pytest.approx(7.9267101468919945)
+    assert band["regressed"] is False
+    assert band["delta_rms_db"] == pytest.approx(-2.8027918022267393)
+    assert answer["comparison"]["available"] is True

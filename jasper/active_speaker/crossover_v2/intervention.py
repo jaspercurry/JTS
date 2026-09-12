@@ -22,23 +22,25 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from ..branch_chain import CrossoverSection, radiating_band_hz
+from ..branch_chain import CrossoverSection, radiating_band_hz, sections_by_role
 from ..branch_target import branch_target
 from ..linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
     _SIGMA_TOLERABLE_DB as SIGMA_TOLERABLE_DB,
+    EnvelopeCurve,
     compose_envelope,
     compute_sigma_curve,
 )
 from ..linearization_fit import (
     FitVocabulary,
+    LinearizationFit,
     complex_correction_response,
     core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
     measurement_hole_bands_hz,
 )
-from ..profile import LEVEL_MATCH_AXIS
+from ..profile import CrossoverRegion, LEVEL_MATCH_AXIS
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
@@ -70,7 +72,7 @@ from .plan_assembly import (
 )
 
 __all__ = [
-    "CloudFitTerms",
+    "BranchFits", "CloudFitTerms",
     "DriverEvidence",
     "LEVEL_DEFINITIONS_DIFFER_REASON",
     "LEVEL_MATCH_AXIS",
@@ -83,11 +85,13 @@ __all__ = [
     "PlannerInputError",
     "SIGMA_TOLERABLE_DB",
     "anchor_trims",
+    "boost_allowed",
     "compare_level_definitions",
     "compose_sigma_db",
     "decide_trim",
     "driver_response_by_role",
     "measure_validity_floor_hz",
+    "fit_branches",
     "plan_linearization",
     "realized_level_match",
     "request_from_analysis",
@@ -794,6 +798,69 @@ def decide_trim(
     )
 
 
+def boost_allowed(*, post_apply_verifies: bool, cloud_phase_planned: bool, cloud_present: bool) -> bool:
+    # A planned-but-lost cloud withholds boost; absent by design permits it.
+    # See docs/historical/linearization-campaign-2026-07.md §4.2.
+    return post_apply_verifies and (cloud_present or not cloud_phase_planned)
+
+
+@dataclass(frozen=True)
+class BranchFits:
+    envelopes: Mapping[str, EnvelopeCurve]
+    fits: Mapping[str, LinearizationFit]
+    radiating_bands_hz: Mapping[str, tuple[float, float]]
+    core_bands_hz: Mapping[str, tuple[float, float] | None]
+    blind_bands_hz: tuple[tuple[float, float], ...]
+
+
+def fit_branches(
+    drivers: Sequence[DriverEvidence], *,
+    mic_tiers: Mapping[str, str],
+    vocabulary: FitVocabulary,
+    sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    source_preset: Mapping[str, Any] | None = None,
+    cloud: CloudFitTerms | None = None,
+    on_bands: Callable[[Mapping[str, tuple[float, float]]], None] | None = None,
+) -> BranchFits:
+    """Compose every envelope before fitting the shared measurement hole."""
+    if sections is None:
+        sections = sections_by_role(
+            CrossoverRegion.from_mapping(region)
+            for region in (source_preset or {}).get("crossover_regions") or ()
+        )
+    responses = {driver.role: driver.response for driver in drivers}
+    radiating = {role: radiating_band_hz(sections.get(role, ())) for role in responses}
+    if on_bands is not None:
+        on_bands(radiating)
+    envelopes = {}
+    for driver in drivers:
+        role, response = driver.role, driver.response
+        # The σ gate reads each branch's REPEAT count against its sibling's; a lone
+        # branch is its OWN sibling, reducing the paired-N gate to its own count.
+        sibling = next((other for name, other in responses.items() if name != role), response)
+        envelopes[role] = compose_envelope(
+            role, response, excited_band_hz=driver.excited_band_hz,
+            mic_tier=mic_tiers[role], driver_class=driver.driver_class,
+            sigma_db=compose_sigma_db(
+                response, sibling, tier=mic_tiers[role], valid_band_hz=driver.excited_band_hz,
+            ),
+            excluded_bands_hz=cloud.excluded_bands_hz if cloud else None,
+            band_spread=cloud.band_spread if cloud else None,
+            n_positions=cloud.n_positions if cloud else None,
+        )
+    core = {role: core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role]) for role in responses}
+    blind = measurement_hole_bands_hz(list(core.values()))
+    fits = {
+        role: fit_driver_linearization(
+            response, envelopes[role], vocabulary=vocabulary,
+            radiating_band_hz=radiating[role], blind_bands_hz=blind,
+            target=branch_target(sections.get(role, ()), envelopes[role].freqs_hz),
+        )
+        for role, response in responses.items()
+    }
+    return BranchFits(envelopes, fits, radiating, core, blind)
+
+
 def plan_linearization(
     request: LinearizationRequest,
     *,
@@ -826,16 +893,7 @@ def plan_linearization(
     context = request.context
     fc_hz = None if context is None else context.fc_hz
     responses = {driver.role: driver.response for driver in request.drivers}
-    # The σ gate reads each branch's REPEAT count against its sibling's; a lone
-    # branch is its OWN sibling, reducing the paired-N gate to its own count.
-    siblings = {
-        role: responses[next((other for other in roles if other != role), role)]
-        for role in roles
-    }
-    excited_band_hz = {
-        driver.role: driver.excited_band_hz for driver in request.drivers
-    }
-    driver_class = {driver.role: driver.driver_class for driver in request.drivers}
+    excited_band_hz = {driver.role: driver.excited_band_hz for driver in request.drivers}
     records: list[JournalRecord] = []
     dropped: list[str] = []
 
@@ -853,29 +911,8 @@ def plan_linearization(
             # plan, and the failure is disclosed on ``journal_dropped``.
             dropped.append(f"{record.event}: {type(exc).__name__}: {exc}")
 
-    # --- each branch's own crossover, and the band it radiates in ----------
-    #
-    # The fit's LIFT stage is bounded to the radiating band: a driver measured
-    # THROUGH its crossover carries that crossover's rolloff in its curve, and a
-    # fit flattening it against a flat target reads the rolloff as a driver
-    # deficit and boosts it back — including at the knee, where a branch is 6 dB
-    # down BY DESIGN.
-    #
-    # LIFT is bounded at the band ITSELF; the SOLVE, cuts included, is bounded
-    # at the band WIDENED by half an octave
-    # (``linearization_fit._solve_band_mask``), which is a looser bound and not
-    # this one. The asymmetry is deliberate: leakage past the handoff still
-    # reaches the summed response and removing it spends no headroom, so a
-    # shoulder cut is kept.
-    #
-    # The band ALSO bounds one LEVEL question, and only one: the core-level
-    # median below. It stops at the median — the give-back is a power-domain
-    # average that quiet stopband bins barely reach.
-    #
-    # These sections are the CANDIDATE's, from the request's context, and every
-    # one of them names ``fc_hz``: that is checked at construction, not here.
-    # Each Fc candidate must be fitted against ITS OWN crossover, or the
-    # comparison measures the fit's mismatch instead of the crossover's.
+    # Candidate sections bound the fit and level median; see branch_target
+    # and linearization_fit._solve_band_mask for the distinct shoulder bounds.
     sections = {role: request.sections_for(role) for role in roles}
     rounded_fc_hz = None if fc_hz is None else round(float(fc_hz), 3)
     # The named defect, disclosed at the site that detects it. See
@@ -890,50 +927,30 @@ def plan_linearization(
                     {"role": role, "fc_hz": rounded_fc_hz},
                     logging.WARNING,
                 )
-    radiating_bands = {role: radiating_band_hz(sections[role]) for role in roles}
-    # At the CANDIDATE's corner, like every corner-driven call below.
-    emit(
-        "correction.crossover_v2_linearization_fit_band",
-        {
-            "fc_hz": rounded_fc_hz,
-            "radiating_band_hz": {
-                role: rounded_band_hz(band) for role, band in radiating_bands.items()
-            },
-            "crossover_order": {
-                role: tuple(s.order for s in sections[role]) for role in roles
-            },
-        },
-    )
 
-    # --- the session's ONE shared level frame ------------------------------
-    #
-    # Every envelope is composed FIRST, so each driver's own core-passband level
-    # is read off it before any driver is fitted.
-    envelopes: dict[str, Any] = {}
-    for role in roles:
-        resp = responses[role]
-        sigma_db = compose_sigma_db(
-            resp,
-            siblings[role],
-            tier=request.mic_tier,
-            valid_band_hz=excited_band_hz[role],
-        )
-        # The cloud seam. All three arguments are ``None`` when no cloud verdict
-        # was available. They can only ever NARROW allowed depth: they enter the
-        # same ``np.min`` as every other term, so no cloud can buy the fit
-        # permission it did not already have.
-        cloud = request.cloud
-        envelopes[role] = compose_envelope(
-            role,
-            resp,
-            excited_band_hz=excited_band_hz[role],
-            mic_tier=request.mic_tier,
-            driver_class=driver_class[role],
-            sigma_db=sigma_db,
-            excluded_bands_hz=cloud.excluded_bands_hz if cloud else None,
-            band_spread=cloud.band_spread if cloud else None,
-            n_positions=cloud.n_positions if cloud else None,
-        )
+    def disclose_bands(radiating: Mapping[str, tuple[float, float]]) -> None:
+        # Emit before fitting so a failed fit still discloses its input bands.
+        emit("correction.crossover_v2_linearization_fit_band", {
+            "fc_hz": rounded_fc_hz,
+            "radiating_band_hz": {role: rounded_band_hz(band) for role, band in radiating.items()},
+            "crossover_order": {role: tuple(s.order for s in sections[role]) for role in roles},
+        })
+
+    branches = fit_branches(
+        request.drivers, sections=sections,
+        mic_tiers={role: request.mic_tier for role in roles},
+        vocabulary=FitVocabulary(
+            allow_boost=boost_allowed(
+                post_apply_verifies=request.post_apply_verifies,
+                cloud_phase_planned=request.cloud_phase_planned, cloud_present=request.cloud is not None,
+            ),
+            boost_excluded_bands_hz=request.cloud.boost_excluded_bands_hz if request.cloud else (),
+        ),
+        cloud=request.cloud, on_bands=disclose_bands,
+    )
+    envelopes, fits = branches.envelopes, branches.fits
+    radiating_bands, core_bands_hz = branches.radiating_bands_hz, branches.core_bands_hz
+    blind_bands_hz = branches.blind_bands_hz
     core_levels_db = {
         role: level
         for role in roles
@@ -967,26 +984,8 @@ def plan_linearization(
         trim_band_average_db=trim_band_estimate_db,
         core_proposal_db=core_proposal_db,
     )
-    # The frame's own INPUTS, for the finding's journal line, so a reader does
-    # not have to re-derive which driver read what and over which band.
-    #
-    # BOTH bands are reported. ``radiating_band_hz`` is the bound asked for;
-    # ``band_hz`` is the span the median was actually taken over. The
-    # interesting divergence is the width floor REFUSING the bound for leaving
-    # too little band. The two also differ by a grid snap in the ORDINARY case,
-    # always — ``band_hz`` is resolved onto the envelope's own bins, so its
-    # edges are the outermost bins inside the declared span — so equality is the
-    # exception, and only inequality of MORE than a bin means the floor fired.
-    #
-    # ONE read per role, shared by the journal line below and the
-    # measurement-hole derivation after it, so the band a filter is named
-    # against and the band a reader is shown cannot drift.
-    core_bands_hz = {
-        role: core_level_band_hz(
-            envelopes[role], radiating_band_hz=radiating_bands[role]
-        )
-        for role in roles
-    }
+    # The requested bound and realized median span can differ when the width
+    # floor refuses a narrow band. Share the fitter's bands with this ledger.
     core_level_evidence = {
         role: {
             "level_db": round(float(level), 3),
@@ -995,18 +994,6 @@ def plan_linearization(
         }
         for role, level in core_levels_db.items()
     }
-    # The per-branch MEASUREMENT HOLE. Each branch's core band stops where its
-    # own crossover hands off, so between the woofer's top and the tweeter's
-    # bottom there is a span NEITHER capture covers while the summed response
-    # there is a live two-branch blend. A hole is a property of the PAIR, so it
-    # is derived here — the composer is the only layer holding both roles — and
-    # handed to each fit as a band, keeping ``fit_driver_linearization`` a
-    # single-branch function that is told things rather than one that knows
-    # about crossovers. Full precision, not the journal's rounded copy.
-    blind_bands_hz = measurement_hole_bands_hz(
-        [core_bands_hz[role] for role in roles]
-    )
-
     # The overlap-band estimator, for the banked finding. Restricted to the
     # roles the core median was actually read over, so the banked pair is the
     # pair that was compared rather than every role the trim solve returned.
@@ -1016,65 +1003,10 @@ def plan_linearization(
         if role in trim_band_estimate_db
     }
 
-    # Boost permission is EVIDENCE-gated, and this is the gate. ONE necessary
-    # condition, plus a clause that distinguishes two ways a cloud can be
-    # missing.
-    #
-    # 1. NECESSARY: the JOURNEY will MEASURE what the speaker did with the boost
-    #    (``post_apply_verifies``). Every plan shape declares a post-apply check
-    #    today, so this reads as always-on — but stating the condition rather
-    #    than a constant means a future tier that drops the post-apply sweep
-    #    drops boost with it instead of shipping an unverified one.
-    #
-    # 2. The cloud clause. On the driver-only path there is no cloud to wait
-    #    for, and boost is permitted there by owner ruling, on the named and
-    #    accepted risk that a boost can land on a position-specific artifact an
-    #    at-mark verification cannot detect — adjudicated by post-apply VERIFY,
-    #    household listening, and retained Undo. See the "Boost ruling" block in
-    #    ``docs/historical/linearization-campaign-2026-07.md`` §4.2.
-    #
-    #    A session that PLANNED a cloud and LOST it is the other case, and it
-    #    withholds boost: ``compose_envelope`` then receives
-    #    ``excluded_bands_hz=None``, so ``allowed_depth_db`` is NOT zeroed in
-    #    the registry's interference nulls, and granting boost would let the fit
-    #    EQ a null the session's own instrument was supposed to have found.
-    #    Absent by DESIGN and absent by FAILURE share the ``cloud is None``
-    #    signature; ``cloud_phase_planned`` is what tells them apart.
-    #
-    # What bounds a boost once permitted, on EITHER path: the envelope's own
-    # depth limits, the realized-cascade stopband-gain guard, the measured-target
-    # bound (no boost where the MEASUREMENT is already at or above target,
-    # however the post-cut working curve reads), the headroom charge, post-apply
-    # VERIFY, and Undo. The gate grants a vocabulary, never a filter.
-    vocabulary = FitVocabulary(
-        allow_boost=request.post_apply_verifies
-        and (request.cloud is not None or not request.cloud_phase_planned),
-        boost_excluded_bands_hz=(
-            request.cloud.boost_excluded_bands_hz if request.cloud is not None else ()
-        ),
-    )
-
-    fits: dict[str, Any] = {}
     corrections: dict[str, np.ndarray] = {}
     for role in roles:
         resp = responses[role]
-        fit = fit_driver_linearization(
-            resp,
-            envelopes[role],
-            vocabulary=vocabulary,
-            radiating_band_hz=radiating_bands[role],
-            # The spans no branch measured. Same list for both roles — a hole
-            # belongs to the pair, not to whichever branch happens to be
-            # fitting when it is reached.
-            blind_bands_hz=blind_bands_hz,
-            # The branch's own committed crossover as the fit's target SHAPE,
-            # built from the SAME ``sections`` the radiating band above and the
-            # emitter's own filters come from, so the shape the fit aims at and
-            # the filter the graph runs cannot disagree. ``None`` for a role
-            # with no committed region, which is a flat target exactly.
-            target=branch_target(sections[role], envelopes[role].freqs_hz),
-        )
-        fits[role] = fit
+        fit = fits[role]
         # The cloud bound's per-filter verdicts, disclosed as a journal record
         # rather than from inside the fit: ``linearization_fit`` is pure
         # computation and owns no logger. Emitted only when the bound actually
@@ -1516,64 +1448,34 @@ def plan_linearization(
 
     if trim.beyond_sanity_margin:
         emit(
-        "correction.crossover_v2_linearization_trim_rejected",
-        {
-            "raw_trim_db": {k: round(v, 3) for k, v in raw_trim.items()},
-            "resolved_trim_db": {
-                k: round(v, 3) for k, v in trim.resolved_db.items()
+            "correction.crossover_v2_linearization_trim_rejected",
+            {
+                "committed": trim.committed_side,
+                "strategy": trim.strategy.value,
+                "margin_db": round(trim.sanity_margin_db, 3),
+                "resolved_trim_db": {k: round(v, 3) for k, v in trim.resolved_db.items()},
+                "anchored_trim_db": {k: round(v, 3) for k, v in trim.anchored_db.items()},
+                "resolved_ripple_db": None if trim.ripple_db is None else round(trim.ripple_db, 3),
+                "raw_trim_db": {k: round(v, 3) for k, v in raw_trim.items()},
+                "fallback_trim_db": {
+                    k: round(v, 3) for k, v in role_attenuations_db.items()
+                },
+                "anchored_level_error_db": round(
+                    float(anchored_match.difference_db), 3
+                ),
+                "resolved_level_error_db": round(
+                    float(resolved_match.difference_db), 3
+                ),
+                "anchored_ripple_db": (
+                    round(float(ripple_anchored_lin), 3)
+                    if ripple_anchored_lin is not None
+                    else None
+                ),
+                "raw_predicted_ripple_db": round(
+                    float(request.predicted_ripple_db), 3
+                ),
             },
-            # The anchor the guard is measured against, and the pair that ships.
-            "anchored_trim_db": {
-                k: round(v, 3) for k, v in trim.anchored_db.items()
-            },
-            "fallback_trim_db": {
-                k: round(v, 3) for k, v in role_attenuations_db.items()
-            },
-            "anchored_level_error_db": round(
-                float(anchored_match.difference_db), 3
-            ),
-            "resolved_level_error_db": round(
-                float(resolved_match.difference_db), 3
-            ),
-            # Derived, not restated: a literal here would be a second place
-            # recording which pair won, free to drift from the one that
-            # decided it.
-            "committed": trim.committed_side,
-            "strategy": trim.strategy.value,
-            "drift_db": round(float(trim.anchor_drift_db), 3),
-            "margin_db": trim.sanity_margin_db,
-            # The ripple at each trim, so live evidence can distinguish
-            # "legitimate flatter optimum rejected" from "garbage correctly
-            # caught" before anyone widens the guard. ``None`` is unreachable
-            # on both linearized fields — a skipped scan leaves the trim AT
-            # the anchor, so the drift is 0 and this event does not fire —
-            # but they stay honest rather than reporting a fabricated 0.0.
-            #
-            # **Read the first two against each other, never either against
-            # the third.** ``anchored_ripple_db`` and ``resolved_ripple_db``
-            # are the SAME linearized branches over the SAME band through the
-            # same ``ripple_at_trim``, differing only in the tweeter trim, so
-            # their difference is exactly what the guard cost this candidate
-            # in flatness. ``raw_predicted_ripple_db`` is the RAW pre-fit
-            # branches at the MEASURE trim — a different curve at a different
-            # stage — so pairing it with a linearized ripple moves two
-            # variables at once and reads the linearization itself as
-            # flatness thrown away.
-            "anchored_ripple_db": (
-                round(float(ripple_anchored_lin), 3)
-                if ripple_anchored_lin is not None
-                else None
-            ),
-            "resolved_ripple_db": (
-                round(float(trim.ripple_db), 3)
-                if trim.ripple_db is not None
-                else None
-            ),
-            "raw_predicted_ripple_db": round(
-                float(request.predicted_ripple_db), 3
-            ),
-        },
-        level=logging.WARNING,
+            level=logging.WARNING,
         )
 
     # The inter-driver realized-level ledger, on every fitted candidate whatever

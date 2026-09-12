@@ -69,7 +69,7 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 def bookkeeping_views(program: str) -> tuple[str, ...]:
     return {
         PURPOSE_SPEAKER: ("inventory", "classify-features", "distortion", "directivity", "frozen", "per-seat"),
-        PURPOSE_ROOM: ("room-median", "room-persistence", "room-grade"),
+        PURPOSE_ROOM: ("room", "room-grade"),
         PURPOSE_BASS: ("bass", "bass-compare"),
     }.get(program, ())
 

@@ -100,5 +100,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="microphone calibration file, applied at each curve's OWN "
              "acoustic frequency; without one the ratios carry the mic's response",
     )
-    distortion.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    distortion.add_argument("--out", default=None, help="write the result here")
     distortion.set_defaults(func=_cmd_distortion)

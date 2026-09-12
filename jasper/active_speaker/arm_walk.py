@@ -55,7 +55,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from jasper.log_event import log_event
 
 from .angle_capture import ARM_ENVELOPE_DEG
-from .wizard_client import STATUS_PATH, SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES, WizardClient
+from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
+from .wizard_client import STATUS_PATH, WizardClient
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +94,6 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: Status endpoint unreadable for this long with no good read. A blip is
 #: absorbed; a wrong ``--hostname``, a 403, or a stopped wizard never clears.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
-
-#: The ``capture.status`` values meaning the session is OVER. Every other
-#: value, INCLUDING an unrecognised one, reads as in flight (ending early
-#: strands a round; waiting costs one poll). Pinned against the wizard's own
-#: in-flight set by ``tests/test_arm_walk.py``.
 
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
 DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")

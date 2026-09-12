@@ -88,6 +88,7 @@ REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
 # Terminal: the re-assert has already been tried and could not be confirmed.
 # NOT ``volume_unresolved``, whose subject is the RESTORE path.
 REASON_MEASUREMENT_VOLUME_DRIFT = "measurement_volume_drift"
+REASON_MEASUREMENT_GRAPH_UNAVAILABLE = "measurement_graph_unavailable"
 # The program PLAYED; the offline evidence math refused. §4.2 divides the
 # emitted measurement protection back out of the capture, and on a
 # candidate-required bin that division is inadmissible when the protection
@@ -425,6 +426,67 @@ def _retriable_reason(
 # The §5.10 table, as data. The envelope and the session both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    "bass_fit_common_coverage_unavailable": ReasonSpec(
+        "bass_fit_common_coverage_unavailable", TEMPLATE_HARD_STOP, 0, "", "The bass takes have no shared usable frequency range.",
+        next_action={"id": "measure_bass_coverage", "label": "Measure both graphs over the target band", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_capture_context_changed": ReasonSpec(
+        "bass_fit_capture_context_changed", TEMPLATE_HARD_STOP, 0, "", "The paired bass captures used different conditions.",
+        next_action={"id": "match_bass_capture", "label": "Measure both graphs at the same pose and settings", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_reference_band_unavailable": ReasonSpec(
+        "bass_fit_reference_band_unavailable", TEMPLATE_HARD_STOP, 0, "", "The bass sweep does not cover the reference band.",
+        next_action={"id": "measure_bass_reference", "label": "Measure a sweep that covers the reference band", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_requires_room_baseline_and_exact_candidate": ReasonSpec(
+        "bass_fit_requires_room_baseline_and_exact_candidate", TEMPLATE_HARD_STOP, 0, "", "The bass pair does not contain the required graphs.",
+        next_action={"id": "select_bass_pair", "label": "Select the room baseline and the measured bass candidate", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_inputs_missing": ReasonSpec(
+        "bass_fit_inputs_missing", TEMPLATE_HARD_STOP, 0, "", "No bass pairs are available for this fit.",
+        next_action={"id": "select_bass_run", "label": "Select a run with baseline and candidate takes", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_pose_missing": ReasonSpec(
+        "bass_fit_pose_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture has no recorded pose.",
+        next_action={"id": "measure_bass_pose", "label": "Measure with a recorded microphone pose", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_target_invalid": ReasonSpec(
+        "bass_target_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target curve is invalid.",
+        next_action={"id": "correct_bass_target", "label": "Supply an ordered target curve from 20 to 200 Hz", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_table_tolerance_invalid": ReasonSpec(
+        "bass_table_tolerance_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target tolerance is invalid.",
+        next_action={"id": "correct_bass_tolerance", "label": "Supply a positive tolerance in dB", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_table_operating_level_missing": ReasonSpec(
+        "bass_table_operating_level_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete operating level.",
+        next_action={"id": "measure_bass_level", "label": "Record Main, Aux1 and program identity on each take", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_table_capture_integrity_failed": ReasonSpec(
+        "bass_table_capture_integrity_failed", TEMPLATE_HARD_STOP, 0, "", "A bass capture failed its integrity check.",
+        next_action={"id": "repeat_bass_capture", "label": "Repeat the failed capture", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_table_capture_context_changed": ReasonSpec(
+        "bass_table_capture_context_changed", TEMPLATE_HARD_STOP, 0, "", "The bass levels were captured under different conditions.",
+        next_action={"id": "match_bass_levels", "label": "Measure all levels with the same stimulus and setup", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_pairs_unavailable": ReasonSpec(
+        "bass_fit_pairs_unavailable", TEMPLATE_HARD_STOP, 0, "", "The run has no unique baseline pair for each candidate take.",
+        next_action={"id": "complete_bass_pairs", "label": "Measure baseline and candidates at matching levels and poses", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_candidate_unreadable": ReasonSpec(
+        "bass_fit_candidate_unreadable", TEMPLATE_HARD_STOP, 0, "", "The measured bass candidate descriptor is unavailable.",
+        next_action={"id": "select_bass_candidate", "label": "Supply the candidate artifact named by the run", "href": "/sound/speaker/crossover/"},
+    ),
+    "bass_fit_run_mismatch": ReasonSpec(
+        "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "", "The selected run does not match this manifest.",
+        next_action={"id": "select_bass_run", "label": "Select the run recorded in this manifest", "href": "/sound/speaker/crossover/"},
+    ),
+    "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
+    "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
+    "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
+    "round_take_unknown": ReasonSpec("round_take_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set."),
+    "round_take_selection_required": ReasonSpec("round_take_selection_required", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set with the take selector."),
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
         next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},
@@ -585,7 +647,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not read the measurement plan. Submit a complete plan in the current format.",
         next_action={
             "id": "review_plan",
-            "label": "Start over",
+            "label": "Review measurement settings",
             "href": "/sound/speaker/crossover/",
         },
     ),
@@ -690,6 +752,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         },
     ),
     # Measurement graph and walk refusals (tracking issue #4942).
+    REASON_MEASUREMENT_GRAPH_UNAVAILABLE: ReasonSpec(
+        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not install or restore the measurement audio setup. Check the speaker's audio state, then start a new session.",
+        next_action={"id": "new_measurement_session", "label": "Start a new session",
+                     "href": "/sound/speaker/crossover/"},
+    ),
     REASON_MEASUREMENT_BASELINE_UNAVAILABLE: ReasonSpec(
         REASON_MEASUREMENT_BASELINE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
         "JTS could not build this program's baseline. Review the saved speaker setup before measuring.",

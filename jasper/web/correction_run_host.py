@@ -16,20 +16,23 @@ from jasper.audio_measurement.branch_program import build_branch_program
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
                        verify_only: bool = False) -> tuple[Any, Any]:
-    answer: Any = None
+    answers: dict[str, Any] = {}
     index = attempt = 0
     phase = ""
     verdict: Any = None
 
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
-        nonlocal answer
-        answer = capture
+        answers[record["take_id"]] = capture
         return {}
 
-    records.enrich = enrich
+    def after_bank(record: Any, record_id: str) -> None:
+        answers[record_id] = answers.pop(record["take_id"])
+
+    records.enrich, records.after_bank = enrich, after_bank
 
     def analyze(record: Any, record_id: str) -> Any:
         nonlocal index, attempt, phase, verdict
+        answer = answers.pop(record_id)
         index, attempt = record["index"], record["attempt"]
         phase = conductor._phase_of_index(index)
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
@@ -54,7 +57,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
     def assessor(analysis: Any, **kwargs: Any) -> TakeVerdict:
         if verdict is None:
-            assessed = assess(analysis, **{**kwargs, "gain_ceiling_db": conductor._measure_gain_ceiling_db})
+            assessed = assess(analysis, **kwargs)
             if phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
                 conductor._rearm_measure_after_transient(assessed)
             return assessed
@@ -81,7 +84,8 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
         if not gains:
             raise ValueError("The CHECK level solve is unavailable")
         if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
-            gains = {role: stimulus_dbfs for role in gains}
+            delta = stimulus_dbfs - max(gains.values())
+            gains = {role: gain + delta for role, gain in gains.items()}
         return excitation.measure_program(gains)
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
     backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs

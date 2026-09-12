@@ -100,8 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
             "and optional ceiling, so entanglement_floor_hz has a provenance-"
             "labeled, non-measured source on rigs where the measured "
             "reflection finder structurally never fires (issue #3502); and "
-            "optional front/side wall distances, which only the "
-            "jasper-round-views boundary-prior model reads."
+            "optional front/side wall distances for jasper-round-views room."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

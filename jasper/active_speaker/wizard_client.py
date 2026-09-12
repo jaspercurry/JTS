@@ -13,12 +13,13 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Mapping
 
+from .capture_status import SESSION_ENDED_STATUSES
+
 #: Page that mints the CSRF cookie + meta token pair, and this client's default. A
 #: caller POSTing to a DIFFERENT wizard daemon passes that daemon's own page as
 #: ``csrf_page_path``.
 CSRF_PAGE_PATH = "/sound/speaker/crossover/"
 STATUS_PATH = "/sound/speaker/crossover/status"
-SESSION_ENDED_STATUSES = frozenset({"complete", "stopped", "failed"})
 
 SESSION_PATH = "/sound/speaker/crossover/v2/session"
 VERIFY_PATH = "/sound/speaker/crossover/v2/verify"

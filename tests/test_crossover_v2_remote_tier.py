@@ -36,6 +36,7 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.refusal_copy import (
+    CrossoverV2Refused,
     REASON_REGISTRY,
 )
 from jasper.active_speaker.crossover_v2_flow import (
@@ -244,32 +245,22 @@ def test_the_gate_holds_each_attempt_separately():
         gate.gate(5, 6, entry)
 
 
-def test_a_stale_release_cannot_open_the_next_position():
-    """The one hazard an untargeted latch would introduce: a driver retrying its
-    POST after the capture already began must not release the NEXT angle."""
+@pytest.mark.parametrize("stale", [False, True])
+def test_an_unmatched_release_is_refused_without_admitting_a_future_pose(stale):
     gate = PositionGate()
-    with pytest.raises(CaptureBeginDeferred):
-        gate.gate(3, 3, _entry(-7))
-    gate.release(3, 3)
-    gate.gate(3, 3, _entry(-7))
-    with pytest.raises(CaptureBeginDeferred):
-        gate.gate(4, 4, _entry(7))
-    # The retry still names position 3, which is no longer what is pending.
-    with pytest.raises(ValueError, match="measurement 4 is waiting, not 3"):
+    if stale:
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(3, 3, _entry(-7))
         gate.release(3, 3)
-    # …and 4 is still held, so nothing was quietly admitted.
+        gate.gate(3, 3, _entry(-7))
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(4, 4, _entry(7))
+    with pytest.raises(CrossoverV2Refused) as refused:
+        gate.release(3, 3)
+    assert refused.value.code == "capture_slot_busy"
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(4, 4, _entry(7))
-
-
-def test_releasing_nothing_is_refused_rather_than_remembered():
-    """A release that arrives with no hold open must not be banked against a
-    future one — that would admit the next capture without a report."""
-    gate = PositionGate()
-    with pytest.raises(ValueError, match="no measurement is waiting"):
-        gate.release(1, 1)
-    with pytest.raises(CaptureBeginDeferred):
-        gate.gate(1, 1, _entry(0))
+    assert gate.published()["pending"]["index"] == 4
 
 
 def test_a_hold_whose_driver_never_answers_expires_loudly():
@@ -650,8 +641,9 @@ def test_a_finished_session_stops_advertising_its_hold():
         assert "position_pending" not in capture
         assert "position_current" not in capture
         # …and a late driver POST cannot reach a gate nobody is holding.
-        with pytest.raises(ValueError):
+        with pytest.raises(CrossoverV2Refused) as refused:
             correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 1, "attempt": 1}'))
+        assert refused.value.code == "capture_slot_busy"
 
 
 def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
@@ -811,7 +803,7 @@ def test_the_release_route_answers_409_on_a_stale_index():
                 "/crossover/v2/position-ready", b'{"index": 9, "attempt": 4}',
             )
             assert status == 409, payload
-            assert b"waiting" in payload
+            assert json.loads(payload)["code"] == "capture_slot_busy"
             # The good release still answers 200 on the same server.
             ok_status, ok_payload = post(
                 "/crossover/v2/position-ready", b'{"index": 4, "attempt": 4}',
@@ -828,8 +820,9 @@ def test_the_release_route_demands_an_index_it_can_check():
     with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
-        with pytest.raises(ValueError, match="measurement 4 is waiting, not 9"):
+        with pytest.raises(CrossoverV2Refused) as refused:
             correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 9, "attempt": 4}'))
+        assert refused.value.code == "capture_slot_busy"
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
 

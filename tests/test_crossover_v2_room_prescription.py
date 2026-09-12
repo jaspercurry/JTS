@@ -28,7 +28,6 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.candidate_bank import find_banked_candidate
-from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_room_peqs,
@@ -38,6 +37,7 @@ from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_views import (
     room_ceiling,
     room_median,
+    room_median_sha256,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
@@ -340,14 +340,14 @@ def evidence(tmp_path: Path) -> tuple[str, str]:
     """The two files every room verb takes: the median and one document.
 
     The document echoes the median's REAL digest, which is what the CLI
-    computes over the bytes it read.
+    computes over the canonical median section.
     """
     median = tmp_path / "round-7" / "room_median.json"
     median.parent.mkdir()
     median.write_text(json.dumps(_room_median()))
     document = tmp_path / "prescription.json"
     document.write_text(
-        json.dumps(_document(sha256=prescription_sha256(median.read_bytes())))
+        json.dumps(_document(sha256=room_median_sha256(json.loads(median.read_text()))))
     )
     return str(document), str(median)
 
@@ -425,7 +425,7 @@ def test_compose_carries_the_room_set_onto_the_candidate(evidence, bank, capsys,
         raw = json.loads(Path(median).read_text())
         raw["evidence"] = {"basis": basis, "take_ids": [p["id"] for p in raw["positions"]]}
         Path(median).write_text(json.dumps(raw))
-        Path(document).write_text(json.dumps(_document(sha256=prescription_sha256(Path(median).read_bytes()))))
+        Path(document).write_text(json.dumps(_document(sha256=room_median_sha256(raw))))
     assert cli.main([
         "compose", "--root", str(bank), "--base", base.fingerprint,
         "--room-prescription", document, "--room-median", median,

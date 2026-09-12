@@ -17,6 +17,7 @@ from typing import Any, Sequence
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HarmonicEvidenceRefused,
 )
+from jasper.cli._report import output_path
 from jasper.cli._refusal import (
     EXIT_OK,
     EXIT_REFUSED,
@@ -28,7 +29,6 @@ from jasper.cli._refusal import (
 
 from . import (
     bass,
-    boundary_prior,
     candidates,
     classify_features,
     close_reference,
@@ -44,13 +44,13 @@ from . import (
     repeat,
     room,
     room_grade,
-    seats,
-    sweeps,
+    seats, speaker_fit, sweeps,
 )
 from ._common import (
     ARTIFACT_BY_VIEW,
     AUTHORITY_TIER,
     PROG,
+    RoundSetRefused,
     REASON_REFUSED,
     REASON_UNREADABLE,
     REASON_UNWRITABLE,
@@ -84,7 +84,7 @@ __all__ = [
 _FAMILIES = (
     grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
     frequency, distortion, dsp_replay, classify_features, findings, close_reference,
-    boundary_prior, delay, room, room_grade, bass, inventory,
+    delay, room, room_grade, bass, inventory, speaker_fit,
 )
 
 
@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
             "EXAMPLES\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"
             "  jasper-round-views frozen captures/.../baseline captures/.../round-3\n"
-            "  jasper-round-views spec-sweep captures/.../session-1/round-3\n"
+            "  jasper-round-views sweep captures/.../session-1/round-3 --scope verdict\n"
             "\n"
             "OPTIONAL MODEL-ERROR FLOOR (Python)\n"
             "  jasper.active_speaker.model_error_store.adopt_floor(floor, path=...)\n"
@@ -135,6 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
     for family in _FAMILIES:
         family.add_parser(sub)
 
+    for child in sub.choices.values():
+        child.allow_abbrev = False
+        for action in child._actions:
+            if "--out" in action.option_strings:
+                action.type = output_path
+    sub.choices["inventory"].set_defaults(set_flags_by_view={
+        name: child.get_default("optional_set_flags") or () for name, child in sub.choices.items()
+    })
     return parser
 
 
@@ -143,6 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
+    except RoundSetRefused as refusal:
+        return failed(EXIT_REFUSED, refusal.reason, refusal.detail)
     except StageFailed as staged:
         return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged))
     except HarmonicEvidenceRefused as refusal:

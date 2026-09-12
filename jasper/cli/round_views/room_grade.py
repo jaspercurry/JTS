@@ -2,25 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""How flat the seat cube's median is, band by band, and how it moved.
-
-* ``room-grade <round-dir> [--baseline <round-dir>]`` — grade this round's
-  ``room_median.json`` (the seat-cube view's artifact, not this one's) against
-  flat, from the prescribable band's floor to the room ceiling and split at
-  :data:`~jasper.active_speaker.crossover_v2.room_views.ROOM_BAND_SPLITS_HZ`,
-  and — with a baseline round — the same numbers of that round's median
-  beside them. Writes ``room_grade.json`` beside the round.
-
-The median is read through the room door's own reader
-(:mod:`~jasper.active_speaker.crossover_v2.room_prescription`), so a
-document this view grades is exactly one the room door would prescribe
-against, and a document neither accepts refuses by the same name here.
-
-A regressed band is DISCLOSED, never acted on: what a band that moved the
-wrong way means for the tune is the reader's judgement, and restoring an
-incumbent is the doctrine's own path (docs/measurement-loop-doctrine.md
-section 3), not this view's.
-"""
+"""Grade one room set against its incumbent from the same run."""
 
 from __future__ import annotations
 
@@ -30,7 +12,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.room_grade import (
-    RoomMedian,
     bundle_graph_scopes,
     grade_room_median,
     read_room_median,
@@ -38,32 +19,26 @@ from jasper.active_speaker.crossover_v2.room_grade import (
 from jasper.active_speaker.crossover_v2.room_prescription import (
     RoomPrescriptionRefused,
 )
-from jasper.cli._refusal import EXIT_UNREADABLE, read_json_source, stage
+from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, read_json_source, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
-    _load_round,
-    _view_out,
     _write,
-    answer,
+    add_set_argument, answer,
     default_out,
     refused_by_name,
-    resolved_out,
+    resolve_set, round_inputs,
 )
 
 
-#: The seat cube's median, written by ``jasper-round-views room-median``.
-ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
-
-def _median(path: Path) -> RoomMedian:
-    """One median document as a value. A missing or unparsable file is the
-    ROUND failing to carry its median, which is the load stage's code."""
-    return read_room_median(
-        stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
-    )
+def _document(path: Path) -> dict:
+    document = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
+    if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
+        raise StageFailed(EXIT_UNREADABLE, TypeError("room_document_malformed"))
+    return document
 
 
 def _band_line(band: Mapping[str, Any]) -> str:
@@ -80,18 +55,21 @@ def _band_line(band: Mapping[str, Any]) -> str:
 
 
 def _cmd_room_grade(args: argparse.Namespace) -> int:
-    banked = _load_round(args.round_dir)
-    candidate_path = Path(args.room_median) if args.room_median else default_out(
-        banked.inputs, banked.round_dir, ROOM_MEDIAN_ARTIFACT
-    )
-    incumbent_path = (
-        Path(args.baseline_room_median) if args.baseline_room_median
-        else resolved_out(Path(args.baseline), ROOM_MEDIAN_ARTIFACT) if args.baseline
-        else None
-    )
+    directory = Path(args.round_dir)
+    inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, directory)
+    selected = resolve_set(inputs, args.set)
+    candidate_path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, args.set)
+    candidate = _document(candidate_path)
+    incumbent_id = args.incumbent or (candidate.get("incumbent") or {}).get("set_id")
+    incumbent_doc = None
+    if incumbent_id is not None:
+        resolve_set(inputs, incumbent_id)
+        incumbent_doc = candidate if incumbent_id == selected.set_id else _document(default_out(
+            inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, incumbent_id,
+        ))
     try:
-        median = _median(candidate_path)
-        incumbent = None if incumbent_path is None else _median(incumbent_path)
+        median = read_room_median(candidate.get("median", {}))
+        incumbent = None if incumbent_doc is None else read_room_median(incumbent_doc.get("median", {}))
         grade = grade_room_median(median, incumbent=incumbent)
     except RoomPrescriptionRefused as exc:
         # A document that will not read into a median is the INPUT failing, not
@@ -101,18 +79,22 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     scope = (median.evidence or {}).get("basis", {}).get("graph_scope")
     artifact = {
         **grade.to_dict(),
-        "room_median": str(candidate_path),
+        "room": str(candidate_path),
+        "set_id": selected.set_id, "incumbent_set_id": incumbent_id,
+        "incumbent_reason": "" if incumbent_id else candidate.get(
+            "incumbent_reason", "room_incumbent_set_unavailable"),
         "evidence": median.evidence,
         "incumbent_evidence": None if incumbent is None else incumbent.evidence,
         "graph_scopes": ([scope] if scope else []) if median.evidence is not None
-                        else bundle_graph_scopes(banked.session_dir),
+                        else bundle_graph_scopes(inputs.session_dir),
         "graph_scopes_source": "selected_median" if median.evidence is not None else "round",
     }
-    # Read before filed, as close-reference does: a grade survives an --out the
-    # operator may not write.
+    # A grade survives an artifact write failure.
     for band in artifact["bands"]:
         print(_band_line(band), file=sys.stderr)
-    written = _write(artifact, args.out, _view_out(args, banked))
+    written = _write(artifact, None, default_out(
+        inputs, directory, ARTIFACT_BY_VIEW[args.command].artifact, args.set,
+    ))
     regressed = artifact["regressed_bands"]
     comparison = artifact["comparison"]
     comparison_result = (
@@ -120,11 +102,12 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         if comparison is not None and not comparison["available"]
         else (
             ", ".join(f"{low:g} Hz" for low in regressed) if regressed
-            else "none" if artifact["incumbent"] else "no baseline named"
+            else "none" if artifact["incumbent"] else "incumbent set unavailable"
         )
     )
     return answer(
-        args.command, out=written, ceiling_hz=grade.ceiling_hz,
+        args.command, out=written, set_id=selected.set_id, incumbent_set_id=incumbent_id,
+        incumbent_reason=artifact["incumbent_reason"], ceiling_hz=grade.ceiling_hz,
         ceiling_source=grade.ceiling_source, n_positions=grade.n_positions,
         spatial_support=artifact["spatial_support"],
         bands=artifact["bands"], regressed_bands=regressed,
@@ -142,27 +125,8 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    room_grade = sub.add_parser(
-        "room-grade",
-        help="grade this round's seat-cube median against flat, band by band, "
-             "and disclose how each band moved against a baseline round",
-    )
-    room_grade.add_argument(
-        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
-    )
-    room_grade.add_argument(
-        "--baseline", default=None, metavar="<round-dir>",
-        help=f"{_ROUND_DIR_HELP} whose median is the incumbent; its bands are "
-             "disclosed beside this round's, never acted on",
-    )
-    room_grade.add_argument(
-        "--room-median", default=None, metavar="PATH",
-        help=f"read this round's median here instead of beside the round "
-             f"({ROOM_MEDIAN_ARTIFACT})",
-    )
-    room_grade.add_argument(
-        "--baseline-room-median", default=None, metavar="PATH",
-        help="read the incumbent median here instead of beside --baseline",
-    )
-    room_grade.add_argument("--out", default=None, help="write the result here (- for stdout)")
-    room_grade.set_defaults(func=_cmd_room_grade)
+    parser = sub.add_parser("room-grade", help="grade a room set against its incumbent in this run")
+    parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
+    add_set_argument(parser)
+    parser.add_argument("--incumbent", help="override the incumbent with this set from the same run")
+    parser.set_defaults(func=_cmd_room_grade)

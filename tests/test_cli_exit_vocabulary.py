@@ -245,9 +245,6 @@ def _fixture_round(root: Path) -> _FixtureRound:
 
 
 def _room_grade_argv(round_: _FixtureRound) -> list[str]:
-    """The one view whose input is another view's artifact: the seat-cube
-    median is written beside the round first, as ``room-median`` writes it."""
-
     write_room_median(round_.measured)
     return ["room-grade", str(round_.measured)]
 
@@ -265,25 +262,21 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "co-metrics": _NO_CLOUD_GROUP,
     "directivity": _NO_CLOUD_GROUP,
     "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
+    "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
     "forward-model": _NO_CAPTURES,
-    "spec-sweep": _NO_CLOUD_GROUP,
-    "gate-sweep": _NO_CAPTURES,
-    "windows": _NO_CAPTURES,
+    "sweep": _NO_CAPTURES,
     "frequency": lambda r: ["frequency", str(r.measured)],
     "distortion": _NO_CAPTURES,
     "bass": _NO_CAPTURES,
     "bass-compare": _NO_CAPTURES,
-    "bass-fit": _NO_CAPTURES,
+    "bass-fit-table": _NO_CAPTURES,
     "dsp-replay": _NO_CAPTURES,
     "dsp-levels": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
     "findings": lambda r: ["findings", str(r.measured)],
     "room-grade": _room_grade_argv,
     "close-reference": _NO_CAPTURES,
-    "boundary-prior": lambda r: ["boundary-prior", str(r.measured)],
-    "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
-    "room-median": lambda r: ["room-median", str(r.seat)],
-    "room-persistence": lambda r: ["room-persistence", str(r.seat)],
+    "room": lambda r: ["room", str(r.seat)],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],

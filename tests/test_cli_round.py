@@ -369,8 +369,9 @@ def test_placement_cannot_join_a_replaced_run(monkeypatch):
     monkeypatch.setattr(capture, "_capture_slot", None)
     monkeypatch.setattr(handlers.correction_runtime, "read_json_body",
                         lambda handler: {"index": 1, "attempt": 1, "run_id": "old"})
-    with pytest.raises(ValueError):
+    with pytest.raises(handlers.CrossoverV2Refused) as refused:
         handlers._handle_crossover_v2_position_ready(None)
+    assert refused.value.code == "capture_slot_busy"
     assert capture._pending_capture is pending
 
 
