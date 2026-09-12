@@ -117,13 +117,6 @@ def test_a_position_with_no_record_still_gets_its_curve_rather_than_a_neighbours
 def test_the_lateral_walk_keeps_its_own_retention_and_never_enters_a_cloud_group():
     """The asymmetry a reader of ``GROUP_PHASES`` would not predict.
 
-    ``PHASE_LATERAL`` is a member of ``GROUP_PHASES`` — it spans many capture
-    indexes like the two clouds — but its captures are per-driver MEASURE
-    replays, not summed sweeps, so they are retained on their own
-    ``lateral_poses`` list and never in ``_group_positions``. The flow says
-    why in ``CrossoverV2Session.__init__``: putting the two in one list
-    "would give the combiner an input it cannot combine."
-
     Nothing asserts that today, in either direction. The trap is symmetrical:
     a migration that treats ``GROUP_PHASES`` as "the phases the cloud
     pipeline owns" would route poses into the combiner, and one that splits
@@ -135,7 +128,7 @@ def test_the_lateral_walk_keeps_its_own_retention_and_never_enters_a_cloud_group
     conductor = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            include_cloud_measure=False, include_lateral=True,
+            include_lateral=True,
         ),
     )
     _run_phase(conductor, 1, 1)

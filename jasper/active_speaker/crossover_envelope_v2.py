@@ -13,7 +13,7 @@ from ..log_event import log_event
 from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
 from .crossover_v2.coordinator import series_position_from_state
-from .crossover_v2.position_gate import RETAKE_ENDPOINT, COMPLETE_ENDPOINT
+from .crossover_v2.position_gate import RETAKE_ENDPOINT
 from .candidate_trials import tuning_trial_matches_candidate
 from .capture_status import CAPTURE_COMPLETE, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from .crossover_v2.journey import (
@@ -27,9 +27,9 @@ from .crossover_v2.journey import (
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_REVIEW,
-    PHASE_CLOSING,
     PHASE_VERIFY,
     PRE_CLOUD_CAPTURE_PHASES,
+    pending_capture_phase,
 )
 from .crossover_v2.spatial import _geometry_guidance_copy
 from .crossover_v2.refusal_copy import (
@@ -42,9 +42,6 @@ from .crossover_v2.refusal_copy import (
     TEMPLATE_SILENT_AUTO_RETRY,
     TEMPLATE_VERIFY_FAIL,
     reason_message,
-)
-from .crossover_v2_flow import (
-    CLOUD_CLOSE_RUNNING,
 )
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 
@@ -74,7 +71,6 @@ _PHASE_STEP = {
     # #2291's entry baseline is the LAST thing stage 1 measures — still
     # measuring, nothing applied yet.
     PHASE_ENTRY_BASELINE: "measure",
-    PHASE_CLOSING: "measure",
     PHASE_APPLYING: "measure",
     PHASE_REVIEW: "measure",
     PHASE_VERIFY: "verify",
@@ -367,64 +363,6 @@ def _retake_action() -> dict[str, Any]:
             "endpoint": RETAKE_ENDPOINT, "body": {}, "show_during_capture": True}
 
 
-def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
-    """The measuring session's TAIL — measured, not yet proposed (D1, B2).
-    True at two moments: ``awaiting_confirm`` (pre-apply cloud walked,
-    group-close confirm open — household has something to do) and
-    ``running`` (confirmed, combine+fit in flight — the one screen that
-    sets ``busy``). Not the review screen. No SCREEN-LEVEL actions (all
-    are destructive of in-progress work; Stop rides the capture block). The
-    confirm belongs to the household here (#2881): mints Save/Record-again
-    against ``/v2/complete``/``/v2/retake``, both ``show_during_capture``.
-    NOT while a capture is held — a screen-level primary would suppress
-    the walkthrough rendering the hold.
-    """
-    v2 = _v2(status)
-    running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
-    capture = _mapping(status.get("capture"))
-    # Derived from durable ``cloud_close``, not the slot, so it also
-    # renders after the walk ended un-confirmed. The two moves below POST
-    # into signals the slot drops once out of an in-flight status.
-    live = bool(
-        str(capture.get("status") or "")
-        and str(capture.get("status")) not in SESSION_ENDED_STATUSES
-    )
-    held = bool(capture.get("position_pending"))
-    ready = live and not running and not held
-    if running:
-        verdict = (
-            "JTS is working out your correction from the measurements — this "
-            "takes a few seconds."
-        )
-    elif ready:
-        verdict = (
-            "All spots measured. Save this measurement, or record the last "
-            "spot again."
-        )
-    elif live:
-        # Held: the only way here with a hold open is a retake just asked for.
-        verdict = "Re-recording one spot — follow the step below."
-    else:
-        verdict = (
-            "All spots measured, but this measurement session has ended "
-            "before it was saved. Measure again to keep a round."
-        )
-    return _envelope(
-        screen="closing",
-        active_step="measure",
-        verdict=verdict,
-        next_action={
-            "id": "crossover_v2_complete",
-            "label": "Save this measurement",
-            "endpoint": COMPLETE_ENDPOINT,
-            "body": {},
-            "show_during_capture": True,
-        } if ready else None,
-        alternate_actions=[_retake_action()] if ready else [],
-        busy=running,
-        status=status,
-        expert_details=_flatness_details_lines(status),
-    )
 
 
 def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -554,9 +492,6 @@ def _envelope(
         "capture": (_mapping(status.get("capture")) or None) if advertise_capture else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
-        # MACHINE-paced: speaker working, household waits. Declared for the
-        # renderer; no renderer reads it yet. False except ``closing``'s
-        # fit-in-flight moment.
         "busy": bool(busy),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
@@ -804,8 +739,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
-    elif phase == PHASE_CLOSING:
-        env = _closing_envelope(status)
     else:
         env = _awaiting_plan_envelope(status)
 
@@ -831,11 +764,9 @@ def crossover_v2_phase(
         else ()
     )
     phases = known or PRE_CLOUD_CAPTURE_PHASES
-    for phase in phases:
-        if phase not in accepted:
-            if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
-                return PHASE_APPLYING
-            return phase
+    pending = pending_capture_phase(phases, accepted, applied=applied)
+    if pending is not None:
+        return pending
     if PHASE_VERIFY not in phases:
         if applied:
             candidate = state.get("candidate") if isinstance(state, Mapping) else None
@@ -848,8 +779,6 @@ def crossover_v2_phase(
             ):
                 return PHASE_DONE
             return PHASE_VERIFY
-        if str((state or {}).get("cloud_close") or ""):
-            return PHASE_CLOSING
         if review_declined:
             return PHASE_CHECK
         return PHASE_REVIEW

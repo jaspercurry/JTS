@@ -39,13 +39,11 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2_flow import (
-    GEOMETRY_RETRY_POSITIONS,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     CrossoverV2Session,
     V2FlowSeams,
@@ -763,26 +761,8 @@ def _plan_spy(mp) -> list:
 
 
 def _run_phase(conductor, index, attempt) -> dict:
-    # Mirrors the production host's own authorize wrapper
-    # (``correction_crossover_v2_wired.build_v2_wired_run_and_consume``):
-    # admission, and ONLY admission. It used to call
-    # ``confirm_cloud_measure_group(index)``
-    # first, because the household's confirmation was inferred from a begin
-    # past the cloud group; since the two-stage split (work order D1) the
-    # confirmation is its own explicit signal and rides no begin at all.
     conductor.authorize_begin(index, attempt)
     return conductor.consume_capture(index, attempt, _capture())
-
-
-def _confirm_cloud(conductor) -> dict:
-    """The confirm seam's own payload — ``{candidate_fingerprint,
-    headroom_cost_db}``.
-
-    The explicit close the host calls on the phone's set-completion signal. One
-    shot by construction (``self._candidate`` is the guard), so a second call
-    returns ``None`` rather than re-fitting.
-    """
-    return conductor.confirm_cloud_measure_group() or {}
 
 
 def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
@@ -841,11 +821,6 @@ def _rearm_conductor(fakes, **kwargs):
 CLOUD_MAP = build_v2_cloud_index_phase_map()
 
 
-CLOUD_MEASURE_INDEXES = tuple(
-    i for i, p in sorted(CLOUD_MAP.items()) if p == PHASE_CLOUD_MEASURE
-)
-
-
 STAGE2_SHAPE = resolve_plan_shape()
 
 
@@ -873,16 +848,6 @@ SHORT_VERIFY_MAP = {1: PHASE_VERIFY, 2: PHASE_CLOUD_VERIFY}
 SHORT_VERIFY_CLOUD_INDEXES = tuple(
     i for i, p in sorted(SHORT_VERIFY_MAP.items()) if p == PHASE_CLOUD_VERIFY
 )
-
-
-def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
-    kwargs.setdefault("index_phase_map", CLOUD_MAP)
-    # What ``prepare_v2_session`` declares: this measuring session has no
-    # VERIFY entry of its own, and the correction it proposes is verified by
-    # stage 2 (work order D2). Without it the fit would be refused boost, which
-    # is the shape of the regression the declaration exists to prevent.
-    kwargs.setdefault("post_apply_verifies", True)
-    return _conductor(fakes, **kwargs)
 
 
 def _walk(conductor, indexes, start_attempt: int) -> int:
@@ -951,51 +916,6 @@ def _comb_cloud_analysis_factory():
         )
 
     return factory
-
-
-def _walk_measure_cloud_to_close(c, *, start_attempt: int = 1) -> dict:
-    """CHECK → MEASURE → every pre-apply cloud position → the CONFIRM.
-
-    Returns the closing verdict MERGED with the confirm's own payload, which is
-    where ``candidate_fingerprint``/``auto_apply`` live since
-    flow-simplification §2.6 moved the fit off the final position's acceptance
-    and onto the household's confirmation past it.
-
-    A position-invariant cloud legitimately trips PR-3b's geometry-locked
-    retake (that is the point of the verdict), so the last index is re-walked
-    until it is accepted — bounded by ``GEOMETRY_RETRY_POSITIONS``' own budget
-    rather than looping forever.
-    """
-    attempt = _walk(c, (1, 2), start_attempt)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-        if verdict["accepted"]:
-            return {**verdict, **_confirm_cloud(c)}
-    raise AssertionError("the cloud-measure group never closed")
-
-
-def _walk_measure_cloud_to_accept(c, *, start_attempt: int = 1) -> int:
-    """CHECK → MEASURE → the whole pre-apply cloud, stopping at the ACCEPT.
-
-    The HELD WINDOW itself — walked, unconfirmed, the phone still offering
-    Retake — which is where the eager fit lives and which
-    ``_walk_measure_cloud_to_close`` walks straight past. Returns the next
-    unused attempt number, so a caller can drive a voluntary retake of the
-    final position from exactly where the household would.
-    """
-    attempt = _walk(c, (1, 2), start_attempt)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-        if verdict["accepted"]:
-            assert verdict["awaiting_confirm"] is True
-            return attempt
-    raise AssertionError("the cloud-measure group never closed")
 
 
 def _count_builds(c) -> list:
@@ -1243,20 +1163,7 @@ def _dummy_program():
 #                                     instead of "of 5" — same digit count)
 #   stage2-express   630 B →  630 B  (UNCHANGED, digest included)
 #   1-entry          329 B →  329 B  (UNCHANGED, digest included)
-#
-# FOUR unchanged digests are the load-bearing check, and they bound the ruling's
-# scope exactly: stage 1 does not walk the post-apply table at all, and neither
-# single-entry stage-2 plan has a prompted pose to gain one — so a change that
-# reached any of them would have been a change to something it was not about.
 _GOLDEN_V2_PLAN_BYTES = {
-    "stage1-full": (
-        2918,
-        "2127852c43a515dd855042e2c99f37a35d877cc32d0d78ba94299c019d19ad3b",
-    ),
-    "stage1-express": (
-        1945,
-        "74e9e4d773d5f7bfb717c7429421f098f4e89f0276a59340f32928e61826cb64",
-    ),
     # Moved by #1964: Full's done_body no longer pre-commits "Verified and
     # applied." before the first tone plays. Moved again by the 2026-08-24
     # geometry ruling: the walk gained its design-axis pose.

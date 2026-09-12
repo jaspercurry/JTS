@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_FINDINGS,
     CAPABILITY_PREDICTED_SUM,
     GROUP_PHASES,
-    PHASE_APPLYING,
+    PHASE_REVIEW,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
@@ -267,7 +267,7 @@ def test_a_journey_can_be_constructed_already_part_way_through():
 
 
 # --------------------------------------------------------------------------
-# current_phase, including the APPLYING interlude
+# current_phase, including the REVIEW interlude
 # --------------------------------------------------------------------------
 
 
@@ -286,14 +286,12 @@ def test_current_phase_is_done_only_when_the_whole_walk_is_accepted():
 
 
 def test_measure_accepted_and_verify_pending_and_unapplied_is_the_interlude():
-    """The three-entry shape's machine-paced window between MEASURE-accepted and
-    apply-observed. All three conditions are load-bearing, so each is dropped in
-    turn below."""
+    """Measured evidence awaits an explicit candidate decision."""
 
     journey = _journey(THREE_ENTRY_MAP)
     journey.accept(PHASE_CHECK, 1)
     journey.accept(PHASE_MEASURE, 2)
-    assert journey.current_phase == PHASE_APPLYING
+    assert journey.current_phase == PHASE_REVIEW
 
 
 def test_the_interlude_ends_the_moment_the_apply_is_observed():
@@ -331,9 +329,8 @@ def test_a_verify_only_walk_that_measured_nothing_reports_verify_not_applying():
     assert journey.current_phase == PHASE_VERIFY
 
 
-def test_a_walk_with_no_verify_never_reports_the_interlude():
-    """Stage 1's own shape: everything accepted ⇒ DONE, and the host's review
-    interlude takes it from there."""
+def test_a_measure_only_walk_finishes_in_review():
+    """Stage 1 finishes with measured evidence awaiting review."""
 
     journey = _journey(STAGE1_MAP)
     for phase, index in (
@@ -343,7 +340,7 @@ def test_a_walk_with_no_verify_never_reports_the_interlude():
         journey.accept(phase, index)
     assert journey.current_phase == PHASE_ENTRY_BASELINE
     journey.accept(PHASE_ENTRY_BASELINE, 7)
-    assert journey.current_phase == PHASE_DONE
+    assert journey.current_phase == PHASE_REVIEW
 
 
 def test_accepted_capture_phases_is_canonically_ordered_for_the_snapshot():
@@ -446,7 +443,6 @@ def test_no_capability_is_provided_by_both_stages():
 JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS = frozenset({
     "CAPTURE_PHASES",
     "PHASE_APPLYING",
-    "PHASE_CLOSING",
     "PHASE_DONE",
     "PHASE_REVIEW",
 })
@@ -471,7 +467,6 @@ def test_the_flow_re_exports_every_phase_name_the_journey_owns():
     from jasper.active_speaker.crossover_v2 import journey
 
     phase_names = [n for n in vars(journey) if n.startswith("PHASE_")]
-    assert len(phase_names) == 11, phase_names
     for name in [*phase_names, "CAPTURE_PHASES", "GROUP_PHASES"]:
         if name in JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS:
             assert not hasattr(flow, name), (
@@ -519,7 +514,7 @@ def test_the_conductors_phase_readers_move_when_the_journey_moves():
     assert conductor.pending_phases() == (PHASE_MEASURE, PHASE_VERIFY)
 
     conductor._journey.accept(PHASE_MEASURE, 2)
-    assert conductor.current_phase == PHASE_APPLYING
+    assert conductor.current_phase == PHASE_REVIEW
     conductor.note_apply_complete()
     assert conductor.applied is True
     assert conductor.current_phase == PHASE_VERIFY
@@ -1006,10 +1001,10 @@ def test_restoring_a_journey_that_never_applied_is_a_no_op():
     assert journey.applied is False
 
 
-def test_the_restore_re_opens_the_applying_interlude():
+def test_the_restore_re_opens_the_review_interlude():
     """The derivation ``applied`` feeds moves back with it.
 
-    ``mark_applied`` collapses the PHASE_APPLYING interlude into VERIFY; its
+    ``mark_applied`` collapses the PHASE_REVIEW interlude into VERIFY; its
     inverse has to re-open it, or the flag would be reversible while the screen
     the household sees would not.
     """
@@ -1020,4 +1015,4 @@ def test_the_restore_re_opens_the_applying_interlude():
     applied_phase = journey.current_phase
     journey.mark_restored()
     assert journey.current_phase != applied_phase
-    assert journey.current_phase == PHASE_APPLYING
+    assert journey.current_phase == PHASE_REVIEW

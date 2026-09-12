@@ -53,10 +53,9 @@ from tests.crossover_v2_fixtures import (
     _way1_measure_analysis,
 )
 
-
 def _way1_index_phase_map() -> dict[int, str]:
     return _plan.build_v2_cloud_index_phase_map(
-        include_cloud_measure=False, include_entry_baseline=True,
+        include_entry_baseline=True,
     )
 
 
@@ -152,11 +151,6 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
         "status": "not_evaluated",
         "reason": MEASURE_PAIR_SINGLE_DRIVER,
     }
-    # A single-branch prescription IS published, and it covers the one role.
-    assert verdict.payload["candidate_fingerprint"]
-    assert conductor._candidate.role_attenuations_db == {"full_range": 0.0}
-
-
 def test_the_way1_candidate_carries_the_fit_and_no_inter_driver_axis():
     """Driven through the same ``_build_candidate`` the 2-way walk uses."""
     conductor = _way1_conductor(

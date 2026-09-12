@@ -1043,7 +1043,6 @@ def session_lateral_walk(
     *,
     externally_positioned: bool,
     base_entries: int,
-    plans_cloud_group: bool,
     supported_summed_candidates: bool = False,
 ) -> tuple[CloudPositionPrompt, ...]:
     """The poses a measurement session should walk for this request.
@@ -1051,8 +1050,7 @@ def session_lateral_walk(
     ``externally_positioned`` is the session's own ADVANCE policy
     (``V2PlanShape.externally_positioned``, never ``positions_gated``);
     ``base_entries`` is how many captures the session takes that are NOT
-    this walk; ``plans_cloud_group`` says whether it also walks a position
-    cloud. Returns one pose per stop, in stop order, never a session phase.
+    this walk. Returns one pose per stop, in stop order, never a session phase.
 
     Raises :class:`LateralWalkRefused` with :data:`WALK_REGIME_UNSUPPORTED`,
     :data:`REASON_WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_CAPTURE_CAPACITY` --
@@ -1086,9 +1084,7 @@ def session_lateral_walk(
             f"session is externally_positioned={externally_positioned}",
         )
     entries = base_entries + len(request.stops)
-    attempts = stage1_plan_max_attempts(
-        entries, include_cloud_measure=plans_cloud_group,
-    )
+    attempts = stage1_plan_max_attempts(entries)
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise LateralWalkRefused(
             WALK_OVER_CAPTURE_CAPACITY,

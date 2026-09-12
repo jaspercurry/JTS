@@ -300,7 +300,7 @@ def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block(
     assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
 
 
-@pytest.mark.parametrize("phase", [PHASE_CLOUD_MEASURE, PHASE_LATERAL])
+@pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_CLOUD_VERIFY])
 def test_compact_cloud_status_never_fabricates_a_required_count(phase):
     result = compact_cloud_status({phase: {"geometry": {}, "pipeline": {}}})
     assert result[phase]["positions_required"] is None
@@ -531,21 +531,3 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
         "an in-flow action with no endpoint is a decision a driver cannot "
         "take, and a button a household clicks to no effect", offenders,
     )
-
-
-
-
-@pytest.mark.parametrize("held, running, actions", [
-    (False, False, ["crossover_v2_complete", "crossover_v2_retake"]),
-    (True, False, []), (False, True, []),
-])
-def test_closing_keeps_done_and_retake_between_captures(held, running, actions):
-    env = build_crossover_envelope_v2({
-        **_status(phase="closing", cloud_close="running" if running else "awaiting_confirm"),
-        "capture": {"status": "awaiting_capture", "position_pending": {"index": 1} if held else None},
-    })
-    assert env["screen"] == "closing"
-    assert env["busy"] is running
-    offered = [a for a in [env["next_action"], *env["alternate_actions"]] if a]
-    assert [a["id"] for a in offered] == actions
-    assert all(a["show_during_capture"] for a in offered)

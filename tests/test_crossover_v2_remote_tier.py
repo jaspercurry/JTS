@@ -113,7 +113,6 @@ def _stage1_of(shape):
         flow._DISPLAY_ROLES_BANDS,
         flow._DISPLAY_FC_HZ,
         plan_shape=shape,
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
@@ -510,13 +509,6 @@ def test_an_entry_with_no_target_is_refused_not_measured():
 #: matched, which is the tier's byte-identity promise as a measurement rather
 #: than as a claim.
 #:
-#: Deliberately NOT added to ``_GOLDEN_V2_PLAN_BYTES``: that table builds each
-#: plan from the BUILDER's defaults, and ``include_cloud_measure`` defaults True
-#: — which for remote's N=9 walks a vertical pose and makes
-#: ``position_angle_deg`` refuse before a digest exists. Remote is only
-#: constructible through the flags a session actually uses
-#: (:data:`STAGE1_INCLUDES_CLOUD_MEASURE`), so its digest belongs beside its own
-#: contract rather than in a table whose convention it cannot satisfy.
 _GOLDEN_REMOTE_PLAN_BYTES = {
     "stage1-remote": (
         1322,

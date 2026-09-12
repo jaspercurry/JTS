@@ -157,7 +157,6 @@ POSITION_ROLE_OFFAX = _spatial.POSITION_ROLE_OFFAX
 POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
 POSITION_ROLE_XOVR = _spatial.POSITION_ROLE_XOVR
 REVERIFY_NO_REWALK_HEADLINE = _plan.REVERIFY_NO_REWALK_HEADLINE
-STAGE1_INCLUDES_CLOUD_MEASURE = _plan.STAGE1_INCLUDES_CLOUD_MEASURE
 STAGE1_INCLUDES_ENTRY_BASELINE = _plan.STAGE1_INCLUDES_ENTRY_BASELINE
 V2PlanShape = _plan.V2PlanShape
 V2_FIRST_BEGIN_TIMEOUT_S = _plan.V2_FIRST_BEGIN_TIMEOUT_S
@@ -217,9 +216,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 )
 
 from jasper.active_speaker.crossover_v2.spatial import (
-    CLOUD_CLOSE_AWAITING_CONFIRM as CLOUD_CLOSE_AWAITING_CONFIRM,
-    CLOUD_CLOSE_NONE as CLOUD_CLOSE_NONE,
-    CLOUD_CLOSE_RUNNING as CLOUD_CLOSE_RUNNING,
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
 
@@ -562,7 +558,6 @@ def assemble_cloud_group_result(
 # --- what one candidate build produced (see crossover_v2.candidates) -------
 _CloudFitEvidence = _candidates.CloudFitEvidence
 _LinearizationState = _candidates.LinearizationState
-_SpeculativeClose = _candidates.SpeculativeClose
 
 
 def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
@@ -800,9 +795,6 @@ class CrossoverV2Session:
         # frame the spec bands were graded in, and one residual per position.
         self._group_trusted_floor_hz: dict[str, float | None] = {}
         self._group_position_residuals: dict[str, tuple[Mapping[str, Any], ...]] = {}
-        # The group's most recent COMBINE, held until the household confirms past it
-        # (§2.6). Held rather than recomputed: a combine is 2.7-6 s of operator time.
-        self._group_combined: dict[str, Any] = {}
 
         # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
@@ -895,34 +887,8 @@ class CrossoverV2Session:
         # positions.
         self._group_band_spread: dict[str, tuple[Any, ...]] = {}
         self._measure_gate_window_ms: float | None = measure_gate_window_ms
-        # The accepted MEASURE analysis, held from MEASURE's accept until the
-        # CLOUD_MEASURE group closes and the fit consumes it, then released. Its
-        # size scales with capture length: on the S0 corpus's 524,289-bin grid
-        # (2026-07-27) one two-occurrence ``DriverResponse`` is 33.6 MB of ndarray
-        # payload. That is not a production MEASURE's grid, and is quoted only for
-        # the ORDER — tens of megabytes on a 1 GB Pi that also retains every cloud
-        # position's response for the combine.
-        self._measure_analysis: Any = None
         self._candidate: Any = None
-        # HAS THE HOUSEHOLD CONFIRMED? — the held-set predicate, deliberately separate
-        # from the ``_candidate`` fire-once guard.
-        self._group_confirmed = False
-        # A group close that already ran speculatively, parked until the household
-        # confirms. ``None`` = no eager fit is banked.
-        self._speculative_close: _SpeculativeClose | None = None
-        # Serializes the group close against the eager fit, the one part of this
-        # session that runs off the capture thread. Three entry points take it and
-        # none nests — the confirm path reaches ``_close_measure_cloud_candidate``,
-        # never the lock-taking ``_close_cloud_group`` — so this non-reentrant
-        # ``Lock`` is correct AND enforces that: an edit that makes one call another
-        # deadlocks the capture thread. It covers ``_group_combined`` and
-        # ``_group_cloud_result``, not ``_measure_analysis``, which is safe by phase
-        # ordering. The combine and the speculative stash are written together under
-        # it, which is why no generation counter tells a stale bank from a current one.
         self._close_lock = threading.Lock()
-        # Set the instant the set-completion signal is admitted, so the combine + fit
-        # are a NAMED state. Never cleared.
-        self._group_close_running = False
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
         # WHICH VERDICT produced that outcome (#1974), written with it and never apart.
         # ``failure.code`` cannot answer it: that is the last rejection of ANY phase.
@@ -1504,7 +1470,6 @@ class CrossoverV2Session:
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None
             ),
-            cloud_close=self.cloud_close_state,
             attempt_history=tuple(self._attempt_history),
         )
 
@@ -1704,10 +1669,6 @@ class CrossoverV2Session:
             PHASE_CHECK: (self._check_priors, self._consume_check),
             PHASE_MEASURE: (self._measure_priors, self._consume_measure),
             PHASE_LATERAL: (self._lateral_priors, self._consume_lateral_pose),
-            PHASE_CLOUD_MEASURE: (
-                self._cloud_priors,
-                partial(self._consume_cloud_position, PHASE_CLOUD_MEASURE),
-            ),
             PHASE_CLOUD_VERIFY: (
                 self._cloud_priors,
                 partial(self._consume_cloud_position, PHASE_CLOUD_VERIFY),
@@ -2255,8 +2216,6 @@ class CrossoverV2Session:
         pair_claim: dict[str, Any] = {}
         solo_reason = analysis.measure_pair_not_evaluated
         if solo_reason is not None:
-            # A candidate is still built and published below: the solo's own
-            # evidence is what the linearization is fitted from.
             log_event(
                 logger, "correction.crossover_v2_measure_solo",
                 session_id=self.session_id,
@@ -2271,25 +2230,11 @@ class CrossoverV2Session:
             # produce a candidate.
             raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
         self._measure_gate_window_ms = self._measure_gate(analysis)
-        # **The fit runs at the last capture before the apply.** A session with a
-        # CLOUD_MEASURE group (every production one) defers the fit and the publish to
-        # that group's close, so the fit consumes the cloud's honesty verdict instead of
-        # preceding it by eight captures; a session with no such group builds
-        # here. On the deferring branch ONLY the analysis is retained — it is the
-        # fit's input and must outlive the cloud walk. Exactly one is ever held.
-        if PHASE_CLOUD_MEASURE in self._journey.plan.phases:
-            self._measure_analysis = analysis
-            return replace(verdict, payload={
-                "measurement_phase": PHASE_MEASURE, **pair_claim,
-            })
-        # The no-deferral shape. The entry baseline is the "before" the round grades
-        # against, not the fit's input, so it defers nothing.
         return replace(
             verdict,
             payload={
                 "measurement_phase": PHASE_MEASURE,
                 **pair_claim,
-                **self._publish_measure_candidate(analysis, None),
             },
         )
 
@@ -2497,8 +2442,6 @@ class CrossoverV2Session:
             echo_band_hz=self._cloud_echo_band.band_hz,
             signal_band_hz=self._cloud_signal_band_hz,
         )
-        # ONE critical section for retain + close: ``run_speculative_group_close`` takes
-        # the same lock, and a VOLUNTARY retake's discard must be atomic with it.
         with self._close_lock:
             self._retain_cloud_position(phase, position, analysis, result)
             if not self._journey.plan.is_last_index_of_group(phase, index):
@@ -2678,186 +2621,10 @@ class CrossoverV2Session:
         }
         if position is not None:
             payload["position_id"] = position.position_id
-        if phase == PHASE_CLOUD_MEASURE:
-            # The FIT no longer runs here (§2.6): firing it on this acceptance made
-            # the final prompted position the one spot a household could not redo.
-            # Stash the combine so the confirm does not pay for a second one.
-            self._group_combined[phase] = combined
-            # …and DROP any eagerly-fitted candidate in the same locked region, which
-            # is what makes "a bank matches the current combine" hold with no counter.
-            self._speculative_close = None
-            payload["awaiting_confirm"] = True
         if phase == PHASE_CLOUD_VERIFY:
             self._run_delta_probe()
             return self._grade_round_once(PhaseVerdict(True, payload=payload))
         return PhaseVerdict(True, payload=payload)
-
-    def cloud_measure_group_awaiting_confirm(self) -> bool:
-        """Whether the pre-apply cloud is walked but not yet confirmed."""
-        return (
-            PHASE_CLOUD_MEASURE in self._group_combined
-            and not self._group_confirmed
-        )
-
-    @property
-    def cloud_close_state(self) -> str:
-        """Where the pre-apply cloud's close has got to."""
-        if self._candidate is not None:
-            return CLOUD_CLOSE_NONE
-        if self._group_close_running:
-            return CLOUD_CLOSE_RUNNING
-        if self.cloud_measure_group_awaiting_confirm():
-            return CLOUD_CLOSE_AWAITING_CONFIRM
-        return CLOUD_CLOSE_NONE
-
-    def run_speculative_group_close(self) -> bool:
-        """Fit the pre-apply cloud NOW, before the household confirms.
-
-        Returns True when a build was banked; every reason not to run is checked here.
-        **Runs OFF the capture thread**, holding ``_close_lock`` for the whole fit, which
-        the retake close and the confirm both take. It never closes the retake window,
-        and a failure here is dropped — the confirm refits and raises the same thing.
-        """
-        with self._close_lock:
-            if not self.cloud_measure_group_awaiting_confirm():
-                return False
-            if self._speculative_close is not None or self._candidate is not None:
-                return False
-            if self._measure_analysis is None:
-                return False
-            combined = self._group_combined[PHASE_CLOUD_MEASURE]
-            started = time.monotonic()
-            try:
-                built = self._build_measure_candidate(
-                    self._measure_analysis, self._cloud_fit_evidence(combined),
-                )
-            except Exception as exc:  # noqa: BLE001 - see docstring
-                # Deliberately open: this is speculative work whose failure the
-                # household has not asked about, and the confirm path will raise the
-                # same thing where it can be handled. Not ``BaseException``.
-                log_event(
-                    logger, "correction.crossover_v2_speculative_close_failed",
-                    level=logging.WARNING, session_id=self.session_id,
-                    error=type(exc).__name__, exc_info=True,
-                )
-                return False
-            self._speculative_close = built
-            log_event(
-                logger, "correction.crossover_v2_speculative_close_banked",
-                session_id=self.session_id,
-                candidate_fingerprint=built.candidate.fingerprint,
-                elapsed_s=round(time.monotonic() - started, 3),
-            )
-            return True
-
-    def note_group_close_started(self) -> None:
-        """The household's set-completion signal arrived; the fit is next."""
-        self._group_close_running = True
-
-    def confirm_cloud_measure_group(self) -> dict[str, Any] | None:
-        """Close out the pre-apply cloud on the household's EXPLICIT confirmation.
-
-        **The group-close seam** (§2.6), called by the host on the phone's
-        set-completion signal; a begin *inside* the group is not a confirmation.
-        Returns :meth:`_publish_measure_candidate`'s payload, or ``None``. **Nothing
-        downstream applies anything.** Fires at most once per session: the guard is
-        ``self._candidate``, so a raise leaves it unset and a failure can be retried.
-        """
-        with self._close_lock:
-            if PHASE_CLOUD_MEASURE not in self._group_combined:
-                return None
-            if self._candidate is not None:
-                return None
-            self._group_confirmed = True
-            log_event(
-                logger, "correction.crossover_v2_cloud_group_confirmed",
-                session_id=self.session_id, phase=PHASE_CLOUD_MEASURE,
-                positions=len(self._group_positions[PHASE_CLOUD_MEASURE]),
-                # Did the household's wait get to skip the fit entirely?
-                banked=self._speculative_close is not None,
-            )
-            return self._close_measure_cloud_candidate(
-                self._group_combined[PHASE_CLOUD_MEASURE]
-            )
-
-    def _close_measure_cloud_candidate(self, combined: Any) -> dict[str, Any]:
-        """Fit, build, and publish the candidate the household will review."""
-        if self._measure_analysis is None:
-            raise CrossoverV2FlowError(
-                "cloud-measure group closed with no retained MEASURE analysis"
-            )
-        # A bank is only ever present for the CURRENT combine — a retake drops it in
-        # the same locked region — so consuming it cannot smuggle a stale cloud past.
-        banked = self._speculative_close
-        if banked is not None:
-            self._speculative_close = None
-            payload = self._commit_measure_candidate(banked)
-        else:
-            payload = self._publish_measure_candidate(
-                self._measure_analysis, self._cloud_fit_evidence(combined)
-            )
-        # Released on success. Releasing makes a SECOND call raise instead of
-        # rebuilding, which is safe because the sole caller refuses once
-        # ``self._candidate`` is set. Left in place on a raise.
-        self._measure_analysis = None
-        return payload
-
-    def _publish_measure_candidate(
-        self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
-    ) -> dict[str, Any]:
-        """Build and publish one candidate for the household to review.
-
-        The single build/publish path; nothing it returns triggers an apply.
-
-        **The accountability seam.** Its two load-bearing measurements NEITHER REFUSE
-        (doctrine deviations (c) and (i)). They run AFTER the build and BEFORE
-        ``_candidate`` is set, outside the SF2 arm that degrades to trims-only.
-        """
-        return self._commit_measure_candidate(
-            self._build_measure_candidate(analysis, cloud)
-        )
-
-    def _build_measure_candidate(
-        self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
-        *,
-        candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-        source_preset: Any = None,
-    ) -> _SpeculativeClose:
-        """Fit and accountability-gate one candidate. Commits NOTHING.
-
-        Three things make a candidate REAL and none happen here: ``self._candidate`` is
-        not written, ``records.candidate`` does not fire, and the retained MEASURE
-        analysis is not released — so a build a retake moots can be dropped.
-        """
-        if candidate_sections is None and source_preset is None:
-            candidate, linearization = self._build_candidate(analysis, cloud)
-        else:
-            candidate, linearization = self._build_candidate(
-                analysis, cloud, candidate_sections=candidate_sections,
-                source_preset=source_preset,
-            )
-        # VERIFY-prediction coherence (#1668 PR-D): when this attempt fitted Layer-1a
-        # linearization the persisted prediction must be the LINEARIZED model, the
-        # thing the emitted graph carries. Otherwise ``analysis.predicted_sum``.
-        predicted_sum = (
-            linearization.linearized_predicted_sum
-            if linearization.linearized_predicted_sum is not None
-            else analysis.predicted_sum
-        )
-        # The last GRADING before a candidate can be proposed. It refuses
-        # nothing; what it returns is the accountability record the publish banks.
-        accountability_finding = self._assert_accountable(
-            predicted_sum, analysis.predicted_sum, linearization=linearization,
-            prescribed=_prescribed_roles(candidate),
-        )
-        return _SpeculativeClose(
-            candidate=candidate,
-            predicted_sum=predicted_sum,
-            analysis=analysis,
-            cloud=cloud,
-            accountability_finding=accountability_finding,
-            linearization=linearization,
-        )
 
     def _previous_graph_predicted_sum(self, analysis: Any, capture_fc_hz: float | None) -> Any:
         """The graph an apply REPLACES, modelled on this capture's branches (#2611).
@@ -2949,118 +2716,10 @@ class CrossoverV2Session:
         """This candidate's STATE axis: applied graph minus the RAW crossover."""
         return _commanded_delta(getattr(analysis, "predicted_sum", None), predicted_sum)
 
-    def commit_intervention_proposal(
-        self,
-        candidate: Any,
-        *,
-        predicted_sum: Any,
-        commanded_delta: Any,
-        accountability_finding: Mapping[str, Any] | None,
-        realized_branch_level: Mapping[str, Any] | None = None,
-        declared_transfer: Any = None,
-        linearization: _LinearizationState | None = None,
-    ) -> None:
-        """The ONE seam through which a planned candidate becomes real (#2291).
-
-        Covers the three state writes, the proposal assembly and the two irreversible
-        seam fires; it does NOT cover ``_measure_predicted_spec_report`` or the
-        ``candidate_built`` disclosure. Every attribute write completes before
-        ``records.candidate``. Assembly cannot fail this commit (#2392).
-        """
-        from jasper.active_speaker.crossover_v2.contracts import InterventionProposal
-        from jasper.active_speaker.crossover_v2.proposal import (
-            plan_intervention_proposal,
-        )
-
-        self._candidate = candidate
-        self._measure_predicted_sum = predicted_sum
-        self._measure_commanded_delta = commanded_delta
-        # #2614's STATE axis. Deliberately NOT part of the proposal: the proposal states
-        # what the round asks for, this states what the graph declares.
-        self._measure_declared_transfer = declared_transfer
-        planned = plan_intervention_proposal(
-            candidate,
-            session_id=self.session_id,
-            predicted_response_after=predicted_sum,
-            commanded_delta=commanded_delta,
-            accountability=accountability_finding,
-            realized_branch_level=realized_branch_level,
-            evidence_identities={
-                "session_id": self.session_id,
-                "speaker_id": self._speaker_id,
-            },
-            linearization=linearization,
-        )
-        self._intervention_proposal = planned
-        self._measure_proposal_fingerprint = (
-            planned.fingerprint
-            if isinstance(planned, InterventionProposal)
-            else ""
-        )
-        # #2662. Read off the candidate's own frozen evidence: ``analysis_json`` already
-        # puts ``alignment_objective`` there, so this is the fingerprinted answer.
-        analysis_evidence = getattr(candidate, "analysis", None)
-        self._measure_alignment_objective = str(
-            (analysis_evidence or {}).get("alignment_objective") or ""
-            if isinstance(analysis_evidence, Mapping)
-            else ""
-        )
-        self._seams.records.candidate(candidate)
-        self._publish_accountability_finding(accountability_finding)
-
-    def _commit_measure_candidate(self, built: _SpeculativeClose) -> dict[str, Any]:
-        """Make a built candidate REAL: stash it, publish it, disclose it."""
-        candidate = built.candidate
-        predicted_sum = built.predicted_sum
-        analysis = built.analysis
-        cloud = built.cloud
-        self.commit_intervention_proposal(
-            candidate,
-            predicted_sum=predicted_sum,
-            # The configured walk's branches are composed at the session's own
-            # corner, the corner the guard checks the applied profile against.
-            commanded_delta=self._commanded_delta_for(
-                analysis, predicted_sum, self._fc_hz,
-            ),
-            declared_transfer=self._declared_transfer_for(analysis, predicted_sum),
-            accountability_finding=built.accountability_finding,
-            # Read off this build's own state (#2392).
-            realized_branch_level=_contracts.realized_branch_level(
-                built.linearization.realized_branch_level,
-                pair_reason=self._pair_reason,
-            ),
-            linearization=built.linearization,
-        )
-        log_event(
-            logger, "correction.crossover_v2_candidate_built",
-            session_id=self.session_id,
-            candidate_fingerprint=candidate.fingerprint,
-            # Which linearization path this build took, read off the candidate
-            # rather than a session field so one value is quoted, not two.
-            linearization=candidate.linearization_outcome,
-            # Did the cloud's honesty verdict actually reach the envelope?
-            cloud_evidence=cloud is not None,
-            excluded_bands=len(cloud.excluded_bands_hz) if cloud else 0,
-            cloud_positions=cloud.n_positions if cloud else 0,
-        )
-        return {
-            "candidate_fingerprint": candidate.fingerprint,
-            # "This correction costs N dB of maximum level." This is the
-            # CONFIRM payload; the household disclosure is persisted by
-            # ``_candidate_summary``. Both use ``worst_headroom_cost_db``.
-            "headroom_cost_db": self._candidate_headroom_cost_db(),
-        }
-
     def _publish_accountability_finding(
         self, record: Mapping[str, Any] | None,
     ) -> None:
-        """Persist the banked accountability finding, or say why it was not.
-
-        Called AFTER ``records.candidate``, inside :meth:`_commit_measure_candidate`,
-        which buys three things: once per session behind the ``_candidate`` guard (the
-        finding store is write-once), never for a candidate that does not exist, and a
-        citation that resolves. Fail-soft: plan §3.4 makes findings optional.
-        """
+        """Persist the banked accountability finding, or say why it was not."""
 
         if record is None or self._seams.records.findings is None:
             return

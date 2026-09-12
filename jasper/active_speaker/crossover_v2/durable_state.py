@@ -139,17 +139,6 @@ class V2ConductorSnapshot:
     # module-global tuple cannot express. Empty on older state; readers fall
     # back to ``CAPTURE_PHASES``.
     session_phases: tuple[str, ...] = ()
-    # WHICH INSTRUMENT produced this session. Empty string means UNKNOWN and
-    # readers must render it as unknown rather than assuming full: guessing
-    # would attach a post-apply cross-position claim to a result that never
-    # measured across positions.
-    # WHERE the pre-apply cloud's close has got to: one of
-    # :data:`CLOUD_CLOSE_NONE` / :data:`CLOUD_CLOSE_AWAITING_CONFIRM` /
-    # :data:`CLOUD_CLOSE_RUNNING`. Persisted because the wizard renders from
-    # durable state alone, where "every stage-1 phase accepted and no candidate"
-    # otherwise reads identically at the confirm screen, during the fit, and
-    # after a session that produced nothing.
-    cloud_close: str = ""
     # History survives the capture-session rebind; see ADR-0296.
     attempt_history: tuple[AttemptRecord, ...] = ()
 
@@ -166,7 +155,6 @@ class V2ConductorSnapshot:
             ),
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
-            "cloud_close": self.cloud_close,
             "attempt_history": [item.to_dict() for item in self.attempt_history],
         }
 
@@ -988,15 +976,6 @@ def build_conductor_state(
         # ``crossover_envelope_v2.crossover_v2_phase`` so a verify-only re-arm
         # reaches "done" rather than waiting on a position group it never had.
         "session_phases": list(snap.session_phases),
-        # WHICH INSTRUMENT produced this state. Empty string means unknown and
-        # readers must render it as unknown rather than assuming "full":
-        # express makes no cross-position post-apply claim, so guessing would
-        # attach a claim the measurement never made.
-        # WHERE the pre-apply cloud's close has got to. The wizard renders
-        # from this file alone, and "every stage-1 phase accepted, no
-        # candidate" is true at the confirm screen, during the fit, and after a
-        # session that produced nothing.
-        "cloud_close": snap.cloud_close,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(getattr(snap, "measure_gain_ceiling_db", None) or {}),

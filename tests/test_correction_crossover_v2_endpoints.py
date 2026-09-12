@@ -38,7 +38,7 @@ from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
 from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_APPLYING,
+    PHASE_REVIEW,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
@@ -2249,42 +2249,16 @@ def test_a_session_that_verified_still_resolves_to_done():
         assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE, phases
 
 
-def test_a_corrupt_state_cannot_reach_the_review_screen_either():
-    """The corrupt-state fallback the walk already documents must keep working
-    — and must not become a NEW way to reach the review screen.
-
-    A garbled ``session_phases`` filters to the empty tuple and walks
-    PRE_CLOUD_CAPTURE_PHASES, which DOES contain VERIFY, so it can never
-    satisfy the measure-only test on the strength of an unreadable state file.
-    It resolves through the loop to its first unaccepted phase, exactly as
-    before this change.
-    """
-
+def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
     v2host.save_v2_state({
         "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "session_phases": ["nonsense", "also-not-a-phase"],
         "applied": False,
     })
-    phase = v2status.crossover_v2_status_block()["phase"]
-    # MEASURE is accepted and VERIFY is not, so the shipped special case owns
-    # this state — the honest "the apply is in flight" answer, not a terminal.
-    assert phase == PHASE_APPLYING
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
-def test_stage_plans_have_their_own_volume_ceiling():
-    from jasper.active_speaker.crossover_v2_flow import (
-        build_v2_capture_plan,
-        build_v2_verify_capture_plan,
-        session_wall_clock_ceiling_s,
-    )
-    from jasper.active_speaker.session_volume_plan import DEFAULT_WALL_CLOCK_CEILING_S
-
-    assert session_wall_clock_ceiling_s(
-        build_v2_capture_plan(_roles(), FC_HZ)
-    ) > session_wall_clock_ceiling_s(
-        build_v2_verify_capture_plan(FC_HZ)
-    ) == DEFAULT_WALL_CLOCK_CEILING_S
 
 
 def _ready_to_apply(monkeypatch, tmp_path):
@@ -2577,104 +2551,12 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
         v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
 
 
-def _closed_cloud_conductor():
-    """A real conductor walked to its cloud-measure close, so it carries a
-    candidate, a full-resolution ``measure_predicted_sum``, and the spec report
-    its accountability seam graded that sum with."""
-    from tests.crossover_v2_fixtures import (
-        FakeSeams,
-        _cloud_conductor,
-        _eligible_measure_analysis,
-        _walk_measure_cloud_to_close,
-    )
-
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    conductor = _cloud_conductor(fakes)
-    _walk_measure_cloud_to_close(conductor)
-    return conductor
 
 
-def test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade():
-    """D4's "one grading instrument", at the persistence seam.
-
-    The durable state carries the prediction TWICE in different resolutions —
-    the curve at ``MAX_PERSISTED_SUM_POINTS`` (a drawing) and the verdict from
-    the full-resolution tuple (the instrument). This pins that the stored
-    verdict is the conductor's own, and that re-grading the stored curve would
-    have produced something else, so the distinction is load-bearing rather
-    than notional."""
-    from jasper.active_speaker.crossover_v2_flow import spec_report_for_predicted_sum
-
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    priors = v2host.load_v2_state()["verify_priors"]
-    assert priors["predicted_spec"] == conductor.measure_predicted_spec_report
-    stored_report = dict(priors["predicted_spec"])
-    comparison = stored_report.pop("comparison")
-    assert comparison["reason"] == "predicted_in_spec"
-    assert stored_report == spec_report_for_predicted_sum(
-        conductor.measure_predicted_sum
-    ).to_dict()
-
-    # The curve that WAS persisted grades differently — which is exactly why
-    # the report is persisted instead of being recomputed from it.
-    stored_curve = priors["predicted_sum"]
-    re_graded = spec_report_for_predicted_sum((
-        np.asarray(stored_curve["freqs_hz"], dtype=float),
-        np.asarray(stored_curve["magnitude_db"], dtype=float),
-    )).to_dict()
-    assert re_graded != priors["predicted_spec"]
 
 
-def test_the_prediction_verdict_survives_a_verify_rearm_persist():
-    """The carry-forward, pinned on the shape that has broken three times.
-
-    A verify-only re-arm builds a FRESH conductor that never runs a fit, so
-    every MEASURE-owned prior has to travel to it explicitly or the first
-    "Try again" blanks it — the ``cloud`` B1 / way-back-stash W6.12 bug
-    shape. The verdict rides the same route as ``gate_window_ms``, and this is
-    what proves the route is wired at BOTH ends."""
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    stored = v2host.load_v2_state()["verify_priors"]["predicted_spec"]
-    assert stored is not None
-
-    rearmed = CrossoverV2Session(
-        session_id="cap_rearm",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=conductor._seams,
-        index_phase_map={1: PHASE_VERIFY},
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        measure_predicted_sum=conductor.measure_predicted_sum,
-        measure_predicted_spec_report=stored,
-    )
-    assert rearmed.measure_predicted_spec_report == stored
-    v2host.persist_conductor_state(rearmed, failure_code=None)
-    assert v2host.load_v2_state()["verify_priors"]["predicted_spec"] == stored
 
 
-def test_the_prediction_reaches_the_status_block_with_its_verdict():
-    """D4's projection: curve + stored verdict, beside the cloud blocks."""
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    prediction = v2status.crossover_v2_status_block()["prediction"]
-    stored = conductor.measure_predicted_spec_report
-    assert prediction["overall_within_target"] == stored["overall_within_target"]
-    assert prediction["reference_db"] == pytest.approx(stored["reference_db"])
-    # The per-band vocabulary matches the compact cloud block's, key for key,
-    # so the review screen can draw both curves in one tolerance corridor.
-    assert [set(b) for b in prediction["spec_bands"]] == [
-        {"f_lo_hz", "f_hi_hz", "within_target", "max_deviation_db", "tolerance_db"}
-    ] * len(stored["bands"])
-    assert prediction["curve"]["freqs_hz"]
 
 
 def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
@@ -2885,111 +2767,8 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["reference_db"] is None
 
 
-def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog):
-    """The 4th ``prediction`` state: report present, curve absent.
-
-    The verdict is stashed BEFORE the improvement gate runs, while
-    ``_measure_predicted_sum`` is assigned only after that gate returns — so
-    while item 2 still refused, a ``correction_not_an_improvement`` refusal
-    persisted the report with ``predicted_sum`` still ``None``. That refusal is
-    gone (the nanny burn-down, doctrine deviation (c)) and no live path
-    produces the pairing from THAT cause any more, so the state is built here
-    rather than walked into. It is still worth pinning, twice over: a speaker
-    that ran a round before the burn-down has exactly these bytes on disk, and
-    any later refusal between the stash and ``commit_intervention_proposal``
-    reproduces the shape.
-
-    The rendering is what must not regress. ``overall_within_target`` is a REAL
-    ``False``, not the ``None`` that means unknown, and there is no curve to
-    draw beside it — the state a review screen is most likely to get wrong.
-
-    **The retired code is tolerated, not honoured.** ``post_apply_grade`` used
-    to read this exact literal into a ``keep_previous`` outcome; that clause
-    went with the refusal, so the same bytes now yield no outcome claim at all
-    — which is the honest reading of a not-applied round with no selector
-    evidence, and specifically not a crash or a fabricated verdict.
-    """
-    from tests.crossover_v2_fixtures import (
-        FakeSeams,
-        _cloud_conductor,
-        _eligible_measure_analysis,
-    )
-
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    conductor = _cloud_conductor(fakes)
-    # The pre-burn-down pairing, stated directly: item 2 graded the prediction
-    # and stashed the report, then refused before any curve was committed.
-    conductor._measure_predicted_spec_report = {
-        "overall_within_target": False,
-        "reference_db": 0.0,
-        "bands": [{
-            "f_lo_hz": 200.0, "f_hi_hz": 2000.0, "tolerance_db": 3.0,
-            "max_deviation_db": 4.0, "max_deviation_hz": 1000.0,
-            "rms_deviation_db": 2.0, "n_bins": 100, "n_excluded": 0,
-            "evaluable": True, "passed": False,
-        }],
-        "comparison": {
-            "reason": "correction_not_an_improvement",
-            "baseline_rms_db": 2.0, "selected_rms_db": 2.0,
-            "improvement_db": 0.0, "required_db": 0.5,
-        },
-    }
-    assert conductor.candidate is None
-    assert conductor.measure_predicted_sum is None
-    with caplog.at_level(logging.INFO, logger=v2host.__name__):
-        v2host.persist_conductor_state(
-            conductor, failure_code="correction_not_an_improvement",
-        )
-        v2host.persist_conductor_state(
-            conductor, failure_code="correction_not_an_improvement",
-        )
-        v2status.crossover_v2_status_block()
-    priors = v2host.load_v2_state()["verify_priors"]
-    assert priors["predicted_sum"] is None
-    assert priors["predicted_spec"] is not None
-
-    prediction = v2status.crossover_v2_status_block()["prediction"]
-    assert prediction["curve"] is None
-    # A graded miss, NOT an ungradeable unknown.
-    assert prediction["overall_within_target"] is False
-    assert prediction["spec_bands"]
-    assert prediction["reference_db"] is not None
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == "not_applied"
-    assert grade["graded"] is True
-    # No outcome, and therefore no classification line: the round is graded as
-    # not-applied, and there is nothing left that claims to know what it meant.
-    assert "outcome" not in grade
-    assert not event_records(caplog, "correction.crossover_v2_result_classified")
 
 
-def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
-    """D3/D4's era stamp, at the only place that can honestly write it.
-
-    A candidate this function serializes was built by THIS process, so its
-    per-fit charges are the CURRENT rule by construction. The stamp is recorded
-    here rather than inferred downstream because nothing on a persisted fit
-    distinguishes the derivations.
-
-    The value moved with #2758: the realized peak is now evaluated over the
-    whole domain, and that era can read SMALLER than a ``realized_peak`` stamp
-    for the same filters — the one direction the earlier eras never had — so it
-    needs its own name rather than riding the old one."""
-    from jasper.active_speaker.linearization_fit import (
-        HEADROOM_COST_BASIS_REALIZED_PEAK,
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
-    )
-
-    conductor = _closed_cloud_conductor()
-    v2host.persist_conductor_state(conductor, failure_code=None)
-
-    candidate = v2host.load_v2_state()["candidate"]
-    assert candidate["headroom_cost_basis"] == (
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
-    )
-    assert candidate["headroom_cost_basis"] != HEADROOM_COST_BASIS_REALIZED_PEAK
-    assert isinstance(candidate["headroom_cost_db"], float)
 
 
 def test_apply_endpoint_requires_current_candidate():
@@ -3311,13 +3090,12 @@ def _no_sweep_state(*, fc_selection=None):
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
     from jasper.active_speaker.crossover_v2_flow import (
-        STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
     stage1 = list(dict.fromkeys(build_v2_cloud_index_phase_map(
 
-        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
+
         include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ).values()))
@@ -3475,7 +3253,7 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
             return SimpleNamespace(
                 session_id="cap_p04", accepted_phases=(PHASE_VERIFY,),
                 session_phases=(PHASE_VERIFY,),  applied=True,
-                gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+                gain_plan_db=None, candidate_fingerprint=None,
             )
 
     conductor = TerminalConductor("cap_p04")
@@ -3496,7 +3274,7 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     conductor.snapshot = lambda: SimpleNamespace(
         session_id="cap_malformed", accepted_phases=(PHASE_VERIFY,),
         session_phases=(PHASE_VERIFY,), applied=True,
-        gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+        gain_plan_db=None, candidate_fingerprint=None,
     )
     monkeypatch.setattr(
         v2status, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
@@ -4369,14 +4147,12 @@ def test_status_block_reports_needs_recovery_and_phase():
     block = v2status.crossover_v2_status_block()
     assert block["needs_recovery"] is True
     assert block["phase"] == PHASE_MEASURE
-    # And the "applying" projection: measure accepted, not yet applied — the
-    # conductor's own auto-apply is in flight (owner ruling, 2026-07-20).
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
     })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_APPLYING
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
 def _linearization_summary(linearization=None, *, outcome=None, analysis=None):
