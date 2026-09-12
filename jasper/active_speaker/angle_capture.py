@@ -88,6 +88,7 @@ __all__ = [
     "REGIMES",
     "MOVER_ARM",
     "MOVER_HUMAN",
+    "MOVER_CONFIRMED",
     "MOVERS",
     "LEVEL_HOLD_REFERENCE",
     "MAX_ANGLE_DEG",
@@ -141,18 +142,11 @@ __all__ = [
 ]
 
 
-#: An external driver turns the microphone and reports the angle reached; the one mover
-#: that auto-advances
-#: (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`),
-#: holds released by the driver's own report.
 MOVER_ARM = "arm"
-
-#: A person moves the microphone and taps when there, exactly as shipped hand-walked
-#: tiers do -- reading the SAME angle-stated prompt the arm is driven to
-#: (:func:`pose_at_angle`); only the advance policy differs.
 MOVER_HUMAN = "human"
+MOVER_CONFIRMED = "confirmed"
 
-MOVERS = (MOVER_ARM, MOVER_HUMAN)
+MOVERS = (MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED)
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
 REQUEST_SCHEMA_VERSION = 3
@@ -182,6 +176,7 @@ MAX_ELEVATION_DEG = 30
 MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_ARM: ARM_ENVELOPE_DEG,
     MOVER_HUMAN: MAX_ANGLE_DEG,
+    MOVER_CONFIRMED: MAX_ANGLE_DEG,
 })
 
 #: Elevation half of the pair above. The arm's 0 is a rig fact: it rotates about the
@@ -189,6 +184,7 @@ MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
 MOVER_MAX_ELEVATION_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_ARM: 0,
     MOVER_HUMAN: MAX_ELEVATION_DEG,
+    MOVER_CONFIRMED: MAX_ELEVATION_DEG,
 })
 
 #: Which composed program object each regime plays, stated as the PHASE whose program it

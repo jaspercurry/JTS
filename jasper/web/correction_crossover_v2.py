@@ -3722,7 +3722,6 @@ def prepare_v2_session(
             V2ConductorSnapshot,
         )
 
-
         if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
             raise CrossoverV2Refused("An inline v3 plan is required", code="program_plan_shape_invalid")
         try:
@@ -3835,13 +3834,13 @@ def prepare_v2_session(
     stop_lock = threading.Lock()
     complete_event = threading.Event()
     retake_event = threading.Event()
-    position_gate = PositionGate() if not verify_only or (plan_shape and plan_shape.positions_gated) else None
+    position_gate = PositionGate(mover=request.mover) if not verify_only else PositionGate() if plan_shape and plan_shape.positions_gated else None
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         acknowledgement_binding=acknowledgement_binding,
-        retries_per_pose=request.retries_per_pose, hand_released=not request.externally_positioned,
+        retries_per_pose=request.retries_per_pose,
         default_setup_calibration=default_setup_calibration_for_v2(),
     )
     if not verify_only:

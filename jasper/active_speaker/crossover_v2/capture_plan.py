@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
-    acknowledgement_binding: str, retries_per_pose: int, hand_released: bool, **spec_kwargs: Any,
+    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
@@ -84,7 +84,6 @@ def build_inline_session_spec(
             duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
             screen={"progress": capture_progress_label(index, len(captures)),
                     "title": prompt.headline, "body": prompt.detail,
-                    POSITION_HAND_RELEASED_KEY: str(hand_released).lower(),
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
     attempts = len(entries) + sum(1 for _ in groupby(prompt.place for prompt in prompts)) * retries_per_pose
@@ -1187,7 +1186,6 @@ POSITION_ROLE_KEY = "position_role"
 POSITION_BATCH_START_KEY = "position_batch_start"
 POSITION_BATCH_SIZE_KEY = "position_batch_size"
 POSITION_BATCH_CONFIG_KEY = "position_batch_config"
-POSITION_HAND_RELEASED_KEY = "position_hand_released"
 
 
 def pose_batch_screens(
@@ -1434,11 +1432,9 @@ def build_v2_capture_plan(
         batch = candidate_screens.get(capture_index, {})
         if branch_diagnostic and not prompt.preserve_text:
             batch = {**batch, "title": "Measure woofer, tweeter and both", "body": "Keep the mic still for all five sweeps. The repeated solo sweeps check the recording clock."}
-        if batch:
-            policy[POSITION_HAND_RELEASED_KEY] = str(not shape.externally_positioned).lower()
-            if int(batch.get(POSITION_BATCH_CONFIG_KEY, 1)) > 1:
-                policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
-                              countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
+        if int(batch.get(POSITION_BATCH_CONFIG_KEY, 1)) > 1:
+            policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
+                          countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,

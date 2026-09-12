@@ -32,7 +32,6 @@ LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate b
 def _answer(verb: str, human: str, **fields: Any) -> int:
     return answered({"verb": verb, **fields}, human)
 
-
 def _round_session_dir(capture_id: str) -> str:
     from jasper.active_speaker.bundles import sessions_dir  # lazy: wait-only measurement imports
     from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir  # lazy: wait-only
@@ -50,7 +49,6 @@ def _round_session_dir(capture_id: str) -> str:
     except OSError:
         return ""
     return found
-
 
 def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> int:
     error = error_of(payload)
@@ -193,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--level", type=float, help="reference volume in dB; must match the banked level")
     run.add_argument("--ceiling", "--ceiling-db-spl", dest="ceiling", type=float, help="SPL ceiling in dB SPL")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
-    run.add_argument("--mover", choices=("human", "arm", "confirmed"))
+    from jasper.active_speaker.angle_capture import MOVERS  # lazy: parser-only measurement imports
+    run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="print preflight; play nothing")
     run.set_defaults(func=_cmd_run)

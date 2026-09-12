@@ -677,26 +677,7 @@ function walkKey(prompt, pending, yielded, progress) {
 
 // The walkthrough: which spot, in the capture plan's own words, and the
 // control that says the microphone is there (#2881). Reads
-// `capture.position_pending` — the hold the position gate publishes, which until
-// now only `jasper-angle-capture serve` ever rendered.
-//
-// Transport-agnostic by construction: NOTHING here tests which source the
-// session opened on. What it tests is `hand_released` — the server's own
-// answer to "is a person expected to release this hold?" — so the panel
-// follows the hold rather than the transport. That is also what keeps the
-// arm's rig off this screen (ADR-0188 §4): an externally positioned walk is
-// gated too, but its driver POSTs the release, and a browser button beside it
-// could free a position the arm has not reached yet.
-//
-// `yielded` steps the panel aside when the SCREEN has minted its own control
-// for this session (the closing screen's Save / Record-again, the review
-// screen's Apply) — one primary at a time, the rule the action row's capture
-// gate already holds.
-// The per-position picture (#3629, #1941 R11) -- degrees/vertical_deg ride
-// the SAME `position_pending` payload the prompt text is built from
-// (jasper.active_speaker.crossover_v2.position_gate), so this draws straight
-// off `pending`, never a second fetch. Hidden for a prompt with no bearing at
-// all (the mark itself has nothing to draw an arrow toward).
+// See ADR-0296: the server owns each mover’s actions.
 function renderWalkDiagram(pending) {
   const degrees = pending ? pending.degrees : 0;
   const verticalDeg = pending ? pending.vertical_deg : 0;
@@ -729,7 +710,7 @@ function setUnitsButtons(unit) {
 function renderWalk(capture, {active, yielded}) {
   const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
   const held = walking ? (capture.join || capture.position_pending) : null;
-  const pending = held && held.hand_released ? held : null;
+  const pending = held && held.mover === 'human' ? held : null;
   // The entry the gate is EXECUTING, and the only thing that moves during a
   // pose batch: configs 2..N are granted under the first config's release, so
   // no second hold is published and the retained prompt would otherwise freeze
@@ -756,19 +737,17 @@ function renderWalk(capture, {active, yielded}) {
   els.walkDetail.textContent = formatDistances(walkPrompt.body || '');
   els.walkDetail.hidden = !walkPrompt.body;
   renderWalkDiagram(walkGeometry);
-  // Two states, and the difference is whose move it is. Holding: the server
-  // named the release action, so render it. Not holding: the tone is playing
-  // on the spot named above, and there is nothing to press — say that rather
-  // than leave a dead button the household can double-fire into a 409.
-  if (pending && pending.action && pending.action.endpoint) {
-    const button = el('button', {
-      class: 'btn btn--primary',
-      type: 'button',
-      disabled: busy,
-      text: pending.action.label || 'The microphone is in place',
-    });
-    button.addEventListener('click', () => runAction(pending.action, button));
-    els.walkAction.replaceChildren(button);
+  if (pending && pending.actions?.length) {
+    els.walkAction.replaceChildren(...pending.actions.map((action, index) => {
+      const button = el('button', {
+        class: index === 0 ? 'btn btn--primary' : 'btn btn--ghost',
+        type: 'button',
+        disabled: busy,
+        text: action.label,
+      });
+      button.addEventListener('click', () => runAction(action, button));
+      return button;
+    }));
   } else {
     els.walkAction.replaceChildren(
       el('p', {
@@ -807,12 +786,9 @@ function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
     els.captureStatus.textContent = 'Stopping playback and restoring the speaker safely…';
     return;
   }
-  // Which of the two sentences is keyed off the same `hand_released` the
-  // panel is: a hold nobody at this browser releases must not be narrated as
-  // if it waited on the reader.
   const awaitingReader = Boolean(
     !suppressConnectAffordance &&
-    (capture.join || capture.position_pending)?.hand_released,
+    (capture.join || capture.position_pending)?.mover === 'human',
   );
   els.captureStatus.textContent = awaitingReader
     ? 'The tone plays as soon as you confirm the microphone is in place.'

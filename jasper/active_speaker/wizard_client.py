@@ -62,8 +62,6 @@ class WizardClient:
         self._opener = opener
         self._csrf: str | None = None
 
-    # -- transport ---------------------------------------------------------- #
-
     def open(self, path: str, *, data: bytes | None = None,
              headers: Mapping[str, str] | None = None) -> tuple[int, str]:
         request = urllib.request.Request(
@@ -154,22 +152,24 @@ class WizardClient:
                       "faults": progress.get("faults", [])}
 
     def placed(self, run_id: str, pose: int | None = None) -> tuple[int, Any]:
+        from .angle_capture import MOVER_CONFIRMED  # lazy: placement-only measurement imports
+        from .crossover_v2.position_gate import POSITION_READY_ENDPOINT  # lazy: placement-only
+        from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH  # lazy: placement-only
+
         http, status = self.run_status(run_id)
         if http != 200:
             return http, status
         pending = status.get("pending")
         if not pending:
             return 409, {"code": "position_not_pending", "run_id": run_id}
+        if pending.get("mover") != MOVER_CONFIRMED:
+            return 409, {"code": REASON_WALK_MOVER_MISMATCH, "run_id": run_id}
         if pose is not None and pose != (status.get("pose") or 1):
             return 409, {"code": "position_mismatch", "run_id": run_id}
-        action = pending["action"]
-        return self.post_json(action["endpoint"], {**action["body"], "run_id": run_id})
+        return self.post_json(POSITION_READY_ENDPOINT, {"index": pending["index"],
+                              "attempt": pending["attempt"], "run_id": run_id})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
-        """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline
-        ``candidate`` override sent -- the host reopens the artifact from the recorded
-        evidence bundle.
-        """
         return self.post_json(
             APPLY_PATH, {"expected_candidate_fingerprint": expected_fingerprint}
         )

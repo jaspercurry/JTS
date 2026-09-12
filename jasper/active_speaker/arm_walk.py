@@ -54,7 +54,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from jasper.log_event import log_event
 
-from .angle_capture import ARM_ENVELOPE_DEG
+from .angle_capture import ARM_ENVELOPE_DEG, MOVER_ARM
+from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READY_PATH
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .wizard_client import STATUS_PATH, WizardClient
 
@@ -100,7 +101,7 @@ DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py
 
 #: Every adapter verb this module may emit. ``set-zero`` is deliberately
 #: absent: no automated walk may redefine the saved acoustic-axis zero.
-_TOOL_SUBCOMMANDS = frozenset({"power", "position", "offset"})
+_TOOL_SUBCOMMANDS = frozenset({"power", "stop", "position", "offset"})
 
 
 # --------------------------------------------------------------------------- #
@@ -112,19 +113,12 @@ EXIT_OK = 0
 EXIT_POWER_VOID = 3
 #: A move was refused or did not complete. The arm is parked.
 EXIT_MOVE_FAILED = 4
-#: ``--complete-after`` fired and the session did not accept it.
-EXIT_COMPLETE_FAILED = 5
 #: In flight, nothing pending, no progress -- a capture is awaiting a human.
 EXIT_STUCK = 6
 #: The session itself reported ``status="failed"``; its error is on the line.
 EXIT_SESSION_FAILED = 7
 #: Nothing ever asked the arm to move before the idle ceiling.
 EXIT_IDLE_CEILING = 8
-#: ``--expect-angles`` was given, no session is in flight, and no walk is staged.
-EXIT_WALK_NOT_STAGED = 9
-#: The run ended without serving every expected angle -- refused at take
-#: time, the session silently degraded to its ordinary shape.
-EXIT_WALK_NOT_TAKEN = 10
 #: The settle actually taken was under :data:`SETTLE_FLOOR_S`.
 EXIT_SETTLE_FLOOR = 11
 #: The run was configured in a way this module refuses before it moves anything.
@@ -159,12 +153,9 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_OK: "ok",
     EXIT_POWER_VOID: "power_void",
     EXIT_MOVE_FAILED: "move_failed",
-    EXIT_COMPLETE_FAILED: "complete_failed",
     EXIT_STUCK: "stuck",
     EXIT_SESSION_FAILED: "session_failed",
     EXIT_IDLE_CEILING: "idle_ceiling",
-    EXIT_WALK_NOT_STAGED: "walk_not_staged",
-    EXIT_WALK_NOT_TAKEN: "walk_not_taken",
     EXIT_SETTLE_FLOOR: "settle_floor",
     EXIT_REFUSED: "refused",
     EXIT_RELEASE_REJECTED: "release_rejected",
@@ -253,9 +244,6 @@ class Poll:
     (:data:`SESSION_ENDED_STATUSES`), or empty -- a third state, not the negation of
     ``in_flight``: no capture block at all means no session has opened yet.
 
-    ``hand_released`` is the session saying a PERSON releases this hold, which is why
-    ``pending`` is empty beside it: the same flag that made
-    :func:`pending_from_capture` decline it.
     """
 
     pending: Pending | None
@@ -263,7 +251,7 @@ class Poll:
     failed_error: str | None = None
     readable: bool = True
     ended: str = ""
-    hand_released: bool = False
+    mover: str | None = None
 
 
 class Mover(Protocol):
@@ -287,9 +275,6 @@ class Session(Protocol):
 
     def release(self, index: int, attempt: int) -> tuple[int, str]:
         """POST position-ready. Returns ``(http_status, body)``."""
-
-    def complete(self) -> tuple[int, str]:
-        """POST the wired all-spots-measured signal. Returns ``(status, body)``."""
 
     def cancel(self) -> tuple[int, str]:
         """POST capture-cancel. Returns ``(http_status, body)``; never raises."""
@@ -364,13 +349,17 @@ class TurntableMover:
             # Unreachable via the CLI; kept since this class is directly
             # constructible and confirmations must never be forged by default.
             raise ArmWalkRefused("moving needs an explicit rig-clear attestation")
-        _, payload = self._invoke(
+        # The vendor stop request is the movement handshake, not a brake.
+        code, payload = self._invoke("stop")
+        if code or not payload.get("ok"):
+            return False
+        code, payload = self._invoke(
             "position",
             str(int(degrees)),
             "--confirm-rig-clear",
             "--confirm-zero-valid",
         )
-        return bool(payload.get("ok"))
+        return code == 0 and bool(payload.get("ok"))
 
     def offset_deg(self) -> float | None:
         _, payload = self._invoke("offset")
@@ -387,10 +376,6 @@ class TurntableMover:
 # the correction wizard, as a Session
 # --------------------------------------------------------------------------- #
 
-#: The position gate's two POSTs; transport and status read are
-#: :mod:`jasper.active_speaker.wizard_client`.
-POSITION_READY_PATH = "/sound/speaker/crossover/v2/position-ready"
-COMPLETE_PATH = "/sound/speaker/crossover/v2/complete"
 #: Stops the box's own v2 capture session (``correction_handlers._handle_crossover_capture_cancel``).
 #: Not under ``v2/``: it is the generic capture-slot verb, the same route
 #: ``crossover/main.js``'s Stop button posts.
@@ -414,11 +399,7 @@ def _capture_already_gone(status: int, body: str) -> bool:
 
 
 class LoopbackSession(WizardClient):
-    """The position gate's three verbs, over the wizard reached on loopback. A
-    :class:`WizardClient` pointed at ``127.0.0.1`` plus the :class:`Session` protocol,
-    so the laptop round runner reaches the SAME wizard across the LAN through the same
-    transport rather than a second copy of the Host/CSRF rules.
-    """
+    """The arm's gate client over the wizard transport."""
 
     def poll(self) -> Poll:
         status, body = self.open(STATUS_PATH)
@@ -434,9 +415,6 @@ class LoopbackSession(WizardClient):
 
     def release(self, index: int, attempt: int) -> tuple[int, str]:
         return self.post(POSITION_READY_PATH, {"index": int(index), "attempt": int(attempt)})
-
-    def complete(self) -> tuple[int, str]:
-        return self.post(COMPLETE_PATH, {})
 
     def cancel(self) -> tuple[int, str]:
         return self.post(CAPTURE_CANCEL_PATH, {})
@@ -478,19 +456,13 @@ class Trail:
 
 @dataclass(frozen=True)
 class WalkConfig:
-    """Everything the loop's timing and expectations are stated in."""
+    """The arm's movement and polling clocks."""
 
     settle_s: float = DEFAULT_SETTLE_S
     poll_s: float = DEFAULT_POLL_S
     idle_ceiling_s: float = DEFAULT_IDLE_CEILING_S
     stuck_alarm_s: float = DEFAULT_STUCK_ALARM_S
     unreadable_ceiling_s: float = DEFAULT_UNREADABLE_CEILING_S
-    complete_after: int | None = None
-    #: The non-zero angles the staged walk contributes; a refused staged walk
-    #: degrades to design-axis captures, so a stated angle never becoming
-    #: pending is how this loop detects the silent degrade. Empty means
-    #: "drive whatever the gate asks for".
-    expect_angles: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.settle_s < SETTLE_FLOOR_S:
@@ -500,17 +472,6 @@ class WalkConfig:
             )
         if self.poll_s <= 0:
             raise ArmWalkRefused("poll interval must be above zero")
-        if self.complete_after is not None and self.complete_after < 1:
-            raise ArmWalkRefused("--complete-after counts releases, so it is >= 1")
-        outside = tuple(
-            deg for deg in self.expect_angles if abs(deg) > ARM_ENVELOPE_DEG
-        )
-        if outside:
-            raise ArmWalkRefused(
-                f"the arm travels +/-{ARM_ENVELOPE_DEG} deg, so it cannot reach "
-                + ", ".join(f"{deg:+d}" for deg in outside)
-                + " deg"
-            )
 
 
 class ArmWalk:
@@ -539,7 +500,6 @@ class ArmWalk:
         self._saw_session = False
         self._capture_ended = False
         self._served: set[tuple[int, int]] = set()
-        self._served_angles: set[int] = set()
         self._releases: list[tuple[int, int, float]] = []
 
     # -- the public entry point -------------------------------------------- #
@@ -564,7 +524,7 @@ class ArmWalk:
                     error=f"{type(exc).__name__}: {exc}" if exc else "no verdict",
                 )
             self._park()
-        return self._final_code(code)
+        return code
 
     # -- the loop ----------------------------------------------------------- #
 
@@ -588,8 +548,6 @@ class ArmWalk:
             idle_ceiling_s=cfg.idle_ceiling_s,
             stuck_alarm_s=cfg.stuck_alarm_s,
             unreadable_ceiling_s=cfg.unreadable_ceiling_s,
-            complete_after=cfg.complete_after,
-            expect_angles=",".join(f"{a:+d}" for a in cfg.expect_angles) or "-",
         )
         verdict = self._mover.power()
         if not verdict.clean:
@@ -628,20 +586,8 @@ class ArmWalk:
                     )
                     return EXIT_STATUS_UNREACHABLE
 
-            if poll.hand_released:
-                # Decided before any clock, so the operator reads the real
-                # reason instead of the stuck alarm's #2506 diagnosis five
-                # minutes later. Nothing moved: this is the same class as the
-                # configuration refusals, discovered off the envelope.
-                self._trail.emit(
-                    "hand_released",
-                    level=logging.ERROR,
-                    detail=(
-                        "a person is walking this round from the browser -- "
-                        "serve has nothing to move and must not release a "
-                        "hold meant for a hand"
-                    ),
-                )
+            if poll.mover is not None and poll.mover != MOVER_ARM:
+                self._trail.emit("mover_mismatch", level=logging.ERROR, mover=poll.mover)
                 return EXIT_REFUSED
 
             if poll.pending is not None:
@@ -653,8 +599,6 @@ class ArmWalk:
                     if code is not None:
                         return code
                     idle_since = last_progress = self._clock()
-                    if self._complete_due():
-                        return self._post_complete()
             elif (
                 poll.readable
                 and poll.in_flight
@@ -724,8 +668,6 @@ class ArmWalk:
         status, body = self._session.release(pending.index, pending.attempt)
         if status != 200:
             # A release is a REQUEST the session may refuse (409/403/400/0);
-            # none of those began a capture, so counting it as served would
-            # satisfy --expect-angles/--complete-after on nothing measured.
             self._trail.emit(
                 "release_rejected",
                 level=logging.ERROR,
@@ -746,25 +688,8 @@ class ArmWalk:
             body=body[:300],
         )
         self._served.add(pending.key)
-        self._served_angles.add(pending.degrees)
         self._releases.append((pending.index, pending.degrees, settled))
         return None
-
-    def _complete_due(self) -> bool:
-        after = self._config.complete_after
-        return after is not None and len(self._served) >= after
-
-    def _post_complete(self) -> int:
-        self._capture_ended = True
-        status, body = self._session.complete()
-        self._trail.emit(
-            "complete",
-            level=logging.INFO if status == 200 else logging.ERROR,
-            released=len(self._served),
-            http=status,
-            body=body[:300],
-        )
-        return EXIT_OK if status == 200 else EXIT_COMPLETE_FAILED
 
     def _session_ended(self, poll: Poll) -> int:
         """The session published a terminal status. Its verdict becomes ours.
@@ -775,8 +700,7 @@ class ArmWalk:
         round N+1's first polls read round N's terminal block without the latch.
 
         ``failed`` carries the session's OWN error; ``stopped`` is not :data:`EXIT_OK`
-        (fewer positions measured than planned); ``complete`` returns cleanly, leaving
-        the ``--expect-angles`` check to :meth:`_final_code`.
+        (fewer positions measured than planned); ``complete`` returns cleanly.
         """
         self._capture_ended = True
         if poll.failed_error is not None:
@@ -794,33 +718,10 @@ class ArmWalk:
 
     # -- the exits ---------------------------------------------------------- #
 
-    def _final_code(self, code: int) -> int:
-        """An otherwise-clean walk still fails if a stated angle never came. Checked after the
-        park, so a degraded session leaves the arm home and the operator a named code,
-        not a silent zero.
-        """
-        if code != EXIT_OK:
-            return code
-        missing = tuple(
-            deg for deg in self._config.expect_angles
-            if deg not in self._served_angles
-        )
-        if not missing:
-            return EXIT_OK
-        self._trail.emit(
-            "walk_not_taken",
-            level=logging.ERROR,
-            missing_angles=",".join(f"{deg:+d}" for deg in missing),
-            served_angles=",".join(f"{deg:+d}" for deg in sorted(self._served_angles))
-            or "-",
-        )
-        return EXIT_WALK_NOT_TAKEN
-
     def _cancel_capture(self) -> None:
         """Best-effort: stop the box's own capture session. Never raises.
 
-        Skipped once this walk already ended the session itself (a normal
-        ``_post_complete``, or a terminal status ``_session_ended`` read) --
+        Skipped once this walk read a terminal session status --
         the box has no matching capture left, and cancelling it would only
         log a spurious warning. A cancel that still races a session's own
         end (another tab's Stop, or the session finishing between the last
@@ -903,14 +804,10 @@ def pending_from_capture(capture: Mapping[str, Any]) -> Pending | None:
     same way: nothing to serve. A hold this loop cannot parse -- or was not
     asked for -- is one it must not move for.
     """
-    raw = capture.get("position_pending")
+    raw = capture.get("join") or capture.get("position_pending")
     if not isinstance(raw, Mapping) or "index" not in raw or "degrees" not in raw:
         return None
-    # The reciprocal of the browser's own ``hand_released`` check: nothing
-    # stops a serve running beside a hand-walked round, and one that claimed
-    # its holds would turn the turntable while a household is standing at the
-    # microphone.
-    if raw.get("hand_released"):
+    if raw.get("mover") != MOVER_ARM:
         return None
     try:
         return Pending(
@@ -944,12 +841,10 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     if state == "failed":
         failed = str(capture.get("error") or "(the session supplied no error)")
     ended = state if state in SESSION_ENDED_STATUSES else ""
-    held = capture.get("position_pending")
+    held = capture.get("join") or capture.get("position_pending")
     return Poll(
         pending_from_capture(capture), not ended, failed, ended=ended,
-        hand_released=bool(
-            isinstance(held, Mapping) and held.get("hand_released")
-        ),
+        mover=str(held.get("mover") or "") if isinstance(held, Mapping) else None,
     )
 
 
@@ -958,7 +853,6 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
 
 __all__: Sequence[str] = (
     "ARM_ENVELOPE_DEG",
-    "COMPLETE_PATH",
     "POSITION_READY_PATH",
     "ArmWalk",
     "ArmWalkRefused",
@@ -968,7 +862,6 @@ __all__: Sequence[str] = (
     "DEFAULT_SETTLE_S",
     "DEFAULT_STUCK_ALARM_S",
     "DEFAULT_TOOL_PATH",
-    "EXIT_COMPLETE_FAILED",
     "EXIT_HANGUP_PARKED",
     "EXIT_IDLE_CEILING",
     "EXIT_INTERRUPTED_PARKED",
@@ -982,8 +875,6 @@ __all__: Sequence[str] = (
     "EXIT_SETTLE_FLOOR",
     "EXIT_STUCK",
     "EXIT_TERMINATED_PARKED",
-    "EXIT_WALK_NOT_STAGED",
-    "EXIT_WALK_NOT_TAKEN",
     "PARK_ON_SIGNALS",
     "PARK_SETTLE_S",
     "PARK_TOLERANCE_DEG",

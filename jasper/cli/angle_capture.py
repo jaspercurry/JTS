@@ -10,7 +10,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 from jasper.active_speaker import arm_walk
 from ._logging import CLI_LOG_FORMAT
@@ -18,50 +18,6 @@ from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 
 MOVER_TURNTABLE = "turntable"
 AUTHORITY_TIER = "mutating (`serve` moves the arm)"
-
-def _angle_field(text: str) -> Any:
-    """One ``--angles`` field, as the seam should see it.
-
-    A field written as a whole number becomes an ``int``; EVERYTHING else is
-    returned as the original string. That asymmetry is the point: the seam
-    refuses a non-integral angle by design, and it can only do that if the
-    non-integral value actually reaches it. Parsing ``7.5`` to a float here
-    would be fine, but parsing it to an ``int`` would not -- and the two are one
-    keystroke apart, so this function never converts anything it would have to
-    round.
-    """
-    field = text.strip()
-    try:
-        return int(field)
-    except ValueError:
-        return field
-
-
-def _parse_angles(raw: str) -> list[Any]:
-    """``"0,7,-7"`` -> ``[0, 7, -7]``, preserving every field the seam must judge.
-
-    Empty fields are dropped so a trailing comma is not an error; an entirely
-    empty list is left empty, and :class:`AngleCaptureRequest` refuses it ("an
-    angle capture request needs at least one stop") rather than this function
-    inventing a second sentence for the same fact.
-    """
-    return [_angle_field(field) for field in raw.split(",") if field.strip()]
-
-
-def _expect_angles(raw: str) -> tuple[int, ...]:
-    """``serve --expect-angles``: the same split, but whole degrees only.
-
-    Stricter than :func:`_parse_angles` because there is no seam downstream to
-    refuse a bad field: ``WalkConfig`` compares and formats these as ints.
-    """
-    fields = _parse_angles(raw)
-    degrees = [field for field in fields if isinstance(field, int)]
-    if len(degrees) != len(fields):
-        raise argparse.ArgumentTypeError(
-            "angles are whole degrees, comma separated (e.g. 7,-7,22,-22)"
-        )
-    return tuple(degrees)
-
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     """Run the arm through one live session and hand back a shared exit code.
@@ -80,8 +36,6 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             poll_s=args.poll_s,
             idle_ceiling_s=args.idle_ceiling_s,
             stuck_alarm_s=args.stuck_alarm_s,
-            complete_after=args.complete_after,
-            expect_angles=args.expect_angles,
         )
     except arm_walk.ArmWalkRefused as exc:
         return failed(EXIT_REFUSED, "walk_refused", str(exc))
@@ -164,24 +118,6 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "the turntable adapter to drive as a subprocess "
             "(default: %(default)s; point it at a checkout for lab work)"
-        ),
-    )
-    parser.add_argument(
-        "--expect-angles",
-        type=_expect_angles,
-        default=(),
-        help=(
-            "non-zero bearings the served run must visit"
-        ),
-    )
-    parser.add_argument(
-        "--complete-after",
-        type=int,
-        default=None,
-        help=(
-            "after this many releases, POST the wired all-spots-measured "
-            "signal that closes the held pre-apply group. A wired stage has no "
-            "phone event to close it, so nothing else will"
         ),
     )
     parser.add_argument(
