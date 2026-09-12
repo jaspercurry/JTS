@@ -815,6 +815,45 @@ def test_seat_level_start_route_dispatches_and_is_csrf_protected(tmp_path, monke
     assert read_calls == [len(body)]
 
 
+def test_seat_level_status_route_answers_json(tmp_path, monkeypatch):
+    expected = {
+        "state": "idle",
+        "target_db_spl": None,
+        "mic": {"available": False},
+        "default_target_db_spl": 78.0,
+    }
+    monkeypatch.setattr(sound_setup, "_seat_level_status_payload", lambda: expected)
+
+    handler_cls = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=tmp_path / "configs",
+        camilla_factory=lambda: None,
+    )
+    rfile = io.BytesIO(
+        b"GET /active-speaker/seat-level/status HTTP/1.1\r\n"
+        b"Host: jts.local\r\n\r\n"
+    )
+    wfile = io.BytesIO()
+    handler = handler_cls.__new__(handler_cls)
+    handler.rfile = rfile
+    handler.wfile = wfile
+    handler.client_address = ("127.0.0.1", 0)
+    handler.server = None
+    handler.raw_requestline = rfile.readline()
+    assert handler.parse_request() is True
+    handler.protocol_version = "HTTP/1.1"
+    handler.do_GET()
+    response = wfile.getvalue()
+
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    headers, body = response.split(b"\r\n\r\n", 1)
+    assert b"Content-Type: application/json" in headers
+    payload = json.loads(body)
+    assert set(payload) == set(expected)
+    assert payload["state"] == "idle"
+
+
 def test_seat_level_stop_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
     """#2761: POST /active-speaker/seat-level/stop reaches
     _seat_level_stop_payload only after the same CSRF chokepoint."""
