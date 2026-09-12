@@ -22,7 +22,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
     EXIT_OK as EXIT_OK,
@@ -602,7 +601,6 @@ def _bind_compose(
         capture_session_id=session_id, cam_factory=cam_factory,
         config_dir=config_dir, topology=box.topology,
         safety_profile=box.safety_profile, role_targets=box.role_targets,
-        session_volume_db=box.session_volume_db,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
         bass_extension_for_spec=bass_for_spec,
@@ -617,28 +615,12 @@ def _spl_monitor(
     mic_serial: str | None,
     volume_db: float | None,
 ) -> tuple[Any, str]:
-    """This door's SPL watch, from the one owner every door asks
-    (:func:`~jasper.active_speaker.plan_run.spl_watch`).
-
-    What is this door's own: a batch states ONE ceiling, and the declaration it
-    already read is the preset the stop is resolved from -- a second disk load
-    of the same answer is what passing it spares.
-    """
     from jasper.active_speaker.angle_capture import LateralWalkRefused  # lazy: measurement stack import cost
-    from jasper.active_speaker.plan_run import spl_watch  # lazy: measurement stack import cost
-    from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
+    from jasper.cli.measurement_watch import measurement_spl_watch  # lazy: measurement stack import cost
 
-    sensitivity = (
-        resolve_mic_sensitivity(mic_serial=mic_serial) if mic_serial
-        else resolved_household_sensitivity(device)
-    )
     try:
-        monitor, note = spl_watch(
-            stated,
-            topology=box.topology,
-            preset=box.preset,
-            sensitivity=sensitivity,
-            device=device,
+        monitor, note = measurement_spl_watch(
+            stated, topology=box.topology, preset=box.preset, device=device, mic_serial=mic_serial,
         )
     except LateralWalkRefused as exc:
         raise BoxNotMeasurable(exc.reason, exc.detail) from exc
@@ -742,6 +724,10 @@ async def _measure(
     if volume_db is not None:
         box = replace(box, session_volume_db=volume_db)
 
+    if request is not None and request.operating_levels_db and request.operating_levels_db != (box.session_volume_db,):
+        from jasper.active_speaker.angle_capture import WALK_LEVEL_POLICY_INVALID  # lazy: measurement stack
+        raise BoxNotMeasurable(WALK_LEVEL_POLICY_INVALID, "The fixed measurement level differs from the requested windows")
+
     session_id = f"measure-{secrets.token_hex(4)}"
     config_dir = str(DEFAULT_CAMILLA_CONFIG_DIR)
     cam_factory = primary_controller
@@ -761,6 +747,7 @@ async def _measure(
         )
         async with measurement_door(
             profile=measurement_profile,
+            spl_monitor=spl_monitor,
             measurement_volume_db=box.session_volume_db,
             camilla_factory=cam_factory,
             action="measuring",
@@ -784,7 +771,7 @@ async def _measure(
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
                 setup_reference=_wired_setup_reference,
-                spl_monitor=spl_monitor,
+                spl_monitor=door.spl_monitor,
                 read_loudness_volume_db=lambda: door.measurement_loudness_volume_db,
             )
             seams = bind_engine_seams(
@@ -808,6 +795,7 @@ async def _measure(
             )
             async with TuningSession(
                 session_id=session_id,
+                allocate_take_id=manifest.allocate_take_id,
                 seams=seams,
                 measurement_level_db=box.session_volume_db,
                 level_match_trims_db=trims,

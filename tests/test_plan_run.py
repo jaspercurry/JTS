@@ -26,6 +26,7 @@ from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, T
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from tests.crossover_v2_fixtures import _loc
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
+from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 
 _ABORTS = {SeamFailure: "seam_failed"}
 _SCOPES = {"fp-a": "candidate", "fp-b": "candidate"}
@@ -97,7 +98,7 @@ class _Store:
 async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None):
     fakes = seams or FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
-    async with open_session(replace(fakes, records=manifest)) as (session, _):
+    async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
                                          gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, signals=signals, captures=captures)
     return result, fakes
@@ -297,7 +298,7 @@ def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypa
     event = Mock(wraps=plan_run.log_event)
     monkeypatch.setattr(plan_run, "log_event", event)
     async def run():
-        async with open_session(replace(fakes, records=manifest)) as (session, _):
+        async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
             return await plan_run.run_plan(_walk([0]), session=session, manifest=manifest, analyze=_analysis,
                                            gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, clock=lambda: now)
     if failure is RuntimeError:
@@ -418,10 +419,11 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
     fakes = FakeSeams()
 
     class FreshEngine:
+        measurement_level_db = -20
         graph_fingerprint = fakes.graph.fingerprint
 
         async def measure(self, spec):
-            async with open_session(replace(fakes, records=manifest)) as (session, _):
+            async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
                 return await session.measure(spec)
 
     result = asyncio.run(plan_run.run_plan(_walk([0, 20]), session=FreshEngine(), manifest=manifest,
@@ -499,7 +501,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
             manifest.begin({"index": index, "repeat": 1, "pose": {"deg": degrees}}, attempt=1, pose_index=index - 1)
-            await manifest.append({**record, **(changed if index == 2 else {})}, f"record-{index}",
+            await manifest.append({**record, "take_id": manifest.allocate_take_id(), **(changed if index == 2 else {})}, f"record-{index}",
                                   TakeVerdict(True), complete=True, started_s=index, ended_s=index + 1)
     asyncio.run(append())
     groups = manifest.to_dict()["sets"]
@@ -510,7 +512,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
 def test_manifest_names_emitted_role_levels_and_usable_bands():
     manifest = RunManifest("run", _Store(FakeSeams().records))
     manifest.begin({"index": 1, "repeat": 1, "pose": {"deg": 0}}, attempt=1, pose_index=0)
-    record = {"stimulus_dbfs": -12, "program": {"segments": [
+    record = {"take_id": manifest.allocate_take_id(), "stimulus_dbfs": -12, "program": {"segments": [
         {"kind": "pilot", "role": "pilot_only", "gain_db": -6},
         {"kind": "sweep", "role": "woofer", "gain_db": -18},
         {"kind": "sweep", "role": "tweeter", "gain_db": -24},
@@ -558,6 +560,123 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
         assert result.reason == "measurement_baseline_unavailable"
         assert result.finalized and not result.attempts
         assert not fakes.banked
+
+
+@pytest.mark.parametrize("levels", [(-20,), (-20, -14), (-20, -20)])
+@pytest.mark.parametrize("stop_on_deferred", [False, True])
+@pytest.mark.parametrize("defer_after", [None, 2, 4])
+async def test_level_windows_keep_one_hold_and_stop_on_deferred_restore(tmp_path, box, monkeypatch, levels, defer_after, stop_on_deferred):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from jasper import measurement_window as coordinator
+    from jasper.active_speaker.crossover_v2.door import isolation_hold
+    from jasper.active_speaker.crossover_v2.session import TuningSession
+    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
+    from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.volume_owner import volume_owner, ClaimKind
+
+    events, sessions, watches, records = [], [], [], []
+    owner, preemptor = volume_owner(), None
+    @asynccontextmanager
+    async def lease(**kwargs):
+        events.append("hold")
+        try:
+            yield
+        finally:
+            events.append("release")
+    monkeypatch.setattr(coordinator, "measurement_window", lease)
+    graph = FakeGraph()
+    graph.entry_scope_fingerprint = "entry"
+    manifest = RunManifest("run", _Store(FakeSeams().records))
+    state_path = tmp_path / "levels.json"
+    plan = SessionVolumePlan(state_path=state_path)
+    class Play(FakePlay):
+        async def run(self, **kwargs):
+            nonlocal preemptor
+            assert events[0] == "hold" and events[-1] != "release"
+            assert box.volume_db == await box.get_loudness_volume_db() == kwargs["level_db"]
+            records.append((kwargs["position_deg"], kwargs["level_db"], kwargs["spec"].candidate_id))
+            answer = await super().run(**kwargs)
+            if len(records) == defer_after:
+                preemptor = await owner.acquire_level(ClaimKind.COMMISSIONING, -30)
+                if stop_on_deferred:
+                    raise plan_run.CaptureStopped("stop")
+            return answer
+    def build(door, allocate):
+        events.append(door.measurement_volume_db)
+        watches.append(door.spl_monitor)
+        capture = SimpleNamespace(take_answer=lambda: None,
+                                  read_loudness_volume_db=box.get_loudness_volume_db)
+        session = TuningSession("run", EngineSeams(door.graph, door.claim,
+                                CapturedRecordStore(manifest, capture), Play()),
+                                door.measurement_volume_db, allocate)
+        sessions.append(session)
+        return session
+    windows = plan_run.LevelWindows(
+        isolation_hold(graph=graph, camilla_factory=lambda: box, action="test", plan=plan,
+                       volume_state_path=state_path), build, None, None,
+        MicSensitivity(-12, 18, "1234"), SimpleNamespace(model_key="minidsp_umik2"), 80,
+    )
+    request = replace(_walk([0, 20], ("fp-a", "fp-b")), operating_levels_db=levels, spl_ceiling_db_spl=80)
+    gate = AnsweredGate()
+    try:
+        result = await plan_run.run_plan(request, windows=windows, manifest=manifest, analyze=_analysis,
+                                          gate=gate, candidate_scopes=_SCOPES,
+                                          aborts={**_ABORTS, plan_run.CaptureStopped: "user_stopped"})
+        expected = [(pose, level, cid) for pose in (0, 20) for level in levels for cid in ("fp-a", "fp-b")]
+        # A higher-ranked claimant stops the current window; no next window may open.
+        if defer_after is not None:
+            expected = expected[:((defer_after + 1) // 2) * 2]
+        assert graph.restores == 1
+        assert records == expected
+        assert events == ["hold", *[level for _pose, level, cid in expected if cid == "fp-a"], "release"]
+        assert len({id(session) for session in sessions}) == len(sessions)
+        assert len({id(watch) for watch in watches}) == len(sessions)
+        assert {watch.ceiling_db_spl for watch in watches} == {80}
+        assert len(gate.grants) == len({pose for pose, _level, _cid in expected})
+        ids = [record["take_id"] for record in manifest.records.records.banked]
+        assert ids == [f"run_take_{i:04d}" for i in range(1, len(ids) + 1)]
+        assert set(ids) == {take["take_id"] for take in result.takes if take["artifacts"]["record_id"]}
+        assert all(take["level"]["level_db"] == take["level"]["loudness_volume_db"] for take in result.takes)
+        assert result.status == ("partial" if defer_after is not None else "complete")
+        assert result.reason == (("user_stopped" if stop_on_deferred else "volume_restore_deferred") if defer_after is not None else "")
+        if defer_after is not None:
+            assert windows.last_window.restore_result.value == "deferred"
+        assert (plan.measurement_volume_db is not None) is (defer_after is not None)
+        for session in sessions:
+            assert not session.is_open
+        if defer_after is not None and not stop_on_deferred:
+            assert REASON_REGISTRY[result.reason].next_action
+    finally:
+        if preemptor is not None:
+            await owner.release(preemptor)
+
+
+@pytest.mark.parametrize("ceiling, sensitivity, reason", [
+    (None, True, "walk_commissioning_stop_unset"), (80, False, "measure_spl_calibration_required"),
+])
+async def test_no_window_can_open_without_a_resolved_ceiling_and_watch(tmp_path, box, ceiling, sensitivity, reason):
+    from types import SimpleNamespace
+    from jasper.active_speaker.crossover_v2.door import isolation_hold
+    from jasper.audio_measurement.calibration import MicSensitivity
+
+    graph = FakeGraph()
+    manifest = RunManifest("run", _Store(FakeSeams().records))
+    build = Mock(side_effect=AssertionError("window opened without a watch"))
+    windows = plan_run.LevelWindows(
+        isolation_hold(graph=graph, camilla_factory=lambda: box, action="test",
+                       volume_state_path=tmp_path / "volume.json"), build, None, None,
+        MicSensitivity(-12, 18, "1234") if sensitivity else None,
+        SimpleNamespace(model_key="minidsp_umik2"), ceiling,
+    )
+    result = await plan_run.run_plan(replace(_walk([0]), operating_levels_db=(-20, -14)),
+                                      windows=windows, manifest=manifest, analyze=_analysis,
+                                      candidate_scopes=_SCOPES, aborts=_ABORTS)
+    assert (result.status, result.reason, result.takes_measured) == ("partial", reason, 0)
+    build.assert_not_called()
+    assert not graph.installs
 
 
 @pytest.mark.parametrize(("regime", "candidate", "phases"), [

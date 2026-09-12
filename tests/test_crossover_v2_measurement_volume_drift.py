@@ -685,7 +685,7 @@ def _drive(
             graph_scope="candidate" if phase == PHASE_VERIFY else "drivers",
             candidate_id="baseline" if phase == PHASE_VERIFY else "",
             program_phase=phase,
-        ))
+        ), level_db=DECLARED_DB)
         await program_playback.play_program(
             prepared.program, session_volume_plan=plan, **prepared.seams,
         )
