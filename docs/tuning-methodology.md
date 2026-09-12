@@ -243,9 +243,11 @@ Judge evidence use, recovery, and resulting state; no tool sequence is required.
 
 Room correction is a layer of this toolbox, not a separate product
 ([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)).
-The room is measured where it is heard: a cube around the listener's head, the
-head centre and the six face centres 0.30 m out (`seat/cube`; `seat/express` is
-the head, right and forward). Each pose is one summed sweep through the applied
+The room is measured where it is heard. The default `seat/cloud` has 11 poses:
+a 3×3 horizontal grid at offsets −0.30, 0, and +0.30 m, plus points 0.30 m
+above and below the head centre. The named `seat/cube` alternative has the
+centre and six face centres; `seat/express` has the centre, right, and forward.
+Each pose is one summed sweep through the applied
 tune, analyzed ungated so the reflections stay in. A seat take records its
 kind, its offset from the head and its window
 ([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md));
@@ -258,7 +260,7 @@ gate it earned), clamped to the room boundary's bounds, with the shipped
 default disclosed when no applied floor is readable
 ([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)).
 Above it the speaker stage has authority and the room layer does nothing.
-Below it speaker, room and bass are read together on the cube.
+Below it speaker, room and bass are read together across the cloud.
 
 `jasper-round-views room --set <set-id>` writes one `room.json` document:
 
