@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-from ..active_speaker.capture_status import CAPTURE_COMPLETE, CAPTURE_STOPPED, CAPTURE_FAILED
+from ..active_speaker.capture_status import CAPTURE_COMPLETE, CAPTURE_STOPPED, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from ..audio_measurement import household_mic
 from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from ..log_event import log_event
@@ -49,14 +49,7 @@ _capture_slot: dict[str, Any] | None = None
 _pending_capture: tuple[CaptureKind, Callable[[str], AbstractContextManager[Any]]] | None = None
 _capture_stop_request: Callable[[], None] | None = None
 _capture_position_gate: Any | None = None
-# The active session's all-spots-measured signal, or None — set by the
-# session's driver/wizard POST. Same claimed-with-the-slot,
-# dropped-when-not-in-flight lifecycle as the two above.
 _capture_complete_request: Callable[[], None] | None = None
-# The active session's per-take RETAKE signal, or None. Same
-# claimed-with-the-slot, dropped-when-not-in-flight lifecycle as the three
-# above, which is what stops a POST arriving after the walk from re-opening a
-# slot nothing is holding.
 _capture_retake_request: Callable[[], None] | None = None
 _CAPTURE_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_capture"})
 _CAPTURE_IN_FLIGHT_STATUSES = _CAPTURE_STOPPABLE_STATUSES | {"stopping"}
@@ -81,17 +74,21 @@ def _set_capture_slot(value: dict[str, Any] | None) -> None:
             _capture_retake_request = None
 
 
+def _clear_terminal_capture(kind_prefix: str) -> None:
+    global _capture_slot
+    with _session_lock:
+        if (_capture_slot and _capture_slot.get("status") in SESSION_ENDED_STATUSES
+                and str(_capture_slot.get("kind") or "").startswith(kind_prefix)):
+            _capture_slot = None
+
+
 def _get_capture_slot() -> dict[str, Any] | None:
     with _session_lock:
         return dict(_capture_slot) if _capture_slot else None
 
 
 def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
-    """Return capture state only to the flow that owns it.
-
-    The process has one hardware-safe capture slot; a page must never render
-    another flow's waiting state.
-    """
+    """Return capture state only to the flow that owns it."""
     capture = _get_capture_slot()
     with _session_lock:
         pending = _pending_capture

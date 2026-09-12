@@ -45,20 +45,6 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-nudges" aria-live="polite"></div>
   </section>
 
-  <section id="crossover-review" class="info-card" aria-label="Measured crossover details" hidden>
-    <p class="eyebrow">What was measured</p>
-    <h2 class="section__title">Measured crossover</h2>
-    <div id="crossover-review-body"></div>
-  </section>
-
-  <!-- ONE section, two truths (issue #2152). Post-VERIFY it shows measured
-       before/after curves and the heading below is exactly right. On the
-       PRE-APPLY review screen — since R15 removed the pre-apply cloud
-       (#2106) — the only curve is the PREDICTION, and "what the microphone
-       heard" then contradicts its own "(not measured)" legend. The heading,
-       eyebrow, aria-label, and the basis line are therefore set by
-       cloud.js's `updateSectionFraming` from what is actually on the canvas;
-       the markup below is the measured wording it falls back to. -->
   <section id="crossover-cloud" class="info-card" aria-label="Before and after measurement" hidden>
     <p id="crossover-cloud-eyebrow" class="eyebrow">Before and after</p>
     <h2 id="crossover-cloud-title" class="section__title">What the microphone heard</h2>
@@ -197,16 +183,7 @@ def handle_envelope(
     the dumb frontend renders each step from (revision plan §3.2), aligned with
     the room flow's envelope-driven pattern. Additive alongside /crossover/status;
     passive speakers get ``active=False`` (Layer A hidden)."""
-    from .correction_crossover_v2 import attach_stage2_preflight
-
     status, _ = handle_status(capture=capture)
-    # Two-stage commission D3: a stage-2 openability refusal is knowable now,
-    # so it is resolved here and rides the status the envelope renders from
-    # as a DISCLOSURE (the apply transaction owns the refusal). A no-op on
-    # every phase but `review`; see attach_stage2_preflight for the
-    # cost/side-effect disclosure and for why it cannot live inside the
-    # (jasper.active_speaker) envelope builder.
-    attach_stage2_preflight(status)
     envelope = _build_envelope_logged(status)
     # The "Start over" confirm copy is grouping-aware; carry the (cheap,
     # fail-open) member flag on every polled envelope so the button that is
@@ -264,69 +241,3 @@ def handle_reset(
         "kept": reset_result.get("kept_ids"),
     }
     return envelope, HTTPStatus.OK
-
-
-def handle_v2_decline(
-    body: Mapping[str, Any] | None = None,
-    *,
-    capture: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], HTTPStatus]:
-    """POST /crossover/v2/decline: "Keep current sound", as a real action.
-
-    **What #2641 measured.** The review screen's decline was minted with an
-    ``href`` and no endpoint, so the click reloaded the page and landed back on
-    the SAME decision screen — a household that had decided was asked again,
-    indefinitely — and the round record could not tell "the household declined"
-    from "the household never looked". The second half is the one the machinery
-    needs: a series that offers another bite has to know when the answer was no.
-
-    **What this does NOT do**, deliberately, because the review screen's own
-    docstring is the contract: it does not touch the speaker (declining changes
-    nothing), and it does not delete the candidate (an accidental tap would
-    otherwise cost ten captures to undo). The proposal stays reviewable until a
-    newer measurement replaces it. What is recorded is the DECISION.
-
-    ``expected_candidate_fingerprint`` is the same guard ``/v2/apply`` carries
-    and refuses on the same way: a decline recorded against a candidate that
-    has since been replaced would close a review the household never saw. An
-    empty expectation is accepted — the review screen mints one when there is
-    no candidate at all, and "there is nothing to propose, keep what you have"
-    is a real decline.
-
-    Returns the freshly-built envelope, the shape :func:`handle_reset` returns,
-    so the page re-renders from its resting screen in one round trip rather
-    than polling for it. This route reads state to CHECK the guard and hands
-    the write to ``correction_crossover_v2``'s own locked writer, which is
-    where every durable v2 write lives.
-    """
-    from .correction_crossover_v2 import load_v2_state, observe_review_decline
-
-    payload = body if isinstance(body, Mapping) else {}
-    expected = str(payload.get("expected_candidate_fingerprint") or "")
-
-    state = load_v2_state()
-    candidate = (state or {}).get("candidate")
-    current = (
-        str(candidate.get("fingerprint") or "")
-        if isinstance(candidate, Mapping) else ""
-    )
-    if expected and expected != current:
-        log_event(
-            logger, "correction.crossover_v2_review_decline_superseded",
-            level=logging.WARNING,
-            expected_candidate_fingerprint=expected,
-        )
-        return {
-            "ok": False,
-            "error": (
-                "The crossover candidate changed while this screen was open. "
-                "Review the current one."
-            ),
-            "issues": [{
-                "code": "baseline_candidate_fingerprint_mismatch",
-                "message": "the reviewed candidate is no longer the current one",
-            }],
-        }, HTTPStatus.CONFLICT
-
-    observe_review_decline(current)
-    return handle_envelope(capture=capture)

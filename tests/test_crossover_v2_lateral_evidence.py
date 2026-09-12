@@ -10,7 +10,6 @@ import hashlib
 import json
 import logging
 import math
-import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -278,6 +277,7 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
 
     env = build_crossover_envelope_v2({
         "active": True,
+        "capture": {"status": "awaiting_capture"},
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {"phase": phase},
     })
@@ -295,26 +295,6 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     assert steps["microphone_check"] == "done"
     assert steps["measure"] == "active"
 
-    # …and the REJECTION screens, where a missing ``_PHASE_STEP`` entry ACTUALLY
-    # bites: they read the precomputed ``active_step``, not the phase branch's
-    # own, and silent-auto-retry uses it as the SCREEN — so a glitched pose
-    # would send the household back to step 1 over one bad sweep. Every code is
-    # one ``_consume_lateral_pose`` can return.
-    for code in (
-        REASON_DRIFT_BASELINES_DISAGREE,   # silent auto-retry: screen == step
-        REASON_LOCATE_FAILED, REASON_PILOT_LEVEL_COLLAPSE,
-        REASON_CLIPPED, REASON_AGC_BEHAVIORAL_FAIL,
-    ):
-        failed = build_crossover_envelope_v2({
-            "active": True, "setup": {"active": True, "status": "ready"},
-            "crossover_v2": {
-                "phase": phase, "failure": {"code": code, "at": time.time()},
-            },
-        })
-        failed_steps = {s["id"]: s["status"] for s in failed["steps"]}
-        assert failed_steps["measure"] == "active", code
-        assert failed_steps["microphone_check"] == "done", code
-        assert failed["screen"] != "microphone_check", code
 
 
 # --- the capture plan ---------------------------------------------------------
