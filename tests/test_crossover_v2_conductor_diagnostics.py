@@ -1043,7 +1043,7 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     assert fields["guard"] == ""
 
 
-def test_verify_diag_logs_full_numbers_on_out_of_tolerance_rejection_too(caplog):
+def test_verify_diag_logs_full_numbers_on_an_advisory_tracking_failure(caplog):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.verify = lambda program: _verify_analysis(program, max_db=5.0, gate_ms=8.5)
@@ -1052,11 +1052,11 @@ def test_verify_diag_logs_full_numbers_on_out_of_tolerance_rejection_too(caplog)
     _run_phase(c, 2, 2)
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "verify_out_of_tolerance"
+    assert verdict["accepted"] is True
+    assert c.verify_code == "verify_out_of_tolerance"
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    assert fields["accepted"] == "false"
-    assert fields["code"] == "verify_out_of_tolerance"
+    assert fields["accepted"] == "true"
+    assert fields["code"] == ""
     assert fields["max_db_notch_excluded"] == "5.0"
     assert fields["verify_gate_window_ms"] == "8.5"
     assert fields["measure_gate_window_ms"] == "8.0"
@@ -1142,9 +1142,6 @@ def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(ca
     # Attempt 2 (N): a REAL, non-None step gets computed and logged (0.1 dB,
     # within the ceiling — independently out of tolerance too, so a 3rd
     # attempt is admitted). ``max_db`` is deliberately more than
-    # ``VERIFY_REPEAT_FLOOR_DB`` away from attempt 1's: agreeing with it would
-    # earn #1873's terminal ``verify_deterministic_mismatch`` and refuse the
-    # 3rd attempt this test needs.
     fakes.verify = lambda program: _verify_analysis(
         program, pilot_hi_dbfs=-20.0 + 0.1, max_db=8.0,
     )

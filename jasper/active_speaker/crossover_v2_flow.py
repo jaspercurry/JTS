@@ -12,7 +12,6 @@ from .crossover_v2.alignment_prescription import (
 
 import hashlib
 import logging
-import math
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -222,7 +221,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASURE_GAIN_ADJUSTED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
     REASON_REGISTRY,
-    REASON_VERIFY_DETERMINISTIC_MISMATCH,
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
@@ -335,15 +333,6 @@ MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 # may step between attempts before the recorder itself is suspect. See
 # ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = _dispatch.VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
-
-# dB. How close two consecutive graded VERIFY attempts must land before the
-# mismatch is called DETERMINISTIC rather than transient (#1873). See ADR-0183
-# — do NOT tighten toward the raw measured p95 without rereading it.
-VERIFY_REPEAT_FLOOR_DB = 0.2
-
-#: ``terminal_outcome`` for the verdict above: the captures agreed, and the
-#: agreement ends the set.
-VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
 CrossoverV2FlowError = _contracts.CrossoverV2FlowError
 
@@ -992,9 +981,6 @@ class CrossoverV2Session:
         # #1873's discriminator: the PREVIOUS VERIFY attempt's out-of-tolerance
         # ``max_db_notch_excluded``, in this session only. A MISMATCH, not a
         # grade — an attempt inside tolerance clears it. SESSION-SCOPED because
-        # ``VERIFY_REPEAT_FLOOR_DB`` is a fixed-mic number and a re-arm is a fresh
-        # sitting.
-        self._verify_last_mismatch_max_db: float | None = None
         # WHEN this session set the reference above (epoch float), stamped in the same
         # statement so the two cannot disagree.
         self._verify_pilot_baseline_at: float | None = None
@@ -3758,29 +3744,6 @@ class CrossoverV2Session:
         self._verify_code = code
         self._verify_gate = gate
 
-    def _note_verify_mismatch(self, max_db: Any) -> str:
-        """Which out-of-tolerance code this attempt earns (#1873).
-
-        The single owner of both halves of the discriminator.
-        ``verify_deterministic_mismatch`` once an attempt lands within
-        :data:`VERIFY_REPEAT_FLOOR_DB` of **its predecessor** — never of a fixed
-        first attempt, unlike the G3 reference above — where the instrument cannot
-        tell the two apart. **The non-finite guard is load-bearing for NaN**:
-        without it, ``nan > floor`` is ``False`` and an unmeasurable capture reads
-        as agreement.
-        """
-        if not isinstance(max_db, (int, float)) or not math.isfinite(float(max_db)):
-            # No usable grade: this attempt is a mismatch nothing can agree
-            # with, and it cannot agree with anything either.
-            self._verify_last_mismatch_max_db = None
-            return REASON_VERIFY_OUT_OF_TOLERANCE
-        current = float(max_db)
-        previous = self._verify_last_mismatch_max_db
-        self._verify_last_mismatch_max_db = current
-        if previous is None or abs(current - previous) > VERIFY_REPEAT_FLOOR_DB:
-            return REASON_VERIFY_OUT_OF_TOLERANCE
-        return REASON_VERIFY_DETERMINISTIC_MISMATCH
-
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call: ``_log_verify_diag`` runs unconditionally after this method
         # returns and would misreport a prior attempt's step as fresh.
@@ -3822,30 +3785,10 @@ class CrossoverV2Session:
         self._verify_claims = _verification._verify_claims(
             tracking, analysis.verify_absolute
         )
-        # Notch-aware, validity-floor-clamped comparator: the NOTCH-EXCLUDED max
-        # over this capture's own gate-derived band. Run 7 read 27.83 dB raw
-        # against a predicted sum whose own ripple was ~30 dB.
-        max_db = tracking.get("max_db_notch_excluded")
-        # Gated on the CLAIM just recorded: R18's vocabulary is three-valued, and a
-        # claim nobody could grade must not read as one that failed (#3487).
         if self._verify_claims["integration"]["status"] == CLAIM_FAIL:
-            code = self._note_verify_mismatch(max_db)
-            self._set_verify_outcome("fail", code, gate_record)
-            # Its own name: the integrity-screen branch above already binds a
-            # ``payload`` in this scope.
-            mismatch_payload: dict[str, Any] = {"tracking": dict(tracking)}
-            if code == REASON_VERIFY_DETERMINISTIC_MISMATCH:
-                # The runner's contract for "no later capture can make this set
-                # usable": the session closes on the verdict instead of waiting
-                # for a next begin whose only answer would be a refusal.
-                mismatch_payload["terminal"] = True
-                mismatch_payload["terminal_outcome"] = (
-                    VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
-                )
-            return replace(verdict, accepted=False, code=code, payload=mismatch_payload, next="fix_and_retake", charge="operator")
-        # Graded and inside tolerance: the mismatch did NOT repeat, so the pair #1873's
-        # discriminator would draw its claim from is broken.
-        self._verify_last_mismatch_max_db = None
+            self._set_verify_outcome("fail", REASON_VERIFY_OUT_OF_TOLERANCE, gate_record)
+            return replace(verdict, payload={"tracking": dict(tracking), "authority": "advisory"},
+                           next="accept", charge="none")
         # The delta probe, run only once tracking has PASSED. What it adds is the
         # band tracking cannot see: the whole span the correction commands.
         self._verify_tracking_curve = analysis.verify_tracking_curve
@@ -4140,8 +4083,6 @@ __all__ = [
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
     "SWEEP_LOCATE_CONFIDENCE_FLOOR",
     "VERIFY_PILOT_TRANSFER_STEP_CEILING_DB",
-    "VERIFY_REPEAT_FLOOR_DB",
-    "VERIFY_TERMINAL_OUTCOME_DETERMINISTIC",
     "alignment_to_candidate_fields",
     "back_off_gain",
     "verify_absolute_tolerance_db",

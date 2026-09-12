@@ -170,10 +170,7 @@ class V2ConductorSnapshot:
     # otherwise reads identically at the confirm screen, during the fit, and
     # after a session that produced nothing.
     cloud_close: str = ""
-    # Attempt history is journey-scoped, not capture-session-scoped: a second
-    # apply→VERIFY runs under a fresh capture session, so these records survive
-    # ``hydrate``'s session rebind while CHECK/MEASURE evidence does not.
-    #
+    # History survives the capture-session rebind; see ADR-0296.
     attempt_history: tuple[AttemptRecord, ...] = ()
     last_attempt_decision: Mapping[str, Any] | None = None
 

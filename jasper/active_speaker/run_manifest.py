@@ -151,6 +151,7 @@ class RunManifest:
                    "side": basis["side"], "role": role,
                    "level": {key: basis.get(key) for key in
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
+                   "analysis": record.get("analysis"),
                    "quality": {"status": status, "fault": verdict.fault,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},
@@ -164,8 +165,6 @@ class RunManifest:
         await self.persist()
 
     async def persist(self) -> None:
-        # Tens to low hundreds of takes fit full atomic snapshots (ADR-0017);
-        # revisit the write cost if walks grow to thousands of takes.
         self.path = await self.records.bank(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:

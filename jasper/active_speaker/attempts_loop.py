@@ -10,27 +10,20 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 FLOOR_BASIS_MEASURED = "measured_repeat_study"
-
-
 FLOOR_BASIS_POLICY = "declared_policy_bar"
-
-
 FLOOR_BASES: frozenset[str] = frozenset({
     FLOOR_BASIS_MEASURED, FLOOR_BASIS_POLICY,
 })
 
 
 FLOOR_SCOPE_WITHIN_SITTING = "within_sitting"
-
-
 FLOOR_SCOPE_ACROSS_SITTINGS = "across_sittings"
-
-
 FLOOR_SCOPES: frozenset[str] = frozenset({
     FLOOR_SCOPE_WITHIN_SITTING, FLOOR_SCOPE_ACROSS_SITTINGS,
 })
 
 
+# The frozen consecutive-pair study uses twice its p95; see ADR-0302.
 CLAIM_FLOOR_P95_MULTIPLE = 2.0
 
 
@@ -56,13 +49,7 @@ def percentile(values: Sequence[float], q: float) -> float:
 
 @dataclass(frozen=True)
 class FloorStats:
-    """What a change in ``metric`` has to clear before the loop may claim it. Build with
-    :meth:`from_repeat_study` (measured) or :meth:`from_policy_bar` (no study);
-    :attr:`basis` rides through every decision. :attr:`scope` (separation covered) is
-    orthogonal to :attr:`basis` -- collapsing them would let "we measured this" imply
-    "across a mic re-placement" (#2081); ``median_db``/``p95_db`` are ``None`` on a
-    policy bar.
-    """
+    """A measured or declared threshold, with its source and scope."""
 
     metric: str
     claim_floor_db: float
@@ -132,16 +119,6 @@ class FloorStats:
             source=source,
             scope=scope,
         )
-
-    def licenses_sitting_pair(self, previous: str, latest: str) -> bool:
-        """May a pair measured in these two sittings be graded against me? ``""`` is UNKNOWN, never
-        a match: two unrecorded sittings must not compare equal as if they were the same
-        place (pre-#2081 state rides in with two blanks).
-        """
-
-        if self.scope == FLOOR_SCOPE_ACROSS_SITTINGS:
-            return True
-        return bool(previous) and previous == latest
 
     def to_dict(self) -> dict[str, Any]:
         return {

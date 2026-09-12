@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.web import correction_crossover_v2 as host
 from jasper.active_speaker.crossover_v2.durable_state import (
     MAX_ATTEMPT_HISTORY, AttemptIntegrity,
 )
@@ -17,7 +18,7 @@ from tests.crossover_v2_fixtures import (
     SESSION,
     FakeSeams,
     _run_phase,
-    _verify_only_conductor,
+    _verify_only_conductor, _verify_analysis,
 )
 
 
@@ -76,16 +77,7 @@ def test_an_unidentifiable_attempt_gets_a_session_scoped_id():
     assert [item.attempt_id for item in c2.attempt_history] == [f"{SESSION}:1"]
 
 
-def test_the_durable_write_still_happens_between_the_record_and_the_decision():
-    """The write's SEQUENCE POINT, not just its count.
-
-    ``record_model_error`` fires after the record exists and before the loop
-    decision is projected onto the conductor — the window the shipped comment
-    calls "claim the durable observation identity before banking the journey
-    projection". A rewrite that gathered the decision first and wrote
-    afterwards would keep every count and payload assertion green and still
-    break the crash-recovery ordering this method was written for.
-    """
+def test_store_write_precedes_journey_history():
     prior = {"decision": None, "reason": "seeded-prior"}
     observed: list[dict[str, Any]] = []
     fakes = FakeSeams()
@@ -107,12 +99,9 @@ def test_the_durable_write_still_happens_between_the_record_and_the_decision():
     assert _run_phase(c, 1, 1)["accepted"] is True
 
     assert len(observed) == 1
-    # The record was already built: its id is what the store was asked about.
     assert observed[0]["attempt_id"] == "candidate-a"
-    # ...and neither the projection nor the ledger had moved yet.
     assert observed[0]["decision_at_write"] is None
     assert observed[0]["history_at_write"] == ()
-    # Both moved afterwards, so the ordering above is a real window.
     assert c.last_attempt_decision != prior
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
 
@@ -133,11 +122,6 @@ def test_comparison_advice_does_not_limit_further_human_started_experiments():
 
 
 def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypatch):
-    """#2082 item 1: ``verdict.accepted`` does not imply ``record.integrity.comparable``
-    (the legacy ``capture_integrity=None`` shape, defensive-only today). Banking an
-    incomparable record into accepted history would make the NEXT attempt's
-    predecessor comparison permanently fail.
-    """
     real_from_verify = flow.attempt_record_from_verify
 
     def _incomparable_record(*args, **kwargs):
@@ -151,3 +135,28 @@ def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypa
     c = _verify_only_conductor(FakeSeams(), tuning_attempt_id="candidate-a")
     assert _run_phase(c, 1, 1)["accepted"] is True
     assert c.attempt_history == ()
+
+
+def test_failed_verify_grade_is_durable_advice_without_a_retake(tmp_path):
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, max_db=3.0)
+    conductor = _verify_only_conductor(fakes, tuning_attempt_id="failed-grade")
+    verdict = _run_phase(conductor, 1, 1)
+    assert verdict["accepted"] is True
+    assert verdict["next"] == "accept"
+    assert conductor.current_phase == "done"
+    assert conductor.last_attempt_decision is None
+    path = tmp_path / "state.json"
+    host.set_state_path_for_tests(path)
+    try:
+        host.persist_conductor_state(conductor, failure_code=None)
+        state = host.load_v2_state()
+    finally:
+        host.set_state_path_for_tests(None)
+    assert state["verify"]["outcome"] == "fail"
+    assert state["verify"]["claims"]["integration"]["status"] == "fail"
+    assert state["attempts_loop"]["last_decision"] is None
+    assert state["attempts_loop"]["history"][-1]["grade_db"] == 3.0
+    grade = host._post_apply_grade(state)
+    assert grade["state"] == host.GRADE_FAILED
+    assert grade["verify_outcome"] == "fail"
