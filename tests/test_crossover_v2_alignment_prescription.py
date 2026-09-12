@@ -1821,7 +1821,6 @@ def test_the_prescription_is_not_an_instruction_the_next_round_inherits():
     decision = coordinator.run_round(
         _evidence_for(prescription),
         coordinator.RoundPorts(
-            rollback=None,
             rollback_available=None,
             applied_boosts=(lambda: False),
             entry_graph_fingerprint=(lambda: "graph-1"),

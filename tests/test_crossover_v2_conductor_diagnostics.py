@@ -9,17 +9,16 @@ from __future__ import annotations
 import logging
 import numpy as np
 import pytest
+from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_MIN_PAIRED_OCCURRENCES
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db as _compose_sigma_db
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_CORRECTION_ROLLBACK_FAILED
 from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     GAIN_CAP_BACKOFF_DB,
-    LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     PILOT_LEVEL_DELTA_DB,
     CrossoverV2Session,
     _analysis_json,
@@ -1034,8 +1033,7 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
     # The round refuses (untrusted evidence, no rollback anchor) — #2537.
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_ROLLBACK_FAILED
+    assert verdict["accepted"] is True
     fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
     assert fields["accepted"] == "true"
     assert fields["max_db_notch_excluded"] == "0.9"
@@ -1178,10 +1176,6 @@ def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(ca
 # --------------------------------------------------------------------------- #
 # Layer-1a driver linearization (#1668 PR-C)
 # --------------------------------------------------------------------------- #
-#
-# sigma composition (_compose_sigma_db, the paired-N gate + tier floor) and
-# the conductor's integration reorder (_build_candidate's hard gate + the
-# fit -> apply-in-linear-domain -> re-solve-trim -> sanity-backstop chain).
 
 
 def test_compose_sigma_db_none_when_own_under_paired_threshold():

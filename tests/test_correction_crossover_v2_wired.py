@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from tests.test_crossover_v2_tuning_scope import banked_program_baseline  # noqa: F401
+from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     INTEGRITY_COUNTER_KEYS,

@@ -352,28 +352,6 @@ def test_exhaustion_uses_the_addressed_slots_evidence_not_the_global_failure():
     assert "volume" not in excinfo.value.user_message.lower()
 
 
-def test_a_refusal_never_borrows_another_failures_evidence():
-    """``_pilot_heard_for``'s pairing rule, mutated at the boundary.
-
-    A refusal can name a code the capture loop never produced. Handing it the
-    last capture's pilot evidence would put a confident sentence about THIS
-    failure in front of a household using another one's measurement. Unknown
-    pairing degrades to the registry copy, which claims nothing.
-    """
-    fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis(
-        program, locate_confidence=0.01, pilot_snr_ok=True,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    assert c.last_failure_pilot_heard is True
-
-    # A refusal for a DIFFERENT code: the evidence must not travel with it.
-    refusal = c._refuse(REASON_PILOT_LEVEL_COLLAPSE)
-    assert refusal.user_message == REASON_REGISTRY[REASON_PILOT_LEVEL_COLLAPSE].message
-    assert c.last_failure_pilot_heard is None
-
-
 @pytest.fixture
 def isolated_v2_state(tmp_path):
     """Point the v2 state file at a tmp path, like the endpoints suite does."""

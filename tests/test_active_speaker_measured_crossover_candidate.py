@@ -27,7 +27,6 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
     candidate_room_peqs,
-    candidate_trial_scope,
     compile_candidate_config,
     driver_corrections,
     effective_preset,
@@ -939,8 +938,6 @@ def test_candidate_room_peqs_are_the_first_declared_sides_filters():
     ) == expected
     assert candidate_room_peqs(candidate) == expected
     assert candidate_room_peqs(_candidate()) == ()
-    assert candidate_trial_scope(candidate) == "candidate"
-    assert candidate_trial_scope(_candidate()) == "candidate"
 
 
 def test_from_mapping_rejects_non_mapping_room_correction():

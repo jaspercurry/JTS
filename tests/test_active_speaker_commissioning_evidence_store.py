@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
 import stat
 from pathlib import Path
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.active_speaker import commissioning_evidence_store
 from jasper.active_speaker.bundles import (
     BUNDLE_KIND,
     DEFAULT_SESSIONS_MAX_BYTES,
@@ -58,6 +60,25 @@ def test_raw_publish_is_write_once_idempotent_and_conflict_strict(
     assert raised.value.code is CommissioningEvidenceStoreErrorCode.PATH_CONFLICT
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_live_snapshot_replaces_atomically_or_keeps_the_previous_document(tmp_path, monkeypatch, fail):
+    store = _open_store(tmp_path)
+    relative = "crossover_v2/run/run_manifest.json"
+    before, after = {"status": "partial"}, {"status": "complete"}
+    store.write_live(relative, before)
+    if fail:
+        def unavailable(*args, **kwargs):
+            raise OSError(errno.ENOSPC, "")
+        monkeypatch.setattr(commissioning_evidence_store, "atomic_write_json", unavailable)
+        with pytest.raises(CommissioningEvidenceStoreError) as raised:
+            store.write_live(relative, after)
+        assert raised.value.code is CommissioningEvidenceStoreErrorCode.PERSIST_FAILED
+    else:
+        store.write_live(relative, after)
+    document = json.loads((store.bundle_dir / commissioning_evidence_store.EVIDENCE_ROOT / "artifacts" / relative).read_text())
+    assert document == (before if fail else after)
+
+
 def test_open_requires_the_exact_existing_session(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     with pytest.raises(CommissioningEvidenceStoreError) as raised:
@@ -76,6 +97,9 @@ def test_paths_reject_traversal_parent_symlinks_and_file_symlinks(
         with pytest.raises(CommissioningEvidenceStoreError) as raised:
             store.publish_raw_artifact(unsafe, b"blocked")
         assert raised.value.code is CommissioningEvidenceStoreErrorCode.INVALID_PATH
+        with pytest.raises(CommissioningEvidenceStoreError) as raised:
+            store.write_live(unsafe, {})
+        assert raised.value.code is CommissioningEvidenceStoreErrorCode.INVALID_PATH
 
     store.publish_raw_artifact("seed.bin", b"seed")
     artifact_root = store.bundle_dir / "evidence/v1/artifacts"
@@ -84,6 +108,9 @@ def test_paths_reject_traversal_parent_symlinks_and_file_symlinks(
     (artifact_root / "escape").symlink_to(outside, target_is_directory=True)
     with pytest.raises(CommissioningEvidenceStoreError) as raised:
         store.publish_raw_artifact("escape/new.bin", b"blocked")
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.INVALID_PATH
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.write_live("escape/status.json", {})
     assert raised.value.code is CommissioningEvidenceStoreErrorCode.INVALID_PATH
 
     target = tmp_path / "target.bin"

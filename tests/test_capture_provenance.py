@@ -493,13 +493,6 @@ def _drive_one_capture(
             return "capture.wav"
 
     graph, records = Graph(), FakeRecords()
-    monkeypatch.setattr(
-        v2host,
-        "load_applied_baseline_profile_state",
-        lambda: {
-            "source": {"measured_candidate_fingerprint": "speaker-candidate-fp"}
-        },
-    )
     monkeypatch.setattr(door, "bind_measurement_graph", lambda *a, **kw: graph)
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _FakeWindow(cam))
     monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
@@ -718,9 +711,6 @@ def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_
     assert carried is not None
     assert carried["main_volume_db"] == -20.0
     assert carried["stimulus"]["phase"] == phase
-    if scope == "candidate":
-        assert carried["graph"]["speaker_candidate_id"] == "candidate-fp"
-    else:
-        assert "speaker_candidate_id" not in carried["graph"]
+    assert "speaker_candidate_id" not in carried["graph"]
     assert plan.holds == [f"capture:{phase}"]
     assert cam.volume_writes == []

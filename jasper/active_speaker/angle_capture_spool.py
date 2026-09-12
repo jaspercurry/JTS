@@ -35,17 +35,14 @@ from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 
 from .angle_capture import (
     AngleCaptureRequest,
-    AngleStop,
-    LEVEL_HOLD_REFERENCE,
-    refuse_unplayable_walk_policy,
+    LateralWalkRefused,
+    REQUEST_KIND as SPOOL_KIND,
+    REQUEST_SCHEMA_VERSION as SPOOL_SCHEMA_VERSION,
 )
-from .measurement_programs import POSE_KIND_BEARING
-from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2_flow import CrossoverV2FlowError
 
 logger = logging.getLogger(__name__)
@@ -86,13 +83,6 @@ DEFAULT_ANGLE_REQUEST_SPOOL_PATH = Path(
 
 #: Where a taken document goes, so a refusal can be read after the fact.
 CONSUMED_SUFFIX = ".consumed"
-
-SPOOL_KIND = "jts_active_speaker_angle_capture_request_staged"
-
-#: 2: the walk's nine ``MeasureSpec`` keys became one ``template`` object the
-#: spec itself writes and reads. A version-1 document refuses as malformed --
-#: the walk is single-use and restaging is one command.
-SPOOL_SCHEMA_VERSION = 2
 
 SPOOL_MAX_BYTES = 64 * 1024
 
@@ -169,41 +159,7 @@ def angle_request_document(request: AngleCaptureRequest) -> dict[str, Any]:
     these keys. :func:`stage_angle_request` adds ``staged_at`` on the way to
     disk.
     """
-    return {
-        "artifact_schema_version": SPOOL_SCHEMA_VERSION,
-        "kind": SPOOL_KIND,
-        "mover": request.mover,
-        # The whole spec in ONE object, written by the class that judges it, so
-        # this document gains a spec field by the spec gaining one and never by
-        # a key spelled here too.
-        "template": request.template.to_dict(),
-        "level_mode": request.level_mode,
-        "main_volume_series_db": list(request.main_volume_series_db),
-        "program": request.program,
-        # Position-major and ORDERED, exactly as the request carries them: the
-        # walk order is the measurement's (``both_at`` pairs regimes at one
-        # angle so the microphone moves once per angle), so a set or a
-        # sorted-by-angle rewrite here would silently re-plan the walk.
-        "stops": [
-            {
-                "angle_deg": stop.angle_deg,
-                "regime": stop.regime,
-                "elevation_deg": stop.elevation_deg,
-                "candidate_id": stop.candidate_id,
-                "purpose": stop.purpose,
-                **({"headline": stop.headline} if stop.headline else {}),
-                **({"detail": stop.detail} if stop.detail else {}),
-                # Only off the mark: a bearing's document stays as it always was.
-                **({"kind": stop.kind} if stop.kind != POSE_KIND_BEARING else {}),
-                **({"distance_m": stop.distance_m} if stop.distance_m is not None else {}),
-                **(
-                    {"seat_offset_m": list(stop.seat_offset_m)}
-                    if stop.seat_offset_m is not None else {}
-                ),
-            }
-            for stop in request.stops
-        ],
-    }
+    return request.to_dict()
 
 
 def stage_angle_request(request: AngleCaptureRequest) -> Path:
@@ -217,11 +173,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
     file), STRICT: a silent fallback to the writer's own group would publish a document
     ``jasper-web`` cannot open, surfacing as a walk that mysteriously did not run.
 
-    A walk stating a policy no player honours yet is refused HERE rather than at the
-    statement (:func:`~.angle_capture.refuse_unplayable_walk_policy`), so a dry run
-    still prices what is coming while the slot only ever holds a runnable walk.
     """
-    refuse_unplayable_walk_policy(request)
     busy = live_measurement_session()
     if busy is not None:
         _refuse(SESSION_ALREADY_LIVE, busy)
@@ -386,102 +338,16 @@ def _consume(pending: Path) -> None:
     )
 
 
-def _banked_rungs(raw: Any) -> tuple[float, ...]:
-    """The walk's own volume rungs -- the one banked number list outside the
-    template, so :meth:`MeasureSpec.from_mapping` cannot be the judge of it. A
-    bare string is refused rather than iterated: it would otherwise read back as
-    one rung per character.
-    """
-    if raw is None:
-        return ()
-    if not isinstance(raw, list) or any(finite_float(rung) is None for rung in raw):
-        _refuse(
-            SPOOL_MALFORMED,
-            f"the staged walk's main_volume_series_db is not a list of "
-            f"numbers: {raw!r}",
-        )
-    return tuple(float(rung) for rung in raw)
-
-
-def _banked_template(raw: Any) -> MeasureSpec:
-    """The banked spec, rebuilt by the class that wrote it.
-
-    Its refusal becomes this document's, naming the field: the page's price peek
-    catches only ``CrossoverV2FlowError``, so a ``ValueError`` out of here would
-    take the tier chooser down on every poll.
-    """
-    if not isinstance(raw, Mapping):
-        _refuse(SPOOL_MALFORMED, f"the staged walk's template is not an object: {raw!r}")
-    try:
-        return MeasureSpec.from_mapping(raw)
-    except ValueError as exc:
-        _refuse(SPOOL_MALFORMED, f"the staged walk's template is not a spec: {exc}")
-
-
 def _validate(raw: bytes) -> AngleCaptureRequest:
-    """Rebuild the request from the banked fields, through its own constructors.
-
-    Every angle, regime and mover check is :mod:`.angle_capture`'s; this checks only the
-    document's own shape (JSON, kind, schema, an ordered stop list) before handing
-    values straight to
-    :class:`~.angle_capture.AngleStop`/:class:`~.angle_capture.AngleCaptureRequest`.
-
-    Angles are handed over UNCOERCED, same rule as ``per_driver_at``: an ``int()`` here
-    would truncate ``0.4`` to an on-axis capture nobody asked for. The spec half of
-    the document is :meth:`MeasureSpec.from_mapping`'s, whole -- this module owns no
-    spec field and cannot disagree with the class about one.
-    """
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        _refuse(SPOOL_MALFORMED, f"the staged walk is not valid JSON: {exc}")
-    if not isinstance(doc, Mapping):
-        _refuse(SPOOL_MALFORMED, "the staged walk is not a JSON object")
-    if doc.get("kind") != SPOOL_KIND:
-        _refuse(
-            SPOOL_MALFORMED,
-            f"the staged walk is not a {SPOOL_KIND} document",
-        )
-    if doc.get("artifact_schema_version") != SPOOL_SCHEMA_VERSION:
-        _refuse(
-            SPOOL_MALFORMED,
-            "the staged walk is schema version "
-            f"{doc.get('artifact_schema_version')!r}, expected "
-            f"{SPOOL_SCHEMA_VERSION}",
-        )
-    stops_raw = doc.get("stops")
-    if not isinstance(stops_raw, list) or not stops_raw:
-        _refuse(SPOOL_MALFORMED, "the staged walk carries no stops")
-    stops: list[AngleStop] = []
-    for entry in stops_raw:
-        if not isinstance(entry, Mapping):
-            _refuse(SPOOL_MALFORMED, "a staged stop is not a JSON object")
-        offset = entry.get("seat_offset_m")
-        stops.append(
-            AngleStop(
-                entry.get("angle_deg"),  # type: ignore[arg-type]
-                str(entry.get("regime")),
-                # Pre-existing documents are a walk at mark height as-is.
-                entry.get("elevation_deg", 0),  # type: ignore[arg-type]
-                str(entry.get("candidate_id") or ""),
-                kind=str(entry.get("kind") or POSE_KIND_BEARING),
-                purpose=entry.get("purpose"),
-                headline=str(entry.get("headline") or ""),
-                detail=str(entry.get("detail") or ""),
-                distance_m=entry.get("distance_m"),
-                seat_offset_m=tuple(offset) if isinstance(offset, list) else None,  # type: ignore[arg-type]
-            )
-        )
-    request = AngleCaptureRequest(
-        stops=tuple(stops),
-        mover=str(doc.get("mover")),
-        template=_banked_template(doc.get("template")),
-        level_mode=str(doc.get("level_mode") or LEVEL_HOLD_REFERENCE),
-        program=str(doc.get("program") or ""),
-        main_volume_series_db=_banked_rungs(doc.get("main_volume_series_db")),
-    )
-    refuse_unplayable_walk_policy(request)
-    return request
+        if not isinstance(doc, Mapping):
+            raise ValueError("the staged walk is not a JSON object")
+        return AngleCaptureRequest.from_mapping(doc)
+    except LateralWalkRefused:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        _refuse(SPOOL_MALFORMED, str(exc))
 
 
 def withdraw_staged_angle_request() -> bool:

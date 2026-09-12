@@ -10,15 +10,6 @@ must still do — so each is written against the production entry point
 (``authorize_begin``) rather than against the pure function, which is where a
 wiring mistake would actually show up.
 
-The first two are ordering properties that a straightforward "gather the
-inputs, then ask" rewrite gets wrong. The begin path reads a meter that may not
-exist yet and asks a seam that must not be asked on every begin; doing either
-eagerly is invisible to every other suite in the tree.
-
-The kind-vocabulary trio below is the discipline ``spatial.SCREEN_KINDS`` and
-``coordinator.REFUSAL_KINDS`` already keep, applied to the decision this slice
-introduced: declared set, every member handled, and an unrecognised member loud
-and REFUSED rather than quietly admitted.
 """
 
 from dataclasses import replace
@@ -41,6 +32,7 @@ from tests._log_events import event_records
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     FakeSeams,
+    _check_analysis,
     _cloud_conductor,
     _conductor,
     _run_phase,
@@ -52,72 +44,26 @@ from tests.crossover_v2_fixtures import (
 UNMAPPED_EVENT = "correction.crossover_v2_begin_decision_kind_unmapped"
 
 
-def _held_at_verify(fakes: FakeSeams, **kwargs):
-    """A conductor parked at the VERIFY anchor with no apply observed."""
-    c = _conductor(fakes, **kwargs)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    return c
-
-
-def test_a_held_begin_leaves_no_meter_behind():
-    """The VERIFY hold must not open a ledger for a capture that never ran.
-
-    ``authorize_begin`` reads the slot's meter before it decides, and the
-    obvious way to write that read — ``setdefault`` — creates the entry on
-    every begin including a held one. A meter that exists with ``admitted=0``
-    is not inert: ``_with_attempt_payload`` stamps an ``attempts`` block onto
-    every later verdict for that slot where there was none before, and the
-    snapshot carries a position the session never measured. Nothing else in
-    the tree looks at ``_slot_attempts`` after a hold, so this is the only
-    place the difference is visible.
-    """
+@pytest.mark.parametrize(("fault", "budget", "counter", "last_fault", "code"), [
+    ({"glitch_detected": True}, admission.MAX_AUTOMATIC_RETAKES_PER_POSITION, "by_speaker",
+     {"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL),
+    ({"linearity_ok": False}, admission.MAX_EXTRA_ATTEMPTS_PER_POSITION, "by_household",
+     {"glitch_detected": True}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE),
+])
+def test_a_spent_budget_stays_terminal_when_the_fault_owner_changes(fault, budget, counter, last_fault, code):
     fakes = FakeSeams()
-    c = _held_at_verify(fakes)
-    slot = c._slot_of_index(3)
-
-    with pytest.raises(CaptureBeginDeferred) as excinfo:
-        c.authorize_begin(3, 3)
-
-    assert excinfo.value.code == "awaiting_apply"
-    assert slot not in c._slot_attempts, (
-        "a held begin opened a meter for a capture that never started"
-    )
-
-    # And the release still opens exactly one, on the take that really begins.
-    fakes.apply_done = True
-    c.note_apply_complete()
-    c.authorize_begin(3, 3)
-    assert c._slot_attempts[slot].admitted == 1
-    assert c._slot_attempts[slot].extras_used == 0
-
-
-def test_an_ordinary_begin_never_asks_the_apply_seam():
-    """``apply_failed`` is asked on the hold branch and nowhere else.
-
-    It is a host seam — in production it reads the auto-apply thread's verdict
-    — so resolving it eagerly to hand the decision a value would put a seam
-    call on every begin of every phase. The port exists to keep the call where
-    the conductor made it; this counts that it stayed there.
-    """
-    fakes = FakeSeams()
-    asked: list[int] = []
-
-    def counting_apply_failed() -> str:
-        asked.append(1)
-        return fakes.apply_failed_code
-
-    seams = replace(fakes.seams(), apply_failed=counting_apply_failed)
-    c = _conductor(fakes, seams=seams)
-
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    assert asked == [], "an ordinary begin asked the apply seam"
-
-    # The hold asks it exactly once — the branch the port exists for.
-    with pytest.raises(CaptureBeginDeferred):
-        c.authorize_begin(3, 3)
-    assert len(asked) == 1
+    fakes.check = lambda program: replace(_check_analysis(program), **fault)
+    c = _conductor(fakes)
+    for attempt in range(1, budget + 1):
+        _run_phase(c, 1, attempt)
+    fakes.check = lambda program: replace(_check_analysis(program), **last_fault)
+    final = _run_phase(c, 1, budget + 1)
+    assert final["attempts"][counter] == budget
+    assert final["terminal"] is True and final["next"] == "stop"
+    assert final["code"] == code
+    with pytest.raises(CaptureBeginRefused) as refused:
+        c.authorize_begin(1, budget + 2)
+    assert refused.value.code == code
 
 
 def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
@@ -148,7 +94,7 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
 
     with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
-    assert "no extra attempts left" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
 
 
 def test_the_spent_slot_outcome_tells_left_out_from_kept():
@@ -308,17 +254,14 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
 
     def ask(**kw):
         base = dict(
-            verify_hold=False, apply_failure_code=lambda: "", ledger=None,
-            last_reason=None, non_retriable=frozenset({"stopped"}),
-            default_code="locate_failed", geometry_locked_code="geometry",
+            ledger=None, last_reason=None, non_retriable=frozenset({"stopped"}),
+            default_code="locate_failed",
         )
         return admission.assess_begin(**{**base, **kw}).kind
 
     produced = {
         ask(),                                                    # free first take
         ask(ledger=admission.SlotAttempts(admitted=1)),           # spends an extra
-        ask(verify_hold=True),                                    # the hold
-        ask(verify_hold=True, apply_failure_code=lambda: "apply_failed"),
         ask(ledger=admission.SlotAttempts(admitted=1), last_reason="stopped"),
         ask(ledger=spent, last_reason="other"),
     }
@@ -828,6 +771,28 @@ def test_a_retriable_rejection_on_a_fresh_slot_still_offers_the_retry():
     assert "terminal" not in settled.payload
 
 
+@pytest.mark.parametrize(("budget", "charges"), [
+    (0, ["speaker"] * 6), (3, ["speaker"] * 6),
+    (4, ["operator", "speaker"] * 3), (1, ["operator"]),
+])
+def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, charges):
+    ledger = admission.SlotAttempts(admitted=100, retries_per_pose=budget)
+    assert ledger.to_payload()["left"] == budget
+    for charge in charges:
+        assert ledger.can_retry(charge)
+        ledger.spend(charge)
+    payload = ledger.to_payload()
+    assert payload["left"] == 0
+    assert payload["by_household"] == charges.count("operator")
+    assert payload["by_speaker"] == charges.count("speaker")
+    assert not ledger.can_retry("operator")
+    for charge in ("operator", "speaker"):
+        if not ledger.can_retry(charge):
+            with pytest.raises(admission.AttemptOverspendError):
+                ledger.spend(charge)
+    assert ledger.to_payload() == payload
+
+
 def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
     """``assess_begin``'s precondition, asserted against the pure function.
 
@@ -855,21 +820,15 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
 
     from_fresh_ledger = admission.assess_begin(
         ledger=fresh,
-        verify_hold=False,
-        apply_failure_code=lambda: None,
         last_reason=None,
         non_retriable=frozenset(),
         default_code="unused",
-        geometry_locked_code="unused",
     )
     from_no_ledger = admission.assess_begin(
         ledger=None,
-        verify_hold=False,
-        apply_failure_code=lambda: None,
         last_reason=None,
         non_retriable=frozenset(),
         default_code="unused",
-        geometry_locked_code="unused",
     )
 
     assert from_fresh_ledger.kind == admission.ADMIT

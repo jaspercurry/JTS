@@ -48,7 +48,6 @@ from jasper.active_speaker.crossover_v2 import (
 #: guard at the bottom of this file checks all of it.
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
     "refusal_copy": (
-        "DELTA_PROBE_REASON_BY_VERDICT",
         "NON_RETRIABLE_CODES",
         "PhaseVerdict",
         "REASON_AGC_BEHAVIORAL_FAIL",
@@ -57,12 +56,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "REASON_CHANNEL_MAP_MISMATCH",
         "REASON_CLIPPED",
         "REASON_CLOUD_GEOMETRY_LOCKED",
-        "REASON_CORRECTION_LEVEL_SHORTFALL",
-        "REASON_CORRECTION_MEASURED_REGRESSION",
-        "REASON_CORRECTION_MODEL_ERROR",
-        "REASON_CORRECTION_ROLLBACK_FAILED",
-        "REASON_CORRECTION_SPATIALLY_COSTLY",
-        "REASON_CORRECTION_UNPROVEN_BOOST",
         "REASON_DELAY_EXCEEDS_SEARCH_WINDOW",
         "REASON_DELAY_IMPLAUSIBLE",
         "REASON_DRIFT_BASELINES_DISAGREE",
@@ -97,12 +90,10 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "TRANSIENT_AUTO_RETRY_CODES",
         "_retriable_reason",
         "_screen_refusal_code",
-        "correction_rollback_failed_message",
         "locate_failed_diagnosis",
         "locate_failed_message",
         "reason_diagnosis",
         "reason_message",
-        "round_restore_reason",
         "verify_inconclusive_cause",
         "verify_inconclusive_diagnosis",
         "verify_inconclusive_message",
@@ -152,7 +143,6 @@ STILL_READ_BY_THE_FLOW: frozenset[str] = frozenset({
     "NON_RETRIABLE_CODES",
     "PhaseVerdict",
     "REASON_CLOUD_GEOMETRY_LOCKED",
-    "REASON_CORRECTION_ROLLBACK_FAILED",
     "REASON_LOCATE_FAILED",
     "REASON_REGISTRY",
     "REASON_VERIFY_INCONCLUSIVE",
@@ -161,7 +151,6 @@ STILL_READ_BY_THE_FLOW: frozenset[str] = frozenset({
     "_screen_refusal_code",
     "reason_diagnosis",
     "reason_message",
-    "round_restore_reason",
 })
 
 #: The complement, over the door wave 0c closed.

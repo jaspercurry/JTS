@@ -28,7 +28,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from jasper.atomic_io import fsync_directory
+from jasper.atomic_io import atomic_write_json, fsync_directory
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_artifacts import (
@@ -621,6 +621,17 @@ class CommissioningEvidenceStore:
         )
         self.reopen_json_artifact(artifact)
         return artifact
+
+    def write_live(self, relative_path: str, document: Mapping[str, Any]) -> None:
+        """Atomically replace run status; raw evidence stays write-once (ADR-0017)."""
+        path = self._target(_artifact_path(relative_path))
+        self._prepare_parent(path.parent)
+        try:
+            atomic_write_json(path, document, mode=BUNDLE_FILE_MODE)
+        except OSError as exc:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.PERSIST_FAILED, str(exc),
+            ) from exc
 
     def reopen_json_artifact(self, artifact: ArtifactIdentity) -> dict[str, Any]:
         return _parse_canonical_object(self._read_identity(artifact))

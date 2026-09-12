@@ -655,7 +655,6 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph_yaml = compile_tuning_graph(MeasurementGraphProfile(
         preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
-        applied_profile=applied,
     ), candidate=candidate_from_applied_profile(topology, applied, purpose="room"))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
@@ -719,7 +718,6 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
     measurement = MeasurementGraphProfile(
         preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
-        applied_profile=applied,
     )
     text = compile_tuning_graph(
         measurement, scope=scope, candidate=_trial_candidate(measurement),
@@ -814,7 +812,7 @@ def test_branch_admission_checks_both_input_routes_and_actual_channels(tmp_path,
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     profile = MeasurementGraphProfile(preset, topology,
         {"woofer": 1, "tweeter": 0} if damage == "swapped_inputs" else {"woofer": 0, "tweeter": 1},
-        ACTIVE_PCM, protection_sections_by_role=confirmed_protection_sections(safety, targets), applied_profile=applied)
+        ACTIVE_PCM, protection_sections_by_role=confirmed_protection_sections(safety, targets), )
     graph = compile_tuning_graph(profile, scope="candidate_branches", candidate=_trial_candidate(profile))
     program = build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
@@ -845,7 +843,6 @@ def test_dynamic_bass_admission_proves_graph_and_reserves_its_maximum_lift(tmp_p
         ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
         topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
-        applied_profile=applied,
     )
     text = compile_tuning_graph(measurement, candidate=candidate_from_applied_profile(topology, applied))
     if change == "processor":
@@ -886,7 +883,6 @@ def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_
         ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
         topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
-        applied_profile=applied,
     )
     graph = compile_tuning_graph(measurement, candidate=candidate_from_applied_profile(topology, applied, purpose="bass"))
     program = SessionExcitation(

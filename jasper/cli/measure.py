@@ -18,6 +18,7 @@ import logging
 import math
 import secrets
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -90,9 +91,6 @@ REFUSE_REQUEST_UNREADABLE = "measure_request_unreadable"
 REFUSE_NO_STAGED_REQUEST = "measure_no_staged_request"
 #: What ``--request staged`` means: the pending slot, consumed on take.
 REQUEST_STAGED = "staged"
-
-#: Where the run's own package lands inside the bundle's evidence artifacts.
-PLAN_RESULT_RELPATH = "plan_result.json"
 
 #: This door's identity on the mux diagnostic gate. ``mux.FANIN_TEST_OWNERS`` is
 #: a CLOSED allowlist, so the name must be registered there; every lease and
@@ -526,6 +524,8 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
             )
         _require_candidate_id(spec, where=f"spec {index}")
         specs.append(spec)
+    if len({spec.spl_ceiling_db_spl for spec in specs}) > 1:
+        raise MeasureFlagError(REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling")
     return tuple(specs)
 
 
@@ -594,7 +594,7 @@ def _bind_compose(
             if spec.graph_scope in CANDIDATE_SCOPES else None
         )
         return measurement_bass_extension(
-            measurement_profile, scope=spec.graph_scope, candidate=candidate,
+            scope=spec.graph_scope, candidate=candidate,
         )
 
     return bind_program_composer(
@@ -610,7 +610,7 @@ def _bind_compose(
 
 
 def _spl_monitor(
-    specs: tuple[Any, ...],
+    stated: float | None,
     *,
     box: BoxDeclaration,
     device: Any,
@@ -628,18 +628,13 @@ def _spl_monitor(
     from jasper.active_speaker.plan_run import spl_watch  # lazy: measurement stack import cost
     from jasper.audio_measurement.calibration import resolve_mic_sensitivity  # lazy: numpy
 
-    stated = {spec.spl_ceiling_db_spl for spec in specs}
-    if len(stated) > 1:
-        raise BoxNotMeasurable(
-            REFUSE_SPL_CEILINGS_MIXED, "one batch must use one SPL ceiling",
-        )
     sensitivity = (
         resolve_mic_sensitivity(mic_serial=mic_serial) if mic_serial
         else resolved_household_sensitivity(device)
     )
     try:
         monitor, note = spl_watch(
-            next(iter(stated)),
+            stated,
             topology=box.topology,
             preset=box.preset,
             sensitivity=sensitivity,
@@ -702,11 +697,11 @@ async def _measure(
     stripping retention protection off a wizard session's evidence — doing that
     before the interlock would hit a LIVE session and then be refused.
     """
-    from jasper.active_speaker import plan_run
+    from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints  # lazy: measurement stack
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
     from jasper.active_speaker.bundles import mark_state, open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
-        CommissioningEvidenceStore,
+        CommissioningEvidenceStore, CommissioningEvidenceStoreError,
     )
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.door import measurement_door
@@ -741,7 +736,8 @@ async def _measure(
         # The kernel owns the sentence; this door owns only its exit code.
         raise BoxNotMeasurable(REFUSE_NO_MIC, str(exc)) from exc
     spl_monitor, spl_note = _spl_monitor(
-        specs, box=box, device=device, mic_serial=mic_serial, volume_db=volume_db,
+        request.spl_ceiling_db_spl if request is not None else specs[0].spl_ceiling_db_spl,
+        box=box, device=device, mic_serial=mic_serial, volume_db=volume_db,
     )
     if volume_db is not None:
         box = replace(box, session_volume_db=volume_db)
@@ -762,7 +758,6 @@ async def _measure(
             role_channels={"woofer": 0, "tweeter": 1},
             playback_device=box.playback_device,
             protection_sections_by_role=box.protection_sections_by_role,
-            applied_profile=load_applied_baseline_profile_state(),
         )
         async with measurement_door(
             profile=measurement_profile,
@@ -784,6 +779,8 @@ async def _measure(
                 bundle_dir,
                 expected_session_id=str(info["session_id"]),
             )
+            manifest = RunManifest(session_id, BankedRecordStore(store, session_id),
+                                   incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
                 setup_reference=_wired_setup_reference,
@@ -793,10 +790,7 @@ async def _measure(
             seams = bind_engine_seams(
                 session_graph=door.graph,
                 records=CapturedRecordStore(
-                    inner=BankedRecordStore(
-                        evidence=store,
-                        capture_session_id=session_id,
-                    ),
+                    inner=manifest,
                     capture=capture,
                 ),
                 volume_claim=door.claim,
@@ -818,14 +812,22 @@ async def _measure(
                 measurement_level_db=box.session_volume_db,
                 level_match_trims_db=trims,
             ) as session:
-                result = await _ran(
-                    session, specs,
-                    request=request, candidate_scopes=candidate_scopes or {},
-                    spl_monitor=spl_note,
-                )
-                outcomes = result.outcomes
-                plan_result = _publish_plan_result(store, result)
-                if result.status == plan_run.RUN_INTERRUPTED:
+                try:
+                    result = await _ran(
+                        session, specs, manifest=manifest,
+                        analyze=partial(_analyze_take, Path(store.bundle_dir), manifest, box.fc_hz),
+                        gain_ceiling_db=box.caps_dbfs,
+                        request=request, candidate_scopes=candidate_scopes or {},
+                        spl_monitor=spl_note,
+                    )
+                except CommissioningEvidenceStoreError as exc:
+                    index = (manifest.stopped_at or {}).get("index", 1)
+                    raise MeasureInterrupted(
+                        REFUSE_STORE_LOST, str(exc), session, store,
+                        spec=manifest.specs.get(index, specs[0]), spec_index=index,
+                    ) from exc
+                outcomes = tuple(result.outcomes)
+                if result.stopped_at is not None:
                     # A cancellation is CONVERTED rather than re-raised: the
                     # operator interrupting a long run most needs the ids of
                     # what banked, and the door's give-back still runs shielded
@@ -833,9 +835,9 @@ async def _measure(
                     stopped_at = result.stopped_at["index"]
                     raise MeasureInterrupted(
                         result.reason, result.detail, session, store,
-                        spec=result.specs[stopped_at - 1], spec_index=stopped_at,
+                        spec=result.specs[stopped_at], spec_index=stopped_at,
                     )
-                if result.status == plan_run.RUN_REFUSED:
+                if result.reason and not result.attempts:
                     raise BoxNotMeasurable(result.reason, result.detail)
     except SessionGraphError as exc:
         if store is None:
@@ -853,7 +855,9 @@ async def _measure(
     report = _report(outcomes, store=store, session_id=session_id)
     # The package's own path and its counts; the take ROWS stay in the package,
     # which is where an unbounded list belongs (ADR-0237).
-    report["plan_result"] = plan_result
+    report["run_manifest"] = result.path
+    if result.status != "complete":
+        report["status"] = "incomplete"
     report["spl_monitor"] = result.spl_monitor
     report["measurement_volume_db"] = box.session_volume_db
     report["measurement_loudness_volume_db"] = door.measurement_loudness_volume_db
@@ -900,6 +904,9 @@ async def _ran(
     request: Any,
     candidate_scopes: Mapping[str, str],
     spl_monitor: str,
+    manifest: Any,
+    analyze: Any,
+    gain_ceiling_db: Mapping[str, float],
 ) -> Any:
     """This invocation's plan, through the ONE executor.
 
@@ -913,38 +920,40 @@ async def _ran(
     aborts = _session_scoped_aborts()
     if request is None:
         return await plan_run.run_specs(
-            specs, session=session, aborts=aborts, spl_monitor=spl_monitor,
+            specs, session=session, manifest=manifest, analyze=analyze, aborts=aborts, spl_monitor=spl_monitor, gain_ceiling_db=gain_ceiling_db,
         )
     return await plan_run.run_plan(
-        request, session=session, candidate_scopes=candidate_scopes,
-        aborts=aborts, spl_monitor=spl_monitor,
+        request, session=session, manifest=manifest, analyze=analyze, candidate_scopes=candidate_scopes,
+        aborts=aborts, spl_monitor=spl_monitor, gain_ceiling_db=gain_ceiling_db,
     )
 
 
-def _publish_plan_result(store: Any, result: Any) -> str:
-    """The run's package, in the bundle; its bundle-relative path.
-
-    A store that will not take it costs the PACKAGE, never the run's own answer:
-    the record ids are banked already and the caller still needs them. Logged at
-    WARNING, since a bundle that cannot take evidence is a real fault.
-    """
-    from jasper.active_speaker.commissioning_evidence_store import (
-        CommissioningEvidenceStoreError,
+def _analyze_take(bundle_dir: Path, manifest: Any, fc_hz: float, record: Mapping[str, Any], record_id: str) -> Any:
+    from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT  # lazy: measurement stack
+    from jasper.active_speaker.crossover_v2.record_index import reopen_measurement_capture  # lazy: measurement stack
+    from jasper.audio_measurement.evidence_identity import json_fingerprint  # lazy: measurement stack
+    from jasper.audio_measurement.gating import SEAT_EXEMPT  # lazy: numpy
+    from jasper.audio_measurement.household_mic import resolve_setup_calibration  # lazy: measurement stack
+    from jasper.audio_measurement.program import ExcitationProgram  # lazy: numpy
+    from jasper.audio_measurement.program_analysis import (  # lazy: numpy
+        MeasurementGeometry, MeasurementPriors, analyze_program_capture,
     )
+    from jasper.audio_measurement.wired_capture import decode_wav_to_mono  # lazy: numpy
 
-    try:
-        return str(
-            store.publish_json_artifact(
-                PLAN_RESULT_RELPATH, result.to_dict(),
-            ).relative_path
-        )
-    except CommissioningEvidenceStoreError as exc:
-        log_event(
-            logger, "active_speaker.measure", level=logging.WARNING,
-            action="plan_result_unpublished", reason=REFUSE_STORE_LOST,
-            detail=str(exc),
-        )
-        return ""
+    _, wav = reopen_measurement_capture(bundle_dir, f"{EVIDENCE_ROOT}/artifacts/{record_id}")
+    program = ExcitationProgram.from_dict(record["program"])
+    calibration = resolve_setup_calibration(record.get("capture_setup"), device=record.get("capture_device"))
+    manifest.calibration = {"id": calibration.calibration_id if calibration else None,
+                            "curve_fingerprint": json_fingerprint(calibration.curve.to_dict()) if calibration else None}
+    if wav is None:
+        raise ValueError("capture WAV missing")
+    samples, rate = decode_wav_to_mono(wav)
+    return analyze_program_capture(
+        program, samples, rate, calibration=calibration.curve if calibration else None,
+        priors=MeasurementPriors(crossover_fc_hz=fc_hz, mic_calibrated=calibration is not None),
+        geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT) if program.phase == "verify" else None,
+        capture_report=record.get("capture_integrity"),
+    )
 
 
 def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:

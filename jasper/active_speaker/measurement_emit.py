@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Sequence
 
 from jasper.active_speaker import camilla_yaml, candidate_bank
@@ -21,7 +21,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     prove_candidate_config,
 )
 from jasper.active_speaker.profile import (
-    required_driver_roles,
+    ActiveSpeakerPreset, required_driver_roles,
 )
 
 __all__ = [
@@ -45,7 +45,6 @@ class MeasurementGraphProfile:
     role_channels: Mapping[str, int]
     playback_device: str
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None
-    applied_profile: Mapping[str, Any] | None = None
 
 
 class MeasurementGraphRefused(ValueError):
@@ -67,7 +66,6 @@ def _filter_list(value: Any) -> bool:
 
 
 def measurement_bass_extension(
-    profile: MeasurementGraphProfile | None = None,
     *,
     scope: str,
     candidate: MeasuredCrossoverCandidate | None = None,
@@ -85,6 +83,18 @@ def measurement_bass_extension(
     return dict(candidate.bass_extension)
 
 
+def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset) -> None:
+    # ADR-0303 frees tuning values, not the physical speaker assignment.
+    def structure(value: ActiveSpeakerPreset) -> tuple[Any, ...]:
+        return (value.way_count, value.channel_map, value.drivers, value.local_subwoofer, tuple(
+            replace(region, delay_ms=None, delay_target_driver=None,
+                    lower_polarity="non-inverted", upper_polarity="non-inverted")
+            for region in value.crossover_regions
+        ))
+    if structure(candidate.source_preset) != structure(preset):
+        raise MeasurementGraphRefused("measurement_candidate_speaker_mismatch", candidate.fingerprint)
+
+
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
     *,
@@ -98,6 +108,7 @@ def compile_tuning_graph(
         raise MeasurementGraphRefused("measurement_candidate_required", scope)
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
+    require_candidate_speaker_identity(candidate, profile.preset)
     # The shared reducer skips malformed records; refuse before it loses identity.
     if set(candidate.linearization) - set(required_driver_roles(candidate.source_preset.way_count)) or any(
         not isinstance(value, Mapping) or not _filter_list(value.get("filters"))

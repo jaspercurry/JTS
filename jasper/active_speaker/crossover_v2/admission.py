@@ -17,11 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Collection, Container
 
+from .refusal_copy import TakeCharge
+
 __all__ = [
     "ATTEMPT_INITIATOR_HOUSEHOLD",
     "ATTEMPT_INITIATOR_SPEAKER",
     "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
+    "MAX_AUTOMATIC_RETAKES_PER_POSITION",
     "SETTLE_BELOW_POSITION_FLOOR",
     "SETTLE_CONDITION_NOT_RETRIABLE",
     "SETTLE_GROUP_CLOSE_REQUIRED",
@@ -36,7 +39,6 @@ __all__ = [
     "BeginDecision",
     "SlotAttempts",
     "assess_begin",
-    "extra_initiator",
     "extras_spent_message",
     "pilot_heard_for",
     "reflection_measured_for",
@@ -46,19 +48,10 @@ __all__ = [
 ]
 
 
-# Bounded-retry ruling #2086: one prompted position gets its PLANNED capture
-# plus at most this many EXTRA attempts, POOLED across everyone who can ask
-# — the household's "Try again" and voluntary retakes, and the session's own
-# geometry retakes. Deliberately NOT derived from ``ReasonSpec.retry_budget``:
-# the bound belongs to the position and the household's patience, not to
-# whichever condition happened to fire last.
 MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
+# Six extra takes per pose bound USB-fault work; planned configs/repeats spend none.
+MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
 
-# Who asked for one extra attempt. Pooled against the single bound above, but
-# recorded separately so the count the household reads is truthful about who
-# spent what. Observed at the REJECTION that kept the plan alive, never at
-# the capture's ``retake`` flag: a geometry rung rejects a good capture to hold
-# the runner on the same index, so it travels with ``retake=false``.
 ATTEMPT_INITIATOR_HOUSEHOLD = "household"
 ATTEMPT_INITIATOR_SPEAKER = "speaker"
 
@@ -75,10 +68,6 @@ class AttemptOverspendError(RuntimeError):
 #: :attr:`BeginDecision.kind` — admit this begin (``spends_extra`` says whether
 #: it costs one of the position's extras, and ``initiator`` who is charged).
 ADMIT = "admit"
-#: Hold the begin: VERIFY is soft-held until an apply is observed.
-DEFER_AWAITING_APPLY = "defer_awaiting_apply"
-#: Refuse: the auto-apply hit a TERMINAL failure, named by ``code``.
-REFUSE_APPLY_FAILED = "refuse_apply_failed"
 #: Refuse: the slot's last rejection was a condition another take cannot clear.
 REFUSE_NON_RETRIABLE = "refuse_non_retriable"
 #: Refuse: the slot's extras are gone (the backstop — see :func:`assess_begin`).
@@ -86,14 +75,11 @@ REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
 
 #: Every kind :func:`assess_begin` can return. Declared so the flow's handling
 #: can be VERIFIED rather than trusted — the discipline
-#: :data:`.spatial.SCREEN_KINDS` and :data:`.coordinator.REFUSAL_KINDS`
-#: already keep. The unhandled direction is REFUSE: an extra take costs the
+#: :data:`.spatial.SCREEN_KINDS` already keeps. The unhandled direction is REFUSE: an extra take costs the
 #: household a try it may need, while a refusal costs it a retry it can make
 #: again.
 DECISION_KINDS = frozenset({
     ADMIT,
-    DEFER_AWAITING_APPLY,
-    REFUSE_APPLY_FAILED,
     REFUSE_NON_RETRIABLE,
     REFUSE_EXTRAS_SPENT,
 })
@@ -101,57 +87,43 @@ DECISION_KINDS = frozenset({
 
 @dataclass
 class SlotAttempts:
-    """One prompted position's attempt ledger (#2086).
-
-    ``admitted`` counts every attempt the session let start; the first is the
-    PLANNED capture and is free, and each one after it spends an extra against
-    :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`, attributed to whoever asked. An
-    ACCEPTED capture consumes no budget of its own, so a position measured
-    cleanly on the first take still has its full three extras. Mutable on
-    purpose: this is per-session state the session advances.
-    """
-
     admitted: int = 0
     by_household: int = 0
     by_speaker: int = 0
+    charge: TakeCharge = "operator"
+    retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
     @property
     def extras_used(self) -> int:
-        return self.by_household + self.by_speaker
+        return self.by_household
 
     @property
     def extras_left(self) -> int:
-        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.extras_used)
+        return max(0, min(self.retries_per_pose - self.by_household, self.automatic_left))
 
-    def spend(self, initiator: str) -> None:
-        """Charge one extra attempt to ``initiator``.
+    @property
+    def automatic_left(self) -> int:
+        return max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_household - self.by_speaker)
 
-        Callers gate on :attr:`extras_left` first; an unchecked overspend raises
-        rather than silently capping.
-        """
-        if self.extras_left <= 0:
-            raise AttemptOverspendError(
-                "slot has no extra attempts left "
-                f"({self.extras_used}/{MAX_EXTRA_ATTEMPTS_PER_POSITION})"
-            )
-        if initiator == ATTEMPT_INITIATOR_SPEAKER:
+    def can_retry(self, charge: TakeCharge = "operator") -> bool:
+        return (self.automatic_left if charge == "speaker" else self.extras_left) > 0
+
+    def spend(self, charge: TakeCharge) -> None:
+        if not self.can_retry(charge):
+            raise AttemptOverspendError("slot has no attempts left for this initiator")
+        if charge == "speaker":
             self.by_speaker += 1
         else:
             self.by_household += 1
 
     def to_payload(self) -> dict[str, Any]:
-        """The honest count, as the phone renders it.
-
-        Numbers only — the page composes the eyebrow, because the §2.1 screen
-        grammar makes the counter the page's slot. ``by_speaker`` is what makes
-        the count truthful about who spent what.
-        """
         return {
-            "used": self.extras_used,
-            "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            "allowed": self.retries_per_pose,
             "left": self.extras_left,
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,
+            "automatic_left": self.automatic_left,
+            "automatic_allowed": MAX_AUTOMATIC_RETAKES_PER_POSITION,
         }
 
 
@@ -170,24 +142,6 @@ class BeginDecision:
     initiator: str = ""
 
 
-def extra_initiator(last_reason: str | None, *, geometry_locked_code: str) -> str:
-    """Who is asking for the extra attempt about to be admitted.
-
-    Read off the rejection that kept the plan alive, the only place the
-    distinction is visible: a geometry rung is the session demanding a wider
-    take of an otherwise fine capture, and it travels the ordinary begin path
-    with ``retake=false`` (rejecting is the only lever that holds a
-    fixed-length plan on the same index). Everything else is the household
-    choosing to spend one. ``geometry_locked_code`` is stated rather than
-    imported: the reason codes are the flow's.
-    """
-    return (
-        ATTEMPT_INITIATOR_SPEAKER
-        if last_reason == geometry_locked_code
-        else ATTEMPT_INITIATOR_HOUSEHOLD
-    )
-
-
 def extras_spent_message(
     ledger: SlotAttempts, *, diagnosis: str, outcome: str,
 ) -> str:
@@ -196,7 +150,7 @@ def extras_spent_message(
     Deliberately does NOT reuse the full registry ``message``: retriable rows
     end by inviting an action the flow will no longer grant.
     """
-    used = ledger.extras_used
+    used = ledger.by_household + ledger.by_speaker
     tries = "try" if used == 1 else "tries"
     count = (
         f"JTS measured this spot {ledger.admitted} times — the planned one "
@@ -261,22 +215,12 @@ def reflection_measured_for(
 
 def assess_begin(
     *,
-    verify_hold: bool,
-    apply_failure_code: Callable[[], str],
     ledger: SlotAttempts | None,
     last_reason: str | None,
     non_retriable: Container[str],
     default_code: str,
-    geometry_locked_code: str,
 ) -> BeginDecision:
-    """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
-
-    ``verify_hold`` is the session's "this is VERIFY and no apply has been
-    observed" — VERIFY is soft-held until one is. No shipped session reaches
-    that hold since the two-stage split (D10): stage 1 has no VERIFY index and
-    stage 2's session is constructed ``applied=True``, so no new design may
-    depend on it. A TERMINAL auto-apply failure refuses outright rather than
-    holding toward a dishonest capture_timeout.
+    """Admit (or refuse) one phone ``begin_capture`` (§5.7).
 
     Neither closing condition normally arrives here — both are settled at the
     REJECTION that closed the slot (#2086 item 3, ADR-0227). :data:`REFUSE_EXTRAS_SPENT`
@@ -285,18 +229,6 @@ def assess_begin(
     actually observed at this slot, never a generic exhaustion code that would
     erase what went wrong.
     """
-    if verify_hold:
-        failure_code = apply_failure_code()
-        if failure_code:
-            return BeginDecision(REFUSE_APPLY_FAILED, code=failure_code)
-        return BeginDecision(DEFER_AWAITING_APPLY)
-    # ONE pooled meter per slot: the planned capture, then at most
-    # MAX_EXTRA_ATTEMPTS_PER_POSITION extras, whoever asks for them. The first
-    # attempt of any slot is always admitted and always free, and nothing is
-    # charged before the answer is ADMIT, so the hold above leaves no ledger
-    # entry behind. Both halves state this function's PRECONDITION: "no attempts
-    # yet" is expressible as no ledger at all or as a ledger with
-    # ``admitted == 0``, and both must mean a free first attempt.
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
     # The ``is not None`` half narrows the type and changes no answer: the flow
@@ -307,14 +239,12 @@ def assess_begin(
         # outran the terminal verdict :data:`SETTLE_CONDITION_NOT_RETRIABLE`,
         # which names the same code, so the two accounts agree.
         return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
-    if ledger.extras_left <= 0:
+    if not ledger.can_retry():
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
     return BeginDecision(
         ADMIT,
         spends_extra=True,
-        initiator=extra_initiator(
-            last_reason, geometry_locked_code=geometry_locked_code
-        ),
+        initiator=ATTEMPT_INITIATOR_SPEAKER if ledger.charge == "speaker" else ATTEMPT_INITIATOR_HOUSEHOLD,
     )
 
 
@@ -397,7 +327,7 @@ def settle_spent_slot(
     """
     if code is not None and code in non_retriable:
         return SETTLE_CONDITION_NOT_RETRIABLE
-    if ledger is None or ledger.extras_left > 0:
+    if ledger is None or ledger.can_retry():
         return SETTLE_RETRY_REMAINS
     return (
         SETTLE_GROUP_CLOSE_REQUIRED if is_group()

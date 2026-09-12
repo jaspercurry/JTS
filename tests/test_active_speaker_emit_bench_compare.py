@@ -138,7 +138,7 @@ def test_a_shelf_realized_at_slope6_q_is_caught() -> None:
         role="tweeter", band_hz=band,
     )
     assert result.verdict.verdict == VERDICT_MODEL_ERROR
-    assert result.verdict.rollback
+    assert result.verdict.advises_against_keep
     # The documented depth of the historical defect, reproduced.
     assert result.band_max_error_db == pytest.approx(1.7, abs=0.15)
     assert result.band_max_error_db > 30 * EXACT_RENDER_CEILING_DB

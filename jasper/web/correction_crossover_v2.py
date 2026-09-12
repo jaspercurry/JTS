@@ -65,17 +65,17 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from jasper.active_speaker import preflight, preflight_live
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
     TypeVar,
 )
 
 from jasper.atomic_io import atomic_write_text
-from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.bundles import mark_state
-from jasper.active_speaker.candidate_parts import COMPOSITION_KIND
 from jasper.active_speaker.candidate_trials import (
-    tuning_trial_matches_candidate,
+    has_tuning_layers, tuning_trial_matches_candidate,
     tuning_trial_reference,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
@@ -98,7 +98,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_ENTRY_BASELINE as CAPABILITY_ENTRY_BASELINE,
     CAPABILITY_FINDINGS,
     CAPABILITY_PREDICTED_SUM as CAPABILITY_PREDICTED_SUM,
-    CAPABILITY_ROLLBACK,
     PHASE_MEASURE,
     PHASE_VERIFY,
     PHASE_CLOUD_VERIFY,
@@ -144,7 +143,6 @@ from jasper.active_speaker.crossover_v2.verification import (
 from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.audio_measurement.household_mic import (
     household_mic_path,
-    resolved_household_sensitivity,
     resolve_setup_calibration as resolve_household_setup_calibration,
 )
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
@@ -304,8 +302,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     the ``code=`` lets the 400 body pick up that reason's ``next_action`` when
     it declares one. Today the classifier routes here to ``program_unplayable``
     (the rest of the ``CrossoverV2FlowError`` family) or to
-    ``program_plan_shape_invalid`` (:class:`PlanShapeError`); neither
-    declares a ``next_action``, so today's 400 carries the sentence alone.
+    ``program_plan_shape_invalid`` (:class:`PlanShapeError`).
 
     The raw text is logged here rather than dropped: this is the one site that
     discards it, and it is the only place the failed constraint is named. The
@@ -1556,7 +1553,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # **This grade reads no ``fc_selection``, on any round.** It once gated its
     # success verdicts on a corner selector's verdict and completeness — "the Fc
     # comparison finished, and the corner on the speaker is the one it
-    # authorized". That selector is retired (``docs/tuning-master-plan.md``
+    # authorized". That selector is retired (historical
     # ticket 2.4) along with the corner hunt that fed it, so no round publishes
     # one and this build cannot restate the adjudication of a round that did.
     #
@@ -1836,48 +1833,7 @@ def _take_staged_angle_walk(
 ) -> tuple[
     tuple[Any, ...], str, dict[int, Any], dict[str, float], tuple[Any, ...], Any
 ] | None:
-    """This session's staged angle walk as
-    ``(poses, consumer, specs, trims, claims, spl_monitor)``, or ``None``.
-
-    A staged walk this session cannot honour REFUSES THE OPEN
-    (:class:`CrossoverV2Refused`) with the producing module's own slug, rather
-    than opening in the ordinary 3-capture shape and silently answering a
-    different question. This runs before any state is opened, so the loud
-    direction is also the cheap one; the document is single-use either way, so
-    the operator restages after fixing what was named.
-
-    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, KEYED
-    here and built by the walk's own owners
-    (:func:`~jasper.active_speaker.angle_capture.design_axis_spec`,
-    :func:`~jasper.active_speaker.angle_capture.stop_specs`), so the objects the
-    engine leg plays are the walk's template placed and never a second reading
-    of it. The design-axis MEASURE index always carries the template; a STOP is
-    in the map only when it plays a summed graph.
-    ``claims`` is what each stop's graph CARRIED, for the pose records the flow
-    banks.
-
-    ``trims`` is the per-role attenuation a ``--level-matched`` walk carries,
-    resolved HERE and empty for a walk that asked for none. Adoption is the one
-    place that can both ask the evidence question and still refuse, so it is
-    asked exactly once. A box with no measured evidence
-    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`)
-    refuses with
-    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`.
-    A datasheet estimate is deliberately not a fallback: it is physics about
-    the driver model, not a measurement of this cabinet.
-
-    ``consumed`` on the journal line is READ BACK from the spool, never
-    asserted: its two unreadable arms deliberately do not consume, so a
-    permissions mistake refuses every session rather than silently destroying
-    the evidence of itself.
-
-    ``lateral_group_present`` and ``plans_cloud_group`` are the session's own
-    facts, passed in because the composing seam may not read session flags.
-
-    A walk does not survive its session: the consumer is not persisted and the
-    document is single-use, so a session that lapses mid-walk re-opens in its
-    ordinary shape and the operator stages again.
-    """
+    """Admit the staged walk before opening any measurement resource."""
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
@@ -1893,10 +1849,7 @@ def _take_staged_angle_walk(
         staged_angle_request_pending,
         take_staged_angle_request,
     )
-    from jasper.active_speaker.plan_run import (
-        resolve_candidate_scopes,
-        spl_watch,
-    )
+    from jasper.active_speaker.plan_run import spl_watch
     from jasper.active_speaker.crossover_v2.capture_plan import (
         build_v2_cloud_index_phase_map,
         position_angle_deg,
@@ -1923,13 +1876,21 @@ def _take_staged_angle_walk(
         # — the journal line and the refusal are one statement, and no arm can
         # log without refusing or refuse without logging.
         return CrossoverV2Refused(
-            f"the staged angle walk was refused ({reason}): {detail}"
+            f"the staged angle walk was refused ({reason}): {detail}", code=reason,
         )
 
     try:
         request = take_staged_angle_request()
         if request is None:
             return None
+        facts = preflight_live.read_preflight_facts(
+            request, context=SimpleNamespace(preset=preset, topology=topology), device=device,
+        )
+        report = preflight.preflight(request, facts)
+        for issue in report.issues:
+            if issue.blocking:
+                raise refused(issue.code, issue.detail)
+        request = report.plan
         if lateral_group_present:
             raise LateralWalkRefused(
                 WALK_LATERAL_GROUP_ALREADY_PLANNED,
@@ -1963,16 +1924,18 @@ def _take_staged_angle_walk(
             "evidence to match them by; run the driver trim step, or stage "
             "the walk without --level-matched",
         )
+    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at run open
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
     try:
         spl_monitor, spl_note = spl_watch(
             measure_spec.spl_ceiling_db_spl,
             topology=topology,
             preset=preset,
-            sensitivity=resolved_household_sensitivity(device),
+            sensitivity=facts.anchor.sensitivity,
+            resolved_ceiling_db_spl=report.spl_ceiling_db_spl,
             device=device,
         )
-        candidate_scopes = resolve_candidate_scopes(candidate_ids)
+        candidate_scopes = report.candidate_scopes
     except LateralWalkRefused as exc:
         raise refused(exc.reason, exc.detail) from exc
     # Asked of the ONE owner of this session's index space rather than counted
@@ -1991,11 +1954,11 @@ def _take_staged_angle_walk(
     try:
         placed = stop_specs(
             request, candidate_scopes=candidate_scopes, prompts=prompts,
+            baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
+                                                if stop.plays_summed and not stop.candidate_id),
         )
     except ValueError as exc:
-        # Only the stop's own pose is new on those constructions; the spec's own
-        # sentence names the field.
-        raise refused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
+        raise refused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
     for index, spec in zip(
         sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
         placed,
@@ -3233,13 +3196,11 @@ def bind_production_play(
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
     resolved_config_dir = config_dir or str(DEFAULT_CAMILLA_CONFIG_DIR)
-    applied_profile = load_applied_baseline_profile_state() or {}
     session_graph = bind_measurement_graph(
         MeasurementGraphProfile(
             preset=preset, topology=topology, role_channels=role_channels,
             playback_device=playback_device,
             protection_sections_by_role=protection_sections_by_role,
-            applied_profile=applied_profile,
         ), camilla_factory=camilla_factory, config_dir=resolved_config_dir,
     )
 
@@ -3262,7 +3223,6 @@ def bind_production_play(
             graph_kind="tuning_measurement", program=program,
             phase=phase, artifact=artifact,
             read_volume_plan=session_volume_plan,
-            speaker_candidate_id=spec.candidate_id or None,
         )
 
     compose = bind_program_composer(
@@ -3415,7 +3375,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     candidate = v2.get("candidate")
     if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
-    if candidate.get("program_id") == COMPOSITION_KIND:
+    if candidate.get("tuning_layers"):
         v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
         return
     try:
@@ -3673,32 +3633,7 @@ def _active_graph_fingerprint() -> str:
 
 
 def _previous_candidate_known() -> bool:
-    """Can the automatic revert actually go back? (#2291's ``rollback_available``)
-
-    The state half; the seam half — is the conductor's ``rollback`` bound at
-    all — is the coordinator's own to check, and it ANDs the two. Three facts,
-    each the answer half of a question the ACTION then re-asks, so the round's
-    promise cannot drift from what the doors do:
-
-    * a prior candidate fingerprint is recorded — the SAME field the
-      auto-revert resolves its target from
-      (:func:`~jasper.web.correction_crossover_v2_status._previous_candidate_fingerprint`);
-    * the pointer is PAIRED to the apply this round is grading
-      (``previous_candidate_displaced_by`` equals the published candidate's
-      fingerprint) — a pointer stamped by an older apply, or consumed by the
-      automatic revert itself, routes to ``recovery_required`` instead of
-      promising a restore the seam then refuses;
-    * the republish door would admit that fingerprint
-      (:func:`~jasper.web.correction_crossover_v2_republish.republish_preflight`
-      — the bank still holds a verifiable artifact and the declaration gate
-      passes).
-
-    The APPLY door's own gates are deliberately not re-asked here — they read
-    live SSOT that a probe cannot pre-answer — and the live displacement check
-    runs at the moment of action (:func:`bind_delta_probe_rollback`), exactly
-    the static/live split the old five-gate probe kept. A raising preflight is
-    caught by the coordinator's seam reader, which fails closed.
-    """
+    """Can the operator republish the previous candidate for this apply?"""
     from jasper.web import correction_crossover_v2_republish as republish_door
     from jasper.web import correction_crossover_v2_status as v2_status
 
@@ -3712,18 +3647,7 @@ def _previous_candidate_known() -> bool:
 
 
 def _previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
-    """Was the way-back pointer recorded by the apply now under grade?
-
-    The one equality of the pairing rule: ``previous_candidate_displaced_by``
-    — stamped by :func:`observe_apply_success` with the candidate its apply
-    installed, and re-stamped to ``None`` by the automatic revert's own
-    success — must equal the published candidate's fingerprint. ``False``
-    covers a pointer stamped by an older apply (#2559's staleness class), the
-    [revert…next-apply] window (no automatic ping-pong; the household's
-    way-back button is deliberately NOT gated on this), and a state written
-    before the pairing existed (no auto-follow until the next apply records
-    one — the same no-schema-bump posture the pointer itself takes).
-    """
+    """Was the previous candidate recorded by the apply now under grade?"""
     resolved = state or {}
     displaced_by = resolved.get("previous_candidate_displaced_by")
     candidate = resolved.get("candidate")
@@ -3879,16 +3803,10 @@ def bind_v2_stage_seams(
     publish_check: Any,
     publish_candidate: Any,
     run_async: Any,
-    camilla_factory: Any,
+    camilla_factory: Any = None,
     provenance: CaptureProvenanceRecorder | None = None,
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
-
-    The single source of truth for the two stage shapes. Both preparers call
-    it; neither assembles a ``V2FlowSeams`` of its own, so "which stage binds
-    rollback" is answered in exactly one place — the capability declarations in
-    :mod:`~jasper.active_speaker.crossover_v2.journey` — instead of being
-    re-derived at two call sites that were free to disagree.
 
     The unconditional seams are unconditional on purpose. ``apply_failed`` is
     never consulted by stage 2 (its conductor is constructed ``applied=True``,
@@ -3944,6 +3862,8 @@ def bind_v2_stage_seams(
     # holds. Bound unconditionally: with the capture-dump ring gone the banked
     # record is the only file these numbers can land in.
     banked_evidence = CaptureEvidenceCarry()
+    from jasper.web.correction_crossover_v2_restore import bind_boost_restore, current_graph_fingerprint  # lazy: host binding cycle
+
     return V2FlowSeams(
         analyze=bind_production_analyze(
             meta=refs, provenance=provenance, carry=banked_provenance,
@@ -3978,10 +3898,6 @@ def bind_v2_stage_seams(
             evidence_store, refs,
             provenance=banked_provenance, evidence=banked_evidence,
         ),
-        rollback=(
-            bind_delta_probe_rollback(run_async, camilla_factory)
-            if CAPABILITY_ROLLBACK in capabilities.provides else None
-        ),
         applied_offset_db=_applied_offset_gate,
         # #2611: the graph an apply replaces, for the commanded axis. Bound on
         # both stages for ``entry_graph_fingerprint``'s reason — "what is live
@@ -3990,6 +3906,8 @@ def bind_v2_stage_seams(
         applied_profile=_applied_profile_now,
         record_model_error=_record_live_model_error,
         rollback_available=_previous_candidate_known,
+        restore_boost=bind_boost_restore(run_async, camilla_factory),
+        tuning_graph_fingerprint=current_graph_fingerprint,
         # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
         # ``entry_graph_fingerprint``'s reason — what is live right now is not
         # a stage asymmetry — and it is the only way the grading stage can
@@ -4095,17 +4013,18 @@ def _bind_engine_measure_leg(
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
+    from jasper.active_speaker.candidate_parts import baseline_candidate_ids  # lazy: compose at session open
+    purposes = {index: "room" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "speaker"
+                for index, phase in index_phase_map.items() if phase in SUMMED_SWEEP_PHASES and index not in (specs_by_index or {})}
+    baselines = baseline_candidate_ids(purposes.values())
     specs = {}
     for index, phase in index_phase_map.items():
-        from jasper.active_speaker.candidate_parts import baseline_candidate_id  # lazy: only summed captures compose a baseline
         default = (specs_by_index or {}).get(index) or MeasureSpec(
             kind="verify" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "candidate",
             graph_scope="candidate" if phase in SUMMED_SWEEP_PHASES else "drivers",
-            candidate_id=baseline_candidate_id("room" if phase in (PHASE_VERIFY, PHASE_CLOUD_VERIFY) else "speaker") if phase in SUMMED_SWEEP_PHASES else "",
+            candidate_id=baselines[purposes[index]] if index in purposes else "",
         )
-        specs[index] = dataclasses.replace(
-            default, program_phase=phase,
-        )
+        specs[index] = dataclasses.replace(default, program_phase=phase)
 
     def _raise_incident(incident: str) -> NoReturn:
         if incident == STIMULUS_ADMISSION_REFUSED:
@@ -4638,7 +4557,6 @@ def prepare_v2_session(
                 applied=bool(prior_raw.get("applied")),
                 gain_plan_db=prior_raw.get("gain_plan_db"),
                 measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
-                measure_gain_retry_used=bool(prior_raw.get("measure_gain_retry_used")),
                 attempt_history=attempt_history_from_state(prior_raw),
                 last_attempt_decision=(
                     dict(prior_decision)
@@ -4818,7 +4736,7 @@ def prepare_v2_session(
         # a second, underscore-prefixed name for the same object.
         seams = bind_v2_stage_seams(
             opening,
-                evidence_store=evidence_store,
+            evidence_store=evidence_store,
             capture_session_id=capture_session_id,
             refs=refs,
             publish_check=publish_check,
@@ -4853,7 +4771,6 @@ def prepare_v2_session(
                 applied=True,
                 gain_plan_db=state.get("gain_plan_db"),
                 measure_gain_ceiling_db=state.get("measure_gain_ceiling_db"),
-                measure_gain_retry_used=bool(state.get("measure_gain_retry_used")),
                 index_phase_map=opening.plan.index_phase_map,
                 measure_predicted_sum=predicted_sum,
                 measure_predicted_spec_report=predicted_spec,
@@ -5181,7 +5098,7 @@ def handle_v2_apply(
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
     from jasper.active_speaker.candidate_trials import require_candidate_trial
 
-    tuning_apply = bool(candidate.room_correction or candidate.bass_extension)
+    tuning_apply = has_tuning_layers(candidate)
     applied_tuning_trial = None
     if not tuning_apply:
         try:
@@ -5528,200 +5445,6 @@ def handle_v2_apply(
         candidate_fingerprint=expected,
     )
     return payload
-
-
-def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
-    """The conductor's ``rollback`` seam (linearization-integrity PR-L5).
-
-    Puts the previous tuning back THROUGH THE NORMAL PATH — republish the
-    prior candidate by fingerprint (:func:`handle_v2_republish`, the same
-    handler POST /crossover/v2/republish runs), then apply it
-    (:func:`handle_v2_apply`, with every admission gate it always runs) — and
-    returns True when that candidate is live again. Not a second restore
-    mechanism that could drift from the operator's own way back: the target is
-    resolved from the SAME field the wizard's "Go back to the previous tuning"
-    action reads (``previous_candidate_fingerprint``),
-    and the two doors are the two the operator would press. The only
-    difference is who pressed them: here the round's adoption table did,
-    because it measured that the applied correction made the speaker worse.
-
-    Catches :class:`CrossoverV2Refused`, which is the ordinary outcome for an
-    automatic caller — a first-ever apply records no prior candidate, a pruned
-    bank cannot republish one, and the apply door carries its own refusals —
-    and reports "not restored" so the conductor's refusal still reaches the
-    household. A rollback that could not run must not swallow the verdict that
-    asked for it.
-
-    It does NOT claim to catch everything: an OSError from the CamillaDSP
-    socket still propagates, and
-    :func:`~jasper.active_speaker.crossover_v2.coordinator._run_round_restore`
-    catches that wider family on the other side of the seam (it has to — a
-    conductor with a different binding gets the same protection). Two honest
-    halves rather than one dishonest "never raises".
-
-    **Three action-time gates run before the doors**, each the ACT half of
-    an answer the adoption table already gave: the pointer must exist, it
-    must be PAIRED to the apply this round displaced
-    (:func:`_previous_candidate_paired` — the stale-stash class, #2559, and
-    the automatic revert's own window both read as unpaired), and the running
-    graph must still be the one this round applied
-    (``applied_profile_displacement`` — the 2026-08-15 out-of-band class). A
-    successful revert then consumes its own pairing
-    (:func:`_consume_auto_revert_pairing`), which is what keeps the graph a
-    round measured WORSE from being automatically re-applied in the
-    [revert…next-apply] window.
-
-    **Exactly once per binding, and the stakes went UP with the normal path
-    (#2291).** ONE conductor site reaches this closure — the round's adoption
-    path — and the guard below is what its history bought (three callers once
-    raced it into a false "still applied" sentence). The restore is attempted
-    once, and every later caller is handed the FIRST call's outcome verbatim.
-
-    **Kept as a property of THIS closure** rather than of any caller's
-    discipline — which is exactly the assumption that broke last time. The
-    one-owner rule is pinned separately, at the flow
-    (``test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence``
-    asserts no second ``self._seams.rollback(`` call site survives).
-    """
-    lock = threading.Lock()
-    outcome: dict[str, bool] = {}
-
-    def _rollback(reason: str) -> bool:
-        with lock:
-            if "restored" in outcome:
-                remembered = outcome["restored"]
-                log_event(
-                    logger,
-                    "correction.crossover_v2_delta_probe_restore_repeat",
-                    level=logging.INFO,
-                    reason=reason, restored=remembered,
-                )
-                return remembered
-            restored = _restore_once(reason)
-            outcome["restored"] = restored
-            return restored
-
-    def _refused_before_the_doors(reason: str, detail: str) -> bool:
-        # The answer ``_previous_candidate_known`` gave the adoption table,
-        # re-read at the moment of action: reaching one of these arms means
-        # the state (or the speaker) moved between the decision and the act,
-        # and refusing is the honest end — the round re-grades into
-        # recovery_required.
-        log_event(
-            logger, "correction.crossover_v2_delta_probe_restore_refused",
-            level=logging.WARNING, reason=reason, detail=detail,
-        )
-        return False
-
-    def _restore_once(reason: str) -> bool:
-        from jasper.active_speaker.baseline_profile import (
-            APPLIED_PROFILE_DISPLACED,
-            applied_profile_displacement,
-            load_applied_baseline_profile_state,
-        )
-        from jasper.web import correction_crossover_backend
-        from jasper.web import correction_crossover_v2_republish as republish_door
-        from jasper.web import correction_crossover_v2_status as v2_status
-
-        state = load_v2_state()
-        fingerprint = v2_status._previous_candidate_fingerprint(state)
-        if fingerprint is None:
-            return _refused_before_the_doors(
-                reason, "no previous candidate fingerprint is recorded",
-            )
-        # The pairing rule's one equality, re-checked where the action is: the
-        # pointer must have been recorded by the apply this round displaced.
-        # An unpaired pointer is every stale-stash shape (#2559) plus the
-        # automatic revert's own [revert…next-apply] window — the AUTO path
-        # refuses; the household's way-back button is deliberately not gated
-        # on this and still offers the pointer through review + Apply.
-        if not _previous_candidate_paired(state):
-            return _refused_before_the_doors(
-                reason,
-                "the recorded previous candidate is not paired to the apply "
-                "this round displaced",
-            )
-        # The live half (#2537's out-of-band class): is the speaker still
-        # playing the graph this round's apply installed? A reconcile moved
-        # the running config on 2026-08-15 and the old restore faithfully
-        # replaced an operator's deliberate graph; the detector already
-        # existed — this path just never asked. Only a POSITIVE displacement
-        # refuses: the other codes mean the comparison could not be made, and
-        # an absent measurement is not evidence of a defect.
-        applied_record = load_applied_baseline_profile_state()
-        if applied_record is not None and (
-            applied_profile_displacement(applied_record)
-            == APPLIED_PROFILE_DISPLACED
-        ):
-            log_event(
-                logger,
-                "correction.crossover_v2_applied_profile_displaced",
-                level=logging.WARNING,
-                surface="auto_revert",
-            )
-            return _refused_before_the_doors(
-                reason,
-                "the running graph is not the one this round applied",
-            )
-        try:
-            republish_door.handle_v2_republish({"fingerprint": fingerprint})
-            payload = handle_v2_apply(
-                {"expected_candidate_fingerprint": fingerprint},
-                run_async,
-                camilla_factory,
-                # Read fresh at the moment of action, exactly as the manual
-                # dispatch does: the stage-2 openability preflight must see
-                # the speaker as it is NOW, not as it was at session prepare.
-                status=correction_crossover_backend.status_payload(),
-            )
-        except CrossoverV2Refused as exc:
-            log_event(
-                logger, "correction.crossover_v2_delta_probe_restore_refused",
-                level=logging.WARNING, reason=reason, detail=str(exc),
-                candidate_fingerprint=fingerprint,
-            )
-            return False
-        restored = payload.get("status") == "applied"
-        if restored:
-            _consume_auto_revert_pairing()
-        # This caller has NO screen — it reduces the payload to a bool for the
-        # conductor — so the blocked apply's cause exists nowhere else at all
-        # (#2519's reasoning, carried to the new mechanism).
-        log_event(
-            logger, "correction.crossover_v2_delta_probe_restore",
-            level=logging.WARNING if not restored else logging.INFO,
-            reason=reason, status=payload.get("status"),
-            candidate_fingerprint=fingerprint,
-            code=str((_blocking_apply_issue(payload) or {}).get("id") or ""),
-        )
-        return restored
-
-    return _rollback
-
-
-def _consume_auto_revert_pairing() -> None:
-    """Mark the way-back pointer as recorded by the automatic revert.
-
-    The revert's own apply just re-stamped the pointer at the candidate it
-    displaced — which is the graph a round measured WORSE. Left paired, the
-    very next graded round of the reverted-to candidate could automatically
-    re-apply that graph (the ping-pong the pairing rule exists to close), so
-    the revert consumes its own pairing: ``previous_candidate_displaced_by``
-    becomes ``None`` until the next ORDINARY apply records a fresh one. The
-    pointer itself stays — the household's way-back button still offers the
-    displaced candidate, through review + Apply, which is their call.
-
-    A cheap write on ``save_v2_state``'s own rule: losing it to a power cut
-    leaves a paired pointer, which re-opens the window for one round on one
-    boot — narrow, and the round it would mislead still runs every apply-door
-    gate.
-    """
-    with _state_lock:
-        state = load_v2_state()
-        if state is None:
-            return
-        state["previous_candidate_displaced_by"] = None
-        save_v2_state(state)
 
 
 def _crossover_label(geometry: Any, with_slope: bool) -> str:

@@ -886,8 +886,12 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert field in diagnostic['context']['incompatible_fields']
 
 
+@pytest.mark.parametrize('has_bass', [False, True])
 @pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
-def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale):
+def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale, has_bass, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
+                        lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension={"low_boost_db": 6} if has_bass else {})))
     grid = np.geomspace(50, 200, 100)
     baseline = {
         'record_path': 'off.json',
@@ -910,6 +914,10 @@ def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(targ
     kwargs = {'candidate_id': 'boost', 'descriptor': {'low_boost_db': 12, 'reference_level_db': 0,
               'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30},
               'target': {'freqs_hz': [50, 200], 'magnitude_db': [target_db, target_db]}}
+    if has_bass:
+        with pytest.raises(ValueError):
+            fit_bass_shape(pairs, **kwargs)
+        return
     result = fit_bass_shape(pairs, **kwargs)
     repeated = fit_bass_shape([pairs[0]] * 5 + pairs[1:], **kwargs)
     assert result['selected_scale'] == pytest.approx(expected_scale)

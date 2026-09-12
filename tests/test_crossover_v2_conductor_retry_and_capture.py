@@ -21,8 +21,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_CORRECTION_MODEL_ERROR,
-    REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     locate_failed_diagnosis,
@@ -30,12 +28,10 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
-    AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
-    GEOMETRY_RETRY_POSITIONS,
     POSITION_ROLES,
     CrossoverV2Session,
     CrossoverV2FlowError,
@@ -76,16 +72,8 @@ from tests.crossover_v2_fixtures import (
 )
 
 
-# ===========================================================================
-# The bounded-retry ruling (owner, 2026-08-03, issue #2086). One prompted
-# position gets the planned capture plus THREE extra attempts, pooled across
-# everyone who can ask for one; exhaustion attributes and degrades rather than
-# killing the session with copy that says "try again".
-# ===========================================================================
-
-
 @pytest.mark.parametrize("case", ["improved", "still_weak", "resume", "driver_cap", "partial_cap", "flat_ceiling", "clipped"])
-def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
+def test_measured_alignment_snr_prices_retries_within_the_admitted_gain(case):
     fakes = FakeSeams()
 
     def check(program):
@@ -110,7 +98,7 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
                 noise_floor_dbfs_scalar=None, relevant_hz=(1600, 4000), model=DRIVER,
             )
             responses.append(replace(response, snr={DRIVER_SNR_ALIGNMENT_KEY: block}))
-        return replace(result, driver_responses=tuple(responses), mic_meter_status="low")
+        return replace(result, driver_responses=tuple(responses), mic_meter_status="usable")
 
     fakes.check, fakes.measure = check, measure
     caps = {"woofer": 0.0, "tweeter": {"driver_cap": -65.0, "partial_cap": -48.0}.get(case, 0.0)}
@@ -132,17 +120,16 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
         fakes.measure = measure
         quieter = c.program_for_phase(PHASE_MEASURE)
         assert quieter.segment("sweep_t").gain_db < original.segment("sweep_t").gain_db
-        assert _run_phase(c, 2, 3)["accepted"]
+        assert not _run_phase(c, 2, 3)["capabilities"]["delay_estimate"]
         assert c.program_for_phase(PHASE_MEASURE).program_id == quieter.program_id
-        assert not c.snapshot().measure_gain_retry_used
         return
 
     first = _run_phase(c, 2, 2)
-    assert first["evidence"] == {"mic_meter_status": "low"}
+    assert first["evidence"]["mic_meter_status"] == "usable"
     if case in {"driver_cap", "flat_ceiling"}:
-        assert first["accepted"]
+        assert not first["accepted"] and first["next"] == "fix_and_retake"
+        assert not first["capabilities"]["delay_estimate"]
         assert c.program_for_phase(PHASE_MEASURE).program_id == original.program_id
-        assert not c.snapshot().measure_gain_retry_used
         return
 
     assert not first["accepted"] and first["auto_retry"] and first["kept_measurement"]
@@ -157,7 +144,7 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
     assert retry.segment("sweep_t").gain_db == pytest.approx(expected_gain)
     assert first["gain_adjustment"]["next_program_id"] == retry.program_id
     snapshot = c.snapshot()
-    assert snapshot.measure_gain_retry_used and snapshot.gain_plan_db["tweeter"] == pytest.approx(expected_gain)
+    assert snapshot.gain_plan_db["tweeter"] == pytest.approx(expected_gain)
     if case == "resume":
         c = CrossoverV2Session.hydrate(
             snapshot, session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
@@ -165,15 +152,15 @@ def test_measured_alignment_snr_gets_one_bounded_gain_retry(case):
             seams=seams, index_phase_map=CLOUD_MAP,
         )
         assert c.program_for_phase(PHASE_MEASURE).program_id == retry.program_id
-    elif case == "improved":
+    if case in {"improved", "resume"}:
         fakes.measure = lambda program: measure(program, 41.0)
     second = _run_phase(c, 2, 3)
-    assert second["accepted"] and "auto_retry" not in second
-    assert second["evidence"] == {"mic_meter_status": "low"}
-    assert c.program_for_phase(PHASE_MEASURE).program_id == retry.program_id
-    assert len(banked) == 2 and banked[1][1] == retry.program_id
+    assert second["accepted"] is (case in {"improved", "resume"})
+    assert second["next"] == {"still_weak": "retake_louder", "partial_cap": "fix_and_retake"}.get(case, "accept")
+    assert second["evidence"]["mic_meter_status"] == "usable"
     if case != "resume":
         assert second["attempts"]["by_speaker"] == 1
+        assert second["attempts"]["by_household"] == 0
 
 
 def test_every_retriable_reason_has_one_structured_diagnosis_source():
@@ -247,60 +234,22 @@ def test_verify_inconclusive_keeps_its_measured_reflection_at_exhaustion():
     assert "try again" not in verdict["reason"].lower()
 
 
-def test_the_extra_try_bound_is_pooled_across_initiators(monkeypatch):
-    """Ruling item 1 + 4, replayed on the shape that killed the 2026-08-03
-    verify: at position index 6 the flow spent locate_failed, two geometry
-    rungs, then locate_failed again — five attempts at one spot, because each
-    reason code held its own budget and the geometry discount forgave two more.
-    The sixth begin was refused pre-play.
-
-    One pooled meter now covers all of it. The bound is shared (a geometry rung
-    spends an extra like anything else), and the accounting is not (it is
-    booked to the speaker, because the speaker is who asked)."""
+@pytest.mark.parametrize("fault", ["glitch", "clip"])
+def test_speaker_retries_have_a_total_bound_and_keep_the_operator_budget(fault):
     fakes = FakeSeams()
-    c = _cloud_conductor(fakes)
-    attempt = _walk(c, (1, 2), 1)
-    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
-    last = CLOUD_MEASURE_INDEXES[-1]
-    _lock(monkeypatch)
-
-    # The planned capture, then the wider retake the speaker asks for.
-    for _ in range(GEOMETRY_RETRY_POSITIONS):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-        assert verdict["code"] == REASON_CLOUD_GEOMETRY_LOCKED
-    assert verdict["attempts"]["by_speaker"] == 1
-    assert verdict["attempts"]["by_household"] == 0
-
-    # The geometry ladder is spent; ordinary quality failures follow.
-    monkeypatch.undo()
-    fakes.verify = lambda program: _verify_analysis(
-        program, locate_confidence=0.0, pilot_snr_ok=True,
-    )
-    verdict = _run_phase(c, last, attempt)
-    attempt += 1
-    assert verdict["code"] == REASON_LOCATE_FAILED
-    # The take the speaker asked for is still the speaker's ask.
-    assert verdict["attempts"] == {
-        "used": 2, "allowed": 3, "left": 1, "by_speaker": 2, "by_household": 0,
-    }
-
-    # The household's own try is the third and last extra.
-    verdict = _run_phase(c, last, attempt)
-    attempt += 1
-    assert verdict["attempts"] == {
-        "used": 3, "allowed": 3, "left": 0, "by_speaker": 2, "by_household": 1,
-    }
-    # FINITE and honest: the position carries the condition actually observed,
-    # and the group closes with what it has instead of the session dying.
-    assert verdict["accepted"] is True
-    assert verdict["unresolved"] == {
-        "index": last,
-        "code": REASON_LOCATE_FAILED,
-        "diagnosis": locate_failed_diagnosis(True),
-    }
-    assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
-    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(program, glitch=fault == "glitch", clipped=fault == "clip")
+    bound = flow._admission.MAX_AUTOMATIC_RETAKES_PER_POSITION
+    for retry in range(bound + 1):
+        result = _run_phase(c, 2, retry + 2)
+        assert result["attempts"]["by_household"] == 0
+        assert result["attempts"]["left"] == min(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION, bound - retry)
+        assert result["attempts"]["by_speaker"] == retry
+        assert result.get("terminal", False) is (retry == bound)
+    assert result["next"] == "stop" and not result["auto_retry"]
+    with pytest.raises(CaptureBeginRefused):
+        c.authorize_begin(2, bound + 3)
 
 
 def test_an_accepted_capture_leaves_the_positions_extras_intact():
@@ -390,56 +339,6 @@ def test_a_group_that_cannot_reach_the_floor_ends_honestly_not_with_retry_copy()
     assert "too few positions" in excinfo.value.user_message.lower()
 
 
-def test_a_spent_final_slot_terminalizes_its_close_time_refusal():
-    """The cloud-close hard stop replaces, rather than hides behind, X.
-
-    The last verify-cloud position spends its pooled extras on locate misses.
-    The group can still close without that spot, but its delta probe then
-    refuses with ``correction_model_error``. That closing finding is the final
-    truth: publish its exact code/copy as terminal on THIS capture, never the
-    earlier locate diagnosis plus a retry the ledger cannot admit.
-    """
-    fakes = FakeSeams()
-    fakes.apply_done = True
-    c = _conductor(
-        fakes,
-        index_phase_map=STAGE2_MAP,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-    )
-    # Isolate the close seam under test from delta-probe AND round-grading
-    # arithmetic; the real classifier's mapping/copy is independently
-    # exhaustive below. Injected at ``_grade_round_once`` rather than at the
-    # probe's own seam because the fifth-principle routing deleted that seam:
-    # a close-time refusal is now the ROUND's answer, and this is where it
-    # enters the close.
-    c._grade_round_once = (  # type: ignore[method-assign]
-        lambda verdict: (
-            flow.PhaseVerdict(False, REASON_CORRECTION_MODEL_ERROR)
-            if c.current_phase == PHASE_CLOUD_VERIFY
-            else verdict
-        )
-    )
-
-    attempt = _walk(c, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
-    last = CLOUD_VERIFY_INDEXES[-1]
-    fakes.verify = lambda program: _verify_analysis(
-        program, locate_confidence=0.0, pilot_snr_ok=True,
-    )
-    for _ in range(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
-        verdict = _run_phase(c, last, attempt)
-        attempt += 1
-
-    closing_copy = REASON_REGISTRY[REASON_CORRECTION_MODEL_ERROR].message
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
-    assert verdict["reason"] == closing_copy
-    assert verdict["terminal"] is True
-    assert verdict["terminal_outcome"] == "phase_cannot_proceed"
-    assert verdict["attempts"]["left"] == 0
-    assert "unresolved" not in verdict
-    assert "could hear the speaker" not in verdict["reason"]
-    assert "previous sound has been put back" in verdict["reason"]
 
 
 def test_no_exhaustion_refusal_ever_carries_a_reasons_try_again_copy():
@@ -1259,12 +1158,6 @@ def test_capture_plan_entries_carry_auto_advance_policy():
             # supporting clause is the body and may legitimately be empty.
             assert entry.screen["title"]
             assert "body" in entry.screen
-    # No entry of a STAGE-1 plan arms on an apply — there is no apply in this
-    # session to arm on (work order D1/D10).
-    assert all(
-        entry.screen.get("auto_advance") != AUTO_ADVANCE_ON_APPLY
-        for entry in plan.entries
-    )
     # …and the END screen is stage 2's, not stage 1's: nothing here may claim
     # the speaker is tuned. (The generic page fallback a stage-1 plan therefore
     # falls back to is PR-T4's; see the work order's D7 list.)

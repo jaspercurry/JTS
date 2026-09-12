@@ -5,7 +5,7 @@
 > proposed 2026-07-28 and kept taking amendments after that (a callout below
 > is marked "Partly built, 2026-08-18" and records owner rulings through
 > 2026-08-21). Tagged historical the same day, superseded by
-> [`tuning-master-plan.md`](../tuning-master-plan.md) — "its
+> later tuning decisions: "its
 > planning-authority claim and its §5.5 'experiment workspace is the one new
 > mutation owner' are superseded: `play_program` is the single activation door
 > (invariant 5), and the SSH-operator + runbook model (R4/R11) replaces the

@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 from .crossover_v2.alignment_prescription import (
-    ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-    _declared_alignment_delay_range_ms,
     alignment_delay_search_bounds_us,
 )
 
@@ -100,7 +98,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.program import (
-    KIND_SWEEP,
     ExcitationProgram,
     RoleBand,
 )
@@ -113,9 +110,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
 )
-from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.active_speaker.crossover_v2.capture_source import (
-    CaptureBeginDeferred,
     CaptureBeginRefused,
 )
 from jasper.log_event import log_event
@@ -136,29 +131,10 @@ MAX_EXTRA_ATTEMPTS_PER_POSITION = _admission.MAX_EXTRA_ATTEMPTS_PER_POSITION
 ATTEMPT_INITIATOR_HOUSEHOLD = _admission.ATTEMPT_INITIATOR_HOUSEHOLD
 ATTEMPT_INITIATOR_SPEAKER = _admission.ATTEMPT_INITIATOR_SPEAKER
 
-# Corner admissibility (plan §4.2 / #1894 / #1675). READ-ONLY doors: patching a
-# name here rebinds this module only; production resolves via ``fc_sweep``.
-
-from jasper.active_speaker.crossover_v2.fc_sweep import (
-    FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-    FC_REJECT_BELOW_DECLARED_FLOOR as FC_REJECT_BELOW_DECLARED_FLOOR,
-    _fc_rejection as _fc_rejection,
-)
-
-# Two more READ-ONLY doors, on the block above's terms.
-from jasper.active_speaker.branch_chain import (
-    sections_by_role as sections_by_role,
-)
-from jasper.active_speaker.crossover_v2.intervention import (
-    LINEARIZATION_MIN_PAIRED_OCCURRENCES as LINEARIZATION_MIN_PAIRED_OCCURRENCES,
-)
-
-
 # --- the walk this session will do (see crossover_v2.capture_plan) ---------
 # READ-ONLY doors: patching a name here rebinds this module only.
 AUTO_ADVANCE_COUNTDOWN = _plan.AUTO_ADVANCE_COUNTDOWN
 AUTO_ADVANCE_COUNTDOWN_S = _plan.AUTO_ADVANCE_COUNTDOWN_S
-AUTO_ADVANCE_ON_APPLY = _plan.AUTO_ADVANCE_ON_APPLY
 AUTO_ADVANCE_TAP = _plan.AUTO_ADVANCE_TAP
 CAPTURE_ENTRY_MARGIN_MS = _plan.CAPTURE_ENTRY_MARGIN_MS
 CAPTURE_PLAN_MAX_ATTEMPTS = _plan.CAPTURE_PLAN_MAX_ATTEMPTS
@@ -243,10 +219,10 @@ wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
 
 # Substituting one of these names here binds only for readers inside this module.
 
+from jasper.active_speaker.crossover_v2 import refusal_copy as _reasons
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     NON_RETRIABLE_CODES,
     REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_LOCATE_FAILED,
     REASON_MEASURE_GAIN_ADJUSTED,
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
@@ -259,7 +235,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     _screen_refusal_code,
     reason_diagnosis,
     reason_message,
-    round_restore_reason,
 )
 
 from jasper.active_speaker.crossover_v2.spatial import (
@@ -348,8 +323,6 @@ def _declared_first_bounce_s(distance_m: float | None) -> float | None:
 # --- tuning constants -----------------------------------------------------
 
 GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
-# Per gain-adjusted clip retry, drop the offending program's level by this much.
-CLIP_RETRY_BACKOFF_DB = 3.0
 PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
 LOCATE_MIN_CONFIDENCE = _dispatch.LOCATE_MIN_CONFIDENCE
 VERIFY_TOLERANCE_DB = _contracts.VERIFY_TOLERANCE_DB
@@ -373,7 +346,7 @@ MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 # Measurement-honesty gate G3, dB: how far VERIFY's leading pilot-pair transfer
 # may step between attempts before the recorder itself is suspect. See
 # ADR-0182.
-VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
+VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = _dispatch.VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
 
 # dB. How close two consecutive graded VERIFY attempts must land before the
 # mismatch is called DETERMINISTIC rather than transient (#1873). See ADR-0183
@@ -383,11 +356,6 @@ VERIFY_REPEAT_FLOOR_DB = 0.2
 #: ``terminal_outcome`` for the verdict above: the captures agreed, and the
 #: agreement ends the set.
 VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
-
-# Nothing here reads this name; it survives as a door pinned by
-# ``test_crossover_v2_programs`` — do not delete it on an importer grep alone.
-courtesy_prelude_for_phase = _programs.courtesy_prelude_for_phase
-
 
 CrossoverV2FlowError = _contracts.CrossoverV2FlowError
 
@@ -401,21 +369,9 @@ back_off_gain = _programs.back_off_gain
 alignment_to_candidate_fields = _planning.alignment_to_candidate_fields
 
 
-def alignment_delay_plausible(
-    delay_us: float | None,
-    source_preset: Any,
-    *,
-    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-) -> bool:
-    """True when ``|delay_us|`` is inside the preset's declared ``delay_range_ms``."""
-    if delay_us is None:
-        return True
-    declared = _declared_alignment_delay_range_ms(source_preset)
-    if declared is None:
-        return True
-    _region, lo_ms, hi_ms = declared
-    delay_ms = abs(float(delay_us)) / 1000.0
-    return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
+def _measure_sufficient(take: _dispatch.TakeVerdict, analysis: ProgramAnalysis) -> bool:
+    return take.ok and (not analysis.driver_responses or analysis.measure_pair_not_evaluated is not None
+                        or take.capabilities["delay_estimate"])
 
 
 _analysis_json = _planning.analysis_json
@@ -534,9 +490,6 @@ class V2FlowSeams:
     apply_failed: ApplyFailureGate
     # Called once per ACCEPTED capture of every retained kind. Fail-soft.
     bank_take: BankTake = _no_bank_take
-    # Undo the applied correction; True when the previous profile was
-    # restored. Absent, the session still classifies and refuses.
-    rollback: Callable[[str], bool] | None = None
     # #1811: the whole-band level move the APPLY made and did not command, read at
     # probe time. ``None`` is "nothing known", which the probe reports honestly.
     applied_offset_db: Callable[[], float] | None = None
@@ -551,6 +504,8 @@ class V2FlowSeams:
     # #2291: is a prior candidate recorded to restore TO? Absence reads as "cannot
     # confirm", never as "there is one".
     rollback_available: Callable[[], bool] | None = None
+    restore_boost: Callable[[str], Mapping[str, Any]] | None = None
+    tuning_graph_fingerprint: Callable[[], str] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Absence answers "boosted".
     applied_boosts: Callable[[], bool] | None = None
 
@@ -587,13 +542,6 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     result = _spatial.combine_cloud_positions(positions)
     _diagnostics._emit_cloud_combine_diagnostics(logger, result.diagnostics)
     return result.combined
-
-
-def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
-    """Combine, read ``.geometry``, and journal a combiner failure."""
-    result = _spatial.cloud_geometry_verdict(positions)
-    _diagnostics._emit_cloud_combine_diagnostics(logger, result.diagnostics)
-    return result.verdict
 
 
 # --- cloud group bands + honesty pipeline (the emitting halves) ------------
@@ -733,7 +681,6 @@ class CrossoverV2Session:
         applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
         measure_gain_ceiling_db: Mapping[str, float] | None = None,
-        measure_gain_retry_used: bool = False,
         index_phase_map: Mapping[int, str] | None = None,
         post_apply_verifies: bool | None = None,
         measure_predicted_sum: Any = None,
@@ -858,7 +805,6 @@ class CrossoverV2Session:
         )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
-        self._measure_gain_retry_used = measure_gain_retry_used
         # CHECK's measured room floor, held until ``_measure_priors`` reads it (#1830).
         # In-memory only: §5.6 invalidates CHECK/MEASURE evidence across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
@@ -991,10 +937,6 @@ class CrossoverV2Session:
         # Where this round's receipt landed. ``None`` when writing failed — an
         # identity for a receipt that does not exist would be worse than none.
         self._round_receipt_identity: dict[str, Any] | None = None
-        # Which arm of ``correction_rollback_failed`` this is: ``True`` a restore
-        # failed against a real anchor, ``False`` there was never one, ``None``
-        # not established.
-        self._last_failure_rollback_anchor: bool | None = None
         # The post-apply VERIFY analysis, retained for the Full tier's later grading.
         self._verify_analysis: ProgramAnalysis | None = None
         # ``None`` until VERIFY is consumed.
@@ -1519,11 +1461,6 @@ class CrossoverV2Session:
         """
         return self._last_failure_pilot_heard if self._last_failure_code else None
 
-    @property
-    def last_failure_rollback_anchor(self) -> bool | None:
-        """Which ``correction_rollback_failed`` arm this failure is (#2291)."""
-        return self._last_failure_rollback_anchor if self._last_failure_code else None
-
     def _pilot_heard_for(
         self, code: str | None, *, slot: str | None = None,
     ) -> bool | None:
@@ -1625,17 +1562,6 @@ class CrossoverV2Session:
             session_id=self.session_id,
         )
 
-    def _apply_observed(self) -> bool:
-        if self._journey.applied:
-            return True
-        try:
-            observed = bool(self._seams.apply_complete())
-        except (OSError, RuntimeError, ValueError):
-            observed = False
-        if observed:
-            self._journey.mark_applied()
-        return observed
-
     def snapshot(self) -> V2ConductorSnapshot:
         return V2ConductorSnapshot(
             session_id=self.session_id,
@@ -1644,7 +1570,6 @@ class CrossoverV2Session:
             applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
-            measure_gain_retry_used=self._measure_gain_retry_used,
             measure_sweep_durations_s=_priors.measure_sweep_durations_s(
                 self._measure_program
             ),
@@ -1692,7 +1617,6 @@ class CrossoverV2Session:
                 applied=snapshot.applied,
                 gain_plan_db=snapshot.gain_plan_db,
                 measure_gain_ceiling_db=snapshot.measure_gain_ceiling_db,
-                measure_gain_retry_used=snapshot.measure_gain_retry_used,
                 **journey,
                 **kwargs,
             )
@@ -1715,35 +1639,12 @@ class CrossoverV2Session:
         # behind for a capture that never started.
         ledger = self._slot_attempts.get(slot)
 
-        def apply_failure_code() -> str:
-            """The apply seam's TERMINAL reason, or ``""`` — guarded here."""
-            try:
-                return str(self._seams.apply_failed() or "")
-            except (OSError, RuntimeError, ValueError):
-                return ""
-
         decision = _admission.assess_begin(
-            verify_hold=phase == PHASE_VERIFY and not self._apply_observed(),
-            apply_failure_code=apply_failure_code,
             ledger=ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
-            geometry_locked_code=REASON_CLOUD_GEOMETRY_LOCKED,
         )
-        if decision.kind == _admission.REFUSE_APPLY_FAILED:
-            self._last_failure_code = decision.code
-            # No capture ran, so no pilot evidence pairs with this (#2085). Written so a
-            # previous capture's cannot trail in.
-            self._last_failure_pilot_heard = None
-            spec = REASON_REGISTRY.get(decision.code)
-            message = (
-                reason_message(decision.code, spec) if spec else decision.code
-            )
-            self.capture_published_refusal = True
-            raise CaptureBeginRefused(decision.code, message)
-        if decision.kind == _admission.DEFER_AWAITING_APPLY:
-            raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
             self.capture_published_refusal = True
@@ -1798,11 +1699,7 @@ class CrossoverV2Session:
         ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
         if decision.spends_extra:
             try:
-                ledger.spend(
-                    _admission.ATTEMPT_INITIATOR_SPEAKER
-                    if self._last_reason.get(slot) == REASON_MEASURE_GAIN_ADJUSTED
-                    else decision.initiator
-                )
+                ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
             except _admission.AttemptOverspendError as exc:
                 # The flow's own error type is what every caller already handles;
                 # the ledger is pure and has no business knowing it.
@@ -1933,9 +1830,10 @@ class CrossoverV2Session:
             pilot_heard=analysis.pilot_snr_ok,
             reflection_measured=reflection_measured,
         )
+        ledger = self._slot_attempts.get(slot)
+        if ledger is not None:
+            ledger.charge = "operator" if verdict.accepted else verdict.charge
         if not verdict.accepted and verdict.code is not None:
-            # Recorded BEFORE the settle so both readers see it: the settle's
-            # attribution fallback, and ``admission.extra_initiator`` next begin.
             self._last_reason[slot] = verdict.code
             self._last_pilot_evidence[slot] = (
                 verdict.code,
@@ -2221,28 +2119,10 @@ class CrossoverV2Session:
         )
 
     def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
-        """CHECK's verdict: the ladder's answer, then the accept-side banking."""
         gain_plan = analysis.gain_plan
-        kind = _dispatch.check_screens(
-            _dispatch.CheckScreens(
-                stimulus_located=_stimulus_locate_ok(analysis),
-                anchor_ambiguous=analysis.anchor_ambiguous,
-                delta_implausible=analysis.delta_implausible,
-                channel_map_ok=analysis.channel_map_ok,
-                pilot_snr_ok=analysis.pilot_snr_ok,
-                linearity_ok=analysis.linearity_ok,
-                gain_plan_present=gain_plan is not None,
-                # Read only when a plan exists; ``False`` is the value the ladder
-                # ignores in that case, never a claim that an absent solve cleared it.
-                gain_plan_snr_floor_ok=(
-                    bool(gain_plan.snr_floor_ok) if gain_plan is not None else False
-                ),
-            )
-        )
-        if kind is not None:
-            return PhaseVerdict(False, _screen_refusal_code(kind))
-        # mypy: the ladder's final rung refuses an absent plan, so reaching
-        # here proves one exists — restated because the checker cannot see it.
+        verdict = PhaseVerdict.from_take(_dispatch.assess(analysis, phase=PHASE_CHECK, program=self._check_program))
+        if not verdict.accepted:
+            return verdict
         assert gain_plan is not None
         self._gain_plan_db = dict(gain_plan.gain_db)
         self._measure_gain_ceiling_db = {
@@ -2256,26 +2136,20 @@ class CrossoverV2Session:
         )
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.records.check(gain_plan, analysis.ambient_report or {})
-        return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
+        return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
 
     def _consume_measure(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
-        if verdict.code == REASON_MEASURE_GAIN_ADJUSTED:
-            # Bank with the program that made THIS response before composing its retry.
+        if verdict.payload.get("kept_measurement"):
             self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
-            self._gain_plan_db = verdict.payload["gain_adjustment"]["next_gain_db"]
-            self._measure_gain_retry_used = True
-            self._rearm_measure_after_transient()
-            verdict.payload["gain_adjustment"]["next_program_id"] = (
-                self.program_for_phase(PHASE_MEASURE).program_id
-            )
-            log_event(
-                logger, "correction.crossover_v2_measure_gain_adjusted",
-                session_id=self.session_id,
-                **verdict.payload["gain_adjustment"],
-            )
+        if verdict.next in {"retake_same", "retake_louder", "retake_quieter"}:
+            self._rearm_measure_after_transient(verdict)
+            if "gain_adjustment" in verdict.payload:
+                verdict.payload["gain_adjustment"]["next_program_id"] = self.program_for_phase(PHASE_MEASURE).program_id
+                log_event(logger, "correction.crossover_v2_measure_gain_adjusted",
+                          session_id=self.session_id, **verdict.payload["gain_adjustment"])
         return self._consume_unprompted(
             PHASE_MEASURE, index, attempt, analysis, result,
             verdict, self._log_measure_diag,
@@ -2416,55 +2290,30 @@ class CrossoverV2Session:
         self._measure_ripple_reservation = None
         self._measure_alignment_reservation = None
         self._measure_calibration_reservation = None
-        screen = _dispatch.measure_screens(
-            _dispatch.MeasureScreens.from_analysis(
-                analysis,
-                sweep_schedule_ok=lambda: _sweep_schedule_ok(
-                    analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
-                ),
-                # A callable: the physical backstop is asked ONLY of an estimate
-                # that already cleared the rung above.
-                delay_physically_plausible=lambda: (
-                    analysis.alignment is None
-                    or alignment_delay_plausible(
-                        analysis.alignment.delay_us, self._preset
-                    )
-                ),
-            ),
-            clip_retry_backoff_db=CLIP_RETRY_BACKOFF_DB,
+        take = _dispatch.assess(
+            analysis, phase=PHASE_MEASURE,
+            priors=MeasurementPriors(alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset)),
+            program=self._measure_program,
+            gain_ceiling_db={role: _programs.back_off_gain(
+                ceiling, self._excitation.session_volume_db, self._excitation.caps_dbfs.get(role, 0.0),
+            ) for role, ceiling in self._measure_gain_ceiling_db.items()},
         )
-        if screen.kind is not None:
-            if screen.guard:
-                self._last_measure_guard = screen.guard
-            if screen.rearm:
-                self._rearm_measure_after_transient(
-                    extra_backoff_db=screen.rearm_backoff_db
-                )
-            return PhaseVerdict(
-                False, _screen_refusal_code(screen.kind), evidence=screen.evidence,
-            )
-        ledger = self._slot_attempts.get(PHASE_MEASURE)
-        if not self._measure_gain_retry_used and (ledger is None or ledger.extras_left > 0):
-            program = self.program_for_phase(PHASE_MEASURE)
-            gains = {seg.role: seg.gain_db for seg in program.segments
-                     if seg.kind == KIND_SWEEP and seg.role is not None}
-            ceilings = {
-                role: _programs.back_off_gain(
-                    ceiling, self._excitation.session_volume_db,
-                    self._excitation.caps_dbfs.get(role, 0.0),
-                )
-                for role, ceiling in self._measure_gain_ceiling_db.items()
-            }
-            adjusted = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
-            if adjusted:
-                return PhaseVerdict(False, REASON_MEASURE_GAIN_ADJUSTED, payload={
-                    "gain_adjustment": {
-                        "source_program_id": program.program_id,
-                        "previous_gain_db": gains,
-                        "next_gain_db": {**gains, **adjusted},
-                    },
+        self._last_measure_guard = str(take.evidence.get("guard", ""))
+        verdict = PhaseVerdict.from_take(take)
+        if not verdict.accepted:
+            if take.ok and take.next == "retake_louder":
+                return replace(verdict, code=REASON_MEASURE_GAIN_ADJUSTED, payload={
+                    "gain_adjustment": {"source_program_id": analysis.program_id,
+                                        "previous_gain_db": dict(self._gain_plan_db or {}),
+                                        "next_gain_db": {**(self._gain_plan_db or {}), **take.gain_targets}},
                     "kept_measurement": True,
-                }, evidence=screen.evidence)
+                })
+            return verdict
+        if not _measure_sufficient(take, analysis):
+            code = (_reasons.REASON_DELAY_IMPLAUSIBLE if take.evidence.get("delay_physically_plausible") is False
+                    else _reasons.REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
+            return replace(verdict, accepted=False, code=code, next="fix_and_retake", charge="operator",
+                           payload={"kept_measurement": True})
         # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
         # does not refuse.** The capture is ACCEPTED and carries a reservation, which
         # changes what the household is TOLD and nothing about what is built.
@@ -2513,13 +2362,13 @@ class CrossoverV2Session:
         # fit's input and must outlive the cloud walk. Exactly one is ever held.
         if PHASE_CLOUD_MEASURE in self._journey.plan.phases:
             self._measure_analysis = analysis
-            return PhaseVerdict(True, payload={
+            return replace(verdict, payload={
                 "measurement_phase": PHASE_MEASURE, **pair_claim,
-            }, evidence=screen.evidence)
+            })
         # The no-deferral shape. The entry baseline is the "before" the round grades
         # against, not the fit's input, so it defers nothing.
-        return PhaseVerdict(
-            True, evidence=screen.evidence,
+        return replace(
+            verdict,
             payload={
                 "measurement_phase": PHASE_MEASURE,
                 **pair_claim,
@@ -2876,7 +2725,7 @@ class CrossoverV2Session:
                 min(retake.rung, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
             ]
             return PhaseVerdict(
-                False, REASON_CLOUD_GEOMETRY_LOCKED,
+                False, REASON_CLOUD_GEOMETRY_LOCKED, charge="speaker",
                 payload={"prompt": prompt, "geometry": dict(verdict)},
             )
         # #1872: a retake of the group's LAST position can land AFTER the group closed
@@ -2923,11 +2772,7 @@ class CrossoverV2Session:
             self._speculative_close = None
             payload["awaiting_confirm"] = True
         if phase == PHASE_CLOUD_VERIFY:
-            # The delta probe's spatial arm, deliberately OUTSIDE the disclosure wrap:
-            # this is a product gate, and a gate that cannot fail a capture is none.
             self._run_delta_probe()
-            # **The probe reports; the ROUND decides.** The verdict reaches
-            # ``evaluate_round_quality`` and restores go through the one restore owner.
             return self._grade_round_once(PhaseVerdict(True, payload=payload))
         return PhaseVerdict(True, payload=payload)
 
@@ -3392,22 +3237,6 @@ class CrossoverV2Session:
             return None
         return float(grid[zeros[0]])
 
-    def _refuse(self, code: str) -> "CaptureBeginRefused":
-        """Build the refusal for ``code``, with its household copy, and record it as
-        this session's failure code.
-
-        **No production path calls this today**; it is kept because it alone owns the
-        stamp. **Stamping ``_last_failure_code`` is the load-bearing half**: the host
-        falls back to a capture-timeout sentence when it is unset.
-        """
-        spec = REASON_REGISTRY[code]
-        pilot_heard = self._pilot_heard_for(code)
-        self._last_failure_code = code
-        self._last_failure_pilot_heard = pilot_heard
-        return CaptureBeginRefused(
-            code, reason_message(code, spec, pilot_heard=pilot_heard),
-        )
-
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
         *, linearization: _LinearizationState | None = None,
@@ -3706,15 +3535,16 @@ class CrossoverV2Session:
             self._round_ports(), session_id=self.session_id,
         )
 
-    # --- #2291: the round, graded and acted on -------------------------------
+    # --- round advice ---
 
     def _round_ports(self) -> "RoundPorts":
-        """Narrow this session's seams down to the five a round may call."""
+        """Bind the round's readers and receipt publisher."""
         from jasper.active_speaker.crossover_v2.coordinator import RoundPorts
 
         return RoundPorts(
-            rollback=self._seams.rollback,
             rollback_available=self._seams.rollback_available,
+            restore_boost=self._seams.restore_boost,
+            tuning_graph_fingerprint=self._seams.tuning_graph_fingerprint,
             applied_boosts=self._seams.applied_boosts,
             entry_graph_fingerprint=self._seams.entry_graph_fingerprint,
             publish_round_receipt=self._seams.records.round_receipt,
@@ -3727,7 +3557,7 @@ class CrossoverV2Session:
         )
 
     def _grade_round_once(self, verdict: PhaseVerdict) -> PhaseVerdict:
-        """Grade this round and act on the adoption table. Once per session.
+        """Grade this round and record the adoption advice. Once per session.
 
         **One owner, two triggers**: express, at the end of :meth:`_consume_verify`;
         full, at the ``PHASE_CLOUD_VERIFY`` close. **Both require an ACCEPTED
@@ -3737,7 +3567,7 @@ class CrossoverV2Session:
         from jasper.active_speaker.crossover_v2 import coordinator
 
         if self._round_evaluated:
-            return verdict
+            return coordinator.round_verdict(verdict, (self._round_receipt_identity or {}).get("protection"))
         self._round_evaluated = True
         # #2602. ``None`` is a host that resolved nothing, and the opening round is the
         # fail-safe reading: it can only offer another round, never suppress a stop.
@@ -3807,38 +3637,9 @@ class CrossoverV2Session:
         )
         self._round_evaluation = decision.evaluation
         self._round_receipt_identity = decision.receipt_identity
-        refusal = decision.refusal
-        if refusal is None:
-            return verdict
-        return self._round_refusal_for(refusal)
-
-    def _round_refusal_for(self, refusal: Any) -> PhaseVerdict:
-        """Map a coordinator refusal KIND to the code the household reads."""
-        from jasper.active_speaker.crossover_v2 import coordinator
-
-        if refusal.kind == coordinator.REFUSAL_RESTORED:
-            return self._round_refusal(round_restore_reason(refusal.cause))
-        if refusal.kind != coordinator.REFUSAL_ROLLBACK_FAILED:
-            log_event(
-                logger, "correction.crossover_v2_round_refusal_kind_unmapped",
-                level=logging.ERROR, session_id=self.session_id,
-                kind=str(refusal.kind),
-            )
-        return self._round_refusal(
-            REASON_CORRECTION_ROLLBACK_FAILED,
-            rollback_anchor_available=refusal.rollback_anchor_available,
-        )
-
-    def _round_refusal(
-        self, code: str, *, rollback_anchor_available: bool | None = None,
-    ) -> PhaseVerdict:
-        """Stamp a round-driven refusal the way the delta probe already does."""
-        self._last_failure_code = code
-        # A round verdict, not a capture — no pilot evidence belongs to it, and
-        # the prior capture's must not trail in (#2085).
-        self._last_failure_pilot_heard = None
-        self._last_failure_rollback_anchor = rollback_anchor_available
-        return PhaseVerdict(False, code)
+        if decision.protection:
+            self._last_failure_code = decision.protection["code"]
+        return coordinator.round_verdict(verdict, decision.protection)
 
     def _consume_verify(
         self,
@@ -4068,65 +3869,26 @@ class CrossoverV2Session:
         self._verify_graded_band_hz = None
         self._verify_frame = None
         self._verify_claims = None
-        # THIS attempt's gate, as a LOCAL: computed before the early returns because
-        # the gate-comparability refusal needs it, but it becomes session state only
-        # through ``_set_verify_outcome``. ``verify_gate`` below is a WINDOW in ms.
         gate_record = _gate_record(
             analysis.summed_response,
             declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
         )
-        # The pre-grade ladder belongs to ``capture_dispatch.verify_integrity_screens``
-        # and runs ahead of EVERY grade. What stays here is every rung that reads state
-        # outliving ONE capture.
-        integrity_screen = _dispatch.verify_integrity_screens(
-            analysis, stimulus_located=_stimulus_locate_ok(analysis),
-        )
-        if integrity_screen is not None:
-            payload = (
-                dict(integrity_screen.integrity_payload)
-                if integrity_screen.integrity_payload is not None else {}
-            )
-            return PhaseVerdict(
-                False,
-                _screen_refusal_code(integrity_screen.kind),
-                payload=payload,
-            )
-        # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
-        # overlay differences that aren't driver alignment ⇒ inconclusive.
-        verify_gate = _gate_window_ms(analysis.summed_response)
-        if (
-            self._measure_gate_window_ms is not None
-            and verify_gate is not None
-            and verify_gate + 1e-6 < self._measure_gate_window_ms
-        ):
-            self._set_verify_outcome(
-                "inconclusive", REASON_VERIFY_INCONCLUSIVE, gate_record,
-            )
-            return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
-        # G3: the tracking-max comparison below is exactly what a shifted recording
-        # chain invalidates, so check the chain's OWN consistency first. The first
-        # usable attempt of the session only records the reference (#1927).
+        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, program=self._verify_program,
+                                pilot_transfer_prior=self._verify_pilot_baseline, measure_gate_window_ms=self._measure_gate_window_ms)
+        verdict = PhaseVerdict.from_take(take)
+        if "pilot_transfer_step_db" in take.evidence:
+            self._verify_pilot_transfer_step_db = float(take.evidence["pilot_transfer_step_db"])
+        if not verdict.accepted:
+            if verdict.code in {REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_INCONCLUSIVE}:
+                self._set_verify_outcome("inconclusive", verdict.code, gate_record)
+            if analysis.capture_integrity is not None and analysis.capture_integrity.failed:
+                verdict = replace(verdict, payload={"capture_integrity": analysis.capture_integrity.to_dict()})
+            return verdict
         transfer = _pilot_transfer_by_role(analysis)
-        if transfer:
-            if self._verify_pilot_baseline is None:
-                self._verify_pilot_baseline = dict(transfer)
-                self._verify_pilot_baseline_at = time.time()
-                self._note_level_reference_reset(transfer)
-            else:
-                shared = [r for r in transfer if r in self._verify_pilot_baseline]
-                if shared:
-                    self._verify_pilot_transfer_step_db = max(
-                        abs(transfer[r] - self._verify_pilot_baseline[r])
-                        for r in shared
-                    )
-        if (
-            self._verify_pilot_transfer_step_db is not None
-            and self._verify_pilot_transfer_step_db > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
-        ):
-            self._set_verify_outcome(
-                "inconclusive", REASON_VERIFY_LEVEL_SHIFT, gate_record,
-            )
-            return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
+        if transfer and self._verify_pilot_baseline is None:
+            self._verify_pilot_baseline = dict(transfer)
+            self._verify_pilot_baseline_at = time.time()
+            self._note_level_reference_reset(transfer)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verification._verify_evidence_from_tracking(tracking)
         self._verify_graded_band_hz = _verification._verify_graded_band_from_tracking(
@@ -4158,7 +3920,7 @@ class CrossoverV2Session:
                 mismatch_payload["terminal_outcome"] = (
                     VERIFY_TERMINAL_OUTCOME_DETERMINISTIC
                 )
-            return PhaseVerdict(False, code, payload=mismatch_payload)
+            return replace(verdict, accepted=False, code=code, payload=mismatch_payload, next="fix_and_retake", charge="operator")
         # Graded and inside tolerance: the mismatch did NOT repeat, so the pair #1873's
         # discriminator would draw its claim from is broken.
         self._verify_last_mismatch_max_db = None
@@ -4173,8 +3935,8 @@ class CrossoverV2Session:
         self._run_delta_probe()
         # Absolute remains independent; the terminal owner classifies its miss.
         self._set_verify_outcome("pass", None, gate_record)
-        return PhaseVerdict(
-            True, payload={
+        return replace(
+            verdict, payload={
                 "measurement_phase": PHASE_VERIFY,
                 "tracking": dict(tracking),
                 **(
@@ -4276,18 +4038,13 @@ class CrossoverV2Session:
 
     # --- helpers -------------------------------------------------------------
 
-    def _rearm_measure_after_transient(self, *, extra_backoff_db: float = 0.0) -> None:
-        """Recompose the MEASURE program for the automatic retry (§5.10 t1)."""
+    def _rearm_measure_after_transient(self, verdict: PhaseVerdict) -> None:
         if self._gain_plan_db is not None:
-            self._measure_program = self._compose_measure_program(
-                self._gain_plan_db, extra_backoff_db=extra_backoff_db
-            )
-            self._gain_plan_db = {
-                seg.role: seg.gain_db for seg in self._measure_program.segments
-                if seg.kind == KIND_SWEEP and seg.role is not None
-            }
-            if extra_backoff_db > 0:
-                # A stronger SNR retry must not undo a measured clipping backoff.
+            self._gain_plan_db.update({key.removeprefix("next_gain_db."): float(value)
+                                      for key, value in verdict.evidence.items()
+                                      if key.startswith("next_gain_db.")})
+            self._measure_program = self._compose_measure_program(self._gain_plan_db)
+            if verdict.next == "retake_quieter":
                 self._measure_gain_ceiling_db = {
                     role: min(ceiling, self._gain_plan_db[role])
                     for role, ceiling in self._measure_gain_ceiling_db.items()

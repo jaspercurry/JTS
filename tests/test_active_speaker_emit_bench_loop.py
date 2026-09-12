@@ -148,7 +148,7 @@ def test_a_shelf_the_dsp_realizes_at_slope6_q_is_caught(slope6_report) -> None:
     assert not slope6_report.matched
     tweeter = next(b for b in slope6_report.branches if b.role == "tweeter")
     assert tweeter.verdict.verdict == VERDICT_MODEL_ERROR
-    assert tweeter.verdict.rollback
+    assert tweeter.verdict.advises_against_keep
     assert tweeter.band_max_error_db == pytest.approx(1.7, abs=0.15)
     assert tweeter.verdict.exceedance_octaves > 1.0 / 3.0
     assert slope6_report.worst_branch is tweeter

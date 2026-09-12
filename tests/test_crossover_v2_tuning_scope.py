@@ -244,34 +244,37 @@ def tuning_profile():
     applied["recomposition_snapshot"]["preset"] = preset.to_dict()
     return MeasurementGraphProfile(
         preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
-        applied_profile=applied,
     )
+
+
+def _saved_tuning(profile):
+    applied = _applied_profile(profile.topology)
+    applied["recomposition_snapshot"]["preset"] = profile.preset.to_dict()
+    return applied
 
 
 @pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
 def test_program_baselines_keep_only_their_lower_layers(tuning_profile, tmp_path, purpose):
-    snapshot = tuning_profile.applied_profile["recomposition_snapshot"]
+    saved = _saved_tuning(tuning_profile)
+    snapshot = saved["recomposition_snapshot"]
     snapshot["room_correction"] = _room_correction()
     snapshot["bass_extension"] = BASS_EXTENSION
-    saved = deepcopy(tuning_profile.applied_profile)
+    before = deepcopy(saved)
     candidate = candidate_from_applied_profile(tuning_profile.topology, saved, purpose=purpose)
     graph = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
     assert bool(candidate.linearization) is (purpose != "speaker")
     assert bool(candidate.blend_correction) is (purpose != "speaker")
     assert bool(candidate.room_correction) is (purpose == "bass")
     assert not candidate.bass_extension
-    if purpose == "speaker":
-        assert candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": 0.0}
-        assert candidate.source_preset == tuning_profile.preset
-    else:
-        expected, issues = recompose_applied_baseline_yaml(
-            tuning_profile.topology, applied_profile=saved, bass_extension={},
-            room_peqs=None if purpose == "bass" else (),
-        )
-        assert not issues and graph == yaml.safe_load(expected)
+    assert candidate.role_attenuations_db == {role: entry["gain_db"] for role, entry in snapshot["corrections"].items()}
+    expected, issues = recompose_applied_baseline_yaml(
+        tuning_profile.topology, applied_profile=saved, bass_extension={},
+        room_peqs=None if purpose == "bass" else (), drop_measured_correction=purpose == "speaker",
+    )
+    assert not issues and graph == yaml.safe_load(expected)
     assert graph["devices"]["volume_limit"] == 0.0
     assert not set(graph["filters"]) & sound_filter_slot_names()
-    assert tuning_profile.applied_profile == saved
+    assert saved == before
 
 
 def _trial_candidate(profile, *, trim=-3.0, gain=-2.0):
@@ -302,21 +305,33 @@ def test_candidate_compilation_carries_all_parts_and_its_own_identity(tuning_pro
     assert filters_b["active_baseline_headroom"] != filters_a["active_baseline_headroom"]
     assert running_graph_fingerprint(text_a) != running_graph_fingerprint(text_b)
     assert a.fingerprint != b.fingerprint
-    assert tuning_profile.applied_profile["recomposition_snapshot"]["linearization"] == LINEARIZATION
+    assert _saved_tuning(tuning_profile)["recomposition_snapshot"]["linearization"] == LINEARIZATION
 
 
 @pytest.mark.parametrize("problem, reason", [
+    ("crossover", "measurement_candidate_speaker_mismatch"),
+    ("channels", "measurement_candidate_speaker_mismatch"),
     ("unknown_role", "measurement_filters_invalid"),
     ("malformed_filter", "measurement_filters_invalid"),
 ])
 def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem, reason):
     candidate = _trial_candidate(tuning_profile)
-    candidate = replace(candidate, linearization={
-        "other" if problem == "unknown_role" else "woofer": {"filters": [
-            "broken" if problem == "malformed_filter" else
-            {"biquad_type": "Peaking", "freq": 420.0, "q": 3.0, "gain": -2.0},
-        ]},
-    })
+    if problem == "crossover":
+        candidate = replace(candidate, source_preset=replace(candidate.source_preset, crossover_regions=(
+            replace(candidate.source_preset.crossover_regions[0], fc_hz=2300.0),
+        )))
+    elif problem == "channels":
+        outputs = candidate.source_preset.channel_map.outputs
+        candidate = replace(candidate, source_preset=replace(candidate.source_preset, channel_map=replace(
+            candidate.source_preset.channel_map, outputs=tuple(replace(output, index=1-output.index) for output in outputs),
+        )))
+    else:
+        candidate = replace(candidate, linearization={
+            "other" if problem == "unknown_role" else "woofer": {"filters": [
+                "broken" if problem == "malformed_filter" else
+                {"biquad_type": "Peaking", "freq": 420.0, "q": 3.0, "gain": -2.0},
+            ]},
+        })
     with pytest.raises(MeasurementGraphRefused) as exc:
         compile_tuning_graph(tuning_profile, candidate=candidate)
     assert exc.value.reason == reason
@@ -339,7 +354,7 @@ def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
     ``linearization_gain`` moves one filter off the applied tune.
     """
 
-    snapshot = tuning_profile.applied_profile["recomposition_snapshot"]
+    snapshot = _saved_tuning(tuning_profile)["recomposition_snapshot"]
     corrections = snapshot["corrections"]
     linearization = deepcopy(snapshot["linearization"])
     if linearization_gain is not None:
@@ -362,7 +377,7 @@ def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
 
 
 @pytest.mark.parametrize("layers", ["speaker", "room", "bass"])
-def test_trial_plays_composed_layers_independent_of_the_applied_profile(tuning_profile, layers):
+def test_trial_plays_composed_layers_independent_of_the_applied_profile(tuning_profile, layers, monkeypatch):
     candidate = _room_candidate(tuning_profile, linearization_gain=-9.0)
     candidate = replace(candidate, room_correction={} if layers == "speaker" else candidate.room_correction,
                         bass_extension=BASS_EXTENSION if layers == "bass" else {})
@@ -370,7 +385,9 @@ def test_trial_plays_composed_layers_independent_of_the_applied_profile(tuning_p
     for filters in applied_room["sides"].values():
         for entry in filters:
             entry["gain"] = -1.0
-    tuning_profile.applied_profile["recomposition_snapshot"]["room_correction"] = applied_room
+    applied = _saved_tuning(tuning_profile)
+    applied["recomposition_snapshot"]["room_correction"] = applied_room
+    monkeypatch.setattr("jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state", lambda: applied)
     text = compile_tuning_graph(tuning_profile, candidate=candidate)
     expected = compile_candidate_config(candidate, playback_device=tuning_profile.playback_device,
                                         room_peqs=candidate_room_peqs(candidate))
@@ -425,24 +442,46 @@ def test_peak_admission_uses_the_composed_bass_layer(tuning_profile, scope):
     from jasper.active_speaker.measurement_emit import measurement_bass_extension
 
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
-    assert measurement_bass_extension(tuning_profile, scope=scope, candidate=candidate) == candidate.bass_extension
-
-
-@pytest.fixture(autouse=True)
-def banked_program_baseline(monkeypatch):
-    from jasper.active_speaker import candidate_parts
-
-    monkeypatch.setattr(candidate_parts, "baseline_candidate_id", lambda purpose: "baseline-" + (purpose or "speaker"))
+    assert measurement_bass_extension(scope=scope, candidate=candidate) == candidate.bass_extension
 
 
 @pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
 def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, tmp_path, purpose):
     from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
 
-    candidate = candidate_from_applied_profile(tuning_profile.topology, tuning_profile.applied_profile, purpose=purpose)
+    candidate = candidate_from_applied_profile(tuning_profile.topology, _saved_tuning(tuning_profile), purpose=purpose)
     banked = publish_authored_candidate(candidate, root=tmp_path)
     reopened = find_banked_candidate(banked.fingerprint, root=tmp_path).candidate
     assert reopened.fingerprint == candidate.fingerprint
     assert yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=reopened)) == yaml.safe_load(
         compile_tuning_graph(tuning_profile, candidate=candidate)
     )
+
+
+def test_baselines_are_banked_once_per_program_at_run_open(tuning_profile, tmp_path, monkeypatch):
+    from jasper.active_speaker import candidate_parts
+    from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
+    calls = []
+    monkeypatch.setattr(candidate_parts, "load_output_topology_strict", lambda: tuning_profile.topology)
+    monkeypatch.setattr(candidate_parts, "load_applied_baseline_profile_state", lambda: _saved_tuning(tuning_profile))
+    def bank(candidate):
+        calls.append(candidate.fingerprint)
+        return publish_authored_candidate(candidate, root=tmp_path)
+    monkeypatch.setattr(candidate_parts, "publish_authored_candidate", bank)
+    ids = candidate_parts.baseline_candidate_ids(["speaker", "room", "speaker", None, "room"])
+    assert set(ids) == {"speaker", "room"}
+    assert len(calls) == len(set(calls)) == 2
+    assert all(find_banked_candidate(identity, root=tmp_path).fingerprint == identity for identity in ids.values())
+
+
+@pytest.mark.parametrize("fault", [OSError("unreadable"), ValueError("invalid")])
+def test_baseline_open_refuses_by_registry_code(monkeypatch, fault):
+    from jasper.active_speaker import candidate_parts
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
+    def broken():
+        raise fault
+    monkeypatch.setattr(candidate_parts, "load_output_topology_strict", broken)
+    with pytest.raises(MeasurementGraphRefused) as refused:
+        candidate_parts.baseline_candidate_ids(["speaker"])
+    assert refused.value.code == "measurement_baseline_unavailable"
+    assert refused.value.code in REASON_REGISTRY

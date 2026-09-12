@@ -788,12 +788,6 @@ def candidate_room_peqs(
     )
 
 
-def candidate_trial_scope(candidate: MeasuredCrossoverCandidate) -> str:
-    """The measurement scope that captures the candidate's complete graph."""
-
-    return "candidate"
-
-
 def effective_preset(candidate: MeasuredCrossoverCandidate) -> ActiveSpeakerPreset:
     """The preset with the candidate's alignment written into its region fields.
 

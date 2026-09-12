@@ -1,120 +1,60 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a stated plan against one held session: poses outer, takes inner.
-
-The executor half of :mod:`.angle_capture`, which turns an operator's intent
-into resolved stops and deliberately stops there. One loop serves both callers:
-a WALK (:func:`run_plan`, a staged :class:`~.angle_capture.AngleCaptureRequest`)
-and a spec LIST at one pose (:func:`run_specs`, the measurement CLI's batch) --
-so "what ends a run", "what a take reports" and "what the microphone was asked
-to do" have one answer apiece rather than one per door.
-
-The microphone moves once per POSE. Every take of one pose runs under a single
-placement grant, which is exactly what
-:meth:`~.crossover_v2.position_gate.PositionGate.gate` already carries across a
-declared batch -- the same gate the capture page and the lab arm satisfy.
-
-Dependency direction: a sibling of :mod:`.crossover_v2_flow` that imports FROM
-it through :mod:`.angle_capture`, never a module under ``crossover_v2/`` (whose
-modules may not reach the flow).
-"""
+"""One plan walk and retry owner, with evidence kept by RunManifest."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
+from threading import Event
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from jasper.log_event import log_event
-
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
+from jasper.audio_measurement.program import ExcitationProgram
+from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
-    REGIME_PER_DRIVER,
-    WALK_CEILING_ABOVE_STOP,
-    WALK_COMMISSIONING_STOP_UNSET,
-    WALK_NOTHING_PLAYABLE,
-    WALK_SPL_CALIBRATION_REQUIRED,
-    WALK_STIMULUS_NOT_ACCEPTED,
-    AngleCaptureRequest,
-    LateralWalkRefused,
-    refuse_unplayable_walk_policy,
-    resolve_request,
-    stop_specs,
+    WALK_CEILING_ABOVE_STOP, WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
+    WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED,
+    AngleCaptureRequest, LateralWalkRefused, resolve_request, stop_specs,
 )
 from .angle_capture_spool import angle_request_document
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
+from .crossover_v2.admission import (
+    MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
+)
+from .crossover_v2.capture_dispatch import assess
 from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
-from .crossover_v2.session import MeasureOutcome, TuningSession
-from .measured_crossover_candidate import candidate_trial_scope
+from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
+from .crossover_v2.session import TuningSession
+from .crossover_v2.spatial import analysis_curve_records
+from .run_manifest import RunManifest
 
 logger = logging.getLogger(__name__)
-
-__all__ = [
-    "PLAN_RESULT_KIND",
-    "PLAN_RESULT_SCHEMA_VERSION",
-    "RUN_INTERRUPTED",
-    "RUN_MEASURED",
-    "RUN_REFUSED",
-    "SPL_MONITOR_UNAVAILABLE",
-    "TAKE_INCOMPLETE",
-    "TAKE_MEASURED",
-    "PlanResult",
-    "TakeResult",
-    "request_fingerprint",
-    "resolve_candidate_scopes",
-    "run_plan",
-    "run_specs",
-    "spl_monitor_note",
-    "spl_watch",
-    "take_spl_ceiling",
-]
-
-#: Every take this run asked for banked cleanly.
-RUN_MEASURED = "measured"
-#: The run stopped part-way and ``stopped_at`` names where. Every take already
-#: banked stays banked.
-RUN_INTERRUPTED = "interrupted"
-#: Nothing played: the plan was refused before the first take.
-RUN_REFUSED = "refused"
-
-TAKE_MEASURED = "measured"
-#: The take played and did not bank everything it asked for; ``reason`` is the
-#: engine's own incident.
-TAKE_INCOMPLETE = "incomplete"
-
-#: What :attr:`PlanResult.spl_monitor` says when no monitor watched the takes
-#: because this box cannot turn a recording into dB SPL. A DISCLOSURE, not a
-#: gate: the commissioning stop still bounds the level a session may claim, and
-#: nothing here relaxes it.
 SPL_MONITOR_UNAVAILABLE = "unavailable_no_calibration"
-
-PLAN_RESULT_KIND = "jts_plan_result"
-PLAN_RESULT_SCHEMA_VERSION = 1
-
-#: The two failures a RUN names for ITSELF, reported under their own ``code``
-#: rather than a caller's word: a placement grant that will not come (the gate's
-#: per-hold and session budgets) and a capture the kernel stopped -- which is
-#: how ``spl_ceiling_exceeded`` reaches an operator by name.
 _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
+Analyze = Callable[[Mapping[str, Any], str], ProgramAnalysis]
 
 
-# --------------------------------------------------------------------------- #
-# the level bound every take plays under
-# --------------------------------------------------------------------------- #
+@dataclass
+class RunSignals:
+    """Thread-safe host inputs, consumed only by the executor."""
+
+    retake: Event = field(default_factory=Event)
+    complete: Event = field(default_factory=Event)
 
 
 def take_spl_ceiling(
@@ -155,26 +95,20 @@ def spl_watch(
     preset: Any,
     sensitivity: Any | None,
     device: Any,
+    resolved_ceiling_db_spl: float | None = None,
 ) -> tuple[WiredSplMonitor | None, str]:
-    """The monitor one session's takes record under, and its SPL disclosure.
+    """Build the monitor from a preflight bound, or resolve it for a local caller.
 
-    ONE owner for both doors that play a stated walk -- ``jasper-measure`` and
-    the wizard's session open -- so the same walk is bounded the same way
-    whichever took it, and each door keeps ONE :class:`LateralWalkRefused` arm
-    to translate rather than a second vocabulary per failure. The box's own
-    commissioning stop is read here, and :func:`take_spl_ceiling` resolves the
-    ceiling every stated request implies against it, refusing one above it.
-
-    ``sensitivity`` is ``None`` on a box that cannot turn a recording into dB
-    SPL. That DISCLOSES when the run stated no ceiling of its own, and REFUSES
-    when it stated one: a bound nothing can enforce is something an operator
-    must be able to act on rather than a number quietly ignored.
+    Without calibration, an unstated ceiling is disclosed as unmonitored;
+    a stated ceiling must be enforceable. Preflight callers carry their proof.
     """
-    try:
-        stop = commissioning_spl_ceiling_db(topology, preset=preset)
-    except ValueError as exc:
-        raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
-    ceiling = take_spl_ceiling(stated_db_spl, commissioning_stop_db_spl=stop)
+    ceiling = resolved_ceiling_db_spl
+    if ceiling is None:
+        try:
+            stop = commissioning_spl_ceiling_db(topology, preset=preset)
+        except ValueError as exc:
+            raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
+        ceiling = take_spl_ceiling(stated_db_spl, commissioning_stop_db_spl=stop)
     if sensitivity is None:
         if stated_db_spl is None:
             return None, SPL_MONITOR_UNAVAILABLE
@@ -186,376 +120,133 @@ def spl_watch(
     return WiredSplMonitor(sensitivity, ceiling, channel), spl_monitor_note(ceiling)
 
 
-# --------------------------------------------------------------------------- #
-# the package a run answers with
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class TakeResult:
-    """One take: where in the plan it sat, what played, and what banked.
-
-    ``index`` is 1-based, the base the gate and the persisted take identity
-    (:func:`~.crossover_v2.spatial._take_identity`) both count in. ``attempt``
-    is the begin this take was admitted under; nothing here retries, so it
-    tracks :attr:`index` and the gate's batch carry reads the pair.
-    ``level_db`` and ``stimulus_dbfs`` are the FIRST stimulus's, and every rung
-    the take banked is in ``record_ids`` (the ladder rule is
-    :meth:`~.crossover_v2.session.TuningSession.measure`'s).
-    ``started_s``/``ended_s`` are seconds from the run's own start, never a wall
-    clock: the package is about durations.
-    """
-
-    pose_index: int
-    index: int
-    attempt: int
-    candidate_id: str
-    graph_fingerprint: str
-    level_db: float | None
-    stimulus_dbfs: float | None
-    record_ids: tuple[str, ...]
-    status: str
-    reason: str
-    started_s: float
-    ended_s: float
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "pose_index": self.pose_index,
-            "index": self.index,
-            "attempt": self.attempt,
-            "candidate_id": self.candidate_id,
-            "graph_fingerprint": self.graph_fingerprint,
-            "level_db": self.level_db,
-            "stimulus_dbfs": self.stimulus_dbfs,
-            "record_ids": list(self.record_ids),
-            "status": self.status,
-            "reason": self.reason,
-            "started_s": round(self.started_s, 3),
-            "ended_s": round(self.ended_s, 3),
-        }
-
-
-@dataclass(frozen=True)
-class PlanResult:
-    """What one run of a plan produced, compact enough to read whole.
-
-    Counts first, then one row per take. ``stopped_at`` is present only on an
-    interrupted run and names the pose and the 1-based stop in flight, which
-    the banked ids alone cannot locate. ``wall_s`` holds one duration per pose
-    the run WALKED, so its length is the poses reached rather than the poses
-    named.
-
-    ``specs`` (one per stop this run PLAYS, in play order -- a skipped stop
-    names none) and ``outcomes`` (the engine's own answers, in take order) are
-    excluded from
-    :meth:`to_dict`: a host that reports per spec — the CLI's per-spec incidents
-    and playback, and WHICH spec an interrupted run stopped on — reads them
-    rather than building the plan a second time to find out.
-    """
-
-    request_fingerprint: str
-    status: str
-    takes_skipped: int
-    mic_moves: int
-    #: Begins this run admitted, INCLUDING the one an interruption stopped --
-    #: which is what makes ``attempts - takes_measured`` the honest count of
-    #: what was started and not banked.
-    attempts: int
-    wall_s: tuple[float, ...]
-    spl_monitor: str
-    takes: tuple[TakeResult, ...] = ()
-    reason: str = ""
-    detail: str = ""
-    stopped_at: Mapping[str, int] | None = None
-    specs: tuple[MeasureSpec, ...] = field(default=(), repr=False)
-    outcomes: tuple[tuple[MeasureOutcome, str], ...] = field(
-        default=(), repr=False,
-    )
-
-    @property
-    def stops_planned(self) -> int:
-        """Stops the plan named: the ones with a spec to play, plus the skipped."""
-        return len(self.specs) + self.takes_skipped
-
-    @property
-    def takes_measured(self) -> int:
-        return len(self.takes)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": PLAN_RESULT_KIND,
-            "schema_version": PLAN_RESULT_SCHEMA_VERSION,
-            "request_fingerprint": self.request_fingerprint,
-            "status": self.status,
-            "reason": self.reason,
-            "detail": self.detail,
-            "stops_planned": self.stops_planned,
-            "takes_measured": self.takes_measured,
-            "takes_skipped": self.takes_skipped,
-            "mic_moves": self.mic_moves,
-            "attempts": self.attempts,
-            "wall_s": [round(seconds, 3) for seconds in self.wall_s],
-            "spl_monitor": self.spl_monitor,
-            "stopped_at": dict(self.stopped_at) if self.stopped_at else None,
-            "takes": [take.to_dict() for take in self.takes],
-        }
-
-
 def request_fingerprint(request: AngleCaptureRequest) -> str:
     """This walk's identity: sha256 over the document the spool banks it as.
 
     Asked of :func:`~.angle_capture_spool.angle_request_document` so a run's
-    receipt names the same shape a staged walk has on disk, minus the clock --
+    manifest names the same shape a staged walk has on disk, minus the clock --
     two runs of one walk fingerprint alike, and an edited stop does not.
     """
     return json_fingerprint(angle_request_document(request))
 
 
 def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
-    """Each named candidate's scope: the one that compiles its complete graph.
-
-    ONE owner for both doors that play a stated walk, so a walk measures the
-    same graph whichever ran it. The bank's own vocabulary rides out UNWRAPPED
-    under this module's refusal type: a second slug for "no such candidate"
-    would send an operator looking in the wrong place.
-    """
+    """Verify named candidates at run open; every trial uses its composed graph."""
     try:
-        return {
-            candidate_id: candidate_trial_scope(
-                candidate_bank.find_banked_candidate(candidate_id).candidate
-            )
-            for candidate_id in sorted(set(candidate_ids) - {""})
-        }
+        scopes = {}
+        for candidate_id in sorted(set(candidate_ids) - {""}):
+            candidate_bank.find_banked_candidate(candidate_id)
+            scopes[candidate_id] = "candidate"
+        return scopes
     except candidate_bank.CandidateBankRefusal as exc:
         raise LateralWalkRefused(exc.code, exc.detail) from exc
 
 
-# --------------------------------------------------------------------------- #
-# the two doors
-# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class _Work:
+    spec: MeasureSpec
+    stop: Mapping[str, Any]
+    pose_index: int
+    config: int
+    size: int
+    entry: Any
+
+
+def _pose(stop: Any) -> dict[str, Any]:
+    return {"kind": stop.kind, "deg": stop.angle_deg, "elevation_deg": stop.elevation_deg,
+            "distance_m": stop.distance_m, "place": stop.place, "seat_offset_m": stop.seat_offset_m}
 
 
 async def run_plan(
-    request: AngleCaptureRequest,
-    *,
-    session: TuningSession,
-    gate: PositionGate | None = None,
-    candidate_scopes: Mapping[str, str],
-    aborts: Mapping[type[BaseException], str],
-    spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
+    request: AngleCaptureRequest, *, session: TuningSession, manifest: RunManifest,
+    analyze: Analyze, gate: PositionGate | None = None,
+    candidate_scopes: Mapping[str, str], aborts: Mapping[type[BaseException], str],
+    signals: RunSignals | None = None, spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
     clock: Callable[[], float] = time.monotonic,
-) -> PlanResult:
-    """Walk one stated request under an open session, poses outer.
+    gain_ceiling_db: Mapping[str, float] | None = None,
+) -> RunManifest:
+    from .candidate_parts import baseline_candidate_ids  # lazy: baseline composition loads DSP analysis
 
-    ``gate`` holds the first begin of every pose batch until something reports
-    the microphone in place; ``None`` says the microphone is ALREADY where the
-    plan asks (a single-pose run, a test), and nothing waits.
-
-    ``candidate_scopes`` maps a stop's candidate fingerprint to the scope that
-    compiles its complete graph, resolved by the caller that can read the bank.
-    ``aborts`` is the caller's own table of which failures end the run and what
-    each is called -- stated, never reached for, because the vocabulary a run
-    refuses in belongs to the host that answers in it.
-
-    A per-driver stop plays the phase's own composed program rather than a spec
-    and is SKIPPED here, counted in ``takes_skipped``: composing a phase program
-    is the session host's, not this loop's.
-    """
-    fingerprint = request_fingerprint(request)
-    try:
-        refuse_unplayable_walk_policy(request)
-        resolved = resolve_request(request)
-        prompts = tuple(stop.prompt for stop in resolved)
-        try:
-            specs = stop_specs(
-                request, candidate_scopes=candidate_scopes, prompts=prompts,
-            )
-        except ValueError as exc:
-            # Only the stop's own pose is new on that construction; the spec's
-            # own sentence names the field it refused.
-            raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from exc
-        # The playable subset, resolved ONCE and numbered over itself. The gate
-        # carries a pose's grant on the pair ``(index - 1, attempt - 1)``, so a
-        # skipped stop counted in the numbering would ask a second placement
-        # grant at the pose the microphone is already standing at.
-        playable = [
-            (offset, spec) for offset, spec in enumerate(specs) if spec is not None
-        ]
-        if not playable:
-            raise LateralWalkRefused(
-                WALK_NOTHING_PLAYABLE,
-                f"every stop in this walk is {REGIME_PER_DRIVER!r}: this loop "
-                "plays a spec, not the phase's own composed program, so "
-                "nothing here would play",
-            )
-    except LateralWalkRefused as exc:
-        return _refused(fingerprint, exc, spl_monitor=spl_monitor)
-
-    stops = [resolved[offset] for offset, _spec in playable]
-    places = [request.stops[offset].place for offset, _spec in playable]
-    batches = [
-        [offset for offset, _place in group]
-        for _key, group in groupby(enumerate(places), key=lambda row: row[1])
-    ]
-    indexes = list(range(1, len(stops) + 1))
-    screens = pose_batch_screens(
-        indexes, [stop.prompt for stop in stops],
-        [stop.candidate_id for stop in stops],
-    )
-    entries = {
-        index: SimpleNamespace(screen={
-            **stop.screen,
-            **position_screen_keys(stop.prompt),
-            **screens.get(index, {}),
-        })
-        for index, stop in zip(indexes, stops)
+    manifest.request_fingerprint = request_fingerprint(request)
+    manifest.program = request.program
+    manifest.spl_monitor = spl_monitor
+    manifest.baseline_graph = request.baseline_graph_scope
+    manifest.asked = {
+        "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
+        "candidates": list(request.candidates or ("base",)), "ceiling": request.spl_ceiling_db_spl,
+        "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
+        "retries_per_pose": request.retries_per_pose,
     }
-    return await _run(
-        batches, [spec for _offset, spec in playable], entries=entries,
-        skipped=len(specs) - len(playable), fingerprint=fingerprint,
-        session=session, gate=gate, aborts=aborts, spl_monitor=spl_monitor,
-        clock=clock,
-    )
+    manifest.planned = [{"index": index * request.repeats + repeat, "repeat": repeat,
+                         "pose": _pose(stop), "candidate_id": stop.candidate_id}
+                        for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
+    try:
+        resolved = resolve_request(request)
+        try:
+            specs = stop_specs(request, candidate_scopes=candidate_scopes,
+                               prompts=tuple(stop.prompt for stop in resolved),
+                               baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
+                                                                   if stop.plays_summed and not stop.candidate_id))
+        except ValueError as exc:
+            raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
+        playable = [(offset, spec) for offset, spec in enumerate(specs) if spec is not None]
+        for offset, spec in enumerate(specs):
+            if spec is None:
+                manifest.planned[offset]["reason"] = WALK_NOTHING_PLAYABLE
+        if not playable:
+            raise LateralWalkRefused(WALK_NOTHING_PLAYABLE, "No composed per-driver spec was supplied")
+    except LateralWalkRefused as exc:
+        manifest.reason, manifest.detail, manifest.finalized = exc.reason, exc.detail, True
+        await manifest.persist()
+        return manifest
+
+    stops = [resolved[offset // request.repeats] for offset, _spec in playable]
+    screens = pose_batch_screens(list(range(1, len(stops) + 1)),
+                                 [stop.prompt for stop in stops], [stop.candidate_id for stop in stops])
+    work: list[_Work] = []
+    for pose_index, (_place, batch) in enumerate(groupby(
+        enumerate(playable), key=lambda row: request.stops[row[1][0] // request.repeats].place,
+    )):
+        rows = list(batch)
+        for config, (index, (offset, spec)) in enumerate(rows, 1):
+            entry = SimpleNamespace(screen={**stops[index].screen,
+                                    **position_screen_keys(stops[index].prompt), **screens.get(index + 1, {})})
+            work.append(_Work(spec, manifest.planned[offset], pose_index, config, len(rows), entry))
+    return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=gate,
+                      aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose, clock=clock, gain_ceiling_db=gain_ceiling_db)
 
 
 async def run_specs(
-    specs: Sequence[MeasureSpec],
-    *,
-    session: TuningSession,
-    aborts: Mapping[type[BaseException], str],
-    spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
+    specs: Sequence[MeasureSpec], *, session: TuningSession, manifest: RunManifest,
+    analyze: Analyze, aborts: Mapping[type[BaseException], str],
+    signals: RunSignals | None = None, spl_monitor: str = SPL_MONITOR_UNAVAILABLE,
     clock: Callable[[], float] = time.monotonic,
-) -> PlanResult:
-    """Measure a spec list against ONE microphone placement, through the same loop.
-
-    A batch of configs at one pose IS a one-pose plan: nothing moves the
-    microphone between them, so there is no gate and one placement is what the
-    whole run costs.
-    """
-    return await _run(
-        [list(range(len(specs)))], tuple(specs), entries={}, skipped=0,
-        fingerprint=json_fingerprint({"specs": [s.to_dict() for s in specs]}),
-        session=session, gate=None, aborts=aborts, spl_monitor=spl_monitor,
-        clock=clock,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# the one loop
-# --------------------------------------------------------------------------- #
+    gain_ceiling_db: Mapping[str, float] | None = None,
+) -> RunManifest:
+    manifest.request_fingerprint = json_fingerprint({"specs": [s.to_dict() for s in specs]})
+    manifest.spl_monitor = spl_monitor
+    pose = _pose(SimpleNamespace(kind="bearing", angle_deg=(specs[0].positions or (0,))[0],
+                                elevation_deg=specs[0].vertical_deg, distance_m=None,
+                                place=None, seat_offset_m=None))
+    manifest.asked = {"poses": [pose], "candidates": [s.candidate_id or "base" for s in specs],
+                      "ceiling": specs[0].spl_ceiling_db_spl, "mover": "fixed",
+                      "level": {"reference_volume_db": session.measurement_level_db}, "repeats": 1}
+    manifest.planned = [{"index": i, "repeat": 1, "pose": pose, "candidate_id": spec.candidate_id}
+                        for i, spec in enumerate(specs, 1)]
+    work = [_Work(spec, stop, 0, i, len(specs), None)
+            for i, (spec, stop) in enumerate(zip(specs, manifest.planned), 1)]
+    return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=None,
+                      aborts=aborts, signals=signals or RunSignals(), retries=MAX_EXTRA_ATTEMPTS_PER_POSITION, clock=clock, gain_ceiling_db=gain_ceiling_db)
 
 
-@dataclass(frozen=True)
-class _Stop:
-    """Where a run stopped: what the failure is called, and the take in flight."""
-
-    reason: str
-    detail: str
-    at: Mapping[str, int]
+class _Control(Exception):
+    pass
 
 
-async def _run(
-    batches: Sequence[Sequence[int]],
-    specs: Sequence[MeasureSpec],
-    *,
-    entries: Mapping[int, Any],
-    skipped: int,
-    fingerprint: str,
-    session: TuningSession,
-    gate: PositionGate | None,
-    aborts: Mapping[type[BaseException], str],
-    spl_monitor: str,
-    clock: Callable[[], float],
-) -> PlanResult:
-    """Poses outer, takes inner, under one grant per pose.
-
-    An interruption -- one of :data:`_OWN_CODE` or one of the caller's
-    ``aborts`` -- KEEPS every take already banked and reports where it stopped.
-    The session's close puts the speaker back exactly once either way, which is
-    the engine's own guarantee and not re-taken here.
-    """
-    aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts)
-    started = clock()
-    takes: list[TakeResult] = []
-    outcomes: list[tuple[MeasureOutcome, str]] = []
-    wall_s: list[float] = []
-    mic_moves = 0
-    attempts = 0
-    stopped: _Stop | None = None
-    for pose_index, batch in enumerate(batches):
-        pose_started = clock()
-        granted = False
-        for offset in batch:
-            spec = specs[offset]
-            # ``attempt`` tracks the stop, so the gate's batch carry sees the
-            # (index - 1, attempt - 1) pair it grants the rest of a pose on.
-            index = attempt = offset + 1
-            attempts += 1
-            try:
-                if gate is not None:
-                    await _grant(gate, index, attempt, entries[index])
-                    if not granted:
-                        mic_moves += 1
-                        granted = True
-                take_started = clock()
-                outcome = await session.measure(spec)
-            except aborting as exc:
-                stopped = _Stop(
-                    _abort_reason(exc, aborts), str(exc) or type(exc).__name__,
-                    {"pose_index": pose_index, "index": index},
-                )
-                break
-            # Read before the next take swaps the install: the session re-proves
-            # the graph per stimulus, so this fingerprint names the variant graph
-            # THIS take measured through.
-            outcomes.append((outcome, str(session.graph_fingerprint)))
-            takes.append(_take(
-                outcome, pose_index=pose_index, index=index, attempt=attempt,
-                graph_fingerprint=str(session.graph_fingerprint),
-                started_s=take_started - started, ended_s=clock() - started,
-            ))
-        wall_s.append(clock() - pose_started)
-        if stopped is not None:
-            break
-    result = PlanResult(
-        request_fingerprint=fingerprint,
-        status=RUN_MEASURED if stopped is None else RUN_INTERRUPTED,
-        takes_skipped=skipped,
-        mic_moves=mic_moves,
-        attempts=attempts,
-        wall_s=tuple(wall_s),
-        spl_monitor=spl_monitor,
-        takes=tuple(takes),
-        reason="" if stopped is None else stopped.reason,
-        detail="" if stopped is None else stopped.detail,
-        stopped_at=None if stopped is None else stopped.at,
-        specs=tuple(specs),
-        outcomes=tuple(outcomes),
-    )
-    log_event(
-        logger, "active_speaker.plan_run",
-        level=logging.WARNING if stopped is not None else logging.INFO,
-        status=result.status, reason=result.reason,
-        poses=len(result.wall_s), takes=result.takes_measured,
-        skipped=result.takes_skipped, mic_moves=result.mic_moves,
-        spl_monitor=result.spl_monitor, request=fingerprint[:12],
-    )
-    return result
-
-
-async def _grant(
-    gate: PositionGate, index: int, attempt: int, entry: Any,
-) -> None:
-    """Hold this begin until the microphone is reported in place.
-
-    The gate's own budgets bound the wait -- a per-hold ceiling and the session
-    ceiling, both raising ``CaptureBeginRefused`` -- so nothing here carries a
-    second clock. The cadence is the one every other runner keeps
-    (:data:`~.crossover_v2.position_gate.POSITION_HOLD_POLL_S`), so gate logging
-    and driver pacing see one rhythm.
-    """
+async def _grant(gate: PositionGate, index: int, attempt: int, entry: Any, signals: RunSignals) -> None:
     while True:
+        if signals.complete.is_set() or signals.retake.is_set():
+            raise _Control
         try:
             gate.gate(index, attempt, entry)
             return
@@ -563,66 +254,164 @@ async def _grant(
             await asyncio.sleep(POSITION_HOLD_POLL_S)
 
 
-def _abort_reason(
-    exc: BaseException, aborts: Mapping[type[BaseException], str],
-) -> str:
-    """What this failure is CALLED: :data:`_OWN_CODE`'s own word, else the
-    caller's word for its type.
-
-    ``isinstance`` and not ``aborts[type(exc)]``: a subclass is still that
-    failure, and a ``KeyError`` would replace the answer.
-    """
-    if isinstance(exc, _OWN_CODE):
-        return str(exc.code)
-    return next(word for cls, word in aborts.items() if isinstance(exc, cls))
-
-
-def _take(
-    outcome: MeasureOutcome,
-    *,
-    pose_index: int,
-    index: int,
-    attempt: int,
-    graph_fingerprint: str,
-    started_s: float,
-    ended_s: float,
-) -> TakeResult:
-    """One engine answer as the package's own row."""
-    first = outcome.stimuli[0] if outcome.stimuli else None
-    incidents = [s.incident for s in outcome.stimuli if s.incident]
-    return TakeResult(
-        pose_index=pose_index,
-        index=index,
-        attempt=attempt,
-        candidate_id=outcome.spec.candidate_id,
-        graph_fingerprint=graph_fingerprint,
-        level_db=None if first is None else first.level_db,
-        stimulus_dbfs=None if first is None else first.stimulus_dbfs,
-        record_ids=outcome.record_ids,
-        status=TAKE_MEASURED if outcome.complete else TAKE_INCOMPLETE,
-        reason=incidents[0] if incidents else "",
-        started_s=started_s,
-        ended_s=ended_s,
-    )
-
-
-def _refused(
-    fingerprint: str, exc: LateralWalkRefused, *, spl_monitor: str,
-) -> PlanResult:
-    """A plan refused before anything played, in the same package shape."""
-    log_event(
-        logger, "active_speaker.plan_run", level=logging.WARNING,
-        status=RUN_REFUSED, reason=exc.reason, detail=exc.detail,
-        request=fingerprint[:12],
-    )
-    return PlanResult(
-        request_fingerprint=fingerprint,
-        status=RUN_REFUSED,
-        takes_skipped=0,
-        mic_moves=0,
-        attempts=0,
-        wall_s=(),
-        spl_monitor=spl_monitor,
-        reason=exc.reason,
-        detail=exc.detail,
-    )
+async def _run(
+    work: Sequence[_Work], *, session: TuningSession, manifest: RunManifest, analyze: Analyze,
+    gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
+    retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
+) -> RunManifest:
+    manifest.specs = {item.stop["index"]: item.spec for item in work}
+    aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, asyncio.CancelledError)
+    started = clock()
+    ledgers = {item.pose_index: SlotAttempts(retries_per_pose=retries) for item in work}
+    attempts = [0] * len(work)
+    offset, grant_epoch = 0, 0
+    previous: int | None = None
+    resume: int | None = None
+    retry: TakeVerdict | None = None
+    playing = [item.spec for item in work]
+    moved: set[int] = set()
+    verdict: TakeVerdict | None = None
+    progress: dict[str, Any] = {}
+    try:
+        await manifest.persist()
+        while offset < len(work):
+            if signals.complete.is_set():
+                manifest.reason = "complete_requested"
+                break
+            if signals.retake.is_set():
+                signals.retake.clear()
+                if previous is not None:
+                    resume, offset = max(offset, previous + 1), previous
+                    retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
+            item = work[offset]
+            ledger = ledgers[item.pose_index]
+            if retry is not None:
+                if not ledger.can_retry(retry.charge):
+                    manifest.reason = retry.fault or "retries_spent"
+                    break
+                if retry.next == "fix_and_retake":
+                    if gate is None:
+                        manifest.reason = retry.fault or "placement_required"
+                        break
+                    grant_epoch += 1
+                    if gate:
+                        gate.abandon_hold()
+                if retry.next in {"retake_louder", "retake_quieter"}:
+                    if retry.next_gain_db is None:
+                        manifest.reason = retry.fault or "retry_gain_missing"
+                        break
+                    playing[offset] = replace(playing[offset], level_ladder_dbfs=(retry.next_gain_db,))
+            spec = playing[offset]
+            attempt = attempts[offset] + 1
+            progress = {"pose": item.pose_index + 1, "poses": len(ledgers),
+                        "config": item.config, "configs": item.size, "attempt": attempt,
+                        "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
+                        "budget": ledger.to_payload()}
+            entry = item.entry
+            if retry and retry.next == "fix_and_retake" and retry.fault and entry:
+                entry = SimpleNamespace(screen={**entry.screen, "body": REASON_REGISTRY[retry.fault].message})
+            take_started: float | None = None
+            try:
+                if gate:
+                    gate.publish(progress)
+                    await _grant(gate, offset + 1, offset + 1 + grant_epoch, entry, signals)
+                    if item.pose_index not in moved:
+                        manifest.mic_moves += 1
+                        moved.add(item.pose_index)
+                take_started = clock()
+                if retry is not None:
+                    ledger.spend(retry.charge)
+                    progress["budget"] = ledger.to_payload()
+                    if gate:
+                        gate.publish(progress)
+                attempts[offset] = attempt
+                ledger.admitted += 1
+                manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
+                outcome = await session.measure(spec)
+                manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
+                verdict = None
+                records = manifest.pending_records or [({}, "")]
+                for ordinal, (record, record_id) in enumerate(records):
+                    if record_id:
+                        try:
+                            analysis = await asyncio.to_thread(analyze, record, record_id)
+                            program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
+                            assessed = assess(analysis, phase=program.phase if program else spec.program_phase or "verify",
+                                              program=program, gain_ceiling_db=gain_ceiling_db)
+                            if program is not None:
+                                record = {**record, "curves": analysis_curve_records(analysis, program)}
+                        except (ValueError, KeyError, OSError) as exc:
+                            assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
+                                                   evidence={"error_type": type(exc).__name__})
+                    else:
+                        incident = next((s.incident for s in outcome.stimuli if s.incident), "")
+                        assessed = TakeVerdict(False, fault=incident if incident in REASON_REGISTRY else REASON_INTERNAL_ERROR,
+                                               next="stop", evidence={"incident": incident})
+                    if not outcome.complete:
+                        incident = str(record.get("incident") or next((s.incident for s in outcome.stimuli if s.incident), ""))
+                        assessed = replace(assessed, ok=False,
+                                           fault=assessed.fault or (incident if incident in REASON_REGISTRY else REASON_INTERNAL_ERROR),
+                                           next="stop" if assessed.next == "accept" else assessed.next,
+                                           evidence={**assessed.evidence, "incident": incident})
+                    await manifest.append(record, record_id, assessed, complete=outcome.complete,
+                                          started_s=take_started - started, ended_s=clock() - started, ordinal=ordinal)
+                    if verdict is None or (verdict.next != "stop" and assessed.next != "accept"):
+                        verdict = assessed
+                assert verdict is not None
+                if gate:
+                    gate.publish({**progress, "fault": verdict.fault, "next_action": verdict.next})
+                if verdict.next == "stop":
+                    manifest.reason = verdict.fault or "take_stopped"
+                    break
+                if signals.complete.is_set():
+                    if offset + 1 < len(work):
+                        manifest.reason = "complete_requested"
+                    break
+                if verdict.next != "accept":
+                    retry = verdict
+                    continue
+                previous = offset
+                retry = None
+                if signals.retake.is_set():
+                    continue
+                offset = resume if resume is not None else offset + 1
+                resume = None
+            except _Control:
+                continue
+            except aborting as exc:
+                manifest.reason = (str(exc.code) if isinstance(exc, _OWN_CODE) else
+                                   next((code for cls, code in aborts.items() if isinstance(exc, cls)), "cancelled"))
+                manifest.detail = str(exc) or type(exc).__name__
+                manifest.cancelled = isinstance(exc, asyncio.CancelledError)
+                manifest.stopped_at = {"pose_index": item.pose_index, "index": item.stop["index"]}
+                if attempts[offset] != attempt:
+                    manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
+                fault = manifest.reason if manifest.reason in REASON_REGISTRY else REASON_INTERNAL_ERROR
+                already_banked = {take["artifacts"]["record_id"] for take in manifest.takes}
+                ended = clock()
+                for record, record_id in manifest.pending_records or [({}, "")]:
+                    if record_id and record_id in already_banked:
+                        continue
+                    await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
+                                          evidence={"incident": manifest.reason}), complete=False,
+                                          started_s=(take_started if take_started is not None else ended) - started,
+                                          ended_s=ended - started)
+                break
+            finally:
+                if take_started is not None:
+                    while len(manifest.wall_s) <= item.pose_index:
+                        manifest.wall_s.append(0.0)
+                    manifest.wall_s[item.pose_index] += clock() - take_started
+    except BaseException:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
+        manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+        raise
+    finally:
+        manifest.finalized = True
+        if gate:
+            gate.abandon_hold()
+            gate.publish({**progress, "status": manifest.status, "fault": manifest.reason or (verdict.fault if verdict else None),
+                          "next_action": "accept" if manifest.status == "complete" else "stop"})
+        log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
+                  takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)
+        await manifest.persist()
+    return manifest

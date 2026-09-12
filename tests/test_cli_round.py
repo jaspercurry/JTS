@@ -491,7 +491,7 @@ def test_wait_does_not_finish_before_capture_cleanup(monkeypatch, capsys):
 @pytest.mark.parametrize("path", [wc.APPLY_PATH, cli.REPUBLISH_PATH, wc.SESSION_PATH])
 def test_a_box_refusal_keeps_its_code_action_and_full_detail(path, monkeypatch, capsys):
     body = {
-        "ok": False, "code": "measurement_candidate_room_mismatch",
+        "ok": False, "code": "measurement_candidate_speaker_mismatch",
         "next_action": {"id": "apply_matching_room_layer", "label": "x" * 240},
         "error": "x" * 400,
     }
