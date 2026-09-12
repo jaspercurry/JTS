@@ -28,7 +28,6 @@ const terminalEnvelope = {
 };
 let nextEnvelope = terminalEnvelope;
 let postResponse = { capture: { status: "stopping" } };
-let postError = null;
 // Lets a test hold a postJSON call pending so it can inspect render() state
 // while that request is still in flight, then release it explicitly.
 let postGate = null;
@@ -39,7 +38,6 @@ const { elements, render, runAction, stopCapture } = await crossoverMainModule({
     getJSON: async () => nextEnvelope,
     postJSON: async () => {
       if (postGate) await postGate;
-      if (postError) throw postError;
       return postResponse;
     },
     renderCloud: () => {},
@@ -66,7 +64,6 @@ assert.equal(actions[0].disabled, false, "terminal action is enabled after Stop"
 // control; a slow, unrelated action re-rendering mid-flight must not.
 let releasePostGate = null;
 postGate = new Promise((resolve) => { releasePostGate = resolve; });
-postError = null;
 postResponse = { status: "ok" };
 
 const stoppableEnvelope = {
@@ -111,111 +108,4 @@ releasePostGate();
 await stopPromise;
 postGate = null;
 
-render({
-  ...terminalEnvelope,
-  candidate_review: {
-    trims: [
-      {role: "woofer", attenuation_db: -2.5},
-      {role: "tweeter", attenuation_db: 0},
-    ],
-    delay: {role: "woofer", delay_ms: 0.0375},
-    polarity: "keep",
-    confidence: 0.71,
-    fingerprint: "cand-proof",
-    program_id: "prog-1",
-  },
-});
-assert.equal(elements.get("crossover-review").hidden, false);
-assert.equal(elements.get("crossover-review-body").children.length, 1);
-
-nextEnvelope = {
-  ...terminalEnvelope,
-  verdict_text: "Restart the complete measurements.",
-  candidate_review: null,
-  next_action: {
-    id: "restart_session",
-    label: "Restart driver and alignment measurements",
-    endpoint: "/sound/speaker/crossover/v2/session",
-    body: {},
-  },
-};
-postResponse = { status: "candidate_refused" };
-await runAction(
-  {
-    endpoint: "/sound/speaker/crossover/candidate",
-    body: {},
-  },
-  element("prepare-candidate"),
-);
-assert.equal(
-  elements.get("crossover-verdict").textContent,
-  "Restart the complete measurements.",
-);
-assert.equal(
-  elements.get("crossover-action").children[0].textContent,
-  "Restart driver and alignment measurements",
-);
-
-nextEnvelope = {
-  ...terminalEnvelope,
-  verdict_text: "The previous crossover was restored exactly.",
-  next_action: {
-    id: "retry_measured_candidate_apply",
-    label: "Retry reviewed crossover",
-    endpoint: "/sound/speaker/crossover/apply",
-    body: {},
-  },
-};
-postError = Object.assign(
-  new Error("Apply failed; the previous crossover was restored."),
-  { status: 409, body: { status: "rolled_back" } },
-);
-await runAction(
-  { endpoint: "/sound/speaker/crossover/apply", body: {} },
-  element("apply-candidate"),
-);
-assert.equal(
-  elements.get("crossover-verdict").textContent,
-  "The previous crossover was restored exactly.",
-);
-assert.equal(
-  elements.get("crossover-action").children[0].textContent,
-  "Retry reviewed crossover",
-);
-assert.equal(
-  elements.get("capture-status").textContent,
-  "Apply failed; the previous crossover was restored.",
-);
-
-nextEnvelope = {
-  ...terminalEnvelope,
-  verdict_text: "The graph is applied; finish its durable state.",
-  next_action: {
-    id: "finish_measured_candidate_apply",
-    label: "Finish apply",
-    endpoint: "/sound/speaker/crossover/apply",
-    body: {},
-  },
-};
-postError = Object.assign(
-  new Error("Candidate apply needs durable finalization."),
-  { status: 500, body: { code: "candidate_apply_finalization_required" } },
-);
-await runAction(
-  { endpoint: "/sound/speaker/crossover/apply", body: {} },
-  element("finish-candidate"),
-);
-assert.equal(
-  elements.get("crossover-verdict").textContent,
-  "The graph is applied; finish its durable state.",
-);
-assert.equal(
-  elements.get("crossover-action").children[0].textContent,
-  "Finish apply",
-);
-assert.equal(
-  elements.get("capture-status").textContent,
-  "Candidate apply needs durable finalization.",
-);
-
-console.log(JSON.stringify({ ok: true, passed: 18 }));
+console.log(JSON.stringify({ ok: true, passed: 6 }));

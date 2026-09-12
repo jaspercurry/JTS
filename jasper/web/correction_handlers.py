@@ -164,24 +164,6 @@ def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any
     )
 
 
-def _handle_crossover_v2_decline(
-    handler: BaseHTTPRequestHandler,
-) -> tuple[dict[str, Any], HTTPStatus]:
-    """POST /crossover/v2/decline: the review screen's "Keep current sound".
-
-    Touches no DSP and holds no capture, so unlike its apply/restore siblings it
-    needs neither ``run_async`` nor ``camilla_controller`` — it records a decision and
-    re-renders. The capture snapshot rides the response for the same reason
-    ``/crossover/reset``'s does: the page renders one envelope per round trip.
-    """
-    raw = correction_runtime.read_json_body(handler)
-
-    from . import correction_crossover_flow
-
-    return correction_crossover_flow.handle_v2_decline(
-        raw,
-        capture=correction_capture._get_capture_slot_for("crossover_v2:"),
-    )
 
 
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
@@ -203,6 +185,7 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
 
     from . import correction_crossover_flow
 
+    correction_capture._clear_terminal_capture("crossover_v2:")
     return correction_crossover_flow.handle_reset(
         capture=correction_capture._get_capture_slot_for("crossover_v2:"),
     )

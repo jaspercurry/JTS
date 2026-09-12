@@ -66,7 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from jasper.active_speaker import preflight, preflight_live
 from typing import (
-    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence,
+    TYPE_CHECKING, Any, Callable, Mapping, Sequence,
     TypeVar,
 )
 
@@ -611,55 +611,8 @@ def observe_apply_success(
 REVIEW_DECISION_DECLINED = "declined"
 
 
-def observe_review_decline(candidate_fingerprint: str) -> None:
-    """Record that the household chose to keep the current sound (#2641).
-
-    The write half of the review screen's decline, beside its
-    :func:`observe_apply_success` sibling and under the same lock, because
-    that is where every durable v2 write lives: a read-modify-write from the
-    HTTP layer would be a second writer racing this one on the state file.
-
-    **It clears nothing.** Declining changes nothing on the speaker and does
-    not delete the candidate — the review screen's own contract, and the reason
-    it holds is that an accidental tap would otherwise cost ten captures to
-    undo. The proposal stays reviewable until a newer measurement replaces it;
-    what this records is the DECISION.
-
-    ``candidate_fingerprint`` is stamped so the decline binds to the proposal
-    it answered. A later measurement mints a different candidate, and the
-    phase resolver compares the two — so a stale decline cannot close a review
-    the household has never seen. Durable, because the whole point is that a
-    household who has decided is not asked again after a power cut.
-    """
-    with _state_lock:
-        state = load_v2_state()
-        if state is None:
-            return
-        state["review_decision"] = {
-            "decision": REVIEW_DECISION_DECLINED,
-            "candidate_fingerprint": str(candidate_fingerprint or ""),
-        }
-        save_v2_state(state, durable=True)
-    log_event(
-        logger, "correction.crossover_v2_review_declined",
-        candidate_fingerprint=str(candidate_fingerprint or ""),
-    )
-
-
 def review_declined(state: Mapping[str, Any] | None) -> bool:
-    """Has the household declined the candidate this state currently holds?
-
-    The READER for the key :func:`observe_review_decline` writes, beside that
-    writer for the reason every other reader/writer pair in this module is:
-    the two must be impossible to drift apart on a shape.
-
-    The fingerprint comparison is the whole check. A decline names the proposal
-    it answered, so a newer measurement — which mints a new candidate — is not
-    covered by it and the review screen comes back. A decline recorded when
-    there was nothing to propose matches a state with no candidate, because
-    "there is nothing to offer, keep what you have" is a real answer to a real
-    screen.
-    """
+    """Read a legacy decline against its candidate fingerprint."""
     if not isinstance(state, Mapping):
         return False
     decision = state.get("review_decision")
@@ -1673,12 +1626,9 @@ def _resolve_measurement_level_trims(
     )
 
 
-
-
 def _fc_hz_label(hz: float) -> str:
     """Format a crossover frequency without a fractional zero."""
     return f"{hz:.1f}".rstrip("0").rstrip(".")
-
 
 
 def persist_conductor_state(
@@ -2858,90 +2808,6 @@ def bind_production_play(
     )
 
     return ProductionPlay(graph=session_graph, compose=compose)
-
-
-# The key :func:`attach_stage2_preflight` writes onto ``status["crossover_v2"]``
-# and :func:`~jasper.active_speaker.crossover_envelope_v2._stage2_preflight`
-# reads. Spelled once, here, because the writer and the reader live in
-# different packages and a literal in each is how they drift.
-STAGE2_PREFLIGHT_KEY = "stage2_preflight"
-
-
-def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
-    """Compute the stage-2 openability DISCLOSURE for the REVIEW screen (D3).
-
-    Runs the same ``resolve_conductor_context`` predicate as apply and stage 2,
-    and stamps the refusal's own sentence under ``STAGE2_PREFLIGHT_KEY`` for
-    the envelope to render as a warning. It does NOT gate the Apply control;
-    the apply transaction is the boundary that refuses a truly un-openable
-    stage 2. The disclosure stays at render time because the refusal is
-    knowable NOW — #1828 moved this predicate early so a household would not
-    burn a link and walk to the phone to hit a deterministic refusal that was
-    knowable before any of it.
-
-    Not free: one call is roughly six JSON reads, a canonical-JSON SHA-256
-    profile fingerprint, and a preset compile, and
-    ``ensure_crossover_preview_ready()`` can WRITE the preview and topology
-    files (self-limiting — an already-ready preview is left byte-untouched).
-    The two gates below keep that off polled screens: review phase only, and
-    no candidate ⇒ nothing to apply ⇒ nothing to disclose (measured before
-    the candidate gate existed: ~80 calls per held-set window at the wizard's
-    1.5 s poll).
-
-    Mutates ``status`` in place (the established shape on this path:
-    ``handle_status`` sets ``payload["capture"]`` the same way) so the envelope
-    builder stays the pure ``status → envelope`` function it is.
-    """
-    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
-
-    v2 = status.get("crossover_v2")
-    if not isinstance(v2, MutableMapping) or v2.get("phase") != PHASE_REVIEW:
-        return
-    candidate = v2.get("candidate")
-    if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
-        return
-    if candidate.get("tuning_layers"):
-        v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
-        return
-    try:
-        resolve_conductor_context(status)
-    except CrossoverV2Refused as exc:
-        message = str(exc)
-        v2[STAGE2_PREFLIGHT_KEY] = {
-            "ok": False,
-            "message": message,
-            "next_action": refusal_next_action(exc),
-        }
-        # A user-visible dead end gets a named line nobody has to guess at —
-        # this is where an operator reads why the review screen warned.
-        log_event(
-            logger,
-            "correction.crossover_v2_stage2_preflight_refused",
-            level=logging.WARNING,
-            code=str(getattr(exc, "code", "") or ""),
-            detail=message,
-        )
-        return
-    except (OSError, RuntimeError, TypeError, ValueError):
-        # "We could not check" must not render quiet: the disclosure fails
-        # closed even though the Apply control no longer keys on it.
-        v2[STAGE2_PREFLIGHT_KEY] = {
-            "ok": False,
-            "message": (
-                "JTS could not check whether it can run the confirming "
-                "measurement after applying this. Measure again to try afresh."
-            ),
-            "next_action": None,
-        }
-        log_event(
-            logger,
-            "correction.crossover_v2_stage2_preflight_refused",
-            level=logging.WARNING,
-            code="preflight_unavailable",
-            detail="the stage-2 openability predicate raised",
-        )
-        return
-    v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
 
 
 # --------------------------------------------------------------------------- #

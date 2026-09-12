@@ -73,15 +73,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "phase": _projection.crossover_v2_phase(
             state, review_declined=_host.review_declined(state),
         ),
-        # The session's own clock (#1947), and the ONLY one this flow needs:
-        # ``save_v2_state`` stamps it on every write, and every write site is a
-        # session TRANSITION — a consumed capture, a review decision, an apply,
-        # a terminal failure, a start-over. No poll writes state, so the file's
-        # last write IS the session's last real activity, and a second
-        # per-record stamp would be a second clock to keep honest. The envelope
-        # reads it to tell a session the household is still inside from one that
-        # ended (``crossover_envelope_v2._session_is_live``). ``None`` when
-        # there is no state file, which reads as "cannot say this is current".
+        # save_v2_state stamps transitions; polls must not create a second clock (#1947).
         "updated_at": (state or {}).get("updated_at"),
         "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
@@ -92,19 +84,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # is the validating reader, so a state file written by another build
         # cannot 500 this poll path.
         "measure": (state or {}).get("measure"),
-        # The last graded round's adoption receipt — what it decided, which row
-        # decided it, and where it sat in the series (#2537, #2602).
-        #
-        # **This projection was missing**, and the envelope has read ``None``
-        # here on every real box since #2537: ``persist_conductor_state`` wrote
-        # ``state["round_receipt"]`` and this block never forwarded it, so the
-        # done screen's round key and its keep-for-iteration caveat existed only
-        # in unit tests that hand-built the status dict. #2602 makes that gap
-        # load-bearing rather than merely wasteful — a series that cannot tell a
-        # household another round is coming has not delivered the ruling — so it
-        # is fixed here rather than filed. Copied through unvalidated, exactly
-        # like ``candidate`` and ``verify`` beside it: the envelope's own
-        # accessor is the validating reader.
+        # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
         "round_receipt": (state or {}).get("round_receipt"),
         "tuning_trial": (state or {}).get("tuning_trial"),
         "verify": (state or {}).get("verify"),

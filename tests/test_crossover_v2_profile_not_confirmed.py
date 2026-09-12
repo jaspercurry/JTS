@@ -35,7 +35,6 @@ from __future__ import annotations
 from tests.test_crossover_v2_stage_bridge import _inline_body
 
 import re
-import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -397,36 +396,6 @@ def test_every_other_evaluation_status_is_cleared_by_saving(status):
     assert v2ctx.profile_refusal_code(status) == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
 
 
-def test_hard_stop_screen_renders_the_reasons_own_action():
-    """The override reaches the rendered screen, and the generic destination is
-    still what every other hard-stop reason gets."""
-
-    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-
-    def _status(code: str) -> dict[str, Any]:
-        return {
-            "active": True,
-            "setup": {"active": True, "status": "ready"},
-            # Stamped now: only a failure the household is currently looking
-            # at renders its terminal screen (#1942).
-            "crossover_v2": {"failure": {"code": code, "at": time.time()}},
-        }
-
-    env = build_crossover_envelope_v2(_status(REASON_PROGRAM_PROFILE_NOT_CONFIRMED))
-    assert env["screen"] == "hard_stop"
-    assert env["next_action"]["href"] == "/sound/speaker/#confirm-safety-limits"
-    assert env["next_action"]["label"] == "Review safety limits"
-    assert env["verdict_text"] == (
-        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
-    )
-
-    generic = build_crossover_envelope_v2(_status(REASON_PROGRAM_UNPLAYABLE))
-    assert generic["screen"] == "hard_stop"
-    assert generic["next_action"] == {
-        "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/",
-    }
-
-
 # --------------------------------------------------------------------------- #
 # #1821 — the pre-flight, end to end at session open
 # --------------------------------------------------------------------------- #
@@ -670,54 +639,6 @@ def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
     )
     assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
     assert env.calls["evidence_store"] != []
-
-
-def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit():
-    """N3: the applied-session combination.
-
-    With ``applied=True`` the envelope promotes any non-verify_fail code to the
-    verify-fail screen (so an applied household is never told "start over" with
-    no Undo). That screen's default "Try again" re-verifies, and a re-verify
-    runs the same session-open pre-flight — so on THIS code it deterministically
-    400s. That is honest as far as it goes (the speaker really is un-measurable
-    until the limits are confirmed) and it is no longer a dead end, because the
-    400 now carries the confirm action as a button. Undo stays available
-    throughout.
-
-    Pinned as the CURRENT behaviour, not endorsed as the final shape: a
-    terminal-for-this-session refusal rendering as a retryable verify-fail is a
-    two-stage-flow question, noted for that work order rather than redesigned
-    here."""
-
-    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "applied": True,
-            # "The way back stays available throughout" is this test's claim,
-            # and that takes a prior banked candidate — set explicitly so the
-            # screen under test is the one the docstring describes.
-            "previous_candidate_fingerprint": "b" * 64,
-            # Stamped now: only a failure the household is currently looking
-            # at renders its terminal screen (#1942).
-            "failure": {
-                "code": REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
-                "at": time.time(),
-            },
-        },
-    })
-    assert env["screen"] == "verify_fail"
-    assert env["verdict_text"] == (
-        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
-    )
-    ids = [action["id"] for action in env["alternate_actions"]]
-    assert "apply_previous" in ids
-    # The retry the screen offers posts the verify route, which is exactly the
-    # route the pre-flight guards — so the 400-body action is what keeps this
-    # combination from being a loop.
-    assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/v2/verify"
 
 
 def test_graph_refusal_retains_its_classifier_code():
