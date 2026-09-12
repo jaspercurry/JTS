@@ -168,6 +168,7 @@ class BaseLiveTurn:
         # never logged — the flight recorder dumps DEBUG records around
         # failures, so household utterances must not reach one.
         self._user_transcript = ""
+        self._user_run_start = 0
         self._assistant_transcript = ""
 
     def _start_tool_calls(self, calls: list[ToolCall]) -> None:
@@ -355,6 +356,12 @@ class BaseLiveTurn:
             self._user_transcript = user
         if assistant is not None:
             self._assistant_transcript = assistant
+
+    def mark_user_speech_run(self) -> None:
+        self._user_run_start = len(self._user_transcript)
+
+    def user_speech_run_transcript(self) -> str:
+        return self._user_transcript[self._user_run_start:]
 
     def user_transcript(self) -> str:
         return self._user_transcript

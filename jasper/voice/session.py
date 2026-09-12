@@ -252,6 +252,17 @@ class LiveTurn(ProviderTurn, Protocol):
         gaps that look like idleness."""
         ...
 
+    def mark_user_speech_run(self) -> None:
+        """Begin a new user speech run at the current end of the turn's
+        transcript. The host's endpointer owns run boundaries; the turn
+        only records where the latest one started."""
+        ...
+
+    def user_speech_run_transcript(self) -> str:
+        """What the user has said since the last `mark_user_speech_run`, so
+        a whole-utterance rule reads one utterance and not the whole turn."""
+        ...
+
     def request_local_interrupt(self) -> None:
         """Locally signal a user barge-in WITHOUT telling the provider.
 

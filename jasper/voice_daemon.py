@@ -1303,6 +1303,7 @@ class WakeLoop:
             if armed:
                 if not self._turns.continuous_speech_started or now - self._turns.continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC:
                     self._turns.continuous_speech_started = self._speech_run_started_at
+                    self._turns.turn.mark_user_speech_run()
                     if speaking and self._turns.barge_in_active:
                         self._signal_barge_in(
                             silero=self._speech_run_max_silero,

@@ -45,10 +45,14 @@ class _SpyTurn:
         self._interrupted = False
         self.local_interrupt_calls = 0
         self.send_audio_calls = 0
+        self.speech_run_marks = 0
         self.sent: list[bytes] = []
 
     def audio_chunks_pending(self) -> int:
         return self._chunks_pending
+
+    def mark_user_speech_run(self) -> None:
+        self.speech_run_marks += 1
 
     def request_local_interrupt(self) -> None:
         self.local_interrupt_calls += 1

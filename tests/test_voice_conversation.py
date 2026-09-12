@@ -11,6 +11,7 @@ import pytest
 
 from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.voice.conversation import (
+    THINK_ALLOWANCE_SEC,
     WATCHDOG_POLL_SEC,
     continuous_watchdog,
     register_conversation_tools,
@@ -23,8 +24,8 @@ from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
-def answered_loop():
-    loop = wake_loop_for_tests(usage_store=FakeUsageStore())
+def answered_loop(tts=None):
+    loop = wake_loop_for_tests(usage_store=FakeUsageStore(), tts=tts)
     loop._turns.state = State.SESSION
     loop._turns.turn = FakeLiveTurn(chunks_received=1)
     loop._turns.session_id = 7
@@ -77,6 +78,7 @@ async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_s
     task = asyncio.create_task(continuous_watchdog(
         turn, tts, followup_seconds=followup_seconds, stall_seconds=120,
         user_activity=lambda: (now - 10, now if busy == "user" else now - 9),
+        request_end=lambda: None,
     ))
     try:
         # Long enough for one full watchdog poll to reach its verdict.
@@ -87,3 +89,125 @@ async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_s
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "run_text, dismissed",
+    [
+        ("Okay, thanks.", True),
+        ("okay thank you", True),
+        ("That's all", True),
+        ("Nevermind", True),
+        ("okay thanks for the weather report", False),
+        ("stop the timer", False),
+        ("", False),
+    ],
+)
+async def test_a_standalone_dismissal_ends_the_turn_without_the_model(run_text, dismissed):
+    """A whole-utterance dismissal needs no delegation and no tool call."""
+    now = time.monotonic()
+    turn = FakeLiveTurn(chunks_received=1)
+    turn.user_run_text = run_text
+    turn.last_chunk_at = lambda: now
+    turn.last_activity_at = lambda: now
+    ends = []
+    task = asyncio.create_task(continuous_watchdog(
+        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
+        user_activity=lambda: (now - 10, now - 9),
+        request_end=lambda: ends.append(1),
+    ))
+    try:
+        await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
+        assert task.done() is dismissed
+        assert len(ends) == int(dismissed)
+        if dismissed:
+            assert task.result() == "dismissed"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_a_dismissal_ends_the_conversation_the_way_the_tool_does():
+    loop = answered_loop()
+    ended = AsyncMock()
+    loop._peering.session_ended = ended
+    now = time.monotonic()
+    turn = loop._turns.turn
+    turn.user_run_text = "Okay, thank you."
+    turn.last_chunk_at = lambda: now
+    turn.last_activity_at = lambda: now
+    reason = await continuous_watchdog(
+        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
+        user_activity=lambda: (now - 10, now - 9),
+        request_end=loop._turns.request_conversation_end,
+    )
+    assert reason == "dismissed"
+    await wait_until(lambda: loop._turns.state is State.WAKE)
+    ended.assert_awaited_once_with("conversation_ended")
+    assert loop._usage_store.close_calls == 1
+    await loop._cancel_fire_and_forget_tasks()
+
+
+@pytest.mark.parametrize("slack, ended", [(2.0, False), (-0.5, True)])
+async def test_a_user_run_that_draws_no_audio_is_bounded_by_the_followup_window(
+    slack, ended,
+):
+    """Not by `stall_seconds`, which no longer funds a long delegation."""
+    followup_seconds = 1.0
+    now = time.monotonic()
+    silent_since = now - (followup_seconds + THINK_ALLOWANCE_SEC) + slack
+    turn = FakeLiveTurn()
+    turn.last_chunk_at = lambda: 0.0
+    turn.last_activity_at = lambda: silent_since
+    task = asyncio.create_task(continuous_watchdog(
+        turn, FakeTts(), followup_seconds=followup_seconds, stall_seconds=120,
+        user_activity=lambda: (now - 30, silent_since),
+        request_end=lambda: None,
+    ))
+    try:
+        await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
+        assert task.done() is ended
+        if ended:
+            assert task.result() == "response_stalled"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("reason", ["followup_timeout", "conversation_ended"])
+async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(reason):
+    """The teardown runs behind the cue, not in front of it."""
+    order: list[str] = []
+    chirped = asyncio.Event()
+
+    def note(call: str) -> None:
+        order.append(call)
+        if call == "write_segment":
+            chirped.set()
+
+    async def teardown(_reason):
+        order.append("teardown")
+        try:
+            await asyncio.wait_for(chirped.wait(), timeout=0.25)
+        except TimeoutError:
+            order.append("still_silent")
+
+    async def release():
+        order.append("release")
+
+    async def restore():
+        order.append("unduck")
+
+    tts = FakeTts(on_call=note)
+    loop = answered_loop(tts=tts)
+    loop._peering.session_ended = teardown
+    loop._turns.turn.release = release
+    loop._assistant_output.ducker.restore = restore
+    loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
+    await loop._turns.end(reason)
+    assert tts.writes == [loop._assistant_output._chirp_off_pcm]
+    assert "still_silent" not in order
+    chirp = order.index("write_segment")
+    assert chirp < order.index("release")
+    assert chirp < order.index("unduck")
+    await loop._cancel_fire_and_forget_tasks()
