@@ -4,7 +4,7 @@
 
 """H2/H3 out of a banked round's MEASURE captures.
 
-* ``distortion <bundle-dir> --dumps <ring> --state <flow-state> --applied-profile <profile>`` — H2/H3
+* ``distortion <bundle-dir>`` — H2/H3
   out of a banked round's MEASURE captures, relative to the fundamental, at
   the drive each capture used. ``<bundle-dir>`` is a commissioning bundle,
   and its round is resolved by the rule the evidence packet's reader uses, so
@@ -34,14 +34,13 @@ from ._common import (
 def _cmd_distortion(args: argparse.Namespace) -> int:
     round_dir, artifact = stage(
         EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_bundle_harmonics,
-        args.bundle_dir, args.dumps, args.state,
+        args.bundle_dir,
         {
             "woofer": args.woofer_band,
             "tweeter": args.tweeter_band,
             "full_range": args.full_range_band,
         },
         calibration_path=args.calibration,
-        applied_profile_path=args.applied_profile,
     )
     # The bundle's own round directory, never `default_out`: this reading is
     # filed where the packet reader looks for it, and that is a banked tree.
@@ -80,26 +79,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     distortion.add_argument(
         "bundle_dir", type=Path, metavar=_BUNDLE_DIR_METAVAR,
-        help="commissioning bundle: info.json beside evidence/v1/artifacts/",
-    )
-    distortion.add_argument(
-        "--dumps", type=Path, required=True,
-        help="banked capture ring (sidecar JSON beside its WAV)",
-    )
-    distortion.add_argument(
-        "--state", type=Path, required=True,
-        help=(
-            "matching capture state used to prove the MEASURE program; capture, "
-            "program and WAV identities must agree. Legacy drive may remain unknown"
-        ),
-    )
-    distortion.add_argument(
-        "--applied-profile", type=Path, default=None,
-        help=(
-            "the applied baseline profile JSON, where this round's crossover "
-            "corner is read from — never the flow state's record of a previous "
-            "apply. Absent or unreadable, the round is refused, not read"
-        ),
+        help="banked round or its commissioning bundle",
     )
     distortion.add_argument(
         "--woofer-band", type=_band, default=DEFAULT_BANDS_HZ["woofer"],

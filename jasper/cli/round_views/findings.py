@@ -36,7 +36,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundViewsError,
     round_inputs,
 )
-from jasper.active_speaker.crossover_v2.ring_projection import bundle_session_id
+from jasper.active_speaker.round_bank import bundle_session_id
 from jasper.attribution.mechanisms import (
     MECHANISM_BOUNDARY_SBIR,
     MECHANISM_HF_REFLECTION,
@@ -85,7 +85,6 @@ BAND_DISCLOSURE = (
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
-    """One banked document, or ``{}`` for anything this cannot read as one."""
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):

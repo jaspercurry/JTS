@@ -38,7 +38,7 @@ from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
 from .contracts import POLARITY_INVERTED
 from .evidence_packet import round_artifact_dir
-from .position_cycle import read_pose_curve_pair, take_phase_composition
+from .position_cycle import PoseCurvePair
 
 LANDSCAPE_KIND = "jts_inter_driver_delay_landscape"
 LANDSCAPE_SCHEMA_VERSION = 1
@@ -452,9 +452,7 @@ def landscape_from_bank(
     *,
     spec: NullWalkSpec,
     inverted_role: str,
-    phase: str,
-    position_deg: int,
-    take_path: str | None = None,
+    pair: PoseCurvePair | None,
 ) -> BankedLandscape:
     """The banked landscape both operator verbs read.
 
@@ -466,9 +464,6 @@ def landscape_from_bank(
     against whatever file happens to sit beside the round.
     """
 
-    lower_role = spec.negative_delay_target
-    upper_role = spec.positive_delay_target
-
     round_dir, why = round_artifact_dir(bundle_dir)
     if round_dir is None:
         raise DelayLandscapeError(
@@ -477,24 +472,18 @@ def landscape_from_bank(
             reason=REFUSAL_NO_ROUND,
         )
 
-    found = read_pose_curve_pair(
-        bundle_dir, phase=phase, position_deg=position_deg,
-        roles=(lower_role, upper_role),
-        take_path=take_path,
-    )
-    if found is None:
+    if pair is None:
         raise DelayLandscapeError(
-            f"{bundle_dir}: no {phase} take at {position_deg} deg carries "
-            f"curves for both {lower_role!r} and {upper_role!r}",
+            f"{bundle_dir}: no matching take carries both driver curves",
             reason=REFUSAL_NO_BANKED_CURVES,
         )
-    lower_curve, upper_curve, take_path = found
-
     landscape = compute_landscape(
-        lower_curve, upper_curve, spec=spec, inverted_role=inverted_role,
+        pair.lower, pair.upper, spec=spec, inverted_role=inverted_role,
     )
+    composition = pair.document.get("phase_composition")
     return BankedLandscape(
-        landscape, take_path, take_phase_composition(bundle_dir, take_path)
+        landscape, pair.take.path,
+        composition if isinstance(composition, str) and composition else None,
     )
 
 

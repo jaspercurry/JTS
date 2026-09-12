@@ -265,9 +265,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "co-metrics": _NO_CLOUD_GROUP,
     "directivity": _NO_CLOUD_GROUP,
     "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
-    "forward-model": lambda r: [
-        "forward-model", str(r.measured), "--measured-round", str(r.verified),
-    ],
+    "forward-model": _NO_CAPTURES,
     "spec-sweep": _NO_CLOUD_GROUP,
     "gate-sweep": _NO_CAPTURES,
     "windows": _NO_CAPTURES,

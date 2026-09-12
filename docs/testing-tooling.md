@@ -790,12 +790,8 @@ ever deletes an already-pulled file.
   `graph.kind` is the field that tells them apart.
 - **The speaker-side capture-dump ring is gone.** Every accepted capture's WAV
   and provenance now ride the session bundle's own banked take records; corpora
-  banked before the removal keep their `dumps/` tree. To feed a
-  `--dumps`-taking tool from a modern bank, project the layout out of the
-  bundle with `jasper-round-views classify-features <bundle-dir>`, which
-  writes it to `<bundle-dir>/ring` before it classifies — so a round with no
-  summed capture to classify still leaves the ring behind, under the exit-1
-  refusal that says it had nothing to classify.
+  banked before the removal keep their `dumps/` tree. The banker writes
+  `<bundle-dir>/ring` once; `classify-features` and `distortion` read it in either order.
 
 ---
 
@@ -839,13 +835,11 @@ the evidence packet reads it.
 ```sh
 jasper-round-views classify-features <bundle-dir>
 jasper-round-views classify-features <bundle-dir> --walk-log logs/walk-1.jsonl
-jasper-round-views classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
+jasper-round-views classify-features <bundle-dir> --at 1037 --at 4149
 ```
 
 - The capture ring is scoped to this round by the bundle's own `session_id`, so
-  a ring holding several rounds needs no flag to be split correctly. A round
-  banked today has no ring of its own, so one is projected out of the bundle
-  into `<bundle-dir>/ring` unless `--dumps` names a ring that already exists
+  the instruments resolve the banked ring without a separate path flag
   (see [Crossover-v2 round banking](#crossover-v2-round-banking)).
 - `--walk-log` gives the timing test repeated angles from a turntable trail;
   `--at` classifies exactly those frequencies instead of detecting them.
@@ -857,8 +851,6 @@ jasper-round-views classify-features <bundle-dir> --dumps <ring> --at 1037 --at 
   `controls_ok: false`, no row can reach `defect-*`, and `controls_disclosure`
   says so in words.
 - **It refuses more often than it reports, and each refusal has a name:**
-  `classification_lateral_capture_shape` (a `lateral` capture replays MEASURE
-  one driver at a time and carries no summed response),
   `classification_round_shape_inadmissible`,
   `classification_captures_unreadable` (admissible shape, ring cannot hand it
   over — the remedy is the ring or the bank step, not a different round),

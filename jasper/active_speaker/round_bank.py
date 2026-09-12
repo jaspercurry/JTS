@@ -20,6 +20,7 @@ directory next::
       declared-geometry.json     declared rig geometry SSOT (optional)
       position_cycle.json        which take was measured at which pose,
                                  derived here from the bundle (optional)
+      bundle/<session-id>/ring/  capture sidecars and hard-linked WAVs
       provenance.json            when it was banked, off which build
 
 ``provenance.json``'s key set is owned here: ``banked_at_utc`` is spelled and
@@ -44,6 +45,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 
+from jasper.attribution.session_identity import (
+    ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
+)
+
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 
 # The first-char class excludes ".", so it rejects ".", ".." and any
@@ -58,12 +63,26 @@ __all__ = [
     "BankedRound",
     "RoundBankError",
     "bank_round",
+    "bundle_session_id",
+    "CAPTURE_RING_DIR",
+    "SKIP_NO_CAPTURED_AT",
+    "SKIP_NO_PHASE",
+    "SKIP_NO_WAV_PATH",
+    "SKIP_WAV_ESCAPES_BUNDLE",
+    "SKIP_WAV_MISSING",
 ]
 
 #: The on-box campaign home: banked rounds, one directory each. A sibling of
 #: ``bundles.DEFAULT_SESSIONS_DIR`` rather than a child of it, so session
 #: retention (``bundles.enforce_retention``) never walks over a banked round.
 DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
+
+CAPTURE_RING_DIR = "ring"
+SKIP_NO_CAPTURED_AT = "no_captured_at"
+SKIP_NO_PHASE = "no_phase"
+SKIP_NO_WAV_PATH = "no_wav_path"
+SKIP_WAV_ESCAPES_BUNDLE = "wav_escapes_bundle"
+SKIP_WAV_MISSING = "wav_missing"
 
 REASON_NOT_A_BUNDLE = "not_a_bundle"
 REASON_ALREADY_BANKED = "already_banked"
@@ -161,7 +180,7 @@ def _round_id(session_dir: Path, session_id: str) -> str:
     :data:`_ROUND_ID_RE` token falls back to the session id rather than banking
     outside the store.
     """
-    from .crossover_v2.evidence_packet import round_artifact_dir
+    from .crossover_v2.evidence_packet import round_artifact_dir  # lazy: keep bank constants cheap
 
     round_dir, _why = round_artifact_dir(session_dir)
     if round_dir is None:
@@ -188,7 +207,7 @@ def _index_poses(target: Path) -> list[str]:
     why nothing here reaches the caller's ``except OSError``, whose job is to
     unwind a half-assembled round.
     """
-    from .crossover_v2.position_cycle import (
+    from .crossover_v2.position_cycle import (  # lazy: keep bank constants cheap
         POSITION_CYCLE_FILENAME,
         PositionCycleError,
         write_position_cycle,
@@ -199,6 +218,60 @@ def _index_poses(target: Path) -> list[str]:
     except (PositionCycleError, OSError):
         return [POSITION_CYCLE_FILENAME]
     return []
+
+
+def bundle_session_id(bundle_dir: Path) -> str:
+    info = json.loads((bundle_dir / "info.json").read_text())
+    session_id = info.get("session_id") if isinstance(info, Mapping) else None
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError(f"{bundle_dir}: no session_id")
+    return session_id
+
+
+def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> dict[str, Any]:
+    from .crossover_v2.record_index import measurement_documents  # lazy: keep bank constants cheap
+
+    ring = bundle / CAPTURE_RING_DIR
+    (ring / "sidecar").mkdir(parents=True, exist_ok=True)
+    (ring / "wav").mkdir(exist_ok=True)
+    skipped = []
+    written = 0
+    for row, document in measurement_documents(bundle):
+        reason = ""
+        try:
+            moment = datetime.fromisoformat(row.captured_at or "")
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            stamp = int(moment.timestamp() * 1e6)
+        except (ValueError, OverflowError):
+            reason = SKIP_NO_CAPTURED_AT
+        raw = document.get("wav_path")
+        source = (bundle / str(raw or "")).resolve()
+        if not row.phase:
+            reason = SKIP_NO_PHASE
+        elif not isinstance(raw, str) or not raw:
+            reason = SKIP_NO_WAV_PATH
+        elif not source.is_relative_to(bundle.resolve()):
+            reason = SKIP_WAV_ESCAPES_BUNDLE
+        elif not source.is_file():
+            reason = SKIP_WAV_MISSING
+        if reason:
+            skipped.append({"path": row.path, "reason": reason})
+            continue
+        # The take id breaks ties at the index's one-second timestamp resolution.
+        stem = f"{stamp}_{Path(row.path).stem}"
+        _link_or_copy(str(source), str(ring / "wav" / f"{stem}.wav"))
+        sidecar = dict(document)
+        sidecar["setup_calibration_id"] = calibration_id
+        identity = SessionIdentity(session_id=session_id)
+        try:
+            identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, row.session_id)
+        except SessionIdentityError:
+            pass
+        stamp_session_identity(sidecar, identity)
+        (ring / "sidecar" / f"{stem}.json").write_text(json.dumps(sidecar))
+        written += 1
+    return {"written": written, "skipped": skipped}
 
 
 def bank_round(
@@ -284,6 +357,8 @@ def bank_round(
                 shutil.copy2(source, target / name)
             else:
                 missing.append(name)
+        calibration_id = str(((info.get("fingerprints") or {}).get("mic") or {}).get("calibration_id") or "")
+        ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {
@@ -295,6 +370,7 @@ def bank_round(
             "installed_sha": sha,
             "git_absent": sha is None,
             "missing": missing,
+            "capture_ring": ring,
         }
         (target / "provenance.json").write_text(
             json.dumps(provenance, indent=2, sort_keys=True) + "\n",
