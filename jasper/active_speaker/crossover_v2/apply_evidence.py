@@ -32,7 +32,7 @@ from .verification import (
 
 def candidate_trial_manifest(fingerprint: str, profile: Mapping[str, Any]) -> dict[str, Any] | None:
     graph = str((profile.get("config") or {}).get("sha256") or "")[:16]
-    found: list[tuple[bool, bool, float, dict[str, Any]]] = []
+    best: tuple[bool, bool, float, dict[str, Any]] | None = None
     for bundle in iter_round_sessions(bundles.sessions_dir() / "apply"):
         directory, _ = round_artifact_dir(bundle)
         if directory is None:
@@ -44,11 +44,13 @@ def candidate_trial_manifest(fingerprint: str, profile: Mapping[str, Any]) -> di
                 basis = group.get("capture_basis") or {}
                 if basis.get("candidate_id") == fingerprint and basis.get("role") == "summed":
                     trial = {**document, "set": group, "bundle": str(bundle), "manifest_path": str(path)}
-                    found.append((document.get("status") == "complete" and basis.get("submitted_graph_fingerprint") == graph,
-                                  trial_is_intact(trial), path.stat().st_mtime, trial))
+                    rank = (document.get("status") == "complete" and basis.get("submitted_graph_fingerprint") == graph,
+                            trial_is_intact(trial), path.stat().st_mtime, trial)
+                    if best is None or rank[:-1] > best[:-1]:
+                        best = rank
         except (OSError, ValueError, TypeError, AttributeError):
             continue
-    return max(found, key=lambda row: row[:-1])[-1] if found else None
+    return best[-1] if best else None
 
 
 def trial_records(trial: Mapping[str, Any]):
@@ -88,9 +90,9 @@ def changed_layers(profile: Mapping[str, Any], applied: Mapping[str, Any] | None
 
 def verification_disclosure(
     candidate: MeasuredCrossoverCandidate, trial: Mapping[str, Any],
-    applied: Mapping[str, Any] | None, *, profile: Mapping[str, Any] | None = None,
+    applied: Mapping[str, Any] | None, *, profile: Mapping[str, Any],
 ) -> dict[str, Any]:
-    layers = changed_layers(profile or {}, applied)
+    layers = changed_layers(profile, applied)
     previous = (applied or {}).get("trial_verification") or {}
     reuse = bool(layers) and "speaker" not in layers and bool(previous.get("speaker_evidence"))
     takes = []

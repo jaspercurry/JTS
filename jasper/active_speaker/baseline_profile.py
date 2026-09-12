@@ -1626,7 +1626,6 @@ def _revalidation_payload(
     current_source: Mapping[str, Any],
     *,
     status: str,
-    issues: Sequence[Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     """Describe whether a previously applied profile is stale.
 
@@ -2126,10 +2125,6 @@ def build_baseline_profile_candidate(
             saved,
             source,
             status=str(payload.get("status") or ""),
-            issues=[
-                issue for issue in payload.get("issues", [])
-                if isinstance(issue, Mapping)
-            ],
         )
         # THE applied verdict, derived once where both the record and the
         # comparison are in hand. Consumers read this rather than the rebuild's
@@ -2265,7 +2260,6 @@ def build_baseline_profile_candidate(
                 saved,
                 source,
                 status=probe_status,
-                issues=issues,
             )
             if applied_profile_revalidation_satisfies_driver_target_proof(
                 revalidation_for_driver_proof
@@ -3592,8 +3586,8 @@ def _prune_baseline_candidate_siblings(
     :func:`promote_applied_baseline_candidate` just promoted, always the new
     applied anchor — or the canonical file itself (which never matches the
     glob below; it carries no ``_candidate_`` suffix). A displaced sibling
-    needs no protection: the way back republishes the BANKED candidate
-    artifact and re-emits its config, never a pruned file.
+    needs no protection: apply re-emits the banked candidate
+    artifact, never a pruned file.
 
     BLAST RADIUS, stated because the code cannot show it: since #2572 the
     CamillaDSP statefile may durably name a candidate sibling. A deploy's

@@ -5429,6 +5429,7 @@ async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
     frozen ``applied_recomposition_profile`` snapshot ``handle_v2_apply``
     reads its way-back pointer and #1811 offset from at the moment of the
     run-8 apply."""
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")

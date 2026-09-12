@@ -25,13 +25,7 @@ SESSION_PATH = "/sound/speaker/crossover/v2/session"
 VERIFY_PATH = "/sound/speaker/crossover/v2/verify"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
 
-#: Why a round verb refused, as a slug a script can branch on. First four are this
-#: client's own pre-flight refusals (nothing sent); last three are the wizard's answer,
-#: the answer that never arrived, and the clock's.
 REASON_NO_FINGERPRINT = "no_fingerprint_named"
-REASON_NO_V2_STATE = "no_v2_state"
-REASON_NO_CANDIDATE = "no_candidate_published"
-REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 REASON_NOT_APPLIED = "apply_not_applied"
 REASON_ANSWER_LOST = "answer_lost"
 REASON_WAIT_TIMEOUT = "wait_timeout"
