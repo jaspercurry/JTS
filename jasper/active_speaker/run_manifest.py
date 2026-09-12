@@ -124,16 +124,16 @@ class RunManifest:
         return record_id
 
     def level_observation(self, record: Mapping[str, Any]) -> dict[str, Any]:
-        observed = finite_float(((record.get("capture_integrity") or {}).get("spl") or {}).get("max_window_db_spl"))
+        observed = finite_float(((record.get("capture_integrity") or {}).get("spl") or {}).get("loudest_half_second_db_spl"))
         gain = capture_basis(record).get("level_db")
         # Offsets deliberately change the gain; compare only takes at this fader.
         accepted = {take["take_id"]: take for take in self.takes
                     if take["quality"]["status"] == TAKE_MEASURED
                     and take["level"].get("level_db") == gain
-                    and take["level"]["max_window_db_spl"] is not None}
+                    and take["level"]["loudest_half_second_db_spl"] is not None}
         same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
-        reference = [take["level"]["max_window_db_spl"] for take in (same or list(accepted.values()))]
-        return {"max_window_db_spl": observed,
+        reference = [take["level"]["loudest_half_second_db_spl"] for take in (same or list(accepted.values()))]
+        return {"loudest_half_second_db_spl": observed,
                 "level_reference_db_spl": median(reference) if reference else None, "same_pose": bool(same)}
 
     async def append(
@@ -167,7 +167,7 @@ class RunManifest:
                    "side": basis["side"], "role": role,
                    "level": {**{key: basis.get(key) for key in
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
-                             "max_window_db_spl": level_observation.get("max_window_db_spl"),
+                             "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"),
                    "quality": {"status": status, "fault": verdict.fault,

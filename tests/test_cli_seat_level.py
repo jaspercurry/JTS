@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import seat_level_sweep as sweep
+from jasper.active_speaker.auto_level import MAX_STEP_DB, MIC_RESPONSE_MIN_RISE_DB, reading_budget
 from jasper.active_speaker.crossover_v2 import composition
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
@@ -77,17 +78,17 @@ def test_defaults_are_the_operators_stated_band():
 
 @pytest.mark.parametrize("start,cap,duration", [(-40, 0, 8.0), (-55, -12, 11.6), (-40, 12, 10.0)])
 def test_watchdog_covers_the_sweep_and_loop_budget(start, cap, duration):
-    from jasper.active_speaker.auto_level import MAX_STEP_DB
     assert sweep.watchdog_seconds(start, cap, duration) == (
         math.ceil((min(cap, 0) - start) / MAX_STEP_DB) + 7
-    ) * (duration + 6.0) + 30.0
+    ) * (duration + 6.0) + 2 * duration + 30.0
 
 
 @pytest.fixture
 def box(tmp_path, monkeypatch):
     state = SimpleNamespace(gain=-8.0, loudness=-15.0, level=75.0, ambient=35.0, events=[], programs=[], admissions=[],
                             playback_failure=None, ambient_failure=None, ambient_start_fails=True, bundle_failed=False,
-                            missing_spl=False, loudness_failure=None, renders=[])
+                            missing_spl=False, loudness_failure=None, renders=[], room_floor=False,
+                            ambient_spans=[], period_maxima=[], room_levels=[])
     async def get(**kwargs):
         return state.gain
     async def set_gain(gain):
@@ -160,12 +161,14 @@ def box(tmp_path, monkeypatch):
         return None if state.bundle_failed else {"bundle_dir": tmp_path, "session_id": "level-bundle"}
     def observe(monitor, spl):
         amplitude = 10 ** ((spl - 94.0) / 20)
-        data = np.full(1024, amplitude * np.iinfo(np.int32).max, dtype="<i4")
-        monitor.observe(data.tobytes(), len(data), 1)
+        data = np.full(24000, amplitude * np.iinfo(np.int32).max, dtype="<i4")
+        monitor.observe(data.tobytes(), len(data), 1, sample_rate_hz=48000)
     class Recorder:
         failure = None
         def start(self):
             assert self.spl_monitor.max_window_db_spl == -math.inf
+            assert self.spl_monitor.loudest_half_second_db_spl == -math.inf
+            assert 'graph' in state.events and state.gain <= -40.0
             state.events.append("ambient")
             observe(self.spl_monitor, state.ambient)
             self.failure = state.ambient_failure or self.spl_monitor.error
@@ -187,7 +190,14 @@ def box(tmp_path, monkeypatch):
         def take_answer(self):
             if state.missing_spl:
                 return SimpleNamespace(capture_integrity={})
-            return SimpleNamespace(capture_integrity={"spl": {"max_window_db_spl": round(self.monitor.max_window_db_spl, 2)}})
+            period_max = self.monitor.max_window_db_spl
+            if state.room_floor:
+                period_max = max(state.gain + 93.36, 60.5 if len(state.programs) % 2 else 72.5)
+            state.period_maxima.append(period_max)
+            return SimpleNamespace(capture_integrity={"spl": {
+                "max_window_db_spl": round(period_max, 2),
+                "loudest_half_second_db_spl": round(self.monitor.loudest_half_second_db_spl, 2),
+            }})
     def readmit(program, path, **kwargs):
         assert kwargs["graph_yaml"] == "accepted graph"
         assert kwargs["session_volume_db"] == state.gain
@@ -200,7 +210,9 @@ def box(tmp_path, monkeypatch):
         assert state.loudness == state.gain
         state.artifact = artifact
         (tmp_path / "capture.wav").write_bytes(b"raw")
-        observe(state.capture.monitor, state.level)
+        state.room_levels.append(58 + .5 * (len(state.programs) % 2))
+        observed = max(state.gain + 93.36, state.room_levels[-1]) if state.room_floor else state.level
+        observe(state.capture.monitor, observed)
         if state.capture.monitor.error:
             raise StimulusCaptureStopped("spl_ceiling_exceeded", "stop", PlaybackObservation(emission="partial"))
         if state.playback_failure:
@@ -227,6 +239,13 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(seat_level.CommissioningEvidenceStore, 'open', lambda *a, **kw: Store())
     monkeypatch.setattr(seat_level, 'mark_state', lambda *a: state.events.append("closed_bundle"))
     monkeypatch.setattr(sweep, 'make_wired_recorder', lambda *a, **kw: Recorder())
+    real_sleep = asyncio.sleep
+    async def sleep(seconds):
+        if state.events[-1:] == ['ambient']:
+            state.ambient_spans.append(seconds)
+            return
+        await real_sleep(seconds)
+    monkeypatch.setattr(sweep.asyncio, 'sleep', sleep)
     monkeypatch.setattr(sweep, 'WiredStimulusCapture', Capture)
     monkeypatch.setattr('jasper.active_speaker.program_admission.readmit_summed_program_from_wav', readmit)
     monkeypatch.setattr('jasper.active_speaker.program_playback.verified_program_aplay', player)
@@ -292,6 +311,7 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         first, second = box.programs
         assert all((s.f1_hz, s.f2_hz) == (20.0, 20000.0)
                    for p in box.programs for s in p.stimulus_segments())
+        assert box.ambient_spans == [first.total_samples / first.sample_rate_hz]
         assert any(s.kind == KIND_COURTESY_TONE for s in first.segments)
         assert not any(s.kind == KIND_COURTESY_TONE for s in second.segments)
         assert len(first.stimulus_segments()) == len(second.stimulus_segments()) == 1
@@ -300,9 +320,25 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         provenance = box.bank.call_args.kwargs['stimulus'].to_dict()
         assert provenance == {'program_id': second.program_id, 'phase': second.phase,
             'wav_sha256': box.artifact.sha256, 'peak_dbfs': round(second.stimulus_segments()[0].gain_db, 2),
-            'statistic': 'max_window_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
+            'statistic': 'loudest_half_second_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
         assert json.loads(box.reference_path.read_text())['stimulus'] == provenance
         assert box.bank.call_args.kwargs['measured_db_spl'] == 75.0
+
+
+def test_room_floor_with_scattered_period_maxima_converges_within_budget(box):
+    box.room_floor, box.ambient = True, 58.0
+    result, _ = asyncio.run(seat_level._run(seat_level.build_parser().parse_args([])))
+    assert result['status'] == 'converged'
+    readings = result['readings']
+    assert readings[0][0] == -40
+    assert result['leveled_db_spl'] == pytest.approx(75, abs=1)
+    assert len(readings) <= reading_budget(-40, 0)
+    assert box.period_maxima[:2] == [60.5, 72.5]
+    assert all(abs(level - 58) <= 1 for level in box.room_levels)
+    for (gain, level), (next_gain, _) in zip(readings, readings[1:]):
+        if level < box.ambient + MIC_RESPONSE_MIN_RISE_DB:
+            assert 0 < next_gain - gain <= MAX_STEP_DB
+    assert box.bank.call_count == 1
 
 
 def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch):

@@ -40,15 +40,15 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 
 def level_drift_verdict(
-    *, max_window_db_spl: float | None, level_reference_db_spl: float | None, same_pose: bool,
+    *, loudest_half_second_db_spl: float | None, level_reference_db_spl: float | None, same_pose: bool,
 ) -> TakeVerdict:
-    delta = (max_window_db_spl - level_reference_db_spl
-             if max_window_db_spl is not None and level_reference_db_spl is not None else None)
+    delta = (loudest_half_second_db_spl - level_reference_db_spl
+             if loudest_half_second_db_spl is not None and level_reference_db_spl is not None else None)
     drifted = delta is not None and abs(delta) > (SAME_POSE_DRIFT_DB if same_pose else ACROSS_POSE_DRIFT_DB)
     return TakeVerdict(not drifted, fault=reasons.REASON_LEVEL_DRIFT_AT_SESSION_GAIN if drifted else None,
                        next="retake_same" if drifted else "accept", charge="none",
                        evidence={key: value for key, value in
-                                 (("max_window_db_spl", max_window_db_spl), ("level_delta_db", delta))
+                                 (("loudest_half_second_db_spl", loudest_half_second_db_spl), ("level_delta_db", delta))
                                  if value is not None})
 
 

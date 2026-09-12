@@ -221,10 +221,10 @@ def test_no_household_vocabulary_reaches_this_module():
 @pytest.mark.parametrize("same_pose,delta,accepted", [(True, 1.9, True), (True, 2.1, False),
     (False, 5.9, True), (False, 6.1, False)])
 def test_session_level_drift_has_margin(same_pose, delta, accepted):
-    level = cd.level_drift_verdict(max_window_db_spl=70 + delta, level_reference_db_spl=70, same_pose=same_pose)
+    level = cd.level_drift_verdict(loudest_half_second_db_spl=70 + delta, level_reference_db_spl=70, same_pose=same_pose)
     verdict = cd.assess(_analysis(), phase="measure", level_verdict=level)
     assert verdict.ok is accepted
-    assert verdict.evidence["max_window_db_spl"] == 70 + delta
+    assert verdict.evidence["loudest_half_second_db_spl"] == 70 + delta
     assert verdict.evidence["level_delta_db"] == pytest.approx(delta)
     if not accepted:
         assert (verdict.fault, verdict.next, verdict.charge) == ("level_drift_at_session_gain", "retake_same", "none")

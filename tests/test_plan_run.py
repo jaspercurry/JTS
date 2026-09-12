@@ -666,10 +666,10 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
     for index, (pose, gain, observed, accepted, delta) in enumerate(cases):
         manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}}, attempt=1, pose_index=index)
         record = {"take_id": str(index), "level_db": gain,
-                  "capture_integrity": {"spl": {"max_window_db_spl": observed}}}
+                  "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
         await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,
                               level_observation=plan_run.level_drift_verdict(**manifest.level_observation(record)).evidence)
         row = next(take for take in manifest.takes if take["take_id"] == str(index))
-        assert row["level"]["max_window_db_spl"] == observed
+        assert row["level"]["loudest_half_second_db_spl"] == observed
         assert row["level"]["level_delta_db"] == delta
     assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"

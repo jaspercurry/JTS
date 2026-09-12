@@ -112,6 +112,9 @@ ZERO_RUN_RECORD_CAP = 8
 # S32_LE interleaved: 4 bytes per sample per channel.
 BYTES_PER_SAMPLE = 4
 
+# Long enough to average room transients, short enough to follow a sweep's loudest region.
+LEVEL_WINDOW_S = 0.5
+
 # How long start() waits for the first chunk. Generous relative to a ~21 ms period (1024
 # frames at 48 kHz); same value as mic_readers.DEFAULT_UDP_READ_TIMEOUT_SECONDS.
 START_TIMEOUT_S = 5.0
@@ -179,7 +182,7 @@ class WiredSplCeilingExceeded(WiredCaptureError):
 
 @dataclass
 class WiredSplMonitor:
-    """Unweighted period-RMS ceiling on the recorder's existing stream."""
+    """Unweighted period-RMS stop and loudest half-second level on one stream."""
 
     sensitivity: Any
     ceiling_db_spl: float
@@ -187,13 +190,27 @@ class WiredSplMonitor:
     exceeded: threading.Event = field(default_factory=threading.Event)
     max_window_db_spl: float = float("-inf")
     error: WiredSplCeilingExceeded | None = None
+    _level_sum_squares: float = field(default=0.0, init=False)
+    _level_frames: int = field(default=0, init=False)
+    _level_window_frames: int = field(default=0, init=False)
+    _loudest_mean_square: float = field(default=0.0, init=False)
 
     def reset(self) -> None:
         self.exceeded.clear()
         self.max_window_db_spl = float("-inf")
         self.error = None
+        self._level_sum_squares = self._loudest_mean_square = 0.0
+        self._level_frames = self._level_window_frames = 0
 
-    def observe(self, data: bytes, frames: int, channels: int) -> None:
+    @property
+    def loudest_half_second_db_spl(self) -> float:
+        mean_square = self._loudest_mean_square
+        if self._level_frames and 2 * self._level_frames >= self._level_window_frames:
+            mean_square = max(mean_square, self._level_sum_squares / self._level_frames)
+        dbfs = 10.0 * math.log10(mean_square) if mean_square > 0 else float("-inf")
+        return self.sensitivity.db_spl_from_dbfs(dbfs)
+
+    def observe(self, data: bytes, frames: int, channels: int, *, sample_rate_hz: int) -> None:
         import numpy as np
 
         samples = np.frombuffer(data, dtype="<i4", count=frames * channels)
@@ -205,6 +222,22 @@ class WiredSplMonitor:
         if observed > self.ceiling_db_spl:
             self.error = WiredSplCeilingExceeded(observed, self.ceiling_db_spl)
             self.exceeded.set()
+
+        self._level_window_frames = round(LEVEL_WINDOW_S * sample_rate_hz)
+        offset = 0
+        while offset < frames:
+            count = min(frames - offset, self._level_window_frames - self._level_frames)
+            self._level_sum_squares += float(np.sum(np.square(
+                column[offset:offset + count] / np.iinfo(np.int32).max,
+            )))
+            self._level_frames += count
+            offset += count
+            if self._level_frames == self._level_window_frames:
+                self._loudest_mean_square = max(
+                    self._loudest_mean_square, self._level_sum_squares / self._level_frames,
+                )
+                self._level_sum_squares = 0.0
+                self._level_frames = 0
 
 
 @dataclass(frozen=True)
@@ -436,7 +469,7 @@ class WiredRecorder:
                 self._chunks.append(data[: length * frame_bytes])
                 self._frames += length
                 if self.spl_monitor is not None:
-                    self.spl_monitor.observe(data, length, self._channels)
+                    self.spl_monitor.observe(data, length, self._channels, sample_rate_hz=rate)
                     if self.spl_monitor.error is not None:
                         raise self.spl_monitor.error
                 if self._frames >= self._max_frames:

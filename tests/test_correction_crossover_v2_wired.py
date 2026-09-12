@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import io
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -28,13 +29,14 @@ from jasper.audio_measurement.wired_capture import (
     WiredMicDevice,
     WiredMicMissing,
     WiredRecorder,
+    WiredSplMonitor,
     decode_wav_to_mono,
 )
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
 from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 
-from tests.test_wired_capture import UMIK2_USB_ID, _make_card
+from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 
@@ -363,7 +365,7 @@ class _StimulusProgram:
     total_samples = RATE // 10
 
 
-def _capture_half(tmp_path, *, factory=None):
+def _capture_half(tmp_path, *, factory=None, script=None):
     def _factory(rate, budget_s):
         assert rate == RATE, "the rate comes from the program that plays"
         assert budget_s > 0
@@ -372,7 +374,7 @@ def _capture_half(tmp_path, *, factory=None):
             sample_rate_hz=rate,
             channels=2,
             max_capture_s=budget_s,
-            pcm_factory=lambda: FakePcm([(64, [(1000, 0)] * 64)]),
+            pcm_factory=lambda: FakePcm(script or [(64, [(1000, 0)] * 64)]),
         )
 
     if tmp_path.is_dir() and not (tmp_path / "info.json").exists():
@@ -384,9 +386,8 @@ def _capture_half(tmp_path, *, factory=None):
     )
 
 
-async def test_the_capture_half_records_across_the_play_and_places_the_bytes(
-    tmp_path,
-):
+@pytest.mark.parametrize("watched", [False, True])
+async def test_the_capture_half_records_across_the_play_and_places_the_bytes(tmp_path, watched):
     """One transaction, one answer: the path names bytes that exist.
 
     The ordering is the pre-roll guarantee and the reason play and capture are
@@ -394,7 +395,11 @@ async def test_the_capture_half_records_across_the_play_and_places_the_bytes(
     lost the part of the answer the analysis needs most.
     """
     order: list[str] = []
-    half = _capture_half(tmp_path)
+    half = _capture_half(tmp_path, script=[
+        (RATE // 2, [(2 ** 26, 0)] * (RATE // 2)), (1024, [(2 ** 27, 0)] * 1024),
+    ] if watched else None)
+    if watched:
+        half = replace(half, spl_monitor=WiredSplMonitor(_Sensitivity(), 85, 0))
 
     async def _play() -> None:
         order.append("played")
@@ -408,6 +413,10 @@ async def test_the_capture_half_records_across_the_play_and_places_the_bytes(
     samples, rate = decode_wav_to_mono(written.read_bytes())
     assert rate == RATE
     assert len(samples) > 0, "the placed capture is the audio that was heard"
+    if watched:
+        spl = half.take_answer().capture_integrity['spl']
+        assert spl == {'weighting': 'Z', 'max_window_db_spl': pytest.approx(75.9, abs=.1),
+                       'loudest_half_second_db_spl': pytest.approx(69.9, abs=.1), 'ceiling_db_spl': 85}
 
 
 async def test_a_recorder_that_will_not_roll_refuses_before_any_excitation(
@@ -911,7 +920,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     records.enrich(None, record)
     records.after_bank(record, "take")
     analysis = await asyncio.to_thread(analyze, record, "take")
-    level = level_drift_verdict(max_window_db_spl=73, level_reference_db_spl=70, same_pose=True)
+    level = level_drift_verdict(loudest_half_second_db_spl=73, level_reference_db_spl=70, same_pose=True)
     verdict = await asyncio.to_thread(assessor, analysis, phase="verify", program=program, level_verdict=level)
     await manifest.append(record, "take", verdict, complete=True, started_s=0, ended_s=1, level_observation=level.evidence)
     consume.assert_not_called()
