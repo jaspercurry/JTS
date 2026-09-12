@@ -36,8 +36,8 @@ _spec.loader.exec_module(menu)
 def test_the_committed_runbook_table_equals_the_regenerated_one():
     committed = menu.RUNBOOK.read_text(encoding="utf-8")
 
-    assert menu.spliced(committed, menu.render_table()) == committed, (
-        "docs/tuning-operator-runbook.md's tool menu is stale -- run "
+    assert menu.render_document(committed) == committed, (
+        "docs/tuning-operator-runbook.md's generated tables are stale -- run "
         "PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu.py"
     )
 
@@ -74,7 +74,12 @@ def test_every_covered_tool_declares_its_own_authority_tier():
 
 
 def test_jasper_doctor_and_the_non_cli_surfaces_are_not_generated():
-    """Scoped to what has a build_parser(): the runbook's own "Other
-    surfaces" table (doors, HTTP endpoints, the two `scripts/` helpers,
-    `jasper-doctor`) has no CLI metadata source and stays hand-written."""
+    """Only tools with safe argparse metadata belong in the tool table."""
     assert "jasper.cli.doctor" not in menu.TUNING_TOOL_MODULES
+
+
+def test_fault_table_has_every_registered_code_once():
+    rendered = menu.render_fault_table()
+
+    for code in menu.REASON_REGISTRY:
+        assert rendered.count(f"| `{code}` |") == 1
