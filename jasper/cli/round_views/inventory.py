@@ -47,7 +47,7 @@ def _runnable(
         TAKES_THIS_BUNDLE: inputs.session_dir,
         "<set-id>": set_id,
     }
-    takes = []
+    takes: list[str] = []
     source = iter(spec.takes)
     for token in source:
         if token in optional_set_flags:

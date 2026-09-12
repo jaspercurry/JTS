@@ -37,7 +37,9 @@ def manifest_set(records, *, set_id=None, selected=None) -> dict:
     takes = []
     for path, record in records:
         take_id = record.get("take_id") or record.get("position_id") or path
-        takes.append({"take_id": take_id, "pose": {"kind": record.get("pose_kind", "bearing")},
+        takes.append({"take_id": take_id, "pose": {"kind": record.get("pose_kind", "bearing"),
+                      "deg": record.get("position_deg"), "elevation_deg": record.get("vertical_deg"),
+                      "distance_m": record.get("mark_distance_m"), "seat_offset_m": record.get("seat_offset_m")},
                       "level": {key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
                       "quality": {"status": "measured", "fault": None},
                       "artifacts": {"record_id": path, "wav_path": record.get("wav_path"), "wav_sha256": record.get("wav_sha256")},

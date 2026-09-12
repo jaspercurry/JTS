@@ -4,6 +4,7 @@
 """Manifest selection, artifact isolation, and the retired CLI doors."""
 
 import json
+import shlex
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,6 @@ from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_t
 from jasper.active_speaker.crossover_v2 import room_views
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
-from jasper.cli import round_views
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
@@ -23,7 +23,7 @@ from jasper.active_speaker.measurement_programs import bookkeeping_views
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.cli._report import render_report
 from jasper.cli.round_views import build_parser, main
-from jasper.cli.round_views._common import resolve_set
+from jasper.cli.round_views._common import RoundSetRefused, resolve_set
 from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
@@ -134,8 +134,6 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
     ["room-persistence", "round", "--capture-id", "take"],
     ["room-grade", "round", "--room-median", "median.json"],
     ["room-grade", "round", "--baseline-room-median", "median.json"],
-    ["bass-compare", "before", "after", "--change", "candidate", "--before-take", "take"],
-    ["bass-compare", "before", "after", "--change", "candidate", "--after-take", "take"],
 ])
 def test_retired_verbs_and_selectors_are_unknown(argv):
     with pytest.raises(SystemExit) as exc:
@@ -147,6 +145,7 @@ def test_retired_verbs_and_selectors_are_unknown(argv):
     ["entry", "round"], ["per-seat", "round", "--include", "agreement"],
     ["repeat-floor", "a", "b"], ["delay-landscape", "bundle", "--fc-hz", "1800"],
     ["dsp-replay", "graph", "stimulus", "--main-db", "-30", "--bass-reference-db", "-30"],
+    ["dsp-levels", "manifest.json", "--raw", "output.f64le", "--window-s", "0", "1"],
 ])
 def test_stdout_cannot_replace_an_artifact(argv):
     with pytest.raises(SystemExit) as exc:
@@ -168,24 +167,31 @@ def test_take_sweep_uses_the_same_record_and_artifact_bytes(tmp_path, capsys, ta
         assert Path(answer["out"]).read_bytes() == (render_report(expected) + "\n").encode()
 
 
-def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, capsys):
+@pytest.mark.parametrize("override", [False, True])
+def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, capsys, override):
     root = bank_seat_round(tmp_path)
     inputs = round_inputs(root)
-    rows = list(measurement_documents(inputs.session_dir))[:2]
-    groups = [manifest_set([(row.path, record)], set_id=f"bass-{number}") for number, (row, record) in enumerate(rows)]
+    rows = list(measurement_documents(inputs.session_dir))[:4]
+    for index, (_, record) in enumerate(rows):
+        record.update(pose_kind="bearing", position_deg=15.0 if index % 2 else 0.0, vertical_deg=0.0)
+    groups = [manifest_set([(row.path, record) for row, record in rows[start:start + 2]],
+                           set_id=f"bass-{number}") for number, start in enumerate((0, 2))]
     write_manifest(root, program="bass", groups=groups)
     views, paths = [], []
-    for number, ((row, record), group) in enumerate(zip(rows, groups)):
-        take = {"record": record, "record_path": row.path, "sweep_band_hz": [20, 200], "sweep_duration_s": 1.0,
-                "calibration": {}, "freqs_hz": [30, 50, 70, 100, 150], "fundamental_db": [-30 + number] * 5,
-                "fundamental_qualified": [True] * 5, "harmonics": {}}
-        view = {"schema": "jts_bass_view/1", "takes": [take]}
+    for number, group in enumerate(groups):
+        takes = [{"record": record, "record_path": row.path, "sweep_band_hz": [20, 200], "sweep_duration_s": 1.0,
+                  "calibration": {}, "freqs_hz": [30, 50, 70, 100, 150], "fundamental_db": [-30 + number + i] * 5,
+                  "fundamental_qualified": [True] * 5, "harmonics": {}}
+                 for i, (row, record) in enumerate(rows[number * 2:number * 2 + 2])]
+        view = {"schema": "jts_bass_view/1", "takes": takes}
         path = default_out(inputs, root, "bass_view.json", group["set_id"])
         path.write_text(json.dumps(view))
         views.append(view)
         paths.append(path)
-    expected = compare_bass_takes(*(selected_take(view, group["takes"][0]["take_id"]) for view, group in zip(views, groups)), change="diagnostic")
-    assert main(["bass-compare", str(root), str(root), "--before-set", "bass-0", "--after-set", "bass-1", "--change", "diagnostic"]) == 0
+    ids = [group["takes"][int(override)]["take_id"] for group in groups]
+    expected = compare_bass_takes(*(selected_take(view, take_id) for view, take_id in zip(views, ids)), change="diagnostic")
+    flags = ["--before-take", ids[0], "--after-take", ids[1]] if override else []
+    assert main(["bass-compare", str(root), str(root), "--before-set", "bass-0", "--after-set", "bass-1", "--change", "diagnostic", *flags]) == 0
     answer, actual = artifact_answer(capsys)
     assert actual == {**expected, "source_views": list(map(str, paths))}
     assert Path(answer["out"]).name == "bass_comparison-bass-1.json"
@@ -233,10 +239,6 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
                             (record.get("take_id", "").endswith("_second") == (candidate is second))],
                            set_id="second" if candidate is second else "first") for candidate in (original, second)]
     write_manifest(round_dir, program="room", groups=groups)
-    assert round_views.main(["room-median", str(round_dir)]) == round_views.EXIT_REFUSED
-    refused = json.loads(capsys.readouterr().out)
-    assert refused["reason"] == "round_set_unknown"
-    assert not (round_dir / "room_median.json").exists()
 
     for record, level in [(original, -30.0), (second, -20.0)]:
         set_id = "first" if record is original else "second"
@@ -287,3 +289,53 @@ def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys, view):
     assert answer["reason"] == "round_take_selection_required"
     assert answer["detail"]["set_id"] == first
     assert answer["reason"] in REASON_REGISTRY
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_inventory_reads_one_manifest_and_uses_optional_set_arguments(two_sets, capsys, monkeypatch, named):
+    root, manifest = two_sets
+    if not named:
+        write_manifest(root, groups=manifest["sets"][:1])
+    reads = []
+    read_text = Path.read_text
+    def read(path, *args, **kwargs):
+        if path.name == RUN_MANIFEST_FILENAME:
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    assert main(["inventory", str(root)]) == 0
+    _, doc = artifact_answer(capsys)
+    assert len(reads) == 1
+    for row in doc["artifacts"]:
+        if row["view"] == "bass-compare":
+            assert row["required_inputs"] == ["<before-round>", "<change>"]
+            tokens = shlex.split(row["next_command"])
+            assert "--before-set" not in tokens
+            assert ("--after-set" in tokens) == named
+
+
+@pytest.mark.parametrize("poses,selected,requested,expected", [
+    ([(0, 0), (15, 0)], [True, True], None, "take-0"),
+    ([(15, 0), (0, 0)], [True, True], None, "take-1"),
+    ([(0, 0), (15, 0)], [True, True], "take-1", "take-1"),
+    ([(0, 10), (15, 0)], [True, True], None, "round_take_selection_required"),
+    ([(0, 0), (0, 0)], [True, True], None, "round_take_selection_required"),
+    ([(None, None), (None, None)], [True, True], None, "round_take_selection_required"),
+    ([(0, 0), (15, 0), (30, 0)], [False, True, True], None, "round_take_selection_required"),
+    ([(0, 0), (15, 0)], [False, True], "take-0", "round_take_unknown"),
+    ([(0, 0), (15, 0)], [True, True], "missing", "round_take_unknown"),
+])
+def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested, expected):
+    root, manifest = two_sets
+    group = manifest["sets"][0]
+    group["takes"] = [{**group["takes"][0], "take_id": f"take-{i}", "selected": keep,
+                       "pose": {"kind": "bearing", "deg": deg, "elevation_deg": elevation}}
+                      for i, ((deg, elevation), keep) in enumerate(zip(poses, selected))]
+    resolved = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
+    if expected.startswith("round_"):
+        with pytest.raises(RoundSetRefused) as refused:
+            resolved.take_id(requested)
+        assert refused.value.reason == expected
+        assert refused.value.detail["take_ids"] == tuple(f"take-{i}" for i, keep in enumerate(selected) if keep)
+    else:
+        assert resolved.take_id(requested) == expected
