@@ -846,3 +846,75 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     await run(session)
     assert manifest.status == "complete"
     assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]
+
+
+async def test_room_take_sidecar_keeps_the_played_stimulus(tmp_path):
+    import json
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder, record_capture_provenance
+    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
+    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+    from jasper.active_speaker.plan_run import prepare_plan_captures
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
+    from jasper.audio_measurement.program import build_verify_program, write_program_wav
+    from jasper.json_fields import sha256_file
+    from jasper.web.correction_run_host import bind_plan_analysis
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.crossover_v2_fixtures import FakeCam
+
+    info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
+    bundle = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
+    request = AngleCaptureRequest(stops=(AngleStop(0, REGIME_SUMMED, purpose="room", candidate_id="room"),), candidates=("room",))
+    capture, = prepare_plan_captures(request, candidate_scopes={"room": "candidate"})
+    phase = capture.spec.program_phase
+    program = build_verify_program(2500, sweep_s=1.5)
+    wav = bundle / "lateral_01_program.wav"
+    write_program_wav(str(wav), program)
+    provenance = CaptureProvenanceRecorder()
+    cam = FakeCam("entry.yml")
+    await cam.set_active_config_raw('{"devices": {"samplerate": 48000, "volume_limit": 0.0}}')
+    played = []
+    async def play():
+        await record_capture_provenance(provenance, open_cam=lambda: cam, graph_kind="tuning_measurement",
+            program=program, phase=phase, artifact=store.identify_artifact(wav.name))
+        played.append(sha256_file(wav))
+    records = core_capture.CapturedRecordStore(BankedRecordStore(store, "run"), SimpleNamespace(take_answer=lambda: None))
+    bind_plan_analysis(None, records, manifest=None, evidence={}, provenance=provenance)
+    await play()
+    record_id = await records.bank({"take_id": "room-take", "kind": "candidate", "purpose": "room",
+                                    "program_phase": phase, "candidate_id": "room"})
+    sidecar = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
+    assert sidecar["phase"] == "lateral"
+    assert sidecar["provenance"]["stimulus"]["wav_sha256"] == played[0]
+    assert provenance.take() is None
+
+
+async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):
+    from jasper.active_speaker.crossover_v2.capture_dispatch import level_drift_verdict
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.active_speaker.run_manifest import RunManifest
+    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor
+    from tests.test_plan_run import _Store
+    from tests.engine_twin import FakeSeams as EngineSeams
+
+    conductor = _conductor(FakeSeams(), index_phase_map={1: "verify"})
+    consume = Mock(side_effect=AssertionError("drifting take consumed"))
+    monkeypatch.setattr(conductor, "_consume_verify", consume)
+    manifest = RunManifest("drift", _Store(EngineSeams().records))
+    manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={}, verify_only=True)
+    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None)
+    record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
+    records.enrich(None, record)
+    records.after_bank(record, "take")
+    analysis = await asyncio.to_thread(analyze, record, "take")
+    level = level_drift_verdict(max_window_db_spl=73, level_reference_db_spl=70, same_pose=True)
+    verdict = await asyncio.to_thread(assessor, analysis, phase="verify", program=program, level_verdict=level)
+    await manifest.append(record, "take", verdict, complete=True, started_s=0, ended_s=1, level_observation=level.evidence)
+    consume.assert_not_called()
+    row = manifest.takes[0]
+    assert (row["quality"]["fault"], row["next_action"], row["charge"]) == ("level_drift_at_session_gain", "retake_same", "none")
+    assert row["level"]["level_delta_db"] == 3
