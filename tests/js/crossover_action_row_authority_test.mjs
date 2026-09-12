@@ -241,10 +241,10 @@ const verifyRetryAction = {
   body: {},
 };
 const wayBackAction = {
-  id: "republish_previous",
+  id: "apply_previous",
   label: "Go back to the previous tuning",
-  endpoint: "/sound/speaker/crossover/v2/republish",
-  body: { fingerprint: "fp-previous" },
+  endpoint: "/sound/speaker/crossover/v2/apply",
+  body: { expected_candidate_fingerprint: "fp-previous" },
   show_during_capture: true,
 };
 const verifyRemeasureAction = {

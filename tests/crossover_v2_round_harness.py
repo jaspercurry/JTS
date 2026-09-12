@@ -24,7 +24,6 @@ pins that need a real evidence store.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
@@ -300,6 +299,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
         measured_candidate=measured, tuning_owner="automatic", write=True,
         state_path=root / "previous.json", config_path=root / "previous.yml", validate=valid_camilla_config,
     )
+    assert (profile.get("config") or {}).get("sha256"), profile["issues"]
     profile.update(status="applied", trial_verification={
         "capture_validity": "usable", "realization": "matched", "benefit": "improved", "spec": "passed"})
     state = v2host.load_v2_state() or {}
@@ -316,7 +316,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     monkeypatch.setattr(baseline_profile_mod, "load_applied_baseline_profile_state", lambda *a, **k: None)
     def compile_profile(*args, **kwargs):
         candidate = copy.deepcopy(profile)
-        candidate.update(status="compiled", applied_recomposition_profile=baseline_profile_mod.load_applied_baseline_profile_state())
+        candidate.update(status="ready_to_apply", applied_recomposition_profile=baseline_profile_mod.load_applied_baseline_profile_state())
         candidate["permissions"]["may_apply"] = True
         return candidate
     monkeypatch.setattr(baseline_profile_mod, "build_baseline_profile_candidate", compile_profile)

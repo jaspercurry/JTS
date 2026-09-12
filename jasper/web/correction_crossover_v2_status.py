@@ -40,8 +40,10 @@ def _offerable_previous_candidate(state: Mapping[str, Any] | None) -> str | None
     """The displaced candidate, when its banked artifact still resolves."""
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 
+    from jasper.active_speaker.crossover_v2.apply_gate import previously_applied
+
     fingerprint = _previous_candidate_fingerprint(state)
-    if fingerprint:
+    if fingerprint and previously_applied(fingerprint, (state or {}).get("previous_applied_profile")):
         try:
             return find_banked_candidate(fingerprint).fingerprint
         except CandidateBankRefusal:

@@ -18,7 +18,6 @@ from ..measured_crossover_candidate import MeasuredCrossoverCandidate
 from .. import runtime_contract
 from .refusal_copy import refusal_copy_for
 from ..commissioning_evidence_store import EVIDENCE_ROOT
-from ..run_manifest import RUN_MANIFEST_FILENAME, TAKE_MEASURED
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,7 @@ class Issue:
 
     @property
     def next_action(self) -> Mapping[str, Any]:
-        return refusal_copy_for(self.code)[1] or {}
+        return refusal_copy_for(self.code)[1] or refusal_copy_for("baseline_graph_safety_proof_failed")[1] or {}
 
     def to_dict(self) -> dict[str, Any]:
         return {"severity": "blocker", "code": self.code, "message": self.detail,
@@ -64,7 +63,7 @@ def apply_preconditions(
             graph = str((candidate.profile.get("config") or {}).get("sha256") or "")[:16]
             if (manifest["set"]["capture_basis"].get("submitted_graph_fingerprint") != graph):
                 issues.append(Issue("candidate_trial_graph_mismatch", "The trial and compiled graph digests differ."))
-            if not trial_is_intact(manifest):
+            if manifest.get("intact") is not True:
                 issues.append(Issue("candidate_trial_evidence_invalid", "The trial set has incomplete or damaged evidence."))
     profile, topology = candidate.profile, candidate.topology
     snapshot = crossover_snapshot_state(
@@ -135,6 +134,7 @@ def check_baseline_apply(
 
 def candidate_trial_manifest(fingerprint: str, profile: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     from .round_inputs import iter_round_sessions, round_artifact_dir  # lazy: round inputs import bank readers
+    from ..run_manifest import RUN_MANIFEST_FILENAME, TAKE_MEASURED  # lazy: the baseline truth layer must not import the run engine
 
     graph = str(((profile or {}).get("config") or {}).get("sha256") or "")[:16]
     best: tuple[bool, bool, float, dict[str, Any]] | None = None
@@ -167,10 +167,14 @@ def candidate_trial_manifest(fingerprint: str, profile: Mapping[str, Any] | None
         except (OSError, ValueError, TypeError, KeyError):
             records.append({})
     trial["records"] = records
+    trial["intact"] = trial_is_intact(trial)
+    trial["verification"] = _trial_verification(trial) if trial["intact"] else {}
     return trial
 
 
 def trial_is_intact(trial: Mapping[str, Any]) -> bool:
+    from ..run_manifest import TAKE_MEASURED  # lazy: the baseline truth layer must not import the run engine
+
     try:
         basis, takes, records = trial["set"]["capture_basis"], trial["set"]["takes"], trial["records"]
         return bool(takes) and len(takes) == len(records) and all(
@@ -195,36 +199,54 @@ def changed_layers(profile: Mapping[str, Any], applied: Mapping[str, Any] | None
             if not before or any(now.get(key) != before.get(key) for key in keys)]
 
 
-def verification_disclosure(
-    candidate: MeasuredCrossoverCandidate, trial: Mapping[str, Any],
-    applied: Mapping[str, Any] | None, *, profile: Mapping[str, Any],
-) -> dict[str, Any]:
-    from jasper.audio_measurement.program_analysis import CaptureIntegrity, IntegrityCheck  # lazy: numpy import cost
-    from ..flat_spec import FlatSpecReport  # lazy: numpy import cost
+def _trial_verification(trial: Mapping[str, Any]) -> dict[str, Any]:
+    import numpy as np  # lazy: analysis import cost, paid before the writer lock
+    from types import SimpleNamespace
+    from jasper.audio_measurement.program_analysis import (CaptureIntegrity, IntegrityCheck, INTEGRITY_FAIL,
+                                                          INTEGRITY_NOT_EVALUATED)  # lazy: numpy import cost
+    from ..flat_spec import FlatSpecReport, evaluate_flat_spec  # lazy: numpy import cost
     from .contracts import VERIFY_TOLERANCE_DB, BenefitStatus, CaptureValidity, RealizationStatus, SpecStatus
-    from .round_evidence import MEASURED_BENEFIT_MARGIN_DB  # lazy: round evidence imports the measurement engine
+    from .round_evidence import (MEASURED_BENEFIT_MARGIN_DB, EntryBaseline, benefit_comparands,
+                                measured_response_from_analysis)  # lazy: round evidence imports the measurement engine
     from .verification import (Verdict, evaluate_benefit, evaluate_capture_validity, evaluate_realization,
                                evaluate_spec, verification_result)
 
-    layers = changed_layers(profile, applied)
-    previous = (applied or {}).get("trial_verification") or {}
-    speaker_unchanged = bool(layers) and "speaker" not in layers
-    reuse = speaker_unchanged and bool(previous.get("speaker_evidence"))
     takes = []
     for take, record in zip(trial["set"]["takes"], trial["records"]):
         raw_integrity = record.get("capture_integrity") or {}
+        diagnostic = record.get("diagnostic") or {}
+        post = None
         try:
             integrity = CaptureIntegrity(checks=tuple(IntegrityCheck(**check) for check in raw_integrity.get("checks", ()))) if raw_integrity else None
-            tracking = record.get("verify_tracking")
+            if "integrity_failed" in diagnostic:
+                integrity = CaptureIntegrity(checks=tuple(
+                    IntegrityCheck(name, status) for key, status in (("integrity_failed", INTEGRITY_FAIL),
+                                                                    ("integrity_not_evaluated", INTEGRITY_NOT_EVALUATED))
+                    for name in diagnostic.get(key, "").split(",") if name))
+        except (ValueError, TypeError, KeyError, AttributeError):
+            integrity = None
+        tracking = record.get("verify_tracking") or diagnostic
+        realization = evaluate_realization(tracking=tracking if isinstance(tracking, Mapping) else None,
+                                           tolerance_db=VERIFY_TOLERANCE_DB)
+        try:
             raw_spec = record.get("spec_report") or {}
             report = FlatSpecReport.from_dict(raw_spec) if raw_spec.get("bands") else None
-            realization = evaluate_realization(tracking=tracking, tolerance_db=VERIFY_TOLERANCE_DB)
+            summed = next((curve for curve in record.get("curves", []) if curve.get("role") == "summed"), None)
+            if summed:
+                analysis: Any = SimpleNamespace(
+                    program_id=(record.get("program") or {}).get("program_id") or record.get("program_id"),
+                    summed_response=SimpleNamespace(**summed))
+                post = measured_response_from_analysis(analysis, reference_mark=str(take.get("pose_index", "")))
+                if post is not None:
+                    report = evaluate_flat_spec(np.asarray(post.curve.hz), np.asarray(post.curve.db),
+                                                exclusion_mask=np.asarray(post.excluded))
         except (ValueError, TypeError, KeyError, AttributeError):
-            integrity, report = None, None
-            realization = evaluate_realization(tracking=None, tolerance_db=VERIFY_TOLERANCE_DB)
+            report, post = None, None
         capture = evaluate_capture_validity(integrity)
         spec = evaluate_spec(report)
-        benefit = evaluate_benefit(entry_baseline=None, post=None, margin_db=MEASURED_BENEFIT_MARGIN_DB)
+        baseline = EntryBaseline.from_dict(record.get("entry_baseline"))
+        before, after = benefit_comparands(baseline=baseline.as_measurement() if baseline else None, post=post)
+        benefit = evaluate_benefit(entry_baseline=before, post=after, margin_db=MEASURED_BENEFIT_MARGIN_DB)
         result = verification_result(capture=capture, realization=realization, benefit=benefit, spec=spec)
         takes.append({"take_id": take["take_id"], **result.to_dict()})
     def set_verdict(key, priority):
@@ -237,6 +259,17 @@ def verification_disclosure(
         benefit=set_verdict("benefit", (BenefitStatus.REGRESSED, BenefitStatus.INDETERMINATE, BenefitStatus.IMPROVED)),
         spec=set_verdict("spec", (SpecStatus.FAILED, SpecStatus.UNEVALUABLE, SpecStatus.PASSED)),
     ).to_dict()
+    return {**dimensions, "takes": takes}
+
+
+def verification_disclosure(
+    candidate: MeasuredCrossoverCandidate, trial: Mapping[str, Any],
+    applied: Mapping[str, Any] | None, *, profile: Mapping[str, Any],
+) -> dict[str, Any]:
+    layers = changed_layers(profile, applied)
+    previous = (applied or {}).get("trial_verification") or {}
+    reuse = bool(layers) and "speaker" not in layers and bool(previous.get("speaker_evidence"))
+    dimensions = trial["verification"]
     speaker_evidence = previous["speaker_evidence"] if reuse else {
         **{key: dimensions[key] for key in ("capture_validity", "realization")},
         "candidate_fingerprint": candidate.fingerprint, "manifest_path": trial["manifest_path"],
@@ -246,4 +279,4 @@ def verification_disclosure(
             "manifest_path": trial["manifest_path"], "set_id": trial["set"]["set_id"],
             "graph_fingerprint": trial["set"]["capture_basis"]["submitted_graph_fingerprint"],
             "layers_changed": layers, "speaker_evidence_reused": reuse,
-            "speaker_evidence": speaker_evidence, "takes": takes}
+            "speaker_evidence": speaker_evidence}

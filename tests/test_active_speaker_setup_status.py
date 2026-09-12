@@ -422,7 +422,7 @@ def test_active_speaker_blocks_volume_and_grouping_until_baseline_is_applied(
             issues=[
                 {
                     "severity": "blocker",
-                    "code": "baseline_summed_validation_missing",
+                    "code": "candidate_trial_required",
                     "message": (
                         "validate the combined crossover before saving the active "
                         "profile"
@@ -441,7 +441,7 @@ def test_active_speaker_blocks_volume_and_grouping_until_baseline_is_applied(
     assert status["volume_allowed"] is False
     assert status["grouping_allowed"] is False
     assert status["safety_muted"] is True
-    assert status["reason"] == "baseline_summed_validation_missing"
+    assert status["reason"] == "candidate_trial_required"
     assert "validate the combined crossover" in status["detail"]
 
 

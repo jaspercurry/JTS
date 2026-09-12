@@ -2336,7 +2336,7 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
     assert result["accepted"] is False
     assert result["code"] == BOOST_OVER_DECLARED_BOUND
     assert result["auto_retry"] is False
-    assert protection["restored"] is restored
+    assert protection["restored"] is restored, protection
     assert protection["graph_fingerprint"] == "a" * 16
     assert protection["finding_recorded"] is (failure != "bank")
     assert len(attempts) == (0 if failure in ("unavailable", "displaced") else 1)

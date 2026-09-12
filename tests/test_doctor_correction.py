@@ -1144,6 +1144,6 @@ def test_check_correction_status(monkeypatch, tmp_path, setup, expected_status, 
 def test_trial_advice_failure_warns_in_doctor(monkeypatch, dimension, value):
     block = {"trial_verification": {dimension: value}}
     monkeypatch.setattr(correction, "_crossover_v2_status_block", lambda: block)
-    result = correction.check_crossover_v2_cloud_pipeline(_evidence.EvidenceCache())
+    result = correction.check_crossover_v2_cloud_pipeline()
     assert result.status == "warn"
     assert result.reason == correction.REASON_APPLIED_GRADE_VERIFY_FAILED

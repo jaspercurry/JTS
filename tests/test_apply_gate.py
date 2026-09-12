@@ -55,11 +55,13 @@ def test_apply_preconditions_fail_independently(apply_facts, fault, code):
     elif fault == "partial":
         trial["status"] = "partial"
     elif fault == "integrity":
-        trial["set"]["takes"][0]["quality"]["status"] = "refused"
+        trial["intact"] = False
     elif fault == "second_take":
         failed_take = copy.deepcopy(trial["set"]["takes"][0])
         failed_take["quality"]["status"] = "refused"
         trial["set"]["takes"].append(failed_take)
+        from jasper.active_speaker.crossover_v2.apply_gate import trial_is_intact
+        trial["intact"] = trial_is_intact(trial)
     elif fault == "layers":
         profile = copy.deepcopy(candidate.profile)
         profile["recomposition_snapshot"]["schema_version"] = 999
@@ -70,10 +72,12 @@ def test_apply_preconditions_fail_independently(apply_facts, fault, code):
         candidate = replace(candidate, profile=profile)
     elif fault == "digest":
         trial["records"][0]["wav_sha256"] = "0" * 64
+        from jasper.active_speaker.crossover_v2.apply_gate import trial_is_intact
+        trial["intact"] = trial_is_intact(trial)
     issues = apply_preconditions(candidate, bank, trial, None)
     assert [issue.code for issue in issues] == ([code] if code else [])
     if issues:
-        assert issues[0].next_action == refusal_copy_for(code)[1]
+        assert issues[0].next_action == (refusal_copy_for(code)[1] or refusal_copy_for("baseline_graph_safety_proof_failed")[1])
         assert issues[0].next_action
 
 
@@ -146,8 +150,10 @@ def test_openability_refuses_by_code(apply_facts, failure):
 def test_fresh_failure_is_not_replaced_by_prior_speaker_advice(apply_facts):
     from jasper.active_speaker.crossover_v2.apply_gate import verification_disclosure
 
-    candidate, _, trial = apply_facts
-    trial["records"][0]["verify_tracking"] = {"max_db_notch_excluded": 99.}
+    candidate, _, _ = apply_facts
+    bank_trial(candidate.measured, candidate.profile, candidate.topology,
+               record_fields={"diagnostic": {"max_db_notch_excluded": 99., "integrity_failed": ""}})
+    trial = candidate_trial_manifest(candidate.measured.fingerprint, candidate.profile)
     prior = {**candidate.profile, "trial_verification": {
         "speaker_evidence": {"capture_validity": "usable", "realization": "matched"}}}
     profile = copy.deepcopy(candidate.profile)
@@ -155,3 +161,37 @@ def test_fresh_failure_is_not_replaced_by_prior_speaker_advice(apply_facts):
     advice = verification_disclosure(candidate.measured, trial, prior, profile=profile)
     assert advice["realization"] == advice["takes"][0]["realization"] == "failed"
     assert advice["speaker_evidence"]["realization"] == "matched"
+
+
+def test_banked_analysis_supplies_all_four_dimensions_without_audio(apply_facts, monkeypatch):
+    import numpy as np
+    from types import SimpleNamespace
+    from jasper.active_speaker.crossover_v2.apply_gate import verification_disclosure
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline, measured_response_from_analysis
+    from jasper.active_speaker.crossover_v2.spatial import analysis_curve_records
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.web.correction_crossover_v2 import _capture_evidence_blocks
+    from tests.crossover_v2_fixtures import _verify_analysis
+
+    candidate, _, _ = apply_facts
+    program = build_verify_program(1600.)
+    analysis = _verify_analysis(program, max_db=99.)
+    frequencies = np.geomspace(20., 20000., 4096)
+    levels = np.sin(np.log(frequencies))
+    analysis = replace(analysis, summed_response=replace(analysis.summed_response,
+                       freqs_hz=frequencies, magnitude_db=levels, complex_tf=(10 ** (levels / 20)).astype(complex)))
+    curves = analysis_curve_records(analysis, program)
+    before = measured_response_from_analysis(SimpleNamespace(program_id=program.program_id,
+        summed_response=SimpleNamespace(**{**curves[0], "magnitude_db": [2 * db for db in curves[0]["magnitude_db"]]})),
+        reference_mark="1")
+    baseline = EntryBaseline.from_measurement(before, graph_fingerprint="a" * 16, captured_at="2026-09-12")
+    bank_trial(candidate.measured, candidate.profile, candidate.topology, record_fields={
+        **_capture_evidence_blocks(None, analysis), "program": program.to_dict(),
+        "curves": curves, "entry_baseline": baseline.to_dict(),
+    })
+    monkeypatch.setattr("jasper.audio_measurement.program_analysis.analyze_program_capture",
+                        lambda *a, **k: pytest.fail("capture analyzed during apply"))
+    trial = candidate_trial_manifest(candidate.measured.fingerprint, candidate.profile)
+    advice = verification_disclosure(candidate.measured, trial, None, profile=candidate.profile)
+    assert {key: advice[key] for key in ("capture_validity", "realization", "benefit", "spec")} == {
+        "capture_validity": "usable", "realization": "failed", "benefit": "improved", "spec": "passed"}

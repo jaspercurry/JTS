@@ -791,7 +791,7 @@ _STAGE2_PREFLIGHT_KEY = "stage2_preflight"
 def _stage2_preflight(status: Mapping[str, Any]) -> tuple[bool, str, dict[str, Any] | None]:
     """``(can_open_stage_2, refusal_message, refusal_action)`` for the
     review screen's refusal DISCLOSURE (a render-time preflight; the apply
-    transaction's ``_assert_stage_2_can_open`` is the boundary that
+    transaction's ``apply_preconditions`` is the boundary that
     refuses). Absence is not a clean reading — an unset key means the
     predicate never ran, disclosed the same as "checked and refused"; only
     an explicit ``ok: True`` renders quiet. Message passed through verbatim.

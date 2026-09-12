@@ -4976,7 +4976,7 @@ def test_a_box_that_cannot_open_stage_2_still_offers_apply_and_discloses():
 
     Apply itself stays ENABLED: a disabled control was never the boundary,
     and the apply transaction re-runs the same predicate
-    (``_assert_stage_2_can_open``) and refuses a truly un-openable stage 2.
+    (``apply_preconditions``) and refuses a truly un-openable stage 2.
     """
     env = build_crossover_envelope_v2(_review_status(stage2_preflight={
         "ok": False,

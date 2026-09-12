@@ -529,7 +529,8 @@ def reset_v2_journey_state() -> None:
              "apply_blocked": None, "verify_priors": None, "evidence": None,
              ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
     if applied:
-        for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile"):
+        for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile",
+                    "accepted_sound_revision", "accepted_sound_declaration_change", "accepted_sound_candidate_fingerprint"):
             clean[key] = state.get(key)
     save_v2_state(clean)
     log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
@@ -2847,9 +2848,7 @@ STAGE2_PREFLIGHT_KEY = "stage2_preflight"
 def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     """Compute the stage-2 openability DISCLOSURE for the REVIEW screen (D3).
 
-    Runs ``resolve_conductor_context`` — the SAME fail-closed predicate the
-    stage 2
-    itself will run, never a cheaper lookalike free to disagree with either —
+    Runs the same ``resolve_conductor_context`` predicate as apply and stage 2,
     and stamps the refusal's own sentence under ``STAGE2_PREFLIGHT_KEY`` for
     the envelope to render as a warning. It does NOT gate the Apply control;
     the apply transaction is the boundary that refuses a truly un-openable
@@ -3988,7 +3987,7 @@ def handle_v2_apply(
     applied_tuning_trial = None
     topology = load_output_topology()
     pre_draft = load_design_draft(topology=topology)
-    accepted_revision = state.get("accepted_sound_revision") if (current or state.get("accepted_sound_candidate_fingerprint") == expected) else None
+    accepted_revision = state.get("accepted_sound_revision") if (state.get("accepted_sound_candidate_fingerprint", expected if current else None) == expected) else None
     saved_already = (
         isinstance(accepted_revision, int) and not isinstance(accepted_revision, bool)
     )
@@ -4085,6 +4084,10 @@ def handle_v2_apply(
     if change is not None:
         if not saved_already:
             measured_revision = state.get("sound_design_revision") if current else None
+            inverse = change_from_record(state.get("accepted_sound_declaration_change"))
+            if (restored and inverse and change.configured == inverse.selected and change.selected == inverse.configured
+                    and state.get("accepted_sound_candidate_fingerprint") == state.get("previous_candidate_displaced_by")):
+                measured_revision = state.get("accepted_sound_revision")
             if (isinstance(measured_revision, bool)
                     or not isinstance(measured_revision, int)):
                 raise CrossoverV2Refused(

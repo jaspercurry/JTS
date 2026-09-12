@@ -4166,6 +4166,8 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
             "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
             "applied": True,
             "previous_candidate_fingerprint": previous_candidate_fingerprint,
+            "previous_applied_profile": {"status": "applied", "config": {"sha256": "a" * 64},
+                                         "source": {"measured_candidate_fingerprint": previous_candidate_fingerprint}},
             "verify": {"outcome": "pass"},
         })
         status = {
@@ -8177,7 +8179,79 @@ def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected
     assert (state or {}).get("round_receipt") is None
     events = event_records(caplog, "correction.crossover_v2_journey_reset_advanced_epoch")
     if applied and receipt:
-        event = parse_event(events[0].getMessage())
+        event = parse_event(events[0].getMessage())[1]
         assert event["reset_round_ordinal_from"] == str(receipt["round_ordinal"])
     else:
         assert not events
+
+
+def test_apply_reads_trial_facts_once_before_the_writer_lock(monkeypatch, tmp_path):
+    from jasper.active_speaker.crossover_v2 import apply_gate
+
+    _, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    for _ in range(3):
+        _bank_for_apply({"candidate": candidate.to_dict()}, record_fields=[{}, {}])
+    checks, records = [], []
+    locked = False
+    original_lock = baseline_profile_mod.dsp_writer_lock
+    original_check = apply_gate.trial_is_intact
+    original_read = Path.read_text
+    @contextlib.asynccontextmanager
+    async def writer(*args, **kwargs):
+        nonlocal locked
+        async with original_lock(*args, **kwargs):
+            locked = True
+            try:
+                yield
+            finally:
+                locked = False
+    def check(trial):
+        assert not locked
+        checks.append(trial["set"]["set_id"])
+        return original_check(trial)
+    def read(path, *args, **kwargs):
+        if path.name.startswith("trial_") and path.suffix == ".json":
+            assert not locked
+            records.append(path)
+        assert path.suffix != ".wav"
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(baseline_profile_mod, "dsp_writer_lock", writer)
+    monkeypatch.setattr(apply_gate, "trial_is_intact", check)
+    monkeypatch.setattr(Path, "read_text", read)
+    result = v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                                   _bg_run_async, _FakeApplyCam, status={})
+    assert result["status"] == "applied"
+    assert len(checks) == 1
+    assert len(records) == len(set(records)) == 2
+    assert "_compiled_graph_text" not in result["profile"]
+
+
+def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch, tmp_path):
+    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.output_topology import load_output_topology
+
+    selected = _seed_alternative_apply(monkeypatch, tmp_path)
+    preset, _, _ = compile_preset_from_crossover_preview(load_output_topology(), load_crossover_preview())
+    previous = _run6_measured_candidate(preset)
+    cam = _FakeApplyCam()
+    applied = _apply({"candidate": previous.to_dict(), "expected_candidate_fingerprint": previous.fingerprint},
+                     _bg_run_async, lambda: cam)
+    assert applied["status"] == "applied"
+    state = v2host.load_v2_state()
+    state.update(candidate={"fingerprint": selected.fingerprint}, applied=False)
+    v2host.save_v2_state(state)
+    applied = _apply({"candidate": selected.to_dict(), "expected_candidate_fingerprint": selected.fingerprint},
+                     _bg_run_async, lambda: cam)
+    assert applied["status"] == "applied"
+    for path in tmp_path.rglob("run_manifest.json"):
+        path.unlink()
+    v2host.reset_v2_journey_state()
+    restored = v2host.handle_v2_apply({"expected_candidate_fingerprint": previous.fingerprint},
+                                     _bg_run_async, lambda: cam, status={})
+    assert restored["status"] == "applied"
+    state = v2host.load_v2_state()
+    assert state["accepted_sound_revision"] == 3
+    assert state["accepted_sound_candidate_fingerprint"] == previous.fingerprint
+    assert state["accepted_sound_declaration_change"]["previous_hz"] == 2750.
