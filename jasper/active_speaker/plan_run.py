@@ -27,7 +27,6 @@ from .angle_capture import (
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED,
     AngleCaptureRequest, LateralWalkRefused, resolve_request, stop_specs,
 )
-from .angle_capture_spool import angle_request_document
 from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
@@ -129,7 +128,7 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
     manifest names the same shape a staged walk has on disk, minus the clock --
     two runs of one walk fingerprint alike, and an edited stop does not.
     """
-    return json_fingerprint(angle_request_document(request))
+    return json_fingerprint(request.to_dict())
 
 
 def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:

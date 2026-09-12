@@ -1598,7 +1598,7 @@ def _direct_round(
     )
     evidence = coordinator.RoundEvidence(
         session_id="cap_direct",
-        tier="express",
+
         post_analysis=analysis,
         entry_baseline=None,
         spec_report=None,
@@ -1813,7 +1813,6 @@ RECEIPT_MAP_KEYS = {
     "round_axes": {"trust", "safety", "quality", "headroom"},
     "evidence_identities": {
         "session_id",
-        "tier",
         "entry_baseline_artifact",
         "commanded_delta_present",
         "candidate_fingerprint",

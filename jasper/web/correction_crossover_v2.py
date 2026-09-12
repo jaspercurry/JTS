@@ -375,6 +375,7 @@ def load_v2_state() -> dict[str, Any] | None:
     ):
         return None
     state = dict(raw)
+    state.pop("tier", None)  # ADR-0298: old records have unknown plan coverage.
     if "room_trial" in state:
         state.setdefault("tuning_trial", state.pop("room_trial"))
     return state
@@ -1469,87 +1470,7 @@ def _spatial_grade(post_apply: Any) -> str:
 
 
 def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
-    """Was the correction now ON the speaker ever checked after it landed?
-
-    **Applied implies graded** (linearization-integrity PR-L4 item 4). A
-    session can end ``applied: true`` with no passing post-apply grade — VERIFY
-    inconclusive, VERIFY failed and never retried, or a session that simply
-    stopped after the apply — and before this the only trace was a phase name
-    and an empty ``verify`` block that every surface read as "nothing to
-    report". That is how a 10 dB-dark profile sat on JTS3 with a green tick
-    over it.
-
-    **Surface, not auto-restore.** The work order allowed either; this is the
-    deliberate choice and the reason is that the two failure modes are not
-    distinguishable at this seam. A missing grade means "we do not know", and
-    the commonest way to reach it is a household that closed the phone after
-    the apply — auto-restoring would silently undo a correction that is very
-    probably fine, on evidence that says nothing about the correction at all.
-    Worse, express-tier sessions omit the post-apply position group by design,
-    so an auto-restore keyed on a missing cloud grade would revert every
-    express session ever run. The way back already exists on the done screen,
-    and it is the household's call. What was missing is being told.
-
-    The returned ``state`` is one of the ``GRADE_*`` constants above;
-    ``graded`` answers only "was it checked" — since R19 it is no longer a
-    boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
-    ``complete`` below carry the verdict it cannot. Both a passing VERIFY
-    outcome and a graded post-apply cloud count — either instrument is a real
-    check, and the tiers differ in which one they run. A mark-VERIFY that
-    FAILED caps ``state`` whatever the cloud group says (#2464); the
-    derivation below owns that rule and states why.
-
-    **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
-    answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
-    three are why this returns more than a state name. ``state`` alone cannot
-    carry either fact, and both were being guessed at downstream:
-
-    * a Full session whose post-apply group never closed reaches
-      ``mark_verified`` — a true local result, and NOT the claim Full
-      promised. It rendered as "applied and graded".
-    * a post-apply group that closed with ``overall_within_target=False`` reaches
-      ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
-      rendered as "applied and graded" — measured on jts3 2026-08-07, a
-      −4.63 dB spatial miss under a green tick.
-
-    ``scope`` is what the evidence DELIVERED; ``tier`` is what the session
-    PROMISED; ``complete`` is the producer's own comparison of the two, so no
-    consumer re-derives it (plan §7: one producer owns the scope/completeness
-    fact for the wizard, ``/state``, and doctor). The ``else`` tier branch
-    catches two different inputs and judges BOTH on delivery alone — but NOT
-    because "the promise cannot be known", which is false of the first input
-    and misdescribes the second:
-
-    * **No ``tier`` line at all.** ``normalize_tier`` documents an absent tier
-      as Full, so this promise IS knowable and the branch declines it BY
-      CHOICE. A state file with no tier came from a build that had no tier
-      concept and therefore never MADE Full's promise; judging it against
-      Full's stricter spatial-scope bar would false-warn a correctly
-      commissioned legacy speaker about delivery it was never asked to
-      produce. Wiring ``normalize_tier`` in here IS that regression.
-    * **A tier word from a later build.** ``normalize_tier`` does not default
-      this one — it RAISES, by its own "fail loudly rather than silently
-      measure something else" rule. That rule is right for a caller opening a
-      session and wrong here: ``_post_apply_grade`` runs unguarded inside
-      ``crossover_v2_status_block`` on every ``/state`` read, wizard poll, and
-      doctor run, so raising would take the whole status block down over a
-      word this build only needed to not grade.
-
-    ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
-    the doctor's cloud-pipeline line prints, never re-derived, so "the grade
-    failed" and "by how much" cannot drift apart. ``None`` whenever the gauge
-    reports no number, including a failed grade whose gauge is absent.
-
-    **Grades and discloses; never gates** (#2160 ruling). A failed spatial
-    grade is a COMPLETED grade: the session completes, the applied tune stays,
-    the failure is loud. Nothing here reverts anything — see the
-    surface-not-auto-restore paragraph above, which this extends rather than
-    revisits.
-    """
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        TIER_EXPRESS,
-        TIER_FULL,
-    )
+    """Report measured grade and coverage; missing coverage stays unknown (ADR-0298)."""
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
@@ -1763,16 +1684,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         scope = GRADE_SCOPE_MARK
     else:
         scope = GRADE_SCOPE_NONE
-    tier = str(block.get("tier") or "")
-    if tier == TIER_FULL:
-        complete = scope == GRADE_SCOPE_SPATIAL
-    elif tier == TIER_EXPRESS:
-        # Express promises the mark and structurally never walks a post-apply
-        # group, so the mark IS its whole grade — complete, and explicitly
-        # scoped. A spatial verdict would exceed the promise, never miss it.
-        complete = scope in {GRADE_SCOPE_MARK, GRADE_SCOPE_SPATIAL}
-    else:
-        complete = scope != GRADE_SCOPE_NONE
+    complete = scope != GRADE_SCOPE_NONE
     flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
     flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
@@ -3839,7 +3751,7 @@ def _verify_plan_shape(
             f"{VERIFY_STAGE_POST_APPLY!r} or {VERIFY_STAGE_RECOVERY!r})"
         )
     try:
-        return resolve_plan_shape((state or {}).get("tier"))
+        return resolve_plan_shape()
     except CrossoverV2FlowError as exc:
         raise refused_from_flow_error(exc) from exc
 

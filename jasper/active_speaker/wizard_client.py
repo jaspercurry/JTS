@@ -2,15 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The correction wizard's transport, and the two round verbs built on it.
-
-One HTTP client for every caller of the crossover wizard (arm walk,
-jasper-basic-profile, jasper-round, scripts/run-crossover-round.py), so the Host-header
-and CSRF rules have one owner instead of drifting copies. ``apply_by_fingerprint`` and
-``wait_for_round`` sit on top for the same reason -- the apply guard and bounded wait
-are BEHAVIOUR the laptop runner and the on-box CLI must agree about exactly. Neither
-sequences anything; the wizard's own artifact-dependency refusals do that.
-"""
 
 from __future__ import annotations
 
@@ -27,41 +18,11 @@ from typing import Any, Callable, Mapping
 #: ``csrf_page_path``.
 CSRF_PAGE_PATH = "/sound/speaker/crossover/"
 STATUS_PATH = "/sound/speaker/crossover/status"
+SESSION_ENDED_STATUSES = frozenset({"complete", "stopped", "failed"})
 
-#: The two stage-opening POSTs and the apply; pinned against ``correction_setup``'s
-#: ``_POST_ROUTES`` by ``tests/test_cli_round.py``.
 SESSION_PATH = "/sound/speaker/crossover/v2/session"
 VERIFY_PATH = "/sound/speaker/crossover/v2/verify"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
-
-#: Verify open's discriminator, restated (not imported, to stay numpy-free on a 1 GB
-#: speaker) from ``correction_crossover_v2``; pinned by ``tests/test_cli_round.py``.
-STAGE_KEY = "stage"
-STAGE_MEASURE = "measure"
-STAGE_POST_APPLY = "post_apply"
-
-#: Measurement tiers a measuring stage open may name. Restated, not imported from
-#: :mod:`crossover_v2_flow` (pulls numpy at import time); pinned equal to
-#: ``crossover_v2_flow.TIERS`` by ``tests/test_cli_round.py``.
-TIERS = ("express", "full", "remote")
-
-#: Phases a stage is still WORKING in: every capture phase plus ``closing`` and
-#: ``applying`` (session mid-flight, not a stopping point). Restated, not derived from
-#: ``.crossover_v2.journey`` (numpy import cost); pinned against it by
-#: ``tests/test_cli_round.py``.
-RUNNING_PHASES = frozenset(
-    {
-        "check",
-        "measure",
-        "lateral",
-        "cloud_measure",
-        "entry_baseline",
-        "verify",
-        "cloud_verify",
-        "closing",
-        "applying",
-    }
-)
 
 #: Why a round verb refused, as a slug a script can branch on. First four are this
 #: client's own pre-flight refusals (nothing sent); last three are the wizard's answer,
@@ -71,7 +32,6 @@ REASON_NO_V2_STATE = "no_v2_state"
 REASON_NO_CANDIDATE = "no_candidate_published"
 REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 REASON_NOT_APPLIED = "apply_not_applied"
-REASON_SESSION_FAILED = "session_failed"
 REASON_ANSWER_LOST = "answer_lost"
 REASON_WAIT_TIMEOUT = "wait_timeout"
 
@@ -79,18 +39,6 @@ _CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
 
 
 class WizardClient:
-    """The correction wizard over HTTP: the speaker's Host, and CSRF handled.
-
-    The transport every caller of that wizard needs, so none owns a second copy: an
-    explicit ``Host:`` header (the management-host guard rejects ``127.0.0.1`` and any
-    OTHER speaker's name), and the double-submit CSRF pair on every mutating POST
-    (cookie from the jar, token from ``<meta name="jts-csrf">``) -- ``csrf_page_path``
-    names which of nginx's several wizard daemons mints it.
-
-    :meth:`open`/:meth:`post` hand back TEXT, not parsed bodies;
-    :meth:`get_json`/:meth:`post_json` are the round's JSON half, and :meth:`v2_block`,
-    :meth:`open_session`, :meth:`apply` are the three verbs a round is made of.
-    """
 
     def __init__(
         self,
@@ -184,23 +132,37 @@ class WizardClient:
         status, block = self.status_envelope()
         return block if status == 200 else {}
 
-    def open_session(
-        self,
-        tier: str,
-        *,
-        stage: str = STAGE_MEASURE,
-        prescriptions: Mapping[str, Any] | None = None,
-    ) -> tuple[int, Any]:
-        """Open the measuring session, or the post-apply verify. ``tier`` is ignored for verify:
-        stage 2 reads the instrument the MEASURING session already recorded.
+    def open_session(self, plan: Mapping[str, Any]) -> tuple[int, Any]:
+        return self.post_json(SESSION_PATH, {"plan": dict(plan)})
 
-        ``prescriptions`` are the session-open door documents (alignment,
-        topology) under their owners' own keys, sent as read -- the gate that
-        judges one is the open's, at the far end.
-        """
-        if stage == STAGE_POST_APPLY:
-            return self.post_json(VERIFY_PATH, {STAGE_KEY: STAGE_POST_APPLY})
-        return self.post_json(SESSION_PATH, {"tier": tier, **(prescriptions or {})})
+    def run_status(self, run_id: str) -> tuple[int, dict[str, Any]]:
+        http, block = self.status_envelope()
+        capture = block.get("capture") or {}
+        if http != 200:
+            return http, {"code": REASON_ANSWER_LOST}
+        live_id = capture.get("session_id") or block.get("session_id")
+        if live_id != run_id:
+            return 409, {"code": "run_not_current", "run_id": run_id, "current_run_id": live_id}
+        progress = capture.get("run") or {}
+        return http, {"run_id": run_id, **progress,
+                      "status": capture.get("status"),
+                      "result": progress.get("status"),
+                      "pending": capture.get("position_pending") or capture.get("join"),
+                      "current": capture.get("position_current"),
+                      "code": progress.get("fault") or capture.get("code"),
+                      "faults": progress.get("faults", [])}
+
+    def placed(self, run_id: str, pose: int | None = None) -> tuple[int, Any]:
+        http, status = self.run_status(run_id)
+        if http != 200:
+            return http, status
+        pending = status.get("pending")
+        if not pending:
+            return 409, {"code": "position_not_pending", "run_id": run_id}
+        if pose is not None and pose != (status.get("pose") or 1):
+            return 409, {"code": "position_mismatch", "run_id": run_id}
+        action = pending["action"]
+        return self.post_json(action["endpoint"], {**action["body"], "run_id": run_id})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
         """The bare POST. The gate is :func:`apply_by_fingerprint`, not this. No inline
@@ -240,18 +202,6 @@ def _live_fingerprint(block: Mapping[str, Any]) -> str:
 def apply_by_fingerprint(
     client: WizardClient, expected_fingerprint: str
 ) -> dict[str, Any]:
-    """The gate, then the apply. A mismatch POSTs nothing at all.
-
-    The endpoint runs the same comparison server-side, so this is not a second opinion
-    -- what it adds is that nothing is SENT on a mismatch. An EMPTY argument is refused
-    first and separately, since an absent live candidate also reads as ``""`` and would
-    otherwise compare equal.
-
-    Success is HTTP 200 **and** ``status == "applied"``: ``apply_failed`` is always 200
-    with an unchanged graph, ``blocked`` is the one status that moves the code off 200,
-    and a refusal is a 400 with no ``status``. A LOST answer (http 0) is neither and
-    carries no ``refused_by`` -- nothing refused, a connection just dropped.
-    """
     named = (expected_fingerprint or "").strip()
     if not named:
         return _blocked(REASON_NO_FINGERPRINT, named, "")
@@ -299,77 +249,23 @@ def _blocked(reason: str, named: str, live: str) -> dict[str, Any]:
     }
 
 
-def _round_is_over(failure: Any, phase: str) -> bool:
-    """Whether a ``failure`` block ENDED the round or only refused one capture.
-
-    Durable state carries ONE failure at a time and the wired walk writes the
-    rejected capture's code into it, clearing it on the next accepted take
-    (``correction_crossover_v2_wired._capture_one`` ->
-    ``durable_state.build_conductor_state``). So the block's presence says a
-    take was refused, never that the session stopped: a round is over when its
-    phase has left :data:`RUNNING_PHASES`, or when the refusal carries a code no
-    retry can clear.
-    """
-    if phase not in RUNNING_PHASES:
-        return True
-    # The reason registry pulls numpy in, which is why it is read HERE rather
-    # than imported: only a poll that already sees a failure pays for it, never
-    # the ordinary polling path (ADR-0226).
-    from jasper.active_speaker.crossover_v2.refusal_copy import NON_RETRIABLE_CODES
-
-    code = str(failure.get("code") or "") if isinstance(failure, Mapping) else ""
-    return code in NON_RETRIABLE_CODES
-
-
 def wait_for_round(
     client: WizardClient,
     *,
-    prior_session_id: str = "",
+    run_id: str,
     timeout_s: float,
     poll_s: float,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Poll until this session's phases are all accepted, or it fails.
-
-    Terminal requires BOTH: the session id must have MOVED off ``prior_session_id``
-    (else a previous round's terminal phase reads as this round's completion at the
-    moment the poll started), and the phase must leave :data:`RUNNING_PHASES`. A caller
-    with no prior id (a separate invocation) passes ``""`` and waits on whatever session
-    is current. A status read that is not answered ends the wait at once, rather than
-    burning the full timeout indistinguishable from a slow round. A failure block ends
-    it only when :func:`_round_is_over` says the round did.
-    """
     deadline = now() + timeout_s
     while True:
-        http, block = client.status_envelope()
+        http, result = client.run_status(run_id)
         if http != 200:
-            return {"status": "lost", "reason": REASON_ANSWER_LOST,
-                    "phase": "", "session_id": "",
-                    "candidate_fingerprint": "", "failure": None}
-        phase = str(block.get("phase") or "")
-        session_id = str(block.get("session_id") or "")
-        failure = block.get("failure")
-        capture = block.get("capture") or {}
-        capture_status = str(capture.get("status") or "")
-        result = {
-            "phase": phase, "session_id": session_id,
-            "candidate_fingerprint": _live_fingerprint(block), "failure": failure,
-            "capture": capture, "needs_recovery": bool(block.get("needs_recovery")),
-            "execution": block.get("execution"), "verify": block.get("verify"),
-        }
-        if result["needs_recovery"]:
-            return {**result, "status": "failed", "reason": "volume_recovery"}
-        if capture_status in {"failed", "stopped"}:
-            return {**result, "status": "failed", "reason": f"capture_{capture_status}"}
-        if failure and _round_is_over(failure, phase):
-            return {**result, "status": "failed", "reason": REASON_SESSION_FAILED}
-        if (
-            session_id and session_id != prior_session_id
-            and phase not in RUNNING_PHASES
-            and capture_status not in {"starting", "running", "stopping"}
-        ):
-            return {**result, "status": "terminal", "reason": ""}
+            return {**result, "status": "lost" if http == 0 else "failed",
+                    "reason": result.get("code") or REASON_ANSWER_LOST}
+        if result["status"] in SESSION_ENDED_STATUSES:
+            return {**result, "status": "terminal"}
         if now() >= deadline:
             return {**result, "status": "timed_out", "reason": REASON_WAIT_TIMEOUT}
-        sleep(poll_s)
+        sleep(min(poll_s, max(0, deadline - now())))

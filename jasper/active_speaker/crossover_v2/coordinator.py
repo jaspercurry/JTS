@@ -151,7 +151,6 @@ class RoundEvidence:
 
     session_id: str
     #: The instrument this session ran, for the receipt's evidence identities.
-    tier: str
     #: The post-apply VERIFY capture — the round's "after".
     post_analysis: "ProgramAnalysis | None"
     #: The pre-apply summed sweep at the same mark — the round's "before".
@@ -415,7 +414,6 @@ def _write_round_receipt(
             round_measurements=_round_measurements(evidence, evaluation),
             evidence_identities={
                 "session_id": evidence.session_id,
-                "tier": evidence.tier,
                 "entry_baseline_artifact": (
                     baseline.artifact_ref if baseline is not None else ""
                 ),

@@ -48,12 +48,6 @@ _session_lock = threading.Lock()
 _capture_slot: dict[str, Any] | None = None
 _pending_capture: tuple[CaptureKind, Callable[[str], AbstractContextManager[Any]]] | None = None
 _capture_stop_request: Callable[[], None] | None = None
-# The active session's position gate, or None — set for a GATED round (the
-# remote commission tier, and a hand-walked round).
-# Same lifecycle as ``_capture_stop_request``: set when the slot is claimed,
-# dropped the moment the slot leaves an in-flight status — which is what stops a
-# finished session from still advertising a position it is waiting for, and
-# stops a late driver POST from releasing a gate nobody is holding.
 _capture_position_gate: Any | None = None
 # The active session's all-spots-measured signal, or None — set by the
 # session's driver/wizard POST. Same claimed-with-the-slot,
@@ -72,6 +66,8 @@ def _set_capture_slot(value: dict[str, Any] | None) -> None:
     global _capture_slot, _capture_stop_request, _capture_position_gate
     global _capture_complete_request, _capture_retake_request
     with _session_lock:
+        if value is not None and _capture_slot and _capture_slot.get("session_id") and value.get("kind") == _capture_slot.get("kind"):
+            value = {"session_id": _capture_slot.get("session_id", ""), **value}
         if value is not None and _capture_position_gate is not None:
             value = {**value, "run": _capture_position_gate.published().get("run")}
         _capture_slot = value
@@ -164,6 +160,7 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
 def _begin_capture_slot(
     kind_label: str,
     *,
+    session_id: str = "",
     request_stop: Callable[[], None] | None = None,
     position_gate: Any | None = None,
     request_complete: Callable[[], None] | None = None,
@@ -182,7 +179,7 @@ def _begin_capture_slot(
             and _capture_slot.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
         ):
             return False
-        _capture_slot = {"status": "starting", "kind": kind_label}
+        _capture_slot = {"status": "starting", "kind": kind_label, **({"session_id": session_id} if session_id else {})}
         _capture_stop_request = request_stop
         _capture_position_gate = position_gate
         _capture_complete_request = request_complete
@@ -271,9 +268,6 @@ class CaptureKind:
     open: Callable[[], Any]
     run_and_consume: Callable[[Any], Awaitable[None]]
     request_stop: Callable[[], None] | None = None
-    #: A gated session's position gate, or None — the remote tier's, or a
-    #: hand-walked round's (#2879). Only the crossover v2 kinds ever set it;
-    #: every other flow leaves it unset and is untouched.
     position_gate: Any | None = None
     #: The session's all-spots-measured signal, or None. Routed to
     #: POST /crossover/v2/complete via the slot, with the same lifecycle
@@ -302,7 +296,7 @@ def _stage_capture(kind: CaptureKind, *, idle_hold: Callable[[str], AbstractCont
     return _pending_payload(kind)
 
 
-def _join_capture(index: int, attempt: int) -> dict[str, Any] | None:
+def _join_capture(index: int, attempt: int, run_id: str | None = None) -> dict[str, Any] | None:
     global _pending_capture
     with _session_lock:
         pending = _pending_capture
@@ -311,6 +305,8 @@ def _join_capture(index: int, attempt: int) -> dict[str, Any] | None:
         if (_capture_slot and _capture_slot.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
                 and str(_capture_slot.get("kind") or "").startswith("crossover_v2:")):
             return None
+        if run_id is not None and pending[0].session_id != run_id:
+            raise ValueError("run_not_current")
         if (index, attempt) != (1, 1):
             raise ValueError("The first placement must name index 1 and attempt 1")
         _pending_capture = None
@@ -358,6 +354,7 @@ def _run_capture(
     exists in either direction."""
     if not _begin_capture_slot(
         kind.label,
+        session_id=kind.session_id,
         request_stop=kind.request_stop,
         position_gate=kind.position_gate,
         request_complete=kind.request_complete,

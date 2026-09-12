@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
 from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.analysis import ShoulderSpan
 from jasper.cli import null_door
-from jasper.cli.angle_capture import build_parser as angle_capture_parser
+from jasper.cli.null_door import build_parser as null_parser
 from jasper.cli.round_views import main
 
 FC_HZ = 1800.0
@@ -137,56 +137,21 @@ def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
     assert err.strip()
 
 
-def test_the_door_hands_back_a_line_the_operator_can_run(tmp_path, capsys) -> None:
-    """One `next` line per coordinate, in the flags
-    `jasper-angle-capture stage` actually takes — this is the whole point of
-    the verb: propose, then stage, without hand-deriving which branch moves."""
-
-    bundle = _bank(tmp_path, curves=[
-        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
-    ])
-    _code, payload, err = _propose(bundle, capsys)
-
-    commands = payload["next"]
-    assert len(commands) == len(payload["confirmation_coordinates_us"])
-
-    # Parsed by the REAL parser, not matched against a copy of its wording: a
-    # printed line is only "ready to run" if the tool it names accepts it, and
-    # a vocabulary change must fail here rather than rot silently.
-    for line in commands:
+@pytest.mark.parametrize("arrival_us", [0.0, 200.0])
+def test_confirmation_commands_carry_the_proposed_coordinates(tmp_path, capsys, arrival_us):
+    bundle = _bank(tmp_path, curves=[_curve("woofer", arrival_us=arrival_us), _curve("tweeter")])
+    code, payload, _ = _propose(bundle, capsys)
+    assert code == 0
+    assert len(payload["next"]) == len(payload["confirmation_coordinates_us"])
+    for line, coordinate in zip(payload["next"], payload["confirmation_coordinates_us"]):
         argv = shlex.split(line)
-        assert argv[0] == "jasper-angle-capture"
-        parsed = angle_capture_parser().parse_args(argv[1:])
-        assert parsed.angles == "0"
-        assert parsed.inverted_role == "tweeter"
-        # The signed coordinate reaches the flags as an executable (role,
-        # delay) pair, never as a negative microsecond count.
-        assert parsed.delay_us >= 0.0
-        # EVERY line asks for the level match, the zero coordinate included: a
-        # null between branches ~10 dB apart in sensitivity is bounded by that
-        # gap however well the coordinate is chosen, so a confirm line without
-        # it would be staging a measurement whose answer was already decided.
-        assert parsed.level_matched is True
-
-
-def test_the_zero_coordinate_stages_no_delay_at_all(tmp_path, capsys) -> None:
-    """Neither branch is delayed at 0 us, and `MeasureSpec` refuses a
-    half-stated (role, delay) pair — so a line naming a role with 0 us would be
-    refused at the very door it was printed for."""
-
-    bundle = _bank(tmp_path, curves=[_curve("woofer"), _curve("tweeter")])
-    _code, payload, err = _propose(bundle, capsys)
-
-    zero = [
-        line for line, coordinate in zip(
-            payload["next"], payload["confirmation_coordinates_us"],
-        )
-        if coordinate == 0.0
-    ]
-    assert zero, "the aligned fixture puts a zero coordinate in the set"
-    for line in zero:
-        assert "--delayed-role" not in line
-        assert "--delay-us" not in line
+        assert argv[0] == "jasper-null"
+        args = null_parser().parse_args(argv[1:])
+        assert args.delays == [coordinate]
+        assert args.position == 0
+        assert args.polarity == "invert"
+        assert args.inverted_role == "tweeter"
+        assert Path(args.bundle_dir) == bundle
 
 
 def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(

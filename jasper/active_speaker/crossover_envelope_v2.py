@@ -41,8 +41,6 @@ from typing import Any, Mapping
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from .frequency_display import prepare_frequency_curve
-from .angle_capture import AngleCaptureRequest, walk_price
-from .angle_capture_spool import peek_staged_angle_request
 from .attempts_loop import (
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
@@ -96,12 +94,6 @@ from .crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLOUD_CLOSE_RUNNING,
-    CrossoverV2FlowError,
-    TIER_EXPRESS,
-    TIER_REMOTE,
-    TIER_FULL,
-    resolve_plan_shape,
-    tier_display_info,
 )
 from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
@@ -710,31 +702,6 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
 
 
 def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
-    """The spec-facing flatness disclosure — "how flat is the speaker" —
-    distinctly labeled from :func:`_verify_expert_details`'s integration-verify
-    lines, which answer "did the crossover integrate as predicted" and gate.
-
-    Reads the cloud group's spec gauge — ``spec_flatness_gauge`` of the same
-    ``evaluate_flat_spec`` report ``/state``, the doctor check and the bundle
-    artifact read — copied through :func:`compact_cloud_status` below, so the
-    number here and the number in the report are the same bytes.
-
-    **The choice is WHICH CLOUD EXISTS, not which tier** (#1965): post-apply
-    cloud if there is one, otherwise the pre-apply cloud. A tier test was right
-    about Express and wrong about STAGE 1, where Full rendered NOTHING on the
-    apply-decision screen while Express rendered the same measured cloud. The
-    pre-apply cloud is the UNCORRECTED baseline, so its branch reads it under an
-    explicit BEFORE-TUNING frame and never as "how flat your speaker is now".
-
-    Empty when neither group has closed. The fallback vocabulary for a
-    post-apply group that closed but produced no usable gauge lives in
-    :func:`_flatness_unavailable_line`.
-
-    The carve-out lines close the sentence (PR-6b, owner decision 1): the
-    excluded-bin count says how much of the spectrum left grading,
-    :func:`_carve_out_expert_lines` says which ranges and why, with τ/r — on
-    every tier, since carve-outs are a post-apply-persistent fact.
-    """
     block = _cloud_verify_block(status)
     if not block:
         return _pre_apply_flatness_lines(status)
@@ -756,24 +723,6 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
 
 
 def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
-    """The BEFORE-TUNING flatness/carve-out disclosure — the branch
-    :func:`_flatness_details_lines` takes whenever no post-apply cloud exists.
-
-    Reads the CLOUD-MEASURE compact block and frames its numbers explicitly as
-    the BEFORE-TUNING state, never as "how flat your speaker is now" (that claim
-    needs a post-apply cloud). Carve-out lines render VERBATIM, unprefixed,
-    because they are a distinct post-apply-persistent fact required on every
-    tier rather than a claim about the CURRENT state.
-
-    Two readers (#1965): Express takes this branch permanently, and Full takes
-    it on the STAGE-1 screens.
-
-    **The scope clause is a claim about the post-apply check, so it renders only
-    where one has PASSED.** "The applied correction targets these; the result was
-    confirmed at the mark only" says a correction is applied AND that the only
-    confirmation was the single anchor sweep, and a passing post-apply tracking
-    verify is exactly the state where both are true.
-    """
     block = _cloud_measure_block(status)
     flatness = _mapping(block.get("flatness"))
     if not flatness:
@@ -1174,40 +1123,12 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The compact CLOUD-MEASURE entry of the ``cloud`` block, or empty.
-
-    Express's only cloud group, and every tier's only cloud group until the
-    post-apply walk closes (#1965) — see :func:`_pre_apply_flatness_lines`.
-    """
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
-
-
-#: The remote tier's ONE disclosure, as a done-screen badge. Info, never warn:
-#: nothing went wrong and there is nothing to fix — the walk sampled one axis,
-#: and a household reading "Your speaker is tuned" is owed the shape of the
-#: evidence behind it.
-_REMOTE_VERTICAL_NUDGE = {
-    "code": "crossover_v2_remote_horizontal_only",
-    "severity": "info",
-    "text": (
-        "Checked across the speaker's horizontal axis only. Run a Full "
-        "measurement to include the up-and-down spot as well."
-    ),
-}
-
-
-def _with_remote_disclosure(
-    nudges: list[dict[str, str]], tier: str,
-) -> list[dict[str, str]]:
-    """Append the remote tier's vertical-coverage disclosure, once."""
-    if tier != TIER_REMOTE:
-        return nudges
-    return [*nudges, dict(_REMOTE_VERTICAL_NUDGE)]
 
 
 def _done_nudges(
     verify: Mapping[str, Any], *, spec_passed: bool | None,
-    result_outcome: str = "", tier: str = "",
+    result_outcome: str = "",
     spatial_unrecognized: bool = False,
 ) -> list[dict[str, str]]:
     """The done screen's badges — one claim per instrument, none
@@ -1259,7 +1180,7 @@ def _done_nudges(
             "severity": "ok",
             "text": "Verified.",
         }
-    nudges: list[dict[str, str]] = _with_remote_disclosure([badge], tier)
+    nudges: list[dict[str, str]] = [badge]
     if not verified:
         return nudges
     probe = _mapping(verify.get("delta_probe"))
@@ -1739,113 +1660,6 @@ def _setup_ready(status: Mapping[str, Any]) -> bool:
     return setup.get("active") is True and setup.get("status") == "ready"
 
 
-# --- tier chooser (flow-simplification §3) ------------------------------------
-
-_TIER_LABELS = {
-    TIER_FULL: "Full measurement",
-    TIER_EXPRESS: "Quick tune",
-    # Named so every tier has one, NOT so a chooser renders it —
-    # ``_tier_choice_actions`` offers exactly Full and Express.
-    TIER_REMOTE: "Remote automated",
-}
-_TIER_CLAIMS = {
-    # "several spots around the mark", not "across the room" (overclaims
-    # past what the post-apply cloud samples).
-    TIER_FULL: "re-check the result at several spots around the mark",
-    TIER_EXPRESS: "confirm the result at the mark",
-    # Full's claim minus the axis a positioner cannot reach.
-    TIER_REMOTE: (
-        "re-check the result at several spots across the speaker's "
-        "horizontal axis"
-    ),
-}
-
-
-def _recommended_tier(status: Mapping[str, Any]) -> str:
-    """Full recommended UNTIL a Full-tier commission has completed on
-    this topology — history decides only the badge, never a silent
-    default. Keyed on TWO signals, both required:
-    ``_applied_chip``'s ``"automatic"`` state (topology-scoped) AND the
-    durable state's ``tier`` being ``TIER_FULL`` — since
-    ``_snapshot_owner`` also reads a legacy per-driver flow (predates
-    tiers) as ``"automatic"``.
-    """
-    if _applied_chip(status)["state"] != "automatic":
-        return TIER_FULL
-    return TIER_EXPRESS if str(_v2(status).get("tier") or "") == TIER_FULL else TIER_FULL
-
-
-def _staged_walk_request() -> AngleCaptureRequest | None:
-    """The staged walk, or ``None`` when none is staged. A PEEK: the
-    session open is still the only take. A slot that cannot be read says
-    NOTHING here — a corrupt document costs this screen an offer and
-    nothing else.
-    """
-    try:
-        return peek_staged_angle_request()
-    except CrossoverV2FlowError:
-        return None
-
-
-def _tier_action(
-    tier: str,
-    info: Mapping[str, Mapping[str, int]],
-    *,
-    recommended: bool,
-    staged_walk: AngleCaptureRequest | None = None,
-) -> dict[str, Any]:
-    detail = info[tier]
-    action: dict[str, Any] = {
-        "id": f"start_v2_session_{tier}",
-        "label": _TIER_LABELS[tier],
-        # Derived from the plan shape (§1.1), never hand-written. STAGE-AWARE
-        # so a chooser doesn't sell a 15-capture Full as one sitting.
-        "description": (
-            f"About {detail['estimated_minutes']} min — "
-            f"{detail['stage1_captures']} measurements now. You decide whether "
-            f"to apply, then {detail['stage2_captures']} more to "
-            f"{_TIER_CLAIMS[tier]}."
-        ),
-        "recommended": recommended,
-        "endpoint": "/sound/speaker/crossover/v2/session",
-        "body": {"tier": tier},
-    }
-    if staged_walk is not None:
-        # Priced before Start (the session open takes the walk regardless
-        # of tier), against THIS tier's shape via ``resolve_plan_shape``.
-        price = walk_price(staged_walk, plan_shape=resolve_plan_shape(tier))
-        action["staged_walk"] = {
-            "program": staged_walk.program,
-            "mic_moves": price["mic_moves"],
-            "captures": price["captures"],
-            # The WHOLE session's ceiling, not just the walk's share.
-            "ceiling_min": price["ceiling_min"],
-        }
-        action["description"] += (
-            f" Plus a staged walk ({staged_walk.program or 'free-form'}): "
-            f"{price['mic_moves']} more spots, "
-            f"{price['captures']} more measurements; up to "
-            f"{price['ceiling_min']} min for the whole session."
-        )
-    return action
-
-
-def _tier_choice_actions(
-    status: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """The microphone_check screen's tier chooser: both tiers first-class, the
-    recommended one primary — never a silent default (§3).
-    """
-    info = tier_display_info()
-    recommended = _recommended_tier(status)
-    other = TIER_FULL if recommended == TIER_EXPRESS else TIER_EXPRESS
-    # Read ONCE, for both actions — one document, one peek per poll. Each action
-    # prices it against its own tier.
-    staged_walk = _staged_walk_request()
-    return (
-        _tier_action(recommended, info, recommended=True, staged_walk=staged_walk),
-        [_tier_action(other, info, recommended=False, staged_walk=staged_walk)],
-    )
 
 
 def _envelope(
@@ -1898,17 +1712,6 @@ def _envelope(
         # The before/after chart's decimated feed, kept off ``cloud`` so
         # the doctor (which reads only ``cloud``) never parses curve data.
         "cloud_chart": _v2(status).get("cloud_chart"),
-        # Which commission instrument produced this session — ``None``
-        # when unstated (unknown-vs-default, same rule as the status
-        # block's own ``tier`` key).
-        "tier": (
-            str(_v2(status).get("tier"))
-            if isinstance(_v2(status).get("tier"), str) and _v2(status).get("tier")
-            else None
-        ),
-        # The PREDICTED response — the chart's third curve. Sent by the
-        # REVIEW screen only (conditional on DATA, keeping the renderer
-        # data-driven — no ``env.screen`` switch).
         "prediction": dict(prediction) if prediction else None,
         # Banked findings as household-readable lines. ``[]`` on every
         # screen that is not the apply decision or the result.
@@ -1919,7 +1722,7 @@ def _envelope(
 def _entry_envelope(
     status: Mapping[str, Any],
     *,
-    next_action: dict[str, Any],
+    next_action: dict[str, Any] | None,
     alternate_actions: list[dict[str, Any]],
     nudges: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
@@ -1930,17 +1733,7 @@ def _entry_envelope(
     """
     return _envelope(
         screen="microphone_check", active_step="microphone_check",
-        # §3: the tier choice is the household's, explicitly, every
-        # session — both actions first-class, Recommended is only history.
-        verdict=(
-            "Place the microphone about 1 m in front of the speaker, at "
-            "tweeter height and pointing at it — about where you'd sit to "
-            "listen (see the picture). That spot is your mark. JTS runs a "
-            "quick microphone check first, then measures from the mark and "
-            "from a few nearby spots it will guide you to — that "
-            "is what lets it tell the speaker apart from the room. Choose "
-            "how thorough a measurement to run below."
-        ),
+        verdict="Your next measurement will appear here.",
         next_action=next_action,
         alternate_actions=alternate_actions,
         nudges=nudges,
@@ -2079,7 +1872,7 @@ def _banked_progress_note(status: Mapping[str, Any]) -> str:
     v2 = _v2(status)
     if not bool(v2.get("applied")):
         return ""
-    if str(v2.get("tier") or "") == TIER_EXPRESS or _cloud_verify_block(status):
+    if _cloud_verify_block(status):
         return ""
     kept = "Your speaker keeps the tuning that was applied"
     if str(_mapping(v2.get("verify")).get("outcome") or "") == "pass":
@@ -2094,13 +1887,6 @@ def _banked_progress_note(status: Mapping[str, Any]) -> str:
 
 
 def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
-    """What this speaker's measurement LEARNED, one line each. The read
-    end of the wire ``_bank_household_findings`` fills (#1949).
-    ``household_copy`` and nothing else reaches this line — mechanism id,
-    evidence scalars, confidence tier and probe lists are internal
-    taxonomy. One line per finding, never a paragraph; dated when not the
-    current moment. Empty renders as nothing.
-    """
     rows = _v2(status).get("findings")
     if not isinstance(rows, list):
         return []
@@ -2120,19 +1906,10 @@ def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
 def _aged_session_envelope(
     status: Mapping[str, Any], *, code: str, text: str,
 ) -> dict[str, Any]:
-    """A session that is over: the ENTRY screen plus ONE quiet dated line
-    (R11 of #1941, #1942, generalised by #1947). Every aged path renders
-    the ordinary entry screen and reports the prior outcome as one
-    ``info`` nudge. Nulls ``cloud``/``cloud_chart``/``tier`` (the entry
-    screen's DATA contract — ``_envelope`` copies them through on every
-    screen with no client-side screen switch). The way back survives via
-    :func:`_way_back_action` when one exists.
-    """
-    next_action, alternate_actions = _tier_choice_actions(status)
     env = _entry_envelope(
         status,
-        next_action=next_action,
-        alternate_actions=[*alternate_actions, *_way_back_action(status)],
+        next_action=None,
+        alternate_actions=_way_back_action(status),
         nudges=[{
             "code": code,
             # ``info``, never ``warn`` — history, not a problem to solve.
@@ -2140,10 +1917,7 @@ def _aged_session_envelope(
             "text": text,
         }],
     )
-    # Nulled AFTER the build, not by sanitising ``status`` first: ``tier``
-    # has a legitimate second reader (``_recommended_tier``). What must
-    # not survive is the CHART's copy of it.
-    for dead_session_key in ("cloud", "cloud_chart", "tier"):
+    for dead_session_key in ("cloud", "cloud_chart"):
         env[dead_session_key] = None
     return env
 
@@ -2476,9 +2250,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         return env
 
     if phase == PHASE_CHECK:
-        next_action, alternate_actions = _tier_choice_actions(status)
         env = _entry_envelope(
-            status, next_action=next_action, alternate_actions=alternate_actions,
+            status, next_action=None, alternate_actions=[],
         )
     elif phase == PHASE_MEASURE:
         env = _envelope(
@@ -2547,11 +2320,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # Express (M=1) has no post-apply cloud — this anchor is the WHOLE
         # post-apply check, not the first of several (§1.3). Full says nothing
         # extra here: its cloud walk follows.
-        verdict += (
-            " — this quick tune's only check, at the mark."
-            if str(v2.get("tier") or "") == TIER_EXPRESS
-            else "."
-        )
+        verdict += "."
         env = _envelope(
             screen="verify", active_step="verify",
             verdict=verdict,
@@ -2571,9 +2340,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "body": {"stage": "post_apply"},
             },
             status=status,
-            # The pre-apply cloud has already closed by the time this screen
-            # renders (it walks BEFORE VERIFY), so its before-tuning disclosure is
-            # available here too, on BOTH tiers since #1965.
             expert_details=_flatness_details_lines(status),
         )
     elif phase == PHASE_CLOUD_VERIFY:
@@ -2597,19 +2363,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # the alternate list when a prior banked candidate exists.
         verify = _mapping(v2.get("verify"))
         candidate = _mapping(v2.get("candidate"))
-        is_express = str(v2.get("tier") or "") == TIER_EXPRESS
-        # Express disclosure (§1.3): the household is told exactly what was
-        # verified ("confirmed at the mark") and named the upgrade path — never a
-        # claim wider than what express measured. "the verified-everywhere
-        # result" overclaimed past what a Full measurement re-checks: a handful of
-        # prompted spots around the mark, never every point in the room.
-        done_verdict = (
-            "Your speaker is tuned and confirmed at the mark. Run a Full "
-            "measurement for the result checked at several spots around "
-            "the mark."
-            if is_express
-            else "Your speaker is tuned."
-        )
+        done_verdict = "Your speaker is tuned."
         # The spec verdict gets a VOTE. Both the headline above and the
         # "Verified." badge read the TRACKING comparator (matched its own
         # prediction, not whether it is flat) — the spec verdict is the
@@ -2687,8 +2441,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     "to confirm it."
                 )
         elif grade.get("complete") is False:
-            # #2098: local check PASSED, a real result — just not what this
-            # tier promised. Express never reaches this branch.
             done_verdict = (
                 "Your speaker is tuned and confirmed at the mark, but the "
                 "wider check across several spots has not produced a result "
@@ -2760,13 +2512,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "endpoint": "/sound/speaker/crossover/v2/session",
                 "body": {},
             })
-        if is_express:
-            alternate_actions.append({
-                "id": "run_full_measurement",
-                "label": "Run a Full measurement",
-                "endpoint": "/sound/speaker/crossover/v2/session",
-                "body": {"tier": TIER_FULL},
-            })
         # Last: the way back is a safety net, not the recommended step.
         alternate_actions.extend(_way_back_action(status))
         # HEAD promoted to primary, inheriting the recommendedness order
@@ -2786,7 +2531,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 _done_nudges(
                     verify, spec_passed=spec_passed,
                     result_outcome=result_outcome,
-                    tier=str(v2.get("tier") or ""),
                     spatial_unrecognized=spatial_unrecognized,
                 )
                 + _round_adoption_nudges(v2)
@@ -2817,12 +2561,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env["steps"] = _step_payload("", set(_STEP_IDS))
         env["progress"] = {"position": len(_STEP_IDS), "total": len(_STEP_IDS)}
     else:
-        next_action, alternate_actions = _tier_choice_actions(status)
         env = _envelope(
             screen="microphone_check", active_step="microphone_check",
-            verdict="Choose how thorough a measurement to run below.",
-            next_action=next_action,
-            alternate_actions=alternate_actions,
+            verdict="Your next measurement will appear here.",
+            next_action=None,
+            alternate_actions=[],
             status=status,
         )
 
@@ -2988,145 +2731,7 @@ def compact_cloud_status(
     cloud_state: Any,
     *,
     current_session_id: str | None = None,
-    tier: Any = None,
 ) -> dict[str, Any] | None:
-    """PR-4's ``/state`` projection of the durable ``cloud`` block — compact:
-    per band, only ``within_target``; the excluded-interval COUNT, not the
-    intervals; the geometry verdict's two household-relevant bits.
-
-    The full per-null τ/r/evidence numbers and the decimated curve live in
-    the durable state's own ``pipeline`` sub-key
-    (:func:`~jasper.active_speaker.crossover_v2.durable_state._cloud_summary`)
-    and the bundle artifact
-    (:func:`~jasper.web.correction_crossover_v2.bind_cloud_publisher`) — this
-    stays a shape-scoped projection, not a third owner of the same data: a
-    consumer that reads ``cloud`` alone (the doctor) never has to parse
-    curve-shaped data mixed into it. PR-7's chart feed is a fourth, separate KEY —
-    :func:`chart_cloud_status`, riding alongside this one on the adapter's own
-    returned dict — for that same shape-scoping reason. It is **not** a
-    separate endpoint or a smaller HTTP
-    response: see that function's own docstring for the measured byte cost
-    and why the actual size mitigation is its own re-decimation ceiling, not
-    this key split.
-
-    ``flatness`` (plan PR-5) is the spec-facing gauge, copied VERBATIM from
-    the pipeline's own ``flatness`` key — the reduction
-    :func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge` made of the
-    same ``spec`` report the ``spec_bands`` above project. It rides the
-    compact block because the envelope's expert disclosure
-    (:func:`_flatness_details_lines` above) renders from THIS
-    projection, and copying is what makes the gauge, the ledger line, and the
-    persisted report byte-identical rather than merely consistent. ``None``
-    when the pipeline never became available — the same "never a fabricated
-    clean reading" rule as ``excluded_interval_count`` below.
-
-    ``reference_db`` (PR-7) rides alongside ``flatness`` for the same reason
-    ``spec_bands`` carries ``max_deviation_db``: it is the one report-level
-    number a chart needs to draw the tolerance corridor
-    (``reference_db ± tolerance_db`` per band) and PR-5 already computed it
-    once, inside ``spec`` — copied verbatim, never re-derived. ``None`` under
-    the same unavailable-pipeline rule as everything else here.
-
-    ``validity_floor_hz`` rides alongside it for one reason: without it a
-    live surface cannot tell WHY ``flatness.n_excluded`` is large. The
-    interference instruments and the gate-validity clamp both remove
-    spec-band bins, and only the honesty instruments' removals are counted
-    by ``excluded_interval_count`` — so a reader seeing 4063 excluded bins
-    and 5 excluded intervals needs the floor to separate "the room combed
-    this speaker" from "one capture's gate collapsed". ``None`` means either
-    no position reported a usable floor or the pipeline never ran; it never
-    means zero.
-
-    ``spec_bands`` carries each band's own ``max_deviation_db`` (N-3) AND
-    ``tolerance_db`` (PR-7 — the corridor half-width a chart draws per band):
-    the per-band numbers are what a chart labels, and their absence from the
-    only projection a page reads is exactly the pressure that grows a second
-    derivation somewhere downstream. Copied from the report like everything
-    else here — this stays a projection, never an owner.
-
-    ``carve_outs`` (plan PR-6b) rides the compact block for that same reason,
-    and it is the one place this projection is deliberately NOT reduced: the
-    τ/r numbers and the copy strings ARE the disclosure owner decision 1
-    committed to, so summarising them to a count here would leave the only
-    surface a page reads unable to say why a band lost bins — and would grow
-    the second copy owner the producer
-    (:func:`~jasper.active_speaker.crossover_v2.spatial.carve_outs_by_band`)
-    exists to prevent. **It is the largest thing on the entry, and that is
-    stated rather than glossed:** measured 2026-07-27 on the S0 ten-position
-    cloud (the widest real case this program has — three identified nulls plus
-    the one screened range that falls inside a graded band, four rows), the
-    carve-outs are **3162 of the entry's 4056 JSON bytes**, against 291 for
-    ``spec_bands``, 217 for ``flatness`` and 186 for ``geometry_guidance`` — a
-    dated snapshot, since any copy edit moves the digits by tens of bytes; what
-    the corpus test pins is the structural claim (four rows, and this key
-    larger than every other on the entry combined), not the digits. The copy
-    strings are the bulk of it. What bounds it is the instruments
-    themselves: three bands, one row per carved range that lands in one, and a
-    range outside every spec band produces no row at all. Copied verbatim, like
-    ``flatness``. ``[]`` when the pipeline never became
-    available — an empty LIST, not ``None``, is safe here because the entry it
-    sits in already reports ``overall_within_target``/``excluded_interval_count`` as
-    ``None`` for that state, so an empty carve-out list cannot be read as "we
-    looked and found nothing" without contradicting its own neighbours.
-
-    ``excluded_interval_count`` is ``None`` — not ``0`` — when the pipeline
-    never successfully became available (SF-1 review finding, 2026-07-27):
-    ``0`` reads as "the honest-instrument pipeline looked and found no
-    interference", a fabricated-clean claim this program forbids when the
-    pipeline simply never ran (a combine or DSP-step failure — see
-    :func:`~jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`'s
-    own ``available: False`` shape). ``geometry_guidance`` is computed
-    directly from the ``geometry`` verdict via
-    :func:`~jasper.active_speaker.crossover_v2.spatial._geometry_guidance_copy`
-    rather than read out of the pipeline's own copy of it, because geometry
-    locking is decided and RECORDED before the pipeline ever runs (see
-    ``_close_cloud_group``) — a locked group's "spread the mic further"
-    guidance must survive an unrelated downstream DSP failure, not disappear
-    with it.
-
-    ``provenance_note`` (PR-7) is the household-facing half of the same
-    marker: ``current_session_id`` is the session the CALLER currently has
-    open (``crossover_v2_status_block``'s own ``state["session_id"]``);
-    :func:`~jasper.active_speaker.crossover_v2.durable_state._cloud_summary`
-    now stamps each phase's dict with the session that
-    actually produced it. When the two disagree — a group carried forward
-    from an earlier session (see that function's own comment) — the note
-    says so via :func:`_provenance_note`; a durable state written before the
-    stamp existed (no ``session_id`` on the block) reads as unknown, not
-    stale, so an upgrade does not manufacture a false "this is old" warning
-    for data nobody ever mis-attributed.
-
-    ``positions_accepted``/``positions_required`` (#2100): the scoped first
-    step of the incomplete-stage-2 recovery fix. A household whose walk fails
-    partway through has always had this count in ``block["positions"]`` and
-    the durable ``tier`` — the gap was that nothing surfaced it, so recovery
-    looked like starting from zero rather than resuming a partial group.
-    Disclosure only: full invalidation across a new session is unchanged.
-    ``positions_required`` is ``None`` when the tier is missing or cannot be
-    resolved (a stale/unknown value) or for a phase this build's plan shape
-    does not size (``PHASE_LATERAL``) — never a fabricated count. A missing
-    tier is deliberately NOT resolved to Full here the way
-    :func:`~.crossover_v2.capture_plan.normalize_tier` resolves an absent
-    tier when starting a plan: this projection reports what the durable
-    state actually recorded, and a durable block written before tier
-    tracking existed does not let the household infer Full's counts.
-    """
-    from .crossover_v2.capture_plan import PlanShapeError, resolve_plan_shape
-
-    plan_shape = None
-    if tier is not None:
-        try:
-            plan_shape = resolve_plan_shape(tier)
-        except PlanShapeError:
-            plan_shape = None
-    required_by_phase = (
-        {
-            PHASE_CLOUD_MEASURE: plan_shape.cloud_measure_positions,
-            PHASE_CLOUD_VERIFY: plan_shape.cloud_verify_positions,
-        }
-        if plan_shape is not None
-        else {}
-    )
     if not isinstance(cloud_state, Mapping):
         return None
     out: dict[str, Any] = {}
@@ -3157,7 +2762,7 @@ def compact_cloud_status(
             "positions_accepted": (
                 len(positions) if isinstance(positions, list) else None
             ),
-            "positions_required": required_by_phase.get(str(phase)),
+            "positions_required": None,
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")

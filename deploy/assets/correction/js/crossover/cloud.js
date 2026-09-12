@@ -6,27 +6,6 @@ import { drawCloudChart } from './chart.js';
 
 const PHASE_CLOUD_MEASURE = 'cloud_measure';
 const PHASE_CLOUD_VERIFY = 'cloud_verify';
-const TIER_EXPRESS = 'express';
-
-// The plain-language, hardware-blind caption shown while only the pre-
-// correction curve exists. A client literal (not server-owned copy): it is
-// a transient UI-state message, not a spec claim, the same category as
-// main.js's own 'Working…' / 'Stopping safely…' status strings — no
-// measured number, no promise about timing.
-const VERIFY_PENDING_TEXT =
-  'The after-correction curve appears once the second measurement pass finishes.';
-
-// Express (M=1, flow-simplification §1.3) has NO post-apply cloud, ever —
-// unlike full mid-session, there is no second pass coming. Reusing
-// VERIFY_PENDING_TEXT here would promise a curve that will never appear
-// (an honesty bug this module must not have): distinguished by `env.tier`,
-// which the envelope copies through from the durable state
-// (crossover_envelope_v2.py's own "tier" key).
-const EXPRESS_NO_AFTER_CURVE_TEXT =
-  'This quick tune confirms the result at the mark only — there is no ' +
-  'after-correction curve for this measurement. Run a Full measurement to ' +
-  'see one.';
-
 // The last chart draw ATTEMPTED (not necessarily successfully rendered —
 // review N-2), so a window resize can redraw without waiting for the next
 // poll. `drawCloudChart` can return `false` on the very first render after
@@ -40,41 +19,14 @@ const EXPRESS_NO_AFTER_CURVE_TEXT =
 // eyeball on real hardware.
 let lastChart = null;
 
-// B1 fix (adversarial review of PR #1780): which compact cloud-phase block
-// carries the household-facing honesty-instrument surface (spec bands,
-// carve-outs, provenance, geometry guidance) — VERIFY for Full (the
-// current, graded truth), MEASURE for Express (the ONLY cloud it ever
-// produces; M=1 never closes a CLOUD-VERIFY group, permanently, not "not
-// yet"). `compact_cloud_status`
-// (jasper.active_speaker.crossover_envelope_v2)
-// already projects the identical shape onto every phase entry, so this is
-// a read-side selection, not new server data.
-// `prediction` (two-stage commission D3.1) forces the pre-apply cloud, and it
-// is the REVIEW screen's marker — the envelope sends that key on no other
-// screen, so this stays a data test rather than the `env.screen` switch PR-T2
-// is explicitly not allowed to add.
-//
-// The review interlude renders BEFORE anything is applied, so a CLOUD-VERIFY
-// entry does not exist yet at Full and never will at Express. Falling through
-// to the Full branch there would leave the screen with no spec bands, hence no
-// tolerance corridor — and the corridor is what makes the predicted curve
-// legible as passing or missing at all, on the one screen whose purpose is
-// that verdict. D3.1 names the source outright: "the per-band verdict from
-// `env.cloud.cloud_measure.spec_bands`".
-//
-// This does NOT relax the standing rule that the pre-apply cloud is never
-// rendered as "how flat your speaker is" (the reason Full reads CLOUD-VERIFY
-// everywhere else): on this screen the pre-apply cloud is the measured
-// evidence being reviewed, framed as exactly that, and the corrected claim
-// belongs to stage 2's own cloud once it has been walked.
-function specSourceFor(cloud, tier, prediction) {
+function specSourceFor(cloud, prediction) {
   const measure = (cloud && cloud[PHASE_CLOUD_MEASURE]) || null;
   const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
   if (prediction) return measure;
-  return tier === TIER_EXPRESS ? measure : verify;
+  return verify || measure;
 }
 
-function chartPayloadFor(cloud, cloudChart, tier, prediction) {
+function chartPayloadFor(cloud, cloudChart, prediction) {
   const measureCurve = cloudChart?.[PHASE_CLOUD_MEASURE]?.curve || null;
   const verifyCurve = cloudChart?.[PHASE_CLOUD_VERIFY]?.curve || null;
   const predictedCurve = prediction?.curve || null;
@@ -83,7 +35,7 @@ function chartPayloadFor(cloud, cloudChart, tier, prediction) {
     measureCurve,
     verifyCurve,
     predictedCurve,
-    specBands: specSourceFor(cloud, tier, prediction)?.spec_bands || [],
+    specBands: specSourceFor(cloud, prediction)?.spec_bands || [],
   };
 }
 
@@ -207,7 +159,7 @@ function updateSectionFraming(els, payload) {
 // series (and a chart with three of them simply missing) would read as
 // broken rather than in-progress. Each swatch is shown only once its own
 // series is actually on the canvas.
-function updateLegend(els, payload, tier) {
+function updateLegend(els, payload) {
   const curves = [payload.measureCurve, payload.verifyCurve, payload.predictedCurve];
   const [hasMeasure, hasVerify, hasPredicted] = curves.map(
     (curve) => curve?.display?.deviation_db.some((db) => db != null),
@@ -219,18 +171,10 @@ function updateLegend(els, payload, tier) {
   if (els.legendPredicted) els.legendPredicted.hidden = !hasPredicted;
   els.legendCorridor.hidden = !hasCorridor;
   els.legendExcluded.hidden = !hasExcluded;
-  // The "after-correction curve is still coming" caption is about the
-  // POST-APPLY measurement, and on the review screen nothing has been applied
-  // for it to describe — the household has not decided yet, so neither
-  // "appears once the second pass finishes" nor express's "there is no after
-  // curve" is a true sentence there. The predicted curve carries its own
-  // meaning through the legend and the screen's verdict copy instead.
   const suppressPendingCaption = Boolean(payload.predictedCurve);
   els.cloudPending.hidden = hasVerify || suppressPendingCaption;
   if (!hasVerify && !suppressPendingCaption) {
-    els.cloudPending.textContent = tier === TIER_EXPRESS
-      ? EXPRESS_NO_AFTER_CURVE_TEXT
-      : VERIFY_PENDING_TEXT;
+    els.cloudPending.textContent = 'No after-correction curve has been measured.';
   }
 }
 
@@ -242,10 +186,9 @@ function updateLegend(els, payload, tier) {
 export function renderCloud(els, env) {
   const cloud = env && env.cloud;
   const cloudChart = env && env.cloud_chart;
-  const tier = env && env.tier;
   const prediction = (env && env.prediction) || null;
-  const specSource = specSourceFor(cloud, tier, prediction);
-  const payload = chartPayloadFor(cloud, cloudChart, tier, prediction);
+  const specSource = specSourceFor(cloud, prediction);
+  const payload = chartPayloadFor(cloud, cloudChart, prediction);
 
   const visible = Boolean(payload);
   els.cloud.hidden = !visible;
@@ -263,7 +206,7 @@ export function renderCloud(els, env) {
   els.cloudGeometry.hidden = !guidance;
 
   updateSectionFraming(els, payload);
-  updateLegend(els, payload, tier);
+  updateLegend(els, payload);
   renderCallouts(els.cloudCallouts, specSource);
 
   lastChart = { canvas: els.cloudChart, payload };

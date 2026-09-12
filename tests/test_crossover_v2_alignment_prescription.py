@@ -1666,7 +1666,7 @@ _USABLE_ANALYSIS = SimpleNamespace(
 def _evidence_for(prescription, objective=ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION):
     return coordinator.RoundEvidence(
         session_id="cap_direct",
-        tier="express",
+
         post_analysis=_USABLE_ANALYSIS,
         entry_baseline=None,
         spec_report=None,

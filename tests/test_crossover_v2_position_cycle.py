@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The staged-walk expansion, and the pose index derived from a banked round."""
+"""The pose index derived from a banked round."""
 
 from __future__ import annotations
 
@@ -21,12 +21,10 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
     SCHEMA_VERSION,
     PositionCycleError,
-    expand_angle_spec,
     position_cycle_document,
     read_entry_baseline_take,
     read_pose_curve_pair,
     read_position_cycle,
-    staged_stops,
     takes_by_position,
     write_position_cycle,
 )
@@ -41,70 +39,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
     entry_baseline_record,
     lateral_pose_record,
 )
-
-
-# --------------------------------------------------------------------------- #
-# the expansion
-# --------------------------------------------------------------------------- #
-
-
-def test_each_angle_is_repeated_n_times_adjacently():
-    """Adjacent, not interleaved: the arm must not travel between takes."""
-    assert expand_angle_spec("0,7,-7", 3) == "0,0,0,7,7,7,-7,-7,-7"
-
-
-def test_one_take_per_position_is_the_list_unchanged():
-    """The default runs on every staged round, so it must be a no-op."""
-    assert expand_angle_spec("0,7,-7,22,-22", 1) == "0,7,-7,22,-22"
-
-
-def test_tokens_are_repeated_verbatim_never_parsed():
-    """The angle vocabulary has ONE validator and it is not this one.
-
-    ``0.4`` truncates to ``0`` under ``int()`` — an off-axis pose silently
-    becoming an on-axis capture — which is why ``_validated_angle`` refuses to
-    coerce. An expansion that parsed to repeat would be a second reader of that
-    vocabulary; it repeats the TEXT, and whatever the operator wrote still
-    reaches the one validator that judges it.
-    """
-    assert expand_angle_spec("0.4,+7,007", 2) == "0.4,0.4,+7,+7,007,007"
-
-
-def test_surrounding_whitespace_is_stripped_so_one_walk_is_one_walk():
-    assert expand_angle_spec("0, 7 ,-7", 2) == "0,0,7,7,-7,-7"
-
-
-def test_empty_fields_are_dropped_exactly_as_the_seam_drops_them():
-    """``jasper.cli.angle_capture._parse_angles`` is
-    ``[... for field in raw.split(",") if field.strip()]`` — a trailing comma is
-    tolerated there by design, so refusing one here would be a second, stricter
-    reader of the same field."""
-    assert expand_angle_spec("0,7,", 2) == "0,0,7,7"
-    assert expand_angle_spec("0,,7", 2) == "0,0,7,7"
-    assert expand_angle_spec(",", 2) == ""
-
-
-@pytest.mark.parametrize("per_position", [0, -1])
-def test_fewer_than_one_take_is_refused(per_position):
-    with pytest.raises(PositionCycleError, match="at least 1"):
-        expand_angle_spec("0,7", per_position)
-
-
-def test_there_is_no_ceiling_here_because_the_plan_owns_that_bound():
-    """A second, lower ceiling invented on the laptop would refuse walks the
-    speaker would have taken — ``session_lateral_walk`` refuses by name."""
-    assert staged_stops(expand_angle_spec("0", 64)) == 64
-
-
-def test_staged_stops_counts_what_the_walk_will_serve():
-    assert staged_stops("0,7,-7") == 3
-    assert staged_stops(expand_angle_spec("0,7,-7", 4)) == 12
-    assert staged_stops("0,7,") == 2
-
-
-# --------------------------------------------------------------------------- #
-# the index — derived from the speaker's own records
-# --------------------------------------------------------------------------- #
 
 
 def _record(

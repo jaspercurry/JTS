@@ -82,7 +82,7 @@ def _refuse_at_lateral() -> dict:
     conductor = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=False, include_lateral=True,
+            include_cloud_measure=False, include_lateral=True,
         ),
     )
     _run_phase(conductor, 1, 1)
@@ -130,7 +130,7 @@ def _refuse_at_entry_baseline() -> dict:
     conductor = _conductor(
         fakes,
         index_phase_map=build_v2_cloud_index_phase_map(
-            tier="full", include_cloud_measure=False, include_lateral=False,
+            include_cloud_measure=False, include_lateral=False,
             include_entry_baseline=True,
         ),
     )

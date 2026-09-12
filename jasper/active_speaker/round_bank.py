@@ -2,37 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bank one live commissioning session into the on-box campaign home.
-
-The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
-on the box itself so a round outlives session retention (#3498, #2882). It is
-the tree
-:func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
-reads, plus the two files this path derives for whoever opens the round
-directory next::
-
-    <campaign-root>/<round-id>/
-      bundle/<session-id>/...    the live session bundle, hard-linked
-      state.json                 crossover-v2 flow state (optional)
-      design-draft.json          active-speaker design draft (optional)
-      applied-profile.json       applied baseline profile SSOT (optional)
-      repeat-floor.json          measured repeat floor SSOT (optional)
-      declared-geometry.json     declared rig geometry SSOT (optional)
-      position_cycle.json        which take was measured at which pose,
-                                 derived here from the bundle (optional)
-      bundle/<session-id>/ring/  capture sidecars and hard-linked WAVs
-      provenance.json            when it was banked, off which build
-
-``provenance.json``'s key set is owned here: ``banked_at_utc`` is spelled and
-formatted as ``scripts/bank-crossover-round.sh`` writes it, and each path adds
-only what it alone knows. Nothing here evicts — the campaign store is
-operator-pruned.
-
-The banked names and their SSOT paths belong to the reader
-(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`) and are imported
-inside the function that needs them, so importing this module for
-:data:`DEFAULT_CAMPAIGN_ROOT` alone stays cheap.
-"""
+"""Bank a completed run and its program bookkeeping views."""
 
 from __future__ import annotations
 
@@ -43,7 +13,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Callable, Mapping, NamedTuple
 
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
@@ -274,10 +244,34 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
     return {"written": written, "skipped": skipped}
 
 
+def _bookkeeping(
+    target: Path, bundle: Path, view_runner: Callable[[str, Path], dict[str, Any]] | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
+    from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
+    from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
+
+    artifacts, _ = round_artifact_dir(bundle)
+    manifest = artifacts / RUN_MANIFEST_FILENAME if artifacts else None
+    if manifest is None or not manifest.is_file():
+        return None, []
+    document = json.loads(manifest.read_text())
+    name, _, size = str(document.get("program") or "").partition("/")
+    purpose = name if not name or name in PURPOSES else program(name, size or None).purpose
+    results = [
+        view_runner(view, target) if view_runner else {
+            "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+        }
+        for view in bookkeeping_views(purpose)
+    ]
+    return str(manifest), results
+
+
 def bank_round(
     session_dir: Path,
     *,
     campaign_root: Path = DEFAULT_CAMPAIGN_ROOT,
+    view_runner: Callable[[str, Path], dict[str, Any]] | None = None,
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
@@ -285,32 +279,6 @@ def bank_round(
     declared_geometry_path: Path | None = None,
     statefile_path: Path | None = None,
 ) -> BankedRound:
-    """Bank one live session bundle and its SSOT documents into the campaign home.
-
-    The bundle is hard-linked in, not copied byte-for-byte (falling back to a
-    copy only across a filesystem boundary) — see :func:`_link_or_copy`.
-
-    Returns the banked round directory and the ``provenance.json`` payload
-    written beside the bundle: when it was banked, which session it came from,
-    and the installed build's SHA (``None`` with ``git_absent`` when the box
-    records none).
-
-    The pose index is derived from the bundle just banked (:func:`_index_poses`)
-    rather than left to whoever reads the round next, so a banked round answers
-    "which take is which pose" without a second tool.
-
-    Raises :class:`RoundBankError` with ``reason`` :data:`REASON_NOT_A_BUNDLE`,
-    :data:`REASON_SESSION_UNFINISHED` (banking an ``open``/``proposal_ready``
-    session would claim its round id mid-flight, and an id is never re-banked)
-    or :data:`REASON_ALREADY_BANKED` — a banked round is never overwritten. An
-    SSOT document that was absent, and a pose index that could not be derived,
-    are both named in ``provenance.json``'s ``missing``: a partially banked
-    round is a normal thing to read.
-
-    A filesystem failure is not a refusal: the :class:`OSError` propagates, so
-    the CLI exits on its filesystem-failure code rather than telling the
-    operator this was not a bundle.
-    """
     session_dir = Path(session_dir)
     try:
         info: Any = json.loads(
@@ -333,6 +301,9 @@ def bank_round(
     session_id = str(info.get("session_id") or session_dir.name)
     target = Path(campaign_root) / _round_id(session_dir, session_id)
     if target.exists():
+        existing = json.loads((target / "provenance.json").read_text())
+        if existing.get("session_id") == session_id:
+            return BankedRound(target, existing)
         raise RoundBankError(REASON_ALREADY_BANKED, f"{target} is already banked")
 
     documents = _ssot_documents(
@@ -360,6 +331,7 @@ def bank_round(
         calibration_id = str(((info.get("fingerprints") or {}).get("mic") or {}).get("calibration_id") or "")
         ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
+        manifest, views = _bookkeeping(target, target / "bundle" / session_dir.name, view_runner)
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {
             "banked_at_utc": datetime.now(timezone.utc).strftime(
@@ -371,6 +343,8 @@ def bank_round(
             "git_absent": sha is None,
             "missing": missing,
             "capture_ring": ring,
+            "manifest": manifest,
+            "views": views,
         }
         (target / "provenance.json").write_text(
             json.dumps(provenance, indent=2, sort_keys=True) + "\n",

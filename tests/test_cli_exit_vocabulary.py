@@ -171,7 +171,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
         "--mic-serial", "no-such-serial", "--stimulus-wav", str(tmp / "absent.wav"),
     ],
     "jasper.cli.angle_capture": lambda tmp, mp: [
-        "plan", "--program", "baseline", "--size", "no-such-size",
+        "serve", "--attest-rig-clear", "--hostname", "jts.local", "--settle-s", "-1",
     ],
     "jasper.cli.measure": lambda tmp, mp: [
         "--kind", "baseline", "--specs", str(tmp / "absent-specs.json"),
@@ -180,7 +180,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
         "packet", str(tmp / "absent-round"),
     ],
     "jasper.cli.round": lambda tmp, mp: [
-        "bank", str(tmp / "absent-session"), "--campaign-root", str(tmp / "campaign"),
+        "run", "--poses", "not-a-layout",
     ],
     "jasper.cli.round_views": lambda tmp, mp: ["entry", str(tmp / "absent-round")],
     # 1 us is off every fine grid the walk offers, so this refuses before the

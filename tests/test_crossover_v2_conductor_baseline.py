@@ -15,7 +15,6 @@ from dataclasses import replace
 from typing import Any
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import (
-    capture_plan,
     planning,
 )
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
@@ -1019,8 +1018,6 @@ def test_predicted_ripple_threshold_boundary_exact_is_silent_just_above_disclose
     assert c2.measure_ripple_reservation is not None
 
 
-
-
 def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():
     """A re-measured MEASURE that comes back clean CLEARS the reservation.
 
@@ -1378,69 +1375,6 @@ def test_an_uncomposed_protected_neutral_capture_is_refused_at_the_seam():
     legacy = _conductor(FakeSeams())
     legacy._measure_program = program
     assert legacy._build_candidate(analysis) is not None
-
-
-def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
-    """#2098's pattern: one producer owns the capture-count fact.
-
-    `prepare_v2_session` runs stage 1 with `STAGE1_INCLUDES_CLOUD_MEASURE`, and
-    before this the chooser still read `shape.measure_capture_target` — the
-    cloud-inclusive 10 (Full) / 5 (Express) — plus cloud-inclusive minutes. The
-    household was told it was starting a ten-capture walk that the session then
-    did not take. Both surfaces now derive from the same flag.
-    """
-    info = flow.tier_display_info()
-    assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # DERIVED from the surviving stage-1 flag rather than hardcoded, so the
-    # chooser is pinned to whatever stage 1 actually runs and this test moves
-    # with a flag flip instead of going stale — which it has done twice now,
-    # for R17's lateral flip on and the 2026-08-18 pause back off, before the
-    # walk was retired outright. No stage-1 plan builds a lateral group any
-    # more, so that term is gone rather than held at a flag-derived 0; only
-    # #2291's entry baseline is still flag-driven, and it's on, so this is 3.
-    expected_stage1 = 2 + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    # The tiers genuinely no longer differ in stage 1 — so the numbers must not
-    # imply that they do. (The lateral walk would not change that: it is the
-    # ANCHOR's own robustness sample, not a spatial cloud, so it is the same
-    # poses at either tier.)
-    assert info["full"]["stage1_captures"] == expected_stage1
-    assert info["express"]["stage1_captures"] == expected_stage1
-    # Stage 2 is where they still differ, and the chooser copy says so.
-    # 6 since the 2026-08-24 geometry ruling put the design axis into the
-    # post-apply pose set (``CLOUD_VERIFY_POSE_PROMPTS``): VERIFY's anchor plus
-    # five prompted poses.
-    assert info["full"]["stage2_captures"] == 6
-    assert info["express"]["stage2_captures"] == 1
-    for tier, detail in info.items():
-        assert detail["capture_target"] == (
-            detail["stage1_captures"] + detail["stage2_captures"]
-        ), tier
-        # Honest minutes: a real duration, bounded by the module's OWN
-        # per-entry wall-clock ceiling for the captures this build plans, so
-        # the bound moves with the plan instead of going stale. It was a flat
-        # ``<= 10`` written for a two-capture stage 1; R17's walk makes Full's
-        # honest quote 12 min (6 before the flip), which that bound would have
-        # failed for being TRUE. The sharp anti-cloud guards are the two
-        # assertions above — the flag itself and the flag-derived stage-1
-        # count; this one only checks the promise tracks the plan rather than
-        # being a hand-written figure.
-        assert 0 < detail["estimated_minutes"] <= (
-            detail["capture_target"] * flow.WALL_CLOCK_CEILING_PER_ENTRY_S / 60.0
-        ), tier
-
-    # The degraded fallback answers with the SAME numbers, so a failure in the
-    # memoized build cannot quietly restore the cloud-inclusive figures.
-    with pytest.MonkeyPatch.context() as mp:
-        # The memo lives with ``tier_display_info`` in ``crossover_v2.capture_plan``;
-        # patching the flow's re-export would rebind a name nothing reads.
-        mp.setattr(
-            capture_plan, "_tier_display_info_cached",
-            lambda: (_ for _ in ()).throw(ValueError("forced")),
-        )
-        degraded = flow.tier_display_info()
-    for tier, detail in degraded.items():
-        assert detail["stage1_captures"] == info[tier]["stage1_captures"], tier
-        assert detail["capture_target"] == info[tier]["capture_target"], tier
 
 
 def test_measure_program_gains_back_off_from_caps():

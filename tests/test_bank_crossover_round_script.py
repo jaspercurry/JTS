@@ -58,7 +58,7 @@ def test_sourcing_the_shared_lib_survives_a_pre_set_pi_host(tmp_path):
     out from under it is an unbound-variable exit 1 -- which callers used to
     read as the capture-integrity checker's benign "nothing to check"
     verdict, banking nothing and calling it success. That overload is gone
-    (`run-crossover-round.py` now aborts on any non-zero bank rc), but the
+    but the
     silent-source failure this pin catches is not: reaching the exit-4
     refusal above proves the source completed.
     """

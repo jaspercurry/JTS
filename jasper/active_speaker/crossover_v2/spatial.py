@@ -2149,7 +2149,6 @@ def assemble_cloud_group_result(
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
     trusted_ceiling_hz: float | None = None,
-    tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
     graded_spec_sink: Callable[[Any], None] | None = None,
@@ -2333,10 +2332,6 @@ def assemble_cloud_group_result(
                 if isinstance(echo_band_provenance, Mapping)
                 else None
             ),
-            # WHICH INSTRUMENT measured this group. ``None`` means unknown,
-            # never a guessed default: the tiers make materially different
-            # claims.
-            "tier": str(tier) or None,
             "curve": _decimate_curve_for_json(
                 combined.freqs_hz, combined.power_mean_spec_db,
             ),

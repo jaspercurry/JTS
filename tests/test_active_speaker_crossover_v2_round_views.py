@@ -1107,9 +1107,6 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["frozen", str(round_dir)])
 
-    # A bundle-taking verb is named with the bundle it must be pointed at, and
-    # nothing else stays open in it.
-    bundle = round_dir / "bundle" / "sess1"
     assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
         f"jasper-round-views classify-features {round_dir}"
     )
@@ -1127,7 +1124,7 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     # One row no view here writes: the banker's own pose index, named with the
     # command that makes it rather than with this tool's prog.
     assert rows[POSITION_CYCLE_FILENAME]["produced_by"] == (
-        f"jasper-round bank {bundle}"
+        "jasper-round wait --run '<run-id>'"
     )
 
     # A view the evidence packet reads is read back where THAT reader looks —

@@ -520,8 +520,6 @@ def test_a_delay_beyond_the_dsp_ceiling_is_refused_at_the_spec():
             MeasureSpec(kind="baseline", delayed_role="tweeter", delay_us=bad)
 
 
-
-
 def test_the_grid_a_curve_was_banked_on_does_not_change_the_answer():
     """The two drivers sweep their own bands, so the sum is taken after a
     resample — and a real capture carries the whole flight time to the
@@ -565,58 +563,6 @@ def _walk(**template):
         stops=(AngleStop(angle_deg=0, regime="per_driver"),),
         template=walk_template(kind="candidate", **template),
     )
-
-
-def test_the_coordinate_survives_the_spool_round_trip(tmp_path):
-    from jasper.active_speaker import angle_capture_spool as spool
-
-    spool.set_angle_request_spool_path_for_tests(tmp_path / "walk.json")
-    try:
-        spool.stage_angle_request(_walk(delayed_role="tweeter", delay_us=250.0))
-        taken = spool.take_staged_angle_request()
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
-
-    assert taken is not None
-    assert (taken.template.delayed_role, taken.template.delay_us) == (
-        "tweeter", 250.0,
-    )
-
-
-def test_the_level_match_survives_the_spool_round_trip(tmp_path):
-    from jasper.active_speaker import angle_capture_spool as spool
-
-    spool.set_angle_request_spool_path_for_tests(tmp_path / "walk.json")
-    try:
-        spool.stage_angle_request(_walk(level_matched=True))
-        taken = spool.take_staged_angle_request()
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
-
-    assert taken is not None and taken.template.level_matched is True
-
-
-def test_a_document_whose_template_omits_the_coordinate_still_reads(tmp_path):
-    """The pair is ADDITIVE inside the template: a banked spec that names
-    neither half reads back as an undelayed walk rather than refusing."""
-    import json
-
-    from jasper.active_speaker import angle_capture_spool as spool
-
-    path = tmp_path / "walk.json"
-    spool.set_angle_request_spool_path_for_tests(path)
-    try:
-        spool.stage_angle_request(_walk())
-        doc = json.loads(path.read_text())
-        doc["template"].pop("delayed_role", None)
-        doc["template"].pop("delay_us", None)
-        path.write_text(json.dumps(doc))
-        taken = spool.take_staged_angle_request()
-    finally:
-        spool.set_angle_request_spool_path_for_tests(None)
-
-    assert taken is not None
-    assert (taken.template.delayed_role, taken.template.delay_us) == ("", 0.0)
 
 
 def test_a_curve_passed_as_the_wrong_branch_is_refused():

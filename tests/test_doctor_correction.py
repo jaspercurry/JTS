@@ -442,24 +442,8 @@ def _verify_cloud(*, passed, flatness):
         ),
         # #2098: a Full session verified only at the mark is not the claim Full
         # promised.
-        pytest.param(
-            _v2_applied_state(tier="full", verify={"outcome": "pass"}), "ok",
-            correction.REASON_APPLIED_GRADE_MARK_ONLY, id="full-mark-only",
-        ),
         # A group that closed but could not combine reaches the same arm — the
         # wording claims delivered evidence only, never "never closed".
-        pytest.param(
-            _v2_applied_state(
-                tier="full", verify={"outcome": "pass"},
-                cloud={
-                    "cloud_verify": _cloud_group_unavailable(
-                        reason="combine_failed"
-                    ),
-                },
-            ),
-            "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY,
-            id="full-closed-but-unavailable",
-        ),
         # The mark IS express's whole promise; a finding here would fire on
         # every express session ever run.
         pytest.param(

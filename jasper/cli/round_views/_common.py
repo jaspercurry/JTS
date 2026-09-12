@@ -129,11 +129,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     ),
     "findings": ViewArtifact("findings.json"),
     "room-grade": ViewArtifact("room_grade.json"),
-    # No view writes this one: the banker does, as it files the session. It is
-    # inventoried anyway because "does this round carry its pose index" is the
-    # same question as the rest, asked of the same directory.
+    # The banker writes this index; inventory reports its presence.
     "position-cycle": ViewArtifact(
-        POSITION_CYCLE_FILENAME, (TAKES_THIS_BUNDLE,), producer="jasper-round bank",
+        POSITION_CYCLE_FILENAME, ("--run", "<run-id>"), producer="jasper-round wait",
     ),
 }
 

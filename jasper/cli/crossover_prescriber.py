@@ -1326,7 +1326,7 @@ def _next_commands(
     # Status discovers candidates; the LLM chooses a compatible shortlist.
     # Staging every retained artifact would turn discovery into an experiment.
     if len(sections["banked"]["candidates"]) > 1:
-        commands.append("jasper-angle-capture plan --help")
+        commands.append("jasper-round run --help")
     if not sections["staged"]["available"]:
         commands.append(
             " ".join([ORIENTATION_COMMAND, *(shlex.quote(w) for w in evidence)])
@@ -1631,7 +1631,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "WHEN NOT TO USE\n"
             "  - to actually MEASURE anything -- this tool never opens a\n"
-            "    session or plays a sound; scripts/run-crossover-round.py or\n"
+            "    session or plays a sound; jasper-round run or\n"
             "    the guided web flow does that\n"
             "  - to skip propose and go straight to stage -- stage runs the\n"
             "    SAME gate propose does, so skipping propose only delays\n"
