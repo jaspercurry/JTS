@@ -8187,12 +8187,19 @@ def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected
 
 def test_apply_reads_trial_facts_once_before_the_writer_lock(monkeypatch, tmp_path):
     from jasper.active_speaker.crossover_v2 import apply_gate
+    from jasper.active_speaker import candidate_bank
 
     _, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
     for _ in range(3):
         _bank_for_apply({"candidate": candidate.to_dict()}, record_fields=[{}, {}])
-    checks, records = [], []
+    checks, records, bank_reads = [], [], []
+    original_find = candidate_bank.find_banked_candidate
+    def find(fingerprint):
+        bank_reads.append(fingerprint)
+        return original_find(fingerprint)
+    monkeypatch.setattr(candidate_bank, "find_banked_candidate", find)
+    monkeypatch.setattr(apply_gate, "find_banked_candidate", find)
     locked = False
     original_lock = baseline_profile_mod.dsp_writer_lock
     original_check = apply_gate.trial_is_intact
@@ -8222,6 +8229,7 @@ def test_apply_reads_trial_facts_once_before_the_writer_lock(monkeypatch, tmp_pa
     result = v2host.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
                                    _bg_run_async, _FakeApplyCam, status={})
     assert result["status"] == "applied"
+    assert bank_reads == [candidate.fingerprint]
     assert len(checks) == 1
     assert len(records) == len(set(records)) == 2
     assert "_compiled_graph_text" not in result["profile"]

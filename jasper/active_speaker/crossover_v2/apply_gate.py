@@ -100,13 +100,14 @@ def previously_applied(fingerprint: str, applied: Mapping[str, Any] | None) -> b
 
 
 def prepare_trial(measured: MeasuredCrossoverCandidate | None, profile: Mapping[str, Any] | None = None,
-                  *, restored: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                  *, restored: Mapping[str, Any] | None = None, bank: BankedCandidate | None = None) -> dict[str, Any]:
     if measured is None:
         return {}
-    try:
-        bank = find_banked_candidate(measured.fingerprint)
-    except CandidateBankRefusal:
-        bank = None
+    if bank is None:
+        try:
+            bank = find_banked_candidate(measured.fingerprint)
+        except CandidateBankRefusal:
+            pass
     return {"bank": bank, "manifest": None if previously_applied(measured.fingerprint, restored)
             else candidate_trial_manifest(measured.fingerprint, profile), "restored": restored}
 

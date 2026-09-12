@@ -4066,7 +4066,7 @@ def handle_v2_apply(
         state.get("previous_candidate_fingerprint") == expected
         and state.get("previous_candidate_displaced_by") == (incumbent.get("source") or {}).get("measured_candidate_fingerprint")
     ) else None
-    trial_evidence = prepare_trial(candidate, reviewed_baseline, restored=restored)
+    trial_evidence = prepare_trial(candidate, reviewed_baseline, restored=restored, bank=banked)
     manifest = trial_evidence["manifest"]
     issues = apply_preconditions(
         ApplyGraph(reviewed_baseline, topology, candidate, openability=lambda: resolve_conductor_context(status)), banked, manifest,
