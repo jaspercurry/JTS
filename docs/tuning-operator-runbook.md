@@ -152,7 +152,7 @@ or reading its numbers alone does not complete visual inspection.
 
 ```
 jasper-round-views frequency <before-take.json> <after-take.json> --image /tmp/before-after.png
-jasper-round-views windows <round-dir> --capture-id <exact-take-id> --rungs-ms 2 4 7 12 --image /tmp/windows.png
+jasper-round-views sweep <round-dir> --scope take --set <set-id> --take <exact-take-id> --rungs-ms 2 4 7 12 --image /tmp/windows.png
 ```
 
 Image rendering runs on the laptop with the optional `plots` install extra.
@@ -168,15 +168,16 @@ the evidence that could separate them. End with one useful next experiment,
 or explain why the measured result is enough. Do not prescribe EQ from a dip
 alone or treat a score as proof of the cause.
 
-`windows` reads one exact WAV/program binding and shows its impulse beside
-alternative windows. The existing gate-sweep calculation owns its grid,
+`sweep --scope take` reads one exact WAV/program binding and shows its impulse beside
+alternative windows. The round sweep calculation owns its grid,
 smoothing, taper, and common reference. It does not replace the saved verdict.
 Raw impulse diagnostics have no microphone correction; preprocessing states
 clock correction and timing coordinates. Longer windows admit more room.
 Window resolution alone does not prove a reflection-free result.
 
-For pose statistics, use `gate-sweep --candidate <fp> --graph <played-fp>`.
-Mixed candidate/graph records are refused, even at the same pose. Use exact
+For pose statistics, use `sweep <round-dir> --scope round --candidate <fp> --graph <played-fp>`.
+The round scope reads every banked summed capture; `--set` limits it to one
+manifest set. Mixed candidate/graph records are refused, even at the same pose. Use exact
 take window overlays when only one recording should answer the question.
 
 ## Optional complete-tune branch check
@@ -201,7 +202,8 @@ The existing `--regime both` remains the neutral per-driver/summed pair.
 
 The retained take carries all three complex curves, raw impulses, exact
 candidate/graph/WAV/program identities, and clock/gate facts. View it with
-`frequency <take.json> --image /tmp/branches.png`. Use `windows` on that exact
+`frequency <take.json> --image /tmp/branches.png`. Use
+`sweep <round-dir> --scope take --set <set-id> --take <take-id>` on that exact
 take with `--role woofer`, `tweeter`, or `summed` to inspect window sensitivity.
 Do not align each impulse to its own peak before comparing driver phase.
 
@@ -212,14 +214,14 @@ because a moving feature may come from the room or placement; then a candidate
 trial, because a forecast becomes evidence only when the changed sum is
 measured. Skip evidence already answered by a valid compatible take.
 
-Run `jasper-round-views forward-model <round-dir> --capture-id <id>` without a
+Run `jasper-round-views forward-model <round-dir> --set <set-id> --take <id>` without a
 candidate to check whether woofer plus tweeter reconstructs the same take's
 measured sum under one common window; `--window-ms` selects a disclosed
 alternative. This closure checks the model. Before a useful changed-candidate
 trial, save the forecast separately:
 
 ```
-jasper-round-views forward-model <round-dir> --capture-id <id> \
+jasper-round-views forward-model <round-dir> --set <set-id> --take <id> \
   --candidate-json <full-candidate> --out forecast.json
 ```
 
@@ -233,9 +235,9 @@ the target branches and sum. Compare its exact sum without overwriting the
 forecast:
 
 ```
-jasper-round-views forward-model <round-dir> --capture-id <id> \
+jasper-round-views forward-model <round-dir> --set <set-id> --take <id> \
   --candidate-json <full-candidate> --measured-round <trial-round> \
-  --measured-capture-id <trial-id> \
+  --measured-set <trial-set-id> --measured-take <trial-id> \
   --expected-prediction-fingerprint <forecast.summary.prediction_fingerprint> \
   --out comparison.json
 ```
@@ -282,13 +284,13 @@ higher-frequency deficits need separate speaker-informed evidence. In order:
 5. `jasper-round-views room-median <round-dir>`: median, spread and
    per-position deviation below the ceiling; `room_median.json` is the input
    the room candidate reads. When several measurement sets are present, use
-   `--capture-id <take-id>` to select the set containing that capture. Repeat
+   `--set <set-id>` from the run manifest. Repeat
    takes count once per physical pose. The result names its source records,
    missing identity fields and unusable takes; it uses only shared measured
    frequency coverage. Use `--out <path>` to retain each candidate separately.
 6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
    hold across the cloud, and at what fraction of positions. Use the same
-   `--capture-id` selection as the median.
+   `--set` selection as the median.
 7. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
    judges a room prescription (`kind: jts_room_prescription`) against
    `room_median.json`; `compose --base <applied fingerprint>
@@ -364,8 +366,10 @@ estimates. Use only frequency bins qualified in both takes for comparisons.
 Missing harmonic coverage, absolute SPL context, or actual DSP drive stays
 unknown. These received measurements do not establish a driver output limit.
 
-Compare selected takes with `jasper-round-views bass-compare <round-dir>
---set <before-set> --set <after-set> --change candidate`.
+Compare sets with `jasper-round-views bass-compare <before-round>
+<after-round> --before-set <id> --after-set <id> --change candidate`.
+The unique on-axis take is the default; `--before-take` and `--after-take`
+select another retained take within each set.
 Use `--change demand` for a fixed-volume stimulus change, or `volume` for
 fixed-stimulus volume tests. The result separates requested input change,
 measured output change, and combined compression, including intended DSP
@@ -395,6 +399,8 @@ binary and shared file renderer, retaining the entire graph and both faders.
 On the Pi, run it through `scripts/pi-run-diagnostic.sh`; it opens no audio
 device. Copy the manifest and `output.f64le` to the laptop, then run
 `dsp-levels <dsp_replay.json> --raw <output.f64le> --window-s <start> <stop>`.
+It writes `dsp_levels.json` beside the render manifest and prints a compact
+JSON answer. `--out <path>` selects another artifact path; `--out -` is retired.
 Compare the same channels and stimulus windows across renders. These are
 digital band levels, not microphone SPL or isolated driver compression.
 
@@ -453,7 +459,7 @@ does not keep raising the level or discard the earlier evidence.
 | Level offset or response shape? | `frozen` band `level_deviation_db` and `max_ripple_db` |
 | Does it hold off axis? | `directivity`, `agreement`, `co-metrics` over summed poses |
 | Does delay/polarity explain the crossover feature? | `delay-landscape`, `jasper-null`, `delay-confirm`; inspect branch levels |
-| Does a feature survive gate/pose changes? | `classify-features`, `gate-sweep`, `close-reference` |
+| Does a feature survive gate/pose changes? | `classify-features`, `sweep --scope round`, `close-reference` |
 | Is a low-end feature what the walls alone predict? | `boundary-prior`; advisory, from declared wall distances |
 | Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |
 | How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |

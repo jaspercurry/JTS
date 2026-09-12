@@ -713,7 +713,7 @@ def summed_capture_bundle(tmp_path, request):
         WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
         bundle, recorder_factory=lambda *_: Recorder(),
     )
-    async def bank(take_id, *, setup=None, scope="room_tune", candidate="", retain_program=True, wav_hash=None):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None):
         async def play():
             pass
         configured = replace(capture, setup_reference=lambda: setup)
@@ -741,7 +741,7 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
 ):
     bundle, calibration_root, program, bank = summed_capture_bundle
     first = asyncio.run(bank("baseline"))
-    asyncio.run(bank("bass", scope="bass_candidate", candidate="bass-6db", setup={
+    asyncio.run(bank("bass", scope="candidate", candidate="bass-6db", setup={
         "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
     }))
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
@@ -763,9 +763,9 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     baseline, bass = view["runs"][0]["series"]
     assert view["runs"][0]["metadata"]["position_count"] == 1
     assert view["runs"][0]["metadata"]["take_count"] == 2
-    assert baseline["candidate_id"] == ""
+    assert baseline["candidate_id"] == "baseline-fp"
     assert bass["candidate_id"] == "bass-6db"
-    assert [s["graph_scope"] for s in (baseline, bass)] == ["room_tune", "bass_candidate"]
+    assert [s["graph_scope"] for s in (baseline, bass)] == ["candidate", "candidate"]
     assert [s["level_db"] for s in (baseline, bass)] == [-20, -20]
     assert [s["stimulus_dbfs"] for s in (baseline, bass)] == [-14, -14]
     assert bass["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
@@ -804,7 +804,7 @@ def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_
 def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle, fault, code, tmp_path):
     bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank(
-        "take", scope="drivers" if fault == "scope" else "room_tune",
+        "take", scope="drivers" if fault == "scope" else "candidate",
         retain_program=fault != "program", wav_hash="0" * 64 if fault == "wav_hash" else None,
     ))
     if fault == "dependency":
@@ -859,7 +859,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
 def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta, mismatch, field):
     before = {
         'record_path': 'before.json',
-        'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'bass_candidate',
+        'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
                    'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0', 'loudness_volume_db': -20},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
@@ -891,11 +891,13 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
 
 
 @pytest.fixture
-def bass_fit_pairs():
+def bass_fit_pairs(monkeypatch):
+    monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
+                        lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension={})))
     grid = np.geomspace(50, 200, 100)
     baseline = {
         'record_path': 'off.json',
-        'record': {'graph_scope': 'room_tune', 'graph_fingerprint': 'baseline',
+        'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
                    'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20,
                    'loudness_volume_db': -10, 'program_id': 'sweep'},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
@@ -909,19 +911,27 @@ def bass_fit_pairs():
         before['record']['position_deg'] = pose
         after = copy.deepcopy(before)
         after['record_path'] = f'boost-{pose}.json'
-        after['record'].update(graph_scope='bass_candidate', candidate_id='boost', graph_fingerprint='boosted')
+        after['record'].update(graph_scope='candidate', candidate_id='boost', graph_fingerprint='boosted')
         after['fundamental_db'] = [-20 + gain] * len(grid)
         pairs.append((before, after))
     return pairs
 
 
+@pytest.mark.parametrize('has_bass', [False, True])
 @pytest.mark.parametrize('target_db,expected_scale', [(1, 0.3), (10, 1), (-1, 0)])
-def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale, bass_fit_pairs):
+def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(target_db, expected_scale, has_bass, bass_fit_pairs, monkeypatch):
     pairs = bass_fit_pairs
     grid = np.asarray(pairs[0][0]['freqs_hz'])
     kwargs = {'candidate_id': 'boost', 'descriptor': {'low_boost_db': 12, 'reference_level_db': 0,
               'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30},
               'target': {'freqs_hz': [50, 200], 'magnitude_db': [target_db, target_db]}}
+    if has_bass:
+        monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
+                            lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension={"low_boost_db": 6})))
+        with pytest.raises(CrossoverV2Refused) as refused:
+            fit_bass_shape(pairs, **kwargs)
+        assert refused.value.code == "bass_fit_requires_room_baseline_and_exact_candidate"
+        return
     result = fit_bass_shape(pairs, **kwargs)
     repeated = fit_bass_shape([pairs[0]] * 5 + pairs[1:], **kwargs)
     assert result['selected_scale'] == pytest.approx(expected_scale)
@@ -1087,7 +1097,7 @@ def test_bass_table_requires_the_manifest_level_key(bass_run, capsys, field):
 def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
     bass_run.write()
     out = bass_run.out.parent / 'comparison.json'
-    assert round_views_main(['bass-compare', str(out.parent), '--set', 'set-0', '--set', 'set-1',
+    assert round_views_main(['bass-compare', str(out.parent), str(out.parent), '--before-set', 'set-0', '--after-set', 'set-1',
                              '--change', 'candidate', '--out', str(out)]) == 0
     assert json.loads(capsys.readouterr().out)['available']
     comparison = json.loads(out.read_text())
@@ -1169,7 +1179,7 @@ def test_bass_file_errors_keep_the_unreadable_exit(bass_run, capsys, verb, fault
     else:
         path.write_text('{broken' if fault == 'json' else json.dumps({'schema': 'wrong', 'takes': []}))
     argv = (bass_run.argv if verb == 'bass-fit-table' else
-            [verb, str(path.parent), '--set', 'set-0', '--set', 'set-1', '--change', 'candidate'])
+            [verb, str(path.parent), str(path.parent), '--before-set', 'set-0', '--after-set', 'set-1', '--change', 'candidate'])
     assert round_views_main(argv) == EXIT_UNREADABLE
     answer = json.loads(capsys.readouterr().out)
     assert answer['status'] == 'unreadable'
@@ -1191,12 +1201,10 @@ def test_bass_table_refuses_invalid_descriptors_by_code(bass_run, capsys, fault)
     assert answer['next_action'] == REASON_REGISTRY[answer['code']].next_action
 
 
-@pytest.mark.parametrize('sets', [[], ['set-0'], ['set-0', 'set-0', 'set-0']])
-def test_bass_compare_requires_two_explicit_sets(bass_run, capsys, sets):
-    bass_run.write(bass_run.takes[:1])
-    argv = ['bass-compare', str(bass_run.out.parent), '--change', 'candidate']
-    assert round_views_main(argv + [arg for set_id in sets for arg in ('--set', set_id)]) == 1
-    assert json.loads(capsys.readouterr().out)['code'] == 'bass_fit_pairs_unavailable'
+def test_bass_compare_requires_two_rounds():
+    with pytest.raises(SystemExit) as refused:
+        build_parser().parse_args(['bass-compare', 'round', '--change', 'candidate'])
+    assert refused.value.code == 2
 
 
 @pytest.mark.parametrize('verb', ['bass-compare', 'bass-fit-table'])
@@ -1211,7 +1219,7 @@ def test_bass_verbs_read_one_manifest_snapshot(bass_run, monkeypatch, capsys, ve
 
     monkeypatch.setattr(Path, 'read_text', read)
     argv = (bass_run.argv if verb == 'bass-fit-table' else
-            [verb, str(bass_run.out.parent), '--set', 'set-0', '--set', 'set-1', '--change', 'candidate'])
+            [verb, str(bass_run.out.parent), str(bass_run.out.parent), '--before-set', 'set-0', '--after-set', 'set-1', '--change', 'candidate'])
     assert round_views_main(argv) == 0
     capsys.readouterr()
     assert len(reads) == 1

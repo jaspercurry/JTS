@@ -205,17 +205,10 @@ _ECHO_BAND_PHASES = (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 #: from there rather than restated here.
 _POSITIONS_SUBDIR = "positions"
 
-#: How a capture ring's sidecars are found under the ring root. No round
-#: writes this layout on the Pi any more; the rings that reach the two readers
-#: are corpora pulled off a Pi before the retention seam died and rings
-#: :func:`~.ring_projection.project_ring` re-projects laptop-side.
-#:
-#: ``**/`` because a pull splits the speaker's flat ring into ``dumps/wav/`` +
-#: ``dumps/sidecar/``, with a per-phase nesting of that shape too, so a caller
-#: passes the ring ROOT and the pattern finds the sidecars inside it. Both
-#: readers (:func:`~.feature_classifier.load_round_captures` and
-#: :func:`~.harmonic_evidence.read_round_harmonics`) consume this constant, so
-#: ``--dumps`` cannot mean two different directories.
+#: :func:`~jasper.active_speaker.round_bank.bank_round` owns the sidecar/WAV layout.
+#: ``**/`` also admits older pulled rings with a directory per phase. Both
+#: :func:`~.feature_classifier.load_round_captures` and
+#: :func:`~.harmonic_evidence.read_round_harmonics` use this ring-root pattern.
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 #: What :func:`_capture_snr_block` reads off one banked take: the two
@@ -1357,7 +1350,7 @@ def _repeat_floor_component(
             REPEAT_FLOOR_UNMEASURED,
             "unmeasured -- no banked repeat floor; calibration experiment "
             "E2 (N touched-nothing fixed-pose repeat rounds through "
-            "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
+            "jasper-round-views repeat-floor; "
             "Calibration experiments)",
         )
     if record is None:
@@ -2389,6 +2382,8 @@ def build_crossover_evidence_packet(
         "round": {
             "available": bool(receipt),
             "schema_version": receipt.get("schema_version"),
+            "advice": _mapping(receipt.get("advice")),
+            "protection": _mapping(receipt.get("protection")),
             "adoption": _mapping(receipt.get("adoption")),
             "verification": _mapping(receipt.get("verification")),
             "round_axes": _mapping(receipt.get("round_axes")),
@@ -2426,8 +2421,6 @@ def build_crossover_evidence_packet(
         # cycled more than one at a pose. Beside the poses rather than inside
         # them: a pose is where the mic stood, a candidate is what played.
         "candidates": candidates,
-        # The round's measured "before", beside the after rather than inside the
-        # receipt: the receipt carries identities, this carries the curve.
         "entry_baseline": entry_baseline,
         "capture_snr": capture_snr,
         "honesty_mask": {

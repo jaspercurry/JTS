@@ -18,7 +18,7 @@ from ._common import (
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
     _write,
-    answer,
+    add_set_argument, answer,
     ARTIFACT_BY_VIEW,
     resolved_out, resolve_set, round_inputs,
 )
@@ -37,12 +37,12 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
     try:
         exact_result = stage(
             EXIT_UNREADABLE, (OSError,), capture_prediction,
-            Path(args.round_dir), capture_id=selected.take_id(), window_ms=args.window_ms,
+            Path(args.round_dir), capture_id=selected.take_id(args.take), window_ms=args.window_ms,
             candidate_path=Path(args.candidate_json) if args.candidate_json else None,
             basis_candidate_path=Path(args.basis_candidate_json) if args.basis_candidate_json else None,
             candidate_root=Path(args.candidate_root) if args.candidate_root else None,
             measured_round=Path(args.measured_round) if args.measured_round else None,
-            measured_capture_id=measured.take_id() if measured else None,
+            measured_capture_id=measured.take_id(args.measured_take) if measured else None,
             expected_prediction_fingerprint=args.expected_prediction_fingerprint,
         )
     except ForwardModelError as exc:
@@ -78,8 +78,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="complete saved candidate.json; omit to reconstruct the recorded tune",
     )
     forward.add_argument("--out", default=None, help="write the result here")
-    forward.add_argument("--set", help="set containing one selected complete-tune diagnostic")
-    forward.add_argument("--measured-set", help="set in --measured-round to compare")
+    add_set_argument(forward, take=True)
+    add_set_argument(forward, name="--measured-set", take=True)
     forward.add_argument("--basis-candidate-json", help="source candidate artifact, checked against the selected take; otherwise resolve its candidate ID from the bank")
     forward.add_argument("--candidate-root", help="candidate bank root for offline source-candidate lookup")
     forward.add_argument("--window-ms", type=float, help="one shared diagnostic window in ms; default is the shipped reference window")

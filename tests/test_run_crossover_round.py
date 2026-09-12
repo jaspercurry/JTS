@@ -1896,7 +1896,7 @@ def test_open_failure_detail_stays_textual_with_coded_bodies(status, structured)
     runner = _runner()
     payload = {"error": "x" * 240}
     if structured:
-        payload["code"] = "measurement_candidate_room_mismatch"
+        payload["code"] = "measurement_candidate_speaker_mismatch"
         payload["next_action"] = {"id": "apply_matching_room_layer"}
     detail = runner._open_failure_detail(
         status, payload, runner.Target(host="speaker", hostname="jts.local", user="pi"),

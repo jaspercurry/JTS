@@ -62,7 +62,7 @@ def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path, metadata:
         doc = json.loads(sidecar.read_text())
         doc.update({
             "kind": POSITION_EVIDENCE_KIND, "session_id": "wired-test",
-            "candidate_id": "reviewed-candidate", "graph_scope": "speaker_tune",
+            "candidate_id": "reviewed-candidate", "graph_scope": "candidate",
             "take_id": "cloud_verify_00_a02", "wav_sha256": sha256_file(wav),
         })
         if metadata == "capture_hash_mismatch":

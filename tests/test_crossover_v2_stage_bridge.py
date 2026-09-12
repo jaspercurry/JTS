@@ -57,6 +57,8 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 
 from __future__ import annotations
 
+from tests._log_events import event_field_maps
+
 import asyncio
 import importlib
 import json
@@ -71,6 +73,7 @@ import pytest
 
 from tests._async_wait import wait_signalled
 from tests.conftest import seat_process_volume_owner
+from tests.test_plan_run import fake_program_baselines
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
@@ -253,6 +256,7 @@ def _production_host_seams(monkeypatch, tmp_path):
     Everything a preparer DECIDES — the plan shape, the index→phase map, the
     seam bindings, the conductor construction, the persist — runs for real.
     """
+    fake_program_baselines(monkeypatch)
     # The preparers' mic gate (#2662 W2b, gate fix round S3) resolves the
     # measurement mic BEFORE any evidence bundle opens; the disclosure it
     # raises with none plugged in has its own pin in
@@ -1367,7 +1371,7 @@ def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
         conductor, (freqs, predicted + error, predicted),
     )
     assert live is not None
-    assert live.rollback is True
+    assert live.advises_against_keep is True
 
     v2host.persist_conductor_state(conductor, failure_code=None)
     state = v2host.load_v2_state() or {}
@@ -1392,7 +1396,7 @@ def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
 
     assert regraded.verdict == live.verdict
     assert regraded.reason == live.reason
-    assert regraded.rollback == live.rollback
+    assert regraded.advises_against_keep == live.advises_against_keep
     # …and the numbers behind it survive the decimation, not merely the label.
     assert regraded.max_error_db == pytest.approx(live.max_error_db, abs=0.05)
     assert regraded.exceedance_octaves == pytest.approx(
@@ -1483,7 +1487,7 @@ def test_an_anchored_verdict_is_re_gradable_from_the_store_alone(monkeypatch):
 
     assert regraded.verdict == live.verdict
     assert regraded.reason == live.reason
-    assert regraded.rollback == live.rollback
+    assert regraded.advises_against_keep == live.advises_against_keep
     assert regraded.entry_anchor_offset_db == pytest.approx(
         live.entry_anchor_offset_db, abs=0.05,
     )
@@ -1523,30 +1527,6 @@ def test_a_truncated_measured_record_reads_as_absent_not_as_a_curve(monkeypatch)
 # --------------------------------------------------------------------------- #
 
 
-def test_only_stage_2_binds_the_rollback_seam(monkeypatch):
-    """Rollback authority sits on the stage that reaches a verdict.
-
-    ``bind_delta_probe_rollback`` is wired into exactly one set of seams, and
-    #2291 Phase 3a moved it to the right one. Stage 1 carries no VERIFY, so it
-    can never reach the delta probe whose verdict presses this button; stage 2
-    is the session that produces the post-apply verdict. A conductor with no
-    rollback seam still refuses — but under
-    ``REASON_CORRECTION_ROLLBACK_FAILED``, the copy that tells the household
-    the correction is STILL APPLIED. That sentence is now true only when the
-    restore genuinely failed, rather than being the only sentence available.
-
-    Both directions, because "stage 2 binds it" alone would keep passing if the
-    seam were bound on both and the duplication is the thing the capability
-    declarations exist to prevent.
-    """
-    stage_1_conductor, _state = _stage_1(monkeypatch)
-    _seed_applied_stage_1_state()
-    stage_2_conductor, _state2 = _stage_2(monkeypatch)
-
-    assert _flow_seams(stage_1_conductor).rollback is None
-    assert callable(_flow_seams(stage_2_conductor).rollback)
-
-
 def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
     """The other asymmetry, pinned the same way and for the same reason.
 
@@ -1561,29 +1541,6 @@ def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
 
     assert callable(_flow_seams(stage_1_conductor).records.findings)
     assert _flow_seams(stage_2_conductor).records.findings is None
-
-
-def test_stage_2_rollback_refuses_cleanly_with_no_prior_candidate(monkeypatch):
-    """#1863's neighbour: an automatic rollback with nothing to roll back to.
-
-    Binding rollback on stage 2 means it can now actually FIRE, so what it
-    does on a first-ever apply — where no prior candidate fingerprint was
-    recorded to republish — is part of the contract rather than a
-    hypothetical. The seam reports "not restored" and does NOT raise: it
-    refuses before pressing either normal-path door, and the verdict that
-    asked for the rollback still reaches the household under
-    ``REASON_CORRECTION_ROLLBACK_FAILED``.
-
-    Issue #1863 proper — not OFFERING a way back when no prior candidate
-    exists — is a render-side affordance question on the done / verify-fail /
-    applied-failure screens, and is untouched here.
-    """
-    _seed_applied_stage_1_state()  # applied, but no prior candidate recorded
-    conductor, _state = _stage_2(monkeypatch, camilla_factory=lambda: SimpleNamespace())
-
-    rollback = _flow_seams(conductor).rollback
-
-    assert rollback("model_error") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -1757,7 +1714,7 @@ def test_the_two_stages_declare_the_capabilities_that_differ():
     assert measure.requires == frozenset()
 
     assert verify.stage == "verify"
-    assert verify.provides == {v2host.CAPABILITY_ROLLBACK}
+    assert verify.provides == set()
     assert verify.requires == {
         v2host.CAPABILITY_COMMANDED_DELTA,
         v2host.CAPABILITY_PREDICTED_SUM,
@@ -1799,30 +1756,15 @@ def test_stage_2_logs_its_capabilities_and_names_a_missing_prior(monkeypatch, ca
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
         _conductor, _state = _stage_2(monkeypatch)
 
-    lines = [record.getMessage() for record in caplog.records]
-    declared = [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capabilities" in line
-    ]
+    declared = event_field_maps(caplog, "correction.crossover_v2_stage_capabilities")
     assert len(declared) == 1
-    assert "stage=verify" in declared[0]
-    # Anchored on the NEXT field, so a widened list cannot satisfy these by
-    # prefix: ``provides=rollback`` is a substring of ``provides=findings,
-    # rollback``, and a mutation that bound rollback on both stages slipped
-    # through an unanchored form of this assertion.
-    assert "provides=rollback requires=" in declared[0]
-    assert (
-        "requires=commanded_delta,entry_baseline,predicted_sum missing="
-        in declared[0]
-    )
-    assert declared[0].endswith("missing=commanded_delta")
-
-    unavailable = [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capability_unavailable" in line
-    ]
+    assert declared[0]["stage"] == "verify"
+    assert declared[0]["provides"] == ""
+    assert declared[0]["requires"] == "commanded_delta,entry_baseline,predicted_sum"
+    assert declared[0]["missing"] == "commanded_delta"
+    unavailable = event_field_maps(caplog, "correction.crossover_v2_stage_capability_unavailable")
     assert len(unavailable) == 1
-    assert "missing=commanded_delta" in unavailable[0]
+    assert unavailable[0]["missing"] == "commanded_delta"
 
 
 def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
@@ -1839,22 +1781,12 @@ def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
         _conductor, _state = _stage_2(monkeypatch)
 
-    lines = [record.getMessage() for record in caplog.records]
-    declared = [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capabilities" in line
-    ]
+    declared = event_field_maps(caplog, "correction.crossover_v2_stage_capabilities")
     assert len(declared) == 1
-    assert "provides=rollback requires=" in declared[0]
-    assert (
-        "requires=commanded_delta,entry_baseline,predicted_sum missing="
-        in declared[0]
-    )
-    assert 'missing=""' in declared[0]
-    assert not [
-        line for line in lines
-        if "event=correction.crossover_v2_stage_capability_unavailable" in line
-    ]
+    assert declared[0]["provides"] == ""
+    assert declared[0]["requires"] == "commanded_delta,entry_baseline,predicted_sum"
+    assert declared[0]["missing"] == ""
+    assert not event_field_maps(caplog, "correction.crossover_v2_stage_capability_unavailable")
 
 
 def test_stage_1_declares_itself_too(monkeypatch, caplog):
@@ -2340,8 +2272,6 @@ async def test_a_volume_that_did_not_confirm_installs_no_graph_at_all(
     assert graph.installs == 0, "a graph was swapped in for a session that cannot play"
     assert graph.restores == 0
     v2host.set_volume_plan_for_tests(None)
-
-
 
 
 def _session_from_real_open(monkeypatch, fakes) -> Any:

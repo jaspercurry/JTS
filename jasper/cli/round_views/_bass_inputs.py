@@ -15,7 +15,6 @@ from jasper.active_speaker.bass_table import fit_bass_table, level_key
 from jasper.active_speaker.candidate_bank import load_candidate_artifact
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
-from jasper.active_speaker.measurement_programs import PURPOSE_BASS, baseline_scope
 
 from ._common import ARTIFACT_BY_VIEW, RoundInputs, RoundSetRefused, SetTakes, default_out, read_run_manifest
 
@@ -63,11 +62,11 @@ def fit_run(inputs: RoundInputs, args) -> dict[str, Any]:
                                         code="bass_table_capture_context_changed")
             key = (level, basis.get("side"), basis.get("role"), doc_pose_key(take["record"]),
                    entry.get("repeat", 0), entry.get("stimulus_ordinal", 0))
-            if basis.get("graph_scope") == baseline_scope(PURPOSE_BASS):
+            candidate_id = basis.get("candidate_id")
+            if candidate_id not in descriptors:
                 baseline[key].append(take)
             else:
-                candidate_id = basis.get("candidate_id")
-                if candidate_id not in descriptors or take["record"].get("candidate_id") != candidate_id:
+                if take["record"].get("candidate_id") != candidate_id:
                     raise CrossoverV2Refused({"set_id": selected.set_id, "candidate_id": candidate_id},
                                             code="bass_fit_candidate_unreadable")
                 candidates[candidate_id][key].append(take)

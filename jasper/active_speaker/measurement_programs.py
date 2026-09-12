@@ -80,11 +80,11 @@ def bookkeeping_views(program: str) -> tuple[str, ...]:
 
 def baseline_scope(purpose: str | None) -> str:
     if _validated_purpose(purpose) == PURPOSE_BASS:
-        return "room_tune"
+        return "room"
     return (
-        "speaker_tune"
+        "speaker"
         if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_REFERENCE)
-        else "base"
+        else "preset"
     )
 
 

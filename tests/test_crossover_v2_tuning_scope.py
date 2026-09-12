@@ -36,6 +36,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
 )
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
 from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile,
     MeasurementGraphRefused,
@@ -44,10 +45,12 @@ from jasper.active_speaker.measurement_emit import (
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
+    MeasuredCrossoverCandidateError,
+    compile_candidate_config,
     candidate_room_peqs,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.camilla_config_contract import FilterSpec, PeqFilter
+from jasper.camilla_config_contract import FilterSpec
 from jasper.camilla_emit import emit_gain_filter
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
@@ -60,8 +63,6 @@ from jasper.sound.profile import (
     build_sound_filter_slots,
     build_sound_filters,
     sound_filter_slot_names,
-    load_profile,
-    save_profile,
 )
 from tests.test_active_speaker_audition import ACTIVE_PCM, LINEARIZATION, _applied_profile
 from tests.test_active_speaker_measured_crossover_candidate import _room_correction
@@ -243,39 +244,37 @@ def tuning_profile():
     applied["recomposition_snapshot"]["preset"] = preset.to_dict()
     return MeasurementGraphProfile(
         preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
-        applied_profile=applied,
     )
 
 
-@pytest.mark.parametrize("scope", ["base", "speaker_tune"])
-def test_tuning_layers_exclude_saved_household_processing(tuning_profile, tmp_path, scope):
-    preference_path = tmp_path / "sound.json"
-    save_profile(SAVED, preference_path)
-    saved_bytes = preference_path.read_bytes()
-    source = deepcopy(tuning_profile.applied_profile)
-    household, issues = recompose_applied_baseline_yaml(
-        tuning_profile.topology, applied_profile=source,
-        preference_filters=build_sound_filter_slots(load_profile(preference_path)),
-        room_peqs=[PeqFilter(freq=80.0, q=2.0, gain=3.0)],
-        output_trim_db=-2.0, bass_extension={},
+def _saved_tuning(profile):
+    applied = _applied_profile(profile.topology)
+    applied["recomposition_snapshot"]["preset"] = profile.preset.to_dict()
+    return applied
+
+
+@pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
+def test_program_baselines_keep_only_their_lower_layers(tuning_profile, tmp_path, purpose):
+    saved = _saved_tuning(tuning_profile)
+    snapshot = saved["recomposition_snapshot"]
+    snapshot["room_correction"] = _room_correction()
+    snapshot["bass_extension"] = BASS_EXTENSION
+    before = deepcopy(saved)
+    candidate = candidate_from_applied_profile(tuning_profile.topology, saved, purpose=purpose)
+    graph = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
+    assert bool(candidate.linearization) is (purpose != "speaker")
+    assert bool(candidate.blend_correction) is (purpose != "speaker")
+    assert bool(candidate.room_correction) is (purpose == "bass")
+    assert not candidate.bass_extension
+    assert candidate.role_attenuations_db == {role: entry["gain_db"] for role, entry in snapshot["corrections"].items()}
+    expected, issues = recompose_applied_baseline_yaml(
+        tuning_profile.topology, applied_profile=saved, bass_extension={},
+        room_peqs=None if purpose == "bass" else (), drop_measured_correction=purpose == "speaker",
     )
-    assert household and not issues
-    graph = yaml.safe_load(compile_tuning_graph(tuning_profile, scope=scope))
-    clean, issues = recompose_applied_baseline_yaml(
-        tuning_profile.topology, applied_profile=source, bass_extension={},
-        drop_measured_correction=scope == "base",
-    )
-    assert not issues and graph == yaml.safe_load(clean)
-    assert graph != yaml.safe_load(household)
-    filters = graph["filters"]
-    assert bool(any("linearization" in name for name in filters)) == (scope == "speaker_tune")
-    assert bool(any(name.startswith("as_blend_") for name in filters)) == (scope == "speaker_tune")
-    assert filters["as_woofer_delay"]["parameters"]["delay"] == 0.4
-    assert filters["as_tweeter_baseline_gain"]["parameters"]["gain"] == -4.25
-    assert filters["as_tweeter_baseline_gain"]["parameters"]["inverted"] is True
+    assert not issues and graph == yaml.safe_load(expected)
     assert graph["devices"]["volume_limit"] == 0.0
-    assert tuning_profile.applied_profile == source
-    assert preference_path.read_bytes() == saved_bytes
+    assert not set(graph["filters"]) & sound_filter_slot_names()
+    assert saved == before
 
 
 def _trial_candidate(profile, *, trim=-3.0, gain=-2.0):
@@ -306,24 +305,26 @@ def test_candidate_compilation_carries_all_parts_and_its_own_identity(tuning_pro
     assert filters_b["active_baseline_headroom"] != filters_a["active_baseline_headroom"]
     assert running_graph_fingerprint(text_a) != running_graph_fingerprint(text_b)
     assert a.fingerprint != b.fingerprint
-    assert tuning_profile.applied_profile["recomposition_snapshot"]["linearization"] == LINEARIZATION
+    assert _saved_tuning(tuning_profile)["recomposition_snapshot"]["linearization"] == LINEARIZATION
 
 
 @pytest.mark.parametrize("problem, reason", [
-    ("topology", "measurement_profile_unavailable"),
-    ("crossover", "measurement_candidate_base_mismatch"),
+    ("crossover", "measurement_candidate_speaker_mismatch"),
+    ("channels", "measurement_candidate_speaker_mismatch"),
     ("unknown_role", "measurement_filters_invalid"),
     ("malformed_filter", "measurement_filters_invalid"),
 ])
 def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem, reason):
     candidate = _trial_candidate(tuning_profile)
-    if problem == "topology":
-        tuning_profile.applied_profile["recomposition_snapshot"]["topology_fingerprint"] = "other"
-    elif problem == "crossover":
-        preset = candidate.source_preset
-        candidate = replace(candidate, source_preset=replace(
-            preset, crossover_regions=(replace(preset.crossover_regions[0], fc_hz=2300.0),),
-        ))
+    if problem == "crossover":
+        candidate = replace(candidate, source_preset=replace(candidate.source_preset, crossover_regions=(
+            replace(candidate.source_preset.crossover_regions[0], fc_hz=2300.0),
+        )))
+    elif problem == "channels":
+        outputs = candidate.source_preset.channel_map.outputs
+        candidate = replace(candidate, source_preset=replace(candidate.source_preset, channel_map=replace(
+            candidate.source_preset.channel_map, outputs=tuple(replace(output, index=1-output.index) for output in outputs),
+        )))
     else:
         candidate = replace(candidate, linearization={
             "other" if problem == "unknown_role" else "woofer": {"filters": [
@@ -336,29 +337,12 @@ def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem
     assert exc.value.reason == reason
 
 
-@pytest.mark.parametrize("scope", ["base", "speaker_tune"])
-@pytest.mark.parametrize("field, value", [
-    ("gain_db", "broken"), ("gain_db", True), ("gain_db", 1.0),
-    ("delay_ms", float("nan")), ("delay_ms", -1.0), ("delay_ms", 21.0),
-    ("inverted", "false"), ("inverted", None),
-])
-def test_saved_corrections_refuse_instead_of_becoming_defaults(tuning_profile, scope, field, value):
-    tuning_profile.applied_profile["recomposition_snapshot"]["corrections"]["tweeter"][field] = value
-    with pytest.raises(MeasurementGraphRefused) as exc:
-        compile_tuning_graph(tuning_profile, scope=scope)
-    assert exc.value.reason == "measurement_corrections_invalid"
-
-
-def test_the_room_candidate_scope_always_names_its_candidate():
-    """The new scope joins the candidate scopes, which never stand alone."""
-
-    assert "room_candidate" in GRAPH_SCOPES
-    assert {"room_candidate", "bass_candidate"} <= CANDIDATE_SCOPES
+@pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
+def test_candidate_scopes_require_a_named_candidate(scope):
+    assert set(GRAPH_SCOPES) == {"drivers", "candidate", "candidate_branches"}
     with pytest.raises(ValueError):
-        MeasureSpec(kind="baseline", graph_scope="room_candidate")
-    assert MeasureSpec(
-        kind="baseline", graph_scope="room_candidate", candidate_id="fp-a",
-    ).candidate_id == "fp-a"
+        MeasureSpec(kind="baseline", graph_scope=scope)
+    assert MeasureSpec(kind="baseline", graph_scope=scope, candidate_id="fp-a").candidate_id == "fp-a"
 
 
 def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
@@ -370,7 +354,7 @@ def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
     ``linearization_gain`` moves one filter off the applied tune.
     """
 
-    snapshot = tuning_profile.applied_profile["recomposition_snapshot"]
+    snapshot = _saved_tuning(tuning_profile)["recomposition_snapshot"]
     corrections = snapshot["corrections"]
     linearization = deepcopy(snapshot["linearization"])
     if linearization_gain is not None:
@@ -392,62 +376,45 @@ def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
     )
 
 
-def test_a_room_candidate_graph_rides_the_applied_speaker_tune(tuning_profile):
-    """Layer 3 plays the candidate's room set through the tune below it.
-
-    Filter-for-filter equality with the ``speaker_tune`` graph, once the room
-    PEQs are set aside, is what proves the room scope adds the room layer and
-    changes nothing else about the tune underneath it.
-    """
-
-    candidate = _room_candidate(tuning_profile)
-    text = compile_tuning_graph(
-        tuning_profile, scope="room_candidate", candidate=candidate,
-    )
-    room = yaml.safe_load(text)
-    tune = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="speaker_tune"))
-
+@pytest.mark.parametrize("layers", ["speaker", "room", "bass"])
+def test_trial_plays_composed_layers_independent_of_the_applied_profile(tuning_profile, layers, monkeypatch):
+    candidate = _room_candidate(tuning_profile, linearization_gain=-9.0)
+    candidate = replace(candidate, room_correction={} if layers == "speaker" else candidate.room_correction,
+                        bass_extension=BASS_EXTENSION if layers == "bass" else {})
+    applied_room = deepcopy(_room_correction())
+    for filters in applied_room["sides"].values():
+        for entry in filters:
+            entry["gain"] = -1.0
+    applied = _saved_tuning(tuning_profile)
+    applied["recomposition_snapshot"]["room_correction"] = applied_room
+    monkeypatch.setattr("jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state", lambda: applied)
+    text = compile_tuning_graph(tuning_profile, candidate=candidate)
+    expected = compile_candidate_config(candidate, playback_device=tuning_profile.playback_device,
+                                        room_peqs=candidate_room_peqs(candidate))
+    assert yaml.safe_load(text) == yaml.safe_load(expected)
     assert extract_room_peqs_from_config_text(text) == list(candidate_room_peqs(candidate))
-    assert {
-        name: entry for name, entry in room["filters"].items()
-        if not name.startswith("room_peq_")
-    } == tune["filters"]
-    assert not any(name.startswith("room_peq_") for name in tune["filters"])
-    assert not set(room["filters"]) & sound_filter_slot_names()
 
 
-@pytest.mark.parametrize("candidate, reason", [
-    (lambda profile: None, "measurement_candidate_required"),
-    (_trial_candidate, "measurement_candidate_no_room"),
-    (
-        lambda profile: _room_candidate(profile, linearization_gain=-9.0),
-        "measurement_candidate_tune_mismatch",
-    ),
-])
-def test_the_room_scope_refuses_what_it_cannot_prove(tuning_profile, candidate, reason):
-    """A room trial is only evidence when it plays the tune that will apply."""
+@pytest.mark.parametrize("scope", ["candidate", "candidate_branches"])
+def test_an_unprovable_composed_graph_refuses_before_play(tuning_profile, monkeypatch, scope):
+    from jasper.active_speaker import measurement_emit
 
-    with pytest.raises(MeasurementGraphRefused) as exc:
-        compile_tuning_graph(
-            tuning_profile, scope="room_candidate", candidate=candidate(tuning_profile),
-        )
-    assert exc.value.reason == reason
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
+    graph = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
+    for entry in graph["filters"].values():
+        if "Highpass" in entry.get("parameters", {}).get("type", ""):
+            entry["parameters"]["type"] = entry["parameters"]["type"].replace("Highpass", "Lowpass")
+    monkeypatch.setattr(measurement_emit, "compile_candidate_config", lambda *a, **kw: yaml.safe_dump(graph))
+    with pytest.raises(MeasuredCrossoverCandidateError) as exc:
+        compile_tuning_graph(tuning_profile, scope=scope, candidate=candidate)
+    assert exc.value.code == "tweeter_unprotected"
 
 
-def test_the_candidate_scope_refuses_a_candidate_carrying_a_room_layer(tuning_profile):
-    """The plain-candidate graph emits no room PEQs, so a room candidate
-    compiled under it would be captured as a graph missing part of itself."""
-
-    with pytest.raises(MeasurementGraphRefused) as exc:
-        compile_tuning_graph(
-            tuning_profile, scope="candidate",
-            candidate=_room_candidate(tuning_profile),
-        )
-    assert exc.value.reason == "measurement_candidate_room_scope"
-
-
-def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning_profile):
+@pytest.mark.parametrize("layers", ["speaker", "room", "bass"])
+def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning_profile, layers):
     candidate = _trial_candidate(tuning_profile, trim=-5, gain=4)
+    candidate = replace(candidate, room_correction={} if layers == "speaker" else _room_correction(),
+                        bass_extension=BASS_EXTENSION if layers == "bass" else {})
     original = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
     split = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="candidate_branches", candidate=candidate))
     assert split["filters"] == original["filters"]
@@ -470,51 +437,51 @@ BASS_EXTENSION = {
 }
 
 
-@pytest.mark.parametrize("scope", ["speaker_tune", "room_tune", "applied", "bass_candidate"])
-def test_room_and_bass_scopes_preserve_saved_upstream_layers(tuning_profile, scope):
-    from jasper.bass_extension.dynamic_graph import validated_base_graph
+@pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
+def test_peak_admission_uses_the_composed_bass_layer(tuning_profile, scope):
     from jasper.active_speaker.measurement_emit import measurement_bass_extension
 
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
-    snapshot = tuning_profile.applied_profile["recomposition_snapshot"]
-    snapshot["room_correction"] = dict(candidate.room_correction)
-    snapshot["bass_extension"] = dict(candidate.bass_extension)
-    saved = deepcopy(tuning_profile.applied_profile)
-    selected = candidate if scope == "bass_candidate" else None
-    text = compile_tuning_graph(tuning_profile, scope=scope, candidate=selected)
-    graph = yaml.safe_load(text)
-    descriptor = measurement_bass_extension(tuning_profile, scope=scope, candidate=selected)
-    if descriptor:
-        graph = validated_base_graph(graph, descriptor, (0,))
-    expected, issues = recompose_applied_baseline_yaml(
-        tuning_profile.topology, applied_profile=saved,
-        room_peqs=() if scope == "speaker_tune" else None,
-        bass_extension={},
+    assert measurement_bass_extension(scope=scope, candidate=candidate) == candidate.bass_extension
+
+
+@pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
+def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, tmp_path, purpose):
+    from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
+
+    candidate = candidate_from_applied_profile(tuning_profile.topology, _saved_tuning(tuning_profile), purpose=purpose)
+    banked = publish_authored_candidate(candidate, root=tmp_path)
+    reopened = find_banked_candidate(banked.fingerprint, root=tmp_path).candidate
+    assert reopened.fingerprint == candidate.fingerprint
+    assert yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=reopened)) == yaml.safe_load(
+        compile_tuning_graph(tuning_profile, candidate=candidate)
     )
-    assert not issues and graph == yaml.safe_load(expected)
-    assert bool(descriptor) is (scope in {"applied", "bass_candidate"})
-    assert tuning_profile.applied_profile == saved
 
 
-@pytest.mark.parametrize("change, reason", [
-    ("speaker", "measurement_candidate_tune_mismatch"),
-    ("room", "measurement_candidate_room_mismatch"),
-    ("missing_bass", "measurement_candidate_no_bass"),
-    ("wrong_scope", "measurement_candidate_bass_scope"),
-])
-def test_bass_trial_refuses_upstream_changes(tuning_profile, change, reason):
-    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
-    tuning_profile.applied_profile["recomposition_snapshot"]["room_correction"] = dict(candidate.room_correction)
-    if change == "speaker":
-        candidate = replace(candidate, role_attenuations_db={"woofer": -3.0, "tweeter": -4.25})
-    elif change == "room":
-        candidate = replace(candidate, room_correction={})
-    elif change == "missing_bass":
-        candidate = replace(candidate, bass_extension={})
-    with pytest.raises(MeasurementGraphRefused) as exc:
-        compile_tuning_graph(
-            tuning_profile,
-            scope="room_candidate" if change == "wrong_scope" else "bass_candidate",
-            candidate=candidate,
-        )
-    assert exc.value.reason == reason
+def test_baselines_are_banked_once_per_program_at_run_open(tuning_profile, tmp_path, monkeypatch):
+    from jasper.active_speaker import candidate_parts
+    from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
+    calls = []
+    monkeypatch.setattr(candidate_parts, "load_output_topology_strict", lambda: tuning_profile.topology)
+    monkeypatch.setattr(candidate_parts, "load_applied_baseline_profile_state", lambda: _saved_tuning(tuning_profile))
+    def bank(candidate):
+        calls.append(candidate.fingerprint)
+        return publish_authored_candidate(candidate, root=tmp_path)
+    monkeypatch.setattr(candidate_parts, "publish_authored_candidate", bank)
+    ids = candidate_parts.baseline_candidate_ids(["speaker", "room", "speaker", None, "room"])
+    assert set(ids) == {"speaker", "room"}
+    assert len(calls) == len(set(calls)) == 2
+    assert all(find_banked_candidate(identity, root=tmp_path).fingerprint == identity for identity in ids.values())
+
+
+@pytest.mark.parametrize("fault", [OSError("unreadable"), ValueError("invalid")])
+def test_baseline_open_refuses_by_registry_code(monkeypatch, fault):
+    from jasper.active_speaker import candidate_parts
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
+    def broken():
+        raise fault
+    monkeypatch.setattr(candidate_parts, "load_output_topology_strict", broken)
+    with pytest.raises(MeasurementGraphRefused) as refused:
+        candidate_parts.baseline_candidate_ids(["speaker"])
+    assert refused.value.code == "measurement_baseline_unavailable"
+    assert refused.value.code in REASON_REGISTRY

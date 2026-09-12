@@ -5,7 +5,7 @@
 """Binary resolution and bounded-subprocess offline render invocation.
 
 Native-render derivation: see
-``docs/historical/bass-extension-waves/limiter-tap-realization.md``.
+``docs/adr/0304-the-bass-level-axis-is-fixed-level-windows.md``.
 
 This module owns its own binary resolution and subprocess shape. It does
 **not** import :mod:`jasper.dsp_apply` — that module's ``_camilladsp_binary``

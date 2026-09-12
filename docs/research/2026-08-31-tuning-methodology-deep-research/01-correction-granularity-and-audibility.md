@@ -1,7 +1,7 @@
 # Deep research 1 — correction granularity, filter budgets, and audibility
 
-> Owner-run deep research, received 2026-08-31, answering Wave 6 ticket
-> 6.9's first assignment (see `docs/tuning-master-plan.md`). Banked
+> Owner-run deep research, received 2026-08-31, answering Wave 6's first
+> research assignment. Banked
 > verbatim below the rule; synthesis and any re-adjudication ADRs live
 > outside this file. Frozen: no further edits.
 

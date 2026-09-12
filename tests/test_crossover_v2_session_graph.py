@@ -370,12 +370,12 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
     with pytest.raises(SessionGraphError):
         graph.installed_graph_yaml()
-    for named in ("candidate", "room_candidate"):
+    for named in ("candidate", "candidate_branches"):
         with pytest.raises(SessionGraphError):
             graph.select_scope(named, "")
     scopes = [
-        ("drivers", ""), ("base", ""), ("speaker_tune", ""),
-        ("candidate", "a"), ("candidate", "b"), ("room_candidate", "a"),
+        ("drivers", ""), ("candidate", "base-speaker"), ("candidate", "base-room"),
+        ("candidate", "a"), ("candidate", "b"), ("candidate_branches", "a"),
     ]
     fingerprints = {}
     for scope, candidate_id in scopes * 2:
@@ -398,7 +398,7 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
         graph.installed_graph_yaml()
 
 
-@pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate"])
+@pytest.mark.parametrize("scope", ["candidate", "candidate_branches"])
 @pytest.mark.parametrize("change", ["none", "path", "anchor", "live", "unmarked"])
 async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     tmp_path, tuning_profile, scope, change, monkeypatch,
@@ -409,8 +409,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
     text = compile_tuning_graph(
-        tuning_profile, scope="base" if scope == "candidate" else scope,
-        candidate=_trial_candidate(tuning_profile) if scope == "candidate" else None,
+        tuning_profile, scope=scope, candidate=_trial_candidate(tuning_profile),
     )
     cam = FakeCam(entry_path=_entry(tmp_path))
 
@@ -425,7 +424,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     cam.get_active_config_raw = live
     cam.normalize_config_raw = normalize
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=lambda *_: text)
-    graph.select_scope(scope, "candidate" if scope == "candidate" else "")
+    graph.select_scope(scope, "candidate")
     fingerprint = await graph.install()
     assert graph.graph_yaml() == text
     played = object()

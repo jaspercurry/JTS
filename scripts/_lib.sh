@@ -46,7 +46,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # With none of those, sourcing REFUSES (exit 78) instead of guessing
 # `jts.local`: on a multi-speaker LAN that name resolves to whichever box
 # claimed it, so a guess deploys to, or measures, the wrong speaker
-# silently (issue #3498, docs/tuning-master-plan.md invariant 7).
+# silently (issue #3498).
 #
 # PI_USER is a login, not an identity: caller, then file, then `pi`.
 #

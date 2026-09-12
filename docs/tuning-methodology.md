@@ -278,5 +278,5 @@ or Schroeder estimate is derived.
 
 ## 12. Bass
 
-The [bass extension plan](HANDOFF-bass-extension-plan.md) owns the dynamic
-bass program and its measurement workflow.
+The [Bass runbook](tuning-operator-runbook.md#bass) is the operator entry point;
+[ADR-0304](adr/0304-the-bass-level-axis-is-fixed-level-windows.md) owns its level axis.
