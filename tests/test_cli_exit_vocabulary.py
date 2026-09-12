@@ -252,8 +252,6 @@ def _room_grade_argv(round_: _FixtureRound) -> list[str]:
     return ["room-grade", str(round_.measured)]
 
 
-#: How each view is run against that round -- or, for a view this fixture
-#: cannot feed, why not.
 _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "entry": lambda r: ["entry", str(r.measured)],
     "frozen": _NO_CLOUD_GROUP,
@@ -265,6 +263,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "co-metrics": _NO_CLOUD_GROUP,
     "directivity": _NO_CLOUD_GROUP,
     "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
+    "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
     "forward-model": _NO_CAPTURES,
     "sweep": _NO_CAPTURES,
     "frequency": lambda r: ["frequency", str(r.measured)],
