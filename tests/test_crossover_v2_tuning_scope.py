@@ -308,6 +308,17 @@ def test_candidate_compilation_carries_all_parts_and_its_own_identity(tuning_pro
     assert _saved_tuning(tuning_profile)["recomposition_snapshot"]["linearization"] == LINEARIZATION
 
 
+@pytest.mark.parametrize("field, value", [("protection_highpass_floor_hz", 40.0), ("sensitivity_db", 80.0)])
+def test_candidate_compile_accepts_a_redeclared_driver_fact(tuning_profile, field, value):
+    candidate = _trial_candidate(tuning_profile)
+    drivers = dict(candidate.source_preset.drivers)
+    drivers["woofer"] = replace(drivers["woofer"], **{field: value})
+    candidate = replace(candidate, source_preset=replace(candidate.source_preset, drivers=drivers))
+    assert getattr(tuning_profile.preset.drivers["woofer"], field) != value
+    assert compile_tuning_graph(tuning_profile, candidate=candidate) == compile_tuning_graph(
+        tuning_profile, candidate=_trial_candidate(tuning_profile))
+
+
 @pytest.mark.parametrize("problem, reason", [
     ("crossover", "measurement_candidate_speaker_mismatch"),
     ("channels", "measurement_candidate_speaker_mismatch"),

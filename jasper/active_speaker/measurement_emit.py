@@ -85,9 +85,12 @@ def measurement_bass_extension(
 
 
 def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset) -> None:
-    # ADR-0303 frees tuning values, not the physical speaker assignment.
+    # ADR-0303 frees tuning values, not the physical speaker assignment. A driver's
+    # declared sensitivity and protection floor evolve with the declaration and
+    # the emitter reads them from the live profile, so they are not identity.
     def structure(value: ActiveSpeakerPreset) -> tuple[Any, ...]:
-        return (value.way_count, value.channel_map, value.drivers, value.local_subwoofer, tuple(
+        drivers = {role: (spec.manufacturer, spec.model) for role, spec in value.drivers.items()}
+        return (value.way_count, value.channel_map, drivers, value.local_subwoofer, tuple(
             replace(region, delay_ms=None, delay_target_driver=None,
                     lower_polarity="non-inverted", upper_polarity="non-inverted")
             for region in value.crossover_regions
