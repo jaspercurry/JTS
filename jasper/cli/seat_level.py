@@ -271,7 +271,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         assert result.gain_db is not None and result.leveled_db_spl is not None
         assert reader is not None and reader.provenance is not None
         write_seat_level_reference(reference_volume_db=result.gain_db, measured_db_spl=result.leveled_db_spl,
-            target=target, sensitivity=sensitivity.to_dict(), max_main_volume_db=ceiling_db, stimulus=reader.provenance)
+            target=target, sensitivity=sensitivity.to_dict(), max_main_volume_db=ceiling_db,
+            stimulus=reader.provenance, ambient_report=result.ambient_report)
         detail = f"reference {result.gain_db:.2f} dB measured {result.leveled_db_spl:.1f} dB SPL"
     else:
         reason_spec = REASON_REGISTRY.get(str(result.reason))

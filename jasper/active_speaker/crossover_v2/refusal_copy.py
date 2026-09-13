@@ -136,6 +136,7 @@ REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
+REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT = "run_level_pilots_under_ambient"
 REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
 REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
@@ -856,6 +857,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_WALK_LEVEL_POLICY_INVALID, TEMPLATE_HARD_STOP, 0, "",
         'Correct the measurement level settings before starting.',
         next_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
+                     "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT: ReasonSpec(
+        REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT, TEMPLATE_HARD_STOP, 0, "",
+        'The requested level puts the summed pilots below the required signal-to-noise floor.',
+        next_action={"id": 'correct_walk_levels', "label": 'Choose a level within the measurement limits',
                      "href": '/sound/speaker/crossover/'},
     ),
     REASON_VOLUME_RESTORE_DEFERRED: ReasonSpec(

@@ -106,6 +106,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `round_set_unknown` | Select a set listed in the run manifest. |  | `hard_stop` |
 | `round_take_selection_required` | Select a retained take from this set with the take selector. |  | `hard_stop` |
 | `round_take_unknown` | Select a retained take from this set. |  | `hard_stop` |
+| `run_level_pilots_under_ambient` | The requested level puts the summed pilots below the required signal-to-noise floor. | Choose a level within the measurement limits | `hard_stop` |
 | `seat_anchor_unusable` | Run jasper-seat-level with the current microphone, then measure. | Run jasper-seat-level with the current microphone, then measure | `hard_stop` |
 | `seat_level_watchdog_expired` | Leveling timed out. Check the audio connection and try again. |  | `fix_and_retry` |
 | `session_ceiling_expired` | The whole measurement ran out of time while it was still waiting for the microphone to reach a position. Start over from this page once the microphone can be moved through the walk more quickly. |  | `session_restart` |

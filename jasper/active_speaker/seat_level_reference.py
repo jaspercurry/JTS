@@ -164,6 +164,7 @@ def write_seat_level_reference(
     sensitivity: dict[str, Any],
     max_main_volume_db: float,
     stimulus: StimulusProvenance | None = None,
+    ambient_report: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish one converged reference. Called ONLY on a converged ramp.
@@ -194,10 +195,8 @@ def write_seat_level_reference(
         "target": target.to_dict(),
         "mic_sensitivity": dict(sensitivity),
         "max_main_volume_db": round(float(max_main_volume_db), 3),
-        # Always a key, ``None`` when the pass measured no stimulus: a consumer
-        # must be able to tell "banked against a stimulus nobody recorded" from
-        # "this build does not record stimuli", and a missing key cannot.
         "stimulus": None if stimulus is None else stimulus.to_dict(),
+        "ambient_report": None if ambient_report is None else dict(ambient_report),
     }
     atomic_write_json(path, payload, mode=0o640)
     return payload

@@ -10,9 +10,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ, ExcitationProgram
-from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder
+from jasper.audio_measurement.snr_policy import framed_ambient_band_report
+from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder, select_capture_channel
 
 from .auto_level import reading_budget
 from .capture_provenance import stimulus_peak_dbfs
@@ -109,7 +112,7 @@ class SweepLevelReader:
         self.first = False
         return float(observed)
 
-    async def read_ambient(self) -> float:
+    async def read_ambient(self) -> tuple[float, dict[str, Any]]:
         duration_s = self.program().total_samples / PROGRAM_SAMPLE_RATE_HZ
         recorder = make_wired_recorder(
             self.device, sample_rate_hz=PROGRAM_SAMPLE_RATE_HZ, max_capture_s=duration_s + READING_OVERHEAD_S,
@@ -120,8 +123,12 @@ class SweepLevelReader:
             # Drain startup before abort, including when a second cancel arrives.
             await resilient_restore(asyncio.to_thread(recorder.start))
             await asyncio.sleep(duration_s)
+            recording = await resilient_restore(asyncio.to_thread(recorder.finish, tail_s=0))
         finally:
             await resilient_restore(asyncio.to_thread(recorder.abort))
-        if recorder.failure is not None:
-            raise recorder.failure
-        return self.monitor.loudest_half_second_db_spl
+        _, mono, _ = select_capture_channel(recording, declared_channel=self.monitor.channel)
+        report = await asyncio.to_thread(
+            framed_ambient_band_report, mono.astype(np.float64) / np.iinfo(np.int32).max,
+            recording.sample_rate_hz, percentile=95,
+        )
+        return self.monitor.loudest_half_second_db_spl, report
