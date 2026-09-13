@@ -1268,3 +1268,19 @@ def test_the_planner_always_discloses_what_the_normalize_gave_back():
     assert set(record.fields["normalized_trim_db"]) == set(
         plan.role_attenuations_db
     )
+
+
+def test_bank_time_plan_uses_each_declared_driver_budget():
+    conductor = _conductor()
+    conductor._fit_budget_by_role = {
+        "woofer": {"max_filters": 1, "max_gain_db": 2},
+        "tweeter": {"max_filters": 3, "boost_floor_hz": 3000, "max_giveback_db": 4},
+    }
+    analysis = _analysis(CANDIDATE_FIT["program_id"])
+    plan = conductor._plan_linearization(analysis, analysis.candidate, None)
+    for role, budget in conductor._fit_budget_by_role.items():
+        fit = plan.linearization[role]
+        assert {key: fit["budget"][key] for key in budget} == budget
+        assert len(fit["filters"]) <= budget["max_filters"]
+        assert fit["correction_giveback_db"] <= fit["budget"]["max_giveback_db"]
+        assert all(abs(f["gain"]) <= fit["budget"]["max_gain_db"] for f in fit["filters"])

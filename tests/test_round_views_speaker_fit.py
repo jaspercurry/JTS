@@ -200,3 +200,24 @@ def test_unreadable_candidate_uses_registry_code(speaker_round, source_preset, c
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "unreadable"
     assert result["reason"] == round_views.REASON_UNREADABLE
+
+
+@pytest.mark.parametrize("overrides", [[], ["--max-filters", "1", "--boost-floor-hz", "600", "--max-gain-db", "2", "--max-giveback-db", "1"]])
+def test_speaker_fit_reads_declared_budgets_and_only_overrides_stdout(speaker_round, capsys, overrides):
+    root, *_ = speaker_round
+    path = root / "design-draft.json"
+    draft = json.loads(path.read_text())
+    budget = {"max_filters": 3, "boost_floor_hz": 300, "max_gain_db": 8, "max_giveback_db": 4}
+    draft["driver_safety_profile"] = {"targets": [{"role": "woofer", "fit_budget": budget}]}
+    path.write_text(json.dumps(draft))
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", *overrides]) == 0
+    result = json.loads(capsys.readouterr().out)
+    expected = {"max_filters": 1, "boost_floor_hz": 600, "max_gain_db": 2, "max_giveback_db": 1} if overrides else budget
+    fit = result["linearization"]["woofer"]["fit"]
+    assert fit["budget"] == expected
+    assert len(fit["filters"]) <= expected["max_filters"]
+    assert all(abs(f["gain"]) <= expected["max_gain_db"] for f in fit["filters"])
+    assert fit["correction_giveback_db"] <= expected["max_giveback_db"]
+    assert result["linearization"]["tweeter"]["fit"]["budget"]["max_filters"] == (1 if overrides else 8)
+    assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}

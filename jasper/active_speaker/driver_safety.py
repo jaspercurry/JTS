@@ -38,6 +38,7 @@ from .driver_protection import (
     format_low_limit,
     resolve_driver_low_limit,
 )
+from .linearization_budget import normalise_fit_budget
 from .measurement import active_driver_targets, physical_driver_target
 
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
@@ -721,6 +722,11 @@ def normalise_driver_safety_fields(
             value.get("required_protection_filters"),
             f"{field_name}.required_protection_filters",
         )
+    if "fit_budget" in value:
+        try:
+            out["fit_budget"] = normalise_fit_budget(value["fit_budget"])
+        except ValueError as exc:
+            raise DriverSafetyProfileError(f"{field_name}.{exc}") from exc
     cabinet = _normalise_cabinet(value.get("cabinet"), f"{field_name}.cabinet")
     if cabinet is not None:
         out["cabinet"] = cabinet
@@ -1845,6 +1851,7 @@ def _profile_core(
             ),
             "measurement_band_hz": derived.get("measurement_band_hz"),
             "level_duration_limits": visible.get("level_duration_limits", {}),
+            "fit_budget": visible.get("fit_budget"),
             "cabinet": visible.get(
                 "cabinet",
                 {
@@ -2148,6 +2155,7 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "field_provenance",
                 "authority",
                 "code_owned_policy",
+                "fit_budget",
             },
         )
         _require_canonical_text_field(
@@ -2262,6 +2270,7 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         # sides of this comparison omit them and agree, while re-deriving would
         # ADD a ``recommended_highpass_hz`` the stored target never had.
         declared_fields = safety_fields | {
+            "fit_budget",
             "recommended_highpass_hz",
             "recommended_highpass_slope_db_per_octave",
         }

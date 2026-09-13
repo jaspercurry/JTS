@@ -339,6 +339,7 @@ def plan_for_candidate(
     cloud_phase_planned: bool,
     plan_linearization: Callable[..., LinearizationPlan],
     journal: Callable[[Any], None] | None = None,
+    fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> LinearizationPlan:
     """Assemble ONE candidate's planner request and run the pure planner.
 
@@ -376,6 +377,7 @@ def plan_for_candidate(
         roles=roles,
         excited_band_hz=excited_band_hz,
         driver_class_by_role=driver_class_by_role,
+        fit_budget_by_role=fit_budget_by_role,
         # Boost permission's one necessary condition, plus the clause telling
         # "no cloud by design" apart from "a cloud was planned and lost". The
         # planner cannot see a session's phase list, so the host answers both.

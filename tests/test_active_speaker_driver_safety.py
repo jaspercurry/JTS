@@ -3983,3 +3983,29 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
         evaluate_driver_safety_profile(profile, topology).confirmed_and_current
         is False
     )
+
+
+@pytest.mark.parametrize("budget,accepted", [
+    ({}, True), ({"max_filters": 3, "boost_floor_hz": 300, "max_gain_db": 8, "max_giveback_db": 4}, True),
+    ({"max_filters": 0}, False), ({"max_filters": 9}, False), ({"max_filters": 1.5}, False),
+    ({"max_filters": True}, False), ({"boost_floor_hz": 0}, False), ({"boost_floor_hz": float("nan")}, False),
+    ({"max_gain_db": 0}, False), ({"max_giveback_db": 0}, True),
+    ({"max_gain_db": -1}, False), ({"max_gain_db": 13}, False), ({"max_gain_db": True}, False),
+    ({"max_giveback_db": -1}, False), ({"max_giveback_db": 19}, False),
+    ({"max_giveback_db": float("inf")}, False), ({"extra": 1}, False), (None, False),
+])
+def test_declared_target_fit_budget_round_trip_and_refusal(budget, accepted):
+    topology = mono_output_topology(card_id=None)
+    manual = _manual_settings()
+    manual["drivers"][0]["fit_budget"] = budget
+    if not accepted:
+        with pytest.raises(DriverSafetyProfileError):
+            build_driver_safety_profile(topology, manual_settings=manual, driver_research=None, saved_at="2026-09-12T00:00:00Z")
+        return
+    draft = build_design_draft(topology, manual_settings=manual, created_at="2026-09-12T00:00:00Z")
+    profile = draft["driver_safety_profile"]
+    assert profile["targets"][0].get("fit_budget", {}) == budget
+    assert evaluate_driver_safety_profile(profile, topology).confirmed_and_current
+    profile["targets"][0]["fit_budget"] = {"max_filters": 9}
+    _refingerprint_profile(profile)
+    assert evaluate_driver_safety_profile(profile, topology).status == "malformed"

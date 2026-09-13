@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -379,6 +379,7 @@ class DriverEvidence:
     response: Any
     excited_band_hz: tuple[float, float]
     driver_class: str = "unknown"
+    fit_budget: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -851,12 +852,12 @@ def fit_branches(
     core = {role: core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role]) for role in responses}
     blind = measurement_hole_bands_hz(list(core.values()))
     fits = {
-        role: fit_driver_linearization(
-            response, envelopes[role], vocabulary=vocabulary,
-            radiating_band_hz=radiating[role], blind_bands_hz=blind,
-            target=branch_target(sections.get(role, ()), envelopes[role].freqs_hz),
+        driver.role: fit_driver_linearization(
+            driver.response, envelopes[driver.role], vocabulary=vocabulary.with_budget(driver.fit_budget),
+            radiating_band_hz=radiating[driver.role], blind_bands_hz=blind,
+            target=branch_target(sections.get(driver.role, ()), envelopes[driver.role].freqs_hz),
         )
-        for role, response in responses.items()
+        for driver in drivers
     }
     return BranchFits(envelopes, fits, radiating, core, blind)
 
@@ -1573,6 +1574,7 @@ def request_from_analysis(
     post_apply_verifies: bool,
     cloud_phase_planned: bool,
     cloud: Any = None,
+    fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> LinearizationRequest:
     """Assemble a request from a ``ProgramAnalysis`` and its raw candidate.
 
@@ -1604,6 +1606,7 @@ def request_from_analysis(
             response=response,
             excited_band_hz=(float(band[0]), float(band[1])),
             driver_class=str(driver_class_by_role.get(role, "unknown")),
+            fit_budget=(fit_budget_by_role or {}).get(role, {}),
         )
     return LinearizationRequest(
         context=context,
