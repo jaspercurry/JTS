@@ -111,6 +111,9 @@ class RunManifest:
         self._attempts += 1
         self._context = {**stop, "attempt": attempt, "pose_index": pose_index}
 
+    def mark_not_measured(self, index: int, reason: str) -> None:
+        next(stop for stop in self.planned if stop["index"] == index)["reason"] = reason
+
     def allocate_take_id(self) -> str:
         self._ordinal += 1
         return f"{self.run_id}_take_{self._ordinal:04d}"
