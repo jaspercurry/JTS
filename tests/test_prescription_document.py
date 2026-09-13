@@ -232,7 +232,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
         ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
         {"woofer": 0, "tweeter": 1}, "null",
     )
-    baseline = yaml.safe_load(compile_tuning_graph(profile, candidate=candidate_from_applied_profile(topology, applied, purpose="bass")))
+    baseline = yaml.safe_load(compile_tuning_graph(profile, candidate=candidate_from_applied_profile(topology, applied)))
     proposed = yaml.safe_load(compile_tuning_graph(profile, scope="candidate", candidate=child))
     assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline
     assert applied == original

@@ -633,7 +633,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.run_manifest import RunManifest
     from tests.engine_twin import FakeSeams as EngineSeams
-    from tests.test_plan_run import _Store, _analysis, _walk, _SCOPES
+    from tests.test_plan_run import _Store, _analysis, _walk
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from jasper.active_speaker.plan_run import PlanCapture
     from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
@@ -657,7 +657,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
         stop_event=control.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=control.complete, retake_event=control.retake,
         manifest=manifest, request=request, captures=captures,
-        analyze=_analysis, assessor=None, candidate_scopes=_SCOPES,
+        analyze=_analysis, assessor=None,
         position_gate=gate,
     )
     return runner, session, fakes, manifest, control, flow
@@ -869,7 +869,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
 
 
 @pytest.mark.parametrize("gain_plan", [None, {"woofer": -50.0, "tweeter": -57.0}])
-def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
+def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.web.correction_run_host import compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
@@ -877,7 +877,7 @@ def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
     program = compose_plan_program(conductor, spec, None)
-    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db if gain_plan is None else max(gain_plan.values())
+    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
     windowed = compose_plan_program(conductor, spec, -60.0)
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)
@@ -892,7 +892,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
     from tests.engine_twin import FakeSeams
-    from tests.test_plan_run import _Store, _walk, _SCOPES
+    from tests.test_plan_run import _Store, _walk
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
@@ -916,7 +916,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
         stop_event=signals.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=signals.complete, retake_event=signals.retake,
         manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
-        analyze=analyze, assessor=assessor, candidate_scopes=_SCOPES,
+        analyze=analyze, assessor=assessor,
     )
     await run(session)
     assert manifest.status == "complete"
@@ -941,7 +941,7 @@ async def test_room_take_sidecar_keeps_the_played_stimulus(tmp_path):
     bundle = Path(info["bundle_dir"])
     store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
     request = AngleCaptureRequest(stops=(AngleStop(0, REGIME_SUMMED, purpose="room", candidate_id="room"),), candidates=("room",))
-    capture, = prepare_plan_captures(request, candidate_scopes={"room": "candidate"})
+    capture, = prepare_plan_captures(request)
     phase = capture.spec.program_phase
     program = build_verify_program(2500, sweep_s=1.5)
     wav = bundle / "lateral_01_program.wav"

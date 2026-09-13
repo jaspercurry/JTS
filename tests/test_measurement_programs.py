@@ -200,8 +200,8 @@ def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> Non
     }
 
 
-@pytest.mark.parametrize("program,purpose,scope", [("room", mp.PURPOSE_ROOM, "speaker"), ("bass", mp.PURPOSE_BASS, "room")])
-def test_room_and_bass_plans_preserve_their_upstream_layers(program, purpose, scope) -> None:
+@pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM), ("bass", mp.PURPOSE_BASS)])
+def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> None:
     cloud = mp.program(program, "cloud")
     quick = mp.program(program, "quick")
 
@@ -212,7 +212,6 @@ def test_room_and_bass_plans_preserve_their_upstream_layers(program, purpose, sc
     assert {row.purpose for row in (cloud, quick)} == {purpose}
     assert {row.regime for row in (cloud, quick)} == {mp.REGIME_SUMMED}
     assert mp.gate_exemption(cloud.purpose) == mp.SEAT_EXEMPT
-    assert mp.baseline_scope(cloud.purpose) == scope
 
 
 @pytest.mark.parametrize(

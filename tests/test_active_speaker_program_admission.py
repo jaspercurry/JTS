@@ -657,7 +657,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph_yaml = compile_tuning_graph(MeasurementGraphProfile(
         preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
-    ), candidate=candidate_from_applied_profile(topology, applied, purpose="room"))
+    ), candidate=candidate_from_applied_profile(topology, applied))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
         session_volume_db=-20.0, fc_hz=2000,
@@ -886,7 +886,7 @@ def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_
         topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
     )
-    graph = compile_tuning_graph(measurement, candidate=candidate_from_applied_profile(topology, applied, purpose="bass"))
+    graph = compile_tuning_graph(measurement, candidate=candidate_from_applied_profile(topology, applied))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
         session_volume_db=-20, fc_hz=1600,

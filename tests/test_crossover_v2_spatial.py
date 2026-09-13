@@ -32,10 +32,6 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import pose_curve, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
-    ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
-    MEASURE_KIND_BASELINE,
-    MEASURE_KIND_CANDIDATE,
-    MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
     POLARITY_INVERTED,
     REFERENCE_MARK_DESIGN_AXIS,
@@ -631,83 +627,11 @@ def test_a_take_record_does_not_overwrite_the_envelopes_document_type(builder):
     ] == POSITION_EVIDENCE_KIND
 
 
-def test_a_takes_kind_is_read_off_the_graph_and_never_off_the_phase():
-    """``PHASE_LATERAL`` is a baseline OR a candidate check; only the graph says.
-
-    A silent ``phase → kind`` map does not merely mislabel some records — it is
-    not well defined. One per-driver walk is the "before" when it ran on the
-    round's entry graph and the candidate check when it ran on an applied one,
-    and the take id, the pose and the phase are identical either way.
-    """
-    kinds = {
-        pose["measure_kind"]
-        for pose in (
-            _pose_record(
-                graph_fingerprint="fp-entry",
-                claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
-            ),
-            _pose_record(
-                graph_fingerprint="fp-candidate",
-                claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
-            ),
-        )
-    }
-
-    assert kinds == {MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE}
-    assert kinds <= set(MEASURE_KINDS)
-
-
-def test_a_re_measure_after_the_apply_is_a_verify_and_not_a_candidate():
-    """The one branch the pose pins above can never reach.
-
-    A verify take and a candidate take BOTH played through a graph that is not
-    the round's "before", so the fingerprints alone cannot separate them — the
-    phase is what says this capture is the re-measure that grades an apply
-    rather than the check that proposed it. That is the single job ``phase``
-    has here, and it is why the rest of the rule refuses to read it.
-    """
-    verify = _cloud_record(
-        phase=PHASE_CLOUD_VERIFY,
-        graph_fingerprint="fp-candidate",
-        claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
-    )
-    candidate = _cloud_record(
-        phase=PHASE_CLOUD_MEASURE,
-        graph_fingerprint="fp-candidate",
-        claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
-    )
-
-    assert verify["measure_kind"] == MEASURE_KIND_VERIFY
-    assert candidate["measure_kind"] == MEASURE_KIND_CANDIDATE
-
-
-@pytest.mark.parametrize(
-    "graph_fingerprint, baseline_fingerprint",
-    [
-        (ENTRY_GRAPH_FINGERPRINT_UNKNOWN, "fp-entry"),
-        ("fp-candidate", ENTRY_GRAPH_FINGERPRINT_UNKNOWN),
-        ("", "fp-entry"),
-        ("fp-candidate", ""),
-    ],
-)
-def test_a_take_whose_graph_is_unnamed_says_so_instead_of_guessing(
-    graph_fingerprint, baseline_fingerprint,
-):
-    """Both spellings of "no graph", from both sides of the comparison.
-
-    ``""`` is what a host that could not name its graph leaves, and
-    ``unknown`` is what ``entry_graph_fingerprint`` returns when no applied
-    profile was found. Either one on either side and the kind is unresolvable —
-    so the record says nothing rather than picking the wrong one, which is
-    ``baseline_record_id``'s precedent: an honest fact about the capture, never
-    a refusal to bank it.
-    """
-    record = _pose_record(
-        graph_fingerprint=graph_fingerprint,
-        claim=spatial.TakeClaim(baseline_fingerprint=baseline_fingerprint),
-    )
-
-    assert record["measure_kind"] == ""
+@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record, _phase_record])
+@pytest.mark.parametrize("kind", ["", *MEASURE_KINDS])
+def test_take_kind_is_the_declared_capture_kind(builder, kind):
+    record = builder(graph_fingerprint="fp-entry", claim=spatial.TakeClaim(measure_kind=kind))
+    assert record["measure_kind"] == kind
 
 
 @pytest.mark.parametrize(

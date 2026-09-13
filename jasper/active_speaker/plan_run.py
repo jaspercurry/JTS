@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from threading import Event
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -30,7 +30,6 @@ from .angle_capture import (
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
-from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
@@ -136,14 +135,12 @@ class PlanCapture:
 
 
 def prepare_plan_captures(
-    request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
-    roles_bands: Sequence[RoleBand] = (),
+    request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = (),
 ) -> tuple[PlanCapture, ...]:
     """Derive preparation and requested captures together (ADR-0297)."""
     resolved = resolve_request(request)
-    baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
-    placed = stop_specs(request, candidate_scopes=candidate_scopes,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids,
+    placed = stop_specs(request,
+                        prompts=tuple(stop.prompt for stop in resolved), baseline_id=BASE_CANDIDATE,
                         roles_bands=roles_bands)
     captures: list[PlanCapture] = []
     if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
@@ -157,8 +154,8 @@ def prepare_plan_captures(
             kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
             headline="", detail="", regime=REGIME_SUMMED),),
                                candidates=(), repeats=1)
-        base_spec, = stop_specs(base_request, candidate_scopes={},
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids,
+        base_spec, = stop_specs(base_request,
+                                prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
         assert base_spec is not None
         captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
@@ -172,18 +169,6 @@ def prepare_plan_captures(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
         )), offset % request.repeats + 1))
     return tuple(captures)
-
-
-def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
-    """Verify named candidates at run open; every trial uses its composed graph."""
-    try:
-        scopes = {}
-        for candidate_id in sorted(set(candidate_ids) - {""}):
-            candidate_bank.find_banked_candidate(candidate_id)
-            scopes[candidate_id] = "candidate"
-        return scopes
-    except candidate_bank.CandidateBankRefusal as exc:
-        raise LateralWalkRefused(exc.code, exc.detail) from exc
 
 
 @dataclass
@@ -225,7 +210,7 @@ async def run_plan(
     request: AngleCaptureRequest, *, session: TuningSession | None = None, manifest: RunManifest,
     door: RunDoor | None = None,
     analyze: Analyze, gate: PositionGate | None = None,
-    candidate_scopes: Mapping[str, str], aborts: Mapping[type[BaseException], str],
+    aborts: Mapping[type[BaseException], str],
     signals: RunSignals | None = None, spl_monitor: str = "",
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
@@ -234,12 +219,11 @@ async def run_plan(
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
-    from .candidate_parts import baseline_candidate_ids  # lazy: baseline composition loads DSP analysis
+    from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
     manifest.request_fingerprint = request_fingerprint(request)
     manifest.program = request.program
     manifest.spl_monitor = spl_monitor
-    manifest.baseline_graph = request.baseline_graph_scope
     manifest.asked = {
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)),
@@ -251,16 +235,13 @@ async def run_plan(
     try:
         resolved = resolve_request(request)
         try:
-            # Remove the CLI shape when W1-15 supplies prepared captures to this host.
+            needs_base = (any(stop.plays_summed and not stop.candidate_id for stop in request.stops)
+                          if captures is None else any(capture.spec.candidate_id == BASE_CANDIDATE for capture in captures))
+            baseline_id = baseline_candidate_id() if needs_base else ""
             if captures is None:
-                specs = stop_specs(request, candidate_scopes=candidate_scopes,
-                                   prompts=tuple(stop.prompt for stop in resolved),
-                                   baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
-                                                                       if stop.plays_summed and not stop.candidate_id))
+                specs = stop_specs(request, prompts=tuple(stop.prompt for stop in resolved), baseline_id=baseline_id)
             else:
-                baselines = baseline_candidate_ids(capture.stop.purpose for capture in captures
-                                                   if capture.spec.candidate_id == BASE_CANDIDATE)
-                specs = tuple(replace(capture.spec, candidate_id=baselines[capture.stop.purpose or "speaker"])
+                specs = tuple(replace(capture.spec, candidate_id=baseline_id)
                               if capture.spec.candidate_id == BASE_CANDIDATE else capture.spec for capture in captures)
         except ValueError as exc:
             raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc

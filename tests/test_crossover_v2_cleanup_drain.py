@@ -41,7 +41,7 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
         SimpleNamespace(_measure_gain_ceiling_db={}), door=door,
         stop_event=threading.Event(), stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=threading.Event(), retake_event=threading.Event(),
-        manifest=None, request=None, captures=None, analyze=None, assessor=None, candidate_scopes={},
+        manifest=None, request=None, captures=None, analyze=None, assessor=None,
     )
     if failure:
         with pytest.raises(failure):

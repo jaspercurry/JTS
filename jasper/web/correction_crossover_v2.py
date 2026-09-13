@@ -3387,7 +3387,7 @@ def prepare_v2_session(
         request = report.plan
         assert request.level.resolved is not None
         captures = prepare_plan_captures(
-            request, candidate_scopes=report.candidate_scopes, roles_bands=context.roles_bands,
+            request, roles_bands=context.roles_bands,
         )
         try:
             protection_sections = confirmed_protection_sections(
@@ -3659,7 +3659,6 @@ def prepare_v2_session(
             retake_event=retake_event,
             manifest=manifest, analyze=analyze, assessor=assessor,
             request=run_request, captures=run_captures,
-            candidate_scopes={} if verify_only else report.candidate_scopes,
         )
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc

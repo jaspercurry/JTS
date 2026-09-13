@@ -5,7 +5,7 @@
 """Resolve a measurement plan from supplied facts, without opening resources."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping
 
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
@@ -76,7 +76,6 @@ class PreflightReport:
     schedule: tuple[ScheduledCapture, ...]
     price: Mapping[str, int | float | None]
     spl_ceiling_db_spl: float | None
-    candidate_scopes: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def blocking(self) -> bool:
@@ -91,7 +90,6 @@ class PreflightReport:
             "issues": [asdict(issue) for issue in self.issues],
             "schedule": [asdict(capture) for capture in self.schedule],
             "mic_moves": self.mic_moves, "price": dict(self.price),
-            "baseline_graph_scope": self.plan.baseline_graph_scope,
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
             "level": {"resolved": self.plan.level.resolved is not None,
                       **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},
@@ -170,4 +168,4 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         )
     ) if valid_shape else ()
     price = walk_price(plan) if valid_shape else {}
-    return PreflightReport(plan, tuple(issues), schedule, price, ceiling, scopes)
+    return PreflightReport(plan, tuple(issues), schedule, price, ceiling)

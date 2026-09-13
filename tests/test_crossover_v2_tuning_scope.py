@@ -37,6 +37,9 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
 from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+from jasper.active_speaker import angle_capture as ac, candidate_parts, measurement_programs as mp
+from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile,
     MeasurementGraphRefused,
@@ -266,7 +269,7 @@ def test_saved_tune_composes_with_its_declared_driver_protection(tuning_profile)
                  "family_or_equivalent": "equivalent_or_steeper"}]},
         ],
     }
-    candidate = candidate_from_applied_profile(tuning_profile.topology, saved, purpose="room")
+    candidate = candidate_from_applied_profile(tuning_profile.topology, saved)
     expected, issues = recompose_applied_baseline_yaml(
         tuning_profile.topology, applied_profile=saved, bass_extension={}, room_peqs=(), playback_device="null",
     )
@@ -277,23 +280,25 @@ def test_saved_tune_composes_with_its_declared_driver_protection(tuning_profile)
         role: entry["gain_db"] for role, entry in saved["recomposition_snapshot"]["corrections"].items()}
 
 
-@pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
-def test_program_baselines_keep_only_their_lower_layers(tuning_profile, tmp_path, purpose):
+@pytest.mark.parametrize("purpose", mp.PURPOSES)
+def test_program_baselines_keep_every_applied_layer(tuning_profile, purpose):
     saved = _saved_tuning(tuning_profile)
     snapshot = saved["recomposition_snapshot"]
     snapshot["room_correction"] = _room_correction()
     snapshot["bass_extension"] = BASS_EXTENSION
     before = deepcopy(saved)
-    candidate = candidate_from_applied_profile(tuning_profile.topology, saved, purpose=purpose)
+    candidate = candidate_from_applied_profile(tuning_profile.topology, saved)
     graph = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
-    assert bool(candidate.linearization) is (purpose != "speaker")
-    assert bool(candidate.blend_correction) is (purpose != "speaker")
-    assert bool(candidate.room_correction) is (purpose == "bass")
-    assert not candidate.bass_extension
+    assert candidate.linearization and candidate.blend_correction
+    assert candidate.room_correction == snapshot["room_correction"]
+    assert candidate.bass_extension.items() >= snapshot["bass_extension"].items()
+    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose=purpose),))
+    spec, = ac.stop_specs(request, baseline_id=candidate.fingerprint,
+                         prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    assert spec.candidate_id == candidate.fingerprint
     assert candidate.role_attenuations_db == {role: entry["gain_db"] for role, entry in snapshot["corrections"].items()}
     expected, issues = recompose_applied_baseline_yaml(
-        tuning_profile.topology, applied_profile=saved, bass_extension={},
-        room_peqs=None if purpose == "bass" else (), drop_measured_correction=purpose == "speaker",
+        tuning_profile.topology, applied_profile=saved,
     )
     assert not issues and graph == yaml.safe_load(expected)
     assert graph["devices"]["volume_limit"] == 0.0
@@ -480,11 +485,9 @@ def test_peak_admission_uses_the_composed_bass_layer(tuning_profile, scope):
     assert measurement_bass_extension(scope=scope, candidate=candidate) == candidate.bass_extension
 
 
-@pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
-def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, tmp_path, purpose):
-    from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
+def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, tmp_path):
 
-    candidate = candidate_from_applied_profile(tuning_profile.topology, _saved_tuning(tuning_profile), purpose=purpose)
+    candidate = candidate_from_applied_profile(tuning_profile.topology, _saved_tuning(tuning_profile))
     banked = publish_authored_candidate(candidate, root=tmp_path)
     reopened = find_banked_candidate(banked.fingerprint, root=tmp_path).candidate
     assert reopened.fingerprint == candidate.fingerprint
@@ -493,9 +496,7 @@ def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, t
     )
 
 
-def test_baselines_are_banked_once_per_program_at_run_open(tuning_profile, tmp_path, monkeypatch):
-    from jasper.active_speaker import candidate_parts
-    from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
+def test_baseline_is_banked_once_at_run_open(tuning_profile, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(candidate_parts, "load_output_topology_strict", lambda: tuning_profile.topology)
     monkeypatch.setattr(candidate_parts, "load_applied_baseline_profile_state", lambda: _saved_tuning(tuning_profile))
@@ -503,20 +504,17 @@ def test_baselines_are_banked_once_per_program_at_run_open(tuning_profile, tmp_p
         calls.append(candidate.fingerprint)
         return publish_authored_candidate(candidate, root=tmp_path)
     monkeypatch.setattr(candidate_parts, "publish_authored_candidate", bank)
-    ids = candidate_parts.baseline_candidate_ids(["speaker", "room", "speaker", None, "room"])
-    assert set(ids) == {"speaker", "room"}
-    assert len(calls) == len(set(calls)) == 2
-    assert all(find_banked_candidate(identity, root=tmp_path).fingerprint == identity for identity in ids.values())
+    identity = candidate_parts.baseline_candidate_id()
+    assert calls == [identity]
+    assert find_banked_candidate(identity, root=tmp_path).fingerprint == identity
 
 
 @pytest.mark.parametrize("fault", [OSError("unreadable"), ValueError("invalid")])
 def test_baseline_open_refuses_by_registry_code(monkeypatch, fault):
-    from jasper.active_speaker import candidate_parts
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
     def broken():
         raise fault
     monkeypatch.setattr(candidate_parts, "load_output_topology_strict", broken)
     with pytest.raises(MeasurementGraphRefused) as refused:
-        candidate_parts.baseline_candidate_ids(["speaker"])
+        candidate_parts.baseline_candidate_id()
     assert refused.value.code == "measurement_baseline_unavailable"
     assert refused.value.code in REASON_REGISTRY

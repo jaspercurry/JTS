@@ -49,20 +49,14 @@ from .pose_curve import (
 from ..measurement_programs import POSE_KIND_BEARING, validated_pose
 from .contracts import (
     DESIGN_AXIS_DEG,
-    ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
-    MEASURE_KIND_BASELINE,
-    MEASURE_KIND_CANDIDATE,
-    MEASURE_KIND_VERIFY,
     POSITION_AXES,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
     CaptureValidity,
 )
 from .journey import (
-    PHASE_CLOUD_VERIFY,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
-    PHASE_VERIFY,
 )
 from .round_evidence import MeasuredResponse, measured_response_from_analysis
 from .verification import (
@@ -123,7 +117,6 @@ __all__ = [
     "geometry_retake",
     "take_id_for",
     "TakeClaim",
-    "take_kind",
     "phase_composition",
     "cloud_position_record",
     "analysis_curve_records",
@@ -610,43 +603,6 @@ def take_stop_id(take_id: str) -> str:
     return _ATTEMPT_SUFFIX.sub("", take_id)
 
 
-#: The graph fingerprints that name no graph: ``""`` from a host that could not
-#: name its graph, and :data:`~.contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN` when
-#: no applied profile was found. Neither can classify a take.
-_UNNAMED_GRAPHS = frozenset({"", ENTRY_GRAPH_FINGERPRINT_UNKNOWN})
-
-#: The phases whose captures are a re-measure AFTER an apply.  Used only to
-#: separate ``verify`` from ``candidate`` — never to separate ``baseline`` from
-#: either, which is the split :func:`take_kind` refuses to take from a phase.
-_VERIFY_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY})
-
-
-def take_kind(
-    *, graph_fingerprint: str, baseline_fingerprint: str, phase: str,
-) -> str:
-    """Which of :data:`~.contracts.MEASURE_KINDS` a take is, or ``""``.
-
-    Derived from the GRAPH, never from the phase: a phase → kind map is not well
-    defined, since a lateral walk is a ``baseline`` or a ``candidate`` check
-    depending on what was applied under it (#3130). The rule: equal to the
-    round's pre-apply fingerprint → ``baseline``; a post-apply re-measure phase
-    → ``verify``; otherwise ``candidate``.
-
-    ``graph_fingerprint`` is the applied profile's ``candidate_fingerprint``
-    (:func:`~.coordinator.entry_graph_fingerprint`'s namespace), deliberately
-    NOT the running-config hash. ``baseline_fingerprint`` is the same quantity
-    for the round's "before", so the two are comparable. Either one unnamed
-    returns ``""`` rather than a guess.
-    """
-    if graph_fingerprint in _UNNAMED_GRAPHS or baseline_fingerprint in _UNNAMED_GRAPHS:
-        return ""
-    if graph_fingerprint == baseline_fingerprint:
-        return MEASURE_KIND_BASELINE
-    if phase in _VERIFY_PHASES:
-        return MEASURE_KIND_VERIFY
-    return MEASURE_KIND_CANDIDATE
-
-
 def phase_composition(analysis: Any, *, protection_emitted: bool) -> str:
     """Which composition the curves on this analysis carry, or ``""``.
 
@@ -684,9 +640,6 @@ class TakeClaim:
     one record shape. Every field defaults empty because an unstated field is an
     honest fact about the capture, never a refusal to bank it.
 
-    ``baseline_fingerprint`` is the round's pre-apply graph, the comparand
-    :func:`take_kind` needs; the take's OWN graph is a separate builder keyword.
-
     ``level_db`` is the PROVEN fader level and ``stimulus_dbfs`` is the ladder
     rung the stimulus played at — two quantities on purpose, since a ladder
     moves the stimulus and never the claim. ``level_db`` is optional here where
@@ -699,7 +652,7 @@ class TakeClaim:
     ``uuid4`` hex).
     """
 
-    baseline_fingerprint: str = ""
+    measure_kind: str = ""
     baseline_record_id: str = ""
     candidate_id: str = ""
     polarity: str = ""
@@ -741,12 +694,6 @@ def _take_identity(
     never the index. Recorded whether or not any store retained the bytes.
     ``claim.wav_path`` is its pointer sibling.
 
-    Spelled ``measure_kind`` rather than the engine record's ``kind`` because
-    :func:`take_kind` can honestly answer ``""``: ``kind`` is read by MEMBERSHIP
-    in :data:`~.contracts.MEASURE_KINDS`, which ``""`` fails, while
-    ``measure_kind`` is read by the key's PRESENCE, which carries an unresolved
-    take through. :meth:`~.record_store.BankedRecordStore.bank` accepts either
-    spelling and writes back this one.
     """
     return {
         "phase": phase,
@@ -755,11 +702,7 @@ def _take_identity(
         "take_id": take_id_for(position_id, attempt),
         "session_id": session_id,
         "wav_sha256": wav_sha256,
-        "measure_kind": take_kind(
-            graph_fingerprint=graph_fingerprint,
-            baseline_fingerprint=claim.baseline_fingerprint,
-            phase=phase,
-        ),
+        "measure_kind": claim.measure_kind,
         "graph_fingerprint": graph_fingerprint,
         "baseline_record_id": claim.baseline_record_id,
         "candidate_id": claim.candidate_id,

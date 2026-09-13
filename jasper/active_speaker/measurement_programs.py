@@ -84,16 +84,6 @@ def run_purpose(run_program: str | None) -> str:
     return name if not name or name in PURPOSES else program(name, size or None).purpose
 
 
-def baseline_scope(purpose: str | None) -> str:
-    if _validated_purpose(purpose) == PURPOSE_BASS:
-        return "room"
-    return (
-        "speaker"
-        if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_REFERENCE)
-        else "preset"
-    )
-
-
 def gate_exemption(purpose: str | None) -> str | None:
     return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS) else None
 
