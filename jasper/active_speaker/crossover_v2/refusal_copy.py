@@ -65,6 +65,8 @@ REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_CAPTURE_TIMEOUT = "capture_timeout"
+REASON_SPL_LEVEL_UNSETTLED = "spl_level_unsettled"
+REASON_MIC_FEED_LOST = "mic_feed_lost"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # The play seam refused or failed the program (safety re-admission over-cap, a
 # graph-restore failure, a session program error) — distinct from a capture
@@ -151,6 +153,21 @@ REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
+
+CAPTURE_QUALITY_REFUSAL_CODES = frozenset({
+    REASON_AGC_BEHAVIORAL_FAIL,
+    REASON_NOISY_ROOM_LINEARITY,
+    REASON_PILOT_LEVEL_COLLAPSE,
+    REASON_SNR_FLOOR,
+    REASON_ANCHOR_AMBIGUOUS,
+    REASON_ANCHOR_TOO_QUIET,
+    REASON_CLIPPED,
+    REASON_LEVEL_DRIFT_AT_SESSION_GAIN,
+    REASON_DRIFT_BASELINES_DISAGREE,
+    REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
+    REASON_LOCATE_FAILED,
+    REASON_SPL_LEVEL_UNSETTLED,
+})
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
 # The seams raise open-endedly (CamillaUnavailable is a bare Exception,
@@ -428,9 +445,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
        for code, message in (
            ("level_unreachable", "The target level is unreachable at this gain. Check the amplifier and microphone."),
            ("level_ambient_too_high", "The room is too loud to level. Reduce the ambient noise and try again."),
-           ("spl_level_unsettled", "The microphone level did not settle. Try again."),
+           (REASON_SPL_LEVEL_UNSETTLED, "The microphone level did not settle. Try again."),
            ("mic_not_observing", "The microphone did not hear the speaker. Check its position and connection."),
-           ("mic_feed_lost", "The microphone stopped sending samples. Check its connection and try again."),
+           (REASON_MIC_FEED_LOST, "The microphone stopped sending samples. Check its connection and try again."),
            ("mic_clipping", "The microphone clipped. Check the microphone and lower the level."),
            ("volume_latch_unconfirmed", "The amplifier gain could not be confirmed. Check the audio connection."),
            ("fader_above_cap", "The amplifier gain exceeds the 0 dB cap. Lower it before leveling."),

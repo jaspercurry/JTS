@@ -43,7 +43,9 @@ from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATER
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
-from .crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict
+from .crossover_v2.refusal_copy import (
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict,
+)
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
@@ -401,6 +403,7 @@ async def _run(
     previous: int | None = None
     resume: int | None = None
     retry: TakeVerdict | None = None
+    retry_was_measured = False
     playing = [item.spec for item in work]
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
@@ -431,6 +434,13 @@ async def _run(
             ledger = ledgers[item.pose_index]
             if retry is not None:
                 if not ledger.can_retry(retry.charge):
+                    if retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES:
+                        manifest.mark_not_measured(item.stop["index"], retry.fault)
+                        retry = None
+                        retry_was_measured = False
+                        offset = resume if resume is not None else offset + 1
+                        resume = None
+                        continue
                     manifest.reason = retry.fault or "retries_spent"
                     break
                 if retry.next == "fix_and_retake":
@@ -533,9 +543,11 @@ async def _run(
                     break
                 if verdict.next != "accept":
                     retry = verdict
+                    retry_was_measured = outcome.complete and any(record_id for _, record_id in records)
                     continue
                 previous = offset
                 retry = None
+                retry_was_measured = False
                 if signals.retake.is_set():
                     continue
                 offset = resume if resume is not None else offset + 1

@@ -20,7 +20,7 @@ from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE,
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS,
-    TakeVerdict,
+    REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
 )
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -220,7 +220,8 @@ def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charg
     assert len(fakes.banked) == 1 + (MAX_AUTOMATIC_RETAKES_PER_POSITION if charge == "speaker" else budget)
     assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else budget)
     assert gate.progress[-1]["budget"]["left"] == 0
-    assert result.reason == REASON_DRIFT_BASELINES_DISAGREE
+    assert result.reason == ""
+    assert result.not_measured[0]["reason"] == REASON_DRIFT_BASELINES_DISAGREE
 
 
 def test_fix_and_retake_needs_a_fresh_same_pose_grant(monkeypatch):
@@ -231,6 +232,32 @@ def test_fix_and_retake_needs_a_fresh_same_pose_grant(monkeypatch):
     assert gate.grants == [(1, 1), (1, 2)]
     assert result.status == "complete"
     assert any(row["fault"] == REASON_ANCHOR_AMBIGUOUS and row["next_action"] == "fix_and_retake" for row in gate.progress)
+
+
+@pytest.mark.parametrize("quality_refusal", [True, False])
+def test_unresolved_stop_skips_only_capture_quality_refusals(monkeypatch, quality_refusal):
+    reason = REASON_ANCHOR_AMBIGUOUS if quality_refusal else REASON_SPL_CEILING_EXCEEDED
+    if quality_refusal:
+        verdicts = iter([
+            TakeVerdict(True),
+            *(TakeVerdict(False, reason, next="fix_and_retake", charge="operator") for _ in range(4)),
+            TakeVerdict(True),
+        ])
+        monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
+        seams = FakeSeams()
+    else:
+        monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(True))
+        seams = FakeSeams(play=FakePlay(script=[("restore", ""), ("ready", reason)]))
+
+    result, fakes = asyncio.run(_run_gated(
+        _walk([0, 20, 40]), seams=seams, gate=AnsweredGate() if quality_refusal else None,
+    ))
+
+    assert result.status == "partial"
+    assert result.reason == ("" if quality_refusal else reason)
+    assert fakes.play.bearings == ([0, 20, 20, 20, 20, 40] if quality_refusal else [0, 20])
+    assert [stop["index"] for stop in result.not_measured] == ([2] if quality_refusal else [2, 3])
+    assert all(stop["reason"] == reason for stop in result.not_measured)
 
 
 @pytest.mark.parametrize("action", ["retake", "complete"])
