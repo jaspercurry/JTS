@@ -581,6 +581,16 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
         assert not fakes.banked
 
 
+@pytest.mark.parametrize("candidate,base", [("base", True), ("fp-a", False)])
+def test_manifest_stamps_base_sets_after_graph_resolution(candidate, base):
+    request = _walk([0], (candidate,))
+    result, _ = asyncio.run(_run_gated(request, captures=plan_run.prepare_plan_captures(request, candidate_scopes=_SCOPES)))
+    groups = result.to_dict()["sets"]
+    assert groups and all(group["base"] is base for group in groups)
+    assert {group["capture_basis"]["candidate_id"] for group in groups} == {
+        "baseline-speaker" if base else candidate}
+
+
 @pytest.mark.parametrize("levels", [(-20,), (-20, -14), (-20, -20)])
 @pytest.mark.parametrize("stop_on_deferred", [False, True])
 @pytest.mark.parametrize("defer_after", [None, 2, 4])

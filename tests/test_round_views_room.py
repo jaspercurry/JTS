@@ -209,7 +209,6 @@ def test_room_views_analyze_wired_takes_without_banked_curves(
     else:
         flags = ["--calibration-root", str(calibration_root)] if copied_calibration else []
         assert _run(capsys, [view, str(root), *flags])["n_positions"] == 3
-    analyzed_room_documents.assert_called_once_with(bundle, calibration_root=calibration_root)
     median = json.loads((root / "room.json").read_text())["median"]
     assert median["n_positions"] == 3
     assert set(median["evidence"]["pose_keys"]) == {
@@ -300,6 +299,34 @@ def test_room_without_an_incumbent_discloses_null_and_reason(room_round, capsys,
     answer = _run(capsys, ["room-grade", str(room_round)])
     assert answer["incumbent"] is None
     assert answer["incumbent_reason"] == reason
+
+
+@pytest.mark.parametrize("windows", [1, 2])
+def test_incumbent_room_finds_the_wired_base(windows):
+    groups = [{"set_id": f"base-{i}", "base": True, "capture_basis": {"candidate_id": "38395a08"},
+               "takes": [{"level_window_db": -20 + i}]} for i in range(windows)]
+    groups.append({"set_id": "trial", "base": False, "capture_basis": {"candidate_id": "trial"},
+                   "takes": [{"level_window_db": -20}]})
+    incumbent, reason = room_views.incumbent_room(
+        {"source": {"measured_candidate_fingerprint": "another-fingerprint"}}, {"sets": groups}, set_id="trial")
+    assert incumbent == {"set_id": "base-0", "round_id": None, "room_median_sha256": None}
+    assert reason == ""
+
+
+def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
+    inputs = round_inputs(room_round)
+    own = resolve_set(inputs, None).set_id
+    selection = select_seat_takes(inputs.session_dir)
+    document = room_views.room_document(
+        selection.takes, set_id=own, evidence=selection.evidence,
+        applied_profile_path=inputs.applied_profile_path, geometry_path=None,
+        manifest={"sets": [{"set_id": own, "capture_basis": {"graph_scope": "room_tune"}, "takes": []}]},
+    )
+    assert document["incumbent"]["set_id"] == own
+    (room_round / "room.json").write_text(json.dumps(document))
+    answer = _run(capsys, ["room-grade", str(room_round)])
+    assert answer["incumbent"] is answer["incumbent_set_id"] is None
+    assert answer["incumbent_reason"] == "room_incumbent_set_unavailable"
 
 
 @pytest.mark.parametrize("change", ["incumbent", "median"])

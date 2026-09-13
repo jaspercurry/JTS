@@ -74,7 +74,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     program = manifest["program"]
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     artifacts: list[dict[str, Any]] = []
-    order = dict.fromkeys((*bookkeeping_views(program), *ARTIFACT_BY_VIEW))
+    order = dict.fromkeys((*(name for name, _, _ in bookkeeping_views(program)), *ARTIFACT_BY_VIEW))
     for view in order:
         spec = ARTIFACT_BY_VIEW[view]
         scoped = "<set-id>" in spec.takes

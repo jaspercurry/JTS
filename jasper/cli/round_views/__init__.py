@@ -164,19 +164,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return failed(EXIT_REFUSED, REASON_REFUSED, str(exc))
 
 
-def view_accepts_set(view: str) -> bool:
-    parser = build_parser()
-    subparsers = next(
-        action for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-    child = subparsers.choices.get(view)
-    return child is not None and any(
-        "--set" in action.option_strings for action in child._actions
-    )
-
-
-def run_bookkeeping(view: str, target: Path, *flags: str) -> dict[str, Any]:
+def run_bookkeeping(
+    view: str, target: Path, *, set_id: str | None = None, incumbent: str | None = None,
+) -> dict[str, Any]:
+    flags = ["--set", set_id] if set_id is not None else []
+    if incumbent is not None:
+        flags += ["--incumbent", incumbent]
     parser = build_parser()
     verbs = next(action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction))
     if view not in verbs:

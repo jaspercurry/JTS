@@ -23,6 +23,7 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle, analyzed_measurements
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
@@ -715,7 +716,7 @@ def summed_capture_bundle(tmp_path, request):
         WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
         bundle, recorder_factory=lambda *_: Recorder(),
     )
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, **fields):
         async def play():
             pass
         configured = replace(capture, setup_reference=lambda: setup)
@@ -730,7 +731,7 @@ def summed_capture_bundle(tmp_path, request):
             "kind": "candidate" if candidate else "baseline", "take_id": take_id,
             "measurement_status": "captured", "incident": "", "phase": "measurement",
             "graph_scope": scope, "candidate_id": candidate, "graph_fingerprint": "a" * 16,
-            "level_db": -20, "stimulus_dbfs": -14, "position_deg": 0,
+            "level_db": -20, "stimulus_dbfs": -14, "position_deg": 0, **fields,
         }, answer)
 
     return bundle, calibration_root, program, bank
@@ -823,11 +824,28 @@ def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle
     ]) == EXIT_UNREADABLE
 
 
-def test_analyzed_document_states_the_gate_it_read_with(summed_capture_bundle):
+@pytest.mark.parametrize("by_take_ids", [False, True])
+def test_room_selection_analyzes_only_selected_takes_and_discloses_its_own_omissions(summed_capture_bundle, by_take_ids):
+    bundle, _, _, bank = summed_capture_bundle
+    fields = {"phase": "lateral", "measurement_purpose": "room", "gating_applied": False}
+    asyncio.run(bank("good", **fields))
+    asyncio.run(bank("skipped", measurement_status="incomplete", **fields))
+    asyncio.run(bank("outside", candidate="another-set", **fields, **(
+        {"wav_hash": "0" * 64} if by_take_ids else {"measurement_status": "incomplete"})))
+    selection = select_seat_takes(bundle, capture_id="good", take_ids=("good", "skipped") if by_take_ids else None)
+    assert [take.take_id for take in selection.takes] == ["good"]
+    assert [(row["take_id"], row["reason"]) for row in selection.evidence["omitted_takes"]] == [
+        ("skipped", "seat_curve_or_pose_unusable")]
+
+
+@pytest.mark.parametrize("banked", [{}, {"gating_applied": True}, {"gating_applied": False}, {"gating_applied": None}])
+def test_analyzed_document_preserves_banked_gating(summed_capture_bundle, banked):
     bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank("take", scope="candidate"))
-    documents = [take.document() for take in analyzed_measurements(bundle)]
-    assert [document["gating_applied"] for document in documents] == [False]
+    take, = analyzed_measurements(bundle)
+    take.record.update(banked)
+    expected = banked.get("gating_applied")
+    assert take.document()["gating_applied"] is (False if expected is None else expected)
 
 
 @pytest.mark.parametrize('summed_capture_bundle', [20000, 200], indirect=True)

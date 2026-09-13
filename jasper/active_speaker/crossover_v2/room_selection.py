@@ -15,19 +15,19 @@ import numpy as np
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.json_fields import finite_float
 
-from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_analysis import analyzed_measurements
 from ..measurement_programs import (
     POSE_KIND_BEARING, PURPOSE_ROOM, resolved_measurement_purpose, validated_pose,
 )
 from .journey import PHASE_LATERAL
 from .position_cycle import parse_curve_magnitude
-from .record_index import Measurement, bundle_measurements, measurement_documents
+from .record_index import Measurement, measurement_documents, record_path
 from .measurement_context import capture_basis
 from .round_captures import RoundCapturesRefused, doc_pose_key
 
 REFUSE_ROOM_SELECTION = "room_capture_selection_required"
 REFUSE_ROOM_CAPTURE = "room_capture_not_found"
+SEAT_UNUSABLE = "seat_curve_or_pose_unusable"
 
 
 @dataclass(frozen=True)
@@ -86,14 +86,14 @@ def select_seat_takes(
     """
     groups: dict[str, list[tuple[Measurement, Mapping[str, Any]]]] = {}
     bases: dict[str, dict[str, Any]] = {}
-    rows_by_path = {f"{EVIDENCE_ROOT}/artifacts/{row.path}": row for row in bundle_measurements(bundle_dir)}
+    documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
+                 if take_ids is None or record.get("take_id") in take_ids}
     analyzed: set[str] = set()
-    for measurement in analyzed_measurements(bundle_dir, calibration_root=calibration_root):
-        row = rows_by_path[measurement.record_path]
+    for measurement in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=documents):
+        row, _ = documents[measurement.record_path]
         analyzed.add(measurement.record_path)
-        record: Mapping[str, Any] = measurement.document()
-        if take_ids is not None and record.get("take_id") not in take_ids:
-            continue
+        documents[measurement.record_path] = row, measurement.document()
+    for row, record in documents.values():
         try:
             purpose = resolved_measurement_purpose(
                 record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
@@ -125,19 +125,14 @@ def select_seat_takes(
         pair[0].captured_at or "", finite_float(pair[1].get("attempt")) or 0, pair[0].path,
     ), reverse=True)
     latest: dict[str, SeatTake] = {}
-    # A capture the analyzer could not open (incident, incomplete) is disclosed, not dropped.
-    omitted = [
-        {"take_id": str(record.get("take_id") or row.path), "record": row.path, "reason": "seat_curve_or_pose_unusable"}
-        for row, record in measurement_documents(bundle_dir)
-        if f"{EVIDENCE_ROOT}/artifacts/{row.path}" not in analyzed
-        and (take_ids is None or record.get("take_id") in take_ids)
-    ]
+    # The analyzer skips a capture with no WAV; disclose it within its selected group.
+    omitted = []
     repeats: list[str] = []
     for row, record in rows:
-        take = _take(row, record)
+        take = _take(row, record) if record_path(row) in analyzed else None
         take_id = str(record.get("take_id") or row.path)
         if take is None:
-            omitted.append({"take_id": take_id, "record": row.path, "reason": "seat_curve_or_pose_unusable"})
+            omitted.append({"take_id": take_id, "record": row.path, "reason": SEAT_UNUSABLE})
         elif take.pose_key in latest:
             repeats.append(take_id)
         else:

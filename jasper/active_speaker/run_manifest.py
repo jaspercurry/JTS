@@ -145,6 +145,8 @@ class RunManifest:
         self, record: Mapping[str, Any], record_id: str, verdict: TakeVerdict, *,
         complete: bool, started_s: float, ended_s: float, level_observation: Mapping[str, Any], ordinal: int = 0,
     ) -> None:
+        from .angle_capture import BASE_CANDIDATE, candidate_identity  # lazy: capture planning import cost
+
         record = {"candidate_id": self._context.get("candidate_id"), **record}
         curves = {curve["role"]: curve for curve in record.get("curves", [])}
         sweeps = [segment for segment in (record.get("program") or {}).get("segments", [])
@@ -162,7 +164,8 @@ class RunManifest:
                 # The composer can cap the requested rung; report the emitted sweep gain.
                 basis["stimulus_dbfs"] = max(gains)
             set_id = json_fingerprint(basis)
-            group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis, "takes": []})
+            group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
+                "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})
             curve = curves.get(role, {})
             band = curve.get("band_hz")
             if band:
