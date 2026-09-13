@@ -2315,14 +2315,16 @@ def build_baseline_profile_candidate(
             playback_device_source=playback_device_source,
         ))
 
-    if measured_candidate is not None and measured_candidate.source_preset != preset:
+    if measured_candidate is not None and (
+        measured_candidate.source_preset.speaker_identity() != preset.speaker_identity()
+    ):
         return finalize(_blocked_payload(
             topology=topology,
             source=source,
             issues=[_issue(
                 "blocker",
                 "measured_candidate_preset_mismatch",
-                "the reviewed measured candidate no longer equals the saved crossover",
+                "the reviewed measured candidate names a different speaker than the saved crossover",
             )],
             status="blocked",
             config_path=config_target,
