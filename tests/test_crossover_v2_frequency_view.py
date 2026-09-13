@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import open_bundle
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
@@ -1133,7 +1134,7 @@ def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
     ('one_level', None), ('same_main', None), ('repeat', None), ('two_candidates', None),
     ('unselected', None), ('entry_baseline', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
     ('duplicate', 'bass_fit_pairs_unavailable'), ('run', 'bass_fit_run_mismatch'),
-    ('candidate', 'bass_fit_candidate_unreadable'),
+    ('candidate', 'bass_fit_candidate_unreadable'), ('base_candidate', 'bass_fit_candidate_unreadable'),
 ])
 def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, capsys, case, reason):
     takes = bass_run.takes
@@ -1170,6 +1171,11 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         bass_run.argv[bass_run.argv.index('--run') + 1] = 'another-run'
     elif case == 'candidate':
         monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact', lambda _: None)
+    elif case == 'base_candidate':
+        def missing_candidate(_):
+            raise CandidateBankRefusal('not_found', 'not found')
+
+        monkeypatch.setattr('jasper.active_speaker.bass_fit.find_banked_candidate', missing_candidate)
     manifest = bass_run.write(takes, selected=selected)
     if case == 'repeat':
         for group in manifest['sets']:
@@ -1181,6 +1187,8 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
     if reason:
         assert code == 1
         assert answer['code'] == reason
+        if case == 'base_candidate':
+            assert answer['detail']['candidate_id'] == 'baseline-fp'
         assert not bass_run.out.exists()
     else:
         assert code == 0

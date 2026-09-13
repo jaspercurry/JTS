@@ -12,8 +12,8 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 
-from .candidate_bank import find_banked_candidate
 from .bass_comparison import bass_capture_context, common_bass_bins, compare_bass_takes
+from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key
 from .crossover_v2.refusal_copy import CrossoverV2Refused
@@ -46,8 +46,16 @@ def fit_bass_shape(
     sources = []
     first = bass_capture_context(pairs[0][0])
     for before, after in pairs:
-        if (not before["record"].get("candidate_id") or after["record"].get("candidate_id") != candidate_id
-                or find_banked_candidate(before["record"]["candidate_id"]).candidate.bass_extension):
+        base_candidate_id = before["record"].get("candidate_id")
+        if not base_candidate_id or after["record"].get("candidate_id") != candidate_id:
+            raise CrossoverV2Refused(code="bass_fit_requires_room_baseline_and_exact_candidate")
+        try:
+            base = find_banked_candidate(base_candidate_id)
+        except CandidateBankRefusal as exc:
+            raise CrossoverV2Refused(
+                {"candidate_id": base_candidate_id}, code="bass_fit_candidate_unreadable",
+            ) from exc
+        if base.candidate.bass_extension:
             raise CrossoverV2Refused(code="bass_fit_requires_room_baseline_and_exact_candidate")
         match = compare_bass_takes(before, after, change="candidate")
         context = bass_capture_context(before)
