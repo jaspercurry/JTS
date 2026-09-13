@@ -42,6 +42,7 @@ from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
+    load_output_topology,
     topology_config_fingerprint,
 )
 
@@ -293,6 +294,106 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
         ),
         "recomposition_snapshot": hashed_snapshot,
     })
+
+
+def reviewed_candidate_refusal(
+    candidate: Mapping[str, Any], expected_candidate_fingerprint: str,
+) -> dict[str, Any] | None:
+    if expected_candidate_fingerprint and candidate.get("candidate_fingerprint") == expected_candidate_fingerprint:
+        return None
+    refused = dict(candidate)
+    refused["permissions"] = {**(refused.get("permissions") or {}), "may_apply": False}
+    refused["issues"] = [*(refused.get("issues") or []), _issue(
+        "blocker", "baseline_candidate_fingerprint_mismatch",
+        "the crossover candidate changed after review; refresh and review the current candidate before applying",
+    )]
+    return {"status": "blocked", "profile": refused, "apply": None, "issues": refused["issues"]}
+
+
+def compile_commissioning_profile(
+    *, topology: OutputTopology | None = None,
+    design_draft: Mapping[str, Any] | None = None, write: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Review the applied candidate, or bootstrap from the declared crossover."""
+    from .candidate_parts import candidate_from_applied_profile, candidate_from_design_draft  # lazy: candidate parts consumes baseline readers
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
+    from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
+    from .measurement_emit import compile_tuning_graph, load_tuning_declaration, MeasurementGraphRefused  # lazy: graph compilation imports baseline readers
+    from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
+    from jasper.sound.settings import saved_sound_layers  # lazy: household settings import baseline readers
+
+    profile: dict[str, Any] = {"artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
+                              "status": "blocked", "permissions": {"may_apply": False}, "issues": []}
+    text = ""
+    try:
+        topology = topology if topology is not None else load_output_topology()
+        draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
+        declaration = load_tuning_declaration(topology, design_draft=draft)
+        applied = load_applied_baseline_profile_state()
+        candidate = (candidate_from_applied_profile(topology, applied) if applied is not None
+                     else candidate_from_design_draft(topology, draft))
+        preference_filters, trim_db = saved_sound_layers()
+        text = compile_tuning_graph(declaration, candidate=candidate,
+                                    preference_filters=preference_filters, output_trim_db=trim_db)
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        target = baseline_candidate_config_path(text)
+        profile.update(prepare_applied_baseline_profile(
+            candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
+            config_path=target, config_sha256=sha,
+        ))
+        profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
+        profile["config"]["exists"] = target.exists()
+        proof = classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text, applied_baseline_state=profile)
+        if not proof.allowed or proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+            raise MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
+        if write:
+            atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
+            profile["config"]["exists"] = True
+            validation = validate_camilla_config(target)
+            if not validation.ok_to_apply:
+                raise MeasurementGraphRefused("baseline_config_validation_failed", validation.to_dict())
+        profile.update(status="ready_to_apply", permissions={"may_apply": True, "may_compile": True})
+    except (CandidateBankRefusal, ValueError) as exc:
+        profile["issues"] = getattr(exc, "issues", None) or [_issue(
+            "blocker", getattr(exc, "code", None) or "compose_refused", str(exc),
+        )]
+    return text, profile
+
+
+async def apply_commissioning_profile(
+    *, expected_candidate_fingerprint: str,
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]],
+    on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
+    from .measurement_emit import load_tuning_declaration  # lazy: graph compilation imports baseline readers
+
+    async with dsp_writer_lock(baseline_config_path().parent, source="active_speaker_baseline_apply"):
+        topology = load_output_topology()
+        draft = load_design_draft(topology=topology)
+        for write in (False, True):
+            text, profile = compile_commissioning_profile(topology=topology, design_draft=draft, write=write)
+            if not profile["permissions"]["may_apply"]:
+                return {"status": "blocked", "profile": profile, "apply": None, "issues": profile["issues"]}
+            refusal = reviewed_candidate_refusal(profile, expected_candidate_fingerprint)
+            if refusal:
+                return refusal
+        declaration = load_tuning_declaration(topology, design_draft=draft)
+        candidate = find_banked_candidate(profile["source"]["measured_candidate_fingerprint"]).candidate
+        prepared = prepare_applied_baseline_profile(
+            candidate, declaration=declaration, design_draft=draft, measurements={}, provenance=profile,
+            config_path=profile["config"]["path"], config_sha256=profile["config"]["sha256"],
+        )
+        if on_candidate_verified is not None:
+            await on_candidate_verified()
+        try:
+            async with load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
+                    load_config=load_config, get_current_config_path=get_current_config_path) as (state, applied):
+                return {"status": "applied", "profile": applied, "apply": state.to_dict(), "issues": []}
+        except DspApplyError as exc:
+            return {"status": "apply_failed", "profile": profile, "apply": exc.state.to_dict(),
+                    "issues": [_issue("blocker", "baseline_profile_apply_failed", str(exc))]}
 
 
 def _canonicalize_camilla_defaults(value: Any) -> Any:
@@ -3051,39 +3152,14 @@ async def _apply_baseline_profile_locked(
             validate=validate,
         )
 
-    def matches_expected(candidate: Mapping[str, Any]) -> bool:
-        actual = baseline_candidate_fingerprint(candidate)
-        return bool(
-            expected_candidate_fingerprint
-            and actual
-            and expected_candidate_fingerprint == actual
-        )
-
-    async def refuse_stale(candidate: Mapping[str, Any]) -> dict[str, Any]:
-        refused = dict(candidate)
-        refused["permissions"] = dict(refused.get("permissions") or {})
-        refused["permissions"]["may_apply"] = False
-        refused["issues"] = [
-            *refused.get("issues", []),
-            _issue(
-                "blocker",
-                "baseline_candidate_fingerprint_mismatch",
-                (
-                    "the crossover candidate changed after review; refresh and "
-                    "review the current candidate before applying"
-                ),
-            ),
-        ]
-        return {
-            "status": "blocked",
-            "profile": refused,
-            "apply": None,
-            "issues": refused["issues"],
-        }
-
     reviewed_candidate = build_candidate(write=False)
-    if expected_candidate_fingerprint is not None and not matches_expected(reviewed_candidate):
-        return await refuse_stale(reviewed_candidate)
+    if expected_candidate_fingerprint is not None:
+        refusal = reviewed_candidate_refusal(
+            {**reviewed_candidate, "candidate_fingerprint": baseline_candidate_fingerprint(reviewed_candidate)},
+            expected_candidate_fingerprint,
+        )
+        if refusal:
+            return refusal
     candidate = build_candidate(write=True)
     if not driver_domain and (candidate.get("config") or {}).get("sha256"):
         from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
