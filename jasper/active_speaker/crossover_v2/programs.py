@@ -48,7 +48,8 @@ PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[
 
 # The neutral drivers graph lacks summed program headroom and linearization
 # cuts: raw drivers can be louder by headroom + the fit budget's largest cut
-# (jts3: 3.1 + 8 dB). Pilots need only SNR; the solve sets MEASURE's level.
+# (jts3: 3.1 + 8 = 11.1 dB, rounded up). Pilots need only SNR; the solve sets
+# MEASURE's level.
 CHECK_PROBE_BACKOFF_DB = 12.0
 
 #: The phases whose capture OPENS a session's playback, and so carries the
