@@ -100,7 +100,8 @@ DEFAULT_UNREADABLE_CEILING_S = 60.0
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
 DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")
 
-# Emitted by experiments/usb-turntable/jts_turntable.py for the observed framing race.
+# Issue #2516: the vendor retries offset/probe/position itself; stop is safe to
+# repeat here because it is idempotent before the absolute position re-homes.
 _VENDOR_HEARTBEAT_FRAME_ERROR = "heartbeat byte appeared inside a protocol frame"
 _VENDOR_RETRY_S = 1.0
 
@@ -352,7 +353,12 @@ class TurntableMover:
             self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
             code = int(getattr(proc, "returncode", 1))
             error = f"{stderr}\n{payload.get('error', '')}"
-            if attempt == 1 and code and _VENDOR_HEARTBEAT_FRAME_ERROR in error:
+            if (
+                attempt == 1
+                and subcommand == "stop"
+                and code
+                and _VENDOR_HEARTBEAT_FRAME_ERROR in error
+            ):
                 log_event(
                     logger,
                     "arm_walk.vendor_tool_retried",
