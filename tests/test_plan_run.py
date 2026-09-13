@@ -23,7 +23,9 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
 )
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
+from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
+from jasper.volume_owner import ClaimKind, volume_owner
 from tests.crossover_v2_fixtures import _loc
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
@@ -682,6 +684,37 @@ async def test_check_plays_at_the_session_level(tmp_path, box, level):
     assert result.status == "complete"
     assert [(call["spec"].program_phase, call["level_db"]) for call in fakes.play.calls] == [
         (phase, level) for phase in ("check", "entry_baseline", "measure")]
+
+
+async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_path, box):
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    fakes = FakeSeams()
+    manifest = RunManifest("run", _Store(fakes.records))
+    door = _run_door(tmp_path, box, fakes, manifest)
+    request = replace(_walk([0, 20, 40]), level=ac.LevelPolicy(resolved=ac.ResolvedLevel(75, -20, "1234")))
+    owner, preemptor = volume_owner(), None
+
+    async def measure(session, spec):
+        nonlocal preemptor
+        outcome = await session.measure(spec)
+        if preemptor is None:
+            preemptor = await owner.acquire_level(ClaimKind.COMMISSIONING, -30)
+        return outcome
+
+    try:
+        result = await plan_run.run_plan(
+            request, door=door, manifest=manifest, analyze=_analysis,
+            candidate_scopes=_SCOPES, aborts=_ABORTS, measure=measure,
+        )
+        assert (result.reason, result.status, result.takes_measured) == ("internal_error", "partial", 1)
+        assert fakes.play.bearings == [0, 20]
+        assert door.opened.restore_result is SessionVolumeRestoreResult.DEFERRED
+        assert result.finalized and not door.is_open
+        assert fakes.graph.restores == 1
+    finally:
+        if preemptor is not None:
+            await owner.release(preemptor)
 
 
 async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
