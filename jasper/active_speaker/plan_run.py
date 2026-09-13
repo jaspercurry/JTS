@@ -294,19 +294,27 @@ async def run_plan(
     levels = tuple(gain + offset for offset in request.level_offsets_db) if gain is not None else ()
     if not levels or (windows is None and (session is None or levels != (session.measurement_level_db,))):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a session factory for its level windows")
+    quietest_level_index = min(range(len(levels)), key=levels.__getitem__)
     expanded = []
     planned: list[dict[str, Any]] = []
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
         rows = list(batch)
-        for level_index, level in enumerate(levels):
-            for offset, spec in rows:
-                stop = {**manifest.planned[offset], "index": len(planned) + 1,
-                        "capture_index": manifest.planned[offset]["index"],
-                        "level_window_db": level, "offset_db": request.level_offsets_db[level_index],
-                        "level_window_index": level_index}
-                planned.append(stop)
-                if spec is not None:
-                    expanded.append((spec, stop, pose_index, level, stops[offset]))
+        scheduled: list[tuple[int, int, MeasureSpec | None]] = [
+            (quietest_level_index, offset, spec) for offset, spec in rows
+            if spec is not None and spec.program_phase == PHASE_CHECK
+        ]
+        scheduled.extend((level_index, offset, spec)
+                         for level_index in range(len(levels)) for offset, spec in rows
+                         if spec is None or spec.program_phase != PHASE_CHECK)
+        for level_index, offset, spec in scheduled:
+            level = levels[level_index]
+            stop = {**manifest.planned[offset], "index": len(planned) + 1,
+                    "capture_index": manifest.planned[offset]["index"],
+                    "level_window_db": level, "offset_db": request.level_offsets_db[level_index],
+                    "level_window_index": level_index}
+            planned.append(stop)
+            if spec is not None:
+                expanded.append((spec, stop, pose_index, level, stops[offset]))
     manifest.planned = planned
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
                                  [row[4].prompt for row in expanded], [row[4].candidate_id for row in expanded])
@@ -410,6 +418,7 @@ async def _run(
     progress: dict[str, Any] = {}
     outer, inner = AsyncExitStack(), AsyncExitStack()
     active_window: tuple[int, int] | None = None
+    check_window_logged = False
     hold: IsolationHold | None = None
     try:
         await manifest.persist()
@@ -499,6 +508,11 @@ async def _run(
                         gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
+                if (not check_window_logged and spec.program_phase == PHASE_CHECK
+                        and item.stop.get("offset_db", 0.0) < 0.0):
+                    log_event(logger, "active_speaker.check_level_window",
+                              level_db=item.level_db, offset_db=item.stop["offset_db"])
+                    check_window_logged = True
                 outcome = await measure(session, spec) if measure else await session.measure(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
