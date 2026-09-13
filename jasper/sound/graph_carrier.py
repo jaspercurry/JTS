@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
@@ -38,6 +38,7 @@ from jasper.sound.camilla_yaml import (
     flat_graph_channel_plan,
     is_base_config,
     is_jts_generated_config,
+    sound_audition_config_path, sound_config_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class ReemitResult:
 
     yaml: str
     room_peq_count: int
+    applied_profile: dict[str, Any] = field(default_factory=dict)
 
 
 class _StereoHostCarrier:
@@ -138,6 +140,9 @@ class _StereoHostCarrier:
             if guard_flat_topology
             else FlatChannelPlan()
         )
+
+    def destination(self, result: ReemitResult, config_dir: str | Path, *, audition: bool = False) -> Path:
+        return sound_audition_config_path(config_dir) if audition else sound_config_path(config_dir)
 
     def _compute_room_peqs(self) -> list:
         raise NotImplementedError
@@ -346,31 +351,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
 
 
 class _ActiveGraphCarrier:
-    """Any active-crossover (roleful) graph — baseline, startup, or commissioning.
-
-    All three are roleful (per-driver split + crossover + limiter + tweeter
-    high-pass) and must never be re-emitted through the stereo template.
-
-    PR-3: the SOLO active *baseline* now hosts preference EQ. It is recomposed
-    from the immutable applied-profile snapshot via the active-speaker emitter —
-    the preference
-    filters fold in PRE-SPLIT, with their worst-case boost rolled into the
-    single ``active_baseline_headroom`` gain (see
-    :func:`jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml`).
-    It NEVER re-emits through the stereo
-    ``emit_sound_config`` template, so the crossover, per-driver limiters, and
-    protective high-pass are preserved by construction (invariant 3). The
-    transient startup/commissioning graphs keep refusing
-    (``eq_on_active_not_wired``); a bonded member refuses
-    (``eq_on_active_bonded_member``) — the deferred active×grouping decision
-    belongs to the Distributed-Active track.
-
-    The baseline-vs-transient distinction is the ``# Source:`` header the runtime
-    verifier keys on (``runtime_contract.ACTIVE_BASELINE_SOURCE``), so the carrier
-    and the verifier cannot disagree about what is a baseline (invariant 1). A
-    header-stripped graph (a CamillaDSP round-trip drops comments) reads as
-    non-baseline and refuses — the safe default.
-    """
+    """The applied speaker candidate with household preference EQ."""
 
     kind = "active"
 
@@ -401,11 +382,7 @@ class _ActiveGraphCarrier:
                 "on top of it isn't available — your crossover and driver "
                 "protection are unchanged.",
             )
-        # Invariant 7: an active baseline that is grouped (already a bonded member,
-        # OR forming a bond right now — the bonded-leader bake is the one caller
-        # that passes member_kwargs) refuses. The active×grouping composition is
-        # deferred to the Distributed-Active track. member_kwargs is the
-        # bake-context signal because grouping.env may not be active yet mid-bake.
+        # Distributed active graphs cannot host household EQ on the driver instance.
         if member_kwargs is not None or _bonded_active_member():
             raise CarrierCannotHostEq(
                 "eq_on_active_bonded_member",
@@ -414,26 +391,22 @@ class _ActiveGraphCarrier:
                 "ungroup it first. Your crossover and driver protection are "
                 "unchanged.",
             )
-        # REDUNDANT here, not forbidden by a stereo-only rule: an armed
-        # active-ring box already derives capture from its own recorded sink
-        # (`active_emit_devices("jts_ring_active_playback")` -> `jts_ring_capture`)
-        # and these STEREO kwargs would stomp a per-driver box. Keyword accepted
-        # for uniformity only.
-        del fanin_coupling_capture_kwargs
-        # By here the carrier has proven this is a SOLO active baseline (bonded
-        # members refused above).
-        yaml = _recompose_active_baseline_with_eq(
-            profile,
-            room_peqs=room_peqs,
-            output_trim_db=output_trim_db,
-            out_path=out_path,
+        del fanin_coupling_capture_kwargs, room_peqs
+        result = _compile_active_baseline_with_eq(profile, output_trim_db=output_trim_db)
+        if out_path is not None:
+            target = self.destination(result, Path(out_path).parent)
+            atomic_write_text(target, result.yaml, mode=CONFIG_FILE_MODE)
+        return result
+
+    def destination(self, result: ReemitResult, config_dir: str | Path, *, audition: bool = False) -> Path:
+        from jasper.active_speaker.baseline_profile import baseline_candidate_config_path, baseline_config_path  # lazy: active graph owner
+
+        if audition:
+            return sound_audition_config_path(config_dir)
+        return baseline_candidate_config_path(
+            result.yaml,
+            Path(config_dir) / baseline_config_path().name,
         )
-        room_peq_count = (
-            len(room_peqs)
-            if room_peqs is not None
-            else len(extract_room_peqs_from_config_text(yaml))
-        )
-        return ReemitResult(yaml=yaml, room_peq_count=room_peq_count)
 
 
 class _UnknownCarrier:
@@ -475,117 +448,31 @@ def _bonded_active_member() -> bool:
     return is_active_member(load_config())
 
 
-def _recompose_active_baseline_with_eq(
-    profile,
-    *,
-    room_peqs: list | None = None,
-    output_trim_db: float = 0.0,
-    out_path: str | Path | None = None,
-):
-    """Recompose the SOLO active baseline with ``profile``'s preference EQ
-    inserted pre-split, returning the emitted YAML (written to ``out_path`` when
-    given).
+def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0) -> ReemitResult:
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state, prepare_applied_baseline_profile  # lazy: active graph owner
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
+    from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: active graph compilation
+    from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME, classify_bass_extension_graph  # lazy: active graph proof
+    from jasper.sound.profile import build_sound_filter_slots  # lazy: profile DSP imports NumPy
 
-    Rebuilds the structural baseline from the immutable applied-profile snapshot
-    via ``recompose_applied_baseline_yaml`` rather than parsing the running config
-    — so the crossover/limiter/protective-HP come from the canonical builder,
-    not a lossy round-trip — and raises :class:`CarrierCannotHostEq` if that
-    snapshot can no longer produce a baseline, whether because the evidence is
-    gone, because the runtime contract rejects the rebuild, or because an L0
-    emit gate refuses it outright (see the re-raise below). ``output_trim_db`` (the
-    household's manual headroom + loudness-match attenuation) is folded into the
-    active headroom so the active path honours it like the stereo path. All
-    imports are lazy: this only runs for a speaker that already IS an active
-    baseline, so the active-speaker + sound-profile deps stay out of the base
-    wizard path.
-
-    THE ENDPOINT IS TRANSPORT STATE, NOT APPLIED EVIDENCE, so it comes from the
-    box and not from the snapshot. The applied snapshot is deliberately
-    immutable, which means it keeps naming whichever lane was resolved at Apply
-    time — on a ring-armed roleful box, the snd-aloop lane forever. Letting that
-    reach the emitter is how BOTH seams that pass through here de-armed a live
-    box: ``reconcile_current_dsp`` on every deploy and on the arm ladder's own
-    coupling rung (issue #2339, observed on jts3 2026-08-11 —
-    ``captures/r7b-jts3-arm3-20260811T162742Z`` files 14-16: fan-in and outputd
-    on the ring, CamillaDSP re-pointed back to the aloop pair, silence with every
-    daemon healthy and ``writer_alive=False``), and a ``/sound/`` or ``/sound/eq/``
-    save (issue #2337). :func:`~jasper.active_speaker.playback_route.
-    resolve_live_active_endpoint` is the one derivation of where the box
-    actually is; ``None`` from it falls through to the snapshot default inside
-    the recomposer, which is byte-identical to the pre-fix behaviour.
-    """
-    from jasper.active_speaker.baseline_profile import (
-        applied_bass_extension,
-        load_applied_baseline_profile_state,
-        recompose_applied_baseline_yaml,
-    )
-    from jasper.active_speaker.playback_route import resolve_live_active_endpoint
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_bass_extension_graph,
-    )
-    from jasper.output_topology import load_output_topology
-    from jasper.sound.profile import build_sound_filter_slots
-
-    topology = load_output_topology()
-    applied_profile = load_applied_baseline_profile_state() or {}
-    preference_filters = build_sound_filter_slots(profile)
-    live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
+    applied = load_applied_baseline_profile_state() or {}
     try:
-        bass_extension = applied_bass_extension(applied_profile)
-        yaml, issues = recompose_applied_baseline_yaml(
-            topology,
-            applied_profile=applied_profile,
-            room_peqs=room_peqs,
-            preference_filters=preference_filters,
-            output_trim_db=output_trim_db,
-            out_path=None,
-            playback_device=live_endpoint,
-            bass_extension=bass_extension,
-        )
-    except ValueError as exc:
-        raise CarrierCannotHostEq(
-            "active_baseline_recompose_unavailable",
-            "JTS couldn't rebuild this speaker's active baseline to add sound "
-            f"EQ: {exc}. Your crossover and driver protection are unchanged.",
-        ) from exc
-    if yaml is None:
-        detail = (issues[0].get("message") if issues else None) or (
-            "the saved active-speaker measurement/crossover evidence is unavailable"
-        )
-        raise CarrierCannotHostEq(
-            "active_baseline_recompose_unavailable",
-            "JTS couldn't rebuild this speaker's active baseline to add sound EQ: "
-            f"{detail}. Your crossover and driver protection are unchanged.",
-        )
-    graph = classify_bass_extension_graph(
-        topology,
-        evidence_source="desired",
-        graph_text=yaml,
-        applied_baseline_state=applied_profile,
-    )
-    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
-        detail = (
-            graph.issues[0].get("message") if graph.issues else None
-        ) or "the recomposed active baseline did not pass the runtime contract"
-        raise CarrierCannotHostEq(
-            "active_baseline_recompose_unavailable",
-            "JTS rebuilt this speaker's active baseline, but the safety "
-            f"contract rejected it: {detail}. Your crossover and driver "
-            "protection are unchanged.",
-        )
-    if out_path is not None:
-        target = Path(out_path)
-        if not target.parent.exists():
-            raise FileNotFoundError(
-                f"parent directory does not exist: {target.parent}"
-            )
-        atomic_write_text(target, yaml, mode=CONFIG_FILE_MODE)
-    return yaml
-
-
-
-
+        draft = load_design_draft()
+        declaration = load_tuning_declaration(design_draft=draft)
+        candidate = candidate_from_applied_profile(declaration.topology, applied)
+        text = compile_tuning_graph(declaration, candidate=candidate,
+            preference_filters=build_sound_filter_slots(profile), output_trim_db=output_trim_db)
+        graph = classify_bass_extension_graph(declaration.topology, evidence_source="desired", graph_text=text,
+            applied_baseline_state={"recomposition_snapshot": {"bass_extension": candidate.bass_extension}})
+        if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+            raise ValueError(graph.classification)
+        prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={}, provenance=applied)
+        prepared["config"]["sound_layer"] = {"profile": profile.to_dict(), "output_trim_db": output_trim_db}
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not compile the saved speaker tune: {exc}") from exc
+    return ReemitResult(text, len(extract_room_peqs_from_config_text(text)), prepared)
 
 
 def _classify_loaded_config(current_path: str | Path) -> dict | None:

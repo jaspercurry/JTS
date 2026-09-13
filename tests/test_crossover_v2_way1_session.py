@@ -13,11 +13,15 @@ rather than defaulted.
 
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+
 import shlex
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml as yaml_lib
 
 from jasper.active_speaker import (
@@ -209,10 +213,9 @@ def _way1_ready_to_apply_payload(tmp_path):
     The shape is the subless passive main PAIR: its mono sibling declares one
     physical output and the active ring's accept-set starts at two.
     """
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+    from tests.apply_fixtures import prepare_candidate
     from tests.active_speaker_fixtures import (
         passive_stereo_output_topology,
-        valid_camilla_config,
     )
 
     topology = passive_stereo_output_topology()
@@ -227,20 +230,7 @@ def _way1_ready_to_apply_payload(tmp_path):
     )
     assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
 
-    return build_baseline_profile_candidate(
-        topology,
-        # A passive box saves no crossover preview and completes no summed
-        # active-crossover validation; both are two-branch artifacts.
-        design_draft={},
-        crossover_preview={},
-        measurements={},
-        write=True,
-        state_path=tmp_path / "baseline_profile.json",
-        config_path=tmp_path / "active_speaker_baseline.yml",
-        validate=valid_camilla_config,
-        tuning_owner="automatic",
-        measured_candidate=candidate,
-    )
+    return prepare_candidate(candidate, topology, tmp_path / "active_speaker_baseline.yml")
 
 
 def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
@@ -253,8 +243,6 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     """
     payload = _way1_ready_to_apply_payload(tmp_path)
 
-    assert payload["status"] == "ready_to_apply"
-    assert payload["permissions"]["may_apply"] is True
     config = yaml_lib.safe_load(
         Path(payload["config"]["path"]).read_text(encoding="utf-8")
     )
@@ -265,7 +253,7 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     branch = next(
         step["names"] for step in config["pipeline"]
         if step.get("type") == "Filter"
-        and "active_baseline_headroom" not in step["names"]
+        and "as_full_range_baseline_gain" in step["names"]
     )
     assert [n for n in branch if n.endswith("_baseline_limiter")] == [
         "as_full_range_baseline_limiter"

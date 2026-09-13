@@ -2,15 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compile temporary measurement graphs without changing saved playback state."""
+"""Compile tuning and measurement graphs from candidates and declarations."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
+from jasper.camilla_config_contract import FilterSpec
+from jasper.output_topology import load_output_topology_strict
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
+from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.active_speaker import camilla_yaml, candidate_bank
-from jasper.active_speaker._common import baseline_id
 from jasper.active_speaker.crossover_v2.measure_spec import (
     CANDIDATE_SCOPES,
     GRAPH_SCOPE_DRIVERS,
@@ -30,6 +33,7 @@ __all__ = [
     "MeasurementGraphRefused",
     "TuningGraphScope",
     "compile_tuning_graph",
+    "load_tuning_declaration",
     "emit_measurement_graph",
     "measurement_bass_extension",
 ]
@@ -57,6 +61,31 @@ class MeasurementGraphRefused(ValueError):
     @property
     def code(self) -> str:
         return self.reason
+
+
+def load_tuning_declaration(
+    topology: Any = None, *, design_draft: Mapping[str, Any] | None = None, playback_device: str | None = None,
+) -> MeasurementGraphProfile:
+    from .commission_wiring import resolve_commission_preset  # lazy: commissioning consumes measurement graphs
+    from .crossover_preview import build_crossover_preview  # lazy: declaration compilation imports baseline readers
+    from .design_draft import load_design_draft  # lazy: declaration compilation imports baseline readers
+    from .driver_safety import evaluate_driver_safety_profile  # lazy: declaration compilation imports baseline readers
+
+    topology = topology if topology is not None else load_output_topology_strict()
+    draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
+    safety = draft.get("driver_safety_profile")
+    try:
+        if not isinstance(safety, Mapping) or not evaluate_driver_safety_profile(safety, topology).confirmed_and_current:
+            raise ValueError("Confirm the declared driver limits.")
+        protection = confirmed_protection_sections(safety)
+    except ValueError as exc:
+        raise MeasurementGraphRefused("driver_safety_profile_not_confirmed", str(exc)) from exc
+    preset = resolve_commission_preset(topology, crossover_preview=build_crossover_preview(draft))
+    return MeasurementGraphProfile(
+        preset, topology, {},
+        playback_device=str(resolve_active_playback_device(topology, playback_device=playback_device)[0] or ""),
+        protection_sections_by_role=protection,
+    )
 
 
 def _filter_list(value: Any) -> bool:
@@ -91,9 +120,11 @@ def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, pr
 
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
+    candidate: MeasuredCrossoverCandidate | None = None,
     *,
     scope: TuningGraphScope = "candidate",
-    candidate: MeasuredCrossoverCandidate | None = None,
+    preference_filters: Sequence[FilterSpec] | None = None,
+    output_trim_db: float = 0.0,
 ) -> str:
     """Compile and prove the candidate's complete speaker, room and bass graph."""
     if scope not in CANDIDATE_SCOPES:
@@ -113,7 +144,7 @@ def compile_tuning_graph(
     devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
     candidate_text = compile_candidate_config(
         candidate, playback_device=profile.playback_device,
-        baseline_id=baseline_id(profile.topology.topology_id),
+        preference_filters=preference_filters or (), output_trim_db=output_trim_db,
         capture_device=devices.capture_device,
         capture_format=devices.capture_format,
         playback_format=devices.playback_format,

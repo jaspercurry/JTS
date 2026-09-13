@@ -10,16 +10,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-import yaml
-
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.output_topology import OutputTopology, load_output_topology_strict
 
 from .branch_chain import branch_headroom_db, sections_by_role
-from .candidate_bank import BankedCandidate, CandidateBankRefusal, publish_authored_candidate
+from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
 from .baseline_profile import (
-    _snapshot_protection_sections, applied_baseline_hardware_match, load_applied_baseline_profile_state,
-    recompose_applied_baseline_yaml,
+    load_applied_baseline_profile_state,
 )
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .crossover_v2.topology_prescription import apply_topology_pin
@@ -58,12 +55,30 @@ def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any]
 def candidate_from_applied_profile(
     topology: OutputTopology, applied_profile: Mapping[str, Any],
 ) -> MeasuredCrossoverCandidate:
-    """Compose the full applied tune."""
-    snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
-    if snapshot is None:
-        raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
-    preset = ActiveSpeakerPreset.from_mapping(dict(snapshot["preset"]))
-    corrections = snapshot["corrections"]
+    """Look up the applied candidate, migrating pre-bank records once."""
+    if applied_profile.get("status") != "applied":
+        raise CandidateBankRefusal("composition_saved_tune_unavailable", "there is no applied candidate")
+    fingerprint = (applied_profile.get("source") or {}).get("measured_candidate_fingerprint")
+    if fingerprint:
+        try:
+            return find_banked_candidate(fingerprint).candidate
+        except CandidateBankRefusal as exc:
+            if exc.code != "not_found":
+                raise
+    try:
+        return _migrate_applied_candidate(applied_profile)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CandidateBankRefusal("composition_saved_tune_unavailable", str(exc)) from exc
+
+
+def _migrate_applied_candidate(applied_profile: Mapping[str, Any]) -> MeasuredCrossoverCandidate:
+    snapshot = applied_profile.get("recomposition_snapshot")
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != 1:
+        raise CandidateBankRefusal("composition_saved_tune_unavailable", "saved candidate inputs are missing")
+    preset = ActiveSpeakerPreset.from_mapping(snapshot.get("preset"))
+    corrections = snapshot.get("corrections")
+    if not isinstance(corrections, Mapping) or set(corrections) != set(required_driver_roles(preset.way_count)):
+        raise CandidateBankRefusal("composition_saved_tune_unavailable", "saved driver corrections are missing")
     sections = sections_by_role(preset.crossover_regions)
     candidate = MeasuredCrossoverCandidate(
         program_id="jts_saved_tune",
@@ -96,26 +111,18 @@ def candidate_from_applied_profile(
                 break
         else:
             raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "saved driver corrections cannot be represented")
-    # The saved tune carries the drivers' declared protection; emit the candidate with the
-    # same sections or the comparison below reads the declaration as a changed tune.
-    emitted = compile_candidate_config(
-        candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
-        protection_sections_by_role=_snapshot_protection_sections(snapshot, preset),
-    )
-    saved, issues = recompose_applied_baseline_yaml(topology, applied_profile=applied_profile, playback_device="null")
-    if saved is None:
-        raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
-    desired, actual = yaml.safe_load(saved), yaml.safe_load(emitted)
-    if any(desired.get(key) != actual.get(key) for key in ("filters", "mixers", "processors", "pipeline")):
-        raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "candidate would change saved processing or protection")
-    prove_candidate_config(candidate, emitted)
-    return candidate
+    try:
+        return find_banked_candidate(candidate.fingerprint).candidate
+    except CandidateBankRefusal as exc:
+        if exc.code != "not_found":
+            raise
+        return publish_authored_candidate(candidate).candidate
 
 
 def baseline_candidate_id() -> str:
     try:
         topology, applied = load_output_topology_strict(), load_applied_baseline_profile_state() or {}
-        return publish_authored_candidate(candidate_from_applied_profile(topology, applied)).fingerprint
+        return candidate_from_applied_profile(topology, applied).fingerprint
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
 

@@ -17,6 +17,7 @@ import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.cli.doctor import active_speaker
 from jasper.cli.doctor._evidence import StatusRead, evidence
 from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_BAKE_CONFIG_PATH
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 from .test_doctor_audio_runtime_camilla import _point_at_config
 
@@ -542,67 +543,19 @@ def test_active_speaker_baseline_canonical_ok_when_not_applicable(
     assert r.reason == active_speaker.REASON_BASELINE_CANONICAL_NOT_APPLICABLE
 
 
-async def test_active_speaker_baseline_canonical_ok_when_content_matches_live(
-    monkeypatch,
-    tmp_path,
-):
-    """The common case: every successful apply's post-success promote keeps
-    canonical's content equal to whatever candidate is actually live."""
-    from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
+@pytest.mark.parametrize("matches", [True, False])
+def test_active_speaker_baseline_canonical_compares_live_content(monkeypatch, tmp_path, matches, isolated_candidate_bank):
+    from tests.test_active_speaker_baseline_profile import _applied_layer_a_yaml
 
-    (
-        _state_path,
-        config_path,
-        _load_config,
-        _current_config_path,
-        _prior_payload,
-        run8_payload,
-        _retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-
-    _point_at_baseline(
-        monkeypatch,
-        live=Path(run8_payload["profile"]["config"]["path"]),
-        canonical=config_path,
-        statefile=tmp_path / "statefile.yml",
-    )
-
-    r = active_speaker.check_active_speaker_baseline_canonical()
-
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-async def test_active_speaker_baseline_canonical_discloses_divergence(
-    monkeypatch,
-    tmp_path,
-):
-    """Canonical holds run-8's promoted bytes; simulating CamillaDSP still
-    running the PRIOR candidate is a genuine content mismatch — disclosed, not
-    warned: the live graph is the audible truth, only the copy is stale."""
-    from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
-
-    (
-        _state_path,
-        config_path,
-        _load_config,
-        _current_config_path,
-        prior_payload,
-        _run8_payload,
-        _retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-
-    _point_at_baseline(
-        monkeypatch,
-        live=Path(prior_payload["profile"]["config"]["path"]),
-        canonical=config_path,
-        statefile=tmp_path / "statefile.yml",
-    )
-
-    r = active_speaker.check_active_speaker_baseline_canonical()
-
-    assert r.status == "ok"
-    assert r.reason == active_speaker.REASON_BASELINE_CANONICAL_STALE
+    canonical = tmp_path / "active_speaker_baseline.yml"
+    live = tmp_path / "active_speaker_baseline_candidate_abc123def456.yml"
+    text = _applied_layer_a_yaml(tmp_path)
+    live.write_text(text)
+    canonical.write_text(text if matches else text.replace("samplerate: 48000", "samplerate: 44100"))
+    _point_at_baseline(monkeypatch, live=live, canonical=canonical, statefile=tmp_path / "statefile.yml")
+    result = active_speaker.check_active_speaker_baseline_canonical()
+    assert result.status == "ok"
+    assert result.reason == ("" if matches else active_speaker.REASON_BASELINE_CANONICAL_STALE)
 
 
 def test_active_speaker_baseline_canonical_discloses_missing_canonical(

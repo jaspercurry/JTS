@@ -493,7 +493,6 @@ def _active_graph_env(
     active_text = emit_active_speaker_baseline_config(
         preset,
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-        baseline_id=f"test-{channels}",
     )
     if channels not in {2, 4, 6}:
         active_text = active_text.replace(

@@ -865,18 +865,10 @@ def compile_candidate_config(
 ) -> str:
     """Compile the candidate's baseline YAML — the one Layer-A emission path.
 
-    ``emit_kwargs`` forwards any other emitter keyword unchanged.
-
-    CONVENTION shared with ``baseline_profile.build_baseline_profile_candidate``:
-    the emitter derives delay and inversion from ``corrections`` ONLY, never
-    from a region's ``delay_ms``/``delay_target_driver``/polarity fields (the
-    baseline mixer is emitted with ``apply_region_polarity=False``). An emitter
-    change that starts reading those fields must revisit both call sites.
-
-    ``candidate.linearization`` is reduced by the shared
-    ``linearization_fit.linearization_filters_by_role``. Not shared with
-    ``baseline_profile.recompose_applied_baseline_yaml``, which reads an
-    already-reduced snapshot and re-validates it inline.
+    Shared with ``baseline_profile.build_baseline_profile_candidate``: the
+    emitter derives delay and inversion from ``corrections`` only, never a
+    region's delay or polarity fields (``apply_region_polarity=False``).
+    An emitter that starts reading those fields must revisit both call sites.
     """
 
     from .linearization_fit import linearization_filters_by_role

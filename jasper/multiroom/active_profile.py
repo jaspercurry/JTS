@@ -10,7 +10,6 @@ from typing import Any, Callable
 import yaml
 
 from jasper.active_speaker import baseline_profile, crossover_preview, design_draft, measurement
-from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.active_speaker.runtime_contract import ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
@@ -45,17 +44,20 @@ def build_grouped_profile(
             validate=validate or validate_camilla_config,
         )
 
-    text, issues = baseline_profile.recompose_applied_baseline_yaml(
-        topology, applied_profile=applied,
-        playback_device=resolve_active_playback_device(topology)[0],
-    )
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: applied candidate bank
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: active graph compilation
+
+    issues: list[dict[str, str]] = []
     result: dict[str, Any] = {
-        "status": "blocked",
-        "permissions": {"may_apply": False},
-        "issues": issues,
+        "status": "blocked", "permissions": {"may_apply": False}, "issues": issues,
         "recomposition_snapshot": applied.get("recomposition_snapshot"),
     }
-    if text is None:
+    try:
+        declaration = load_tuning_declaration(topology)
+        text = compile_tuning_graph(declaration, candidate=candidate_from_applied_profile(topology, applied))
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        issues.append({"severity": "blocker", "code": getattr(exc, "code", "grouping_applied_compile_failed"), "message": str(exc)})
         return result
     # Remove when the bond delivers canonical volume to each output endpoint.
     if baseline_profile.applied_bass_extension(applied):

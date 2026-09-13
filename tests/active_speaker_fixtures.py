@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
@@ -426,3 +428,56 @@ def standard_measurements(topology: OutputTopology, tmp_path: Path) -> dict:
         state_path=state_path,
         now="2026-06-14T12:03:00Z",
     )
+
+
+def applied_graph_fixture(topology, applied, *, playback_device=None):
+    from jasper.active_speaker.branch_chain import confirmed_protection_sections
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+
+    snapshot = applied["recomposition_snapshot"]
+    preset = ActiveSpeakerPreset.from_mapping(snapshot["preset"])
+    protection = snapshot.get("driver_protection")
+    declaration = MeasurementGraphProfile(preset, topology, {}, playback_device or snapshot["playback_device"],
+        confirmed_protection_sections(protection) if protection else None)
+    return declaration, candidate_from_applied_profile(topology, applied)
+
+
+def compile_applied_fixture(topology, *, applied_profile, playback_device=None,
+                            preference_filters=(), output_trim_db=0.0, drop_measured_correction=False,
+                            bass_extension=None, room_peqs=None, out_path=None):
+    from dataclasses import replace
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph
+
+    declaration, candidate = applied_graph_fixture(topology, applied_profile, playback_device=playback_device)
+    if drop_measured_correction:
+        candidate = replace(candidate, linearization={}, blend_correction=())
+    if bass_extension is not None:
+        candidate = replace(candidate, bass_extension=bass_extension)
+    if room_peqs is not None:
+        assert not room_peqs
+        candidate = replace(candidate, room_correction={})
+    text = compile_tuning_graph(declaration, candidate=candidate,
+        preference_filters=preference_filters, output_trim_db=output_trim_db)
+    if out_path is not None:
+        Path(out_path).write_text(text)
+    return text, []
+
+
+def declare_applied_fixture(monkeypatch, topology, applied, *, live_endpoint=False):
+    from dataclasses import replace
+    from jasper.active_speaker.playback_route import resolve_active_playback_device
+
+    declaration, _candidate = applied_graph_fixture(topology, applied)
+    draft = standard_design_draft(topology)
+    def load(live_topology=None, *, playback_device=None, design_draft=None):
+        return replace(declaration, playback_device=playback_device or (resolve_active_playback_device(topology)[0] if live_endpoint else declaration.playback_device))
+    monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration", load)
+    monkeypatch.setattr("jasper.active_speaker.design_draft.load_design_draft",
+                        lambda **kw: draft)
+
+
+@pytest.fixture
+def isolated_candidate_bank(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))

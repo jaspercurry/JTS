@@ -66,6 +66,9 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
     class _FakeCarrier:
         kind = "base_flat"
 
+        def destination(self, result, config_dir, **kwargs):
+            return current
+
         def reemit(self, profile, **kwargs):
             seen["fanin_coupling_capture_kwargs"] = kwargs.get(
                 "fanin_coupling_capture_kwargs"
@@ -73,8 +76,6 @@ def _capture_reemit_coupling(monkeypatch, tmp_path):
             # room_peq_count=0 + a flat profile + 0 trim: nothing to EQ.
             return ReemitResult(yaml="# dry\n", room_peq_count=0)
 
-    # reconcile imports carrier_for_loaded_config lazily from graph_carrier, so
-    # patch it at its source module.
     monkeypatch.setattr(
         "jasper.sound.graph_carrier.carrier_for_loaded_config",
         lambda *a, **k: _FakeCarrier(),

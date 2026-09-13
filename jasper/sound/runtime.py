@@ -13,13 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR, same_config_file
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
+from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR, same_config_file, dsp_writer_lock
 from jasper.fanin_coupling import capture_kwargs_for_coupling
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
     SoundProfile,
     build_sound_filters,
+    build_sound_filter_slots,
     load_profile,
     save_profile,
 )
@@ -70,37 +72,7 @@ def _config_without_id_header(text: str) -> str:
 
 
 def _running_config_is_intent(current_path: str | Path, dry_yaml: str) -> bool:
-    """Does the config CamillaDSP is RUNNING already carry ``dry_yaml``'s DSP?
-
-    The question this asks is deliberately about the running config and not
-    about ``sound_current.yml``, the file the reconcile would write. Those are
-    the same file on an ordinary stereo box and are NOT the same file on a
-    speaker running a kept active-crossover candidate
-    (``active_speaker_baseline_candidate_<hash>.yml``) — and asking the
-    narrower question there is the #2572 defect:
-
-    The active carrier recomposes from the immutable applied-profile record, so
-    the CONTENT survives a reconcile; only the NAME moves. The old check was
-    gated on the running config being the write target, which a candidate never
-    is, so identical bytes were written under a second filename and CamillaDSP's
-    statefile stopped naming the candidate. From there the applied record and the
-    statefile disagree on a pure path compare
-    (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`),
-    the record reads as DISPLACED, and the crossover-v2 round loses its entry
-    graph identity — a kept correction stops chaining into the next round even
-    though the speaker never stopped playing it. Observed on jts3 2026-08-15:
-    post-deploy ``sound_current.yml`` and the kept candidate had the same
-    sha256. An identity move, not a content move.
-
-    Compared modulo the cosmetic ``(id=...)`` header (see
-    :data:`_CONFIG_ID_HEADER_RE`) exactly as the same-path comparison always
-    was; this is that comparison with its path precondition dropped, so a box
-    where the two paths DO match answers identically to before.
-
-    FAIL-SAFE: an unreadable or undecodable running config answers ``False`` and
-    falls through to the ordinary write-and-apply path. A comparison that cannot
-    be made is never read as "nothing to do".
-    """
+    """Compare the loaded bytes with the saved graph, ignoring the stereo render ID."""
 
     try:
         running = Path(current_path).read_text(encoding="utf-8")
@@ -141,38 +113,13 @@ def default_camilla_factory():
 
 
 class StatefileCamillaController:
-    """Disk-backed stand-in for the live CamillaDSP controller.
+    """Use CamillaDSP's persisted config path while the daemon is down.
 
-    :func:`load_profile_config` asks the daemon exactly two things — "which
-    config is loaded?" and "load this one" — and both have an honest on-disk
-    answer while the daemon is down: CamillaDSP's statefile names the config it
-    will open on its next start. Answering from there is what lets a reconcile
-    CONVERGE a box whose CamillaDSP is stopped instead of aborting on a refused
-    websocket (#2664).
-
-    Why that matters, from the jts4 incident: install could stop CamillaDSP
-    before the reconcile, and the width flip is EXACTLY when the graph must be
-    re-emitted — so the one deploy that needed the reconcile most was the one
-    that could not reach the daemon. It aborted, and install then started
-    CamillaDSP against a statefile still naming the pre-flip graph:
-    ``set_format`` EINVAL, five restarts, ``start-limit-hit``.
-
-    This is a TRANSPORT, not a graph choice. The carrier is still resolved from
-    the config the statefile already names, so a roleful box re-emits its own
-    roleful graph and a flat box its flat one — no topology decision is taken
-    or restated here. Choosing a graph when the statefile names none stays
-    :mod:`jasper.active_speaker.runtime_contract`'s job (install runs it as
-    ``jasper-active-speaker runtime-safe-graph`` immediately before this).
-
-    WHY THE SEEDING CONTRACT IS NOT REUSED HERE. Asking it for a SAFE graph is
-    right for a recovery that is deliberately de-arming a box; a deploy is the
-    opposite job — it must keep the speaker on its own graph and merely refresh
-    it. It also could not have healed jts4 —
-    ``classify_camilla_config_text`` reads ``playback_device``,
-    ``playback_channels`` and ``volume_limit_db``, never the sample format, so
-    the seeding contract re-proves a stale-width graph LEGAL and preserves it.
-    Only a re-emit moves the width, which is why this converges through the
-    carrier rather than through a second call to the seeder.
+    The saved path still selects the carrier, including its driver protection.
+    Reconcile must re-emit that carrier to refresh transport format and geometry;
+    the recovery seeder proves graph safety but cannot perform that refresh.
+    If the statefile names no graph, selection belongs to
+    :mod:`jasper.active_speaker.runtime_contract`.
     """
 
     def __init__(self, statefile_path: str | Path | None = None) -> None:
@@ -212,24 +159,21 @@ def _render_saved_dsp_on_carrier(
     This is the one render boundary shared by the reset-safe materializer and
     reconcile's dry run. Carrier dispatch owns graph compatibility and room-PEQ
     preservation; the sound profile/settings files own preference EQ and output
-    trim. ``write=False`` has no filesystem mutation.
+    trim. ``write`` controls the DSP config file.
     """
 
-    from jasper.sound.camilla_yaml import sound_config_path
     from jasper.sound.graph_carrier import CarrierCannotHostEq, carrier_for_loaded_config
 
     config_path = Path(config_dir)
     selected_profile = profile if profile is not None else load_profile(profile_path)
     selected_settings = settings if settings is not None else load_sound_settings()
     trim_db = output_trim_db(selected_profile, selected_settings)
-    out_path = sound_config_path(config_path)
     carrier = carrier_for_loaded_config(base_config_path, config_dir=config_path)
     if write:
         config_path.mkdir(parents=True, exist_ok=True)
     try:
         result = carrier.reemit(
             selected_profile,
-            out_path=out_path if write else None,
             profile_id=RECONCILE_PROFILE_ID,
             output_trim_db=trim_db,
             fanin_coupling_capture_kwargs=capture_kwargs_for_coupling(),
@@ -240,6 +184,9 @@ def _render_saved_dsp_on_carrier(
             exc.message,
             carrier_kind=carrier.kind,
         ) from exc
+    out_path = carrier.destination(result, config_path)
+    if write:
+        atomic_write_text(out_path, result.yaml, mode=CONFIG_FILE_MODE)
     return _SavedDspRender(
         output_path=out_path,
         yaml=result.yaml,
@@ -259,7 +206,7 @@ def materialise_saved_dsp_on_carrier(
 ) -> Path:
     """Write saved program DSP onto a proved carrier and return its path.
 
-    The write is atomic and targets canonical ``sound_current.yml``. This
+    The carrier selects the destination for the atomic write. This
     function deliberately does not acquire the DSP writer lock, ask CamillaDSP
     to load the graph, or mutate the saved profile/settings. Its caller owns the
     surrounding transaction and must re-prove the returned graph before load.
@@ -294,7 +241,6 @@ async def load_profile_config(
     audition: bool = False,
     output_trim_db: float = 0.0,
     profile_id: str | None = None,
-    out_path: str | Path | None = None,
 ) -> tuple[Any, Path, SoundProfile]:
     """Render and load ``profile`` on top of the currently loaded DSP graph.
 
@@ -309,6 +255,8 @@ async def load_profile_config(
         sound_config_path,
     )
     from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
+        ReemitResult,
         carrier_for_loaded_config,
         eq_block_for_loaded_config,
     )
@@ -319,107 +267,114 @@ async def load_profile_config(
     render_id = profile_id if profile_id is not None else str(time.time_ns())
     cam = camilla_factory()
 
-    # Fast pre-check: refuse non-hostable graphs before recording an apply failure
-    # for handled active/custom/dynamic-pipe graph refusals. The authoritative
-    # check repeats inside the writer lock below.
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
-    # ``out_path`` names the file this render is written to, and WINS over
-    # ``audition`` when both are given. The default is the
-    # household's own ``sound_current.yml`` (or the audition preview). The
-    # reconcile overrides it to RE-ANCHOR: a speaker running a kept
-    # active-crossover candidate must keep running THAT file, so a refreshed
-    # graph is written back over it rather than appearing under a second name
-    # and displacing the applied-profile record from the statefile (#2572). Safe
-    # to rewrite in place because the candidate's filename is a fingerprint of
-    # its SOURCE inputs, not a hash of its emitted bytes
-    # (:func:`jasper.active_speaker.baseline_profile._source_payload`), and the
-    # content is recomposed from the same immutable applied-profile snapshot —
-    # so the name still describes what the file was built from.
-    out_path = (
-        Path(out_path)
-        if out_path is not None
-        else (
-            sound_audition_config_path(config_path)
-            if audition
-            else sound_config_path(config_path)
+    carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
+    if carrier.kind != "active" or not carrier.can_host_eq:
+        pre_block = eq_block_for_loaded_config(
+            profile, current_path=pre_path, config_dir=config_path, output_trim_db=output_trim_db,
         )
-    )
-    pre_block = eq_block_for_loaded_config(
-        profile,
-        current_path=pre_path,
-        config_dir=config_path,
-        output_trim_db=output_trim_db,
-    )
-    if pre_block is not None:
-        raise pre_block
+        if pre_block is not None:
+            raise pre_block
 
-    # SHARED fan-in→Camilla coupling: resolve the capture/playback-device kwargs
-    # ONCE. ONE transport (ADR-0100) — unconditionally the ring, never {}.
-    # Stereo carriers apply the shm-ring devices; active baselines keep their
-    # own topology-specific paths; grouped pipe sinks keep their own PLAYBACK
-    # (capture still follows).
-    coupling_capture_kwargs = capture_kwargs_for_coupling()
+    from jasper.active_speaker.baseline_profile import load_composed_graph  # lazy: active graph owner
 
-    # One shot: apply_dsp_config reuses load_config to ROLL BACK, and an
-    # in-place rollback has already put the pre-prepare bytes back on disk, so
-    # re-sending the candidate held here would undo exactly that.
-    quiet_load: dict[str, str] = {}
+    if carrier.kind == "active":
+        from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state, prepare_applied_baseline_profile  # lazy: active graph admission
+        from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: active candidate bank
+        from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
+        from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
+        from jasper.active_speaker.measurement_emit import load_tuning_declaration  # lazy: active speaker declaration
+        from jasper.active_speaker.playback_route import resolve_active_playback_device  # lazy: active speaker endpoint
+        from jasper.output_topology import load_output_topology_strict  # lazy: active speaker topology
 
-    async def _prepare_config() -> dict[str, Any]:
-        current_path = await cam.get_config_file_path(best_effort=False)
-        if not current_path:
-            raise RuntimeError("CamillaDSP did not report a loaded config path")
-        carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
-        result = carrier.reemit(
-            profile,
-            out_path=out_path,
-            profile_id=render_id,
-            output_trim_db=output_trim_db,
-            fanin_coupling_capture_kwargs=coupling_capture_kwargs,
-        )
-        # Rewriting the file CamillaDSP already runs, with a graph it will
-        # update in place, is as silent as a live edit, so an A/B the listener
-        # is making on purpose does not fade. Loading a DIFFERENT file is a
-        # real swap and keeps its bracket; the statefile transport, standing in
-        # with CamillaDSP down, cannot be asked at all.
-        if (
-            same_config_file(str(current_path), out_path)
-            and does_live_edits(cam)
-            and not (await plan_live_edit_for(cam, result.yaml)).duck
-        ):
-            quiet_load["yaml"] = result.yaml
-        return {
-            "prior_config_path": current_path,
-            "room_peq_count": result.room_peq_count,
-            "sound_filter_count": len(build_sound_filters(profile)),
-        }
+        try:
+            applied = load_applied_baseline_profile_state() or {}
+            topology = load_output_topology_strict()
+            candidate = candidate_from_applied_profile(topology, applied)
+            draft = load_design_draft(topology=topology)
+            playback_device, _ = resolve_active_playback_device(topology)
+            declaration = load_tuning_declaration(topology, design_draft=draft, playback_device=playback_device)
+            prepared = prepare_applied_baseline_profile(candidate, declaration=declaration,
+                design_draft=draft, measurements={}, provenance=applied)
+        except (CandidateBankRefusal, OSError, ValueError) as exc:
+            raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not prepare the saved speaker tune: {exc}") from exc
 
-    async def _load_config(path: str) -> bool:
-        raw = quiet_load.pop("yaml", None)
-        if raw is not None and same_config_file(path, out_path):
-            # The bytes are already at out_path and the loaded path does not
-            # move, so this leaves the end state a file reload would have.
-            return bool(
-                await cam.set_active_config_raw(raw, best_effort=False, duck=False)
+    async with dsp_writer_lock(config_path, source=source):
+        active = carrier.kind == "active"
+        out_path = sound_audition_config_path(config_path) if audition else sound_config_path(config_path)
+        coupling_capture_kwargs = capture_kwargs_for_coupling()
+
+        # One shot: apply_dsp_config reuses load_config to ROLL BACK, and an
+        # in-place rollback has already put the pre-prepare bytes back on disk, so
+        # re-sending the candidate held here would undo exactly that.
+        quiet_load: dict[str, str] = {}
+
+        async def _render_config() -> tuple[str, ReemitResult]:
+            current_path = await cam.get_config_file_path(best_effort=False)
+            if not current_path:
+                raise RuntimeError("CamillaDSP did not report a loaded config path")
+            current_carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+            rendered = current_carrier.reemit(
+                profile, profile_id=render_id, output_trim_db=output_trim_db,
+                fanin_coupling_capture_kwargs=coupling_capture_kwargs,
             )
-        return bool(await cam.set_config_file_path(path, best_effort=False))
+            if current_carrier.kind != carrier.kind:
+                raise RuntimeError("Loaded graph carrier changed during sound preparation")
+            if (
+                (active or same_config_file(current_path, out_path))
+                and does_live_edits(cam)
+                and not (await plan_live_edit_for(cam, rendered.yaml)).duck
+            ):
+                quiet_load["yaml"] = rendered.yaml
+                quiet_load["current_path"] = current_path
+            return current_path, rendered
 
-    apply_state = await apply_dsp_config(
-        source=source,
-        candidate_path=out_path,
-        prepare=_prepare_config,
-        load_config=_load_config,
-        get_current_config_path=lambda: cam.get_config_file_path(
-            best_effort=True,
-        ),
-        persist=(lambda: save_profile(profile, profile_path))
-        if persist_profile
-        else None,
-        sound_filter_count=len(build_sound_filters(profile)),
-    )
-    return apply_state, out_path, profile
+        async def _load_config(path: str) -> bool:
+            raw = quiet_load.pop("yaml", None)
+            if raw is not None:
+                if same_config_file(path, quiet_load.pop("current_path", None)):
+                    return bool(await cam.set_active_config_raw(raw, best_effort=False, duck=False))
+                return bool(await cam.set_config_file_path(path, best_effort=False, duck=False))
+            return bool(await cam.set_config_file_path(path, best_effort=False))
+
+        if active:
+            async def _prepare_active() -> str:
+                _, rendered = await _render_config()
+                prepared.update(rendered.applied_profile)
+                return rendered.yaml
+
+            async with load_composed_graph(
+                _prepare_active, source=source, profile=prepared, config_dir=config_path,
+                audition=audition, load_config=_load_config,
+                get_current_config_path=lambda: cam.get_config_file_path(best_effort=True),
+                persist=(lambda: save_profile(profile, profile_path)) if persist_profile else None,
+                record=None if audition else "sound",
+                sound_filter_count=len(build_sound_filter_slots(profile)),
+            ) as (state, _applied):
+                return state, Path(state.candidate_config_path), profile
+
+        async def _prepare_config() -> dict[str, Any]:
+            current_path, rendered = await _render_config()
+            atomic_write_text(out_path, rendered.yaml, mode=CONFIG_FILE_MODE)
+            return {"prior_config_path": current_path, "room_peq_count": rendered.room_peq_count,
+                    "sound_filter_count": len(build_sound_filters(profile))}
+
+        apply_state = await apply_dsp_config(
+            source=source,
+            candidate_path=out_path,
+            prepare=_prepare_config,
+            load_config=_load_config,
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=True,
+            ),
+            persist=(lambda: save_profile(profile, profile_path))
+            if persist_profile
+            else None,
+            sound_filter_count=len(build_sound_filters(profile)),
+        )
+        return apply_state, out_path, profile
 
 
 async def reconcile_current_dsp(
@@ -444,7 +399,6 @@ async def reconcile_current_dsp(
     """
 
     from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
-    from jasper.dsp_apply import dsp_writer_lock
     from jasper.sound.camilla_yaml import sound_audition_config_path, sound_config_path
     from jasper.sound.graph_carrier import CarrierCannotHostEq
 
@@ -531,23 +485,6 @@ async def reconcile_current_dsp(
 
         out_path = dry.output_path
 
-        # THE FLAT-PROFILE NOOP IS GONE, and its own guard is why. It skipped the
-        # apply on a flat box — nothing to EQ, so nothing to write — but it was
-        # already conditioned on the coupling kwargs being empty, because a graph
-        # that has to name the ring's capture must be written even when the
-        # profile is flat. ADR-0100 made those kwargs unconditional, so the skip
-        # became unreachable; restoring it would strand a flat box's graph on a
-        # lane fan-in does not write. The equality check below is what now
-        # short-circuits a flat box, and it compares the actual bytes.
-        #
-        # The saved intent is ALREADY what the speaker is playing, whatever that
-        # config is named — so there is nothing to refresh. Returning here is
-        # what keeps a kept active-crossover candidate the running config
-        # instead of re-writing its own bytes under ``sound_current.yml`` and
-        # displacing the applied-profile record from the statefile (#2572; see
-        # ``_running_config_is_intent``). ``current=`` and ``candidate=`` on the
-        # journal line below name both paths, so an operator can see when this
-        # left a NON-``sound_current.yml`` graph in place.
         if not force and _running_config_is_intent(current_path, dry.yaml):
             return _log_reconcile_result(
                 {
@@ -563,30 +500,6 @@ async def reconcile_current_dsp(
                 }
             )
 
-        # ONE DERIVER, TWO TRIGGERS — not a second writer. The candidate is a
-        # DERIVED artifact, and both the commissioning path and this one produce
-        # it through the SAME carrier recompose of that candidate's own
-        # immutable applied-profile record (`load_profile_config` ->
-        # `carrier.reemit`). This branch may never write candidate bytes that
-        # differ from that shared recompose; it chooses the destination, never
-        # the content. Written that way deliberately so AGENTS.md's
-        # single-writer rule survives intact rather than acquiring an exception.
-        #
-        # RE-ANCHOR, don't displace. The bytes differ, so this box does need a
-        # refreshed graph — but a speaker running a kept active-crossover
-        # candidate must keep running THAT file. Writing the refresh under
-        # ``sound_current.yml`` instead is what moves the statefile off the
-        # candidate, leaves the applied record and the statefile disagreeing on
-        # a pure path compare, and costs a crossover-v2 round its entry graph
-        # (#2572). The equality short-circuit above used to be the whole defence
-        # and only held while the emitted content never changed; this holds when
-        # it does.
-        reanchor_path = (
-            current_path
-            if dry.carrier_kind == "active"
-            and not same_config_file(current_path, out_path)
-            else None
-        )
         apply_state, applied_path, _ = await load_profile_config(
             profile,
             profile_path=profile_path,
@@ -596,7 +509,6 @@ async def reconcile_current_dsp(
             persist_profile=False,
             output_trim_db=trim_db,
             profile_id=RECONCILE_PROFILE_ID,
-            out_path=reanchor_path,
         )
     return _log_reconcile_result(
         {

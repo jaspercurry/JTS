@@ -278,13 +278,11 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
     """Bank the displaced graph; leave admission and DSP apply intact."""
-    import json
     from dataclasses import replace
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.web import correction_crossover_v2_apply as apply_host
     from jasper.active_speaker.driver_safety import build_driver_safety_profile
     from tests.test_active_speaker_driver_safety import _manual_settings
-    from tests.active_speaker_fixtures import valid_camilla_config
     from tests.test_active_speaker_baseline_profile import _draft, _MEASURE_EVIDENCE
     from tests.test_active_speaker_measured_crossover_candidate import _candidate
     from tests.test_crossover_v2_stage_bridge import _topology
@@ -298,29 +296,29 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
             topology, manual_settings=_manual_settings(), driver_research=None, saved_at="2026-09-13T12:00:00Z")
     preview = build_crossover_preview(draft)
     preset, _, _ = baseline_profile_mod.compile_preset_from_crossover_preview(topology, preview)
+    if preset is None:
+        raise ValueError("Previous graph fixture has no crossover preset")
     measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)
-    profile = baseline_profile_mod.build_baseline_profile_candidate(
-        topology, design_draft=draft, crossover_preview=preview, measurements={},
-        measured_candidate=measured, tuning_owner="automatic", write=True,
-        state_path=root / "previous.json", config_path=root / "previous.yml", validate=valid_camilla_config,
-    )
-    assert (profile.get("config") or {}).get("sha256"), profile["issues"]
+    from tests.apply_fixtures import prepare_candidate
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: root / "sessions")
+    profile = prepare_candidate(measured, topology, root / "previous.yml", design_draft=draft)
     profile["status"] = "applied"
     state = v2state.load_v2_state() or {}
     if state.get("previous_candidate_fingerprint"):
         state.update(previous_candidate_fingerprint=measured.fingerprint, previous_applied_profile=profile)
         v2state.save_v2_state(state)
-    candidate_path = root / "sessions/authored/evidence/v1/artifacts/crossover_v2/previous/candidate.json"
-    candidate_path.parent.mkdir(parents=True, exist_ok=True)
-    candidate_path.write_text(json.dumps(measured.to_dict()))
-    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: root / "sessions")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(root / "applied.json"))
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(root / "baseline.yml"))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(root / "dsp-apply.json"))
     monkeypatch.setattr(baseline_profile_mod, "load_applied_baseline_profile_state", lambda *a, **k: None)
     monkeypatch.setattr(apply_host, "load_output_topology", lambda: topology)
     monkeypatch.setattr(apply_host, "load_design_draft", lambda **kwargs: draft)
-    monkeypatch.setattr(apply_host, "evaluate_driver_safety_profile", _real_safety_evaluation)
+    from jasper.active_speaker.measurement_emit import load_tuning_declaration
+    def declaration_for_apply(*args, **kwargs):
+        with monkeypatch.context() as context:
+            context.setattr("jasper.active_speaker.driver_safety.evaluate_driver_safety_profile", _real_safety_evaluation)
+            return load_tuning_declaration(*args, **kwargs)
+    monkeypatch.setattr(apply_host, "load_tuning_declaration", declaration_for_apply)
     return []
 
 

@@ -859,15 +859,12 @@ class CamillaController:
             )
 
     async def set_config_file_path(
-        self, path: str, *, best_effort: bool = False,
+        self, path: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
-        """Tell CamillaDSP to load the YAML at `path` and reload the
-        pipeline.
+        """Set the persisted YAML path before asking CamillaDSP to reload.
 
-        The two-step `set_file_path` + `reload` is what camillagui-
-        backend does and what every CamillaDSP downstream uses for
-        config swap. Bundling them here keeps the call site simple
-        and ensures the order is correct (path before reload).
+        ``duck=False`` requires the same live-edit proof as
+        :meth:`set_active_config_raw`, including when the filename changes.
         """
         def write_and_reload(c):
             c.config.set_file_path(path)
@@ -875,7 +872,7 @@ class CamillaController:
             return True
 
         try:
-            async with self._graph_mutation("camilla.set_config_file_path"):
+            async with self._graph_mutation("camilla.set_config_file_path", duck=duck):
                 return bool(await self._call(write_and_reload))
         except CamillaUnavailable as e:
             if best_effort:

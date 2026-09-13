@@ -19,14 +19,13 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Sequence
 
 import yaml as yaml_parser
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import (
-    FilterSpec,
     PeqFilter,
 )
 from jasper.dsp_apply import (
@@ -44,10 +43,9 @@ from jasper.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
     topology_config_fingerprint,
-    topology_fingerprint_matches,
 )
 
-from ._common import baseline_id, finite_float as _finite_float, issue as _issue
+from ._common import finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
     _branch_context,
@@ -58,16 +56,15 @@ from .camilla_yaml import (
     linearization_headroom_db,
 )
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
-from .candidate_trials import candidate_boost_issue
 from .measurement_emit import MeasurementGraphProfile
-from .boost_protection import config_graph_fingerprint
+from .branch_chain import confirmed_protection_sections
 from .crossover_contract import (
     TUNING_OWNERS,
     automatic_candidate_readiness,
     legacy_manual_preservation_state,
     measured_level_match_applied,
 )
-from .crossover_preview import crossover_design_fingerprint, crossover_preview_fingerprint
+from .crossover_preview import crossover_design_fingerprint, crossover_preview_fingerprint, load_crossover_preview
 from .driver_base_trim import (
     BANK_CLEAR_FAILED,
     BANK_CORRECTION_ENTRY_UNREADABLE,
@@ -95,9 +92,7 @@ from .level_trim import (
 )
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
-    MeasuredCrossoverCandidateError,
-    candidate_room_peqs, candidate_on_declaration, driver_corrections, effective_preset,
-    room_peqs_from_correction,
+    candidate_on_declaration, driver_corrections, effective_preset,
 )
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
@@ -202,24 +197,72 @@ def baseline_config_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
 
 
-def baseline_candidate_config_path(sha256: str, path: str | Path | None = None) -> Path:
+def baseline_candidate_config_path(text: str, path: str | Path | None = None) -> Path:
     target = baseline_config_path(path)
+    sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return target.with_name(f"{target.stem}_candidate_{sha256[:12]}{target.suffix}")
 
 
 @asynccontextmanager
 async def load_composed_graph(
-    text: str, sha256: str, *, source: str,
+    text: str | Callable[[], Awaitable[str]], *, source: str,
+    profile: Mapping[str, Any],
     load_config: Callable[[str], Awaitable[bool]],
     get_current_config_path: Callable[[], Awaitable[str | None]],
-) -> AsyncIterator[DspApplyState]:
-    target = baseline_candidate_config_path(sha256)
-    async with dsp_writer_lock(target.parent, source=source):
-        atomic_write_text(target, text, mode=0o640)
-        yield await apply_dsp_config(
-            source=source, candidate_path=target, expected_candidate_sha256=sha256,
+    persist: Callable[[], Any] | None = None,
+    config_dir: str | Path | None = None,
+    audition: bool = False,
+    record: Literal["apply", "sound"] | None = "apply",
+    sound_filter_count: int | None = None,
+) -> AsyncIterator[tuple[DspApplyState, dict[str, Any]]]:
+    from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text, sound_audition_config_path  # lazy: sound graph metadata
+
+    directory = Path(config_dir) if config_dir is not None else baseline_config_path().parent
+    target = sound_audition_config_path(directory) if audition else directory / baseline_config_path().name
+    applied = dict(profile)
+    async with dsp_writer_lock(directory, source=source):
+        async def write_graph() -> dict[str, Any]:
+            nonlocal target, applied
+            rendered = await text() if callable(text) else text
+            applied = dict(profile)
+            if record == "sound":
+                saved = load_baseline_profile_state() or {}
+                anchor = _applied_profile_anchor(saved) or {}
+                if not anchor.get("recomposition_snapshot") or not anchor.get("source"):
+                    raise ValueError("Applied speaker record is incomplete")
+                protection = _protection_projection((profile.get("recomposition_snapshot") or {}).get("driver_protection"))
+                applied = {**anchor, "source": {**anchor.get("source", {}),
+                           "driver_protection_fingerprint": _fingerprint(protection)},
+                           "recomposition_snapshot": {**anchor.get("recomposition_snapshot", {}), "driver_protection": protection}}
+                applied["source"]["fingerprint"] = _fingerprint({key: value for key, value in applied["source"].items() if key != "fingerprint"})
+            if not audition:
+                target = baseline_candidate_config_path(rendered, directory / baseline_config_path().name)
+            sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+            applied["config"] = {**profile.get("config", {}), "path": str(target), "basename": target.name,
+                                 "sha256": sha256, "exists": True}
+            atomic_write_text(target, rendered, mode=CONFIG_FILE_MODE)
+            return {"candidate_path": target, "expected_candidate_sha256": sha256,
+                    "room_peq_count": len(extract_room_peqs_from_config_text(rendered))}
+
+        state = await apply_dsp_config(
+            source=source, candidate_path=target,
+            prepare=write_graph,
             load_config=load_config, get_current_config_path=get_current_config_path,
+            persist=persist, sound_filter_count=sound_filter_count,
         )
+        if record == "apply":
+            applied = persist_applied_baseline_profile(applied, apply_state=state.to_dict())
+        elif record == "sound":
+            saved = load_baseline_profile_state() or {}
+            if saved.get("status") == "applied":
+                saved = applied
+            else:
+                saved["applied_recomposition_profile"] = applied
+            atomic_write_text(baseline_profile_state_path(), json.dumps(saved, indent=2, sort_keys=True) + "\n",
+                              mode=CONFIG_FILE_MODE, durable=True)
+        if record:
+            promote_applied_baseline_candidate(applied)
+        yield state, applied
 
 
 def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
@@ -380,17 +423,7 @@ def _source_payload(
     driver_protection: Mapping[str, Any] | None = None,
     candidate_graph_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fingerprint source inputs, not emitted bytes.
-
-    Covers ``candidate_graph_context`` (playback/capture device, domain,
-    driver-domain pair trim, the measured-candidate/driver-protection
-    fingerprints) since #2416 — the caller assembles it and passes it in
-    BEFORE the emit devices it depends on are resolved into bytes, so two
-    builds differing only there no longer share one filename. Still not a
-    content hash: two builds with identical source can still emit different
-    bytes for other reasons (recompose, blend correction). Confirm the live
-    normalized graph; a matching path is not proof of content.
-    """
+    """Fingerprint declaration and evidence inputs, not emitted bytes."""
     measurement_summary = (
         measurements.get("summary")
         if isinstance(measurements.get("summary"), Mapping)
@@ -1087,7 +1120,6 @@ def _blocked_payload(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASELINE_PROFILE_KIND,
         "status": status,
-        "baseline_id": baseline_id(topology.topology_id),
         "created_at": None,
         "updated_at": None,
         "source": dict(source),
@@ -1168,7 +1200,7 @@ def _applied_profile_anchor(
 def _frozen_applied_profile(
     saved: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Small immutable record sufficient to recompose the running Layer A."""
+    """Return the applied record fields consumed by runtime readers."""
     applied = _applied_profile_anchor(saved)
     if applied is None:
         return None
@@ -1186,7 +1218,6 @@ def _frozen_applied_profile(
         "artifact_schema_version": applied.get("artifact_schema_version"),
         "kind": applied.get("kind"),
         "status": "applied",
-        "baseline_id": applied.get("baseline_id"),
         "applied_at": applied.get("applied_at"),
         "candidate_fingerprint": candidate_fingerprint,
         "source": dict(applied.get("source") or {}),
@@ -1196,37 +1227,10 @@ def _frozen_applied_profile(
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
-        # WHICH speaker groups the applied profile measured. An allowlist
-        # entry for the Gap 3c reason every neighbour here carries: a frozen
-        # view that dropped it would describe a measured profile unable to
-        # name its own measured groups.
         "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
-        "trial_verification": applied.get("trial_verification"),
-        # Layer-1a driver linearization (#1668 PR-D). Mirrors "corrections"'s
-        # own top-level convenience copy — the authoritative copy consumed by
-        # recompose_applied_baseline_yaml lives inside recomposition_snapshot
-        # (already carried whole below); this top-level key is for callers
-        # that want "what's currently applied" without unpacking the
-        # snapshot. Absent on any pre-PR-D applied profile (era-tolerant).
         "linearization": dict(applied.get("linearization") or {}),
-        # Gauge fix (2026-07-24): mirrors "linearization" immediately
-        # above — same top-level convenience copy, same era-tolerant
-        # absence. This is the field setup_status.read_active_speaker_setup_status
-        # reads (via load_applied_baseline_profile_state -> here) to surface
-        # WHY linearization did or didn't run on /state's protected_profile;
-        # dropping it here (an allowlist function, unlike
-        # persist_applied_baseline_profile's whole-object spread) would
-        # silently strip it on every read even though the write side
-        # persists it — see test_frozen_applied_profile_carries_linearization_top_level's
-        # own docstring for the identical Gap 3c bug class this mirrors.
         "linearization_outcome": str(applied.get("linearization_outcome") or ""),
-        # Same allowlist duty as "linearization_outcome" above.
         "trim_decision": dict(applied.get("trim_decision") or {}),
-        # Crossover blend correction (design doc decision 10). Mirrors
-        # "linearization" above exactly: an ALLOWLIST entry, so omitting it
-        # would silently strip on every read a field the write side persists —
-        # the Gap 3c bug class. A list, not a mapping, because it describes the
-        # SUM rather than a driver.
         "blend_correction": list(applied.get("blend_correction") or []),
         "room_correction": dict(applied.get("room_correction") or {}),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
@@ -1271,43 +1275,7 @@ def _profile_branch_context(
 
 
 def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
-    """The pre-split common attenuation one profile's linearization costs, dB.
-
-    Reads the profile's own emitter input — the reduced
-    ``{role: [filter_dict, ...]}`` linearization mapping — through
-    :func:`~jasper.active_speaker.camilla_yaml.linearization_headroom_db`, the
-    emitter's OWN reducer, so this number cannot drift from the
-    ``active_baseline_headroom`` gain the graph actually carries. Always ``>=
-    0`` (it is an attenuation); ``0.0`` for a cut-only or absent
-    linearization, which is every profile written before PR-L5.
-
-    Prefers ``recomposition_snapshot["linearization"]`` — the copy
-    :func:`recompose_applied_baseline_yaml` re-emits from — and falls back to
-    the top-level convenience mirror for an era-older frozen profile that
-    carries one without a snapshot. The two are written from a single variable
-    (see the candidate payload), so the preference is about which one is
-    AUTHORITATIVE, never about reconciling a disagreement.
-
-    **One bounded cross-era case** (#1808 landed the peak rule on 2026-07-28).
-    A profile emitted under the OLD sum rule carries a graph attenuated by
-    ``H_sum``, but this reader — evaluating the same filters through the same
-    chain the emitter uses today — returns ``H_peak``. For the one household
-    whose PREVIOUS profile predates that deploy, the first post-deploy
-    session's declared offset is therefore short by ``H_sum − H_peak`` (22.458
-    vs 4.00 dB on the JTS3 profile that motivated the rule, so potentially
-    large). Nothing is mis-levelled by it: the declared offset is an ANALYSIS
-    input, no level moves either way, and the shortfall lands in the delta
-    probe's ``residual_offset_db`` — visible, and named ``level_mismatch`` if
-    it is material. It self-clears the moment that household applies once
-    under the peak rule. Not worth an era flag; worth knowing when reading a
-    first-session residual.
-
-    Deliberately NOT the whole program-domain headroom: ``baseline_headroom_db``
-    is a module constant and preference EQ is a recompose-time input an
-    active-crossover apply does not touch, so those cancel in the difference
-    this exists to serve; a candidate's own room boost does NOT cancel, and is
-    the incompleteness :func:`applied_program_level_delta_db` discloses.
-    """
+    """The pre-split common attenuation one profile's linearization costs, dB."""
     linearization = profile_linearization(profile)
     if not linearization:
         return 0.0
@@ -1366,29 +1334,7 @@ def profile_blend_correction(
 
 
 def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """One profile's AUTHORITATIVE reduced linearization, or ``{}``.
-
-    The ``{role: [filter_dict, ...]}`` mapping the emitter takes — ALREADY
-    reduced, so callers must not pass it through
-    :func:`~jasper.active_speaker.linearization_fit.linearization_filters_by_role`
-    (that helper's own docstring warns it silently returns ``{}`` for an
-    already-reduced mapping, which would read as "this graph boosts nothing").
-
-    The preference rule lives here and nowhere else, because it decides WHICH
-    copy is authoritative and a second transcription is how two readers start
-    disagreeing about what a speaker is playing:
-    ``recomposition_snapshot["linearization"]`` is the copy
-    :func:`recompose_applied_baseline_yaml` re-emits from, so it wins; the
-    top-level key is an era-older convenience mirror for a frozen profile that
-    carries one without a snapshot. Both are written from a single variable,
-    so the preference is about authority, never about reconciling a
-    disagreement.
-
-    ``{}`` for a cut-only or absent linearization — every profile written
-    before PR-L5 — and that is a true answer rather than a failure: both
-    questions asked of this mapping (what does it cost, does it boost) are
-    correct for a profile that linearizes nothing.
-    """
+    """One profile's AUTHORITATIVE reduced linearization, or ``{}``."""
     if not isinstance(profile, Mapping):
         return {}
     snapshot = profile.get("recomposition_snapshot")
@@ -1401,26 +1347,7 @@ def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any
 
 
 def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """One profile's AUTHORITATIVE ``{role: {gain_db, delay_ms, inverted}}``, or ``{}``.
-
-    The per-driver refinement the emitted graph carries — the exact mapping
-    :func:`~jasper.active_speaker.measured_crossover_candidate.driver_corrections`
-    produced for the candidate that became this profile, so a reader gets the
-    per-role trim, the branch delay, and the branch inversion that are ACTUALLY
-    live rather than three values re-derived from a candidate nobody kept.
-
-    Same authority rule, and the same reason for it, as
-    :func:`profile_linearization` one function up:
-    ``recomposition_snapshot["corrections"]`` is the copy
-    :func:`recompose_applied_baseline_yaml` re-emits from, so it wins, and the
-    top-level key is the era-older convenience mirror. Both are written from a
-    single variable; the preference decides which is authoritative, never which
-    of two disagreeing copies to believe.
-
-    ``{}`` when neither copy is present or parseable — a true "this profile does
-    not say", which every caller must treat as an absence rather than as a graph
-    that trims nothing.
-    """
+    """One profile's AUTHORITATIVE ``{role: {gain_db, delay_ms, inverted}}``, or ``{}``."""
     if not isinstance(profile, Mapping):
         return {}
     snapshot = profile.get("recomposition_snapshot")
@@ -1707,63 +1634,6 @@ def _revalidation_payload(
     }
 
 
-def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
-    """How much per-driver and summed evidence a measured candidate actually
-    carries — ``{"driver": n, "summed": n}``, both ``0`` for ``None``.
-
-    **Existence is not evidence** (linearization-integrity PR-L4 item 5). Both
-    completeness flags used to be satisfied by ``measured_candidate is not
-    None``, which is a statement about a Python reference, not about anything
-    measured. On the 2026-07-27 JTS3 profile that published
-    ``summed_validation_complete: true`` beside ``validated_summed_group_count:
-    0`` — a self-contradicting record that a test pinned as intended, and one of
-    the reasons nothing in the verification chain objected to a 10 dB-dark
-    speaker. This asks the candidate what it is holding.
-
-    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`
-    is counted from what its analysis RECORDED, never
-      from fields its ``__post_init__`` guarantees. Per-driver: the roles whose
-      level the trim solve actually produced (``analysis.trim_band_average_db``
-      — ``None`` on a legacy candidate), or the roles the fit corrected, taking
-      whichever is larger. Summed: the pre-apply cloud's walked positions
-      (``exclusion_evidence.n_positions``), plus one for the MEASURE capture
-      itself IF that capture carries a real cross-branch alignment
-      (``alignment_confidence``) — the alignment is measured across both
-      branches at once, which is summed-domain evidence. A trims-only candidate
-      — the ineligible-mic-tier / fit-failed fallback, a real production shape —
-      is NOT vacuous and still counts via those two.
-
-    **Counting only what varies is the whole point** (PR-L4 review S1). A first
-    cut counted ``len(role_attenuations_db)`` and "is ``analysis`` non-empty",
-    both of which ``MeasuredCrossoverCandidate.__post_init__`` already enforces
-    — so the counts were ≥1 by construction and the flags meant exactly what
-    ``is not None`` had meant, which is the vacuity this item exists to remove.
-    An "evidence count" that cannot be zero is not evidence.
-
-    A count, not a boolean, because the caller publishes it: a reader seeing
-    ``complete: true`` is entitled to see the number behind it.
-    """
-    if candidate is None:
-        return {"driver": 0, "summed": 0}
-    analysis = getattr(candidate, "analysis", None)
-    analysis = analysis if isinstance(analysis, Mapping) else {}
-    solved_levels = analysis.get("trim_band_average_db")
-    driver = len(solved_levels) if isinstance(solved_levels, Mapping) else 0
-    linearization = getattr(candidate, "linearization", None)
-    if isinstance(linearization, Mapping):
-        driver = max(driver, len(linearization))
-    exclusion = getattr(candidate, "exclusion_evidence", None)
-    positions = 0
-    if isinstance(exclusion, Mapping):
-        try:
-            positions = max(0, int(exclusion.get("n_positions") or 0))
-        except (TypeError, ValueError):
-            positions = 0
-    if analysis.get("alignment_confidence") is not None:
-        positions += 1
-    return {"driver": driver, "summed": positions}
-
-
 def _compare_level_sittings(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
@@ -1875,21 +1745,6 @@ def _crossover_preview_ready(crossover_preview: Mapping[str, Any]) -> bool:
     )
 
 
-def _snapshot_protection_sections(
-    snapshot: Mapping[str, Any], preset: ActiveSpeakerPreset,
-) -> Mapping[str, Sequence[Any]] | None:
-    protection = snapshot.get("driver_protection")
-    if protection is None:
-        return None
-    from .branch_chain import confirmed_protection_sections  # lazy: graph compilation imports NumPy
-
-    try:
-        sections = confirmed_protection_sections(protection)
-        return {role: sections[role] for role in required_driver_roles(preset.way_count)}
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        raise ActiveSpeakerConfigError("saved driver protection is invalid") from exc
-
-
 def build_baseline_profile_candidate(
     topology: OutputTopology,
     *,
@@ -1908,7 +1763,6 @@ def build_baseline_profile_candidate(
     driver_domain_pair_trim_db: float = 0.0,
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
-    measured_candidate: "MeasuredCrossoverCandidate | None" = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1946,11 +1800,6 @@ def build_baseline_profile_candidate(
     """
     if tuning_owner not in TUNING_OWNERS:
         raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
-    if measured_candidate is not None:
-        if not isinstance(measured_candidate, MeasuredCrossoverCandidate):
-            raise TypeError("measured_candidate must be MeasuredCrossoverCandidate")
-        if tuning_owner != "automatic":
-            raise ValueError("measured_candidate requires automatic tuning ownership")
     if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
         raise ValueError(
             "driver_domain requires program_channel in "
@@ -1966,16 +1815,7 @@ def build_baseline_profile_candidate(
     protection = (protection_anchor.get("recomposition_snapshot") or {}).get("driver_protection")
     safety_profile = design_draft.get("driver_safety_profile")
     if evaluate_driver_safety_profile(safety_profile, topology).confirmed_and_current:
-        protection = {
-            "profile_fingerprint": safety_profile["profile_fingerprint"],
-            "targets": [{
-                "role": target["role"],
-                "target_fingerprint": target["target_fingerprint"],
-                "required_protection_filters": [
-                    dict(requirement) for requirement in target["required_protection_filters"]
-                ],
-            } for target in safety_profile["targets"]],
-        }
+        protection = _protection_projection(safety_profile)
     if driver_domain:
         protection = None
     resolved_playback_device, playback_device_source = (
@@ -1988,44 +1828,6 @@ def build_baseline_profile_candidate(
         topology,
         playback_device=playback_device,
     )
-    # BOTH DEVICE HALVES follow the RESOLVED sink, in the same ONE derivation
-    # the re-emit seam reads — the second production emit site learning the
-    # lesson the first one already carries. The sink here is marker-aware
-    # (``resolve_active_playback_device`` answers the ring on an armed box)
-    # while the capture lane and the whole wire/latency geometry used to take
-    # the emitter's ALSA-lane defaults, which is a candidate naming the ring and
-    # sourcing the snd-aloop tap fan-in stops feeding the moment the coupling
-    # arms. The arm ladder never traverses this builder and
-    # ``recompose_applied_baseline_yaml``'s mirror check catches such a graph
-    # loudly, so this closes a drift, not an outage — but two emit sites where
-    # only one has learned is how the next one gets written.
-    #
-    # Every non-ring device (every box that is not armed, and every lab
-    # override) answers exactly the emitter's own defaults, so this is
-    # byte-identical there. Derived BEFORE ``candidate_graph_context`` because
-    # the fingerprint has to describe the graph that will actually be emitted:
-    # recording the caller's ``None`` would let two different capture lanes
-    # share one candidate identity.
-    #
-    # A ring device whose declared wire this repo cannot parse REFUSES here
-    # rather than resolving to something plausible: failing loud beats emitting
-    # the half-moved graph this derivation exists to prevent, and nothing has
-    # been written at this point either way. Only an armed box with a typo'd
-    # ``JASPER_FANIN_RING_WIRE_FORMAT`` reaches it — and it reaches it with a
-    # perfectly healthy jasper-fanin, because fan-in resolves that value once in
-    # ``Config::from_env`` at process start while this reader is file-fresh per
-    # call. A file edited after fan-in came up is a refusal here and nothing at
-    # all there; the two coexist indefinitely.
-    #
-    # The parser raises a bare ``ValueError``; ``ActiveSpeakerConfigError`` is
-    # the shape this function owes its callers. Being a ``ValueError`` subclass
-    # it leaves every existing rendering alone (typed blocker, 400, 502) and
-    # adds the one this conversion is for: the multiroom follower gate
-    # (``jasper.multiroom.follower_config``) catches it, converts it to
-    # ``ActiveFollowerError`` and reaches ``fall_back_to_solo()``. A bare
-    # ``ValueError`` escapes that gate and aborts the grouping reconcile
-    # instead, skipping the fallback the gate exists for. The parser's own
-    # sentence rides through: it names the env var and the value that was typed.
     try:
         devices = active_emit_devices(resolved_playback_device, topology=topology)
     except ValueError as exc:
@@ -2045,26 +1847,13 @@ def build_baseline_profile_candidate(
         ),
         "capture_device": emit_capture_device,
         "capture_format": emit_capture_format,
-        "measured_candidate_fingerprint": (
-            measured_candidate.fingerprint if measured_candidate is not None else None
-        ),
         **({"driver_protection": protection} if protection is not None else {}),
     }
-    # #2416: assembled BEFORE ``_source_payload`` so the candidate's source
-    # fingerprint — and therefore its filename — covers the graph context,
-    # not only topology/design-draft/measurements. Two builds that differ
-    # only in ``candidate_graph_context`` (a different capture device, a
-    # different measured candidate) used to share one filename while
-    # carrying different bytes; they now source-fingerprint apart and each
-    # gets its own sibling.
     source = _source_payload(
         topology,
         design_draft,
         crossover_preview,
         measurements,
-        measured_candidate_fingerprint=(
-            measured_candidate.fingerprint if measured_candidate is not None else None
-        ),
         driver_protection=protection,
         candidate_graph_context=candidate_graph_context,
     )
@@ -2081,55 +1870,6 @@ def build_baseline_profile_candidate(
             # Never trust the persisted derived field for evidence admission.
             # Re-derive the context from the applied immutable graph inputs.
             applied_profile_context_id = baseline_candidate_fingerprint(applied_anchor)
-    # Every SOLO (non-driver-domain) candidate lands on its OWN
-    # source-fingerprinted sibling file -- unconditionally, whether or not a
-    # profile was ever applied before, and regardless of what that prior
-    # profile's own path was. (``_source_payload``'s docstring is the single
-    # statement of what that fingerprint does and does not cover, and why a
-    # candidate's path is never its graph identity.)
-    #
-    # Never the bare ``baseline_config_path()`` name (issue #1666): a
-    # candidate write must never overwrite the file CamillaDSP's own
-    # statefile, jasper-doctor, the multiroom follower fallback, and a human
-    # inspecting the box all read as the durable truth. Before this was
-    # unconditional, an applied profile's path alternated between the
-    # canonical name and a sibling on every successive apply (whichever the
-    # PREVIOUS apply did NOT use) -- so an apply landing on the canonical
-    # half of that alternation wrote unvalidated candidate bytes there
-    # BEFORE validation/activation, and a rejected apply could leave the
-    # canonical file holding rejected bytes. The canonical name is now
-    # written ONLY by the post-success promote step in
-    # ``_apply_baseline_profile_locked``, which runs after
-    # ``apply_dsp_config`` has already proven the candidate live.
-    #
-    # ``driver_domain=True`` candidates are deliberately EXCLUDED: they are
-    # the multiroom follower/leader bonding machinery's own role-specific
-    # compile-then-immediately-consume seam (jasper.multiroom.follower_config
-    # / active_leader_config), which passes its OWN dedicated config_path +
-    # state_path precisely "so the solo baseline artifacts are never
-    # clobbered" (this function's own docstring). That state_path never
-    # reaches ``persist_applied_baseline_profile`` / ``status="applied"``, so
-    # ``applied_anchor`` above is always None for it -- there is no applied
-    # lineage to protect or promote, no way back to a prior candidate for
-    # it, and its caller re-proves the freshly written file synchronously
-    # before ever loading it. Forcing it onto a sibling would silently break
-    # that caller's read of its OWN just-written config_path (confirmed by
-    # tests/test_multiroom_follower_config.py and
-    # tests/test_multiroom_active_leader_config.py against this change).
-    if not driver_domain:
-        # The 12 hex characters are a SOURCE fingerprint, NOT a content hash.
-        # They identify the inputs this graph was compiled FROM (topology,
-        # design draft, crossover preview, measurement summary — see
-        # `_source_payload`), never the bytes that came out. Two consequences a
-        # reader will otherwise get backwards: the same name can legitimately
-        # hold different bytes after a recompose from the same record, which is
-        # what lets `reconcile_current_dsp` refresh a kept candidate IN PLACE
-        # instead of displacing it; and a byte difference under an unchanged
-        # name is therefore NOT evidence of tampering or drift. Content
-        # identity is answered by the content-derived fingerprints
-        # (`running_graph_fingerprint`, `_normalized_graph_fingerprint`), which
-        # is what the measurement program actually consumes.
-        config_target = baseline_candidate_config_path(source["fingerprint"], config_target)
     retained_applied = _frozen_applied_profile(applied_anchor)
     applied_profile_proves = _applied_profile_proves_driver_targets(saved, source)
 
@@ -2197,32 +1937,25 @@ def build_baseline_profile_candidate(
 
     issues: list[dict[str, str]] = []
     summary = measurements.get("summary") if isinstance(measurements.get("summary"), Mapping) else {}
-    # PR-L4 item 5: a candidate satisfies a completeness flag by the evidence it
-    # CARRIES, never by existing. See `measured_candidate_evidence_counts`.
-    candidate_evidence = measured_candidate_evidence_counts(measured_candidate)
-    driver_target_proof_complete = bool(candidate_evidence["driver"]) or bool(
+    driver_target_proof_complete = bool(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
     driver_target_proof_source = (
-        "measured_candidate"
-        if candidate_evidence["driver"]
-        else ("measurements" if driver_target_proof_complete else "missing")
+        "measurements" if driver_target_proof_complete else "missing"
     )
-    summed_validation_complete = bool(candidate_evidence["summed"]) or bool(
+    summed_validation_complete = bool(
         summary.get("summed_validation_complete")
     )
     summed_validation_source = (
-        "measured_candidate"
-        if candidate_evidence["summed"]
-        else ("measurements" if summed_validation_complete else "missing")
+        "measurements" if summed_validation_complete else "missing"
     )
     # Passive mains ride the SAME multi-output emitter as the active path, via a
     # degenerate 1-way preset built from the topology — the preset
     # ``commission_wiring`` answers a passive capture with, so the compiled
     # graph and the measured plant are ONE.
     passive_mains = _passive.passive_mains_compiles_roleful(
-        topology, measured_candidate, applied_anchor
+        topology, None, applied_anchor
     )
 
     preset: ActiveSpeakerPreset | None = None
@@ -2296,17 +2029,14 @@ def build_baseline_profile_candidate(
                 "confirm each driver with a quiet test before saving the active profile",
             ))
         summed_validation_complete = (
-            bool(candidate_evidence["summed"])
-            or bool(summary.get("summed_validation_complete"))
+            bool(summary.get("summed_validation_complete"))
             or (
                 driver_target_proof_complete
                 and _summed_validation_evidence_complete(summary)
             )
         )
         summed_validation_source = (
-            "measured_candidate"
-            if candidate_evidence["summed"]
-            else ("measurements" if summed_validation_complete else "missing")
+            "measurements" if summed_validation_complete else "missing"
         )
     if issues:
         return finalize(_blocked_payload(
@@ -2329,23 +2059,6 @@ def build_baseline_profile_candidate(
                     "active profile compiler could not build speaker preset intent",
                 )
             ],
-            status="blocked",
-            config_path=config_target,
-            playback_device=resolved_playback_device,
-            playback_device_source=playback_device_source,
-        ))
-
-    if measured_candidate is not None and (
-        measured_candidate.source_preset.speaker_identity() != preset.speaker_identity()
-    ):
-        return finalize(_blocked_payload(
-            topology=topology,
-            source=source,
-            issues=[_issue(
-                "blocker",
-                "measured_candidate_preset_mismatch",
-                "the reviewed measured candidate names a different speaker than the saved crossover",
-            )],
             status="blocked",
             config_path=config_target,
             playback_device=resolved_playback_device,
@@ -2394,73 +2107,22 @@ def build_baseline_profile_candidate(
         if preset_matches_applied_profile(preset, applied_anchor)
         else ""
     )
-    if measured_candidate is not None:
-        corrections = measured_candidate.driver_corrections()
-        correction_meta = _measured_candidate_metadata(measured_candidate, preset, topology, measurements, now)
-        correction_issues: list[dict[str, str]] = []
-        sitting_notes = correction_meta["level_match"]["sitting_differences"]
-        if sitting_notes:
-            correction_issues.append(_issue(
-                "warning", "driver_level_sittings_differ", "; ".join(sitting_notes),
-            ))
-            log_event(logger, "baseline_profile.level_sittings_differ", level=logging.WARNING,
-                      tolerance_db=LEVEL_SITTING_TOLERANCE_DB, detail="; ".join(sitting_notes))
-    else:
-        corrections, correction_issues, correction_meta = _derive_corrections(
-            preset,
-            crossover_preview,
-            measurements,
-            tuning_owner=tuning_owner,
-            expected_profile_context_id=expected_profile_context_id or None,
-            applied_profile_context=applied_anchor,
-        )
+    corrections, correction_issues, correction_meta = _derive_corrections(
+        preset,
+        crossover_preview,
+        measurements,
+        tuning_owner=tuning_owner,
+        expected_profile_context_id=expected_profile_context_id or None,
+        applied_profile_context=applied_anchor,
+    )
     issues.extend(correction_issues)
-    # Layer-1a driver linearization (#1668 PR-D). Threads whatever the
-    # measured candidate carries: empty for no candidate at all or a plain
-    # trims candidate — hence ``getattr`` with a default — or a pre-PR-C
-    # persisted candidate. Reduced to the emitter's own input shape by
-    # the shared helper, ``linearization_fit.linearization_filters_by_role``
-    # — the same reduction ``measured_crossover_candidate.compile_candidate_config``
-    # uses, so the two RICH-candidate call sites reduce identically. NOT
-    # shared with ``recompose_applied_baseline_yaml`` below: that seam reads
-    # THIS function's already-reduced output back out of a persisted
-    # snapshot, so it deliberately re-validates the reduced shape inline
-    # instead of calling this helper again (calling it on an already-reduced
-    # mapping silently returns {} for every role — see
-    # linearization_filters_by_role's own docstring). Do not "consolidate"
-    # the two.
-    from .linearization_fit import linearization_filters_by_role
-
-    linearization = linearization_filters_by_role(
-        getattr(measured_candidate, "linearization", None) or {}
-    )
-    # Gauge fix (2026-07-24): the single writer's own verdict for WHY
-    # linearization did or didn't run this attempt — "" (empty, the
-    # ``getattr`` default) for no candidate, a plain trims candidate, or a
-    # pre-gauge-fix persisted MeasuredCrossoverCandidate. Never
-    # re-derived here — see MeasuredCrossoverCandidate.linearization_outcome's
-    # own docstring.
-    linearization_outcome = str(
-        getattr(measured_candidate, "linearization_outcome", "") or ""
-    )
-    # WHICH trim pair the candidate committed — the outcome above cannot tell
-    # an anchored commit from a resolved one. ``getattr`` default for the same
-    # cases as its neighbours, plus a round whose pair a trim pin displaced.
-    trim_decision = dict(getattr(measured_candidate, "trim_decision", None) or {})
-    # Decision 10's blend correction, already in the emitter's flat shape (the
-    # solver writes it that way). ``getattr`` with a default for the same
-    # reason the two above use one.
-    blend_correction = [
-        dict(entry)
-        for entry in (getattr(measured_candidate, "blend_correction", ()) or ())
-    ]
-    # The candidate's own room PEQ set, reduced to the emitter's single list by
-    # ``candidate_room_peqs``. ``getattr`` with a default for the same cases as
-    # its neighbours above; the helper needs the candidate's layout, so it only
-    # runs once the field is known to be there.
-    bass_extension = dict(getattr(measured_candidate, "bass_extension", None) or {})
-    room_correction = dict(getattr(measured_candidate, "room_correction", None) or {})
-    room_peqs = candidate_room_peqs(measured_candidate) if room_correction else ()
+    linearization: dict[str, Any] = {}
+    linearization_outcome = ""
+    trim_decision: dict[str, Any] = {}
+    blend_correction: list[dict[str, Any]] = []
+    bass_extension: dict[str, Any] = {}
+    room_correction: dict[str, Any] = {}
+    room_peqs: Sequence[PeqFilter] = ()
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -2530,21 +2192,12 @@ def build_baseline_profile_candidate(
                 "manual_crossover_preserved",
                 "preserved the currently applied manual crossover corrections",
             ))
-    if measured_candidate is not None:
-        automatic_candidate = correction_meta["automatic_candidate"]
-    else:
-        automatic_candidate = automatic_candidate_readiness(
-            required_group_ids=sorted(group.id for group in topology.speaker_groups
-                                      if group.mode in {"active_2_way", "active_3_way"}),
-            level_match=correction_meta["level_match"], measurement_summary=summary,
-            active_comparison_set=measurements.get("active_comparison_set"),
-        )
-    if tuning_owner == "automatic" and not automatic_candidate["ready"]:
-        issues.append(_issue(
-            "blocker",
-            str(automatic_candidate["reason"]),
-            str(automatic_candidate["detail"]),
-        ))
+    automatic_candidate = automatic_candidate_readiness(
+        required_group_ids=sorted(group.id for group in topology.speaker_groups
+                                  if group.mode in {"active_2_way", "active_3_way"}),
+        level_match=correction_meta["level_match"], measurement_summary=summary,
+        active_comparison_set=measurements.get("active_comparison_set"),
+    )
     provisional = bool(correction_meta.get("provisional"))
     if driver_domain and not bass_extension:
         bass_extension = applied_bass_extension()
@@ -2575,8 +2228,6 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target if write else None,
-                baseline_id=baseline_id(topology.topology_id),
                 bass_extension=bass_extension,
             )
         else:
@@ -2591,45 +2242,16 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target if write else None,
-                baseline_id=baseline_id(topology.topology_id),
                 bass_extension=bass_extension,
                 linearization=linearization,
                 blend_correction=blend_correction,
                 room_peqs=room_peqs,
-                protection_sections_by_role=_snapshot_protection_sections(candidate_graph_context, preset),
+                protection_sections_by_role=(confirmed_protection_sections(protection) if protection is not None else None),
             )
-            # A v2 measured candidate carrying delay/polarity re-proves its
-            # exact requested delay binding against the freshly compiled text
-            # before this candidate can ever reach "ready_to_apply" — the
-            # delay_graph + graph_safety proofs named in the crossover
-            # measurement v2 design (§5.8). A failed proof is a blocker issue,
-            # exactly like a failed CamillaDSP validation below: fail closed,
-            # no partial write reaches "ready".
-            from .measured_crossover_candidate import prove_candidate_config
-
-            if (
-                isinstance(measured_candidate, MeasuredCrossoverCandidate)
-                and measured_candidate.alignment.delay_role is not None
-            ):
-                try:
-                    prove_candidate_config(measured_candidate, yaml)
-                except MeasuredCrossoverCandidateError as exc:
-                    log_event(
-                        logger,
-                        "correction.crossover_alignment_proof_blocked",
-                        level=logging.ERROR,
-                        code=exc.code,
-                        detail=exc.detail,
-                        candidate_fingerprint=measured_candidate.fingerprint,
-                        delay_role=measured_candidate.alignment.delay_role,
-                    )
-                    issues.append(_issue(
-                        "blocker",
-                        "measured_candidate_alignment_proof_failed",
-                        str(exc),
-                    ))
+        if not driver_domain:
+            config_target = baseline_candidate_config_path(yaml, config_target)
         if write:
+            atomic_write_text(config_target, yaml, mode=CONFIG_FILE_MODE)
             validation = validate(config_target).to_dict()
             if not validation.get("ok_to_apply") and validation.get("status") not in {
                 "valid",
@@ -2659,7 +2281,6 @@ def build_baseline_profile_candidate(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASELINE_PROFILE_KIND,
         "status": status,
-        "baseline_id": baseline_id(topology.topology_id),
         "created_at": (
             saved.get("created_at") if saved and saved.get("created_at") else now
         ),
@@ -2704,20 +2325,12 @@ def build_baseline_profile_candidate(
             ),
             # ...and the counts BEHIND a measured-candidate claim, so every
             # `complete: true` in this block has a number under it somewhere.
-            "measured_candidate_evidence": dict(candidate_evidence),
         },
         "corrections": corrections,
         "corrections_source": correction_meta["sources"],
         "gain_provenance": correction_meta["gain_provenance"],
         "corrections_provenance": correction_meta["corrections_provenance"],
         "level_match": correction_meta["level_match"],
-        # Layer-1a driver linearization (#1668 PR-D) — same reduced
-        # {role: [filter_dict, ...]} shape emit_active_speaker_baseline_config
-        # consumes; mirrors "corrections" (top-level convenience copy of what
-        # the immutable recomposition_snapshot below also carries). N1
-        # (#1668 PR-D review): this top-level copy is NOT what
-        # recompose_applied_baseline_yaml reads -- see that field's own
-        # comment inside recomposition_snapshot below.
         "linearization": linearization,
         # Gauge fix (2026-07-24): WHY linearization did or didn't run for
         # THIS candidate — "" / "fitted" / "trim_rejected" /
@@ -2735,11 +2348,6 @@ def build_baseline_profile_candidate(
         # for the same reason "linearization_outcome" is, and NOT inside
         # recomposition_snapshot, which baseline_candidate_fingerprint hashes.
         "trim_decision": trim_decision,
-        # Crossover blend correction (decision 10) — top-level convenience
-        # copy, mirroring "linearization" above. The authoritative copy the
-        # recompose re-emits lives inside recomposition_snapshot below; this
-        # one is what a "what is applied right now" read (`/state`, the apply
-        # observability line) uses without unpacking the snapshot.
         "blend_correction": blend_correction,
         # Convenience mirror of the accepted room layer. Recomposition reads
         # the immutable snapshot below; the mirror supports profiles saved
@@ -2771,10 +2379,6 @@ def build_baseline_profile_candidate(
             "per_driver_limiters": True,
         },
         "issues": issues,
-        # Immutable Layer-A inputs captured at Save. Once this candidate is
-        # explicitly applied, every production recompose reads ONLY this
-        # snapshot; later measurement/design edits remain candidates and cannot
-        # alter playback as a side effect of applying room/preference EQ.
         "recomposition_snapshot": {
             "schema_version": 1,
             "topology_id": topology.topology_id,
@@ -2786,12 +2390,6 @@ def build_baseline_profile_candidate(
             "corrections_provenance": correction_meta["corrections_provenance"],
             "level_match": correction_meta["level_match"],
             "tuning_owner": tuning_owner,
-            # Layer-1a driver linearization (#1668 PR-D): the immutable input
-            # every future recompose (room/preference EQ, /sound) re-emits
-            # verbatim — THIS is the copy recompose_applied_baseline_yaml
-            # reads (not the top-level mirror above). Absent/empty for every
-            # profile saved before this stage existed (era-tolerant on read;
-            # see that function's own snapshot.get("linearization", {})).
             "linearization": linearization,
             # Decision 10's blend correction: an INPUT every future recompose
             # (room/preference EQ, /sound) must re-emit verbatim, so it belongs
@@ -2816,281 +2414,6 @@ def build_baseline_profile_candidate(
             mode=0o640,
         )
     return payload
-
-
-def applied_baseline_hardware_match(
-    topology: OutputTopology,
-    *,
-    applied_profile: Mapping[str, Any],
-) -> tuple[Mapping[str, Any] | None, list[dict[str, str]]]:
-    """Is this applied profile a usable baseline that STILL MATCHES the hardware?
-
-    Returns ``(snapshot, [])`` when it is, and ``(None, [blocker])`` otherwise,
-    following this module's ``(value | None, issues)`` convention. The snapshot
-    comes back because proving it usable and reading it are the same act — a
-    caller that re-fetched ``recomposition_snapshot`` itself would be a second
-    reader of a key this function exists to validate.
-
-    ONE OWNER, TWO CALLERS, and the second caller is why this is a function.
-    :func:`recompose_applied_baseline_yaml` has always asked these four questions
-    inline before emitting; it still asks them, through here. The new caller is
-    the unattended roleful gate
-    (``jasper.fanin.ring_readiness.ring_roleful_unattended_ready``), which
-    must answer "does this box HAVE a hardware-matched applied baseline?" without
-    emitting anything. Re-deriving the compare there would put the definition of
-    "matches the hardware" in two places — the failure mode where one site is
-    fixed and the other silently keeps admitting.
-
-    The four questions, in refusal order, are unchanged and so are their codes:
-    the record is an APPLIED profile; it carries a schema-1 recomposition
-    snapshot (pre-snapshot profiles cannot be recomposed at all); its domain is
-    ``full``; and its recorded topology identity AND fingerprint both still match
-    the topology passed in. The last is the DAC-swap guard — a genuine hardware
-    change refuses here rather than emitting a graph composed for other drivers.
-    """
-    if applied_profile.get("status") != "applied":
-        return None, [_issue(
-            "blocker",
-            "applied_baseline_snapshot_unavailable",
-            "the saved active-speaker profile is not an applied profile",
-        )]
-    snapshot = applied_profile.get("recomposition_snapshot")
-    if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != 1:
-        return None, [_issue(
-            "blocker",
-            "applied_baseline_snapshot_unavailable",
-            (
-                "the applied active-speaker profile predates immutable "
-                "recomposition; apply it again before adding EQ"
-            ),
-        )]
-    if snapshot.get("domain") != "full":
-        return None, [_issue(
-            "blocker",
-            "applied_baseline_snapshot_domain_invalid",
-            "only a full solo active-speaker profile can host room or preference EQ",
-        )]
-    if (
-        snapshot.get("topology_id") != topology.topology_id
-        or not topology_fingerprint_matches(
-            snapshot.get("topology_fingerprint"), topology
-        )
-    ):
-        return None, [_issue(
-            "blocker",
-            "applied_baseline_snapshot_topology_stale",
-            (
-                "the applied active-speaker profile belongs to a different "
-                "output topology; reapply speaker setup first"
-            ),
-        )]
-    return snapshot, []
-
-
-def recompose_applied_baseline_yaml(
-    topology: OutputTopology,
-    *,
-    applied_profile: Mapping[str, Any],
-    room_peqs: Sequence[PeqFilter] | None = None,
-    preference_filters: Sequence[FilterSpec] = (),
-    output_trim_db: float = 0.0,
-    out_path: str | Path | None = None,
-    playback_device: str | None = None,
-    drop_measured_correction: bool = False,
-    bass_extension: Mapping[str, Any] | None = None,
-    protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
-) -> tuple[str | None, list[dict[str, str]]]:
-    """Re-emit Layer A strictly from the immutable applied-profile snapshot.
-
-    This is the production graph-carrier seam. Mutable design drafts,
-    crossover previews, and measurement stores are deliberately not parameters:
-    captures remain candidates until :func:`apply_baseline_profile` snapshots
-    them under an explicit Apply transaction.
-
-    Omitted ``room_peqs`` preserves the accepted room correction in that
-    snapshot. An explicit empty sequence emits the speaker layer alone.
-
-    ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
-    is opt-in: ``None`` emits against the device the snapshot recorded,
-    byte-for-byte as before. An explicit value re-points the SAME applied
-    evidence at a different transport for the SAME lane — the
-    active ALSA lane and the ACTIVE RING carry identical post-crossover
-    per-driver program at identical width to the same reader. What differs
-    besides the name is the whole ``devices:`` block the sink implies — its
-    CAPTURE lane (the ring coupling is end-to-end), its wire format, and its
-    CamillaDSP latency/queue geometry — which ``active_emit_devices`` derives
-    FROM the device so this function has one place that knows, not several.
-    Moving the device is what makes the ring arm possible at all: the
-    reconciler derives its endpoint marker FROM the loaded graph, so the graph
-    has to name the ring first. Passing anything that is not a legal active
-    endpoint is refused by the emitter's own forbidden-token and width guards,
-    not here.
-
-    ``drop_measured_correction`` omits the two stages that carry MEASURED
-    driver correction — the per-role linearization filters and the summed blend
-    correction — and changes nothing else, so the emitted graph keeps this
-    profile's own crossover, trims, delays, protection and program layers. It
-    exists for :mod:`jasper.active_speaker.audition`, which needs a graph that
-    differs from the applied one on exactly one axis and must never persist it.
-    Callers that WRITE a graph leave it False: a reduced graph is something to
-    listen to, never something to boot from.
-    """
-    snapshot, hardware_issues = applied_baseline_hardware_match(
-        topology, applied_profile=applied_profile
-    )
-    if snapshot is None:
-        return None, hardware_issues
-    try:
-        preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
-    except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
-        return None, [_issue(
-            "blocker",
-            "applied_baseline_snapshot_invalid",
-            f"the applied active-speaker snapshot is invalid: {exc}",
-        )]
-    if room_peqs is None:
-        room_correction = (
-            snapshot.get("room_correction")
-            if "room_correction" in snapshot
-            else applied_profile.get("room_correction", {})
-        )
-        if not isinstance(room_correction, Mapping):
-            return None, [_issue(
-                "blocker",
-                "applied_baseline_snapshot_invalid",
-                "the applied active-speaker snapshot has invalid room correction data",
-            )]
-        try:
-            room_peqs = room_peqs_from_correction(room_correction, preset)
-        except (MeasuredCrossoverCandidateError, KeyError, TypeError, ValueError) as exc:
-            return None, [_issue(
-                "blocker",
-                "applied_baseline_snapshot_invalid",
-                f"the applied active-speaker snapshot has invalid room correction data: {exc}",
-            )]
-    corrections = snapshot.get("corrections")
-    # The snapshot's device is the DEFAULT, never the only answer: an explicit
-    # ``playback_device`` re-points this evidence at the other transport of the
-    # same lane (see the parameter's note). The validity check below still runs
-    # against the SNAPSHOT's value, because an override cannot repair a snapshot
-    # that recorded no device — that snapshot is invalid whatever endpoint the
-    # caller asks for, and letting an override mask it would emit a graph from
-    # evidence we just failed to verify.
-    snapshot_playback_device = snapshot.get("playback_device")
-    expected_roles = set(required_driver_roles(preset.way_count))
-    correction_roles = set(corrections) if isinstance(corrections, Mapping) else set()
-    corrections_valid = (
-        correction_roles == expected_roles
-        and all(isinstance(value, Mapping) for value in corrections.values())
-    ) if isinstance(corrections, Mapping) else False
-    if (
-        not corrections_valid
-        or not isinstance(snapshot_playback_device, str)
-        or not snapshot_playback_device
-    ):
-        return None, [_issue(
-            "blocker",
-            "applied_baseline_snapshot_invalid",
-            "the applied active-speaker snapshot is missing corrections or playback device",
-        )]
-    emit_playback_device = playback_device or snapshot_playback_device
-    # BOTH DEVICE HALVES follow the sink, in ONE derivation. Composed here rather
-    # than left to each caller because a graph naming the ring with the ALSA
-    # lane's format, latency geometry or queue depth is a graph that names the
-    # right device and behaves like the wrong one — and neither half of that is
-    # hypothetical. The FORMAT: a ring re-emit that inherited the box's
-    # program-lane default put S32_LE on jts3's ring while the resolver answered
-    # S16_LE, a sheared attach waiting at the arm's last rung (2026-08-11,
-    # captures/r7b-jts3-arm2-20260811T132227Z). The CAPTURE: moving only the
-    # playback device leaves the graph sourcing the snd-aloop tap that fan-in
-    # stops feeding the moment the coupling arms — silence with every daemon
-    # healthy, and quiet, because the plan compares capture CHANNELS (2 == 2) and
-    # the width gate only holds ring-NAMED lanes to the wire. Non-ring devices
-    # answer the emitter's own defaults. Nothing restores the tap: the ring is
-    # the one legal ACTIVE endpoint, so there is no reverse derivation to run.
-    # The topology goes in because the ring's resolution is per-box.
-    #
-    # The ring branch resolves the box's DECLARED wire, which FAILS LOUD on a
-    # token neither language recognizes (a typo in
-    # JASPER_FANIN_RING_WIRE_FORMAT). That is the right verdict — jasper-fanin
-    # parks on the same value — but it must reach the operator as this
-    # function's ordinary refusal, not as a traceback out of
-    # `jasper-active-speaker baseline-reemit`. Every caller gets the parser's own
-    # sentence, and nothing has been written yet.
-    try:
-        devices = active_emit_devices(emit_playback_device, topology=topology)
-    except ValueError as exc:
-        return None, [_issue(
-            "blocker",
-            "ring_wire_declaration_invalid",
-            f"this box declares a ring wire neither jasper-fanin nor JTS can "
-            f"resolve, so there is no wire to emit against: {exc}",
-        )]
-    # Layer-1a driver linearization (#1668 PR-D): read era-tolerantly (absent
-    # on any pre-PR-D snapshot -> {}, "no linearization was fit" — the same
-    # convention MeasuredCrossoverCandidate.from_mapping uses for its own
-    # "linearization" key). Already in the emitter's reduced input shape —
-    # build_baseline_profile_candidate stores it that way (see its own
-    # linearization_filters_by_role call) — so no further reduction here.
-    # This is the fix for the CRITICAL silent-reversion gap: before this
-    # read, every /sound preference-EQ recompose (and any other
-    # recompose_applied_baseline_yaml caller) silently dropped an applied
-    # profile's linearization stage on the next recompose.
-    linearization_raw = None if drop_measured_correction else snapshot.get(
-        "linearization"
-    )
-    linearization = (
-        {
-            str(role): list(filters)
-            for role, filters in linearization_raw.items()
-            if isinstance(filters, Sequence) and not isinstance(filters, (str, bytes))
-        }
-        if isinstance(linearization_raw, Mapping)
-        else {}
-    )
-    # Decision 10's blend correction, read era-tolerantly for exactly the
-    # reason above and against exactly the same gap: absent on every snapshot
-    # written before the stage existed -> [] -> no stage emitted, and a
-    # /sound preference-EQ save on a corrected speaker must NOT silently
-    # revert the blend correction the household is listening to.
-    blend_correction_raw = None if drop_measured_correction else snapshot.get(
-        "blend_correction"
-    )
-    blend_correction = (
-        [dict(entry) for entry in blend_correction_raw
-         if isinstance(entry, Mapping)]
-        if isinstance(blend_correction_raw, Sequence)
-        and not isinstance(blend_correction_raw, (str, bytes, Mapping))
-        else []
-    )
-    yaml = emit_active_speaker_baseline_config(
-        preset,
-        playback_device=emit_playback_device,
-        capture_device=devices.capture_device,
-        capture_format=devices.capture_format,
-        playback_format=devices.playback_format,
-        chunksize=devices.chunksize,
-        target_level=devices.target_level,
-        queuelimit=devices.queuelimit,
-        enable_rate_adjust=devices.enable_rate_adjust,
-        corrections={str(role): dict(value) for role, value in corrections.items()},
-        room_peqs=room_peqs,
-        preference_filters=preference_filters,
-        output_trim_db=output_trim_db,
-        out_path=out_path,
-        baseline_id=str(
-            applied_profile.get("baseline_id")
-            or baseline_id(topology.topology_id)
-        ),
-        bass_extension=(applied_bass_extension(applied_profile) if bass_extension is None else bass_extension),
-        linearization=linearization,
-        blend_correction=blend_correction,
-        protection_sections_by_role=(
-            protection_sections_by_role if protection_sections_by_role is not None
-            else _snapshot_protection_sections(snapshot, preset)
-        ),
-    )
-    return yaml, []
 
 
 def _bundle_dir_from_measurements(measurements: Mapping[str, Any]) -> Path | None:
@@ -3401,14 +2724,27 @@ def _measured_candidate_metadata(
     }
 
 
+def _protection_projection(profile: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if profile is None:
+        return None
+    return {
+        "profile_fingerprint": profile["profile_fingerprint"],
+        "targets": [{
+            "role": target["role"],
+            "target_fingerprint": target["target_fingerprint"],
+            "required_protection_filters": [dict(requirement) for requirement in target["required_protection_filters"]],
+        } for target in profile["targets"]],
+    }
+
+
 def prepare_applied_baseline_profile(
     candidate: MeasuredCrossoverCandidate,
     *,
     declaration: MeasurementGraphProfile,
     design_draft: Mapping[str, Any],
     measurements: Mapping[str, Any],
-    config_path: str | Path,
-    config_sha256: str,
+    config_path: str | Path | None = None,
+    config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -3420,11 +2756,15 @@ def prepare_applied_baseline_profile(
         if exc.code != "not_found":
             raise
         publish_authored_candidate(candidate)
-    protection = ((provenance or {}).get("recomposition_snapshot") or {}).get("driver_protection") if provenance else design_draft.get("driver_safety_profile")
+    protection = _protection_projection(design_draft.get("driver_safety_profile"))
     source = _source_payload(
-        declaration.topology, design_draft, {}, measurements,
+        declaration.topology, design_draft, load_crossover_preview(current_design_draft=design_draft), measurements,
         measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
     )
+    source = {**source, **((provenance or {}).get("source") or {}),
+              **({"driver_protection_fingerprint": _fingerprint(protection)} if protection is not None else {}),
+              "measured_candidate_fingerprint": candidate.fingerprint}
+    source["fingerprint"] = _fingerprint({key: value for key, value in source.items() if key != "fingerprint"})
     corrections = driver_corrections(candidate)
     linearization = linearization_filters_by_role(candidate.linearization)
     meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, applied_at or _utc_now())
@@ -3441,10 +2781,9 @@ def prepare_applied_baseline_profile(
     applied = {
         **(provenance or {}),
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
-        "baseline_id": baseline_id(declaration.topology.topology_id),
-        "source": {**source, **((provenance or {}).get("source") or {}), "measured_candidate_fingerprint": candidate.fingerprint},
-        "config": {**((provenance or {}).get("config") or {}), "path": str(config_path),
-                   "basename": Path(config_path).name, "sha256": config_sha256, "exists": True,
+        "source": source,
+        "config": {**((provenance or {}).get("config") or {}), "path": str(config_path or ""),
+                   "basename": Path(config_path).name if config_path else "", "sha256": config_sha256, "exists": bool(config_path),
                    "playback_device": declaration.playback_device, "domain": "full"},
         "corrections": corrections, "linearization": linearization,
         "corrections_source": (provenance or {}).get("corrections_source", meta["sources"]),
@@ -3484,7 +2823,7 @@ def persist_applied_baseline_profile(
     return applied
 
 
-# Newest-by-mtime source-fingerprinted candidate siblings to keep around a
+# Newest-by-mtime content-addressed candidate siblings to keep around a
 # canonical baseline config on every successful promote. Orphaned candidates
 # accumulate forever now that promotion is a byte COPY, never a move/rename
 # (a fleet Pi was observed carrying 38 of them); this is a bounded-I/O
@@ -3502,7 +2841,7 @@ def promote_applied_baseline_candidate(
 
     ``build_baseline_profile_candidate`` never writes ``baseline_config_path()``
     directly (issue #1666) -- every ``write=True`` candidate lands on its own
-    source-fingerprinted sibling, so a candidate that fails validation or
+    content-addressed sibling, so a candidate that fails validation or
     activation can never appear at the canonical name. This is the ONLY
     place that publishes to that name, and every caller runs it AFTER its own
     ``apply_dsp_config`` + ``persist_applied_baseline_profile`` have already
@@ -3618,7 +2957,6 @@ async def apply_baseline_profile(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
-    measured_candidate: "MeasuredCrossoverCandidate | None" = None,
     refresh_inputs: Callable[
         [],
         tuple[
@@ -3632,16 +2970,7 @@ async def apply_baseline_profile(
         validate_camilla_config
     ),
 ) -> dict[str, Any]:
-    """Serialize candidate proof, compile, load, confirmation, and rollback.
-
-    ``measured_candidate`` is optional and defaults to ``None`` so every
-    existing caller is byte-identical; passing one threads
-    :func:`build_baseline_profile_candidate`'s ``measured_candidate`` seam
-    through this same atomic apply-with-rollback transaction (see
-    ``jasper.active_speaker.measured_crossover_candidate`` for the v2 measured
-    candidate that carries optional delay/polarity).
-
-    """
+    """Serialize candidate proof, compile, load, confirmation, and rollback."""
 
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
@@ -3667,7 +2996,6 @@ async def apply_baseline_profile(
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
             on_candidate_verified=on_candidate_verified,
-            measured_candidate=measured_candidate,
             validate=validate,
         )
 
@@ -3691,32 +3019,11 @@ async def _apply_baseline_profile_locked(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
-    measured_candidate: "MeasuredCrossoverCandidate | None" = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
 ) -> dict[str, Any]:
-    """Apply the saved baseline candidate through the shared DSP transaction.
-
-    ``capture_device`` is threaded to :func:`build_baseline_profile_candidate`
-    so the reconciler can apply a follower's grouping-ring baseline. It
-    stays ``None`` by default rather than materialising the tap here, so the
-    apply path reaches that function's one device derivation instead of pinning
-    the capture half against a sink it does not look at.
-
-    ``driver_domain`` + ``program_channel`` switch the emit to a wireless active
-    follower's driver-domain-only Layer-A graph (Slice 2 emitter). The optional
-    ``driver_domain_pair_trim_db`` follows the same parameter on
-    :func:`build_baseline_profile_candidate` so direct apply callers cannot drift
-    from the candidate builder. The follower branch of the multiroom reconciler
-    passes follower-specific ``state_path`` / ``config_path`` alongside these so
-    the solo baseline state is not overwritten.
-
-    ``measured_candidate`` forwards unchanged to
-    :func:`build_baseline_profile_candidate`; ``None`` (the default) keeps
-    every existing caller byte-identical.
-
-    """
+    """Apply the saved baseline candidate through the shared DSP transaction."""
 
     state_target = baseline_profile_state_path(state_path)
 
@@ -3741,7 +3048,6 @@ async def _apply_baseline_profile_locked(
             driver_domain_pair_trim_db=driver_domain_pair_trim_db,
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
-            measured_candidate=measured_candidate,
             validate=validate,
         )
 
@@ -3775,22 +3081,9 @@ async def _apply_baseline_profile_locked(
             "issues": refused["issues"],
         }
 
-    reviewed_candidate = build_candidate(
-        write=False,
-        compile_config=measured_candidate is not None,
-    )
-    graph_issue = candidate_boost_issue(config_graph_fingerprint(reviewed_candidate)) if measured_candidate is not None else None
-    if graph_issue is not None:
-        reviewed_candidate["permissions"]["may_apply"] = False
-        reviewed_candidate["issues"] = [*reviewed_candidate.get("issues", []), graph_issue]
-        return {
-            "status": "blocked", "profile": reviewed_candidate,
-            "apply": None, "issues": reviewed_candidate["issues"],
-        }
-
-    if measured_candidate is None and expected_candidate_fingerprint is not None:
-        if not matches_expected(reviewed_candidate):
-            return await refuse_stale(reviewed_candidate)
+    reviewed_candidate = build_candidate(write=False)
+    if expected_candidate_fingerprint is not None and not matches_expected(reviewed_candidate):
+        return await refuse_stale(reviewed_candidate)
     candidate = build_candidate(write=True)
     if not driver_domain and (candidate.get("config") or {}).get("sha256"):
         from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
@@ -3832,7 +3125,6 @@ async def _apply_baseline_profile_locked(
         logger,
         "correction.crossover_apply_started",
         config_path=str((candidate.get("config") or {}).get("path") or ""),
-        baseline_id=candidate.get("baseline_id"),
         tuning_owner=tuning_owner,
         topology_id=topology.topology_id,
         graph_fingerprint=graph_fingerprint,
@@ -3842,7 +3134,7 @@ async def _apply_baseline_profile_locked(
 
     prepared = candidate
     if not driver_domain:
-        bank_candidate = measured_candidate or candidate_from_applied_profile(topology, {**candidate, "status": "applied"})
+        bank_candidate = candidate_from_applied_profile(topology, {**candidate, "status": "applied"})
         prepared = prepare_applied_baseline_profile(
             bank_candidate,
             declaration=MeasurementGraphProfile(
@@ -3892,7 +3184,6 @@ async def _apply_baseline_profile_locked(
         log_event(
             logger,
             "correction.crossover_apply_rolled_back",
-            baseline_id=candidate.get("baseline_id"),
             topology_id=topology.topology_id,
             graph_fingerprint=graph_fingerprint,
             reason=str(exc),
@@ -3922,7 +3213,6 @@ async def _apply_baseline_profile_locked(
     log_event(
         logger,
         "correction.crossover_apply_succeeded",
-        baseline_id=candidate.get("baseline_id"),
         topology_id=topology.topology_id,
         tuning_owner=tuning_owner,
         graph_fingerprint=graph_fingerprint,
@@ -3946,7 +3236,6 @@ async def _apply_baseline_profile_locked(
     log_event(
         logger,
         "dsp.baseline_linearization",
-        baseline_id=candidate.get("baseline_id"),
         topology_id=topology.topology_id,
         **(
             {role: len(filters) for role, filters in applied_linearization.items()}

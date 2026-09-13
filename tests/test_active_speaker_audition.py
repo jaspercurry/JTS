@@ -11,6 +11,9 @@ really untouched, and does a measurement session keep the door shut.
 
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+
+
 import asyncio
 import json
 import time
@@ -18,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml as yaml_lib
 
 from jasper.active_speaker.audition import (
@@ -32,9 +37,6 @@ from jasper.active_speaker.audition import (
     stop_audition,
 )
 from jasper.output_topology import topology_config_fingerprint
-from jasper.active_speaker.baseline_profile import (
-    recompose_applied_baseline_yaml,
-)
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME
 
@@ -106,10 +108,10 @@ def test_baseline_layer_drops_only_the_measured_correction_stages() -> None:
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_profile(topology)
 
-    full_text, full_issues = recompose_applied_baseline_yaml(
+    full_text, full_issues = compile_applied_fixture(
         topology, applied_profile=applied,
     )
-    reduced_text, reduced_issues = recompose_applied_baseline_yaml(
+    reduced_text, reduced_issues = compile_applied_fixture(
         topology,
         applied_profile=applied,
         drop_measured_correction=True,
@@ -174,11 +176,13 @@ def test_the_household_layers_survive_the_reduction(
     if bass_extension:
         applied["recomposition_snapshot"]["bass_extension"] = _dynamic_bass_descriptor()
     applied["recomposition_snapshot"]["room_correction"] = _ROOM_CORRECTION
-    full_text, issues = recompose_applied_baseline_yaml(
+    full_text, issues = compile_applied_fixture(
         topology, applied_profile=applied,
     )
     assert issues == [] and full_text is not None
 
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    declare_applied_fixture(monkeypatch, topology, applied)
     reduced, issues = build_reduced_yaml(
         topology, applied_profile=applied,
     )
@@ -237,39 +241,17 @@ def test_the_level_disclosure_counts_the_cuts_it_gives_back() -> None:
 def test_the_audition_asks_for_a_reduced_graph_and_never_a_written_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``build_reduced_yaml`` is where the door's promise becomes a call.
-
-    Two arguments carry it: ``drop_measured_correction=True`` is the whole
-    layer semantics, and ``out_path=None`` is what keeps a reduced graph
-    something to listen to rather than something a box could boot from. Spied
-    on the real function, so a future refactor that stages the graph to disk
-    fails here.
-    """
-
-    from jasper.active_speaker import audition as audition_module
-    from jasper.active_speaker import baseline_profile
-
-    seen: dict[str, object] = {}
-    real = baseline_profile.recompose_applied_baseline_yaml
-
-    def _spy(topology, **kwargs):
-        seen.update(kwargs)
-        return real(topology, **kwargs)
-
-    monkeypatch.setattr(baseline_profile, "recompose_applied_baseline_yaml", _spy)
+    from jasper.active_speaker.audition import build_reduced_yaml
+    from tests.active_speaker_fixtures import declare_applied_fixture
 
     topology = _active_topology("mono", "active_2_way")
-    anchor = tmp_path / "anchor.yml"
-    anchor.write_text("devices: {}\n", encoding="utf-8")
-    text, issues = audition_module.build_reduced_yaml(
-        topology,
-        applied_profile=_applied_profile(topology),
-    )
-
-    assert issues == [] and text is not None
-    assert seen["drop_measured_correction"] is True
-    assert seen["out_path"] is None
-    assert list(tmp_path.iterdir()) == [anchor]
+    applied = _applied_profile(topology)
+    declare_applied_fixture(monkeypatch, topology, applied)
+    before = sorted(tmp_path.rglob("*"))
+    text, issues = build_reduced_yaml(topology, applied_profile=applied)
+    assert not issues
+    assert not any("linearization" in name or name.startswith("as_blend_") for name in _filters(text))
+    assert sorted(tmp_path.rglob("*")) == before
 
 
 # --------------------------------------------------------------------------- #
@@ -324,7 +306,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     topology = _active_topology("mono", "active_2_way")
     applied = _applied_profile(topology)
-    full_text, issues = recompose_applied_baseline_yaml(
+    full_text, issues = compile_applied_fixture(
         topology, applied_profile=applied,
     )
     assert issues == [] and full_text is not None
@@ -344,7 +326,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         audition_module,
         "build_reduced_yaml",
         lambda _topology, *, applied_profile: (
-            recompose_applied_baseline_yaml(
+            compile_applied_fixture(
                 topology,
                 applied_profile=applied_profile,
                 drop_measured_correction=True,

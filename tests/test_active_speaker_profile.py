@@ -415,7 +415,6 @@ def test_two_way_active_startup_config_is_muted_and_protected():
     yaml = emit_active_speaker_startup_config(
         preset,
         playback_device="hw:ActiveDAC",
-        baseline_id="baseline-test",
     )
 
     assert (
@@ -423,7 +422,6 @@ def test_two_way_active_startup_config_is_muted_and_protected():
         "emit_active_speaker_startup_config"
     ) in yaml
     assert "preset_id=DE250-E150HE44-v1" in yaml
-    assert "baseline_id=baseline-test" in yaml
     assert "volume_limit: 0.0" in yaml
     assert 'device: "hw:ActiveDAC"' in yaml
     assert "channels: 2" in yaml

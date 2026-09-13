@@ -352,7 +352,6 @@ def _software_guard_requested_any(groups: list[SpeakerGroup]) -> bool:
     return any(_software_guard_requested(group) for group in groups)
 
 
-
 def _active_mode_for_way(way_count: int) -> str:
     return f"active_{way_count}_way"
 
@@ -1654,31 +1653,6 @@ def _stage_protected_startup_config_locked(
     software_guard_requested = _software_guard_requested_any(active_groups)
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
 
-    # THE ANCHOR'S DEVICE BLOCK IS DERIVED, NOT DEFAULTED (#2364). This graph is
-    # the box's durable BOOT anchor, so every half of its device contract has to
-    # match the endpoint it names. Forwarding only the device NAME left the other
-    # halves at the emitter's snd-aloop defaults, which on the ACTIVE ring is a
-    # sink of `jts_ring_active_playback` over a capture of `plug:jasper_capture`
-    # — the tap fan-in STOPS feeding under `shm_ring` — plus the program-lane
-    # format and the loopback chunk/target/queue geometry. That is a graph that
-    # names the right device and behaves like the wrong one: silence with every
-    # daemon healthy, and quiet, because nothing downstream inspects transport
-    # coherence (`build_startup_load_preflight`'s gates are about staging,
-    # identity, protection and level, never the transport).
-    #
-    # `active_emit_devices` is the ONE derivation for "what does an emit against
-    # THIS device have to declare", the same one `recompose_applied_baseline_yaml`
-    # reads — so the anchor and the applied baseline now answer the endpoint
-    # question in the same place instead of two. Non-ring devices get the
-    # emitter's own defaults back, so this is byte-identical on every box that is
-    # not armed.
-    #
-    # CROSS-BOOT SEMANTICS, stated because #2364 asked for them: the anchor names
-    # whichever endpoint the box currently resolves, exactly as the applied
-    # baseline does. `baseline-reemit --endpoint ring` moves it to the ring —
-    # the ONE legal ACTIVE endpoint, and so the arm's only `--endpoint` choice,
-    # with no "back" to move it to — and a re-stage in between re-derives from
-    # the live marker rather than freezing a stale answer.
     devices = None
     if blocker_count == 0 and bound_preset and resolved_playback_device:
         # A ring wire token neither jasper-fanin nor JTS can resolve must reach
@@ -1725,7 +1699,6 @@ def _stage_protected_startup_config_locked(
                 enable_rate_adjust=devices.enable_rate_adjust,
                 audible_outputs=frozenset(),
                 out_path=out_path,
-                baseline_id=f"staged-{_safe_stem(topology.topology_id)}",
             )
             classification = _record_generated_config_classification(
                 emitted_config,
@@ -2084,7 +2057,6 @@ def prepare_driver_commissioning_config(
                 volume_limit_db=volume_limit_db,
                 startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
-                baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",
                 filter_mode=filter_mode,
             )
             classification = _record_generated_config_classification(

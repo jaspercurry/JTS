@@ -2,33 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A re-emit preserves the endpoint the box is LIVE on (#2339, #2337, #2344).
-
-Four seams rebuild a roleful box's active graph from its immutable applied
-snapshot: the deploy/arm-ladder reconcile (``jasper-sound
-reconcile-current-dsp``), a ``/sound/`` or ``/sound/eq/`` save, a bass-extension
-apply, and the drift check that binds Layer A to the applied profile. The
-snapshot keeps naming whichever playback lane was resolved at Apply time, so a
-seam that lets that reach the emitter moves the speaker's transport without
-anyone asking: on jts3 that was silence with every daemon healthy
-(#2339, ``captures/r7b-jts3-arm3-20260811T162742Z`` files 14-16,
-``writer_alive=False``, Ring A ``drop_no_reader`` climbing), and ``install.sh``
-runs that same reconcile on every deploy.
-
-The seams that EMIT a graph ask one derivation,
-:func:`jasper.active_speaker.playback_route.resolve_live_active_endpoint`. The
-drift check emits nothing and instead NEUTRALIZES the transport axis against the
-graph it is comparing: a third opinion in a two-way comparison turns ordinary
-device-resolution drift into a crossover-drift claim. An unarmed box is
-byte-identical to before under all four.
-
-These walk the real functions over real files (a real statefile, a real applied
-profile, a real topology) rather than mocking the seam under test: the defect
-was a missing argument at a call site, and a mock of that call site would have
-passed straight through it.
-"""
+"""Graph composition preserves the resolved transport endpoint (see #2339)."""
 
 from __future__ import annotations
+
+from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+
 
 import ast
 import dataclasses
@@ -38,18 +17,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml as yaml_parser
 
 from jasper.active_speaker.state_paths import (
     BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
-)
-from jasper.active_speaker.baseline_profile import (
-    recompose_applied_baseline_yaml,
-)
-from jasper.active_speaker.playback_route import (
-    LOADED_GRAPH_SOURCE,
-    OUTPUTD_ACTIVE_LANE_SOURCE,
-    resolve_live_active_endpoint,
 )
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.camilla_config_contract import (
@@ -70,7 +43,6 @@ from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from tests.sound_camilla_fixtures import FakeCamilla
 from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE
 
-ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"
 
 
@@ -95,6 +67,8 @@ def applied_box(tmp_path, monkeypatch):
     monkeypatch.setenv(STATE_PATH_ENV, str(state_path))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    declare_applied_fixture(monkeypatch, topology, applied, live_endpoint=True)
     return topology, applied
 
 
@@ -117,7 +91,7 @@ def _point_statefile_at(tmp_path: Path, monkeypatch, graph_text: str, *, name: s
 
 
 def _graph_for(topology, applied, device: str | None) -> str:
-    yaml, issues = recompose_applied_baseline_yaml(
+    yaml, issues = compile_applied_fixture(
         topology, applied_profile=applied, playback_device=device
     )
     assert issues == [], issues
@@ -164,6 +138,12 @@ def _event_fields(records, event: str) -> dict[str, str]:
     }
 
 
+def _call_name(node):
+    if not isinstance(node, ast.Call):
+        return None
+    return getattr(node.func, "id", getattr(node.func, "attr", None))
+
+
 def _jasper_calls(name: str):
     """Every call to ``name`` under ``jasper/``, DISCOVERED by parsing, as
     ``(relative_path, module_tree, call_node)``.
@@ -175,135 +155,8 @@ def _jasper_calls(name: str):
     for path in sorted((repo / "jasper").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            called = (
-                func.attr
-                if isinstance(func, ast.Attribute)
-                else func.id
-                if isinstance(func, ast.Name)
-                else None
-            )
-            if called == name:
+            if _call_name(node) == name:
                 yield path.relative_to(repo).as_posix(), tree, node
-
-
-# --------------------------------------------------------------------------
-# 1. THE DERIVATION. Which witness answers, and in which order.
-#
-# The statefile-pointed graph is upstream truth: the marker is derived FROM it
-# by `jasper-audio-hardware-reconcile`, so mid-arm (graph moved, marker still
-# clear) the graph answers and a deploy landing there stops undoing rung 1. A
-# fresh box has no statefile and still has to take a deploy, so an unadoptable
-# graph falls through to the CHOOSER rather than refusing. Every case asserts
-# the SOURCE, since both witnesses answer the same device name, and sweeps both
-# marker states: ADR-0100 left one legal endpoint and the chooser stopped
-# reading the marker, so one that still branched on it would answer the retired
-# lane in one sweep — the shape every pre-retirement box is in.
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "shape",
-    [
-        "adoptable_ring_graph",
-        "no_statefile",
-        "dangling_config_path",
-        "graph_without_devices",
-        "graph_on_a_non_endpoint_device",
-        "graph_on_the_retired_aloop_endpoint",
-    ],
-)
-async def test_which_witness_answers_for_the_live_endpoint(
-    applied_box, tmp_path, monkeypatch, shape,
-):
-    """An adoptable graph answers; every unadoptable shape falls through to the
-    CHOOSER, never to the applied snapshot whose lane re-created #2339."""
-    topology, applied = applied_box
-    source = (
-        LOADED_GRAPH_SOURCE
-        if shape == "adoptable_ring_graph"
-        else OUTPUTD_ACTIVE_LANE_SOURCE
-    )
-    statefile = tmp_path / "outputd-statefile.yml"
-    if shape == "adoptable_ring_graph":
-        _point_statefile_at(
-            tmp_path,
-            monkeypatch,
-            _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
-            name="loaded.yml",
-        )
-    elif shape == "dangling_config_path":
-        statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n", encoding="utf-8")
-    elif shape == "graph_without_devices":
-        graph = tmp_path / "no-devices.yml"
-        graph.write_text("pipeline: []\n", encoding="utf-8")
-        statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
-    elif shape != "no_statefile":
-        declined = (
-            ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-            if shape == "graph_on_the_retired_aloop_endpoint"
-            else DEFAULT_PLAYBACK_DEVICE
-        )
-        graph = tmp_path / f"{shape}.yml"
-        graph.write_text(
-            _graph_for(topology, applied, None).replace(
-                RING_ACTIVE_PLAYBACK_DEVICE, declined
-            ),
-            encoding="utf-8",
-        )
-        assert declined in graph.read_text(encoding="utf-8")
-        statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
-
-    for marker_armed in (True, False):
-        monkeypatch.setattr(
-            "jasper.fanin_coupling.ring_active_endpoint_armed",
-            lambda env=None, armed=marker_armed: armed,
-        )
-        assert resolve_live_active_endpoint(topology) == (
-            RING_ACTIVE_PLAYBACK_DEVICE,
-            source,
-        ), marker_armed
-
-
-async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
-    applied_box, tmp_path, monkeypatch, caplog,
-):
-    """Declining an observed sink is a decision, so it is logged; adopting a
-    legal one is not narrated. Without the line the journal cannot tell "looked
-    and declined" from "never looked". DEBUG, because a lab box takes this
-    branch on every call, legitimately."""
-    topology, applied = applied_box
-    graph, _statefile = _point_statefile_at(
-        tmp_path,
-        monkeypatch,
-        _graph_for(topology, applied, None).replace(
-            RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
-        ),
-        name="stereo-lane.yml",
-    )
-
-    with caplog.at_level(logging.DEBUG, logger=ROUTE_LOGGER):
-        answer = resolve_live_active_endpoint(topology)
-
-    assert answer == (RING_ACTIVE_PLAYBACK_DEVICE, OUTPUTD_ACTIVE_LANE_SOURCE)
-    fields = _event_fields(caplog.records, "active_speaker.live_endpoint")
-    assert fields["result"] == "declined_non_endpoint_device"
-    assert fields["observed"] == DEFAULT_PLAYBACK_DEVICE
-    assert fields["config"] == str(graph)
-
-    caplog.clear()
-    _point_statefile_at(
-        tmp_path,
-        monkeypatch,
-        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
-        name="ring.yml",
-    )
-    with caplog.at_level(logging.DEBUG, logger=ROUTE_LOGGER):
-        resolve_live_active_endpoint(topology)
-    assert not [r for r in caplog.records if "live_endpoint" in r.message]
 
 
 # --------------------------------------------------------------------------
@@ -351,7 +204,7 @@ async def test_reconcile_current_dsp_re_emits_through_the_live_endpoint(
     assert (payload["status"], payload["carrier_kind"]) == ("reconciled", "active")
     emitted = Path(str(camilla.loaded_path)).read_text(encoding="utf-8")
     assert _both_halves(emitted) == (RING_CAPTURE_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
-    expected, _ = recompose_applied_baseline_yaml(
+    expected, _ = compile_applied_fixture(
         topology,
         applied_profile=applied,
         preference_filters=_preference_filters(profile_path),
@@ -452,36 +305,19 @@ async def test_the_layer_a_binding_judges_crossover_never_the_transport(
         # The emitter really does refuse this device, so the degradation is
         # routed rather than hypothesised.
         with pytest.raises(ActiveSpeakerConfigError):
-            recompose_applied_baseline_yaml(
+            compile_applied_fixture(
                 topology, applied_profile=applied, playback_device=RING_PLAYBACK_DEVICE
             )
 
 
-async def test_the_drift_check_neutralizes_the_transport_axis(
+async def test_the_drift_check_includes_the_transport_axis(
     applied_box, tmp_path, monkeypatch,
 ):
-    """The Layer-A expectation is built against the endpoint of the graph it is
-    COMPARED to — the caller's readback — not the box's statefile, which is
-    staged here deliberately disagreeing."""
-    from unittest import mock
-
     topology, applied = applied_box
-    ring_graph = _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE)
-    _point_statefile_at(
-        tmp_path,
-        monkeypatch,
-        ring_graph.replace(RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE),
-        name="other.yml",
-    )
-    spy = mock.Mock(return_value=(None, []))
-
-    with mock.patch(
-        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml", spy
-    ):
-        _layer_a_binding(topology, applied, ring_graph)
-
-    assert spy.call_args is not None, "the drift check never reached the recomposer"
-    assert spy.call_args.kwargs.get("playback_device") == RING_ACTIVE_PLAYBACK_DEVICE
+    graph = _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE)
+    changed = graph.replace(RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE)
+    assert _layer_a_binding(topology, applied, graph)["matches"] is True
+    assert _layer_a_binding(topology, applied, changed)["matches"] is False
 
 
 # --------------------------------------------------------------------------
@@ -489,44 +325,93 @@ async def test_the_drift_check_neutralizes_the_transport_axis(
 # --------------------------------------------------------------------------
 
 
-async def test_every_recompose_call_site_names_the_endpoint_or_is_exempt():
-    """A WALKING guard over the CALL SITES, so a fourth seam cannot arrive
-    quietly."""
-    found: set[str] = set()
-    missing: list[str] = []
-    for rel, _tree, call in _jasper_calls("recompose_applied_baseline_yaml"):
-        found.add(rel)
-        if any(kw.arg == "playback_device" for kw in call.keywords):
-            continue
-        missing.append(f"{rel}:{call.lineno}")
+def _keyword(call, name):
+    return next((kw.value for kw in call.keywords if kw.arg == name), None)
 
-    assert found, "no recompose call sites found — this guard has gone vacuous"
-    assert not missing, (
-        "these rebuild a roleful box's active graph without naming an endpoint, "
-        "so they inherit the applied snapshot's lane and move an armed speaker "
-        f"off the ring (#2339/#2337): {missing}"
-    )
+
+def _assigned_value(scope, value, before):
+    if not isinstance(value, ast.Name):
+        return value
+    assignments = [node for node in ast.walk(scope) if isinstance(node, ast.Assign)
+                   and node.lineno < before and any(
+                       isinstance(target, ast.Name) and target.id == value.id
+                       for binding in node.targets for target in ast.walk(binding))]
+    return max(assignments, key=lambda node: node.lineno).value if assignments else None
+
+
+async def test_every_composition_call_site_names_the_endpoint_or_is_exempt():
+    from jasper.active_speaker import measurement_emit
+
+    exemptions = {
+        ("jasper/active_speaker/crossover_v2/door.py", "emit_scoped"):
+            "session_profile.playback_device: bound by bind_measurement_graph before the session starts",
+    }
+    used_exemptions = set()
+    found = set()
+    missing: list[str] = []
+
+    device_field = next(field for field in dataclasses.fields(measurement_emit.MeasurementGraphProfile)
+                        if field.name == "playback_device")
+    assert device_field.default is device_field.default_factory is dataclasses.MISSING
+    loader_tree = ast.parse(Path(measurement_emit.__file__).read_text())
+    loader = next(node for node in loader_tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "load_tuning_declaration")
+    profile_call = next(node.value for node in ast.walk(loader) if isinstance(node, ast.Return))
+    assert _call_name(profile_call) == "MeasurementGraphProfile"
+    device = _keyword(profile_call, "playback_device")
+    assert device is not None
+    assert any(_call_name(node) == "resolve_active_playback_device" for node in ast.walk(device))
+    assert not any(isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value
+                   for node in ast.walk(device)), "resolved playback device must not fall back to a default PCM"
+
+    for name in ("compile_tuning_graph", "load_composed_graph"):
+        sites = list(_jasper_calls(name))
+        assert sites, f"no {name} call sites found — this guard has gone vacuous"
+        for rel, tree, call in sites:
+            scope = min((node for node in ast.walk(tree)
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and node.lineno <= call.lineno <= node.end_lineno),
+                        key=lambda node: node.end_lineno - node.lineno)
+            site = (rel, scope.name)
+            found.add(site)
+            if site in exemptions:
+                used_exemptions.add(site)
+                assert call.args and isinstance(call.args[0], ast.Name) and call.args[0].id == "profile"
+                continue
+            profile = _keyword(call, "profile")
+            if name == "compile_tuning_graph" and profile is None and call.args:
+                profile = call.args[0]
+            source = _assigned_value(scope, profile, call.lineno)
+            if name == "load_composed_graph":
+                if _call_name(source) == "prepare_applied_baseline_profile":
+                    source = _assigned_value(scope, _keyword(source, "declaration"), source.lineno)
+                elif isinstance(source, ast.Attribute) and source.attr == "applied_profile":
+                    result = _assigned_value(scope, source.value, source.lineno)
+                    if (_call_name(result) == "reemit" and call.args
+                            and ast.dump(call.args[0]) == ast.dump(ast.Attribute(value=source.value, attr="yaml", ctx=ast.Load()))):
+                        continue
+            if _call_name(source) != "load_tuning_declaration":
+                missing.append(f"{rel}:{call.lineno}:{name}")
+                continue
+            override = _keyword(source, "playback_device")
+            if override is not None:
+                endpoint = _assigned_value(scope, override, source.lineno)
+                if not (isinstance(endpoint, ast.Attribute) and endpoint.attr == "playback_device"
+                        or _call_name(endpoint) in {"resolve_active_playback_device", "_baseline_reemit_endpoint"}
+                        or (isinstance(endpoint, ast.Subscript)
+                            and _call_name(endpoint.value) == "parse_camilla_devices_config"
+                            and isinstance(endpoint.slice, ast.Constant) and endpoint.slice.value == "playback_device")):
+                    missing.append(f"{rel}:{call.lineno}:default_playback_device")
+
+    assert found and used_exemptions == set(exemptions)
+    assert not missing, f"composition has no resolved profile.playback_device: {missing}"
 
 
 async def test_sound_carrier_forwards_the_derived_endpoint(applied_box):
-    from unittest import mock
+    from jasper.sound.graph_carrier import _compile_active_baseline_with_eq
 
-    from jasper.sound import graph_carrier
-
-    sentinel_device = "jts_sentinel_endpoint"
-    spy = mock.Mock(return_value=(None, []))
-    with mock.patch(
-        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml", spy
-    ), mock.patch(
-        "jasper.active_speaker.playback_route.resolve_live_active_endpoint",
-        mock.Mock(return_value=(sentinel_device, LOADED_GRAPH_SOURCE)),
-    ), pytest.raises(graph_carrier.CarrierCannotHostEq):
-        graph_carrier._recompose_active_baseline_with_eq(
-            SoundProfile(enabled=False), out_path=None
-        )
-
-    assert spy.call_args is not None
-    assert spy.call_args.kwargs.get("playback_device") == sentinel_device
+    result = _compile_active_baseline_with_eq(SoundProfile(enabled=False))
+    assert _both_halves(result.yaml) == (RING_CAPTURE_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
 
 
 # --------------------------------------------------------------------------

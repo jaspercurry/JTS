@@ -7303,7 +7303,7 @@ def _program_bake_member_kwargs(monkeypatch) -> None:
         pytest.param(
             "active_speaker_baseline.yml",
             _active_baseline_config,
-            "active_baseline_recompose_unavailable",
+            "active_baseline_compile_unavailable",
             None,
             id="active_speaker_baseline",
         ),
@@ -7430,7 +7430,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     assert b"502" not in status_line
     payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
     assert payload["status"] == "blocked"
-    assert payload["reason_code"] == "active_baseline_recompose_unavailable"
+    assert payload["reason_code"] == "active_baseline_compile_unavailable"
     # Fail closed: active config never swapped, no prepare_failed state.
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
@@ -7550,7 +7550,7 @@ async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap
         )
     refusal = sound_setup._carrier_refusal(excinfo.value)
     assert refusal is not None
-    assert refusal.reason_code == "active_baseline_recompose_unavailable"
+    assert refusal.reason_code == "active_baseline_compile_unavailable"
     # The in-lock re-check fired (pre-check saw the hostable config first).
     assert cam.calls >= 2
     # The stereo config was NEVER loaded over the active crossover.

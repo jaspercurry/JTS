@@ -24,7 +24,6 @@ def _applied_profile() -> dict:
     }
     return {
         "status": "applied",
-        "baseline_id": "baseline-test",
         "candidate_fingerprint": "protected-profile",
         "source": {"fingerprint": "protected-profile"},
         "recomposition_snapshot": {
@@ -44,7 +43,6 @@ def _driver_excitation(*, locked: bool) -> dict:
         "locked_main_volume_db": -4.0,
         "effective_peak_dbfs": -22.0,
         "gain_source": "applied_baseline_recomposition_snapshot",
-        "baseline_id": "baseline-1",
         "topology_id": "bench_mono",
         "role": "woofer",
     }
@@ -66,7 +64,6 @@ def test_driver_excitation_verifier_normalizes_both_scopes_idempotently() -> Non
         assert set(normalized) == set(source)
         assert ("locked_main_volume_db" in normalized) is locked
         assert normalized["gain_source"] == source["gain_source"]
-        assert normalized["baseline_id"] == source["baseline_id"]
         assert normalized["topology_id"] == source["topology_id"]
         assert normalized["role"] == source["role"]
         assert verified_driver_excitation(normalized) == normalized
@@ -112,7 +109,6 @@ def test_driver_excitation_verifier_fails_closed_without_throwing() -> None:
         {key: value for key, value in locked.items() if key != "locked_main_volume_db"},
         {**varying, "locked_main_volume_db": 0.0},
         {**locked, "gain_source": ""},
-        {**locked, "baseline_id": False},
         {**locked, "topology_id": None},
         {**locked, "role": "   "},
         {**varying, "commissioning_gain_db": 0.1, "effective_peak_dbfs": -11.9},

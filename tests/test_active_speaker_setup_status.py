@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_state as v2state
+from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
 
 from collections.abc import Callable
 from importlib.resources import files
@@ -14,6 +15,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 import jasper.active_speaker._common as _common
@@ -23,7 +26,6 @@ from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
-    recompose_applied_baseline_yaml,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
@@ -220,8 +222,11 @@ def _write_applied_graph(
     topology: OutputTopology,
     profile: dict,
     path: Path,
+    *, monkeypatch,
 ) -> None:
-    text, issues = recompose_applied_baseline_yaml(
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    declare_applied_fixture(monkeypatch, topology, profile)
+    text, issues = compile_applied_fixture(
         topology,
         applied_profile=profile,
     )
@@ -496,7 +501,7 @@ def test_durable_anchor_mismatch_names_the_field_and_both_values(
     protected_path = tmp_path / "active_speaker_baseline.yml"
     anchor_path = tmp_path / "active_speaker_baseline_candidate_60205a8de2bf.yml"
     manual = _applied_acoustic_profile(measured=False, config_path=protected_path)
-    _write_applied_graph(topology, manual, protected_path)
+    _write_applied_graph(topology, manual, protected_path, monkeypatch=monkeypatch)
     anchor = yaml.safe_load(protected_path.read_text(encoding="utf-8"))
     anchor["filters"]["as_woofer_delay"]["parameters"]["delay"] = 0.1286
     anchor_path.write_text(yaml.safe_dump(anchor, sort_keys=False), encoding="utf-8")
@@ -554,7 +559,7 @@ def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
     config_path = tmp_path / "active_speaker_baseline.yml"
     applied = _applied_acoustic_profile(config_path=config_path)
     applied["source"]["topology_fingerprint"] = "a" * 64
-    _write_applied_graph(topology, applied, config_path)
+    _write_applied_graph(topology, applied, config_path, monkeypatch=monkeypatch)
     # The freshly-built candidate no longer equals the applied one — which is
     # the whole shape of a topology edit, and the second gate the block held:
     # a stale `protected_ready` made the un-applied candidate a blocker too.
@@ -647,7 +652,7 @@ def test_a_blocker_outranks_a_notice_for_the_setup_headline(
     config_path = tmp_path / "active_speaker_baseline.yml"
     applied = _applied_acoustic_profile(config_path=config_path)
     applied["source"]["topology_fingerprint"] = "a" * 64
-    _write_applied_graph(topology, applied, config_path)
+    _write_applied_graph(topology, applied, config_path, monkeypatch=monkeypatch)
     # Config file still on disk, so the notice's arm is reached; the baseline
     # itself is not applied, so a real blocker lands after it.
     applied["status"] = "draft"
@@ -752,7 +757,7 @@ def _applied_automatic_room_status(
     automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
     if candidate_fingerprint:
         automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
-    _write_applied_graph(topology, automatic, config_path)
+    _write_applied_graph(topology, automatic, config_path, monkeypatch=monkeypatch)
     monkeypatch.setattr(
         baseline_mod,
         "build_baseline_profile_candidate",
@@ -1375,3 +1380,27 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
 
 
 # --- Overwrite-bug regression (lane E, Slice 2 paired summed evidence) ------
+
+
+def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, monkeypatch):
+    from jasper.active_speaker.baseline_profile import active_layer_a_fingerprint
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+    from tests.apply_fixtures import prepare_candidate
+    from jasper.sound.settings import saved_sound_layers
+    from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _run6_measured_candidate
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    target = tmp_path / "applied.yml"
+    applied = prepare_candidate(candidate, topology, target, design_draft=load_design_draft(topology=topology))
+    applied["status"] = "applied"
+    applied["recomposition_snapshot"]["corrections"] = {}
+    preference_filters, trim_db = saved_sound_layers()
+    expected = compile_tuning_graph(load_tuning_declaration(topology), candidate,
+                                    preference_filters=preference_filters, output_trim_db=trim_db)
+    assert target.read_text() == expected
+    binding = setup_mod._applied_layer_a_binding(topology, applied_profile=applied,
+        active_config_path=str(target), active_config_text=None)
+    assert binding["status"] == "current"
+    assert binding["expected_fingerprint"] == binding["loaded_fingerprint"] == active_layer_a_fingerprint(expected)

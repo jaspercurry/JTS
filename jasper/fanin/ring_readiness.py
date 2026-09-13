@@ -1120,41 +1120,11 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
 
 
 def ring_roleful_unattended_ready() -> tuple[bool, str]:
-    """May an unattended pass MOVE a ROLEFUL box's graph? Fail-closed, two arms.
-
-    It refuses by DEFAULT and admits exactly two proven graph shapes. Both arms
-    are about the GRAPH's provenance — never about the box's topology SHAPE,
-    which :func:`ring_topology_ready` owns one gate later:
-
-    1. **A hardware-fingerprint-matched applied baseline** —
-       :func:`~jasper.active_speaker.baseline_profile.applied_baseline_hardware_match`,
-       the same predicate the emitter fails closed on. What a converging pass
-       then moves is the graph a human already approved for THIS hardware, with
-       driver values byte-preserved. A real DAC swap fails the fingerprint and
-       lands in the default refusal.
-    2. **The all-muted staged anchor** — the loaded graph IS this box's published
-       anchor (:func:`_staged_anchor_identity`) AND every output it declares ends
-       in a wired terminal mute (:func:`_anchor_is_all_muted`). It emits silence,
-       so it cannot be a hearing event on any hardware.
-
-    SCOPE, held deliberately narrow: arm 1 is the fingerprint compare ONLY.
-    Applied-record DIVERGENCE (``applied_profile_displacement``) is another
-    gate's question.
-
-    Everything else refuses, fail-CLOSED: an unreadable topology, no applied
-    record and no anchor, a stale fingerprint, an anchor that is not terminally
-    muted. The refusal names the runnable arm so a refused box has a way out.
-
-    A CORRUPT applied record is caught HERE rather than left to the caller:
-    ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
-    own loader catches, but a non-UTF-8 byte (the SD-card / power-cut truncation)
-    raises ``UnicodeDecodeError`` straight past it, and the caller's ``except``
-    would turn that into a refusal carrying no remediation.
-    """
-    from jasper.active_speaker.baseline_profile import (  # lazy: import cost, pulls scipy via bass_extension (ADR-0226)
-        applied_baseline_hardware_match,
-        load_applied_baseline_profile_state,
-    )
+    """Admit a candidate on the live declaration, or the all-muted startup anchor."""
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: import cost
+    from jasper.active_speaker.measurement_emit import load_tuning_declaration, require_candidate_speaker_identity  # lazy: import cost
     from jasper.active_speaker.runtime_contract import classify_output_contract  # lazy: import cost
     from jasper.output_topology import (  # lazy: import cost
         OutputTopologyError,
@@ -1176,26 +1146,22 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     stale_detail = ""
     try:
         applied = load_applied_baseline_profile_state()
-    except (OSError, ValueError) as exc:
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
         applied = None
         stale_detail = (
             f"the applied active-speaker record could not be read "
             f"({type(exc).__name__})"
         )
     if applied is not None:
-        _snapshot, hardware_issues = applied_baseline_hardware_match(
-            topology, applied_profile=applied
-        )
-        if not hardware_issues:
-            return True, (
-                "roleful, and this box's applied active-speaker profile still "
-                "matches the hardware (topology identity and fingerprint both "
-                "current), so a converging pass moves the graph a human already "
-                "approved for these drivers"
-            )
-        stale_detail = "; ".join(
-            str(issue.get("code", "")) for issue in hardware_issues
-        )
+        try:
+            if (applied.get("recomposition_snapshot") or {}).get("topology_id") != topology.topology_id:
+                raise ValueError("applied_topology_mismatch")
+            declaration = load_tuning_declaration(topology)
+            candidate = candidate_from_applied_profile(topology, applied)
+            require_candidate_speaker_identity(candidate, declaration.preset)
+            return True, "roleful applied candidate matches the live speaker declaration"
+        except (CandidateBankRefusal, OSError, ValueError) as exc:
+            stale_detail = str(getattr(exc, "code", type(exc).__name__))
 
     # Arm 2 — the all-muted staged anchor.
     graph = read_loaded_camilla_graph()

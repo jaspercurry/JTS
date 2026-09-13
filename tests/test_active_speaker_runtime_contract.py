@@ -275,7 +275,6 @@ def _active_baseline_yaml(
         room_peqs=room_peqs,
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
-        baseline_id=f"baseline-{layout}-{way}way",
         bass_extension=bass_extension,
     )
 
@@ -294,7 +293,6 @@ def _driver_domain_yaml(
         playback_device=ACTIVE_PCM,
         program_channel=channel,
         pair_trim_db=pair_trim_db,
-        baseline_id=f"follower-{layout}-{way}way",
         bass_extension=bass_extension,
     )
 

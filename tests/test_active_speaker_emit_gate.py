@@ -200,7 +200,7 @@ def test_predicate_real_1600hz_preset_is_well_above_floor() -> None:
     # Guard the "can't over-block a real preset" claim directly: the shipped
     # DE250 + woofer crossover at 1600 Hz clears the 400 Hz floor with margin.
     yaml = emit_active_speaker_baseline_config(
-        _preset("mono", 2), playback_device=ACTIVE_PCM, baseline_id="b"
+        _preset("mono", 2), playback_device=ACTIVE_PCM
     )
     view = view_from_emitted_text(yaml)
     assert unprotected_tweeter_outputs(view, tweeter_channels={1}) == ()
@@ -328,7 +328,7 @@ _REFUSAL_CASES = [
     pytest.param(
         "_driver_baseline_filter_chain",
         lambda p: emit_active_speaker_baseline_config(
-            p, playback_device=ACTIVE_PCM, baseline_id="broken"
+            p, playback_device=ACTIVE_PCM
         ),
         id="baseline",
     ),
@@ -365,7 +365,7 @@ def test_emit_gate_names_the_unprotected_output(monkeypatch) -> None:
     )
     with pytest.raises(ActiveSpeakerConfigError, match=r"output\(s\) 2"):
         emit_active_speaker_baseline_config(
-            _preset("mono", 2), playback_device=ACTIVE_PCM, baseline_id="broken"
+            _preset("mono", 2), playback_device=ACTIVE_PCM
         )
 
 
@@ -378,7 +378,7 @@ def test_emit_gate_logs_before_raising(monkeypatch, caplog) -> None:
     with caplog.at_level("ERROR"):
         with pytest.raises(ActiveSpeakerConfigError):
             emit_active_speaker_baseline_config(
-                _preset("mono", 2), playback_device=ACTIVE_PCM, baseline_id="broken"
+                _preset("mono", 2), playback_device=ACTIVE_PCM
             )
     assert "event=active_speaker.emit_gate" in caplog.text
     assert "blocked_unprotected_tweeter" in caplog.text
@@ -392,7 +392,6 @@ def test_emit_gate_allows_protected_active_baseline(layout: str, way: int) -> No
     yaml = emit_active_speaker_baseline_config(
         _preset(layout, way),
         playback_device=ACTIVE_PCM,
-        baseline_id=f"baseline-{layout}-{way}way",
     )
     assert "pipeline:" in yaml
 
@@ -500,7 +499,7 @@ def test_assert_pipeline_references_closed_passes_the_real_program_config() -> N
 def test_assert_pipeline_references_closed_passes_the_real_baseline_config() -> None:
     preset = _preset("mono", 2)
     yaml_text = emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM, baseline_id="closure-check"
+        preset, playback_device=ACTIVE_PCM
     )
     _assert_pipeline_references_closed(yaml_text, preset)  # must not raise
 
@@ -539,7 +538,7 @@ def test_build_and_prove_refuses_baseline_graph_with_dropped_mixer(monkeypatch) 
     monkeypatch.setattr(camilla_yaml, "_emit_split_mixer", _renamed)
     with pytest.raises(ActiveSpeakerConfigError, match="undefined mixer"):
         emit_active_speaker_baseline_config(
-            _preset("mono", 2), playback_device=ACTIVE_PCM, baseline_id="broken"
+            _preset("mono", 2), playback_device=ACTIVE_PCM
         )
 
 
@@ -768,7 +767,7 @@ _VOLUME_LIMIT_EMITTERS = [
     ),
     pytest.param(
         lambda **kw: emit_active_speaker_baseline_config(
-            _preset(), playback_device=ACTIVE_PCM, baseline_id="clamp", **kw
+            _preset(), playback_device=ACTIVE_PCM, **kw
         ),
         id="baseline",
     ),

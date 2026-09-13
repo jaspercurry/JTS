@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
@@ -340,12 +339,14 @@ def _applied_layer_a_binding(
     active_config_path: str | None,
     active_config_text: str | None,
 ) -> dict[str, Any]:
-    """Bind Active's immutable applied snapshot to the loaded Layer-A graph."""
+    """Compare the compiled applied candidate with the loaded graph."""
 
-    from .baseline_profile import (
-        active_layer_a_fingerprint,
-        recompose_applied_baseline_yaml,
-    )
+    from .baseline_profile import active_layer_a_fingerprint  # lazy: baseline readers import setup status
+    from jasper.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
+    from .candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
+    from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
+    from .measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: graph compilation imports NumPy
+    from jasper.sound.settings import saved_sound_layers  # lazy: household EQ imports NumPy
 
     unavailable = {
         "status": "unverifiable",
@@ -380,35 +381,19 @@ def _applied_layer_a_binding(
                 "loaded_fingerprint": None,
                 "differences": [],
             }
-        # THE TRANSPORT AXIS IS NEUTRALIZED, not compared. This projection binds
-        # ``output_devices``, so an ACTIVE-ring-armed box could never match an
-        # expectation built against the device its snapshot recorded, and the
-        # check reported ``mismatch`` for a transport move nobody asked about
-        # (#2339/#2337). Layer A is crossover and protection evidence; the RIGHT
-        # transport is judged by ``check_fanin_coupling`` and
-        # ``ring_edge_width_ready``.
-        #
-        # The endpoint comes from the graph being COMPARED, not from the box: a
-        # third opinion (the statefile) would make a box whose device resolution
-        # merely drifted report crossover drift. ``None`` falls through to the
-        # snapshot default.
-        loaded_playback = parse_camilla_devices_config(loaded_yaml).get(
-            "playback_device"
-        )
-        expected_yaml, expected_issues = recompose_applied_baseline_yaml(
-            topology,
-            applied_profile=applied_profile,
-            playback_device=loaded_playback or None,
-        )
-        if expected_yaml is None or expected_issues:
-            return unavailable
+        playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
+        declaration = load_tuning_declaration(topology, playback_device=playback_device)
+        candidate = candidate_from_applied_profile(topology, applied_profile)
+        preference_filters, trim_db = saved_sound_layers()
+        expected_yaml = compile_tuning_graph(declaration, candidate=candidate,
+            preference_filters=preference_filters, output_trim_db=trim_db)
         expected = active_layer_a_fingerprint(expected_yaml)
         loaded = active_layer_a_fingerprint(loaded_yaml)
         matches = expected == loaded
         differences = (
             [] if matches else _layer_a_differences(expected_yaml, loaded_yaml)
         )
-    except _READINESS_DERIVATION_ERRORS:
+    except (*_READINESS_DERIVATION_ERRORS, CandidateBankRefusal):
         return unavailable
     return {
         "status": "current" if matches else "mismatch",

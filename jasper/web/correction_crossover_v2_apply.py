@@ -11,25 +11,20 @@ import logging
 from typing import Any, Mapping
 
 from jasper.active_speaker import baseline_profile, runtime_contract
-from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.candidate_trials import candidate_boost_issue
-from jasper.active_speaker.commission_wiring import resolve_commission_preset
 from jasper.active_speaker.crossover_declaration import (
     assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
 )
-from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.active_speaker.crossover_v2.conductor_context import measurement_role_channels
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.design_draft import load_design_draft
-from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
 from jasper.active_speaker.measured_crossover_candidate import candidate_on_declaration
 from jasper.active_speaker.measurement import load_measurement_state
-from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.playback_route import resolve_active_playback_device
+from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
 from jasper.dsp_apply import DspApplyError
 from jasper.log_event import log_event
 from jasper.output_topology import load_output_topology
+from jasper.sound.settings import saved_sound_layers
 from .sound_active_speaker import apply_measured_crossover_geometry
 
 logger = logging.getLogger(__name__)
@@ -42,19 +37,16 @@ def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any
             candidate = find_banked_candidate(expected).candidate
             topology = load_output_topology()
             draft = load_design_draft(topology=topology)
-            safety = draft.get("driver_safety_profile")
             try:
-                if not isinstance(safety, Mapping) or not evaluate_driver_safety_profile(safety, topology).confirmed_and_current:
-                    raise ValueError("Confirm the declared driver limits.")
-                protection = confirmed_protection_sections(safety)
-            except ValueError as exc:
-                raise CrossoverV2Refused(str(exc), code="driver_safety_profile_not_confirmed") from exc
-            try:
-                preset = resolve_commission_preset(topology, crossover_preview=build_crossover_preview(draft))
-                declaration = MeasurementGraphProfile(preset, topology, measurement_role_channels(preset),
-                    str(resolve_active_playback_device(topology)[0] or ""), protection)
-                assert_crossover_honours_declared_floor(candidate_on_declaration(candidate, preset).source_preset)
+                declaration = load_tuning_declaration(topology, design_draft=draft)
+                assert_crossover_honours_declared_floor(candidate_on_declaration(candidate, declaration.preset).source_preset)
                 text = compile_tuning_graph(declaration, candidate=candidate)
+                # Boost findings identify measurement graphs, which exclude household EQ.
+                measured_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                preference_filters, trim_db = saved_sound_layers()
+                if preference_filters or trim_db:
+                    text = compile_tuning_graph(declaration, candidate=candidate,
+                        preference_filters=preference_filters, output_trim_db=trim_db)
             except ValueError as exc:
                 raise CrossoverV2Refused(str(exc), code=getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused") from exc
             sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -62,20 +54,18 @@ def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any
                 applied_baseline_state={"recomposition_snapshot": {"bass_extension": candidate.bass_extension}})
             if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
                 raise CrossoverV2Refused(proof.classification, code="baseline_graph_safety_proof_failed")
-            issue = candidate_boost_issue(sha[:16])
+            issue = candidate_boost_issue(measured_sha[:16])
             if issue:
                 log_event(logger, "correction.crossover_v2_apply", status="blocked", code=issue["code"], candidate_fingerprint=expected)
                 return {"status": "blocked", "issue": {"code": issue["code"], "message": issue["message"]}}
             prepared = baseline_profile.prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft,
-                measurements=load_measurement_state(topology), config_path=baseline_profile.baseline_candidate_config_path(sha), config_sha256=sha)
+                measurements=load_measurement_state(topology))
             previous = baseline_profile.load_applied_baseline_profile_state()
             offset = baseline_profile.applied_program_level_delta_db(previous, prepared)
             summary = v2durable._candidate_summary(candidate, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
             change = declaration_change_for_candidate(source_preset=candidate.source_preset, design_draft=draft)
             load, current = v2state.baseline_apply_seams(camilla_factory())
-            async with baseline_profile.load_composed_graph(text, sha, source="active_speaker_baseline_apply", load_config=load, get_current_config_path=current) as applied:
-                profile = baseline_profile.persist_applied_baseline_profile(prepared, apply_state=applied.to_dict())
-                baseline_profile.promote_applied_baseline_candidate(profile)
+            async with baseline_profile.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared, load_config=load, get_current_config_path=current) as (applied, profile):
                 with v2state._state_lock:
                     v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=previous,
                         previous_candidate_fingerprint=((previous or {}).get("source") or {}).get("measured_candidate_fingerprint"), expected_post_apply_offset_db=offset)

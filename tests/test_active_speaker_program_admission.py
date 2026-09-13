@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Multi-segment excitation-program admission (Wave 2 deliverable B).
-
-Pins: a clean 2-channel MEASURE program is admitted; per-segment refusals for a
-band escape and a peak over the driver cap; the artifact whole-file facts
-(per-channel true peak <= cap, out-of-segment quiet, manifest-peak match); and
-play-time re-admission catching tampered WAV bytes.
-"""
+"""Program admission checks driver caps, segment limits, and captured audio."""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +12,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.usefixtures("banked_session_level")
+pytestmark = pytest.mark.usefixtures("banked_session_level", "isolated_candidate_bank")
 import yaml
 from scipy.io import wavfile
 
@@ -46,7 +40,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
     write_program_wav,
 )
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import mono_output_topology, isolated_candidate_bank as isolated_candidate_bank
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
