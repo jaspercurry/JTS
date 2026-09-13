@@ -253,6 +253,30 @@ def _saved_tuning(profile):
     return applied
 
 
+def test_saved_tune_composes_with_its_declared_driver_protection(tuning_profile):
+    saved = _saved_tuning(tuning_profile)
+    saved["recomposition_snapshot"]["driver_protection"] = {
+        "profile_fingerprint": "p" * 64,
+        "targets": [
+            {"role": "woofer", "target_fingerprint": "w" * 64, "required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": 40.0, "minimum_slope_db_per_octave": 24.0,
+                 "family_or_equivalent": "equivalent_or_steeper"}]},
+            {"role": "tweeter", "target_fingerprint": "t" * 64, "required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": 1600.0, "minimum_slope_db_per_octave": 24.0,
+                 "family_or_equivalent": "equivalent_or_steeper"}]},
+        ],
+    }
+    candidate = candidate_from_applied_profile(tuning_profile.topology, saved, purpose="room")
+    expected, issues = recompose_applied_baseline_yaml(
+        tuning_profile.topology, applied_profile=saved, bass_extension={}, room_peqs=(), playback_device="null",
+    )
+    assert not issues
+    filters = yaml.safe_load(expected)["filters"]
+    assert any(name.startswith("as_woofer_declared_protection") for name in filters)
+    assert candidate.role_attenuations_db == {
+        role: entry["gain_db"] for role, entry in saved["recomposition_snapshot"]["corrections"].items()}
+
+
 @pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
 def test_program_baselines_keep_only_their_lower_layers(tuning_profile, tmp_path, purpose):
     saved = _saved_tuning(tuning_profile)

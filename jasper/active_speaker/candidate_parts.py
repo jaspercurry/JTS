@@ -17,7 +17,10 @@ from jasper.output_topology import OutputTopology, load_output_topology_strict
 
 from .branch_chain import branch_headroom_db, sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal, publish_authored_candidate
-from .baseline_profile import applied_baseline_hardware_match, load_applied_baseline_profile_state, recompose_applied_baseline_yaml
+from .baseline_profile import (
+    _snapshot_protection_sections, applied_baseline_hardware_match, load_applied_baseline_profile_state,
+    recompose_applied_baseline_yaml,
+)
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .crossover_v2.topology_prescription import apply_topology_pin
 from .measured_crossover_candidate import (
@@ -94,7 +97,12 @@ def candidate_from_applied_profile(
                 break
         else:
             raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "saved driver corrections cannot be represented")
-    emitted = compile_candidate_config(candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate))
+    # The saved tune carries the drivers' declared protection; emit the candidate with the
+    # same sections or the comparison below reads the declaration as a changed tune.
+    emitted = compile_candidate_config(
+        candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
+        protection_sections_by_role=_snapshot_protection_sections(snapshot, preset),
+    )
     saved, issues = recompose_applied_baseline_yaml(topology, applied_profile=applied_profile, playback_device="null")
     if saved is None:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
