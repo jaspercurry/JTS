@@ -10,10 +10,11 @@ declaration and the emitted graph cannot disagree. Nothing here writes:
 ``sound_setup`` owns the single durable writer in both directions.
 
 **Why the comparison has to exist at all.**
-``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard is a whole-
-dataclass ``!=``: the candidate's ``source_preset`` must equal the preset
-recompiled *now* from the saved declaration. So a candidate measured at a
-crossover the declaration does not carry can only be applied by making the
+``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard compares
+``ActiveSpeakerPreset.speaker_identity()``: the candidate's ``source_preset``
+must name the same physical speaker — crossover regions included — as the
+preset recompiled *now* from the saved declaration. So a candidate measured at
+a crossover the declaration does not carry can only be applied by making the
 declaration carry it FIRST. That is what :class:`CrossoverDeclarationChange`
 describes, and what
 ``jasper.web.sound_setup.apply_measured_crossover_geometry`` writes.
