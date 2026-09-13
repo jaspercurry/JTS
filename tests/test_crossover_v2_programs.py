@@ -89,7 +89,6 @@ GAIN_PLAN_DB = {"woofer": -32.0, "tweeter": -38.0}
 #: evidence the extraction captured is spent proving the trim's own scope rather
 #: than being overwritten by it.
 GOLDEN_DEEP_CAP = {
-    "check": "37d2c9f4bacfc6b5573611d37887170c5bbc4792685071fd003fbee31bc939bf",
     "measure": "90bd46b530f373531348acfc9786a9998c92dd11b2e5975d0cf7c9dec0be0814",
     "verify": "29c3a0e1cceee6c2d95862bcb50e0c2edb884f798bc877fc98b46f7d731a46e3",
 }
@@ -137,16 +136,27 @@ def _conductor(caps: dict[str, float]):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("phase", ["check", "verify"])
-def test_the_composed_programs_are_the_ones_that_shipped(phase):
-    """The two ANNOUNCED programs' ids equal the pre-extraction conductor's."""
+def test_the_verify_program_is_the_one_that_shipped():
     ex = _excitation(CAPS)
-    composed = {
-        "check": ex.check_program(),
-        "verify": ex.verify_program(),
-    }[phase]
 
-    assert composed.program_id == GOLDEN_DEEP_CAP[phase]
+    assert ex.verify_program().program_id == GOLDEN_DEEP_CAP["verify"]
+
+
+def test_check_pilots_do_not_exceed_the_summed_pilot_pair():
+    ex = _excitation(CAPS)
+    check = ex.check_program()
+    verify = ex.verify_program()
+    summed = {
+        segment.segment_id.rsplit("_", 1)[-1]: segment.gain_db
+        for segment in verify.stimulus_segments()
+        if segment.kind == "pilot"
+    }
+
+    assert all(
+        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]]
+        for segment in check.stimulus_segments()
+        if segment.kind == "pilot"
+    )
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
@@ -198,8 +208,9 @@ def test_the_conductor_composes_through_the_same_owner():
     the golden.
     """
     c = _conductor(CAPS)
+    ex = _excitation(CAPS)
 
-    assert c.program_for_phase(flow.PHASE_CHECK).program_id == GOLDEN_DEEP_CAP["check"]
+    assert c.program_for_phase(flow.PHASE_CHECK).program_id == ex.check_program().program_id
     assert c.program_for_phase(flow.PHASE_VERIFY).program_id == GOLDEN_DEEP_CAP["verify"]
     assert (
         c.program_for_phase(flow.PHASE_MEASURE).program_id

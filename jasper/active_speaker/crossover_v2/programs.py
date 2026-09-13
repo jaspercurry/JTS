@@ -169,11 +169,15 @@ class SessionExcitation:
 
     def check_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
         """Clamp per role, then attenuate both pilots together for a retry."""
+        summed_base = self._summed_gain()
         role_base = {
-            rb.role: back_off_gain(
-                BASE_STIMULUS_PEAK_DBFS,
-                self.session_volume_db,
-                self.caps_dbfs.get(rb.role, 0.0),
+            rb.role: min(
+                back_off_gain(
+                    BASE_STIMULUS_PEAK_DBFS,
+                    self.session_volume_db,
+                    self.caps_dbfs.get(rb.role, 0.0),
+                ),
+                summed_base,
             ) - max(0.0, extra_backoff_db)
             for rb in self.roles
         }
@@ -239,12 +243,7 @@ class SessionExcitation:
         self, *, courtesy_prelude: bool, extra_backoff_db: float, sweep_s: float | None = None,
         leading_pilots: bool = True,
     ) -> ExcitationProgram:
-        binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
-        gain = back_off_gain(
-            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
-            self.session_volume_db,
-            binding_cap,
-        )
+        gain = self._summed_gain(extra_backoff_db)
         return build_verify_program(
             self.fc_hz,
             roles=self.roles,
@@ -256,6 +255,14 @@ class SessionExcitation:
             leading_pilot_gains_db=self.pilot_gains(gain) if leading_pilots else None,
             courtesy_prelude=courtesy_prelude,
             **({"sweep_s": sweep_s} if sweep_s is not None else {}),
+        )
+
+    def _summed_gain(self, extra_backoff_db: float = 0.0) -> float:
+        binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
+        return back_off_gain(
+            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
+            self.session_volume_db,
+            binding_cap,
         )
 
 
