@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.preflight import PreflightFacts, preflight
 from jasper.active_speaker.seat_level_reference import AnchorFacts
@@ -171,3 +171,18 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     issue, = report.issues
     assert issue.code == "measurement_candidate_invalid"
     assert issue.blocking and issue.next_action
+
+
+@pytest.mark.parametrize("level_db,blocked", [(None, False), (-25, False), (-17, False), (-16.99, True), (0, True)])
+def test_run_level_keeps_anchor_and_obeys_statement_ceiling(level_db, blocked):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=level_db))
+    facts = ready_facts(plan)
+    report = preflight(plan, facts)
+    assert report.plan.level.level_db == level_db
+    assert report.plan.level.resolved.reference_volume_db == -18
+    assert report.blocking is blocked
+    assert preflight(report.plan, facts) == report
+    if blocked:
+        issue, = report.to_dict()["issues"]
+        assert issue["code"] == "walk_level_policy_invalid"
+        assert issue["evidence"] == {"level_db": level_db, "predicted_db_spl": pytest.approx(75 + level_db + 18), "ceiling_db_spl": 85}

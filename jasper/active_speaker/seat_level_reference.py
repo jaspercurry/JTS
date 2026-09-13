@@ -41,6 +41,13 @@ class SeatLevelTargetError(ValueError):
     """The requested seat-SPL target is not a band this speaker may chase."""
 
 
+def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float) -> None:
+    if not math.isfinite(level_db_spl) or not math.isfinite(ceiling_db_spl):
+        raise SeatLevelTargetError("measurement SPL and commissioning ceiling must be finite")
+    if level_db_spl > ceiling_db_spl - MAX_STEP_DB - CEILING_MARGIN_DB:
+        raise SeatLevelTargetError(f"measurement SPL {level_db_spl:g} exceeds the commissioning envelope at {ceiling_db_spl:g}")
+
+
 @dataclass(frozen=True)
 class StimulusProvenance:
     """The summed program and the statistic used for the session gain."""
@@ -93,13 +100,7 @@ class SeatLevelTarget:
             raise SeatLevelTargetError("seat-SPL target and tolerance must be finite")
         if self.tolerance_db <= 0.0:
             raise SeatLevelTargetError("seat-SPL tolerance must be positive")
-        if not math.isfinite(ceiling_db_spl):
-            raise SeatLevelTargetError("commissioning SPL ceiling must be finite")
-        if self.high_db_spl > ceiling_db_spl - MAX_STEP_DB - CEILING_MARGIN_DB:
-            raise SeatLevelTargetError(
-                f"seat-SPL band top {self.high_db_spl:g} dB SPL exceeds the "
-                f"profile's commissioning ceiling {ceiling_db_spl:g} dB SPL"
-            )
+        validate_commissioning_spl(self.high_db_spl, ceiling_db_spl=ceiling_db_spl)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -224,12 +225,7 @@ class LevelUnresolved(Exception):
 
 @dataclass(frozen=True)
 class ResolvedLevel:
-    """The banked anchor's drive level, absolute, with the terms behind it.
-
-    One level, not a target and an anchor: a walk drives AT the anchor, so a
-    second field would be the same number under a name inviting the two to
-    differ.
-    """
+    """The banked session anchor and its microphone identity."""
 
     anchor_db_spl: float
     reference_volume_db: float
@@ -325,7 +321,7 @@ def resolve_anchor_level(
 
 
 def check_target_capture_dbfs(sensitivity: Any, anchor_db_spl: float) -> float:
-    """The CHECK solve's capture-peak target at the session anchor.
+    """The CHECK solve's capture-peak target at the run's predicted SPL.
 
     The anchor is a loudest-half-second RMS; the solve compares peaks.
     """

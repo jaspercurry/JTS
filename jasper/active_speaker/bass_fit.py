@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db, validate_dynamic_bass_descriptor
 
 from .bass_comparison import bass_capture_context, common_bass_bins, compare_bass_takes
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
@@ -55,8 +55,6 @@ def fit_bass_shape(
             raise CrossoverV2Refused(
                 {"candidate_id": base_candidate_id}, code="bass_fit_candidate_unreadable",
             ) from exc
-        if base.candidate.bass_extension:
-            raise CrossoverV2Refused(code="bass_fit_requires_room_baseline_and_exact_candidate")
         match = compare_bass_takes(before, after, change="candidate")
         context = bass_capture_context(before)
         across = compare_capture_basis(context, first, interventions=("pose_key",),
@@ -110,11 +108,17 @@ def fit_bass_shape(
     error = desired[valid] - a[:, valid]
     energy = float(np.sum(delta ** 2))
     fraction = float(np.clip(np.sum(delta * error) / energy, 0, 1)) if energy > 0 else 0.0
+    base_descriptor = base.candidate.bass_extension or None
+    base_boost = loudness_boost_db(first["loudness_volume_db"], DynamicBassDescriptor(**base_descriptor)) if base_descriptor else 0.0
+    base_low_boost = base_descriptor["low_boost_db"] if base_descriptor else 0.0
     choices = []
     for scale in sorted({0.0, fraction, 1.0}):
         prediction = a[:, valid] + scale * delta
         rms = np.sqrt(np.mean((prediction - desired[valid]) ** 2, axis=1))
-        choices.append({"scale": scale, "descriptor": {**settings, "low_boost_db": scale * settings["low_boost_db"]} if scale else None,
+        fitted = (base_descriptor if scale == 0 else settings if scale == 1 else
+                  {**settings, "low_boost_db": base_low_boost + scale * (settings["low_boost_db"] - base_low_boost)})
+        choices.append({"scale": scale, "descriptor": fitted,
+                        "realized_boost_db": (base_boost + scale * np.median(delta, axis=0)).tolist(),
                         "mean_pose_rms_db": float(np.mean(rms)), "per_pose_rms_db": rms.tolist(),
                         "max_abs_error_db": float(np.max(np.abs(prediction - desired[valid]))),
                         "predicted_median_db": np.median(prediction, axis=0).tolist()})

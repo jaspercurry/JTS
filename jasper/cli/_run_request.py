@@ -8,7 +8,7 @@ import argparse
 from dataclasses import replace
 
 from jasper.active_speaker.angle_capture import (
-    AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID, request_for_program,
+    AngleCaptureRequest, LevelPolicy, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID, request_for_program,
 )
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.preflight import PreflightReport, preflight
@@ -18,7 +18,7 @@ from ._refusal import read_json_source
 
 def resolve_run(args: argparse.Namespace) -> PreflightReport:
     if args.plan:
-        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover")):
+        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db")):
             raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
@@ -35,6 +35,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport:
     if any(not value for value in candidates):
         raise ValueError("candidates must name a fingerprint or base")
     request = request_for_program(
-        program, candidates=candidates, mover="arm" if args.mover == "arm" else "human",
+        program, candidates=candidates, level=LevelPolicy(level_db=args.level_db),
+        mover=("arm" if args.mover == "arm" else "human") if args.mover else program.mover or "human",
     )
     return preflight(request, read_preflight_facts(request))

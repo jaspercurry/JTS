@@ -2,14 +2,14 @@
 
 ## Entry contract
 
-Register the wired microphone with `jasper-mic-calibration`; set its capture control to 100%, and confirm its serial and calibration. Run `jasper-seat-level` once at the mark with the current microphone. Each run holds that session gain. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
+Register the wired microphone with `jasper-mic-calibration`; set its capture control to 100%, and confirm its serial and calibration. Run `jasper-seat-level` once at the mark with the current microphone. Each run holds one level; the session gain is the default. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
 
 ## The loop
 
 1. Run `jasper-round run --program <speaker|room|bass>`. No `--candidates` makes a measurement run; supplied fingerprints make a trial. Use `--dry-run` first when you need the resolved schedule and refusals without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With `--mover arm`, run `jasper-angle-capture serve`. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement.
 3. Run `jasper-round wait --run <id>`. The executor assesses each take, performs only its bounded recovery, finishes the manifest, and banks the run automatically. Use `status` to inspect progress without granting placement.
-4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir> --run <run-id> --candidate <candidate.json> --target <target.json> --tolerance-db <db>`. `inventory` lists exact available commands.
+4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json> --target <target.json> --tolerance-db <db>`. `inventory` lists exact available commands.
 5. Author one prescription document. Run `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`, then `compose <doc> --base <fingerprint|saved> --round <round-dir> --set <set-id>`.
 6. Trial the composed fingerprint with the same loop. Then run `jasper-round apply <fingerprint>`. Apply requires a banked complete trial of that graph, intact trial evidence, matching identity, and a proved layer stack. Its verification dimensions are advice, not another gate.
 
@@ -23,7 +23,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## Bass
 
-`bass/cloud` uses the same 11 poses, through accepted Speaker and Room with bass off. Each window holds the session gain plus its offset. Trial baseline and bass candidate in one run. Use `bass-fit-table`; never apply between the paired captures.
+`bass/axis` measures one on-axis bearing with the arm. Run `jasper-round run --program bass --layout bass_axis --candidates base,<fp> --level-db L --wait` once per level, then `jasper-round-views bass-fit-table <round…> --candidate <fp> --target <target.json> --tolerance-db <db>`. The base is the applied tune, including its bass block. The table joins measured pairs by level and includes the base’s boost. Keep the applied tune fixed across these rounds.
 
 ## Evidence and recovery
 

@@ -1444,13 +1444,13 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
     request = ac.request_for_program(
         mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
         retries_per_pose=2,
-        level=ac.LevelPolicy(resolved=ResolvedLevel(75.8, -12.7, "8108494")),
+        level=ac.LevelPolicy(level_db=-25, resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
     doc = request.to_dict()
-    assert doc["artifact_schema_version"] == 4
+    assert doc["artifact_schema_version"] == 5
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
-    assert doc["level"] == {"mode": "hold_reference", "anchor_db_spl": 75.8,
+    assert doc["level"] == {"mode": "hold_reference", "level_db": -25, "anchor_db_spl": 75.8,
                             "reference_volume_db": -12.7, "mic_serial": "8108494",
                             "session_id": "", "leveled_at": "", "target_db_spl": 75.0}
     assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
@@ -1469,15 +1469,16 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
 
 @pytest.mark.parametrize("fields", [
     *[{"mode": mode} for mode in ("acquire_at_anchor", "series", "loud")],
+    *[{"level_db": value} for value in (math.nan, math.inf, -math.inf, True, "-20", 1, -60, -1000)],
     {"anchor_db_spl": math.nan}, {"reference_volume_db": math.inf},
     {"reference_volume_db": True}, {"reference_volume_db": "-20"},
     {"reference_volume_db": 1.0}, {"mic_serial": 123},
 ])
 def test_invalid_level_policy_refuses_at_construction(fields):
     with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.LevelPolicy(mode=fields.get("mode", ac.LEVEL_HOLD_REFERENCE),
+        ac.LevelPolicy(mode=fields.get("mode", ac.LEVEL_HOLD_REFERENCE), level_db=fields.get("level_db"),
                        resolved=replace(ResolvedLevel(75.8, -12.7, "8108494"),
-                                        **{k: v for k, v in fields.items() if k != "mode"}))
+                                        **{k: v for k, v in fields.items() if k not in {"mode", "level_db"}}))
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
@@ -1552,8 +1553,9 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
         assert plan_accepts == (stops == 1)
 
 
-def test_previous_request_version_requires_restage():
-    doc = {**ac.summed_at([0]).to_dict(), "artifact_schema_version": 3, "level_offsets_db": [0, -5]}
+@pytest.mark.parametrize("version", [3, 4])
+def test_previous_request_version_requires_restage(version):
+    doc = {**ac.summed_at([0]).to_dict(), "artifact_schema_version": version}
     with pytest.raises(ac.LateralWalkRefused) as refused:
         ac.AngleCaptureRequest.from_mapping(doc)
     assert refused.value.reason == ac.WALK_SCHEMA_VERSION_UNSUPPORTED

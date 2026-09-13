@@ -36,6 +36,7 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
+from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (
@@ -141,7 +142,7 @@ __all__ = [
 
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
-REQUEST_SCHEMA_VERSION = 4
+REQUEST_SCHEMA_VERSION = 5
 REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 
@@ -348,10 +349,14 @@ class LevelPolicy:
 
     mode: str = LEVEL_HOLD_REFERENCE
     resolved: ResolvedLevel | None = None
+    level_db: float | None = None
 
     def __post_init__(self) -> None:
         if self.mode != LEVEL_HOLD_REFERENCE:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"unsupported level mode: {self.mode!r}")
+        if self.level_db is not None and (finite_float(self.level_db) is None
+                or not EMERGENCY_MEASUREMENT_VOLUME_DB < self.level_db <= 0):
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level_db is outside the measurement fader range")
         if self.resolved is None:
             return
         if not isinstance(self.resolved, ResolvedLevel):
@@ -364,18 +369,30 @@ class LevelPolicy:
         if self.resolved.mic_serial is not None and not isinstance(self.resolved.mic_serial, str):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "mic_serial must be text")
 
+    @property
+    def volume_db(self) -> float | None:
+        return self.level_db if self.level_db is not None else self.resolved.reference_volume_db if self.resolved else None
+
+    @property
+    def offset_db(self) -> float:
+        if self.resolved is None or self.volume_db is None:
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
+        return self.volume_db - self.resolved.reference_volume_db
+
     def to_dict(self) -> dict[str, Any]:
-        return {"mode": self.mode, **(asdict(self.resolved) if self.resolved is not None else {
+        return {"mode": self.mode, "level_db": self.level_db, **(asdict(self.resolved) if self.resolved is not None else {
             f.name: None for f in fields(ResolvedLevel)
         })}
 
     @classmethod
     def from_mapping(cls, doc: Mapping[str, Any]) -> LevelPolicy:
-        if set(doc) != {"mode", *(f.name for f in fields(ResolvedLevel))}:
-            raise ValueError("level must state mode and the resolved level fields")
+        if set(doc) != {"mode", "level_db", *(f.name for f in fields(ResolvedLevel))}:
+            raise ValueError("level must state mode, level_db and the resolved level fields")
         values = dict(doc)
         mode = values.pop("mode")
-        return cls(mode=mode, resolved=None if all(v is None for v in values.values()) else ResolvedLevel(**values))
+        level_db = values.pop("level_db")
+        return cls(mode=mode, level_db=level_db,
+                   resolved=None if all(v is None for v in values.values()) else ResolvedLevel(**values))
 
 
 @dataclass(frozen=True)
@@ -458,7 +475,7 @@ class AngleCaptureRequest:
     @classmethod
     def from_mapping(cls, doc: Mapping[str, Any]) -> AngleCaptureRequest:
         if doc.get("artifact_schema_version") != REQUEST_SCHEMA_VERSION:
-            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED, "restage the request as version 4")
+            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED, "restage the request as version 5")
         if doc.get("kind") != REQUEST_KIND:
             raise ValueError("invalid angle request kind")
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}

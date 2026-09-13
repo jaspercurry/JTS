@@ -27,6 +27,7 @@ from jasper.active_speaker import measurement_programs as mp
         ("seat", "express", 3, 3, 3),
         ("room", "cloud", 11, 11, 11),
         ("room", "quick", 3, 3, 3),
+        ("bass", "axis", 1, 1, 1),
         ("close", "spot", 1, 1, 1),
     ],
 )
@@ -80,6 +81,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
     assert choices == (
         ("baseline", "express"),
         ("baseline", "full"),
+        ("bass", "axis"),
         ("bass", "cloud"),
         ("bass", "quick"),
         ("branches", "express"),

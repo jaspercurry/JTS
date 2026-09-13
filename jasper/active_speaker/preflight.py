@@ -5,7 +5,7 @@
 """Resolve a measurement plan from supplied facts, without opening resources."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Mapping
 
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
@@ -13,7 +13,7 @@ from jasper.json_fields import finite_float
 
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
-    BASE_CANDIDATE, AngleCaptureRequest, LevelPolicy, LateralWalkRefused,
+    BASE_CANDIDATE, AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
     REGIME_BRANCHES, candidate_identity, walk_price,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
@@ -22,7 +22,9 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
-from .seat_level_reference import AnchorFacts, LevelUnresolved, resolve_anchor_level
+from .seat_level_reference import (
+    AnchorFacts, LevelUnresolved, SeatLevelTargetError, resolve_anchor_level, validate_commissioning_spl,
+)
 
 # Rechecked at participation; a dry run reserves none of these resources.
 LIVE_ADMISSION = (
@@ -39,6 +41,7 @@ class PreflightIssue:
     detail: str
     next_action: Mapping[str, Any]
     blocking: bool = True
+    evidence: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_code(cls, code: str, detail: str, *, blocking: bool = True) -> PreflightIssue:
@@ -149,10 +152,17 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         if facts.anchor.sensitivity is not None:
             try:
                 anchor = resolve_anchor_level(facts=facts.anchor)
-                level = LevelPolicy(resolved=anchor)
+                level = replace(plan.level, resolved=anchor)
                 if plan.level.resolved is not None and plan.level != level:
                     raise LevelUnresolved("seat_anchor_unusable", "The carried anchor differs from the banked anchor")
                 plan = replace(plan, level=level)
+                predicted = anchor.anchor_db_spl + level.offset_db
+                try:
+                    validate_commissioning_spl(predicted, ceiling_db_spl=stop)
+                except SeatLevelTargetError as exc:
+                    issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, str(exc)),
+                                          evidence={"level_db": level.volume_db, "predicted_db_spl": predicted,
+                                                    "ceiling_db_spl": stop}))
             except (LevelUnresolved, LateralWalkRefused) as exc:
                 add(exc.reason, exc.detail)
 
