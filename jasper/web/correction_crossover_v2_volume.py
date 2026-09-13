@@ -54,8 +54,10 @@ def set_volume_plan_for_tests(plan: Any) -> None:
         _volume_plan = plan
 
 
-# Hold the exclusive measurement window between plays so voice reconciliation
-# cannot change the admitted volume. Register each play as the abort target.
+# jasper-voice's idle reconciler reverted the -20 dB session volume within
+# ~200 ms of session_volume_opened, so cap enforcement cannot trust a one-shot write.
+# Hold the pause's exclusive mutex for the whole session, with idempotent
+# acquire/release and each play registered as the abort target.
 _session_pause_cm: Any = None
 _session_abort_target: Any = None
 

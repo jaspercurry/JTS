@@ -224,8 +224,9 @@ REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
 
-    ``code`` selects registry copy and an action before any durable failure
-    exists. Unknown provider codes have no registry action.
+    Stamp ``code`` before rendering the envelope: a pre-flight refusal has no
+    persisted failure, so its response needs the code to select registry copy
+    and an action (see #1821). Unknown provider codes have no registry action.
     """
 
     def __init__(self, *args: Any, code: str = "", next_action: Mapping[str, Any] | None = None) -> None:
