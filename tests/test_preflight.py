@@ -95,8 +95,6 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
 
 @pytest.mark.parametrize("fault", ["box", "wrong_mic", "no_calibration"])
 def test_live_facts_surface_owner_refusals(monkeypatch, fault):
-    from types import SimpleNamespace
-    from jasper.active_speaker import preflight_live
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement import calibration, household_mic
 
@@ -191,7 +189,7 @@ def test_run_level_keeps_anchor_and_obeys_statement_ceiling(level_db, blocked):
         assert issue["evidence"] == {"level_db": level_db, "predicted_db_spl": pytest.approx(75 + level_db + 18), "ceiling_db_spl": 85}
 
 
-@pytest.mark.parametrize("level_db,has_ambient,blocked", [(-18, True, False), (-38, True, True), (-38, False, False)])
+@pytest.mark.parametrize("level_db,has_ambient,blocked", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])
 @pytest.mark.parametrize("fc_hz,band,ambient_row,floor", [
     (2000, (200, 800), (160, 350, -68.4), -43.4),
     (625, (200, 250), (160, 350, -68.4), -43.4),
@@ -200,16 +198,18 @@ def test_run_level_keeps_anchor_and_obeys_statement_ceiling(level_db, blocked):
 def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, blocked, fc_hz, band, ambient_row, floor):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=level_db))
     anchor = ready_facts(plan).anchor
+    sensitivity = replace(anchor.sensitivity, sens_factor_db=-12.07)
     report = {"bands": [{"band_hz": [lo, hi], "level_dbfs": dbfs} for lo, hi, dbfs in (
-        (20, 80, -55.8), (80, 160, -66.9), (160, 350, -68.4), (350, 1000, -71.3), (1000, 3000, -10),
+        (20, 80, -55.8), (80, 160, -66.9), (160, 350, -68.4), (350, 1000, -71.3), (1000, 4000, -75.5), (4000, 12000, -81.1),
     )]}
-    record = {**anchor.record, **({"ambient_report": report} if has_ambient else {})}
+    record = {**anchor.record, "measured_db_spl": 74.9, "reference_volume_db": -14.809,
+              "mic_sensitivity": sensitivity.to_dict(), **({"ambient_report": report} if has_ambient else {})}
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: sensitivity)
     context = SimpleNamespace(
         topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
         roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),),
-        fc_hz=fc_hz, driver_caps_dbfs={"woofer": -8}, session_volume_db=-18, driver_sweep_duration_limits_s={},
+        fc_hz=fc_hz, driver_caps_dbfs={"woofer": -8}, session_volume_db=record["reference_volume_db"], driver_sweep_duration_limits_s={},
     )
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.summed_pilot_band_hz == (band if has_ambient else None)
@@ -222,7 +222,7 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
         assert issue["next_action"]
         lo, hi, dbfs = ambient_row
         assert issue["evidence"] == {
-            "level_db": -38, "predicted_pilot_capture_dbfs": pytest.approx(-61),
+            "level_db": -34.809, "predicted_pilot_capture_dbfs": pytest.approx(-48.1597),
             "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": dbfs},
             "floor_dbfs": pytest.approx(floor),
         }

@@ -19,14 +19,13 @@ from .angle_capture import (
     REGIME_BRANCHES, candidate_identity, walk_price,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
-from .crossover_v2.programs import PILOT_LEVEL_DELTA_DB
 from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
 from .seat_level_reference import (
-    AnchorFacts, LevelUnresolved, SeatLevelTargetError, resolve_anchor_level, validate_commissioning_spl,
+    AnchorFacts, LevelUnresolved, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level, validate_commissioning_spl,
 )
 
 # Rechecked at participation; a dry run reserves none of these resources.
@@ -171,7 +170,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                 band = facts.summed_pilot_band_hz
                 if band is not None and isinstance(ambient, Mapping) and any(pose.plays_summed for pose in plan.stops):
                     rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
-                    pilot_dbfs = facts.anchor.sensitivity.dbfs_from_db_spl(predicted) - PILOT_LEVEL_DELTA_DB
+                    pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
                     # Remove when summed programs no longer require the leading pilot pair.
                     if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
                         lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
