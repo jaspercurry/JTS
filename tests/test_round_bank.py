@@ -398,6 +398,105 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
         assert views[0]["status"] == "written"
 
 
+def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_path):
+    from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+
+    session, state = _live_session(tmp_path)
+    manifest = write_manifest(session, program="room")
+    artifacts, _ = round_artifact_dir(session)
+    path = artifacts / RUN_MANIFEST_FILENAME
+    calls = []
+
+    def run(view, target, *flags):
+        calls.append((view, *flags))
+        return {"view": view, "status": "written"}
+
+    one = bank_round(
+        session, campaign_root=tmp_path / "one", state_path=state, view_runner=run,
+    )
+    assert calls == [("room",), ("room-grade",)]
+    assert one.provenance["views"] == [
+        {"view": "room", "status": "written"},
+        {"view": "room-grade", "status": "written"},
+    ]
+
+    base = manifest["sets"][0]
+    base["set_id"] = "base-set"
+    base["capture_basis"]["candidate_id"] = "base-fingerprint"
+    candidate = json.loads(json.dumps(base))
+    candidate["set_id"] = "candidate-set"
+    candidate["capture_basis"]["candidate_id"] = "candidate-fingerprint"
+    manifest.update(
+        sets=[base, candidate],
+        asked={"candidates": ["base", "candidate-fingerprint"]},
+        baseline_graph="speaker",
+        incumbent={"speaker": "measured-fingerprint-not-a-graph-id"},
+    )
+    path.write_text(json.dumps(manifest))
+    calls.clear()
+
+    trial = bank_round(
+        session, campaign_root=tmp_path / "trial", state_path=state, view_runner=run,
+    )
+
+    assert calls == [
+        ("room", "--set", "base-set"),
+        ("room", "--set", "candidate-set"),
+        ("room-grade", "--set", "candidate-set", "--incumbent", "base-set"),
+    ]
+    assert trial.provenance["views"] == [
+        {"view": "room", "status": "written", "set_id": "base-set"},
+        {"view": "room", "status": "written", "set_id": "candidate-set"},
+        {"view": "room-grade", "status": "written", "set_id": "candidate-set",
+         "incumbent_set_id": "base-set"},
+    ]
+
+    manifest["program"] = "speaker"
+    path.write_text(json.dumps(manifest))
+    calls.clear()
+    speaker = bank_round(
+        session, campaign_root=tmp_path / "speaker", state_path=state, view_runner=run,
+    )
+    assert calls == [
+        ("inventory", "--set", "base-set"),
+        ("inventory", "--set", "candidate-set"),
+        ("classify-features",),
+        ("distortion",),
+        ("directivity",),
+        ("per-seat",),
+    ]
+    assert speaker.provenance["views"] == [
+        {"view": "inventory", "status": "written", "set_id": "base-set"},
+        {"view": "inventory", "status": "written", "set_id": "candidate-set"},
+        {"view": "classify-features", "status": "written"},
+        {"view": "distortion", "status": "written"},
+        {"view": "directivity", "status": "written"},
+        {"view": "per-seat", "status": "written"},
+    ]
+
+    windows = [json.loads(json.dumps(base)) for _ in range(2)]
+    for number, window in enumerate(windows, 1):
+        window["set_id"] = f"base-window-{number}"
+    manifest.update(program="room", sets=windows, asked={"candidates": ["base"]})
+    path.write_text(json.dumps(manifest))
+    calls.clear()
+    ambiguous = bank_round(
+        session, campaign_root=tmp_path / "ambiguous", state_path=state, view_runner=run,
+    )
+    assert calls == [
+        ("room", "--set", "base-window-1"),
+        ("room", "--set", "base-window-2"),
+    ]
+    assert ambiguous.provenance["views"] == [
+        {"view": "room", "status": "written", "set_id": "base-window-1"},
+        {"view": "room", "status": "written", "set_id": "base-window-2"},
+        {"view": "room-grade", "set_id": "base-window-1",
+         "status": "unavailable", "reason": "base_set_ambiguous"},
+        {"view": "room-grade", "set_id": "base-window-2",
+         "status": "unavailable", "reason": "base_set_ambiguous"},
+    ]
+
+
 @pytest.mark.parametrize("purpose,view", [
     (purpose, view)
     for purpose in ("speaker", "room", "bass")

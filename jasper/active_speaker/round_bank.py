@@ -48,6 +48,7 @@ from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
 )
 
+from .angle_capture import BASE_CANDIDATE
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 
 # The first-char class excludes ".", so it rejects ".", ".." and any
@@ -274,8 +275,10 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 
 
 def _bookkeeping(
-    target: Path, bundle: Path, view_runner: Callable[[str, Path], dict[str, Any]] | None,
+    target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
+    from jasper.cli.round_views import view_accepts_set  # lazy: round views imports this module
+
     from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
@@ -287,12 +290,54 @@ def _bookkeeping(
     document = json.loads(manifest.read_text())
     name, _, size = str(document.get("program") or "").partition("/")
     purpose = name if not name or name in PURPOSES else program(name, size or None).purpose
-    results = [
-        view_runner(view, target) if view_runner else {
-            "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
-        }
-        for view in bookkeeping_views(purpose)
-    ]
+    views = bookkeeping_views(purpose)
+    sets = [row for row in document.get("sets", ())
+            if isinstance(row, Mapping) and isinstance(row.get("set_id"), str)]
+    if len(sets) <= 1:
+        results = [
+            view_runner(view, target) if view_runner else {
+                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+            }
+            for view in views
+        ]
+        return str(manifest), results
+
+    asked = document.get("asked")
+    candidates = asked.get("candidates", ()) if isinstance(asked, Mapping) else ()
+    trials = {value for value in candidates if isinstance(value, str) and value != BASE_CANDIDATE}
+    unmatched = [row["set_id"] for row in sets
+                 if isinstance(row.get("capture_basis"), Mapping)
+                 and row["capture_basis"].get("candidate_id") not in trials]
+    base_set = unmatched[0] if len(unmatched) == 1 else None
+
+    results = []
+    for view in views:
+        if not view_accepts_set(view):
+            results.append(view_runner(view, target) if view_runner else {
+                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+            })
+            continue
+        for row in sets:
+            set_id = row["set_id"]
+            if view == "room-grade":
+                if base_set is None:
+                    results.append({
+                        "view": view, "set_id": set_id,
+                        "status": "unavailable", "reason": "base_set_ambiguous",
+                    })
+                    continue
+                if set_id == base_set:
+                    continue
+            flags = ["--set", set_id]
+            if view == "room-grade" and base_set is not None:
+                flags += ["--incumbent", base_set]
+            result = view_runner(view, target, *flags) if view_runner else {
+                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+            }
+            result = {**result, "view": view, "set_id": set_id}
+            if view == "room-grade" and base_set is not None:
+                result["incumbent_set_id"] = base_set
+            results.append(result)
     return str(manifest), results
 
 
@@ -300,7 +345,7 @@ def bank_round(
     session_dir: Path,
     *,
     campaign_root: Path = DEFAULT_CAMPAIGN_ROOT,
-    view_runner: Callable[[str, Path], dict[str, Any]] | None = None,
+    view_runner: Callable[..., dict[str, Any]] | None = None,
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
