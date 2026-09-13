@@ -53,6 +53,10 @@ class Measurement:
     graph_fingerprint: str = ""
 
 
+def record_path(row: Measurement) -> str:
+    return f"{EVIDENCE_ROOT}/artifacts/{row.path}"
+
+
 class MeasurementCaptureIdentityError(ValueError):
     """A captured take does not name its exact dependent WAV."""
 

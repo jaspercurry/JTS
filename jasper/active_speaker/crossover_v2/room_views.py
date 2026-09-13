@@ -293,7 +293,7 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
 
 
 def incumbent_room(
-    profile: Mapping[str, Any] | None, manifest: Mapping[str, Any],
+    profile: Mapping[str, Any] | None, manifest: Mapping[str, Any], *, set_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     profile = profile or {}
     snapshot = profile.get("recomposition_snapshot") or {}
@@ -306,6 +306,12 @@ def incumbent_room(
         or (not row["capture_basis"].get("candidate_id")
             and row["capture_basis"].get("graph_scope") in scopes)
     )]
+    if any("base" in row for row in manifest["sets"]):
+        selected = next((row for row in manifest["sets"] if row["set_id"] == set_id), None)
+        def window(row: Mapping[str, Any]) -> Any:
+            return next((take.get("level_window_db") for take in row.get("takes", ())), None)
+        matches = [row["set_id"] for row in manifest["sets"]
+                   if row.get("base") and (selected is None or window(row) == window(selected))]
     if len(matches) != 1:
         return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {
@@ -337,7 +343,7 @@ def room_document(
     geometry = load_declared_geometry(geometry_path) if geometry_path is not None else None
     walls = {key: distance for key, field in WALL_FIELD_BY_KEY.items()
              if geometry is not None and (distance := getattr(geometry, field)) is not None}
-    incumbent, incumbent_reason = incumbent_room(profile, manifest)
+    incumbent, incumbent_reason = incumbent_room(profile, manifest, set_id=set_id)
     return {
         "ceiling": {"hz": ceiling.ceiling_hz, "provenance": ceiling.to_dict()},
         "median": median,

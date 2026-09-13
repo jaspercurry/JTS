@@ -39,14 +39,14 @@ from .room import write_room
 
 def _document(
     inputs: RoundInputs, directory: Path, set_id: str | None, calibration_root: Path | None,
-) -> dict:
+) -> tuple[dict, Path]:
     if calibration_root is not None:
-        return write_room(inputs, directory, set_id, calibration_root=calibration_root)[0]
+        return write_room(inputs, directory, set_id, calibration_root=calibration_root)
     path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id)
     document = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
     if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
         raise StageFailed(EXIT_UNREADABLE, TypeError("room_document_malformed"))
-    return document
+    return document, path
 
 
 def _band_line(band: Mapping[str, Any]) -> str:
@@ -66,16 +66,15 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     directory = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, directory)
     selected = resolve_set(inputs, args.set)
-    candidate_path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, args.set)
     try:
-        candidate = _document(inputs, directory, args.set, args.calibration_root)
+        candidate, candidate_path = _document(inputs, directory, args.set, args.calibration_root)
         incumbent_id = args.incumbent or (candidate.get("incumbent") or {}).get("set_id")
         incumbent_doc = None
         if incumbent_id is not None:
             resolve_set(inputs, incumbent_id)
             incumbent_doc = candidate if incumbent_id == selected.set_id else _document(
                 inputs, directory, incumbent_id, args.calibration_root,
-            )
+            )[0]
         median = read_room_median(candidate.get("median", {}))
         incumbent = None if incumbent_doc is None else read_room_median(incumbent_doc.get("median", {}))
         grade = grade_room_median(median, incumbent=incumbent)

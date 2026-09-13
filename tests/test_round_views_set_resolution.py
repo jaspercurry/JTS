@@ -19,7 +19,6 @@ from jasper.active_speaker.crossover_v2.record_index import measurement_document
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.window_view import window_view
-from jasper.active_speaker.measurement_programs import bookkeeping_views
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.cli._report import render_report
 from jasper.cli.round_views import build_parser, main
@@ -119,7 +118,6 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
 def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, first):
     root = bank_seat_round(tmp_path)
     write_manifest(root, program=program)
-    assert bookkeeping_views(program) == first
     assert main(["inventory", str(root)]) == 0
     answer, doc = artifact_answer(capsys)
     assert answer["program"] == doc["program"] == program

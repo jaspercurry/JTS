@@ -48,7 +48,6 @@ from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
 )
 
-from .angle_capture import BASE_CANDIDATE
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 
 # The first-char class excludes ".", so it rejects ".", ".." and any
@@ -276,7 +275,6 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
-    set_scoped: Callable[[str], bool] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
     from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
@@ -292,50 +290,34 @@ def _bookkeeping(
     views = bookkeeping_views(purpose)
     sets = [row for row in document.get("sets", ())
             if isinstance(row, Mapping) and isinstance(row.get("set_id"), str)]
-    if len(sets) <= 1:
-        results = [
-            view_runner(view, target) if view_runner else {
-                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
-            }
-            for view in views
-        ]
-        return str(manifest), results
+    multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
 
-    asked = document.get("asked")
-    candidates = asked.get("candidates", ()) if isinstance(asked, Mapping) else ()
-    trials = {value for value in candidates if isinstance(value, str) and value != BASE_CANDIDATE}
-    unmatched = [row["set_id"] for row in sets
-                 if isinstance(row.get("capture_basis"), Mapping)
-                 and row["capture_basis"].get("candidate_id") not in trials]
-    base_set = unmatched[0] if len(unmatched) == 1 else None
+    def unavailable(view: str, reason: str) -> dict[str, Any]:
+        return {"view": view, "status": "unavailable", "reason": reason}
 
     results = []
-    for view in views:
-        if set_scoped is None or not set_scoped(view):
-            results.append(view_runner(view, target) if view_runner else {
-                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
-            })
-            continue
-        for row in sets:
-            set_id = row["set_id"]
-            if view == "room-grade":
-                if base_set is None:
-                    results.append({
-                        "view": view, "set_id": set_id,
-                        "status": "unavailable", "reason": "base_set_ambiguous",
-                    })
+    for view, per_set, grades_against_base in views:
+        targets = sets if per_set and len(sets) > 1 else [None]
+        for row in targets:
+            set_id = row["set_id"] if row else None
+            incumbent_id = None
+            if row and grades_against_base:
+                if row.get("base"):
                     continue
-                if set_id == base_set:
+                from .crossover_v2.room_views import incumbent_room  # lazy: room analysis import cost
+
+                incumbent, reason = incumbent_room(None, document, set_id=set_id)
+                if incumbent is None:
+                    results.append({**unavailable(view, reason), "set_id": set_id})
                     continue
-            flags = ["--set", set_id]
-            if view == "room-grade" and base_set is not None:
-                flags += ["--incumbent", base_set]
-            result = view_runner(view, target, *flags) if view_runner else {
-                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
-            }
-            result = {**result, "view": view, "set_id": set_id}
-            if view == "room-grade" and base_set is not None:
-                result["incumbent_set_id"] = base_set
+                incumbent_id = incumbent["set_id"]
+            result = view_runner(
+                view, target, set_id=set_id, incumbent=incumbent_id if multiple_bases else None,
+            ) if view_runner else unavailable(view, "view_runner_unavailable")
+            if set_id is not None:
+                result = {**result, "set_id": set_id}
+            if incumbent_id is not None:
+                result = {**result, "incumbent_set_id": incumbent_id}
             results.append(result)
     return str(manifest), results
 
@@ -345,7 +327,6 @@ def bank_round(
     *,
     campaign_root: Path = DEFAULT_CAMPAIGN_ROOT,
     view_runner: Callable[..., dict[str, Any]] | None = None,
-    set_scoped: Callable[[str], bool] | None = None,
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
@@ -433,7 +414,7 @@ def bank_round(
         ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
         manifest, views = _bookkeeping(
-            target, target / "bundle" / session_dir.name, view_runner, set_scoped,
+            target, target / "bundle" / session_dir.name, view_runner,
         )
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {

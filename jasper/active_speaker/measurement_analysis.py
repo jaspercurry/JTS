@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,9 +24,8 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.json_fields import finite_float
 
-from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.record_index import (
-    MeasurementCaptureIdentityError, bundle_measurements, reopen_measurement_capture,
+    MeasurementCaptureIdentityError, bundle_measurements, record_path, reopen_measurement_capture,
 )
 from .crossover_v2.spatial import analysis_curve_records
 from .frequency_view import FrequencyRun
@@ -51,9 +50,11 @@ class AnalyzedMeasurement:
 
     def document(self) -> dict[str, Any]:
         summed = self.analysis.summed_response
+        analyzed_gating = bool((summed.gating or {}).get("applied")) if summed is not None else None
+        banked_gating = self.record.get("gating_applied")
         return {
             **self.record, "curves": analysis_curve_records(self.analysis, self.program),
-            "gating_applied": bool((summed.gating or {}).get("applied")) if summed is not None else None,
+            "gating_applied": analyzed_gating if banked_gating is None else banked_gating,
             "diagnostic": analysis_diagnostic_summary(self.analysis),
             "calibration": {"applied": self.calibration is not None,
                             "calibration_id": self.calibration.calibration_id if self.calibration else None},
@@ -61,13 +62,12 @@ class AnalyzedMeasurement:
 
 
 def analyzed_measurements(
-    bundle_dir: Path, *, calibration_root: Path | None = None,
+    bundle_dir: Path, *, calibration_root: Path | None = None, paths: Iterable[str] | None = None,
 ) -> Iterator[AnalyzedMeasurement]:
     """Reopen exact takes once; release each raw capture before loading the next."""
-    for row in bundle_measurements(bundle_dir):
-        record_path = f"{EVIDENCE_ROOT}/artifacts/{row.path}"
+    for path in paths if paths is not None else map(record_path, bundle_measurements(bundle_dir)):
         try:
-            record, wav = reopen_measurement_capture(bundle_dir, record_path)
+            record, wav = reopen_measurement_capture(bundle_dir, path)
         except MeasurementCaptureIdentityError as exc:
             raise MeasurementAnalysisRefused("measurement_capture_identity_mismatch") from exc
         if wav is None:
@@ -88,7 +88,7 @@ def analyzed_measurements(
             geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
             capture_report=record.get("capture_integrity"),
         )
-        yield AnalyzedMeasurement(record, record_path, program, samples, rate, calibration, analysis)
+        yield AnalyzedMeasurement(record, path, program, samples, rate, calibration, analysis)
 
 
 def analyze_measurement_bundle(

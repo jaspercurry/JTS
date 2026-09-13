@@ -321,7 +321,7 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
 
 def test_wait_banks_and_returns_manifest_and_views(monkeypatch, capsys, tmp_path):
     from jasper.active_speaker import round_bank
-    from jasper.cli.round_views import run_bookkeeping, view_accepts_set
+    from jasper.cli.round_views import run_bookkeeping
 
     views = [{"view": "bass", "status": "written", "out": "bass_view.json"}]
     banked = round_bank.BankedRound(tmp_path, {"manifest": "run_manifest.json", "views": views})
@@ -331,7 +331,7 @@ def test_wait_banks_and_returns_manifest_and_views(monkeypatch, capsys, tmp_path
     opener = _run_opener({"status": "complete", "run": {"status": "complete", "manifest": "run_manifest.json"}})
     code, body = _run(["wait", "--run", "run-1"], opener, monkeypatch, capsys)
     assert code == 0 and calls == [(tmp_path, {
-        "view_runner": run_bookkeeping, "set_scoped": view_accepts_set,
+        "view_runner": run_bookkeeping,
     })]
     assert body["manifest"] == "run_manifest.json" and body["views"] == views
 
