@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Mapping
 
+from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
+from jasper.audio_measurement.quality_model import DRIVER
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
@@ -17,7 +19,8 @@ from .angle_capture import (
     REGIME_BRANCHES, candidate_identity, walk_price,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
-from .crossover_v2.refusal_copy import REASON_REGISTRY
+from .crossover_v2.programs import PILOT_LEVEL_DELTA_DB
+from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
@@ -60,6 +63,7 @@ class PreflightFacts:
     commissioning_stop_db_spl: float | None
     mover: str
     issues: tuple[PreflightIssue, ...] = ()
+    summed_pilot_band_hz: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,20 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                     issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, str(exc)),
                                           evidence={"level_db": level.volume_db, "predicted_db_spl": predicted,
                                                     "ceiling_db_spl": stop}))
+                ambient = facts.anchor.record.get("ambient_report")
+                band = facts.summed_pilot_band_hz
+                if band is not None and isinstance(ambient, Mapping) and any(pose.plays_summed for pose in plan.stops):
+                    rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
+                    pilot_dbfs = facts.anchor.sensitivity.dbfs_from_db_spl(predicted) - PILOT_LEVEL_DELTA_DB
+                    # Remove when summed programs no longer require the leading pilot pair.
+                    if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
+                        lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
+                        code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
+                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+                            "level_db": level.volume_db, "predicted_pilot_capture_dbfs": pilot_dbfs,
+                            "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
+                            "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,
+                        }))
             except (LevelUnresolved, LateralWalkRefused) as exc:
                 add(exc.reason, exc.detail)
 

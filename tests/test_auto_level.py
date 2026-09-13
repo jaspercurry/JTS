@@ -35,7 +35,7 @@ class Chain:
 
     async def read_ambient(self):
         assert not self.playing
-        return self.ambient
+        return self.ambient, {"bands": [{"band_hz": [200, 800], "level_dbfs": self.ambient - 94}]}
 
     async def read_level(self):
         self.playing = True
@@ -204,7 +204,7 @@ def test_coded_refusals_stop_playback(kwargs, reason):
 def test_nonfinite_feed_cannot_drive_the_fader(reading, source):
     chain = Chain()
     async def read():
-        return reading
+        return (reading, {}) if source == 'read_ambient' else reading
     setattr(chain, source, read)
     result = asyncio.run(chain.run())
     assert result.reason == 'mic_feed_lost'
@@ -221,6 +221,7 @@ def test_a_quieter_room_is_remeasured_in_silence():
     result = asyncio.run(chain.run())
     assert result.status == 'converged'
     assert result.ambient_db_spl == 30.0
+    assert result.ambient_report == {"bands": [{"band_hz": [200, 800], "level_dbfs": -64.0}]}
 
 
 @pytest.mark.parametrize('current,cap', [(-55.0, -40.0), (-10.0, -55.0)])

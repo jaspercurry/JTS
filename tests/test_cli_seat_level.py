@@ -25,7 +25,7 @@ from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, S
 from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
-from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
+from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredRecording, WiredSplCeilingExceeded
 from jasper.cli import seat_level
 from tests._log_events import event_fields
 
@@ -159,10 +159,12 @@ def box(tmp_path, monkeypatch):
         (tmp_path / "info.json").write_text('{"session_id": "level-bundle"}')
         (tmp_path / "artifacts.json").write_text('{"artifacts": []}')
         return None if state.bundle_failed else {"bundle_dir": tmp_path, "session_id": "level-bundle"}
-    def observe(monitor, spl, frames=24000):
+    def observe(monitor, spl, frames=24000, *, tone_hz=0):
         amplitude = 10 ** ((spl - 94.0) / 20)
-        data = np.full(frames, amplitude * np.iinfo(np.int32).max, dtype="<i4")
+        signal = np.sqrt(2) * np.sin(2 * np.pi * tone_hz * np.arange(frames) / 48000) if tone_hz else np.ones(frames)
+        data = np.asarray(signal * amplitude * np.iinfo(np.int32).max, dtype="<i4")
         monitor.observe(data.tobytes(), len(data), 1, sample_rate_hz=48000)
+        return data.tobytes()
     class Recorder:
         failure = None
         def start(self):
@@ -171,15 +173,20 @@ def box(tmp_path, monkeypatch):
             assert 'graph' in state.events and state.gain <= -40.0
             state.events.append("ambient")
             if state.room_floor:
-                observe(self.spl_monitor, 72.5, frames=1024)
-                observe(self.spl_monitor, state.ambient, frames=22976)
+                self.chunks = (observe(self.spl_monitor, 72.5, frames=1024),
+                               observe(self.spl_monitor, state.ambient, frames=22976))
                 assert self.spl_monitor.max_window_db_spl == pytest.approx(72.5, abs=.1)
                 assert self.spl_monitor.loudest_half_second_db_spl == pytest.approx(61.3, abs=.1)
             else:
-                observe(self.spl_monitor, state.ambient)
+                self.chunks = (observe(self.spl_monitor, state.ambient, tone_hz=400),)
             self.failure = state.ambient_failure or self.spl_monitor.error
             if self.failure and state.ambient_start_fails:
                 raise self.failure
+        def finish(self, *, tail_s):
+            assert tail_s == 0
+            if self.failure:
+                raise self.failure
+            return WiredRecording(self.chunks, 24000, 0, 0, False, 48000, 1)
         def abort(self):
             state.events.append("abort")
     class Capture:
@@ -329,6 +336,11 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
             'statistic': 'loudest_half_second_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
         assert json.loads(box.reference_path.read_text())['stimulus'] == provenance
         assert box.bank.call_args.kwargs['measured_db_spl'] == 75.0
+        ambient = json.loads(box.reference_path.read_text())['ambient_report']
+        assert ambient == result['ambient_report']
+        assert ambient['method'] == 'one_second_p95'
+        transition, = [row for row in ambient['bands'] if row['band_id'] == 'transition']
+        assert transition == {'band_id': 'transition', 'band_hz': [350, 1000], 'level_dbfs': pytest.approx(-59, abs=.01)}
 
 
 def test_room_floor_with_scattered_period_maxima_converges_within_budget(box):

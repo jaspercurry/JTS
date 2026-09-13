@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED, capped_gap_step_db
 from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
@@ -41,6 +41,7 @@ class LevelResult:
     gain_db: float | None = None
     leveled_db_spl: float | None = None
     ambient_db_spl: float | None = None
+    ambient_report: dict[str, Any] = field(default_factory=dict)
     readings: list[tuple[float, float]] = field(default_factory=list)
 
 
@@ -56,7 +57,7 @@ def mic_is_not_observing(*, max_rise_db: float, min_rise_db: float) -> bool:
 async def level_to(
     target_db_spl: float, *, tolerance_db: float, stop_db_spl: float,
     max_main_volume_db: float, sensitivity: MicSensitivity,
-    read_level: LevelReader, read_ambient: LevelReader,
+    read_level: LevelReader, read_ambient: Callable[[], Awaitable[tuple[float, dict[str, Any]]]],
     get_main_volume_db: Callable[[], Awaitable[float | None]],
     set_main_volume_db: Callable[[float], Awaitable[object]],
 ) -> LevelResult:
@@ -81,15 +82,14 @@ async def level_to(
                 raise _Refused("volume_latch_unconfirmed")
         result.gain_db = gain
 
-    async def reading(reader: LevelReader) -> float:
-        observed = await reader()
+    def reading(observed: float) -> float:
         if not math.isfinite(observed):
             raise _Refused("mic_feed_lost")
         return observed
 
     async def ambient() -> float:
-        observed = await reading(read_ambient)
-        result.ambient_db_spl = observed
+        observed, result.ambient_report = await read_ambient()
+        result.ambient_db_spl = reading(observed)
         if observed >= target_db_spl - min_rise:
             raise _Refused(REFUSE_AMBIENT_TOO_HIGH)
         return observed
@@ -110,7 +110,7 @@ async def level_to(
         in_band: float | None = None
         remeasured = ever_unsettled = last_buried = False
         while len(result.readings) < budget:
-            observed = await reading(read_level)
+            observed = reading(await read_level())
             assert gain is not None
             result.readings.append((gain, observed))
             if len(result.readings) == 1:
