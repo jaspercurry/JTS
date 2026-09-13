@@ -32,6 +32,7 @@ from .measured_crossover_candidate import (
     prove_candidate_config,
 )
 
+from .level_trim import declared_driver_gains
 from .measurement_emit import MeasurementGraphRefused
 from .profile import ActiveSpeakerPreset, required_driver_roles
 
@@ -79,13 +80,10 @@ def candidate_from_design_draft(
     """Bank the declared crossover and trims without measured layers."""
     preview = build_crossover_preview(design_draft)
     preset = resolve_commission_preset(topology, crossover_preview=preview)
+    gains, _, _, issues = declared_driver_gains(required_driver_roles(preset.way_count), preview["drivers"])
     candidate = MeasuredCrossoverCandidate(
-        program_id="jts_declared_crossover", analysis={"measurement_status": "unmeasured"},
-        source_preset=preset,
-        role_attenuations_db={
-            role: 0.0 if (gain := preview["drivers"].get(role, {}).get("gain_offset_db")) is None else gain
-            for role in required_driver_roles(preset.way_count)
-        },
+        program_id="jts_declared_crossover", analysis={"measurement_status": "unmeasured", "issues": issues},
+        source_preset=preset, role_attenuations_db=gains,
     )
     return publish_authored_candidate(candidate).candidate
 

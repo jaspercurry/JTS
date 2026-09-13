@@ -141,13 +141,27 @@ def resolve_active_playback_device(
     topology: OutputTopology,
     *,
     playback_device: str | None = None,
+    required_output_count: int | None = None,
 ) -> tuple[str | None, str]:
-    """Return the active-speaker playback PCM."""
+    """Resolve the PCM and, for a compiled preset, require its outputd handoff."""
+    layout = resolve_output_layout(topology, playback_device=playback_device)
+    if required_output_count is not None:
+        from .measurement_emit import MeasurementGraphRefused  # lazy: graph declarations consume this resolver
 
-    layout = resolve_output_layout(
-        topology,
-        playback_device=playback_device,
-    )
+        # Saved graphs name the same PCM explicitly; use its registered wire width.
+        if layout.playback_device_source == EXPLICIT_SOURCE:
+            registered = resolve_output_layout(topology, env={})
+            if layout.playback_device == registered.playback_device:
+                layout = registered
+        if not layout.playback_device:
+            raise MeasurementGraphRefused("baseline_playback_device_missing", layout.playback_device_source)
+        if required_output_count > layout.transport_channel_count:
+            raise MeasurementGraphRefused("active_playback_route_too_narrow", {
+                "required_active_output_count": required_output_count,
+                "transport_channel_count": layout.transport_channel_count,
+            })
+        if layout.playback_device_source != OUTPUTD_ACTIVE_LANE_SOURCE:
+            raise MeasurementGraphRefused("baseline_output_handoff_not_supported", layout.playback_device_source)
     return layout.playback_device, layout.playback_device_source
 
 
