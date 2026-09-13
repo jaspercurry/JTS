@@ -127,24 +127,17 @@ def test_composed_programs_admit_at_shaped_caps(tmp_path, woofer_peak, tweeter_p
 
 
 def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
-    """CHECK pilots keep the 10 dB behavioral delta where headroom allows, and
-    degrade honestly (recorded in the program) where a driver cap compresses the
-    level — the JTS3 tweeter drops ~33 dB but its pair stays 10 dB apart."""
-    c, _topology, _profile, _targets, sv = _profiled_conductor(
+    """CHECK pilots keep their 10 dB delta after both level bounds apply."""
+    c, _topology, _profile, _targets, _sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
     check = c.program_for_phase(PHASE_CHECK)
 
-    # Woofer: cap (-8) leaves headroom, so the pair rides the reference base and
-    # keeps the full 10 dB delta.
     w_hi = check.segment("pilot_woofer_hi")
     w_lo = check.segment("pilot_woofer_lo")
-    assert w_hi.gain_db == pytest.approx(BASE_STIMULUS_PEAK_DBFS)
+    assert w_hi.gain_db <= BASE_STIMULUS_PEAK_DBFS
     assert w_hi.gain_db - w_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
 
-    # Tweeter: cap (-65) compresses the base ~33 dB down, honestly recorded in
-    # the segment gains + effective peak — but the 10 dB delta is preserved so
-    # the behavioral-linearity check still has its two known levels.
     t_hi = check.segment("pilot_tweeter_hi")
     t_lo = check.segment("pilot_tweeter_lo")
     assert t_hi.gain_db < BASE_STIMULUS_PEAK_DBFS

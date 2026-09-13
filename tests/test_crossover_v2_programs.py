@@ -81,8 +81,8 @@ GAIN_PLAN_DB = {"woofer": -32.0, "tweeter": -38.0}
 #: reading its id. Re-derive them ONLY by re-running that comparison; editing a
 #: literal here to make a test pass would delete the evidence it exists to be.
 #:
-#: **Every one of these three is still the pre-extraction id, including
-#: ``measure``.** The 2026-08-18 prelude trim moved what MEASURE *ships* (it no
+#: **Both entries are still pre-extraction ids, including ``measure``.** The
+#: 2026-08-18 prelude trim moved what MEASURE *ships* (it no
 #: longer opens on the courtesy prelude), and the way that change is pinned is
 #: by restoring the prelude and asserting THIS literal comes back — see
 #: :func:`test_only_the_prelude_moved_under_the_shipped_measure_program`. So the
