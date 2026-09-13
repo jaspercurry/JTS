@@ -276,9 +276,8 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
+    set_scoped: Callable[[str], bool] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    from jasper.cli.round_views import view_accepts_set  # lazy: round views imports this module
-
     from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
@@ -312,7 +311,7 @@ def _bookkeeping(
 
     results = []
     for view in views:
-        if not view_accepts_set(view):
+        if set_scoped is None or not set_scoped(view):
             results.append(view_runner(view, target) if view_runner else {
                 "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
             })
@@ -346,6 +345,7 @@ def bank_round(
     *,
     campaign_root: Path = DEFAULT_CAMPAIGN_ROOT,
     view_runner: Callable[..., dict[str, Any]] | None = None,
+    set_scoped: Callable[[str], bool] | None = None,
     state_path: Path | None = None,
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
@@ -432,7 +432,9 @@ def bank_round(
         calibration_id = str(((info.get("fingerprints") or {}).get("mic") or {}).get("calibration_id") or "")
         ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
-        manifest, views = _bookkeeping(target, target / "bundle" / session_dir.name, view_runner)
+        manifest, views = _bookkeeping(
+            target, target / "bundle" / session_dir.name, view_runner, set_scoped,
+        )
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {
             "banked_at_utc": datetime.now(timezone.utc).strftime(

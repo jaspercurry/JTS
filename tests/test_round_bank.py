@@ -400,6 +400,7 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
 
 def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_path):
     from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+    from jasper.cli.round_views import view_accepts_set
 
     session, state = _live_session(tmp_path)
     manifest = write_manifest(session, program="room")
@@ -412,7 +413,8 @@ def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_pa
         return {"view": view, "status": "written"}
 
     one = bank_round(
-        session, campaign_root=tmp_path / "one", state_path=state, view_runner=run,
+        session, campaign_root=tmp_path / "one", state_path=state,
+        view_runner=run, set_scoped=view_accepts_set,
     )
     assert calls == [("room",), ("room-grade",)]
     assert one.provenance["views"] == [
@@ -436,7 +438,8 @@ def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_pa
     calls.clear()
 
     trial = bank_round(
-        session, campaign_root=tmp_path / "trial", state_path=state, view_runner=run,
+        session, campaign_root=tmp_path / "trial", state_path=state,
+        view_runner=run, set_scoped=view_accepts_set,
     )
 
     assert calls == [
@@ -455,7 +458,8 @@ def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_pa
     path.write_text(json.dumps(manifest))
     calls.clear()
     speaker = bank_round(
-        session, campaign_root=tmp_path / "speaker", state_path=state, view_runner=run,
+        session, campaign_root=tmp_path / "speaker", state_path=state,
+        view_runner=run, set_scoped=view_accepts_set,
     )
     assert calls == [
         ("inventory", "--set", "base-set"),
@@ -481,7 +485,8 @@ def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_pa
     path.write_text(json.dumps(manifest))
     calls.clear()
     ambiguous = bank_round(
-        session, campaign_root=tmp_path / "ambiguous", state_path=state, view_runner=run,
+        session, campaign_root=tmp_path / "ambiguous", state_path=state,
+        view_runner=run, set_scoped=view_accepts_set,
     )
     assert calls == [
         ("room", "--set", "base-window-1"),
