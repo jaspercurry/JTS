@@ -32,7 +32,9 @@ class FakeCamilla:
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
         return self.loaded_path or self.current_path
 
-    async def set_config_file_path(self, path: str, *, best_effort: bool = False) -> bool:
+    async def set_config_file_path(self, path: str, *, best_effort: bool = False, duck: bool = True) -> bool:
+        if not duck:
+            self.ducks.append(duck)
         self.set_calls.append(path)
         self.loaded_path = path
         if self.fail_set and not best_effort:

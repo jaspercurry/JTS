@@ -291,16 +291,11 @@ async def load_profile_config(
     render_id = profile_id if profile_id is not None else str(time.time_ns())
     cam = camilla_factory()
 
-    # Fast pre-check: refuse non-hostable graphs before recording an apply failure
-    # for handled active/custom/dynamic-pipe graph refusals. The authoritative
-    # check repeats inside the writer lock below.
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
-    if carrier.kind == "active":
-        result = carrier.reemit(profile, output_trim_db=output_trim_db)
-    else:
+    if carrier.kind != "active":
         pre_block = eq_block_for_loaded_config(
             profile, current_path=pre_path, config_dir=config_path, output_trim_db=output_trim_db,
         )
@@ -311,8 +306,7 @@ async def load_profile_config(
 
     async with dsp_writer_lock(config_path, source=source):
         active = carrier.kind == "active"
-        out_path = (carrier.destination(result, config_path, audition=audition) if active else
-                    sound_audition_config_path(config_path) if audition else sound_config_path(config_path))
+        out_path = sound_audition_config_path(config_path) if audition else sound_config_path(config_path)
         coupling_capture_kwargs = capture_kwargs_for_coupling()
 
         # One shot: apply_dsp_config reuses load_config to ROLL BACK, and an
@@ -332,42 +326,39 @@ async def load_profile_config(
             if current_carrier.kind != carrier.kind:
                 raise RuntimeError("Loaded graph carrier changed during sound preparation")
             if (
-                same_config_file(current_path, out_path)
+                (active or same_config_file(current_path, out_path))
                 and does_live_edits(cam)
                 and not (await plan_live_edit_for(cam, rendered.yaml)).duck
             ):
                 quiet_load["yaml"] = rendered.yaml
+                quiet_load["current_path"] = current_path
             return current_path, rendered
 
         async def _load_config(path: str) -> bool:
             raw = quiet_load.pop("yaml", None)
-            if raw is not None and same_config_file(path, out_path):
-                # The bytes are already at out_path and the loaded path does not
-                # move, so this leaves the end state a file reload would have.
-                return bool(
-                    await cam.set_active_config_raw(raw, best_effort=False, duck=False)
-                )
+            if raw is not None:
+                if same_config_file(path, quiet_load.pop("current_path", None)):
+                    return bool(await cam.set_active_config_raw(raw, best_effort=False, duck=False))
+                return bool(await cam.set_config_file_path(path, best_effort=False, duck=False))
             return bool(await cam.set_config_file_path(path, best_effort=False))
 
         if active:
-            prepared = result.applied_profile
-            prepared["config"].update(path=str(out_path), basename=out_path.name)
+            prepared: dict[str, Any] = {}
 
             async def _prepare_active() -> str:
                 _, rendered = await _render_config()
                 prepared.update(rendered.applied_profile)
-                prepared["config"].update(path=str(out_path), basename=out_path.name)
                 return rendered.yaml
 
             async with load_composed_graph(
-                result.yaml, prepared["config"]["sha256"], source=source, profile=prepared,
-                prepare=_prepare_active, load_config=_load_config,
+                _prepare_active, source=source, profile=prepared, config_dir=config_path,
+                audition=audition, load_config=_load_config,
                 get_current_config_path=lambda: cam.get_config_file_path(best_effort=True),
                 persist=(lambda: save_profile(profile, profile_path)) if persist_profile else None,
-                record=None if audition else "sound", room_peq_count=result.room_peq_count,
+                record=None if audition else "sound",
                 sound_filter_count=len(build_sound_filter_slots(profile)),
             ) as (state, _applied):
-                return state, out_path, profile
+                return state, Path(state.candidate_config_path), profile
 
         async def _prepare_config() -> dict[str, Any]:
             current_path, rendered = await _render_config()

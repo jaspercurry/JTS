@@ -1325,23 +1325,35 @@ async def test_active_audition_has_its_own_path_and_keeps_the_apply_record(tmp_p
     assert result["reason"] == "active_audition"
 
 
-async def test_active_neutral_to_touched_edit_updates_in_place(tmp_path, active_sound_box):
+async def test_active_neutral_to_touched_edit_updates_in_place(tmp_path, monkeypatch, active_sound_box):
+    from jasper.active_speaker import measurement_emit
+    import hashlib
     from jasper.sound.live_edit import plan_live_edit
     from jasper.sound.runtime import load_profile_config
 
     _, _, cam, config_dir = active_sound_box
+    initial = Path(cam.current_path)
+    cam.running = initial.read_text()
+    compiler = mock.Mock(wraps=measurement_emit.compile_tuning_graph)
+    monkeypatch.setattr(measurement_emit, "compile_tuning_graph", compiler)
     kwargs = dict(profile_path=tmp_path / "sound.json", config_dir=config_dir, camilla_factory=lambda: cam,
                   source="sound", persist_profile=True)
     _, target, _ = await load_profile_config(SoundProfile(), **kwargs)
+    assert target == initial
+    assert compiler.call_count == 1
+    assert cam.ducks == [False]
     cam.running = target.read_text()
     carrier = carrier_for_loaded_config(target, config_dir=config_dir)
     touched = SoundProfile(simple_eq=SimpleEq(bass_db=2))
     assert plan_live_edit(cam.running, carrier.reemit(touched).yaml).method == "parameters"
     cam.set_calls.clear()
+    cam.ducks.clear()
+    compiler.reset_mock()
     _, updated, _ = await load_profile_config(touched, **kwargs)
-    assert updated == target
+    assert compiler.call_count == 1
+    assert updated.stem.endswith(hashlib.sha256(updated.read_bytes()).hexdigest()[:12])
     assert cam.ducks == [False]
-    assert cam.set_calls == []
+    assert cam.set_calls == [str(updated)]
 
 
 @pytest.mark.parametrize("failure", ["compile", "carrier_changed"])
@@ -1357,7 +1369,7 @@ async def test_active_prepare_failure_in_the_lock_is_recorded(tmp_path, monkeypa
     def disappear(*args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == (1 if failure == "compile" else 2):
             if failure == "compile":
                 raise CarrierCannotHostEq("active_baseline_compile_unavailable", "candidate missing")
             from types import SimpleNamespace
@@ -1388,3 +1400,22 @@ async def test_active_sound_save_records_the_live_protection(tmp_path, active_so
                               camilla_factory=lambda: cam, source="sound", persist_profile=True)
     recorded = load_baseline_profile_state()["recomposition_snapshot"]["driver_protection"]
     assert confirmed_protection_sections(recorded) == load_tuning_declaration(topology).protection_sections_by_role
+
+
+@pytest.mark.parametrize("missing", ["source", "recomposition_snapshot"])
+async def test_partial_applied_record_refuses_sound_save(tmp_path, monkeypatch, active_sound_box, missing):
+    from jasper.active_speaker import baseline_profile
+    from jasper.dsp_apply import DspApplyError
+
+    _, _, cam, config_dir = active_sound_box
+    applied = baseline_profile.load_applied_baseline_profile_state()
+    partial = {key: value for key, value in applied.items() if key != missing}
+    monkeypatch.setattr(baseline_profile, "load_baseline_profile_state", lambda: partial)
+    with pytest.raises(DspApplyError) as error:
+        async with baseline_profile.load_composed_graph(Path(cam.current_path).read_text(),
+                source="sound", profile=applied, config_dir=config_dir, record="sound",
+                load_config=cam.set_config_file_path, get_current_config_path=cam.get_config_file_path):
+            pytest.fail("Partial applied record was loaded")
+    assert error.value.state.result == "prepare_failed"
+    assert isinstance(error.value.__cause__, ValueError)
+    assert cam.set_calls == []

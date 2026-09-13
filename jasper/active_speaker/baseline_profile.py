@@ -64,7 +64,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
     measured_level_match_applied,
 )
-from .crossover_preview import crossover_design_fingerprint, crossover_preview_fingerprint
+from .crossover_preview import crossover_design_fingerprint, crossover_preview_fingerprint, load_crossover_preview
 from .driver_base_trim import (
     BANK_CLEAR_FAILED,
     BANK_CORRECTION_ENTRY_UNREADABLE,
@@ -197,44 +197,63 @@ def baseline_config_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
 
 
-def baseline_candidate_config_path(sha256: str, path: str | Path | None = None) -> Path:
+def baseline_candidate_config_path(text: str, path: str | Path | None = None) -> Path:
     target = baseline_config_path(path)
+    sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return target.with_name(f"{target.stem}_candidate_{sha256[:12]}{target.suffix}")
 
 
 @asynccontextmanager
 async def load_composed_graph(
-    text: str, sha256: str, *, source: str,
+    text: str | Callable[[], Awaitable[str]], *, source: str,
     profile: Mapping[str, Any],
     load_config: Callable[[str], Awaitable[bool]],
     get_current_config_path: Callable[[], Awaitable[str | None]],
     persist: Callable[[], Any] | None = None,
-    prepare: Callable[[], Awaitable[str]] | None = None,
+    config_dir: str | Path | None = None,
+    audition: bool = False,
     record: Literal["apply", "sound"] | None = "apply",
-    room_peq_count: int | None = None,
     sound_filter_count: int | None = None,
 ) -> AsyncIterator[tuple[DspApplyState, dict[str, Any]]]:
-    target = Path(profile["config"]["path"])
-    async with dsp_writer_lock(target.parent, source=source):
-        async def write_graph() -> None:
-            rendered = await prepare() if prepare is not None else text
+    from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text, sound_audition_config_path  # lazy: sound graph metadata
+
+    directory = Path(config_dir) if config_dir is not None else baseline_config_path().parent
+    target = sound_audition_config_path(directory) if audition else directory / baseline_config_path().name
+    applied = dict(profile)
+    async with dsp_writer_lock(directory, source=source):
+        async def write_graph() -> dict[str, Any]:
+            nonlocal target, applied
+            rendered = await text() if callable(text) else text
+            applied = dict(profile)
+            if record == "sound":
+                saved = load_baseline_profile_state() or {}
+                anchor = _applied_profile_anchor(saved) or {}
+                if not anchor.get("recomposition_snapshot") or not anchor.get("source"):
+                    raise ValueError("Applied speaker record is incomplete")
+                protection = _protection_projection((profile.get("recomposition_snapshot") or {}).get("driver_protection"))
+                applied = {**anchor, "source": {**anchor.get("source", {}),
+                           "driver_protection_fingerprint": _fingerprint(protection)},
+                           "recomposition_snapshot": {**anchor.get("recomposition_snapshot", {}), "driver_protection": protection}}
+                applied["source"]["fingerprint"] = _fingerprint({key: value for key, value in applied["source"].items() if key != "fingerprint"})
+            if not audition:
+                target = baseline_candidate_config_path(rendered, directory / baseline_config_path().name)
+            sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+            applied["config"] = {**profile.get("config", {}), "path": str(target), "basename": target.name,
+                                 "sha256": sha256, "exists": True}
             atomic_write_text(target, rendered, mode=CONFIG_FILE_MODE)
+            return {"candidate_path": target, "expected_candidate_sha256": sha256,
+                    "room_peq_count": len(extract_room_peqs_from_config_text(rendered))}
 
         state = await apply_dsp_config(
-            source=source, candidate_path=target, expected_candidate_sha256=sha256,
+            source=source, candidate_path=target,
             prepare=write_graph,
             load_config=load_config, get_current_config_path=get_current_config_path,
-            persist=persist, room_peq_count=room_peq_count, sound_filter_count=sound_filter_count,
+            persist=persist, sound_filter_count=sound_filter_count,
         )
-        applied = dict(profile)
         if record == "apply":
-            applied = persist_applied_baseline_profile(profile, apply_state=state.to_dict())
+            applied = persist_applied_baseline_profile(applied, apply_state=state.to_dict())
         elif record == "sound":
             saved = load_baseline_profile_state() or {}
-            applied = dict(_applied_profile_anchor(saved) or {})
-            applied["config"] = dict(profile["config"])
-            applied["recomposition_snapshot"]["driver_protection"] = profile["recomposition_snapshot"]["driver_protection"]
-            applied["source"]["driver_protection_fingerprint"] = profile["source"].get("driver_protection_fingerprint")
             if saved.get("status") == "applied":
                 saved = applied
             else:
@@ -404,17 +423,7 @@ def _source_payload(
     driver_protection: Mapping[str, Any] | None = None,
     candidate_graph_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fingerprint source inputs, not emitted bytes.
-
-    Covers ``candidate_graph_context`` (playback/capture device, domain,
-    driver-domain pair trim, the measured-candidate/driver-protection
-    fingerprints) since #2416 — the caller assembles it and passes it in
-    BEFORE the emit devices it depends on are resolved into bytes, so two
-    builds differing only there no longer share one filename. Still not a
-    content hash: two builds with identical source can still emit different
-    bytes for other reasons (recompose, blend correction). Confirm the live
-    normalized graph; a matching path is not proof of content.
-    """
+    """Fingerprint declaration and evidence inputs, not emitted bytes."""
     measurement_summary = (
         measurements.get("summary")
         if isinstance(measurements.get("summary"), Mapping)
@@ -1806,16 +1815,7 @@ def build_baseline_profile_candidate(
     protection = (protection_anchor.get("recomposition_snapshot") or {}).get("driver_protection")
     safety_profile = design_draft.get("driver_safety_profile")
     if evaluate_driver_safety_profile(safety_profile, topology).confirmed_and_current:
-        protection = {
-            "profile_fingerprint": safety_profile["profile_fingerprint"],
-            "targets": [{
-                "role": target["role"],
-                "target_fingerprint": target["target_fingerprint"],
-                "required_protection_filters": [
-                    dict(requirement) for requirement in target["required_protection_filters"]
-                ],
-            } for target in safety_profile["targets"]],
-        }
+        protection = _protection_projection(safety_profile)
     if driver_domain:
         protection = None
     resolved_playback_device, playback_device_source = (
@@ -1849,13 +1849,6 @@ def build_baseline_profile_candidate(
         "capture_format": emit_capture_format,
         **({"driver_protection": protection} if protection is not None else {}),
     }
-    # #2416: assembled BEFORE ``_source_payload`` so the candidate's source
-    # fingerprint — and therefore its filename — covers the graph context,
-    # not only topology/design-draft/measurements. Two builds that differ
-    # only in ``candidate_graph_context`` (a different capture device, a
-    # different measured candidate) used to share one filename while
-    # carrying different bytes; they now source-fingerprint apart and each
-    # gets its own sibling.
     source = _source_payload(
         topology,
         design_draft,
@@ -1877,55 +1870,6 @@ def build_baseline_profile_candidate(
             # Never trust the persisted derived field for evidence admission.
             # Re-derive the context from the applied immutable graph inputs.
             applied_profile_context_id = baseline_candidate_fingerprint(applied_anchor)
-    # Every SOLO (non-driver-domain) candidate lands on its OWN
-    # source-fingerprinted sibling file -- unconditionally, whether or not a
-    # profile was ever applied before, and regardless of what that prior
-    # profile's own path was. (``_source_payload``'s docstring is the single
-    # statement of what that fingerprint does and does not cover, and why a
-    # candidate's path is never its graph identity.)
-    #
-    # Never the bare ``baseline_config_path()`` name (issue #1666): a
-    # candidate write must never overwrite the file CamillaDSP's own
-    # statefile, jasper-doctor, the multiroom follower fallback, and a human
-    # inspecting the box all read as the durable truth. Before this was
-    # unconditional, an applied profile's path alternated between the
-    # canonical name and a sibling on every successive apply (whichever the
-    # PREVIOUS apply did NOT use) -- so an apply landing on the canonical
-    # half of that alternation wrote unvalidated candidate bytes there
-    # BEFORE validation/activation, and a rejected apply could leave the
-    # canonical file holding rejected bytes. The canonical name is now
-    # written ONLY by the post-success promote step in
-    # ``_apply_baseline_profile_locked``, which runs after
-    # ``apply_dsp_config`` has already proven the candidate live.
-    #
-    # ``driver_domain=True`` candidates are deliberately EXCLUDED: they are
-    # the multiroom follower/leader bonding machinery's own role-specific
-    # compile-then-immediately-consume seam (jasper.multiroom.follower_config
-    # / active_leader_config), which passes its OWN dedicated config_path +
-    # state_path precisely "so the solo baseline artifacts are never
-    # clobbered" (this function's own docstring). That state_path never
-    # reaches ``persist_applied_baseline_profile`` / ``status="applied"``, so
-    # ``applied_anchor`` above is always None for it -- there is no applied
-    # lineage to protect or promote, no way back to a prior candidate for
-    # it, and its caller re-proves the freshly written file synchronously
-    # before ever loading it. Forcing it onto a sibling would silently break
-    # that caller's read of its OWN just-written config_path (confirmed by
-    # tests/test_multiroom_follower_config.py and
-    # tests/test_multiroom_active_leader_config.py against this change).
-    if not driver_domain:
-        # The 12 hex characters are a SOURCE fingerprint, NOT a content hash.
-        # They identify the inputs this graph was compiled FROM (topology,
-        # design draft, crossover preview, measurement summary — see
-        # `_source_payload`), never the bytes that came out. Two consequences a
-        # reader will otherwise get backwards: the same name can legitimately
-        # hold different bytes after a recompose from the same record, which is
-        # what lets `reconcile_current_dsp` refresh a kept candidate IN PLACE
-        # instead of displacing it; and a byte difference under an unchanged
-        # name is therefore NOT evidence of tampering or drift. Content
-        # identity is answered by the content-derived fingerprints
-        # (`running_graph_fingerprint`, `_normalized_graph_fingerprint`), which
-        # is what the measurement program actually consumes.
-        config_target = baseline_candidate_config_path(source["fingerprint"], config_target)
     retained_applied = _frozen_applied_profile(applied_anchor)
     applied_profile_proves = _applied_profile_proves_driver_targets(saved, source)
 
@@ -2284,7 +2228,6 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target if write else None,
                 bass_extension=bass_extension,
             )
         else:
@@ -2299,14 +2242,16 @@ def build_baseline_profile_candidate(
                 target_level=devices.target_level,
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
-                out_path=config_target if write else None,
                 bass_extension=bass_extension,
                 linearization=linearization,
                 blend_correction=blend_correction,
                 room_peqs=room_peqs,
                 protection_sections_by_role=(confirmed_protection_sections(protection) if protection is not None else None),
             )
+        if not driver_domain:
+            config_target = baseline_candidate_config_path(yaml, config_target)
         if write:
+            atomic_write_text(config_target, yaml, mode=CONFIG_FILE_MODE)
             validation = validate(config_target).to_dict()
             if not validation.get("ok_to_apply") and validation.get("status") not in {
                 "valid",
@@ -2779,14 +2724,27 @@ def _measured_candidate_metadata(
     }
 
 
+def _protection_projection(profile: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if profile is None:
+        return None
+    return {
+        "profile_fingerprint": profile["profile_fingerprint"],
+        "targets": [{
+            "role": target["role"],
+            "target_fingerprint": target["target_fingerprint"],
+            "required_protection_filters": [dict(requirement) for requirement in target["required_protection_filters"]],
+        } for target in profile["targets"]],
+    }
+
+
 def prepare_applied_baseline_profile(
     candidate: MeasuredCrossoverCandidate,
     *,
     declaration: MeasurementGraphProfile,
     design_draft: Mapping[str, Any],
     measurements: Mapping[str, Any],
-    config_path: str | Path,
-    config_sha256: str,
+    config_path: str | Path | None = None,
+    config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -2798,11 +2756,15 @@ def prepare_applied_baseline_profile(
         if exc.code != "not_found":
             raise
         publish_authored_candidate(candidate)
-    protection = design_draft.get("driver_safety_profile")
+    protection = _protection_projection(design_draft.get("driver_safety_profile"))
     source = _source_payload(
-        declaration.topology, design_draft, {}, measurements,
+        declaration.topology, design_draft, load_crossover_preview(current_design_draft=design_draft), measurements,
         measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
     )
+    source = {**source, **((provenance or {}).get("source") or {}),
+              **({"driver_protection_fingerprint": _fingerprint(protection)} if protection is not None else {}),
+              "measured_candidate_fingerprint": candidate.fingerprint}
+    source["fingerprint"] = _fingerprint({key: value for key, value in source.items() if key != "fingerprint"})
     corrections = driver_corrections(candidate)
     linearization = linearization_filters_by_role(candidate.linearization)
     meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, applied_at or _utc_now())
@@ -2819,9 +2781,9 @@ def prepare_applied_baseline_profile(
     applied = {
         **(provenance or {}),
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
-        "source": {**((provenance or {}).get("source") or {}), **source},
-        "config": {**((provenance or {}).get("config") or {}), "path": str(config_path),
-                   "basename": Path(config_path).name, "sha256": config_sha256, "exists": True,
+        "source": source,
+        "config": {**((provenance or {}).get("config") or {}), "path": str(config_path or ""),
+                   "basename": Path(config_path).name if config_path else "", "sha256": config_sha256, "exists": bool(config_path),
                    "playback_device": declaration.playback_device, "domain": "full"},
         "corrections": corrections, "linearization": linearization,
         "corrections_source": (provenance or {}).get("corrections_source", meta["sources"]),
@@ -2861,7 +2823,7 @@ def persist_applied_baseline_profile(
     return applied
 
 
-# Newest-by-mtime source-fingerprinted candidate siblings to keep around a
+# Newest-by-mtime content-addressed candidate siblings to keep around a
 # canonical baseline config on every successful promote. Orphaned candidates
 # accumulate forever now that promotion is a byte COPY, never a move/rename
 # (a fleet Pi was observed carrying 38 of them); this is a bounded-I/O
@@ -2879,7 +2841,7 @@ def promote_applied_baseline_candidate(
 
     ``build_baseline_profile_candidate`` never writes ``baseline_config_path()``
     directly (issue #1666) -- every ``write=True`` candidate lands on its own
-    source-fingerprinted sibling, so a candidate that fails validation or
+    content-addressed sibling, so a candidate that fails validation or
     activation can never appear at the canonical name. This is the ONLY
     place that publishes to that name, and every caller runs it AFTER its own
     ``apply_dsp_config`` + ``persist_applied_baseline_profile`` have already

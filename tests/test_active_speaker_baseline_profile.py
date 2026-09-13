@@ -361,7 +361,7 @@ def _derive_sensitivity_trims(way_count: int, sensitivities: dict[str, float]):
         role: {"sensitivity_db_2v83_1m": value}
         for role, value in sensitivities.items()
     }
-    preset = SimpleNamespace(way_count=way_count, crossover_regions=[])
+    preset: Any = SimpleNamespace(way_count=way_count, crossover_regions=[])
     corrections, _issues, meta = _derive_corrections(
         preset, {"drivers": drivers}, {}
     )
@@ -953,6 +953,39 @@ def test_saved_baseline_profile_cache_invalidates_when_topology_changes(
     }
 
 
+@pytest.mark.parametrize("with_provenance", [False, True])
+def test_confirmed_protection_record_stays_current_after_rebuild(tmp_path, monkeypatch, with_provenance):
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.measurement_emit import load_tuning_declaration
+    from tests.apply_fixtures import bank_candidate
+    from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _run6_measured_candidate
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = load_design_draft(topology=topology)
+    safety = draft["driver_safety_profile"]
+    assert safety["status"] == "confirmed"
+    preview = load_crossover_preview(current_design_draft=draft)
+    measurements = load_measurement_state(topology)
+    inputs = dict(design_draft=draft, crossover_preview=preview, measurements=measurements)
+    provenance = build_baseline_profile_candidate(topology, **inputs) if with_provenance else None
+    candidate = _run6_measured_candidate(preset)
+    bank_candidate(candidate)
+    applied = baseline_profile_mod.prepare_applied_baseline_profile(candidate,
+        declaration=load_tuning_declaration(topology, design_draft=draft),
+        design_draft=draft, measurements=measurements, provenance=provenance)
+    applied["status"] = "applied"
+    baseline_profile_mod.baseline_profile_state_path().write_text(json.dumps(applied))
+    rebuilt = build_baseline_profile_candidate(topology, **inputs)
+    assert applied["recomposition_snapshot"]["driver_protection"] == {
+        "profile_fingerprint": safety["profile_fingerprint"],
+        "targets": [{key: target[key] for key in ("role", "target_fingerprint", "required_protection_filters")}
+                    for target in safety["targets"]],
+    }
+    assert baseline_profile_mod._changed_source_keys(applied["source"], rebuilt["source"]) == []
+    assert rebuilt["revalidation"]["required"] is False
+
+
 def test_superseded_applied_profile_reports_revalidation_path(
     tmp_path: Path,
 ) -> None:
@@ -1429,7 +1462,7 @@ async def test_persist_applied_baseline_releases_the_hold_on_its_idempotent_retu
     )
     state_path = tmp_path / "baseline_profile.json"
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
     real_persist = baseline_profile_mod.persist_applied_baseline_profile
 
     def spy_persist(candidate, **kwargs):
@@ -4508,7 +4541,7 @@ def _bank_events(caplog) -> list[dict[str, str]]:
 
 def _applied_with_sources(
     tmp_path: Path, sources: dict[str, str]
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """A really-applied measured candidate, re-sourced one role at a time.
 
     Built by the real compiler and re-fingerprinted, so it still passes every

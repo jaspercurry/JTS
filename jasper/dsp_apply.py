@@ -825,6 +825,15 @@ async def apply_dsp_config(
                 try:
                     metadata = await _maybe_call(prepare)
                     if isinstance(metadata, dict):
+                        # A prepare-selected destination must be content addressed;
+                        # mutable targets need their bytes saved before preparation.
+                        if metadata.get("candidate_path"):
+                            candidate = Path(metadata["candidate_path"])
+                            state.candidate_config_path = str(candidate)
+                            if candidate_restore and not same_config_file(candidate_restore[0], candidate):
+                                candidate_restore = None
+                        if "expected_candidate_sha256" in metadata:
+                            expected_candidate_sha256 = metadata["expected_candidate_sha256"]
                         if (
                             metadata.get("prior_config_path")
                             and not state.prior_config_path

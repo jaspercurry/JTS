@@ -59,13 +59,13 @@ def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any
                 log_event(logger, "correction.crossover_v2_apply", status="blocked", code=issue["code"], candidate_fingerprint=expected)
                 return {"status": "blocked", "issue": {"code": issue["code"], "message": issue["message"]}}
             prepared = baseline_profile.prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft,
-                measurements=load_measurement_state(topology), config_path=baseline_profile.baseline_candidate_config_path(sha), config_sha256=sha)
+                measurements=load_measurement_state(topology))
             previous = baseline_profile.load_applied_baseline_profile_state()
             offset = baseline_profile.applied_program_level_delta_db(previous, prepared)
             summary = v2durable._candidate_summary(candidate, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
             change = declaration_change_for_candidate(source_preset=candidate.source_preset, design_draft=draft)
             load, current = v2state.baseline_apply_seams(camilla_factory())
-            async with baseline_profile.load_composed_graph(text, sha, source="active_speaker_baseline_apply", profile=prepared, load_config=load, get_current_config_path=current) as (applied, profile):
+            async with baseline_profile.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared, load_config=load, get_current_config_path=current) as (applied, profile):
                 with v2state._state_lock:
                     v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=previous,
                         previous_candidate_fingerprint=((previous or {}).get("source") or {}).get("measured_candidate_fingerprint"), expected_post_apply_offset_db=offset)

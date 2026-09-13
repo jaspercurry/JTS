@@ -22,7 +22,6 @@ neither depends back.
 from __future__ import annotations
 
 import logging
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -405,7 +404,7 @@ class _ActiveGraphCarrier:
         if audition:
             return sound_audition_config_path(config_dir)
         return baseline_candidate_config_path(
-            result.applied_profile["source"]["measured_candidate_fingerprint"],
+            result.yaml,
             Path(config_dir) / baseline_config_path().name,
         )
 
@@ -469,8 +468,7 @@ def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0) ->
             applied_baseline_state={"recomposition_snapshot": {"bass_extension": candidate.bass_extension}})
         if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
             raise ValueError(graph.classification)
-        prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={},
-            config_path="", config_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), provenance=applied)
+        prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={}, provenance=applied)
         prepared["config"]["sound_layer"] = {"profile": profile.to_dict(), "output_trim_db": output_trim_db}
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not compile the saved speaker tune: {exc}") from exc

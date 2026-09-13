@@ -470,11 +470,12 @@ def declare_applied_fixture(monkeypatch, topology, applied, *, live_endpoint=Fal
     from jasper.active_speaker.playback_route import resolve_active_playback_device
 
     declaration, _candidate = applied_graph_fixture(topology, applied)
+    draft = standard_design_draft(topology)
     def load(live_topology=None, *, playback_device=None, design_draft=None):
         return replace(declaration, playback_device=playback_device or (resolve_active_playback_device(topology)[0] if live_endpoint else declaration.playback_device))
     monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration", load)
     monkeypatch.setattr("jasper.active_speaker.design_draft.load_design_draft",
-                        lambda **kw: {"driver_safety_profile": applied["recomposition_snapshot"].get("driver_protection")})
+                        lambda **kw: draft)
 
 
 @pytest.fixture
