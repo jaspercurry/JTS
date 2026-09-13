@@ -790,6 +790,46 @@ def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog):
     }
 
 
+@pytest.mark.parametrize(
+    "second_ok,expected", [(True, None), (False, aw.EXIT_MOVE_FAILED)]
+)
+def test_heartbeat_frame_failure_retries_once(second_ok, expected, caplog):
+    caplog.set_level(logging.INFO, logger=aw.__name__)
+    good = json.dumps({"ok": True, "result": {}})
+    power = json.dumps({"ok": True, "power": {"status": {
+        "available": True, "current_flags": [], "history_flags": [], "raw": "0x0",
+    }}})
+    framing_failure = _Proc(json.dumps({
+        "ok": False,
+        "error": aw._VENDOR_HEARTBEAT_FRAME_ERROR,
+        "error_type": "ProtocolError",
+    }), 1)
+    responses = [_Proc(power), framing_failure,
+                 _Proc(good) if second_ok else framing_failure]
+    if second_ok:
+        responses.append(_Proc(good))
+
+    sleeps = []
+    mover = aw.TurntableMover(
+        attest_rig_clear=True,
+        run=lambda *_, **__: responses.pop(0),
+        sleep=sleeps.append,
+    )
+    trail = _RecordingTrail()
+    walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
+
+    assert walk._serve(aw.Pending(1, 1, 7, "onax")) == expected
+    assert sleeps == [aw._VENDOR_RETRY_S]
+    assert event_fields(caplog, "arm_walk.vendor_tool_retried") == {
+        "subcommand": "stop",
+        "attempt": "2",
+    }
+    if second_ok:
+        assert trail.one("moved")["degrees"] == 7
+    else:
+        assert trail.error("move_failed")["subcommand"] == "stop"
+
+
 def test_an_adapter_that_cannot_be_launched_is_a_failed_move():
     def boom(argv, **_):
         raise OSError("no such file")
