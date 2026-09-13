@@ -191,7 +191,7 @@ class RunManifest:
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
-                   "analysis": record.get("analysis"),
+                   "analysis": record.get("analysis"), "curve": curve or None,
                    "quality": {"status": status, "fault": verdict.fault,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},

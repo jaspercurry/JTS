@@ -78,6 +78,12 @@ def bookkeeping_views(purpose: str) -> tuple[tuple[str, bool, bool], ...]:
     }.get(purpose, ())
 
 
+def run_purpose(run_program: str | None) -> str:
+    """The purpose behind a run manifest's program id (``speaker`` or ``speaker/full``)."""
+    name, _, size = str(run_program or "").partition("/")
+    return name if not name or name in PURPOSES else program(name, size or None).purpose
+
+
 def baseline_scope(purpose: str | None) -> str:
     if _validated_purpose(purpose) == PURPOSE_BASS:
         return "room"
