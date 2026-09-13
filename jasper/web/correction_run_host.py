@@ -4,7 +4,6 @@
 """Bind banked captures to the program analyzer and legacy preparation effects."""
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 from typing import Any
 
@@ -17,12 +16,9 @@ from jasper.audio_measurement.household_mic import resolved_household_sensitivit
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict, PhaseVerdict
+from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
-from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
-from jasper.log_event import log_event
-
-logger = logging.getLogger(__name__)
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
@@ -125,18 +121,12 @@ def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: 
                        level_anchor_db_spl: float | None = None,
                        level_offsets_db: tuple[float, ...] = (0.0,)) -> tuple[LevelWindows, Any, Any]:
     sensitivity = resolved_household_sensitivity(device)
-    check_target_capture_dbfs = None
-    if level_anchor_db_spl is not None and sensitivity is not None:
-        # CHECK plays at the quietest window; its solve must realize that window's SPL so the
-        # solved gains land on the anchor at the reference window and offset dB below it elsewhere.
-        check_target_db_spl = level_anchor_db_spl + min(level_offsets_db or (0.0,))
-        check_target_capture_dbfs = sensitivity.dbfs_from_db_spl(check_target_db_spl) + SWEEP_PEAK_TO_RMS_DB
-        log_event(logger, "active_speaker.check_level_target", anchor_db_spl=level_anchor_db_spl,
-                  check_target_db_spl=check_target_db_spl, target_capture_dbfs=check_target_capture_dbfs)
+    check_target = (anchored_check_target(sensitivity, level_anchor_db_spl, level_offsets_db)
+                    if level_anchor_db_spl is not None and sensitivity is not None else None)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, verify_only=verify_only, provenance=provenance,
-                                          check_target_capture_dbfs=check_target_capture_dbfs)
+                                          check_target_capture_dbfs=check_target)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(
