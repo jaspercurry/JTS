@@ -313,6 +313,22 @@ def test_incumbent_room_finds_the_wired_base(windows):
     assert reason == ""
 
 
+def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
+    inputs = round_inputs(room_round)
+    own = resolve_set(inputs, None).set_id
+    selection = select_seat_takes(inputs.session_dir)
+    document = room_views.room_document(
+        selection.takes, set_id=own, evidence=selection.evidence,
+        applied_profile_path=inputs.applied_profile_path, geometry_path=None,
+        manifest={"sets": [{"set_id": own, "capture_basis": {"graph_scope": "room_tune"}, "takes": []}]},
+    )
+    assert document["incumbent"]["set_id"] == own
+    (room_round / "room.json").write_text(json.dumps(document))
+    answer = _run(capsys, ["room-grade", str(room_round)])
+    assert answer["incumbent"] is answer["incumbent_set_id"] is None
+    assert answer["incumbent_reason"] == "room_incumbent_set_unavailable"
+
+
 @pytest.mark.parametrize("change", ["incumbent", "median"])
 def test_room_median_digest_tracks_only_the_measured_section(room_round, capsys, change):
     inputs = round_inputs(room_round)
