@@ -120,10 +120,17 @@ class RunManifest:
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         pose = self._context["pose"]
-        payload: dict[str, Any] = {**record, **{key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
-                              if key in self._context}, "pose_kind": pose["kind"],
-                   "measurement_purpose": resolved_measurement_purpose(self._context.get("purpose"), pose["kind"]),
-                   "mark_distance_m": pose["distance_m"], "seat_offset_m": pose.get("seat_offset_m")}
+        planned = {
+            "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
+            "seat_offset_m": pose.get("seat_offset_m"),
+        }
+        if "measurement_purpose" not in record:
+            planned["measurement_purpose"] = resolved_measurement_purpose(
+                self._context.get("purpose"), pose["kind"],
+            )
+        context = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
+                   if key in self._context}
+        payload: dict[str, Any] = {**planned, **record, **context}
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
         return record_id
@@ -172,6 +179,7 @@ class RunManifest:
                 lower = max(band[0], curve.get("validity_floor_hz") or band[0])
                 band = [lower, band[1]] if lower < band[1] else None
             row = {**self._context, "take_id": take_id, "stimulus_ordinal": ordinal,
+                   "phase": record["phase"] if "phase" in record else self._context.get("phase"),
                    "side": basis["side"], "role": role,
                    "level": {**{key: basis.get(key) for key in
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
