@@ -14,6 +14,8 @@ spelling.
 """
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+
 import io
 import wave
 from dataclasses import dataclass
@@ -24,7 +26,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureAnswer,
 )
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
-from jasper.web import correction_crossover_v2 as v2host
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 
@@ -100,7 +101,7 @@ def test_a_contract_only_answer_satisfies_the_production_analyze_seam(
     )
     assert isinstance(answer, CaptureAnswer)
 
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=resolver, meta={},
     )
     out = analyze(

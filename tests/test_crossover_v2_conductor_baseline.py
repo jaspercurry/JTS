@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 import logging
 import types
 import numpy as np
@@ -203,7 +205,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
         load_state,
         record_model_error,
     )
-    from jasper.web import correction_crossover_v2 as v2host
 
     path = tmp_path / "model-error.json"
     state_path = tmp_path / "v2-state.json"
@@ -270,12 +271,12 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
         caplog, "correction.crossover_v2_model_error_write_failed"
     )
 
-    v2host.set_state_path_for_tests(state_path)
+    v2state.set_state_path_for_tests(state_path)
     try:
-        v2host.persist_conductor_state(recovered, failure_code=None)
-        persisted = v2host.load_v2_state()
+        v2state.persist_conductor_state(recovered, failure_code=None)
+        persisted = v2state.load_v2_state()
     finally:
-        v2host.set_state_path_for_tests(None)
+        v2state.set_state_path_for_tests(None)
     assert [
         item["attempt_id"] for item in persisted["attempts_loop"]["history"]
     ] == ["candidate-base", "candidate-previous"]

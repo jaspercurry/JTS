@@ -456,11 +456,7 @@ def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
     ``outcome``, which is a ``pass`` in both: it is whether any claim was
     graded at all.
     """
-    from jasper.web.correction_crossover_v2 import (
-        GRADE_INCONCLUSIVE,
-        GRADE_MARK_VERIFIED,
-        _post_apply_grade,
-    )
+    from jasper.web.correction_crossover_v2_grade import GRADE_INCONCLUSIVE, GRADE_MARK_VERIFIED, _post_apply_grade
 
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)

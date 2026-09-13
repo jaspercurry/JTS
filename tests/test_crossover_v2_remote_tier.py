@@ -434,7 +434,7 @@ def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
     missing from either set reaches the household as the transport lie the
     other two gate codes exist to avoid.
     """
-    from jasper.web.correction_crossover_v2 import POSITION_GATE_TERMINAL_CODES
+    from jasper.active_speaker.crossover_v2.position_gate import POSITION_GATE_TERMINAL_CODES
 
     assert SESSION_CEILING_EXPIRED_CODE in REASON_REGISTRY
     assert SESSION_CEILING_EXPIRED_CODE in POSITION_GATE_TERMINAL_CODES
@@ -469,7 +469,7 @@ def test_the_gates_three_refusals_name_neither_mover():
     so a fourth gate refusal inherits the rule the day it is written.
     """
 
-    from jasper.web.correction_crossover_v2 import POSITION_GATE_TERMINAL_CODES
+    from jasper.active_speaker.crossover_v2.position_gate import POSITION_GATE_TERMINAL_CODES
 
     assert POSITION_GATE_TERMINAL_CODES, "the gate has terminal codes to check"
     pattern = re.compile(r"\b(" + "|".join(_MOVER_WORDS) + r")\b", re.IGNORECASE)

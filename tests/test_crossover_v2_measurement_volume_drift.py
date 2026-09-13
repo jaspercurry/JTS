@@ -10,6 +10,9 @@ A wrong or unreadable level refuses playback without writing the fader.
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import asyncio
 import logging
 from types import SimpleNamespace
@@ -624,7 +627,7 @@ def _program(phase: str) -> Any:
 @pytest.fixture(autouse=True)
 def _reset_volume_plan():
     yield
-    v2host.set_volume_plan_for_tests(None)
+    v2volume.set_volume_plan_for_tests(None)
 
 
 def _drive(
@@ -664,8 +667,8 @@ def _drive(
             installed_graph_yaml=lambda: "devices: {samplerate: 48000}\n",
         ),
     )
-    v2host.set_volume_plan_for_tests(plan)
-    playback = v2host.bind_production_play(
+    v2volume.set_volume_plan_for_tests(plan)
+    playback = v2evidence.bind_production_play(
         camilla_factory=lambda: cam,
         evidence_store=SimpleNamespace(
             bundle_dir=tmp_path,

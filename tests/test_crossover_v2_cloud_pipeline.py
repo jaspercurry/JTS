@@ -22,6 +22,9 @@ Two layers:
 """
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import json
 import logging
 import re
@@ -738,7 +741,6 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
     from types import SimpleNamespace
 
     from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
-    from jasper.web import correction_crossover_v2 as v2host
 
     echo_band_hz = (5000.0, 19_000.0)
     captures = corpus.s0_position_captures(corpus.S0_MAIN)
@@ -752,7 +754,7 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
     )
 
     monkeypatch.setattr(
-        v2host, "load_v2_state",
+        v2state, "load_v2_state",
         lambda: {
             "cloud": {
                 "cloud_measure": {
@@ -771,7 +773,7 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
         },
     )
     monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+        v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
 
     r = check_crossover_v2_cloud_pipeline()

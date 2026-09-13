@@ -11,15 +11,13 @@ only the web host holds — the loaded state, the volume plan, the review
 decision, the banked candidate — and shapes what comes back into
 ``status["crossover_v2"]``.
 
-The host (:mod:`jasper.web.correction_crossover_v2`) is reached through the
-MODULE object, never by name — ``_host.load_v2_state()``, not a from-import.
-That keeps this adapter on the same late-bound patch surface it had while it
-lived in the host: a test that patches ``load_v2_state`` on the host still
-reaches this reader. A from-import here would bind a second name that no such
-patch can reach, and the tests would go on passing while patching nothing.
 """
 
 from __future__ import annotations
+
+from jasper.web import correction_crossover_v2_grade as v2grade
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
 
 import logging
 from typing import Any, Mapping
@@ -27,8 +25,9 @@ from typing import Any, Mapping
 from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.active_speaker.grade_coverage import asked_beyond_mark
 from jasper.log_event import log_event
-from jasper.web import correction_crossover_v2 as _host
 
+
+logger = logging.getLogger(__name__)
 
 def previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | None:
     """The measured candidate the applied graph displaced, if one is recorded."""
@@ -60,19 +59,19 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     crash-hydrated active plan surfaces no unresolved payload but still needs
     draining before a new session).
     """
-    state = _host.load_v2_state()
+    state = v2state.load_v2_state()
     session_id = (state or {}).get("session_id")
     # Count is derived from its persistence owner on every state read. Keeping
     # a second copy in journey state made crash recovery and offline store
     # repair observable as two contradictory counts.
-    store_count = _host._attempt_loop_store_snapshot().model_error_count
+    store_count = v2state._attempt_loop_store_snapshot().model_error_count
     try:
-        needs_recovery = bool(_host.session_volume_plan().needs_recovery)
+        needs_recovery = bool(v2volume.session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
         needs_recovery = True  # unreadable volume state fails closed
     block: dict[str, Any] = {
         "phase": _projection.crossover_v2_phase(
-            state, review_declined=_host.review_declined(state),
+            state, review_declined=v2state.review_declined(state),
         ),
         # save_v2_state stamps transitions; polls must not create a second clock (#1947).
         "updated_at": (state or {}).get("updated_at"),
@@ -115,7 +114,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
-    block["post_apply_grade"] = _host._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
+    block["post_apply_grade"] = v2grade._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
     return block
 
 
@@ -151,7 +150,7 @@ def _controllability_status() -> dict[str, Any] | None:
         return read_controllability_ledger()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         log_event(
-            _host.logger,
+            logger,
             "correction.controllability_ledger_unavailable",
             level=logging.WARNING,
             exc_info=True,

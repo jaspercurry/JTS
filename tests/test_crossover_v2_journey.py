@@ -18,6 +18,8 @@ Two halves, matching the extraction:
 
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import journey
+
 import ast
 import dataclasses
 from graphlib import CycleError, TopologicalSorter
@@ -449,7 +451,6 @@ def test_the_flow_re_exports_every_phase_name_the_journey_owns():
     """
 
     from jasper.active_speaker import crossover_v2_flow as flow
-    from jasper.active_speaker.crossover_v2 import journey
 
     phase_names = [n for n in vars(journey) if n.startswith("PHASE_")]
     for name in [*phase_names, "CAPTURE_PHASES", "GROUP_PHASES"]:
@@ -462,16 +463,6 @@ def test_the_flow_re_exports_every_phase_name_the_journey_owns():
             continue
         assert hasattr(flow, name), f"{name} is not re-exported by the flow"
         assert getattr(flow, name) is getattr(journey, name), name
-
-
-def test_the_host_re_exports_the_journeys_own_declarations():
-    """The host publishes these names; they must not become a second copy."""
-
-    from jasper.web import correction_crossover_v2 as v2host
-
-    assert v2host.STAGE_MEASURE_CAPABILITIES is STAGE_MEASURE_CAPABILITIES
-    assert v2host.STAGE_VERIFY_CAPABILITIES is STAGE_VERIFY_CAPABILITIES
-    assert v2host.CAPABILITY_ENTRY_BASELINE is CAPABILITY_ENTRY_BASELINE
 
 
 def _conductor(**kwargs):
@@ -898,7 +889,7 @@ def test_the_envelope_renderer_never_re_types_a_code_it_could_import():
     """
 
     from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE
-    from jasper.web.correction_crossover_v2 import GRADE_INCONCLUSIVE
+    from jasper.web.correction_crossover_v2_grade import GRADE_INCONCLUSIVE
 
     assert GRADE_INCONCLUSIVE == RESULT_INCONCLUSIVE, (
         "the value collision this skip exists for has ended — delete the skip"

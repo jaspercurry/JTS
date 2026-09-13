@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 import asyncio
 import errno
 import shutil
@@ -232,7 +234,6 @@ def test_a_round_id_that_is_not_a_plain_token_falls_back_to_the_session_id(
 def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     tmp_path, monkeypatch, snapshot,
 ):
-    from jasper.web import correction_crossover_v2 as host
 
     session, state_path = _live_session(tmp_path)
     if snapshot:
@@ -242,11 +243,11 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
         conductor = _conductor(FakeSeams())
         conductor.session_id = "capture-1"
         conductor._set_verify_outcome("pass", None, {})
-        host.set_state_path_for_tests(state_path)
+        v2state.set_state_path_for_tests(state_path)
         try:
-            host.persist_conductor_state(conductor, failure_code=None, evidence={"bundle_session_id": session.name})
+            v2state.persist_conductor_state(conductor, failure_code=None, evidence={"bundle_session_id": session.name})
         finally:
-            host.set_state_path_for_tests(None)
+            v2state.set_state_path_for_tests(None)
         assert json.loads((session / CAPTURE_STATE_FILENAME).read_text())["session_id"] == "capture-1"
     state_path.write_text(json.dumps({"session_id": "capture-B", "verify": {"outcome": "fail"}}))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state_path)

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 from collections.abc import Callable
 from importlib.resources import files
 import json
@@ -684,22 +686,22 @@ def v2_journey(tmp_path: Path):
     """
     from jasper.web import correction_crossover_v2 as v2
 
-    v2.set_state_path_for_tests(tmp_path / "crossover_v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "crossover_v2_state.json")
     try:
         yield v2
     finally:
-        v2.set_state_path_for_tests(None)
+        v2state.set_state_path_for_tests(None)
 
 
 def _v2_apply(v2: Any) -> None:
     """A reviewed candidate, applied — ``observe_apply_success``'s own path."""
-    v2.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "session-1",
         "accepted_phases": ["measure"],
         "candidate": {"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT},
         "applied": False,
     })
-    v2.observe_apply_success(_APPLIED_CANDIDATE_FINGERPRINT)
+    v2state.observe_apply_success(_APPLIED_CANDIDATE_FINGERPRINT)
 
 
 def _new_session_first_persist(v2: Any) -> None:
@@ -707,7 +709,7 @@ def _new_session_first_persist(v2: Any) -> None:
     session, so the first persist of a NEW measure session writes it ``False``
     beside no candidate — while the applied graph keeps playing.
     """
-    v2.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "session-2",
         "accepted_phases": [],
         "candidate": None,
@@ -720,7 +722,7 @@ def _republish_door(v2: Any) -> None:
     ``False`` (``correction_crossover_v2_republish``), naming a DIFFERENT
     candidate than the one playing.
     """
-    v2.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "session-3",
         "accepted_phases": ["measure"],
         "candidate": {"fingerprint": "1" * 64},
@@ -731,7 +733,7 @@ def _republish_door(v2: Any) -> None:
 
 def _start_over(v2: Any) -> None:
     """Start over keeps the applied graph playing and drops the candidate."""
-    v2.reset_v2_journey_state()
+    v2state.reset_v2_journey_state()
 
 
 def _applied_automatic_room_status(

@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 from types import SimpleNamespace
 
 import logging
@@ -754,10 +758,10 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolated_v2_state(tmp_path, monkeypatch):
 
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     yield
-    v2host.set_state_path_for_tests(None)
-    v2host.set_volume_plan_for_tests(None)
+    v2state.set_state_path_for_tests(None)
+    v2volume.set_volume_plan_for_tests(None)
 
 
 def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch):
@@ -774,7 +778,7 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
         v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
     )
     monkeypatch.setattr(
-        v2host, "open_v2_evidence_store", lambda topology: (SimpleNamespace(publish_json_artifact=lambda *a: None), "sess-fake")
+        v2evidence, "open_v2_evidence_store", lambda topology: (SimpleNamespace(publish_json_artifact=lambda *a: None), "sess-fake")
     )
 
     prepared = v2host.prepare_v2_session(

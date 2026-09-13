@@ -57,6 +57,12 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+from jasper.active_speaker.crossover_v2 import journey
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 from tests._log_events import event_field_maps
 
 import asyncio
@@ -231,10 +237,10 @@ def _status() -> dict[str, Any]:
 
 @pytest.fixture(autouse=True)
 def _isolated_v2_state(tmp_path):
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     yield
-    v2host.set_state_path_for_tests(None)
-    v2host.set_volume_plan_for_tests(None)
+    v2state.set_state_path_for_tests(None)
+    v2volume.set_volume_plan_for_tests(None)
 
 
 @pytest.fixture(autouse=True)
@@ -375,13 +381,13 @@ def _production_host_seams(monkeypatch, tmp_path):
     # land without a real bundle on disk is what keeps this module about the
     # bridge.
     monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
+        v2evidence, "open_v2_evidence_store",
         lambda topology: (_AcceptingStore(tmp_path / "bundle"), "bundle-test"),
     )
     # The measurement-volume plan: the REAL one, on a temp state path, so the
     # preparers' volume gates (`needs_recovery`, the stale-ceiling drain, the
     # wall-clock re-arm) run for real against a clean, closed plan.
-    v2host.set_volume_plan_for_tests(
+    v2volume.set_volume_plan_for_tests(
         SessionVolumePlan(state_path=tmp_path / "session_volume.json")
     )
     yield
@@ -422,7 +428,7 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
     prepared.open()
 
-    return captured["conductor"], (v2host.load_v2_state() or {})
+    return captured["conductor"], (v2state.load_v2_state() or {})
 
 
 @pytest.mark.parametrize(
@@ -445,7 +451,7 @@ async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
     info = open_bundle(_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
     bundle = Path(info["bundle_dir"])
     store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
-    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda topology: (store, store.session_id))
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda topology: (store, store.session_id))
     prepared = v2host.prepare_v2_session(
         _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=None,
     )
@@ -457,7 +463,7 @@ async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
         artifacts.append(store.publish_json_artifact("completed_take.json", {"accepted": True}))
         cleanup_started.set()
         await cleanup_finished.wait()
-        v2host._persist_execution_result(session.session_id, volume_restore=restore)
+        v2state._persist_execution_result(session.session_id, volume_restore=restore)
         if error is not None:
             raise error
 
@@ -583,7 +589,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
             },
         },
     }
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     return state
 
 
@@ -665,7 +671,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
 
     store = _RecordingCheckStore()
     monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
+        v2evidence, "open_v2_evidence_store",
         lambda topology: (store, store.session_id),
     )
     if open_stage_under_test is _stage_2:
@@ -803,15 +809,15 @@ def test_a_bridge_key_crosses_with_its_values_and_never_invents_them(
     # conductor silently never given the fact passes for the wrong reason.
     assert (read(conductor) is None) is (persisted is None)
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert (v2host.load_v2_state() or {})["verify_priors"][key] == persisted
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    assert (v2state.load_v2_state() or {})["verify_priors"][key] == persisted
 
     state = _seed_applied_stage_1_state()
     if persisted is None:
         state["verify_priors"].pop(key, None)
     else:
         state["verify_priors"][key] = persisted
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     stage_2, _state2 = _stage_2(monkeypatch)
 
     if persisted is None:
@@ -890,7 +896,7 @@ def test_a_pre_phase_3a_state_file_leaves_the_probe_unavailable(monkeypatch):
     """
     state = _seed_applied_stage_1_state()
     del state["verify_priors"]["commanded_delta"]
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
 
     conductor, _state = _stage_2(monkeypatch)
 
@@ -918,12 +924,12 @@ def test_the_commanded_delta_survives_a_real_stage_1_persist_into_stage_2(monkey
     _install_commanded_delta(
         conductor, (list(_COMMANDED_FREQS_HZ), list(_COMMANDED_DELTA_DB)),
     )
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    v2state.persist_conductor_state(conductor, failure_code=None)
 
-    applied = v2host.load_v2_state() or {}
+    applied = v2state.load_v2_state() or {}
     applied["applied"] = True
     applied["candidate"] = {"fingerprint": "fp-stage-1"}
-    v2host.save_v2_state(applied)
+    v2state.save_v2_state(applied)
 
     stage_2_conductor, _state2 = _stage_2(monkeypatch)
 
@@ -972,12 +978,12 @@ def test_the_measured_verify_curve_is_persisted_beside_the_priors(monkeypatch):
     predicted = np.zeros_like(freqs)
     conductor._verify_tracking_curve = (freqs, predicted + error, predicted)
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    record = (v2host.load_v2_state() or {})["verify_priors"]["verify_measured"]
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    record = (v2state.load_v2_state() or {})["verify_priors"]["verify_measured"]
 
     assert set(record) == {"freqs_hz", "measured_db", "predicted_db"}
     n = len(record["freqs_hz"])
-    assert 0 < n <= v2host.MAX_PERSISTED_SUM_POINTS
+    assert 0 < n <= v2durable.MAX_PERSISTED_SUM_POINTS
     assert len(record["measured_db"]) == n
     assert len(record["predicted_db"]) == n
     # Decimated in dB, which is linear — so the difference of the two persisted
@@ -994,10 +1000,10 @@ def test_a_session_with_no_verify_capture_persists_no_measured_curve(monkeypatch
     a stage-1 persist — and for every state file written before this key
     shipped. It is never a fabricated empty curve."""
     conductor, _state = _stage_1(monkeypatch)
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    priors = (v2host.load_v2_state() or {})["verify_priors"]
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    priors = (v2state.load_v2_state() or {})["verify_priors"]
     assert priors["verify_measured"] is None
-    assert v2host.verify_measured_curve_from_state({"verify_priors": priors}) is None
+    assert v2durable.verify_measured_curve_from_state({"verify_priors": priors}) is None
 
 
 def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
@@ -1022,16 +1028,16 @@ def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
     assert live is not None
     assert live.advises_against_keep is True
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    state = v2host.load_v2_state() or {}
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    state = v2state.load_v2_state() or {}
 
     stored_freqs, stored_measured, stored_predicted = (
-        v2host.verify_measured_curve_from_state(state)
+        v2durable.verify_measured_curve_from_state(state)
     )
     # The decimation really happened — otherwise this test would be pinning a
     # pass-through and would keep passing if the block average broke.
     assert stored_freqs.size < freqs.size
-    stored_commanded = v2host.commanded_delta_prior_from_state(state)
+    stored_commanded = v2durable.commanded_delta_prior_from_state(state)
     commanded_on_grid = np.interp(
         stored_freqs, stored_commanded[0], stored_commanded[1]
     )
@@ -1105,18 +1111,18 @@ def test_an_anchored_verdict_is_re_gradable_from_the_store_alone(monkeypatch):
     assert live is not None
     assert live.entry_anchor_offset_db == pytest.approx(anchor_db, abs=1e-6)
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    state = v2host.load_v2_state() or {}
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    state = v2state.load_v2_state() or {}
 
     stored_freqs, stored_measured, stored_predicted = (
-        v2host.verify_measured_curve_from_state(state)
+        v2durable.verify_measured_curve_from_state(state)
     )
     assert stored_freqs.size < freqs.size  # the decimation really happened
-    stored_commanded = v2host.commanded_delta_prior_from_state(state)
+    stored_commanded = v2durable.commanded_delta_prior_from_state(state)
     commanded_on_grid = np.interp(
         stored_freqs, stored_commanded[0], stored_commanded[1]
     )
-    stored_entry = v2host.entry_baseline_prior_from_state(state)
+    stored_entry = v2durable.entry_baseline_prior_from_state(state)
     assert stored_entry is not None
     entry_on_grid = np.interp(
         stored_freqs,
@@ -1161,14 +1167,14 @@ def test_a_truncated_measured_record_reads_as_absent_not_as_a_curve(monkeypatch)
     freqs, _commanded, error = _regradable_fixture()
     predicted = np.zeros_like(freqs)
     conductor._verify_tracking_curve = (freqs, predicted + error, predicted)
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    v2state.persist_conductor_state(conductor, failure_code=None)
 
-    state = v2host.load_v2_state() or {}
-    assert v2host.verify_measured_curve_from_state(state) is not None
+    state = v2state.load_v2_state() or {}
+    assert v2durable.verify_measured_curve_from_state(state) is not None
     state["verify_priors"]["verify_measured"]["measured_db"] = (
         state["verify_priors"]["verify_measured"]["measured_db"][:-3]
     )
-    assert v2host.verify_measured_curve_from_state(state) is None
+    assert v2durable.verify_measured_curve_from_state(state) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1319,13 +1325,13 @@ def test_the_two_stages_declare_the_capabilities_that_differ():
     assert verify.stage == "verify"
     assert verify.provides == set()
     assert verify.requires == {
-        v2host.CAPABILITY_COMMANDED_DELTA,
-        v2host.CAPABILITY_PREDICTED_SUM,
+        journey.CAPABILITY_COMMANDED_DELTA,
+        journey.CAPABILITY_PREDICTED_SUM,
         # #2291 Phase 3c. Genuinely required, not merely nice to have: without
         # the entry baseline the round can say the graph did what it commanded
         # and cannot say the speaker got better — the question the issue exists
         # for — so its absence has to reach the capability journal.
-        v2host.CAPABILITY_ENTRY_BASELINE,
+        journey.CAPABILITY_ENTRY_BASELINE,
     }
 
 
@@ -1354,7 +1360,7 @@ def test_stage_2_logs_its_capabilities_and_names_a_missing_prior(monkeypatch, ca
     """
     state = _seed_applied_stage_1_state()
     del state["verify_priors"]["commanded_delta"]
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
 
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
         _conductor, _state = _stage_2(monkeypatch)
@@ -1441,10 +1447,10 @@ def test_the_commanded_delta_persists_on_the_same_grid_as_the_predicted_sum(n_bi
     freqs = np.linspace(20.0, 24000.0, n_bins)
     curve = np.sin(np.log10(freqs) * 7.0)
 
-    reduced_delta = v2host._decimate_delta((freqs, curve))
-    reduced_sum = v2host._decimate_sum((freqs, curve))
+    reduced_delta = v2durable._decimate_delta((freqs, curve))
+    reduced_sum = v2durable._decimate_sum((freqs, curve))
 
-    assert len(reduced_delta["freqs_hz"]) <= v2host.MAX_PERSISTED_SUM_POINTS
+    assert len(reduced_delta["freqs_hz"]) <= v2durable.MAX_PERSISTED_SUM_POINTS
     assert reduced_delta["freqs_hz"] == reduced_sum["freqs_hz"]
 
 
@@ -1458,11 +1464,11 @@ def test_the_commanded_delta_is_block_averaged_in_db_not_in_power():
     """
     import numpy as np
 
-    freqs = np.linspace(20.0, 24000.0, 2 * v2host.MAX_PERSISTED_SUM_POINTS)
-    swing = np.tile([6.0, -6.0], v2host.MAX_PERSISTED_SUM_POINTS)
+    freqs = np.linspace(20.0, 24000.0, 2 * v2durable.MAX_PERSISTED_SUM_POINTS)
+    swing = np.tile([6.0, -6.0], v2durable.MAX_PERSISTED_SUM_POINTS)
 
-    reduced_delta = v2host._decimate_delta((freqs, swing))
-    reduced_sum = v2host._decimate_sum((freqs, swing))
+    reduced_delta = v2durable._decimate_delta((freqs, swing))
+    reduced_sum = v2durable._decimate_sum((freqs, swing))
 
     assert reduced_delta["delta_db"] == pytest.approx([0.0] * len(swing[::2]))
     assert reduced_sum["magnitude_db"][0] > 1.0

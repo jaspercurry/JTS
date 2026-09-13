@@ -5,6 +5,9 @@
 """Flat-spec data stays identical across the pipeline, persisted state, and doctor."""
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import json
 from types import SimpleNamespace
 
@@ -588,13 +591,12 @@ def _walk_every_surface(result, monkeypatch) -> dict:
     compact = compact_cloud_status(_durable_cloud_block(result))
     chart = chart_cloud_status(_durable_cloud_block(result))
     from jasper.cli.doctor import correction as doctor_correction
-    from jasper.web import correction_crossover_v2 as v2host
 
     monkeypatch.setattr(
-        v2host, "load_v2_state", lambda: {"cloud": _durable_cloud_block(result)}
+        v2state, "load_v2_state", lambda: {"cloud": _durable_cloud_block(result)}
     )
     monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+        v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
     doctor = doctor_correction.check_crossover_v2_cloud_pipeline()
 

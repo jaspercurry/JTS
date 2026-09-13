@@ -12,6 +12,9 @@ them. The schema itself is pinned in ``tests/test_attribution_findings.py``.
 
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+
 from tests.engine_twin import retained_take_writer
 
 import asyncio
@@ -838,11 +841,10 @@ def test_the_cloud_artifact_and_its_findings_share_one_identity(
     resolve to the same session, and the capture id rides as an alias rather
     than as a competing identity."""
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, bundle_dir = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
+    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
 
@@ -872,11 +874,10 @@ def test_the_live_seam_promotes_carve_outs_and_cites_the_cloud_artifact(
     from — so ``read_finding_set``'s default verification has something real
     to check."""
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
+    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
 
@@ -897,13 +898,12 @@ def test_a_findings_failure_never_fails_the_cloud_publish(tmp_path: Path) -> Non
     unlike its two strict siblings, and the cloud artifact it rides behind is
     already durable by the time findings run."""
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
 
     # A carve-out block shaped in a way promotion cannot read at all.
-    v2host.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
+    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
         PHASE, {"available": True, "carve_outs": "not-a-list"}
     )
 
@@ -967,12 +967,11 @@ def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
     diagnosis checkable rather than merely believable.
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
+    v2evidence.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
 
     findings = read_finding_set(store, capture_session_id=CAPTURE, phase="measure")
     assert findings is not None
@@ -1004,15 +1003,14 @@ def test_the_frame_finding_takes_its_own_phase_so_the_cloud_set_survives(
     neither overwrote the other.
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
+    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
+    v2evidence.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
 
     cloud_set = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     frame_set = read_finding_set(store, capture_session_id=CAPTURE, phase="measure")
@@ -1037,18 +1035,17 @@ def test_a_frame_finding_failure_never_costs_the_session(tmp_path: Path) -> None
     gate found something and said so in the journal.
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     # (a) no candidate artifact to cite.
-    v2host.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
+    v2evidence.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
     assert read_finding_set(store, capture_session_id=CAPTURE, phase="measure") is None
     assert "finding_artifacts" not in refs
 
     # (b) a record promotion cannot read.
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(
+    v2evidence.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(
         {**_LEVEL_FRAME_RECORD, "f_hi_hz": None}
     )
     assert read_finding_set(store, capture_session_id=CAPTURE, phase="measure") is None
@@ -1069,14 +1066,13 @@ def test_the_banked_finding_is_read_back_for_the_household_to_see(
     """
 
     from jasper.attribution.promotion import LEVEL_FRAME_HOUSEHOLD_COPY
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
+    v2evidence.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
 
-    projected = refs[v2host.FINDING_HOUSEHOLD_REFS_KEY]
+    projected = refs[v2durable.FINDING_HOUSEHOLD_REFS_KEY]
     assert len(projected) == 1
     # The sentence is the producer's, copied, never re-minted here.
     assert projected[0]["household_copy"] == LEVEL_FRAME_HOUSEHOLD_COPY
@@ -1109,18 +1105,17 @@ def test_a_carve_out_set_is_recorded_but_never_projected(tmp_path: Path) -> None
     rather than quietly duplicate the copy.
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
+    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
     # Recorded — the durable finding set exists and reopens.
     banked = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     assert banked is not None and [f.mechanism for f in banked.findings] == ["M2"]
     # …and NOT on the household wire.
-    assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in refs
+    assert v2durable.FINDING_HOUSEHOLD_REFS_KEY not in refs
 
 
 def test_a_finding_whose_evidence_vanished_is_never_projected(
@@ -1137,13 +1132,12 @@ def test_a_finding_whose_evidence_vanished_is_never_projected(
     invented, and the session is not harmed (§3.4).
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, bundle = _open_store(tmp_path)
     refs: dict = {}
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
-    assert refs[v2host.FINDING_HOUSEHOLD_REFS_KEY]
+    v2evidence.bind_findings_publisher(store, CAPTURE, refs, asyncio.run)(_LEVEL_FRAME_RECORD)
+    assert refs[v2durable.FINDING_HOUSEHOLD_REFS_KEY]
 
     # The cited artifact goes away underneath a second read.
     (
@@ -1154,7 +1148,7 @@ def test_a_finding_whose_evidence_vanished_is_never_projected(
         read_finding_set(store, capture_session_id=CAPTURE, phase="measure")
 
     fresh: dict = {}
-    v2host._bank_household_findings(
+    v2evidence._bank_household_findings(
         store, capture_session_id=CAPTURE, phase="measure", refs=fresh,
     )
     assert fresh == {}
@@ -1171,11 +1165,10 @@ def test_a_missing_finding_set_projects_nothing_rather_than_an_empty_claim(
     claim this session never made.
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host._bank_household_findings(
+    v2evidence._bank_household_findings(
         store, capture_session_id=CAPTURE, phase="measure", refs=refs,
     )
     assert refs == {}

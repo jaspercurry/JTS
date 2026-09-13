@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 import asyncio
 import logging
 import os
@@ -112,7 +114,6 @@ def build_v2_wired_run_and_consume(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> Callable[[Any], Awaitable[Any]]:
     async def run(pi_session: Any) -> None:
-        from jasper.web import correction_crossover_v2 as host  # lazy: host binds runner
 
         session_id = pi_session.session_id
         deadline = monotonic() + ceiling_s
@@ -148,18 +149,18 @@ def build_v2_wired_run_and_consume(
                 )
             finally:
                 restore = door.opened.restore_result if door.opened else None
-                host._persist_execution_result(session_id, volume_restore=restore.value if restore else "failed")
+                v2state._persist_execution_result(session_id, volume_restore=restore.value if restore else "failed")
             if result.reason and result.reason != "complete_requested":
                 if result.reason == "user_stopped" or result.cancelled:
                     raise CaptureStopped("capture stopped")
                 raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
-            host._persist_terminal_failure(conductor, code)
+            v2state._persist_terminal_failure(conductor, code)
             raise
         else:
             try:
-                host.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
+                v2state.persist_conductor_state(conductor, failure_code=None, evidence=evidence_refs)
             except BaseException as exc:  # noqa: BLE001 - publish persistence faults
                 publish_failure(exc)
                 raise

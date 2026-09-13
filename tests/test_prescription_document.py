@@ -5,6 +5,8 @@
 """A document is judged and proved as one candidate before the bank is written."""
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -35,7 +37,6 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.cli import crossover_prescriber
-from jasper.web import correction_crossover_v2 as v2host
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -236,7 +237,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     proposed = yaml.safe_load(compile_tuning_graph(profile, scope="candidate", candidate=child))
     assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline
     assert applied == original
-    assert v2host.load_v2_state() is None
+    assert v2state.load_v2_state() is None
 
 
 @pytest.mark.parametrize("change", [None, "bass_off", "speaker", "room"])

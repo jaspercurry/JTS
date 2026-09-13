@@ -8,6 +8,10 @@ Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
 (ADR-0233 rule 3). ``correction.REASON_*`` is the closed vocabulary.
 """
 
+from jasper.web import correction_crossover_v2_grade as v2grade
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import json
 import logging
 import os
@@ -291,11 +295,10 @@ def _hand_written_config_on_the_jts_ring():
 
 
 def _patch_v2_state(monkeypatch, state):
-    from jasper.web import correction_crossover_v2 as v2host
 
-    monkeypatch.setattr(v2host, "load_v2_state", lambda: state)
+    monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
     monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+        v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
 
 
@@ -578,7 +581,6 @@ def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
     read is the unrecognized reason code, never the passing wording (S1,
     #2242). The grade is injected directly because no producer path can emit
     it — that is the point."""
-    from jasper.web import correction_crossover_v2 as v2host
     from jasper.web import correction_crossover_v2_status as v2status
 
     monkeypatch.setattr(
@@ -587,7 +589,7 @@ def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
         lambda: {
             "tier": "full",
             "post_apply_grade": {
-                "state": v2host.GRADE_GRADED,
+                "state": v2grade.GRADE_GRADED,
                 "graded": True,
                 "verify_outcome": "pass",
                 "scope": "hemispherical-2027",
@@ -604,7 +606,6 @@ def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
 
 
 def test_a_measured_tuning_trial_does_not_require_speaker_verify(monkeypatch):
-    from jasper.web import correction_crossover_v2 as v2host
     from jasper.web import correction_crossover_v2_status as v2status
 
     monkeypatch.setattr(
@@ -612,8 +613,8 @@ def test_a_measured_tuning_trial_does_not_require_speaker_verify(monkeypatch):
         "crossover_v2_status_block",
         lambda: {
             "post_apply_grade": {
-                "state": v2host.GRADE_TUNING_TRIAL_MEASURED,
-                "scope": v2host.GRADE_SCOPE_TUNING_TRIAL,
+                "state": v2grade.GRADE_TUNING_TRIAL_MEASURED,
+                "scope": v2grade.GRADE_SCOPE_TUNING_TRIAL,
                 "verify_outcome": None,
             },
         },
@@ -639,28 +640,27 @@ def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     confirm the existing fallthrough is what you want), then extend the
     pinned sets below.
     """
-    from jasper.web import correction_crossover_v2 as v2host
 
     spatial_members = {
-        value for name, value in vars(v2host).items()
+        value for name, value in vars(v2grade).items()
         if name.startswith("GRADE_SPATIAL_") and isinstance(value, str)
     }
     scope_members = {
-        value for name, value in vars(v2host).items()
+        value for name, value in vars(v2grade).items()
         if name.startswith("GRADE_SCOPE_") and isinstance(value, str)
     }
 
     assert spatial_members == {
-        v2host.GRADE_SPATIAL_ABSENT,
-        v2host.GRADE_SPATIAL_PASSED,
-        v2host.GRADE_SPATIAL_FAILED,
-        v2host.GRADE_SPATIAL_UNMEASURABLE,
+        v2grade.GRADE_SPATIAL_ABSENT,
+        v2grade.GRADE_SPATIAL_PASSED,
+        v2grade.GRADE_SPATIAL_FAILED,
+        v2grade.GRADE_SPATIAL_UNMEASURABLE,
     }
     assert scope_members == {
-        v2host.GRADE_SCOPE_NONE,
-        v2host.GRADE_SCOPE_MARK,
-        v2host.GRADE_SCOPE_TUNING_TRIAL,
-        v2host.GRADE_SCOPE_SPATIAL,
+        v2grade.GRADE_SCOPE_NONE,
+        v2grade.GRADE_SCOPE_MARK,
+        v2grade.GRADE_SCOPE_TUNING_TRIAL,
+        v2grade.GRADE_SCOPE_SPATIAL,
     }
 
 
@@ -677,23 +677,22 @@ def test_grade_state_member_set_is_pinned_for_its_consumers():
     confirm the existing fallthrough is what you want), then extend the
     pinned set below.
     """
-    from jasper.web import correction_crossover_v2 as v2host
 
     state_members = {
-        value for name, value in vars(v2host).items()
+        value for name, value in vars(v2grade).items()
         if name.startswith("GRADE_")
         and not name.startswith(("GRADE_SCOPE_", "GRADE_SPATIAL_"))
         and isinstance(value, str)
     }
 
     assert state_members == {
-        v2host.GRADE_NOT_APPLIED,
-        v2host.GRADE_GRADED,
-        v2host.GRADE_MARK_VERIFIED,
-        v2host.GRADE_INCONCLUSIVE,
-        v2host.GRADE_FAILED,
-        v2host.GRADE_UNVERIFIED,
-        v2host.GRADE_TUNING_TRIAL_MEASURED,
+        v2grade.GRADE_NOT_APPLIED,
+        v2grade.GRADE_GRADED,
+        v2grade.GRADE_MARK_VERIFIED,
+        v2grade.GRADE_INCONCLUSIVE,
+        v2grade.GRADE_FAILED,
+        v2grade.GRADE_UNVERIFIED,
+        v2grade.GRADE_TUNING_TRIAL_MEASURED,
     }
 
 

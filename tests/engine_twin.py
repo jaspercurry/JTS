@@ -399,7 +399,7 @@ async def open_session(
 
 
 def retained_take_writer(store, capture_session_id, refs, run_async, *, retention=None, **kwargs):
-    from jasper.web.correction_crossover_v2 import bind_position_retention, _record_store
+    from jasper.web.correction_crossover_v2_evidence import bind_position_retention, _record_store
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
         CapturedRecordStore, WiredCaptureAnswer, place_wired_answer,
     )

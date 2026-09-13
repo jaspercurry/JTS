@@ -4,6 +4,8 @@
 """Bind banked captures to the program analyzer and legacy preparation effects."""
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 from dataclasses import replace
 from typing import Any
 
@@ -144,6 +146,6 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
 
     return RunDoor(
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
-                       action="measuring", plan=host.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
+                       action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
     ), analyze, assessor

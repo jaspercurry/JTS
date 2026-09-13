@@ -3,6 +3,9 @@
 """Compose, prove, load and record one banked candidate."""
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+from jasper.web import correction_crossover_v2_state as v2state
+
 import hashlib
 import logging
 from typing import Any, Mapping
@@ -27,8 +30,9 @@ from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.dsp_apply import DspApplyError
 from jasper.log_event import log_event
 from jasper.output_topology import load_output_topology
-from . import correction_crossover_v2 as host
 from .sound_active_speaker import apply_measured_crossover_geometry
+
+logger = logging.getLogger(__name__)
 
 def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any) -> dict[str, Any]:
     from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN  # lazy: NumPy is needed only when applying
@@ -60,41 +64,41 @@ def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any
                 raise CrossoverV2Refused(proof.classification, code="baseline_graph_safety_proof_failed")
             issue = candidate_boost_issue(sha[:16])
             if issue:
-                log_event(host.logger, "correction.crossover_v2_apply", status="blocked", code=issue["code"], candidate_fingerprint=expected)
+                log_event(logger, "correction.crossover_v2_apply", status="blocked", code=issue["code"], candidate_fingerprint=expected)
                 return {"status": "blocked", "issue": {"code": issue["code"], "message": issue["message"]}}
             prepared = baseline_profile.prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft,
                 measurements=load_measurement_state(topology), config_path=baseline_profile.baseline_candidate_config_path(sha), config_sha256=sha)
             previous = baseline_profile.load_applied_baseline_profile_state()
             offset = baseline_profile.applied_program_level_delta_db(previous, prepared)
-            summary = host._candidate_summary(candidate, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
+            summary = v2durable._candidate_summary(candidate, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
             change = declaration_change_for_candidate(source_preset=candidate.source_preset, design_draft=draft)
-            load, current = host.baseline_apply_seams(camilla_factory())
+            load, current = v2state.baseline_apply_seams(camilla_factory())
             async with baseline_profile.load_composed_graph(text, sha, source="active_speaker_baseline_apply", load_config=load, get_current_config_path=current) as applied:
                 profile = baseline_profile.persist_applied_baseline_profile(prepared, apply_state=applied.to_dict())
                 baseline_profile.promote_applied_baseline_candidate(profile)
-                with host._state_lock:
-                    host.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=previous,
+                with v2state._state_lock:
+                    v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=previous,
                         previous_candidate_fingerprint=((previous or {}).get("source") or {}).get("measured_candidate_fingerprint"), expected_post_apply_offset_db=offset)
                     update: dict[str, Any] = {"status": "unchanged"}
                     if change:
                         try:
                             saved = apply_measured_crossover_geometry(expected_revision=draft.get("revision", 0),
                                 between_roles=change.between_roles, configured=change.configured, selected=change.selected)
-                            state = host.load_v2_state() or {}
+                            state = v2state.load_v2_state() or {}
                             state.update(accepted_sound_revision=saved["revision"], accepted_sound_declaration_change=change_to_record(change), accepted_sound_candidate_fingerprint=expected)
-                            host.save_v2_state(state, durable=True)
+                            v2state.save_v2_state(state, durable=True)
                             update = {"status": "updated"}
                         except Exception as exc:  # noqa: BLE001
                             update = {"status": "failed", "code": getattr(exc, "code", None) or getattr(exc, "reason", None) or type(exc).__name__, "error": str(exc)}
-                            log_event(host.logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
-            log_event(host.logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
+                            log_event(logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
+            log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
             return {"status": "applied", "profile": profile, "apply": applied.to_dict(), "declaration_update": update, "expected_post_apply_offset_db": round(offset, 3)}
         except (CandidateBankRefusal, CrossoverV2Refused) as exc:
-            log_event(host.logger, "correction.crossover_v2_apply", status="blocked", code=exc.code, candidate_fingerprint=expected)
+            log_event(logger, "correction.crossover_v2_apply", status="blocked", code=exc.code, candidate_fingerprint=expected)
             if isinstance(exc, CandidateBankRefusal):
                 raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
             raise
         except DspApplyError as exc:
-            log_event(host.logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)
+            log_event(logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)
             return {"status": "apply_failed", "apply": exc.state.to_dict(), "issue": {"code": "apply_failed", "message": str(exc)}}
     return run_async(apply())

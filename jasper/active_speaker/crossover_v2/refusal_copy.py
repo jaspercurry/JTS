@@ -224,17 +224,8 @@ REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
 
-    ``code`` names the refusal: a :data:`REASON_REGISTRY` entry when one
-    exists for it, else a provider-owned code that names it for the journal
-    and renders no action. A refusal raised BEFORE any
-    durable state is written — which the
-    session-open pre-flight is, by design (issue #1821: no link minted, no
-    session burned) — never reaches the envelope, because the envelope renders
-    from a PERSISTED ``failure``. So a pre-flight refusal that carried only a
-    sentence left the household reading the fix rather than one click from it:
-    the reason's ``next_action`` existed and nothing could render it. Stamping
-    the code here lets the host's ``refusal_next_action`` hand the dispatcher
-    the same action the hard-stop screen would have shown, from the same entry.
+    ``code`` selects registry copy and an action before any durable failure
+    exists. Unknown provider codes have no registry action.
     """
 
     def __init__(self, *args: Any, code: str = "", next_action: Mapping[str, Any] | None = None) -> None:

@@ -1276,7 +1276,7 @@ def test_a_status_endpoint_that_refuses_reads_as_unreadable():
 
 
 def test_the_endpoints_are_the_products_own():
-    from jasper.web.correction_crossover_v2 import POSITION_READY_ENDPOINT
+    from jasper.active_speaker.crossover_v2.position_gate import POSITION_READY_ENDPOINT
 
     assert aw.POSITION_READY_PATH == POSITION_READY_ENDPOINT
     assert wc.STATUS_PATH == "/sound/speaker/crossover/status"

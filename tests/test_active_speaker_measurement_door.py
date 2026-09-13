@@ -13,6 +13,8 @@ graph would prove nothing about the fader it strands.
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+
 import asyncio
 from typing import Any
 
@@ -429,10 +431,9 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
     from types import SimpleNamespace
 
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
-    from jasper.web import correction_crossover_v2 as host
 
     profile = _profile()
-    playback = host.bind_production_play(
+    playback = v2evidence.bind_production_play(
         camilla_factory=lambda: object(),
         evidence_store=SimpleNamespace(bundle_dir=tmp_path),
         capture_session_id="door_pin",

@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.web import correction_crossover_v2_state as v2state
+
 import threading
 from typing import Any, Callable
 
@@ -32,7 +35,7 @@ def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], 
             if outcome:
                 return dict(outcome)
             outcome.update(status="restore_failed", restored=False)
-            state = host.load_v2_state()
+            state = v2state.load_v2_state()
             previous = status.previous_candidate_fingerprint(state)
             if not graph_fingerprint or current_graph_fingerprint() != graph_fingerprint:
                 outcome["status"] = "graph_displaced"
@@ -45,7 +48,7 @@ def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], 
                     )
                     if result.get("status") == "applied":
                         outcome.update(status="restored", restored=True)
-                except host.CrossoverV2Refused as exc:
+                except refusal_copy.CrossoverV2Refused as exc:
                     outcome["refusal_code"] = exc.code
             return dict(outcome)
 

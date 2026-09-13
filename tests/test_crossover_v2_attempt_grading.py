@@ -4,12 +4,14 @@
 
 """Production attempt identity, durable write ordering and VERIFY advice."""
 
+from jasper.web import correction_crossover_v2_grade as v2grade
+from jasper.web import correction_crossover_v2_state as v2state
+
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.web import correction_crossover_v2 as host
 from jasper.active_speaker.crossover_v2.durable_state import (
     MAX_ATTEMPT_HISTORY, AttemptIntegrity,
 )
@@ -140,15 +142,15 @@ def test_failed_verify_grade_is_durable_advice_without_a_retake(tmp_path):
     assert verdict["next"] == "accept"
     assert conductor.current_phase == "done"
     path = tmp_path / "state.json"
-    host.set_state_path_for_tests(path)
+    v2state.set_state_path_for_tests(path)
     try:
-        host.persist_conductor_state(conductor, failure_code=None)
-        state = host.load_v2_state()
+        v2state.persist_conductor_state(conductor, failure_code=None)
+        state = v2state.load_v2_state()
     finally:
-        host.set_state_path_for_tests(None)
+        v2state.set_state_path_for_tests(None)
     assert state["verify"]["outcome"] == "fail"
     assert state["verify"]["claims"]["integration"]["status"] == "fail"
     assert state["attempts_loop"]["history"][-1]["grade_db"] == 3.0
-    grade = host._post_apply_grade(state)
-    assert grade["state"] == host.GRADE_FAILED
+    grade = v2grade._post_apply_grade(state)
+    assert grade["state"] == v2grade.GRADE_FAILED
     assert grade["verify_outcome"] == "fail"
