@@ -31,7 +31,6 @@ from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 
 _ABORTS = {SeamFailure: "seam_failed"}
-_SCOPES = {"fp-a": "candidate", "fp-b": "candidate"}
 
 
 def _walk(angles, candidates=("fp-a",)):
@@ -102,7 +101,7 @@ async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signa
     manifest = RunManifest("run", _Store(fakes.records))
     async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                         gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, signals=signals, captures=captures)
+                                         gate=gate, aborts=_ABORTS, signals=signals, captures=captures)
     return result, fakes
 
 
@@ -385,7 +384,7 @@ def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypa
     async def run():
         async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
             return await plan_run.run_plan(_walk([0]), session=session, manifest=manifest, analyze=_analysis,
-                                           gate=gate, candidate_scopes=_SCOPES, aborts=_ABORTS, clock=lambda: now)
+                                           gate=gate, aborts=_ABORTS, clock=lambda: now)
     if failure is RuntimeError:
         with pytest.raises(RuntimeError):
             asyncio.run(run())
@@ -475,7 +474,7 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
                 return await session.measure(spec)
 
     result = asyncio.run(plan_run.run_plan(_walk([0, 20]), session=FreshEngine(), manifest=manifest,
-                         analyze=_analysis, gate=AnsweredGate(), candidate_scopes=_SCOPES, aborts=_ABORTS))
+                         analyze=_analysis, gate=AnsweredGate(), aborts=_ABORTS))
     root = Path(info["bundle_dir"]) / "evidence/v1/artifacts"
     document = json.loads((root / result.path).read_text())
     records = [json.loads((root / take["artifacts"]["record_id"]).read_text()) for take in _takes(document)]
@@ -596,7 +595,7 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", baselines)
     monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
     request = replace(_walk([0, 20, -20], ("base",)), repeats=2)
-    captures = plan_run.prepare_plan_captures(request, candidate_scopes={}) if prepared else None
+    captures = plan_run.prepare_plan_captures(request) if prepared else None
     assert calls == []
     result, fakes = asyncio.run(_run_gated(request, captures=captures))
     assert len(calls) == 1
@@ -613,7 +612,7 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
 @pytest.mark.parametrize("candidate,base", [("base", True), ("fp-a", False)])
 def test_manifest_stamps_base_sets_after_graph_resolution(candidate, base):
     request = _walk([0], (candidate,))
-    result, _ = asyncio.run(_run_gated(request, captures=plan_run.prepare_plan_captures(request, candidate_scopes=_SCOPES)))
+    result, _ = asyncio.run(_run_gated(request, captures=plan_run.prepare_plan_captures(request)))
     groups = result.to_dict()["sets"]
     assert groups and all(group["base"] is base for group in groups)
     assert {group["capture_basis"]["candidate_id"] for group in groups} == {
@@ -639,7 +638,7 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     )
     result = await plan_run.run_plan(replace(_walk([0]), level=ac.LevelPolicy(resolved=ac.ResolvedLevel(75, -14, "1234"))),
                                       door=door, manifest=manifest, analyze=_analysis,
-                                      candidate_scopes=_SCOPES, aborts=_ABORTS)
+                                      aborts=_ABORTS)
     assert (result.status, result.reason, result.takes_measured) == ("partial", reason, 0)
     build.assert_not_called()
     assert not graph.installs
@@ -655,7 +654,7 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, ph
         stops=(ac.AngleStop(20, regime, candidate_id=candidate),),
         candidates=(candidate,), repeats=2,
     )
-    captures = plan_run.prepare_plan_captures(request, candidate_scopes={"candidate-a": "candidate"})
+    captures = plan_run.prepare_plan_captures(request)
     assert tuple(capture.spec.program_phase for capture in captures) == (*phases, phases[-1])
     assert [capture.repeat for capture in captures[-2:]] == [1, 2]
     assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
@@ -676,8 +675,8 @@ async def test_check_plays_at_the_session_level(tmp_path, box, level):
     door.build_session = Mock(wraps=door.build_session)
     result = await plan_run.run_plan(
         request, door=door, manifest=manifest, analyze=_analysis,
-        candidate_scopes={}, aborts=_ABORTS,
-        captures=plan_run.prepare_plan_captures(request, candidate_scopes={}),
+        aborts=_ABORTS,
+        captures=plan_run.prepare_plan_captures(request),
         assessor=lambda *_args, **_kwargs: TakeVerdict(True),
     )
     door.build_session.assert_called_once()
@@ -705,7 +704,7 @@ async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_
     try:
         result = await plan_run.run_plan(
             request, door=door, manifest=manifest, analyze=_analysis,
-            candidate_scopes=_SCOPES, aborts=_ABORTS, measure=measure,
+            aborts=_ABORTS, measure=measure,
         )
         assert (result.reason, result.status, result.takes_measured) == ("internal_error", "partial", 1)
         assert fakes.play.bearings == [0, 20]

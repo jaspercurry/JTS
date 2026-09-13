@@ -521,7 +521,7 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 def test_prepared_summed_captures_keep_the_program_band(purpose, size):
     layout = measurement_program(purpose, size)
     request = request_for_program(layout, mover=layout.mover or "human")
-    captures = prepare_plan_captures(request, candidate_scopes={}, roles_bands=_roles())
+    captures = prepare_plan_captures(request, roles_bands=_roles())
     excitation = _excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0})
     host = SimpleNamespace(_excitation=excitation)
     for capture in captures:

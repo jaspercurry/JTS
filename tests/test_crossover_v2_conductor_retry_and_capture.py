@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from dataclasses import replace
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_VERIFY
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -537,6 +538,11 @@ def test_a_check_take_banks_no_curve_because_check_measures_none():
     banked = {meta["phase"]: meta for meta in retained}
     assert banked[PHASE_CHECK]["curves"] == []
     assert banked[PHASE_MEASURE]["curves"] != []
+
+
+def test_a_verify_take_banks_the_kind_its_own_round_can_derive():
+    take, _ = _walk_to_banked_take(PHASE_VERIFY)
+    assert take["measure_kind"] == MEASURE_KIND_VERIFY
 
 
 def test_an_unprompted_take_is_named_the_way_the_entry_baseline_named_its_own():

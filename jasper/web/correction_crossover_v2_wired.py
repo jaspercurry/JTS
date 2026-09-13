@@ -108,7 +108,6 @@ def build_v2_wired_run_and_consume(
     conductor: Any, *, stop_event: threading.Event, stop_lock: Any,
     ceiling_s: float, complete_event: threading.Event, retake_event: threading.Event,
     door: plan_run.RunDoor, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
-    candidate_scopes: Mapping[str, str],
     position_gate: Any = None, evidence_refs: Mapping[str, Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> Callable[[Any], Awaitable[Any]]:
@@ -143,7 +142,7 @@ def build_v2_wired_run_and_consume(
             try:
                 result = await plan_run.run_plan(
                     request, door=door, manifest=manifest, analyze=analyze, assessor=assessor,
-                    gate=position_gate, candidate_scopes=candidate_scopes, captures=captures,
+                    gate=position_gate, captures=captures,
                     signals=signals, admit=admit, aborts={CaptureStopped: "user_stopped"},
                     gain_ceiling_db=conductor._measure_gain_ceiling_db,
                 )

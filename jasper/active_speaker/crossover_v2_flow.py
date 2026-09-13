@@ -2035,7 +2035,7 @@ class CrossoverV2Session:
         analysis: ProgramAnalysis,
         result: Any,
     ) -> None:
-        """Bank one take for a phase with no prompted spot."""
+        candidate_id = self._applied_candidate_id()
         self._seams.bank_take(
             result,
             _spatial.phase_capture_record(
@@ -2044,6 +2044,9 @@ class CrossoverV2Session:
                 attempt=attempt,
                 curves=self._banked_curves(phase, analysis),
                 claim=_spatial.TakeClaim(
+                    candidate_id=candidate_id,
+                    measure_kind=(_contracts.MEASURE_KIND_VERIFY if phase == PHASE_VERIFY else
+                                  _contracts.MEASURE_KIND_CANDIDATE if candidate_id else ""),
                     phase_composition=self._phase_composition(analysis),
                 ),
                 **self._capture_stamp(result),

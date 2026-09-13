@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from threading import Event
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -30,7 +30,6 @@ from .angle_capture import (
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
-from . import candidate_bank
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
@@ -136,8 +135,7 @@ class PlanCapture:
 
 
 def prepare_plan_captures(
-    request: AngleCaptureRequest, *, candidate_scopes: Mapping[str, str],
-    roles_bands: Sequence[RoleBand] = (),
+    request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = (),
 ) -> tuple[PlanCapture, ...]:
     """Derive preparation and requested captures together (ADR-0297)."""
     resolved = resolve_request(request)
@@ -171,18 +169,6 @@ def prepare_plan_captures(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
         )), offset % request.repeats + 1))
     return tuple(captures)
-
-
-def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
-    """Verify named candidates at run open; every trial uses its composed graph."""
-    try:
-        scopes = {}
-        for candidate_id in sorted(set(candidate_ids) - {""}):
-            candidate_bank.find_banked_candidate(candidate_id)
-            scopes[candidate_id] = "candidate"
-        return scopes
-    except candidate_bank.CandidateBankRefusal as exc:
-        raise LateralWalkRefused(exc.code, exc.detail) from exc
 
 
 @dataclass
@@ -224,7 +210,7 @@ async def run_plan(
     request: AngleCaptureRequest, *, session: TuningSession | None = None, manifest: RunManifest,
     door: RunDoor | None = None,
     analyze: Analyze, gate: PositionGate | None = None,
-    candidate_scopes: Mapping[str, str], aborts: Mapping[type[BaseException], str],
+    aborts: Mapping[type[BaseException], str],
     signals: RunSignals | None = None, spl_monitor: str = "",
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
