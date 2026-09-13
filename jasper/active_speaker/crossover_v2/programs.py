@@ -168,7 +168,10 @@ class SessionExcitation:
         return pilot_gains(hi_gain_db)
 
     def check_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        """Clamp per role, then attenuate both pilots together for a retry."""
+        """Clamp per role, then attenuate both pilots together for a retry.
+
+        A per-driver pilot never exceeds the summed program's pilot at the same fader.
+        """
         summed_base = self._summed_gain()
         role_base = {
             rb.role: min(

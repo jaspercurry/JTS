@@ -297,21 +297,22 @@ async def run_plan(
     planned: list[dict[str, Any]] = []
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
         rows = list(batch)
-        level_indexes = list(range(len(levels)))
-        if any(spec is not None and spec.program_phase == PHASE_CHECK for _, spec in rows):
-            level_indexes.insert(0, level_indexes.pop(level_indexes.index(quietest_level_index)))
-        for level_index in level_indexes:
+        scheduled: list[tuple[int, int, MeasureSpec | None]] = [
+            (quietest_level_index, offset, spec) for offset, spec in rows
+            if spec is not None and spec.program_phase == PHASE_CHECK
+        ]
+        scheduled.extend((level_index, offset, spec)
+                         for level_index in range(len(levels)) for offset, spec in rows
+                         if spec is None or spec.program_phase != PHASE_CHECK)
+        for level_index, offset, spec in scheduled:
             level = levels[level_index]
-            for offset, spec in rows:
-                if spec is not None and spec.program_phase == PHASE_CHECK and level_index != quietest_level_index:
-                    continue
-                stop = {**manifest.planned[offset], "index": len(planned) + 1,
-                        "capture_index": manifest.planned[offset]["index"],
-                        "level_window_db": level, "offset_db": request.level_offsets_db[level_index],
-                        "level_window_index": level_index}
-                planned.append(stop)
-                if spec is not None:
-                    expanded.append((spec, stop, pose_index, level, stops[offset]))
+            stop = {**manifest.planned[offset], "index": len(planned) + 1,
+                    "capture_index": manifest.planned[offset]["index"],
+                    "level_window_db": level, "offset_db": request.level_offsets_db[level_index],
+                    "level_window_index": level_index}
+            planned.append(stop)
+            if spec is not None:
+                expanded.append((spec, stop, pose_index, level, stops[offset]))
     manifest.planned = planned
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
                                  [row[4].prompt for row in expanded], [row[4].candidate_id for row in expanded])

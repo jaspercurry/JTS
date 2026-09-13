@@ -673,11 +673,15 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, ph
     assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])
 
 
-@pytest.mark.parametrize(("offsets", "expected_level"), [
-    ((0.0, -12.0), -26.0),
-    ((), -14.0),
+@pytest.mark.parametrize(("offsets", "expected"), [
+    ((0.0, -12.0), [
+        ("check", -26.0),
+        ("entry_baseline", -14.0), ("measure", -14.0),
+        ("entry_baseline", -26.0), ("measure", -26.0),
+    ]),
+    ((), [("check", -14.0), ("entry_baseline", -14.0), ("measure", -14.0)]),
 ])
-async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expected_level):
+async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expected):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
@@ -709,7 +713,12 @@ async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expect
 
     async def measure(session, spec):
         played.append((spec.program_phase, session.measurement_level_db))
-        return SimpleNamespace(complete=False, stimuli=())
+        await manifest.bank({
+            "take_id": manifest.allocate_take_id(),
+            "level_db": session.measurement_level_db,
+            "loudness_volume_db": session.measurement_level_db,
+        })
+        return SimpleNamespace(complete=True, stimuli=())
 
     monkeypatch.setattr(plan_run, "level_window", level_window)
     monkeypatch.setattr(plan_run, "spl_watch", lambda **_kwargs: (object(), "ceiling_85_db_spl"))
@@ -727,10 +736,10 @@ async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expect
         request, windows=windows, manifest=manifest, analyze=_analysis,
         candidate_scopes={}, aborts=_ABORTS,
         captures=plan_run.prepare_plan_captures(request, candidate_scopes={}),
-        measure=measure,
+        measure=measure, assessor=lambda *_args, **_kwargs: TakeVerdict(True),
     )
 
-    assert played == [(plan_run.PHASE_CHECK, expected_level)]
+    assert played == expected
 
 
 async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
