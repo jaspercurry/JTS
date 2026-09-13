@@ -11,6 +11,7 @@ import json
 import math
 from contextlib import asynccontextmanager
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -363,24 +364,286 @@ def test_room_floor_with_scattered_period_maxima_converges_within_budget(box):
     assert box.bank.call_count == 1
 
 
-def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch):
-    from jasper.active_speaker.crossover_v2 import door
-    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
-    from jasper.active_speaker.measurement_emit import compile_tuning_graph
-    from tests.test_active_speaker_measurement_door import _profile
-    profile = _profile()
-    candidate = MeasuredCrossoverCandidate(
-        program_id="accepted", analysis={"measurement_status": "unmeasured"},
-        source_preset=profile.preset, role_attenuations_db={"woofer": 0.0, "tweeter": 0.0},
+@pytest.fixture
+def commissioning_box(tmp_path, monkeypatch):
+    from jasper.active_speaker.design_draft import load_design_draft
+    from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _FakeApplyCam
+
+    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = load_design_draft()
+    draft["manual_settings"]["drivers"][1]["gain_offset_db"] = -11.0
+    draft["driver_research"]["crossover_candidates"][0].update(
+        delay_target_role="woofer", delay_ms=0.35, upper_polarity="inverted",
     )
+    (tmp_path / "design_draft.json").write_text(json.dumps(draft))
+    (tmp_path / "crossover_preview.json").unlink()
+    monkeypatch.setattr("jasper.sound.settings.saved_sound_layers", lambda: ([], 0.0))
+    monkeypatch.setattr("jasper.web.sound_active_speaker._active_speaker_restore_auto_source", lambda **kw: {"status": "ok"})
+    return topology, _FakeApplyCam()
+
+
+@pytest.mark.parametrize("applied", [False, True], ids=["declared", "banked"])
+async def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch, commissioning_box, applied):
+    from dataclasses import replace
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+    from jasper.active_speaker.candidate_parts import candidate_from_design_draft
+    from jasper.active_speaker.crossover_v2 import door
+    from jasper.active_speaker.crossover_v2.conductor_context import measurement_role_channels
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+    from jasper.web import sound_active_speaker as web
+
+    topology, cam = commissioning_box
+    draft = load_design_draft()
+    profile = load_tuning_declaration(topology, design_draft=draft)
+    profile = replace(profile, role_channels=measurement_role_channels(profile.preset))
+    if applied:
+        candidate = replace(candidate_from_design_draft(topology, draft), role_attenuations_db={"woofer": -3.0, "tweeter": -8.0},
+                            blend_correction=[{"biquad_type": "Peaking", "freq": 2000, "q": 1.0, "gain": -2.0}])
+        prepared = baseline_profile.prepare_applied_baseline_profile(candidate, declaration=profile, design_draft=draft, measurements={})
+        baseline_profile.persist_applied_baseline_profile(prepared, apply_state={"result": "success"})
+    reviewed = web._active_speaker_baseline_profile_payload(write=True)
+    assert reviewed["status"] == "ready_to_apply", reviewed["issues"]
+    if applied:
+        assert reviewed["source"]["measured_candidate_fingerprint"] == candidate.fingerprint
+    candidate = find_banked_candidate(reviewed["source"]["measured_candidate_fingerprint"]).candidate
+    if not applied:
+        assert candidate.analysis["measurement_status"] == "unmeasured"
+        assert not (candidate.linearization or candidate.blend_correction or candidate.room_correction or candidate.bass_extension)
+        assert candidate.driver_corrections() == {
+            "woofer": {"gain_db": 0.0, "delay_ms": 0.35, "inverted": False},
+            "tweeter": {"gain_db": -11.0, "delay_ms": 0.0, "inverted": True},
+        }
     lookup = Mock(side_effect=AssertionError("accepted candidate went to the bank"))
     monkeypatch.setattr(door, "find_banked_candidate", lookup)
     graph = door.bind_measurement_graph(profile, candidate=candidate, camilla_factory=Mock(), config_dir=tmp_path)
     assert graph.graph_yaml() == compile_tuning_graph(profile, scope="candidate", candidate=candidate)
+    assert Path(reviewed["config"]["path"]).read_text() == graph.graph_yaml()
+    result = await web._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint=reviewed["candidate_fingerprint"], camilla_factory=lambda: cam,
+    )
+    assert result["status"] == "applied", result
+    assert Path(cam.path).read_text() == graph.graph_yaml()
+    assert baseline_profile.load_applied_baseline_profile_state()["source"]["measured_candidate_fingerprint"] == candidate.fingerprint
+    assert not (tmp_path / "crossover_preview.json").exists()
     graph.select_scope("drivers")
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
     assert graph.graph_yaml() == emit_measurement_graph(profile)
     lookup.assert_not_called()
+
+
+async def test_commissioning_validates_then_verifies_under_lock_before_loading(monkeypatch, commissioning_box):
+    from jasper.active_speaker import baseline_profile
+    from jasper.web import sound_active_speaker as web
+
+    _, cam = commissioning_box
+    reviewed = web._active_speaker_baseline_profile_payload()
+    events = []
+    validate = baseline_profile.validate_camilla_config
+    load = cam.set_config_file_path
+    def checked(path):
+        events.append("validated")
+        return validate(path)
+    async def loaded(path, **kwargs):
+        events.append("loaded")
+        return await load(path, **kwargs)
+    async def verified():
+        from jasper.dsp_apply import _DSP_LOCK_OWNERSHIP
+        assert _DSP_LOCK_OWNERSHIP.get() is not None
+        events.append("verified")
+    monkeypatch.setattr(baseline_profile, "validate_camilla_config", checked)
+    monkeypatch.setattr(cam, "set_config_file_path", loaded)
+    result = await web._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint=reviewed["candidate_fingerprint"], on_candidate_verified=verified, camilla_factory=lambda: cam,
+    )
+    assert result["status"] == "applied"
+    assert events == ["validated", "verified", "loaded"]
+
+
+@pytest.mark.parametrize("write", [False, True])
+def test_commissioning_review_requires_write_to_enable_apply(commissioning_box, write):
+    from jasper.web.sound_active_speaker import _active_speaker_baseline_profile_payload
+
+    profile = _active_speaker_baseline_profile_payload(write=write)
+    assert profile["status"] == ("ready_to_apply" if write else "ready_to_compile")
+    assert profile["permissions"] == {"may_apply": write, "may_compile": True}
+
+
+@pytest.mark.parametrize("change,code", [
+    ("trim", "baseline_candidate_fingerprint_mismatch"),
+    ("protection", "driver_safety_profile_not_confirmed"),
+    ("validation", "baseline_config_validation_failed"),
+])
+async def test_commissioning_refusals_precede_cleanup_and_load(tmp_path, monkeypatch, commissioning_box, change, code):
+    from jasper.active_speaker import baseline_profile
+    from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+    from jasper.web import sound_active_speaker as web
+
+    _, cam = commissioning_box
+    reviewed = web._active_speaker_baseline_profile_payload()
+    if change == "validation":
+        monkeypatch.setattr(baseline_profile, "validate_camilla_config", lambda path:
+                            CamillaConfigValidationResult(ValidationStatus.INVALID_CONFIG, str(path)))
+    else:
+        path = tmp_path / "design_draft.json"
+        draft = json.loads(path.read_text())
+        if change == "protection":
+            draft["driver_safety_profile"] = None
+        else:
+            draft["manual_settings"]["drivers"][1]["gain_offset_db"] = -12.0
+        path.write_text(json.dumps(draft))
+    verified = AsyncMock()
+    result = await web._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint=reviewed["candidate_fingerprint"], on_candidate_verified=verified, camilla_factory=lambda: cam,
+    )
+    assert result["status"] == "blocked"
+    assert code in {issue["code"] for issue in result["issues"]}
+    assert result["profile"]["permissions"]["may_apply"] is False
+    assert cam.path is None
+    assert baseline_profile.load_applied_baseline_profile_state() is None
+    verified.assert_not_awaited()
+
+
+@pytest.mark.parametrize("route,code", [
+    ("narrow", "active_playback_route_too_narrow"),
+    ("missing", "baseline_playback_device_missing"),
+    ("direct", "baseline_output_handoff_not_supported"),
+    ("saved_ring", None),
+])
+async def test_commissioning_and_declaration_refuse_unusable_routes(monkeypatch, commissioning_box, route, code):
+    from dataclasses import replace
+    from jasper import output_topology
+    from jasper.active_speaker.measurement_emit import load_tuning_declaration, MeasurementGraphRefused
+    from jasper.web import sound_active_speaker as web
+
+    topology, cam = commissioning_box
+    declaration = load_tuning_declaration(topology)
+    if route in {"narrow", "missing"}:
+        dac = output_topology._dac_by_id(topology.hardware.device_id)
+        dac = replace(dac, supports_active_outputd_lane=route == "narrow",
+                      active_outputd_lane_channels=1 if route == "narrow" else None)
+        monkeypatch.setattr(output_topology, "_dac_by_id", lambda _: dac)
+    else:
+        monkeypatch.setenv(output_topology.ACTIVE_PLAYBACK_DEVICE_ENV,
+                          declaration.playback_device if route == "saved_ring" else "hw:CARD=DAC,DEV=0")
+    if code:
+        with pytest.raises(MeasurementGraphRefused) as exc:
+            load_tuning_declaration(topology)
+        assert exc.value.code == code
+    else:
+        assert load_tuning_declaration(topology).playback_device == declaration.playback_device
+    reviewed = web._active_speaker_baseline_profile_payload(write=True)
+    verified = AsyncMock()
+    result = await web._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint=reviewed.get("candidate_fingerprint", ""),
+        on_candidate_verified=verified, camilla_factory=lambda: cam,
+    )
+    if code:
+        assert reviewed["status"] == result["status"] == "blocked"
+        assert code in {issue["code"] for issue in result["issues"]}
+        assert cam.path is None
+        verified.assert_not_awaited()
+    else:
+        assert result["status"] == "applied"
+
+
+@pytest.mark.parametrize("error_kind,code", [
+    ("graph", "measurement_candidate_speaker_mismatch"),
+    ("candidate", "attenuation_out_of_range"),
+    ("bank", "not_found"),
+    ("emitter", "compose_refused"),
+])
+@pytest.mark.parametrize("phase", ["review", "apply_preflight"])
+async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_box, error_kind, code, phase):
+    from jasper.active_speaker import baseline_profile, measurement_emit
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal
+    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
+    from jasper.web import sound_active_speaker as web
+
+    _, cam = commissioning_box
+    reviewed = web._active_speaker_baseline_profile_payload()
+    error = {
+        "graph": measurement_emit.MeasurementGraphRefused(code, {}),
+        "candidate": MeasuredCrossoverCandidateError(code),
+        "bank": CandidateBankRefusal(code, "candidate unavailable"),
+        "emitter": ActiveSpeakerConfigError("invalid graph"),
+    }[error_kind]
+    if phase == "review":
+        monkeypatch.setattr(measurement_emit, "compile_tuning_graph", Mock(side_effect=error))
+        refused = web._active_speaker_baseline_profile_payload()
+        assert refused["status"] == "blocked"
+        assert refused["issues"][0]["code"] == code
+    else:
+        compile_profile = baseline_profile.compile_commissioning_profile
+        monkeypatch.setattr(baseline_profile, "compile_commissioning_profile",
+                            Mock(side_effect=[compile_profile(), compile_profile(write=True)]))
+        monkeypatch.setattr(measurement_emit, "load_tuning_declaration", Mock(side_effect=error))
+    verified = AsyncMock()
+    result = await web._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
+        on_candidate_verified=verified, camilla_factory=lambda: cam,
+    )
+    assert result["status"] == "blocked"
+    assert result["issues"][0]["code"] == code
+    assert result["profile"]["permissions"]["may_apply"] is False
+    assert cam.path is None
+    verified.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome", ["applied", "apply_failed", "blocked"])
+async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplog, commissioning_box, outcome):
+    from jasper.active_speaker import baseline_profile, bundles, measurement
+    from jasper.web import sound_active_speaker as web
+    from tests._log_events import event_fields, event_records
+
+    topology, cam = commissioning_box
+    reviewed = web._active_speaker_baseline_profile_payload(write=True)
+    if outcome == "apply_failed":
+        first = await web._active_speaker_baseline_profile_apply_payload(
+            expected_candidate_fingerprint=reviewed["candidate_fingerprint"], camilla_factory=lambda: cam,
+        )
+        assert first["status"] == "applied"
+        previous = baseline_profile.load_applied_baseline_profile_state()
+        load = cam.set_config_file_path
+        calls = 0
+        async def fail_once(path, **kwargs):
+            nonlocal calls
+            calls += 1
+            return False if calls == 1 else await load(path, **kwargs)
+        monkeypatch.setattr(cam, "set_config_file_path", fail_once)
+    bundle = bundles.open_bundle(topology, calibration_id="", sessions_dir=bundles.sessions_dir())
+    measurements = {"active_comparison_set": {"bundle_session_id": bundle["session_id"]}}
+    monkeypatch.setattr(measurement, "load_measurement_state", lambda _: measurements)
+    reviewed = web._active_speaker_baseline_profile_payload(write=True)
+    caplog.clear()
+    caplog.set_level("INFO", logger=baseline_profile.__name__)
+    result = await web._active_speaker_baseline_profile_apply_payload(
+        expected_candidate_fingerprint="stale" if outcome == "blocked" else reviewed["candidate_fingerprint"],
+        camilla_factory=lambda: cam,
+    )
+    assert result["status"] == outcome
+    record = bundles._read_info(Path(bundle["bundle_dir"]))
+    assert record["state"] == ("applied" if outcome == "applied" else "failed")
+    assert record["apply"] == result["apply"]
+    if outcome == "blocked":
+        assert not event_records(caplog, "correction.crossover_apply_started")
+        return
+    started = event_fields(caplog, "correction.crossover_apply_started")
+    assert started["candidate_fingerprint"] == reviewed["candidate_fingerprint"]
+    if outcome == "apply_failed":
+        failed = json.loads((tmp_path / "baseline_profile.json").read_text())
+        assert failed["status"] == "apply_failed"
+        assert failed["apply"] == result["apply"]
+        assert failed["issues"][-1]["code"] == "baseline_profile_apply_failed"
+        assert baseline_profile.load_applied_baseline_profile_state() == previous
+        rolled_back = event_fields(caplog, "correction.crossover_apply_rolled_back")
+        assert rolled_back["rollback_attempted"] == rolled_back["rollback_succeeded"] == "true"
+        assert record["rollback_target"] == {"config_path": previous["config"]["path"]}
+    else:
+        succeeded = event_fields(caplog, "correction.crossover_apply_succeeded")
+        assert succeeded["candidate_fingerprint"] == succeeded["applied_fingerprint"] == reviewed["candidate_fingerprint"]
 
 
 def test_unapplied_baseline_refuses_with_its_code(box, monkeypatch, capsys):

@@ -5267,18 +5267,12 @@ BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
 
 
 def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
-    """Stand in for the whole baseline-apply backend behind the finish handoff.
-
-    Returns ``(apply_kwargs_seen, mux_commands)``: the kwargs of every
-    ``apply_baseline_profile`` call in order, and the mux commands the restore
-    issued. The fake invokes ``on_candidate_verified`` exactly as the real
-    apply does, so the finish route's cleanup runs.
-    """
+    """Stub the graph apply and collect finish cleanup/source restoration."""
 
     apply_calls: list[dict] = []
     mux_commands: list[str] = []
 
-    async def fake_apply_baseline_profile(_topology, **kwargs):
+    async def fake_apply_commissioning_profile(**kwargs):
         apply_calls.append(kwargs)
         callback = kwargs.get("on_candidate_verified")
         if callback is not None:
@@ -5309,21 +5303,9 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
             "test_source": None,
         }
 
-    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: object())
     monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft", lambda: {}
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.load_measurement_state",
-        lambda topology: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
-        fake_apply_baseline_profile,
+        "jasper.active_speaker.baseline_profile.apply_commissioning_profile",
+        fake_apply_commissioning_profile,
     )
     monkeypatch.setattr(
         sound_active_speaker, "_commission_tone_mux_command", fake_mux_command

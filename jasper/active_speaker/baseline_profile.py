@@ -42,6 +42,7 @@ from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
+    load_output_topology,
     topology_config_fingerprint,
 )
 
@@ -83,12 +84,12 @@ from .driver_base_trim import (
     load_base_trim,
     write_base_trim,
 )
-from .driver_pad import effective_sensitivity_db
 from .driver_safety import evaluate_driver_safety_profile
 from .level_trim import (
     MAX_ATTENUATION_DB,
     LevelTrimError,
     attenuation_from_group_deltas,
+    declared_driver_gains,
 )
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
@@ -113,11 +114,6 @@ SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
-
-# Sensitivity deltas below this magnitude (dB) are treated as level-matched and
-# get no derived trim, so the least-sensitive (reference) driver and any ties
-# stay at unity.
-_SENSITIVITY_TRIM_EPS_DB = 0.05
 
 # How far the MEASURED level match and the pad-folded DATASHEET sensitivity gap
 # may disagree about the same pair of drivers before the measured value is
@@ -293,6 +289,126 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
         ),
         "recomposition_snapshot": hashed_snapshot,
     })
+
+
+def reviewed_candidate_refusal(
+    candidate: Mapping[str, Any], expected_candidate_fingerprint: str,
+) -> dict[str, Any] | None:
+    if expected_candidate_fingerprint and candidate.get("candidate_fingerprint") == expected_candidate_fingerprint:
+        return None
+    refused = dict(candidate)
+    refused["permissions"] = {**(refused.get("permissions") or {}), "may_apply": False}
+    refused["issues"] = [*(refused.get("issues") or []), _issue(
+        "blocker", "baseline_candidate_fingerprint_mismatch",
+        "the crossover candidate changed after review; refresh and review the current candidate before applying",
+    )]
+    return {"status": "blocked", "profile": refused, "apply": None, "issues": refused["issues"]}
+
+
+def _commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
+    profile.update(status="blocked", permissions={"may_apply": False, "may_compile": False})
+    profile["issues"] = getattr(exc, "issues", None) or [_issue(
+        "blocker", getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused", str(exc),
+    )]
+
+
+def compile_commissioning_profile(
+    *, topology: OutputTopology | None = None,
+    design_draft: Mapping[str, Any] | None = None, write: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Review the applied candidate, or bootstrap from the declared crossover."""
+    from .candidate_parts import candidate_from_applied_profile, candidate_from_design_draft  # lazy: candidate parts consumes baseline readers
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
+    from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
+    from .measurement_emit import compile_tuning_graph, load_tuning_declaration, MeasurementGraphRefused  # lazy: graph compilation imports baseline readers
+    from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
+    from jasper.sound.settings import saved_sound_layers  # lazy: household settings import baseline readers
+
+    profile: dict[str, Any] = {"artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
+                              "status": "blocked", "permissions": {"may_apply": False}, "issues": []}
+    text = ""
+    try:
+        topology = topology if topology is not None else load_output_topology()
+        draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
+        declaration = load_tuning_declaration(topology, design_draft=draft)
+        applied = load_applied_baseline_profile_state()
+        candidate = (candidate_from_applied_profile(topology, applied) if applied is not None
+                     else candidate_from_design_draft(topology, draft))
+        preference_filters, trim_db = saved_sound_layers()
+        text = compile_tuning_graph(declaration, candidate=candidate,
+                                    preference_filters=preference_filters, output_trim_db=trim_db)
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        target = baseline_candidate_config_path(text)
+        profile.update(prepare_applied_baseline_profile(
+            candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
+            config_path=target, config_sha256=sha,
+        ))
+        profile["issues"] = list(candidate.analysis.get("issues") or [])
+        profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
+        profile["config"]["exists"] = target.exists()
+        proof = classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text, applied_baseline_state=profile)
+        if not proof.allowed or proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+            raise MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
+        if write:
+            atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
+            profile["config"]["exists"] = True
+            validation = validate_camilla_config(target)
+            if not validation.ok_to_apply:
+                raise MeasurementGraphRefused("baseline_config_validation_failed", validation.to_dict())
+        profile.update(status="ready_to_apply" if write else "ready_to_compile",
+                       permissions={"may_apply": write, "may_compile": True})
+    except (CandidateBankRefusal, ValueError) as exc:
+        _commissioning_refusal(profile, exc)
+    return text, profile
+
+
+async def apply_commissioning_profile(
+    *, expected_candidate_fingerprint: str,
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]],
+    on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
+    from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
+    from .measurement_emit import load_tuning_declaration  # lazy: graph compilation imports baseline readers
+
+    async with dsp_writer_lock(baseline_config_path().parent, source="active_speaker_baseline_apply"):
+        profile: dict[str, Any] = {}
+        prepared: dict[str, Any] | None = None
+        measurements: Mapping[str, Any] = {}
+        try:
+            topology = load_output_topology()
+            measurements = load_measurement_state(topology)
+            draft = load_design_draft(topology=topology)
+            for write in (False, True):
+                text, profile = compile_commissioning_profile(topology=topology, design_draft=draft, write=write)
+                if any(issue.get("severity") == "blocker" for issue in profile["issues"]):
+                    break
+                refusal = reviewed_candidate_refusal(profile, expected_candidate_fingerprint)
+                if refusal:
+                    profile = refusal["profile"]
+                    break
+            else:
+                declaration = load_tuning_declaration(topology, design_draft=draft)
+                candidate = find_banked_candidate(profile["source"]["measured_candidate_fingerprint"]).candidate
+                prepared = prepare_applied_baseline_profile(
+                    candidate, declaration=declaration, design_draft=draft, measurements=measurements, provenance=profile,
+                    config_path=profile["config"]["path"], config_sha256=profile["config"]["sha256"],
+                )
+        except (CandidateBankRefusal, ValueError) as exc:
+            _commissioning_refusal(profile, exc)
+        if prepared is None:
+            await _record_apply_outcome_into_bundle(measurements, candidate=profile, apply_state=None, rollback_target=None)
+            return {"status": "blocked", "profile": profile, "apply": None, "issues": profile["issues"]}
+        if on_candidate_verified is not None:
+            await on_candidate_verified()
+        _baseline_apply_started(topology, prepared)
+        try:
+            async with load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
+                    load_config=load_config, get_current_config_path=get_current_config_path) as (state, applied):
+                return await _baseline_apply_result(topology, applied, measurements, apply_state=state)
+        except DspApplyError as exc:
+            return await _baseline_apply_result(topology, prepared, measurements, apply_state=exc.state, error=exc)
 
 
 def _canonicalize_camilla_defaults(value: Any) -> Any:
@@ -843,72 +959,14 @@ def _derive_corrections(
             delay_provenance[role] = PROVENANCE_MANUAL
 
     drivers = crossover_preview.get("drivers")
-    pinned_gain_roles: set[str] = set()
-    estimated_gains: dict[str, float] = {}
-    gain_provenance: dict[str, str] = {}
-    sensitivities: dict[str, float] = {}
-    if isinstance(drivers, Mapping):
-        for role, driver in drivers.items():
-            if role not in corrections or not isinstance(driver, Mapping):
-                continue
-            # #1665: fold any declared in-line pad into the naked datasheet
-            # sensitivity before it feeds the datasheet-trim estimate below --
-            # an L-pad'd driver's effective output is quieter than its bare
-            # rating, and the interim trim must attenuate from THAT figure,
-            # not the pre-pad one.
-            naked_sensitivity = _finite_float(driver.get("sensitivity_db_2v83_1m"))
-            sensitivity = effective_sensitivity_db(naked_sensitivity, driver.get("pad"))
-            if sensitivity is not None:
-                sensitivities[str(role)] = sensitivity
-            gain = _finite_float(driver.get("gain_offset_db"))
-            if gain is None:
-                continue
-            if gain > 0:
-                issues.append(_issue(
-                    "warning",
-                    "positive_driver_gain_ignored",
-                    f"positive gain for {role} was ignored; baseline gains only attenuate",
-                ))
-                gain = 0.0
-            if gain < -60:
-                issues.append(_issue(
-                    "warning",
-                    "driver_gain_clamped",
-                    f"gain for {role} was clamped to -60 dB",
-                ))
-                gain = -60.0
-            provenance = str(driver.get("gain_offset_db_provenance") or "").strip()
-            # Pre-provenance preview artifacts are conservatively treated as a
-            # pin: an upgrade must not replace a deliberate safety attenuation.
-            if provenance not in {"research_estimate", "sensitivity_estimate"}:
-                provenance = "operator_pinned"
-                corrections[str(role)]["gain_db"] = gain
-                pinned_gain_roles.add(str(role))
-            else:
-                estimated_gains[str(role)] = gain
-            gain_provenance[str(role)] = provenance
-
-    # Interim datasheet trim. When research declares no explicit gain_offset_db
-    # for a driver but the sensitivities are known, attenuate the hotter drivers
-    # down to the least-sensitive (reference) driver so a high-sensitivity
-    # compression/horn driver can never start at full level relative to the
-    # woofer (the shrill / horn-dominant failure mode, and a diaphragm hazard).
-    # These are computed but NOT committed here: a usable MEASURED trim
-    # overrides them below — from either evidence source ``_measured_level_trims``
-    # accepts, the banked base trim the apply seam writes or the guided
-    # per-driver captures — falling back to this datasheet estimate (marked
-    # provisional) when no measurement is available.
-    datasheet_trims: dict[str, float] = {}
-    derivable_roles = [
-        role for role in sensitivities if role not in pinned_gain_roles
-    ]
-    if len(sensitivities) >= 2 and derivable_roles:
-        reference_db = min(sensitivities.values())
-        for role in derivable_roles:
-            trim_db = reference_db - sensitivities[role]  # <= 0 by construction
-            if trim_db >= -_SENSITIVITY_TRIM_EPS_DB:
-                continue  # reference driver and ties stay at unity
-            datasheet_trims[role] = max(round(trim_db, 1), MAX_ATTENUATION_DB)
+    gains, gain_provenance, datasheet_trims, gain_issues = declared_driver_gains(
+        tuple(corrections), drivers if isinstance(drivers, Mapping) else {},
+    )
+    issues.extend(gain_issues)
+    pinned_gain_roles = {role for role, source in gain_provenance.items() if source == "operator_pinned"}
+    estimated_gains = {role: gains[role] for role in gain_provenance if role not in pinned_gain_roles}
+    for role in pinned_gain_roles:
+        corrections[role]["gain_db"] = gains[role]
 
     # MEASURED refinement overrides research, UI-suggested, and sensitivity
     # estimates. Manual tuning keeps an operator pin authoritative. Automatic
@@ -2448,16 +2506,7 @@ async def _record_apply_outcome_into_bundle(
     apply_state: Mapping[str, Any] | None,
     rollback_target: Mapping[str, Any] | None,
 ) -> None:
-    """Record one apply attempt (blocked, failed, or applied) into the bundle.
-
-    ``jasper.active_speaker.bundles.record_apply`` is already fail-soft —
-    this wrapper only resolves which bundle (via the comparison set's
-    ``bundle_session_id`` — see ``jasper.active_speaker.bundles``) and moves
-    the small JSON-only write off the event loop, since
-    :func:`apply_baseline_profile` is async. Lane E's apply lifecycle events
-    (``correction.crossover_apply_started`` / ``_succeeded`` /
-    ``_rolled_back``) land at this same boundary.
-    """
+    """Record the outcome off-thread; the bundle writer handles I/O failures."""
 
     bundle_dir = _bundle_dir_from_measurements(measurements)
     if bundle_dir is None:
@@ -2472,6 +2521,55 @@ async def _record_apply_outcome_into_bundle(
         apply_state=apply_state,
         rollback_target=rollback_target,
     )
+
+
+def _baseline_apply_started(topology: OutputTopology, candidate: Mapping[str, Any]) -> None:
+    log_event(
+        logger, "correction.crossover_apply_started",
+        config_path=str((candidate.get("config") or {}).get("path") or ""),
+        tuning_owner=candidate.get("tuning_owner"), topology_id=topology.topology_id,
+        graph_fingerprint=(candidate.get("source") or {}).get("fingerprint"),
+        candidate_fingerprint=candidate.get("candidate_fingerprint"),
+    )
+
+
+async def _baseline_apply_result(
+    topology: OutputTopology, profile: Mapping[str, Any], measurements: Mapping[str, Any],
+    *, apply_state: DspApplyState, error: DspApplyError | None = None, state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    state = apply_state.to_dict()
+    graph_fingerprint = (profile.get("source") or {}).get("fingerprint")
+    if error is not None:
+        target = baseline_profile_state_path(state_path)
+        previous = _applied_profile_anchor(_load_saved_state(target))
+        profile = {**profile, "status": "apply_failed", "apply": state, "updated_at": _utc_now(),
+                   "permissions": {"may_apply": False},
+                   "issues": [*profile.get("issues", []), _issue("blocker", "baseline_profile_apply_failed", str(error))]}
+        if previous is not None:
+            profile["applied_recomposition_profile"] = previous
+        atomic_write_text(target, json.dumps(profile, indent=2, sort_keys=True) + "\n", mode=0o640, durable=True)
+        # See docs/active-crossover-information-design.md: this event includes failed rollbacks.
+        log_event(
+            logger, "correction.crossover_apply_rolled_back", topology_id=topology.topology_id,
+            graph_fingerprint=graph_fingerprint, reason=str(error),
+            rollback_attempted=apply_state.rollback_attempted, rollback_succeeded=apply_state.rollback_succeeded,
+            rollback_error=apply_state.rollback_error,
+        )
+    else:
+        log_event(
+            logger, "correction.crossover_apply_succeeded", topology_id=topology.topology_id,
+            tuning_owner=profile.get("tuning_owner"), graph_fingerprint=graph_fingerprint,
+            candidate_fingerprint=profile["candidate_fingerprint"], applied_fingerprint=profile["candidate_fingerprint"],
+            applied_at=profile["applied_at"],
+        )
+        linearization = profile.get("linearization") or {}
+        log_event(logger, "dsp.baseline_linearization", topology_id=topology.topology_id,
+                  **({role: len(filters) for role, filters in linearization.items()} if linearization else {"none": True}))
+    await _record_apply_outcome_into_bundle(
+        measurements, candidate=profile, apply_state=state,
+        rollback_target={"config_path": apply_state.prior_config_path} if apply_state.prior_config_path else None,
+    )
+    return {"status": profile["status"], "profile": profile, "apply": state, "issues": profile.get("issues", [])}
 
 
 def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
@@ -3051,39 +3149,14 @@ async def _apply_baseline_profile_locked(
             validate=validate,
         )
 
-    def matches_expected(candidate: Mapping[str, Any]) -> bool:
-        actual = baseline_candidate_fingerprint(candidate)
-        return bool(
-            expected_candidate_fingerprint
-            and actual
-            and expected_candidate_fingerprint == actual
-        )
-
-    async def refuse_stale(candidate: Mapping[str, Any]) -> dict[str, Any]:
-        refused = dict(candidate)
-        refused["permissions"] = dict(refused.get("permissions") or {})
-        refused["permissions"]["may_apply"] = False
-        refused["issues"] = [
-            *refused.get("issues", []),
-            _issue(
-                "blocker",
-                "baseline_candidate_fingerprint_mismatch",
-                (
-                    "the crossover candidate changed after review; refresh and "
-                    "review the current candidate before applying"
-                ),
-            ),
-        ]
-        return {
-            "status": "blocked",
-            "profile": refused,
-            "apply": None,
-            "issues": refused["issues"],
-        }
-
     reviewed_candidate = build_candidate(write=False)
-    if expected_candidate_fingerprint is not None and not matches_expected(reviewed_candidate):
-        return await refuse_stale(reviewed_candidate)
+    if expected_candidate_fingerprint is not None:
+        refusal = reviewed_candidate_refusal(
+            {**reviewed_candidate, "candidate_fingerprint": baseline_candidate_fingerprint(reviewed_candidate)},
+            expected_candidate_fingerprint,
+        )
+        if refusal:
+            return refusal
     candidate = build_candidate(write=True)
     if not driver_domain and (candidate.get("config") or {}).get("sha256"):
         from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
@@ -3119,17 +3192,7 @@ async def _apply_baseline_profile_locked(
     if on_candidate_verified is not None:
         await on_candidate_verified()
 
-    graph_fingerprint = (candidate.get("source") or {}).get("fingerprint")
-    candidate_identity = candidate.get("candidate_fingerprint")
-    log_event(
-        logger,
-        "correction.crossover_apply_started",
-        config_path=str((candidate.get("config") or {}).get("path") or ""),
-        tuning_owner=tuning_owner,
-        topology_id=topology.topology_id,
-        graph_fingerprint=graph_fingerprint,
-        candidate_fingerprint=candidate_identity,
-    )
+    _baseline_apply_started(topology, candidate)
     from .candidate_parts import candidate_from_applied_profile  # lazy: candidate parts consumes baseline readers
 
     prepared = candidate
@@ -3158,104 +3221,8 @@ async def _apply_baseline_profile_locked(
             validate=validate,
         )
     except DspApplyError as exc:
-        failed = {
-            **candidate,
-            "status": "apply_failed",
-            "apply": exc.state.to_dict(),
-            "updated_at": _utc_now(),
-            "issues": [
-                *candidate.get("issues", []),
-                _issue(
-                    "blocker",
-                    "baseline_profile_apply_failed",
-                    str(exc),
-                ),
-            ],
-        }
-        atomic_write_text(
-            state_target,
-            json.dumps(failed, indent=2, sort_keys=True) + "\n",
-            mode=0o640,
-        )
-        # Spec-pinned failure event name: apply_rolled_back covers every
-        # DspApplyError, whether or not the underlying rollback itself
-        # succeeded -- see docs/active-crossover-information-design.md
-        # "Structured events" (there is no separate apply_failed event).
-        log_event(
-            logger,
-            "correction.crossover_apply_rolled_back",
-            topology_id=topology.topology_id,
-            graph_fingerprint=graph_fingerprint,
-            reason=str(exc),
-            rollback_attempted=exc.state.rollback_attempted,
-            rollback_succeeded=exc.state.rollback_succeeded,
-            rollback_error=exc.state.rollback_error,
-        )
-        await _record_apply_outcome_into_bundle(
-            measurements,
-            candidate=failed,
-            apply_state=exc.state.to_dict(),
-            rollback_target=(
-                {"config_path": exc.state.prior_config_path}
-                if exc.state.prior_config_path
-                else None
-            ),
-        )
-        return {
-            "status": "apply_failed",
-            "profile": failed,
-            "apply": exc.state.to_dict(),
-            "issues": failed["issues"],
-        }
+        return await _baseline_apply_result(topology, candidate, measurements, apply_state=exc.state, error=exc, state_path=state_target)
 
     applied = persist_applied_baseline_profile(prepared, apply_state=apply_state.to_dict(), state_path=state_target)
     promote_applied_baseline_candidate(applied, config_path=config_path)
-    log_event(
-        logger,
-        "correction.crossover_apply_succeeded",
-        topology_id=topology.topology_id,
-        tuning_owner=tuning_owner,
-        graph_fingerprint=graph_fingerprint,
-        # Apply loads this exact frozen candidate without transforming it, so
-        # candidate and applied identities are equal. ``graph_fingerprint``
-        # remains the separate source/cache context identifier.
-        candidate_fingerprint=applied["candidate_fingerprint"],
-        applied_fingerprint=applied["candidate_fingerprint"],
-        applied_at=applied["applied_at"],
-    )
-    # Layer-1a driver linearization observability (#1668 PR-D review SF3):
-    # one line per successful apply recording what linearization (if any)
-    # reached hardware -- per-role filter counts, or none=true when the
-    # candidate carried no linearization stage. Read from the candidate's
-    # own top-level "linearization" mirror (see
-    # build_baseline_profile_candidate), the same reduced
-    # {role: [filter_dict, ...]} shape the emitter consumed.
-    applied_linearization = candidate.get("linearization")
-    if not isinstance(applied_linearization, Mapping):
-        applied_linearization = {}
-    log_event(
-        logger,
-        "dsp.baseline_linearization",
-        topology_id=topology.topology_id,
-        **(
-            {role: len(filters) for role, filters in applied_linearization.items()}
-            if applied_linearization
-            else {"none": True}
-        ),
-    )
-    await _record_apply_outcome_into_bundle(
-        measurements,
-        candidate=applied,
-        apply_state=apply_state.to_dict(),
-        rollback_target=(
-            {"config_path": apply_state.prior_config_path}
-            if apply_state.prior_config_path
-            else None
-        ),
-    )
-    return {
-        "status": "applied",
-        "profile": applied,
-        "apply": apply_state.to_dict(),
-        "issues": applied.get("issues", []),
-    }
+    return await _baseline_apply_result(topology, applied, measurements, apply_state=apply_state)

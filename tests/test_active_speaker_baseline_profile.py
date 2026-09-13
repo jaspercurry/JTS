@@ -2281,41 +2281,27 @@ def _baseline_payload(topology: OutputTopology, research: dict, tmp_path: Path) 
     )
 
 
-def test_baseline_profile_derives_level_trim_from_sensitivity_gap(
-    tmp_path: Path,
-) -> None:
-    topology = _dual_apple_topology()
-    payload = _baseline_payload(
-        topology,
-        _research_with_sensitivity(),  # 25.2 dB gap, no explicit gain_offset_db
-        tmp_path,
-    )
+@pytest.mark.parametrize("gain,expected,code", [
+    (None, -25.2, "driver_gain_derived_from_sensitivity"),
+    (-18.5, -18.5, None),
+    (1.0, 0.0, "positive_driver_gain_ignored"),
+    (-61.0, -60.0, "driver_gain_clamped"),
+])
+def test_declared_and_legacy_sensitivity_gain_offsets_share_clamps(tmp_path, gain, expected, code):
+    from jasper.active_speaker.candidate_parts import candidate_from_design_draft
 
+    topology = _dual_apple_topology()
+    research = _research_with_sensitivity(tweeter_gain_db=gain)
+    payload = _baseline_payload(topology, research, tmp_path)
+    candidate = candidate_from_design_draft(topology, build_design_draft(topology, driver_research=research))
     assert payload["status"] == "ready_to_apply"
-    # Hotter horn is attenuated to the woofer reference; woofer stays at unity.
-    assert payload["corrections"]["tweeter"]["gain_db"] == -25.2
-    assert payload["corrections"]["woofer"]["gain_db"] == 0.0
-    assert payload["safety"]["positive_gain_allowed"] is False
-    assert "driver_gain_derived_from_sensitivity" in {
-        issue["code"] for issue in payload["issues"]
-    }
-
-
-def test_baseline_profile_explicit_gain_overrides_sensitivity_trim(
-    tmp_path: Path,
-) -> None:
-    topology = _dual_apple_topology()
-    payload = _baseline_payload(
-        topology,
-        _research_with_sensitivity(tweeter_gain_db=-18.5),
-        tmp_path,
-    )
-
-    # An explicit (e.g. measured) trim wins over the sensitivity heuristic.
-    assert payload["corrections"]["tweeter"]["gain_db"] == -18.5
-    assert "driver_gain_derived_from_sensitivity" not in {
-        issue["code"] for issue in payload["issues"]
-    }
+    assert candidate.driver_corrections() == payload["corrections"]
+    assert candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": expected}
+    assert candidate.analysis["measurement_status"] == "unmeasured"
+    if code:
+        assert code in {issue["code"] for issue in payload["issues"]}
+        if gain is not None:
+            assert code in {issue["code"] for issue in candidate.analysis["issues"]}
 
 
 def test_baseline_profile_no_trim_when_sensitivities_match(tmp_path: Path) -> None:

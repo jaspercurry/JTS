@@ -83,7 +83,9 @@ def load_tuning_declaration(
     preset = resolve_commission_preset(topology, crossover_preview=build_crossover_preview(draft))
     return MeasurementGraphProfile(
         preset, topology, {},
-        playback_device=str(resolve_active_playback_device(topology, playback_device=playback_device)[0] or ""),
+        playback_device=str(resolve_active_playback_device(
+            topology, playback_device=playback_device, required_output_count=camilla_yaml._output_count(preset),
+        )[0]),
         protection_sections_by_role=protection,
     )
 

@@ -3646,31 +3646,9 @@ def _active_speaker_baseline_profile_payload(
     write: bool = False,
     design_draft: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return or compile the active-speaker baseline profile candidate.
+    from jasper.active_speaker.baseline_profile import compile_commissioning_profile  # lazy: graph compilation imports NumPy
 
-    ``design_draft`` lets a caller that has already read the draft hand it in
-    rather than pay for a second read of the same file.
-    """
-
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-
-    topology = load_output_topology()
-    if design_draft is None:
-        design_draft = load_design_draft()
-    preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=write,
-    )
+    _, payload = compile_commissioning_profile(design_draft=design_draft, write=write)
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",
@@ -3691,38 +3669,14 @@ async def _active_speaker_baseline_profile_apply_payload(
 ) -> dict[str, Any]:
     """Apply the active-speaker baseline profile through DSP apply."""
 
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-
-    topology = load_output_topology()
-    design_draft = load_design_draft()
-    preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
-
-    def refresh_inputs():
-        current_topology = load_output_topology()
-        current_draft = load_design_draft()
-        current_preview = load_crossover_preview(current_design_draft=current_draft)
-        return (
-            current_topology,
-            current_draft,
-            current_preview,
-            load_measurement_state(current_topology),
-        )
+    from jasper.active_speaker.baseline_profile import apply_commissioning_profile  # lazy: graph compilation imports NumPy
 
     cam = camilla_factory()
-    payload = await apply_baseline_profile(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
+    payload = await apply_commissioning_profile(
         load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
         expected_candidate_fingerprint=expected_candidate_fingerprint,
         on_candidate_verified=on_candidate_verified,
-        refresh_inputs=refresh_inputs,
     )
     if payload.get("status") == "applied":
         payload["source_selection_restore"] = _active_speaker_restore_auto_source(
@@ -3769,31 +3723,12 @@ async def _active_speaker_finish_commissioning_payload(
     between "saved" and "applied".
     """
 
+    from jasper.active_speaker.baseline_profile import reviewed_candidate_refusal  # lazy: baseline readers import wizard state
+
     reviewed = _active_speaker_baseline_profile_payload(write=False)
-    if (
-        not expected_candidate_fingerprint
-        or str(reviewed.get("candidate_fingerprint") or "")
-        != expected_candidate_fingerprint
-    ):
-        issue = {
-            "severity": "blocker",
-            "code": "baseline_candidate_fingerprint_mismatch",
-            "message": (
-                "the crossover candidate changed after review; refresh and "
-                "review the current candidate before applying"
-            ),
-        }
-        reviewed = dict(reviewed)
-        reviewed["permissions"] = dict(reviewed.get("permissions") or {})
-        reviewed["permissions"]["may_apply"] = False
-        reviewed["issues"] = [*reviewed.get("issues", []), issue]
-        return {
-            "status": "blocked",
-            "profile": reviewed,
-            "apply": None,
-            "issues": reviewed["issues"],
-            "commissioning_cleanup": {"status": "not_attempted"},
-        }
+    refusal = reviewed_candidate_refusal(reviewed, expected_candidate_fingerprint)
+    if refusal:
+        return {**refusal, "commissioning_cleanup": {"status": "not_attempted"}}
 
     commissioning_cleanup: dict[str, Any] = {"status": "not_attempted"}
 
