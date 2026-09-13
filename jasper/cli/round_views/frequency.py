@@ -147,11 +147,11 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     series = []
     for run in payload["runs"]:
         for curve in run["series"]:
-            curve["plot"] = prepare_plot_curve(curve, run.get("metadata"), ref_band_hz=args.ref_band_hz)
+            curve["plot"] = prepare_plot_curve(curve, run.get("metadata"), ref_band_hz=args.ref_band_hz, normalize=args.normalize)
             series.append({
                 "slot": run["slot"], "id": curve["id"], "candidate_id": curve.get("candidate_id"),
                 "position": curve.get("position"),
-                **{key: curve["plot"][key] for key in ("rms_db", "peak_to_peak_db", "band_means")},
+                **{key: curve["plot"][key] for key in ("display", "rms_db", "peak_to_peak_db", "band_means")},
             })
     written = _write(payload, args.out, _frequency_default_out(source_a))
     return answer(
@@ -172,6 +172,7 @@ def add_image_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ref-band-hz", type=float, nargs=2, default=DEFAULT_REF_BAND_HZ, metavar=("LOW", "HIGH"),
                         help="per-curve power-mean reference band (default: 200–5000 Hz)")
     parser.add_argument("--low-end", action="store_true", help="add a 20–300 Hz panel per pose")
+    parser.add_argument("--normalize", action="store_true", help="use each curve's reference-band power mean for shape comparison")
 
 
 def render_image(args: argparse.Namespace, payload: dict) -> dict:
@@ -179,7 +180,7 @@ def render_image(args: argparse.Namespace, payload: dict) -> dict:
         return {"image": None}
     try:
         render_frequency_view(payload, args.image, selected=args.series, band_hz=args.plot_band_hz,
-                              ref_band_hz=args.ref_band_hz, low_end=args.low_end)
+                              ref_band_hz=args.ref_band_hz, low_end=args.low_end, normalize=args.normalize)
     except ImportError as exc:
         if not (exc.name or "").startswith("matplotlib"):
             raise

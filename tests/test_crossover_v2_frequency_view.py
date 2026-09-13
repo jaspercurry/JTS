@@ -199,9 +199,8 @@ def test_image_uses_shared_trust_markings_and_keeps_untrusted_data(tmp_path, mon
     render_frequency_view(view, tmp_path / "response.png", band_hz=(50, 1000))
     ax = figures[0].axes[0]
     plotted = list(ax.lines[0].get_ydata())
-    reference = 10 * np.log10(np.mean(10 ** (np.array([-24, -23, -22]) / 10)))
     assert plotted[0] is None
-    assert plotted[1:] == pytest.approx(np.array([-25, -24, -23, -22]) - reference)
+    assert plotted[1:] == pytest.approx([-1, 0, 1, 2])
     spans = [patch.get_path().transformed(patch.get_patch_transform()).vertices[:, 0]
              for patch in ax.patches]
     assert [(min(xs), max(xs)) for xs in spans] == [(50, 357), (400, 500)]
@@ -220,8 +219,10 @@ def test_plot_power_reference_smoothing_and_statistics(monkeypatch, offset, shap
     monkeypatch.setattr(frequency_plot, "smooth_fractional_octave", observed)
     freqs = np.array([25, 35, 45, 55, 70, 100, 150, 300, 1000, 1010, 4000, 9000])
     raw = np.array([2] * 7 + [0, 0, 10 * np.log10(3), 0, 4]) if shape else np.zeros(12)
-    plot = frequency_plot.prepare_plot_curve({"id": "test", "freqs_hz": freqs.tolist(), "magnitude_db": (raw + offset).tolist()})
+    plot = frequency_plot.prepare_plot_curve({"id": "test", "freqs_hz": freqs[::-1].tolist(), "magnitude_db": (raw + offset)[::-1].tolist()})
     assert calls == [6]
+    assert plot["freqs_hz"] == freqs.tolist()
+    assert plot["display"] == "normalized"
     reference = 10 * np.log10(1.5) if shape else 0
     expected = np.array([2] * 7 + [0, 10 * np.log10(2), 10 * np.log10(2), 0, 4]) - reference if shape else np.zeros(12)
     assert plot["deviation_db"] == pytest.approx(expected, abs=1e-10)
@@ -232,13 +233,46 @@ def test_plot_power_reference_smoothing_and_statistics(monkeypatch, offset, shap
     assert [band["mean_db"] for band in plot["band_means"]] == pytest.approx(expected[[0, 1, 2, 3, 4, 5, 6, 7]], abs=1e-10)
 
 
-def test_image_groups_configurations_by_pose(tmp_path, monkeypatch):
+@pytest.mark.parametrize("normalize,mode,levels", [
+    (False, "run_reference", [0, 3]), (True, "normalized", [0, 0]),
+])
+def test_frequency_reference_modes_preserve_or_remove_level_differences(tmp_path, monkeypatch, capsys, normalize, mode, levels):
+    figure = pytest.importorskip("matplotlib.figure")
+    freqs = [25, 35, 45, 55, 70, 100, 150, 300, 1000, 9000]
+    curves = tuple(frequency_series(
+        series_id=str(offset), label=str(offset), kind="measurement", reference_db=-20,
+        freqs_hz=freqs[::-1], magnitude_db=[-20 + offset] * len(freqs), position={"deg": 0},
+    ) for offset in (0, 3))
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(neutral_view(FrequencyRun("trial", "speaker_response", curves))))
+    figures = []
+    monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
+    assert round_views_main([
+        "frequency", str(source), "--image", str(tmp_path / "plot.png"),
+        *(["--normalize"] if normalize else []),
+    ]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    for series, line, level in zip(answer["series"], figures[0].axes[0].lines, levels):
+        assert series["display"] == mode
+        assert series["rms_db"] == pytest.approx(level, abs=1e-10)
+        assert series["peak_to_peak_db"] == pytest.approx(0, abs=1e-10)
+        assert [band["mean_db"] for band in series["band_means"]] == pytest.approx([level] * 8, abs=1e-10)
+        assert list(line.get_xdata()) == freqs
+        assert list(line.get_ydata()) == pytest.approx([level] * len(freqs), abs=1e-10)
+
+
+@pytest.mark.parametrize("candidates,labels", [
+    (("base", "candidate-123456"), ["applied", "candidat"]),
+    (("base", "abcdefghijkl-one", "abcdefghijkl-two", "abcdefghijkl-one"),
+     ["applied", "abcdefghijkl-o", "abcdefghijkl-t"]),
+])
+def test_image_groups_configurations_by_pose(tmp_path, monkeypatch, candidates, labels):
     figure = pytest.importorskip("matplotlib.figure")
     curves = tuple(frequency_series(
-        series_id=f"{pose}:{candidate}", label=candidate, kind="measurement",
+        series_id=f"{pose}:{index}", label=candidate, kind="measurement",
         freqs_hz=[20, 100, 1000, 10000, 20000], magnitude_db=[-10] * 5,
         position={"deg": pose}, candidate_id=candidate, base=candidate == "base",
-    ) for pose in (-20, 20) for candidate in ("base", "candidate-123456"))
+    ) for pose in (-20, 20) for index, candidate in enumerate(candidates))
     figures = []
     monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
     render_frequency_view(neutral_view(FrequencyRun("trial", "speaker_response", curves)), tmp_path / "plot.png", low_end=True)
@@ -247,7 +281,7 @@ def test_image_groups_configurations_by_pose(tmp_path, monkeypatch):
         assert ax.get_xlim() == (20, 300 if index % 2 else 20000)
         assert ax.get_ylim() == (-20, 20)
         assert [line.get_linestyle() for line in ax.lines[:2]] == ["--", "-"]
-        assert [text.get_text() for text in ax.get_legend().get_texts()] == ["applied", "candidate-12"]
+        assert [text.get_text() for text in ax.get_legend().get_texts()] == labels
         assert [tick for tick in ax.get_xticks()] == ([20, 50, 100, 200] if index % 2 else [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000])
 
 

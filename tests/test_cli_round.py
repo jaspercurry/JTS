@@ -319,7 +319,8 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
 
 
 @pytest.mark.parametrize("verb", ["wait", "run"])
-def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch, capsys, tmp_path, verb):
+@pytest.mark.parametrize("timeout", ["--timeout", "--timeout-s"])
+def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch, capsys, tmp_path, verb, timeout):
     from jasper.active_speaker import round_bank
     from jasper.cli.round_views import run_bookkeeping
 
@@ -331,7 +332,7 @@ def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch,
     opener = _run_opener({"status": "complete", "run": {"status": "complete", "manifest": "run_manifest.json"}})
     opener.pages[wc.SESSION_PATH] = json.dumps({"capture": {"session_id": "run-1"}})
     argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--poses", "seat_express", "--wait"]
-    code, body = _run([*argv, "--timeout", "0"], opener, monkeypatch, capsys)
+    code, body = _run([*argv, timeout, "0"], opener, monkeypatch, capsys)
     assert code == 0 and calls == [(tmp_path, {
         "view_runner": run_bookkeeping,
     })]
