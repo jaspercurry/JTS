@@ -128,8 +128,8 @@ class RunManifest:
             planned["measurement_purpose"] = resolved_measurement_purpose(
                 self._context.get("purpose"), pose["kind"],
             )
-        context = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
-                   if key in self._context}
+        context: dict[str, Any] = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
+                                   if key in self._context}
         payload: dict[str, Any] = {**planned, **record, **context}
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
