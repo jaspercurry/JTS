@@ -101,6 +101,20 @@ def test_solver_failure_preserves_the_recording(phase, alignment):
     assert verdict.next == "accept"
 
 
+def test_louder_retake_on_a_quieter_role_keeps_the_program_peak():
+    band = snr_policy.band_snr_verdicts(
+        decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -40}],
+        noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000, 4000), model=DRIVER,
+    )
+    response = replace(_driver_response("tweeter", 8.0), snr={"alignment": band})
+    verdict = cd.assess(_analysis(driver_responses=(response,)), phase="measure",
+                        gain_db={"woofer": -20.0, "tweeter": -30.0}, gain_ceiling_db={"tweeter": -22.0})
+    assert verdict.next == "retake_louder"
+    assert verdict.gain_targets == {"tweeter": -22.0}
+    assert verdict.next_gain_db == -20.0
+
+
 @pytest.mark.parametrize("phase", PHASES)
 @pytest.mark.parametrize("pilot_ok", [True, False])
 def test_low_snr_prices_a_louder_take(phase, pilot_ok):

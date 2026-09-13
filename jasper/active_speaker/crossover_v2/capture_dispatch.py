@@ -141,11 +141,17 @@ def _assess_recording(
 
     verdict = TakeVerdict(True, evidence=evidence, capabilities=capabilities)
 
+    def program_peak(targets: Mapping[str, float]) -> float | None:
+        # The retry rung is the program's peak after the per-role targets land; a
+        # composer shifts the plan until its peak meets the rung, so a target on a
+        # quieter role must not read as a new peak for every role.
+        return max({**gains, **targets}.values()) if targets else None
+
     def refuse(code: str, *, next: TakeNext = "fix_and_retake", charge: TakeCharge = "operator",
                targets: Mapping[str, float] | None = None, ok: bool = False) -> TakeVerdict:
         targets = targets or {}
         return replace(verdict, ok=ok, fault=code, next=next, charge=charge,
-                       next_gain_db=max(targets.values(), default=None),
+                       next_gain_db=program_peak(targets),
                        evidence={**evidence, **{f"next_gain_db.{role}": float(gain)
                                                for role, gain in targets.items()}},
                        capabilities=capabilities if ok else {key: False for key in capabilities})
@@ -211,7 +217,7 @@ def _assess_recording(
             if step > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
                 return refuse(reasons.REASON_VERIFY_LEVEL_SHIFT, ok=True)
     if adjusted:
-        return replace(verdict, next="retake_louder", next_gain_db=max(adjusted.values()), charge="speaker",
+        return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
                        evidence={**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}})
     return verdict
 
