@@ -18,13 +18,15 @@ from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_P
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
+from jasper.active_speaker.crossover_v2.programs import CHECK_PROBE_BACKOFF_DB
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS,
     REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
 )
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
-from tests.crossover_v2_fixtures import _loc
+from jasper.web.correction_run_host import compose_plan_program
+from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 
@@ -738,6 +740,7 @@ async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expect
     from types import SimpleNamespace
 
     played = []
+    conductor = _conductor(FlowSeams())
 
     @asynccontextmanager
     async def hold():
@@ -765,6 +768,16 @@ async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expect
 
     async def measure(session, spec):
         played.append((spec.program_phase, session.measurement_level_db))
+        if spec.program_phase == "check":
+            assert spec.level_ladder_dbfs == ()
+            conductor._excitation = replace(conductor._excitation, session_volume_db=session.measurement_level_db)
+            program = compose_plan_program(conductor, spec, None)
+            summed = conductor._excitation.verify_program()
+            for segment in program.stimulus_segments():
+                if segment.kind == "pilot":
+                    suffix = segment.segment_id.rsplit("_", 1)[-1]
+                    assert segment.gain_db == pytest.approx(
+                        summed.segment(f"pilot_summed_{suffix}").gain_db - CHECK_PROBE_BACKOFF_DB)
         await manifest.bank({
             "take_id": manifest.allocate_take_id(),
             "level_db": session.measurement_level_db,

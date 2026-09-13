@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +23,8 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureAnswer,
     CaptureStopped,
 )
+from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
 from jasper.audio_measurement.wired_capture import (
     CODE_WIRED_MIC_MISSING,
     WiredCaptureAnswer,
@@ -34,11 +37,13 @@ from jasper.audio_measurement.wired_capture import (
 )
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
+from jasper.web import correction_run_host
 from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
+from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
 
 RATE = 48_000
 
@@ -802,6 +807,56 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
             assert verdict.ok
     assert ceilings is conductor._measure_gain_ceiling_db
     assert fakes.published_candidates == []
+
+
+@pytest.mark.parametrize(("anchor", "verify_only", "sensitivity", "offsets"), [
+    (74.9, False, MicSensitivity(-12.07), (0.0,)),
+    (74.9, False, MicSensitivity(-12.07), (0.0, -12.0)),
+    (0.0, False, MicSensitivity(-12.07), (0.0,)),
+    (None, False, MicSensitivity(-12.07), (0.0,)),
+    (None, True, MicSensitivity(-12.07), (0.0,)),
+    (74.9, False, None, (0.0,)),
+])
+def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, verify_only, sensitivity, offsets):
+    fakes = FlowSeams()
+    conductor = _conductor(fakes, index_phase_map={1: "check", 2: "measure", 3: "verify"},
+                           gain_plan_db={"woofer": -32.0, "tweeter": -38.0})
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    resolve = Mock(return_value=sensitivity)
+    monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", resolve)
+    monkeypatch.setattr(correction_run_host, "CapturedRecordStore", lambda *_args: records)
+    monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
+    target = (sensitivity.dbfs_from_db_spl(anchor + min(offsets)) + SWEEP_PEAK_TO_RMS_DB
+              if anchor is not None and sensitivity is not None else None)
+    with caplog.at_level(logging.INFO):
+        windows, analyze, _assessor = correction_run_host.bind_level_windows(
+            host=SimpleNamespace(session_volume_plan=lambda: None),
+            context=SimpleNamespace(topology=None, preset=None, session_volume_db=-14.809),
+            device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}),
+            production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
+            ceiling_s=30, ceiling_db_spl=85, camilla_factory=None, verify_only=verify_only,
+            level_anchor_db_spl=anchor, level_offsets_db=offsets,
+        )
+        for index, phase in enumerate(("check", "measure", "verify"), 1):
+            expected = (conductor._check_priors() if phase == "check" else
+                        conductor._measure_priors() if phase == "measure" else
+                        conductor._verify_priors() if verify_only else conductor._lateral_priors())
+            if phase == "check" and target is not None:
+                expected = replace(expected, target_capture_dbfs=target)
+            program = conductor.program_for_phase(phase)
+            for attempt in (1, 2):
+                record = {"take_id": "engine", "index": index, "attempt": attempt, "program": program.to_dict()}
+                records.enrich(None, record)
+                records.after_bank(record, "take")
+                analyze(record, "take")
+                assert fakes.analyzed[-1][3].target_capture_dbfs == pytest.approx(expected.target_capture_dbfs)
+    resolve.assert_called_once_with(_device())
+    assert windows.sensitivity is sensitivity
+    events = event_field_maps(caplog, "active_speaker.check_level_target")
+    assert len(events) == (0 if target is None else 1)
+    if target is not None:
+        assert float(events[0]["anchor_db_spl"]) == anchor
+        assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
 
 
 @pytest.mark.parametrize("target", [None, -48.0, -60.0])

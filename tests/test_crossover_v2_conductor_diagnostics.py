@@ -19,6 +19,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2 import diagnostics
+from jasper.active_speaker.crossover_v2.programs import CHECK_PROBE_BACKOFF_DB
 from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     GAIN_CAP_BACKOFF_DB,
@@ -142,8 +143,7 @@ def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
     t_lo = check.segment("pilot_tweeter_lo")
     assert t_hi.gain_db < BASE_STIMULUS_PEAK_DBFS
     assert t_hi.gain_db - t_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
-    assert t_hi.effective_peak_dbfs <= -65.0 + 1e-9
-    assert t_hi.effective_peak_dbfs >= -65.0 - PILOT_LEVEL_DELTA_DB
+    assert t_hi.effective_peak_dbfs == pytest.approx(-65.0 - GAIN_CAP_BACKOFF_DB - CHECK_PROBE_BACKOFF_DB)
 
 
 def test_verify_pilot_pair_preserves_delta_after_clamp():
@@ -214,18 +214,6 @@ def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
     assert peak_dbfs + sv >= binding_cap - 1.0
 
 
-# --- W6.5: the sensitivity-derived HF ceiling drives PRODUCTION composition -----
-#
-# The 2026-07-19 gate blocker: the derived ceiling existed in admission but the
-# conductor context resolved caps WITHOUT the proven-HP flag, so every composed
-# level (CHECK pilot bases, MEASURE back_off_gain, VERIFY min(caps)) still
-# clamped to the legacy -65 — reviewer-measured composed CHECK pilot: -65.01.
-# This pin drives the conductor with caps resolved EXACTLY the way the fixed
-# resolve_conductor_context resolves them (program_admission=True + the
-# declaration's sensitivities) and asserts the composed tweeter hi pilot lands
-# at the derived cap, then that admission (same declared mapping) agrees.
-
-
 def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_path):
     from jasper.active_speaker.excitation_safety_plan import (
         resolve_driver_excitation_ceilings,
@@ -276,10 +264,8 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
         seams=FakeSeams().seams(),
         driver_spacing_m=0.15,
     )
-    # Probe (b): the composed CHECK tweeter hi pilot rides the DERIVED cap
-    # (back_off margin under -33.2), not the legacy -65.01 the gate measured.
     t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
-    assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)
+    assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB - CHECK_PROBE_BACKOFF_DB)
     # And the play-time gate (same declared mapping, as bind_production_play
     # now threads it) admits what the conductor composed.
     wav = tmp_path / "check.wav"
