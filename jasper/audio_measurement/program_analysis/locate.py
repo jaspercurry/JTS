@@ -26,6 +26,7 @@ from .model import (
     SEGMENT_SEARCH_S,
     SegmentLocation,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    WITNESS_BAND_FLOOR_HZ,
 )
 from .signals import _has_clipped_run, _locate, _peak_dbfs
 
@@ -168,6 +169,7 @@ def _resolve_anchor(
     if len(candidates) < 2 or witness is None:
         return first, arrival - first.start_sample, None
 
+    assert witness.f1_hz is not None and witness.f2_hz is not None
     witness_stim = stimuli.get(witness.segment_id)
     if witness_stim is None:
         witness_stim = segment_stimulus(witness)
@@ -190,13 +192,14 @@ def _resolve_anchor(
         (row for index, row in enumerate(scored) if index != best_index),
         key=lambda item: item[0],
     )
-    # Re-anchoring requires POSITIVE evidence that the winning witness locate
-    # is a sharp lag, not room noise (a silent driver never played, so
-    # nothing in the window is sharp and re-anchoring on noise would shift
-    # the timeline for no reason). NOT redundant with the presence ranking
-    # (which prefers the later candidate on a garbage capture) and NOT
-    # sufficient alone — a sharp lag is not the witness.
-    corroborated = best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+    # Filtering can prove the timeline but inflates empty-window presence,
+    # so ranking and ambiguity keep the full-band scores.
+    _, band_confidence, _ = _locate_in_window(
+        capture, witness_stim, best_offset + witness.start_sample,
+        witness.n_samples, sample_rate=sample_rate,
+        band_hz=(max(WITNESS_BAND_FLOOR_HZ, witness.f1_hz), witness.f2_hz),
+    )
+    corroborated = max(best_confidence, band_confidence) >= SWEEP_LOCATE_CONFIDENCE_FLOOR
     if not corroborated:
         best_seg, best_offset = first, arrival - first.start_sample
     # Corroboration alone is not discrimination: two candidates both above
@@ -207,7 +210,7 @@ def _resolve_anchor(
     # Multiplication rather than subtraction so a zero runner-up presence
     # resolves rather than divides by zero.
     ambiguous = (
-        corroborated
+        best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
         and runner_up >= SWEEP_LOCATE_CONFIDENCE_FLOOR
         and best_presence < runner_up_presence * ANCHOR_DISCRIMINATION_RATIO
     )
@@ -307,13 +310,9 @@ def _locate_in_window(
     n_samples: int,
     *,
     sample_rate: int,
+    band_hz: tuple[float, float] | None = None,
 ) -> tuple[int, float, float]:
     """Matched-filter ``stim`` at ``scheduled`` +/- :data:`SEGMENT_SEARCH_S`.
-
-    The ONE place the per-segment search geometry lives: both
-    :func:`_locate_segments` and :func:`_resolve_anchor` score through it,
-    so the chosen anchor is by construction the anchor segments actually
-    locate under.
 
     Returns BOTH scores, since they answer different questions: ``confidence``
     is the peakedness margin (is the winning lag sharp against its own
@@ -329,6 +328,11 @@ def _locate_in_window(
     window = capture[lo:hi]
     if window.size < stim.size:
         return scheduled, 0.0, 0.0
+    if band_hz is not None:
+        window_b = _bandlimit(window, sample_rate, *band_hz)
+        stim_b = _bandlimit(stim, sample_rate, *band_hz)
+        if float(np.linalg.norm(stim_b)) > 0.0 and float(np.linalg.norm(window_b)) > 0.0:
+            window, stim = window_b, stim_b
     res = _locate(
         window, stim, sample_rate=sample_rate,
         max_capture_s=window.size / sample_rate + 1.0,

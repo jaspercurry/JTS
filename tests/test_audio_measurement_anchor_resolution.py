@@ -146,6 +146,12 @@ def _band_impulse(delay: int, f_lo: float, f_hi: float, amp: float, n: int = 409
     return np.fft.irfft(spectrum, n)
 
 
+def _low_shelf(ir: np.ndarray, shelf_db: float) -> np.ndarray:
+    spectrum = np.fft.rfft(ir)
+    spectrum[np.fft.rfftfreq(ir.size, 1.0 / SR) < 200.0] *= 10 ** (shelf_db / 20.0)
+    return np.fft.irfft(spectrum, ir.size)
+
+
 def _band_noise(n: int, f_lo: float, f_hi: float, rms: float, seed: int):
     x = np.random.default_rng(seed).normal(0.0, 1.0, n)
     spectrum = np.fft.rfft(x)
@@ -162,17 +168,20 @@ def _check_roles() -> list[RoleBand]:
     ]
 
 
-def _verify_program(*, with_pilots: bool = True):
+def _verify_program(*, with_pilots: bool = True, sweep_band_hz=None):
     kwargs = {}
     if with_pilots:
         kwargs = {"leading_pilot_gains_db": (-22.0, -12.0), "pilot_duration_s": 0.5}
-    return build_verify_program(FC_HZ, sweep_s=1.5, courtesy_prelude=True, **kwargs)
+    return build_verify_program(
+        FC_HZ, sweep_s=1.5, courtesy_prelude=True, sweep_band_hz=sweep_band_hz, **kwargs
+    )
 
 
-def _pristine(program, *, noise: float = 1e-4, seed: int = 0) -> np.ndarray:
+def _pristine(program, *, noise: float = 1e-4, seed: int = 0, ir=None) -> np.ndarray:
     """A clean capture: the program through one band-passed driver IR."""
     pcm = render_program_pcm(program)
-    ir = _band_impulse(200, 150.0, 6000.0, 1.0)
+    if ir is None:
+        ir = _band_impulse(200, 150.0, 6000.0, 1.0)
     mono = np.zeros(pcm.shape[0], dtype=np.float64)
     for ch in range(pcm.shape[1]):
         mono += fftconvolve(pcm[:, ch], ir)[: pcm.shape[0]]
@@ -321,6 +330,29 @@ def test_pre_fix_offset_would_have_failed_this_capture():
 # --------------------------------------------------------------------------- #
 # the repair
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("shelf_db", [0.0, 6.0, 12.0, 18.0])
+def test_low_shelf_preserves_witness_corroboration_and_offset(monkeypatch, shelf_db):
+    prog = _verify_program(sweep_band_hz=(30.0, 20_000.0))
+    # A 12.5 ms low-band echo competes outside the ±5 ms main lobe.
+    ir = (_band_impulse(1000, 30.0, 6000.0, 1.0)
+          + _band_impulse(1600, 30.0, 180.0, 1.1))
+    baseline, _, _, _ = _global_offset(prog, _pristine(prog, ir=ir), SR)
+    cap = _pristine(prog, ir=_low_shelf(ir, shelf_db))
+    offset, _, _, anchor = _global_offset(prog, cap, SR)
+
+    assert anchor.corroborated is True
+    assert offset == baseline
+
+    if shelf_db == 18.0:
+        locate = locate_mod._locate_in_window
+        monkeypatch.setattr(
+            locate_mod, "_locate_in_window",
+            lambda *args, band_hz=None, **kwargs: locate(*args, **kwargs),
+        )
+        _, _, _, raw_anchor = _global_offset(prog, cap, SR)
+        assert raw_anchor.corroborated is False
 
 
 def test_knife_edge_capture_locates_the_sweep_exactly_as_the_pristine_one():
@@ -591,9 +623,8 @@ INCIDENT_TONE_RMS = 0.13
 QUIET_TONE_RMS = 3e-3
 
 
-def _full_band_locate(capture, stimulus, *, frac=0.6, band_hz=None, sample_rate=None):
-    """``_earliest_strong_peak`` as it scored before #2644: band argument dropped."""
-    return _earliest_strong_peak(capture, stimulus, frac=frac)
+def _use_full_band_locators(monkeypatch):
+    monkeypatch.setattr(locate_mod, "_bandlimit", lambda samples, *args: samples)
 
 
 def _check_screen(analysis) -> str | None:
@@ -733,10 +764,7 @@ def test_the_quiet_pilots_in_band_snr_never_moved():
 
 
 def test_a_misanchored_capture_has_no_valid_channel_map(monkeypatch):
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     prog = _incident_program()
     cap = _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
 
@@ -759,10 +787,7 @@ def test_the_near_tie_guard_alone_turns_that_verdict_into_a_retake(monkeypatch):
     already make the wiring copy unreachable, because a capture the analyzer
     could not attribute is not evidence about how a speaker is wired.
     """
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     prog = _incident_program()
     analysis = analyze_program_capture(
         prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR
@@ -792,10 +817,7 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
     not `anchor_ambiguous` -- the snr-floor rung's copy is actionable and a
     retake in a quieter room also cures the mis-anchoring, so it wins.
     """
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     prog = _incident_program()
     analysis = analyze_program_capture(
         prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR
@@ -942,8 +964,8 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
     scores = iter(witness_scores)
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
-        lambda capture, stim, scheduled, n, *, sample_rate: (
-            scheduled, next(scores), 0.5
+        lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
+            scheduled, next(scores) if band_hz is None else 1.0, 0.5
         ),
     )
     prog = _incident_program()
@@ -1008,10 +1030,7 @@ def test_the_ratio_brackets_the_two_measured_populations(monkeypatch):
     """
     prog = _incident_program()
     healthy = _anchor_separation(prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS))
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     unattributed = _anchor_separation(
         prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
     )
@@ -1059,8 +1078,8 @@ def test_the_guard_compares_a_ratio_and_not_a_difference(
     presence = iter(presences)
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
-        lambda capture, stim, scheduled, n, *, sample_rate: (
-            scheduled, 0.99, next(presence)
+        lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
+            scheduled, 0.99, next(presence) if band_hz is None else 0.0
         ),
     )
     prog = _incident_program()
@@ -1097,10 +1116,7 @@ def test_the_separation_is_flat_across_room_level(monkeypatch):
     assert min(resolved) > ANCHOR_DISCRIMINATION_RATIO * 3, (
         f"a resolved anchor fell near the guard: {resolved}"
     )
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     # The mis-locking half of the ramp only (below ~0.10 the full-band locate
     # still finds the quiet pilot, so those rows are the resolved population
     # again and would say nothing here).
@@ -1143,10 +1159,7 @@ def test_a_mislocking_room_has_already_failed_a_rung_below(monkeypatch):
     Run against the pre-#2644 locate, because that is what produces mis-locks
     at all; the companion below asserts the shipped locate produces none.
     """
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     prog = _incident_program()
     saw_mislock = False
     for tone in _ROOM_RAMP:
@@ -1195,8 +1208,8 @@ def test_a_corrected_anchor_can_also_be_ambiguous(monkeypatch):
     presences = iter((0.9000, 0.9007))
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
-        lambda capture, stim, scheduled, n, *, sample_rate: (
-            scheduled, 0.99, next(presences)
+        lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
+            scheduled, 0.99, next(presences) if band_hz is None else 0.0
         ),
     )
     prog = _incident_program()
@@ -1214,10 +1227,7 @@ def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
     line -- at WARNING, like a correction, because both mean the timeline is
     not what the locate said it was.
     """
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.locate._earliest_strong_peak",
-        _full_band_locate,
-    )
+    _use_full_band_locators(monkeypatch)
     prog = _incident_program()
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
@@ -1336,8 +1346,8 @@ def test_the_peakedness_margin_prefers_the_EMPTY_window(monkeypatch, caplog):
     scores = iter((_FIELD_LO, _FIELD_HI))
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
-        lambda capture, stim, scheduled, n, *, sample_rate: (
-            scheduled, *next(scores)
+        lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
+            scheduled, *(next(scores) if band_hz is None else (0.0, 0.0))
         ),
     )
     prog = _measure_program()
@@ -1392,7 +1402,6 @@ def test_a_measure_capture_with_both_pilots_present_keeps_its_timeline():
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is False
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
-    # Hundreds-fold, the way every correctly-attributed capture in this file is.
     assert _anchor_separation(prog, cap) > ANCHOR_DISCRIMINATION_RATIO * 3
 
     analysis = analyze_program_capture(
@@ -1507,11 +1516,13 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
     locate = locate_mod._locate_in_window
     readings = iter([(confidence, 0.0156), (0.1, 0.001)])
 
-    def witness(capture, stim, scheduled, n, *, sample_rate):
+    def witness(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
+        if band_hz is not None:
+            return scheduled, 0.0, 0.0
         reading = next(readings, None)
         if reading is not None:
             return scheduled, *reading
-        return locate(capture, stim, scheduled, n, sample_rate=sample_rate)
+        return locate(capture, stim, scheduled, n, sample_rate=sample_rate, band_hz=band_hz)
 
     monkeypatch.setattr(locate_mod, "_locate_in_window", witness)
     monkeypatch.setattr(
