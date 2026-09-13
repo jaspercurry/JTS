@@ -179,26 +179,30 @@ def saved_tune():
 @pytest.mark.parametrize("change, code", [
     ("topology", "composition_saved_tune_unavailable"),
     ("delay", "composition_saved_tune_unrepresentable"),
-    ("protection", "composition_saved_tune_unrepresentable"),
 ])
 def test_saved_candidate_refuses_unrepresentable_upstream_tune(saved_tune, change, code):
     topology, applied = saved_tune
     snapshot = applied["recomposition_snapshot"]
     if change == "topology":
         snapshot["topology_fingerprint"] = "old-hardware"
-    elif change == "delay":
-        snapshot["corrections"]["tweeter"]["delay_ms"] = 0.22
     else:
-        snapshot["driver_protection"] = {"targets": [
-            {"role": role, "target_fingerprint": role, "required_protection_filters": ([{
-                "kind": "highpass", "cutoff_hz": 40,
-                "minimum_slope_db_per_octave": 24,
-            }] if role == "woofer" else [])}
-            for role in ("woofer", "tweeter")
-        ]}
+        snapshot["corrections"]["tweeter"]["delay_ms"] = 0.22
     with pytest.raises(CandidateBankRefusal) as refused:
         candidate_from_applied_profile(topology, applied)
     assert refused.value.code == code
+
+
+def test_saved_candidate_carries_the_declared_driver_protection(saved_tune):
+    topology, applied = saved_tune
+    applied["recomposition_snapshot"]["driver_protection"] = {"targets": [
+        {"role": role, "target_fingerprint": role, "required_protection_filters": ([{
+            "kind": "highpass", "cutoff_hz": 40,
+            "minimum_slope_db_per_octave": 24,
+        }] if role == "woofer" else [])}
+        for role in ("woofer", "tweeter")
+    ]}
+    candidate = candidate_from_applied_profile(topology, applied)
+    assert candidate.role_attenuations_db["tweeter"] == applied["recomposition_snapshot"]["corrections"]["tweeter"]["gain_db"]
 
 
 @pytest.mark.parametrize("base_kind", ["saved", "banked"])
