@@ -586,19 +586,9 @@ def _crossover_v2_status_block() -> dict | None:
 
 
 def _applied_grade_finding(block: dict) -> tuple[str, str]:
-    """Read trial advice and plan-derived coverage from the status owners."""
+    """Read plan-derived coverage from the status owner."""
     grade = block.get("post_apply_grade")
     grade = grade if isinstance(grade, dict) else {}
-    advice = block.get("trial_verification")
-    if isinstance(advice, dict):
-        dimensions = ", ".join(f"{key}={advice.get(key, 'unavailable')}" for key in
-                               ("capture_validity", "realization", "benefit", "spec"))
-        layers = ",".join(advice.get("layers_changed", [])) or "none"
-        reused = "; speaker trial reused" if advice.get("speaker_evidence_reused") else ""
-        return (f"applied trial: {dimensions}; layers_changed={layers}{reused}",
-                REASON_APPLIED_GRADE_VERIFY_FAILED if any(advice.get(key) == value for key, value in
-                (("capture_validity", "unusable"), ("realization", "failed"), ("benefit", "regressed"), ("spec", "failed")))
-                else grade.get("reason", ""))
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
         GRADE_GRADED,

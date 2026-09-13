@@ -40,10 +40,11 @@ def _offerable_previous_candidate(state: Mapping[str, Any] | None) -> str | None
     """The displaced candidate, when its banked artifact still resolves."""
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 
-    from jasper.active_speaker.crossover_v2.apply_gate import previously_applied
-
     fingerprint = previous_candidate_fingerprint(state)
-    if fingerprint and previously_applied(fingerprint, (state or {}).get("previous_applied_profile")):
+    applied = (state or {}).get("previous_applied_profile") or {}
+    if (fingerprint and applied.get("status") == "applied"
+            and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint
+            and (applied.get("config") or {}).get("sha256")):
         try:
             return find_banked_candidate(fingerprint).fingerprint
         except CandidateBankRefusal:
@@ -115,10 +116,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-
-    applied = load_applied_baseline_profile_state() or {}
-    block["trial_verification"] = applied.get("trial_verification")
     block["post_apply_grade"] = _host._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
     return block
 

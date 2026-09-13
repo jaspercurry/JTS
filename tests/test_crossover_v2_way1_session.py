@@ -300,7 +300,7 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
     caplog.set_level(logging.INFO, logger=baseline_profile_mod.logger.name)
 
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_profile_mod._persist_applied_record(
         _way1_ready_to_apply_payload(tmp_path),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",

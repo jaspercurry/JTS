@@ -55,8 +55,9 @@ from .camilla_yaml import (
     emit_active_speaker_driver_domain_config,
     linearization_headroom_db,
 )
+from .candidate_bank import CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
 from .candidate_trials import candidate_boost_issue
-from .crossover_v2.apply_gate import check_baseline_apply, prepare_trial
+from .measurement_emit import MeasurementGraphProfile
 from .boost_protection import config_graph_fingerprint
 from .crossover_contract import (
     TUNING_OWNERS,
@@ -93,7 +94,7 @@ from .level_trim import (
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
-    candidate_room_peqs,
+    candidate_room_peqs, driver_corrections, effective_preset,
     room_peqs_from_correction,
 )
 from .playback_route import (
@@ -3427,83 +3428,86 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
 
 
 def persist_applied_baseline_profile(
-    candidate: Mapping[str, Any],
+    candidate: MeasuredCrossoverCandidate,
     *,
+    declaration: MeasurementGraphProfile,
+    design_draft: Mapping[str, Any],
+    measurements: Mapping[str, Any],
+    config_path: str | Path,
+    config_sha256: str,
     apply_state: Mapping[str, Any],
     state_path: str | Path | None = None,
     applied_at: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist one already-read-back compiler candidate as the Layer-A SSOT.
+    """Record the loaded candidate and the declaration used to compose it."""
+    from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
+    if apply_state.get("result") != "success":
+        raise ValueError("successful apply proof is required")
+    try:
+        find_banked_candidate(candidate.fingerprint)
+    except CandidateBankRefusal as exc:
+        if exc.code != "not_found":
+            raise
+        publish_authored_candidate(candidate)
+    protection = ((provenance or {}).get("recomposition_snapshot") or {}).get("driver_protection") if provenance else design_draft.get("driver_safety_profile")
+    source = _source_payload(
+        declaration.topology, design_draft, {}, measurements,
+        measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
+    )
+    corrections = driver_corrections(candidate)
+    linearization = linearization_filters_by_role(candidate.linearization)
+    snapshot = {
+        **((provenance or {}).get("recomposition_snapshot") or {}),
+        "schema_version": 1, "topology_id": declaration.topology.topology_id,
+        "topology_fingerprint": source["topology_fingerprint"],
+        "preset": effective_preset(candidate).to_dict(), "corrections": corrections,
+        "linearization": linearization, "blend_correction": list(candidate.blend_correction),
+        "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
+        "driver_protection": protection, "playback_device": declaration.playback_device,
+        "measured_candidate_fingerprint": candidate.fingerprint,
+    }
+    applied = {
+        **(provenance or {}),
+        "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
+        "baseline_id": baseline_id(declaration.topology.topology_id),
+        "source": {**source, **((provenance or {}).get("source") or {}), "measured_candidate_fingerprint": candidate.fingerprint},
+        "config": {**((provenance or {}).get("config") or {}), "path": str(config_path),
+                   "basename": Path(config_path).name, "sha256": config_sha256, "exists": True,
+                   "playback_device": declaration.playback_device},
+        "corrections": corrections, "linearization": linearization,
+        "corrections_source": (provenance or {}).get("corrections_source", {}),
+        "linearization_outcome": (provenance or {}).get("linearization_outcome", candidate.linearization_outcome),
+        "trim_decision": (provenance or {}).get("trim_decision", dict(candidate.trim_decision)),
+        "tuning_owner": (provenance or {}).get("tuning_owner", "automatic"),
+        "blend_correction": snapshot["blend_correction"], "room_correction": snapshot["room_correction"],
+        "recomposition_snapshot": snapshot,
+    }
+    return _persist_applied_record(applied, apply_state=apply_state, state_path=state_path, applied_at=applied_at)
 
-    Always durable (fsync-before-rename, see
-    :func:`jasper.atomic_io.atomic_write_text`): this write IS the apply
-    seam — the moment a successfully loaded CamillaDSP graph becomes the
-    record JTS trusts as "what's actually running" — so unlike the
-    draft/preview writers upstream, there is no non-accept caller for this
-    function to keep cheap for.
-    """
 
-    if (
-        candidate.get("kind") != BASELINE_PROFILE_KIND
-        or candidate.get("status") not in {"ready_to_apply", "applied"}
-        or not isinstance(candidate.get("recomposition_snapshot"), Mapping)
-        or apply_state.get("result") != "success"
-        or baseline_candidate_fingerprint(candidate)
-        != candidate.get("candidate_fingerprint")
-    ):
-        raise ValueError(
-            "baseline candidate and successful apply proof are required"
-        )
-    # The commission is over: a baseline is what boots now, not the all-muted
-    # staged anchor, so the startup-load hold that protected that anchor is
-    # spent. Releasing it HERE rather than in a web handler is what makes the
-    # release cover every way a baseline becomes applied — this function is the
-    # apply seam all three callers funnel through (the apply path, the
-    # commissioning apply, and the restore) — and the guard above has already
-    # proved `apply_state["result"] == "success"`. Before the idempotent
-    # early-return below as well as the write, because an already-applied
-    # baseline leaves the hold just as stale. Best-effort by contract: a failed
-    # clear never turns a successful apply into a failure, and the marker is
-    # ephemeral (/run) either way.
-    #
-    # A lingering hold is inert today — `safe_graph_for_current_topology`'s rung
-    # ALSO requires the current graph to classify as all-muted-active-startup,
-    # which an applied baseline does not — so this is a latent-surprise and
-    # doctor-honesty fix, not a live-bug fix. Observed on jts3 after a
-    # save-and-apply that left the marker set.
+def _persist_applied_record(
+    candidate: Mapping[str, Any], *, apply_state: Mapping[str, Any],
+    state_path: str | Path | None = None, applied_at: str | None = None,
+) -> dict[str, Any]:
+    if apply_state.get("result") != "success":
+        raise ValueError("successful apply proof is required")
     release_staged_startup_hold()
-    # Before the idempotent early-return below, for the reason the hold release
-    # is: an already-applied candidate whose base trim never reached disk (a
-    # first attempt that hit a full or read-only /var/lib) must be banked by
-    # the retry, not skipped by it.
     _bank_applied_base_trim(candidate)
     target = baseline_profile_state_path(state_path)
     existing = _load_saved_state(target)
-    candidate_identity = baseline_candidate_fingerprint(candidate)
-    if (
-        isinstance(existing, Mapping)
-        and existing.get("status") == "applied"
-        and baseline_candidate_fingerprint(existing) == candidate_identity
-    ):
-        return dict(existing)
+    identity = baseline_candidate_fingerprint(candidate)
+    if (existing and existing.get("status") == "applied"
+            and baseline_candidate_fingerprint(existing) == identity
+            and existing.get("config") == candidate.get("config")):
+        return existing
     now = applied_at or _utc_now()
-    applied = {
-        **candidate,
-        "status": "applied",
-        "applied_at": now,
-        "updated_at": now,
-        "apply": dict(apply_state),
-        "revalidation": {"required": False, "status": "not_required"},
-    }
+    applied = {**candidate, "status": "applied", "applied_at": now, "updated_at": now,
+               "apply": dict(apply_state), "candidate_fingerprint": identity,
+               "revalidation": {"required": False, "status": "not_required"},
+               "permissions": {"may_apply": False}}
     applied.pop("applied_recomposition_profile", None)
-    applied["permissions"] = dict(applied.get("permissions") or {})
-    applied["permissions"]["may_apply"] = False
-    atomic_write_text(
-        target,
-        json.dumps(applied, indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-        durable=True,
-    )
+    atomic_write_text(target, json.dumps(applied, indent=2, sort_keys=True) + "\n", mode=0o640, durable=True)
     return applied
 
 
@@ -3640,10 +3644,8 @@ async def apply_baseline_profile(
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
-    expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredCrossoverCandidate | None" = None,
-    trial_evidence: Mapping[str, Any] | None = None,
     refresh_inputs: Callable[
         [],
         tuple[
@@ -3666,12 +3668,8 @@ async def apply_baseline_profile(
     ``jasper.active_speaker.measured_crossover_candidate`` for the v2 measured
     candidate that carries optional delay/polarity).
 
-    ``expected_tuning_graph_fingerprint`` binds the complete measured graph,
-    including its Room and bass layers, before the locked DSP transaction.
     """
 
-    if trial_evidence is None:
-        trial_evidence = prepare_trial(measured_candidate)
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
         source="active_speaker_baseline_apply",
@@ -3695,10 +3693,8 @@ async def apply_baseline_profile(
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
-            expected_tuning_graph_fingerprint=expected_tuning_graph_fingerprint,
             on_candidate_verified=on_candidate_verified,
             measured_candidate=measured_candidate,
-            trial_evidence=trial_evidence,
             validate=validate,
         )
 
@@ -3721,10 +3717,8 @@ async def _apply_baseline_profile_locked(
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
-    expected_tuning_graph_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     measured_candidate: "MeasuredCrossoverCandidate | None" = None,
-    trial_evidence: Mapping[str, Any] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -3749,8 +3743,6 @@ async def _apply_baseline_profile_locked(
     :func:`build_baseline_profile_candidate`; ``None`` (the default) keeps
     every existing caller byte-identical.
 
-    ``expected_tuning_graph_fingerprint`` includes every layer played during
-    the tuning capture; no unmeasured bass layer is added after this proof.
     """
 
     state_target = baseline_profile_state_path(state_path)
@@ -3812,18 +3804,9 @@ async def _apply_baseline_profile_locked(
 
     reviewed_candidate = build_candidate(
         write=False,
-        compile_config=measured_candidate is not None or expected_tuning_graph_fingerprint is not None,
+        compile_config=measured_candidate is not None,
     )
-    graph_issue = None
-    if expected_tuning_graph_fingerprint is not None and str(
-        (reviewed_candidate.get("config") or {}).get("sha256") or ""
-    )[:16] != expected_tuning_graph_fingerprint:
-        graph_issue = _issue(
-            "blocker", "candidate_trial_graph_mismatch",
-            "the captured tuning graph does not match the compiled graph",
-        )
-    if measured_candidate is not None:
-        graph_issue = graph_issue or candidate_boost_issue(config_graph_fingerprint(reviewed_candidate))
+    graph_issue = candidate_boost_issue(config_graph_fingerprint(reviewed_candidate)) if measured_candidate is not None else None
     if graph_issue is not None:
         reviewed_candidate["permissions"]["may_apply"] = False
         reviewed_candidate["issues"] = [*reviewed_candidate.get("issues", []), graph_issue]
@@ -3836,7 +3819,16 @@ async def _apply_baseline_profile_locked(
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
     candidate = build_candidate(write=True)
-    check_baseline_apply(candidate, topology, measured_candidate, state_target, trial_evidence=trial_evidence or {}, driver_domain=driver_domain)
+    if not driver_domain and (candidate.get("config") or {}).get("sha256"):
+        from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
+
+        proof = classify_bass_extension_graph(
+            topology, evidence_source="desired",
+            graph_text=Path(candidate["config"]["path"]).read_text(), applied_baseline_state=candidate,
+        )
+        if not proof.allowed or proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+            candidate["permissions"]["may_apply"] = False
+            candidate["issues"].append(_issue("blocker", "baseline_graph_safety_proof_failed", proof.classification))
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
             measurements,
@@ -3936,11 +3928,22 @@ async def _apply_baseline_profile_locked(
             "issues": failed["issues"],
         }
 
-    applied = persist_applied_baseline_profile(
-        candidate,
-        apply_state=apply_state.to_dict(),
-        state_path=state_target,
-    )
+    from .candidate_parts import candidate_from_applied_profile  # lazy: candidate parts consumes baseline readers
+
+    if driver_domain:
+        applied = _persist_applied_record(candidate, apply_state=apply_state.to_dict(), state_path=state_target)
+    else:
+        bank_candidate = measured_candidate or candidate_from_applied_profile(topology, {**candidate, "status": "applied"})
+        applied = persist_applied_baseline_profile(
+            bank_candidate,
+            declaration=MeasurementGraphProfile(
+                preset=bank_candidate.source_preset, topology=topology, role_channels={},
+                playback_device=str(candidate["config"]["playback_device"]),
+            ),
+            design_draft=design_draft, measurements=measurements,
+            config_path=candidate["config"]["path"], config_sha256=candidate["config"]["sha256"],
+            apply_state=apply_state.to_dict(), state_path=state_target, provenance=candidate,
+        )
     promote_applied_baseline_candidate(applied, config_path=config_path)
     log_event(
         logger,
@@ -3952,8 +3955,8 @@ async def _apply_baseline_profile_locked(
         # Apply loads this exact frozen candidate without transforming it, so
         # candidate and applied identities are equal. ``graph_fingerprint``
         # remains the separate source/cache context identifier.
-        candidate_fingerprint=candidate_identity,
-        applied_fingerprint=candidate_identity,
+        candidate_fingerprint=applied["candidate_fingerprint"],
+        applied_fingerprint=applied["candidate_fingerprint"],
         applied_at=applied["applied_at"],
     )
     # Layer-1a driver linearization observability (#1668 PR-D review SF3):

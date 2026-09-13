@@ -61,24 +61,6 @@ def tuning_trial_matches_candidate(reference: Any, candidate_fingerprint: Any) -
     )
 
 
-def require_candidate_trial(
-    candidate: Any, *, manifest: Mapping[str, Any] | None,
-) -> None:
-    """Require this candidate's summed set in a completed run (ADR-0301)."""
-    trial = manifest or {}
-    group = trial.get("set") or {}
-    basis = group.get("capture_basis") or {}
-    if (
-        trial.get("status") != "complete"
-        or basis.get("candidate_id") != candidate.fingerprint
-        or basis.get("graph_scope") != "candidate"
-        or basis.get("role") != "summed"
-        or re.fullmatch(r"[0-9a-f]{16}", str(basis.get("submitted_graph_fingerprint") or "")) is None
-        or not group.get("takes")
-    ):
-        raise CandidateBankRefusal("candidate_trial_required", "Complete a trial run of this candidate.")
-
-
 def candidate_boost_issue(graph_fingerprint: str) -> dict[str, str] | None:
     try:
         finding = read_boost_finding(graph_fingerprint)

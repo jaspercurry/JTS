@@ -673,7 +673,7 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     import jasper.dsp_apply as dsp_apply
 
     apply_route, apply_dsp = Mock(), AsyncMock()
-    monkeypatch.setattr(v2host, "handle_v2_apply", apply_route)
+    monkeypatch.setattr("jasper.web.correction_crossover_v2_apply.handle_v2_apply", apply_route)
     monkeypatch.setattr(dsp_apply, "apply_dsp_config", apply_dsp)
     gate = AnsweredGate()
     runner, session, fakes, manifest, _, flow = _plan_host(monkeypatch, tmp_path, box, gate=gate, phase=phase)

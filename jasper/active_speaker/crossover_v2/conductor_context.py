@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
 
 from jasper.log_event import log_event
+from jasper.active_speaker.profile import required_driver_roles
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
@@ -40,6 +41,7 @@ __all__ = [
     "conductor_status",
     "ensure_crossover_preview_ready",
     "profile_refusal_code",
+    "measurement_role_channels",
     "resolve_conductor_context",
 ]
 
@@ -137,6 +139,10 @@ class V2ConductorContext(Generic[_Level]):
         )
 
 
+def measurement_role_channels(preset: Any) -> dict[str, int]:
+    return {role: channel for channel, role in enumerate(required_driver_roles(preset.way_count))}
+
+
 def profile_refusal_code(evaluation_status: str) -> str:
     """Map a :class:`~jasper.active_speaker.driver_safety.DriverSafetyProfileEvaluation`
     status to the reason code whose copy names the action that ACTUALLY clears it.
@@ -167,39 +173,10 @@ def profile_refusal_code(evaluation_status: str) -> str:
 
 
 def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
-    """Ensure a ready crossover preview exists before a v2 session reads one.
+    """Keep capture preset resolution off its generic no-preview fallback.
 
-    ``durable`` only matters on the regenerate branch (a reused preview
-    writes nothing) and passes straight through to
-    :func:`~jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`.
-    The default keeps the session-open/verify-re-arm callers cheap;
-    :func:`handle_v2_apply`'s crossover-accept branch opts in.
-
-    ``/sound/``'s Preview button was the ONLY historical writer of
-    ``active_speaker_crossover_preview.json``; the v2 flow never called it, so
-    a household that went straight to ``/sound/speaker/crossover/`` without visiting
-    ``/sound/`` first baked its MEASURE candidate's ``source_preset`` against
-    the generic bundled-preset fallback (:func:`~jasper.active_speaker.commission_wiring.resolve_capture_preset`'s
-    no-preview branch) — which then can NEVER match a preview generated later,
-    so Apply refuses ``measured_candidate_preset_mismatch`` forever. This is
-    called at the top of :func:`resolve_conductor_context` — the one place
-    both stages of :func:`prepare_v2_session`, session-open and the verify
-    re-arm, resolve the design draft/topology — so the fallback branch is
-    never reached from a v2 entry point again.
-
-    Reuses the SAME generator ``/sound/`` drives
-    (:func:`~jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`,
-    itself a thin wrapper around :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`)
-    rather than reimplementing preview generation. Idempotent: an existing
-    preview that is already ``ready_for_protected_staging`` for the CURRENT
-    design draft (the freshness/fingerprint check already built into
-    :func:`~jasper.active_speaker.crossover_preview.load_crossover_preview`)
-    is left byte-untouched — reused, not regenerated. Anything else (absent,
-    stale, or blocked) is regenerated once; if the fresh attempt still cannot
-    reach ``ready_for_protected_staging`` (a safety profile whose declared
-    values are ``incomplete`` or whose outputs moved under it, a blocked design
-    draft, etc.), this raises a named :class:`CrossoverV2Refused`
-    pointing at ``/sound/`` instead of leaving the surprise for apply time.
+    See ``commission_wiring.resolve_capture_preset``. A reused preview is
+    unchanged; a regenerated preview uses the declaration's existing writer.
     """
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
@@ -345,7 +322,6 @@ def resolve_conductor_context(
         resolve_driver_measurement_band_hz,
     )
     from jasper.active_speaker.playback_route import resolve_active_playback_device
-    from jasper.active_speaker.profile import required_driver_roles
     from jasper.active_speaker.session_volume_plan import (
         LevelUnresolved, session_measurement_volume_db,
     )
@@ -545,7 +521,7 @@ def resolve_conductor_context(
         driver_spacing_source="unknown" if driver_spacing_m is None else "declared",
         topology=topology,
         playback_device=playback_device,
-        role_channels={role: channel for channel, role in enumerate(roles)},
+        role_channels=measurement_role_channels(preset),
         sound_design_revision=int(draft.get("revision", 0)),
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,

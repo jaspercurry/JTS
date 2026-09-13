@@ -276,11 +276,12 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
     """Bank the displaced graph; leave admission and DSP apply intact."""
-    import copy
     import json
     from dataclasses import replace
     from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from jasper.web import correction_crossover_backend
+    from jasper.web import correction_crossover_v2_apply as apply_host
+    from jasper.active_speaker.driver_safety import build_driver_safety_profile
+    from tests.test_active_speaker_driver_safety import _manual_settings
     from tests.active_speaker_fixtures import valid_camilla_config
     from tests.test_active_speaker_baseline_profile import _draft, _MEASURE_EVIDENCE
     from tests.test_active_speaker_measured_crossover_candidate import _candidate
@@ -291,6 +292,8 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     with monkeypatch.context() as build_context:
         build_context.setattr("jasper.active_speaker.driver_safety.evaluate_driver_safety_profile", _real_safety_evaluation)
         draft = _draft(topology)
+        draft["driver_safety_profile"] = build_driver_safety_profile(
+            topology, manual_settings=_manual_settings(), driver_research=None, saved_at="2026-09-13T12:00:00Z")
     preview = build_crossover_preview(draft)
     preset, _, _ = baseline_profile_mod.compile_preset_from_crossover_preview(topology, preview)
     measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)
@@ -300,8 +303,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
         state_path=root / "previous.json", config_path=root / "previous.yml", validate=valid_camilla_config,
     )
     assert (profile.get("config") or {}).get("sha256"), profile["issues"]
-    profile.update(status="applied", trial_verification={
-        "capture_validity": "usable", "realization": "matched", "benefit": "improved", "spec": "passed"})
+    profile["status"] = "applied"
     state = v2host.load_v2_state() or {}
     if state.get("previous_candidate_fingerprint"):
         state.update(previous_candidate_fingerprint=measured.fingerprint, previous_applied_profile=profile)
@@ -314,13 +316,9 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(root / "baseline.yml"))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(root / "dsp-apply.json"))
     monkeypatch.setattr(baseline_profile_mod, "load_applied_baseline_profile_state", lambda *a, **k: None)
-    def compile_profile(*args, **kwargs):
-        candidate = copy.deepcopy(profile)
-        candidate.update(status="ready_to_apply", applied_recomposition_profile=baseline_profile_mod.load_applied_baseline_profile_state())
-        candidate["permissions"]["may_apply"] = True
-        return candidate
-    monkeypatch.setattr(baseline_profile_mod, "build_baseline_profile_candidate", compile_profile)
-    monkeypatch.setattr(correction_crossover_backend, "status_payload", _status)
+    monkeypatch.setattr(apply_host, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(apply_host, "load_design_draft", lambda **kwargs: draft)
+    monkeypatch.setattr(apply_host, "evaluate_driver_safety_profile", _real_safety_evaluation)
     return []
 
 

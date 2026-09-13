@@ -145,25 +145,13 @@ def _handle_crossover_v2_capture(
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /crossover/v2/apply: apply the reviewed v2 measured candidate.
+    from .correction_crossover_v2_apply import handle_v2_apply  # lazy: apply-only graph compiler
 
-    Reads the same ``status_payload()`` the session preparers do, because the
-    apply now runs the stage-2 openability preflight server-side (two-stage
-    commission work order D3): a speaker that cannot open its post-apply check
-    must not be corrected and left ungraded.
-    """
-    raw = correction_runtime.read_json_body(handler)
-
-    from . import correction_crossover_backend, correction_crossover_v2 as v2host
-
-    return v2host.handle_v2_apply(
-        raw,
+    return handle_v2_apply(
+        correction_runtime.read_json_body(handler),
         correction_runtime.run_async,
         correction_runtime.camilla_controller,
-        status=correction_crossover_backend.status_payload(),
     )
-
-
 
 
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
