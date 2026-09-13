@@ -113,38 +113,13 @@ def default_camilla_factory():
 
 
 class StatefileCamillaController:
-    """Disk-backed stand-in for the live CamillaDSP controller.
+    """Use CamillaDSP's persisted config path while the daemon is down.
 
-    :func:`load_profile_config` asks the daemon exactly two things — "which
-    config is loaded?" and "load this one" — and both have an honest on-disk
-    answer while the daemon is down: CamillaDSP's statefile names the config it
-    will open on its next start. Answering from there is what lets a reconcile
-    CONVERGE a box whose CamillaDSP is stopped instead of aborting on a refused
-    websocket (#2664).
-
-    Why that matters, from the jts4 incident: install could stop CamillaDSP
-    before the reconcile, and the width flip is EXACTLY when the graph must be
-    re-emitted — so the one deploy that needed the reconcile most was the one
-    that could not reach the daemon. It aborted, and install then started
-    CamillaDSP against a statefile still naming the pre-flip graph:
-    ``set_format`` EINVAL, five restarts, ``start-limit-hit``.
-
-    This is a TRANSPORT, not a graph choice. The carrier is still resolved from
-    the config the statefile already names, so a roleful box re-emits its own
-    roleful graph and a flat box its flat one — no topology decision is taken
-    or restated here. Choosing a graph when the statefile names none stays
-    :mod:`jasper.active_speaker.runtime_contract`'s job (install runs it as
-    ``jasper-active-speaker runtime-safe-graph`` immediately before this).
-
-    WHY THE SEEDING CONTRACT IS NOT REUSED HERE. Asking it for a SAFE graph is
-    right for a recovery that is deliberately de-arming a box; a deploy is the
-    opposite job — it must keep the speaker on its own graph and merely refresh
-    it. It also could not have healed jts4 —
-    ``classify_camilla_config_text`` reads ``playback_device``,
-    ``playback_channels`` and ``volume_limit_db``, never the sample format, so
-    the seeding contract re-proves a stale-width graph LEGAL and preserves it.
-    Only a re-emit moves the width, which is why this converges through the
-    carrier rather than through a second call to the seeder.
+    The saved path still selects the carrier, including its driver protection.
+    Reconcile must re-emit that carrier to refresh transport format and geometry;
+    the recovery seeder proves graph safety but cannot perform that refresh.
+    If the statefile names no graph, selection belongs to
+    :mod:`jasper.active_speaker.runtime_contract`.
     """
 
     def __init__(self, statefile_path: str | Path | None = None) -> None:
@@ -280,6 +255,7 @@ async def load_profile_config(
         sound_config_path,
     )
     from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
         ReemitResult,
         carrier_for_loaded_config,
         eq_block_for_loaded_config,
@@ -295,7 +271,7 @@ async def load_profile_config(
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
-    if carrier.kind != "active":
+    if carrier.kind != "active" or not carrier.can_host_eq:
         pre_block = eq_block_for_loaded_config(
             profile, current_path=pre_path, config_dir=config_path, output_trim_db=output_trim_db,
         )
@@ -303,6 +279,27 @@ async def load_profile_config(
             raise pre_block
 
     from jasper.active_speaker.baseline_profile import load_composed_graph  # lazy: active graph owner
+
+    if carrier.kind == "active":
+        from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state, prepare_applied_baseline_profile  # lazy: active graph admission
+        from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: active candidate bank
+        from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
+        from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
+        from jasper.active_speaker.measurement_emit import load_tuning_declaration  # lazy: active speaker declaration
+        from jasper.active_speaker.playback_route import resolve_active_playback_device  # lazy: active speaker endpoint
+        from jasper.output_topology import load_output_topology_strict  # lazy: active speaker topology
+
+        try:
+            applied = load_applied_baseline_profile_state() or {}
+            topology = load_output_topology_strict()
+            candidate = candidate_from_applied_profile(topology, applied)
+            draft = load_design_draft(topology=topology)
+            playback_device, _ = resolve_active_playback_device(topology)
+            declaration = load_tuning_declaration(topology, design_draft=draft, playback_device=playback_device)
+            prepared = prepare_applied_baseline_profile(candidate, declaration=declaration,
+                design_draft=draft, measurements={}, provenance=applied)
+        except (CandidateBankRefusal, OSError, ValueError) as exc:
+            raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not prepare the saved speaker tune: {exc}") from exc
 
     async with dsp_writer_lock(config_path, source=source):
         active = carrier.kind == "active"
@@ -343,8 +340,6 @@ async def load_profile_config(
             return bool(await cam.set_config_file_path(path, best_effort=False))
 
         if active:
-            prepared: dict[str, Any] = {}
-
             async def _prepare_active() -> str:
                 _, rendered = await _render_config()
                 prepared.update(rendered.applied_profile)
