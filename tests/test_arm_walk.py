@@ -38,7 +38,7 @@ from jasper.active_speaker import arm_walk as aw
 from jasper.active_speaker import wizard_client as wc
 from jasper.cli import _refusal as refusal
 from jasper.cli import angle_capture as cli
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
 
 ROOT = Path(__file__).resolve().parents[1]
 TURNTABLE_SCRIPT = ROOT / "experiments" / "usb-turntable" / "jts_turntable.py"
@@ -788,6 +788,62 @@ def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog):
     assert event_fields(caplog, "arm_walk.vendor_tool_failed") == {
         key: str(value) for key, value in expected.items()
     }
+
+
+@pytest.mark.parametrize(
+    "failure_at,retry_succeeds,expected",
+    [
+        ("stop", True, None),
+        ("stop", False, aw.EXIT_MOVE_FAILED),
+        ("position", None, aw.EXIT_MOVE_FAILED),
+    ],
+)
+def test_heartbeat_frame_failure_retries_only_stop(
+    failure_at, retry_succeeds, expected, caplog
+):
+    caplog.set_level(logging.INFO, logger=aw.__name__)
+    good = json.dumps({"ok": True, "result": {}})
+    power = json.dumps({"ok": True, "power": {"status": {
+        "available": True, "current_flags": [], "history_flags": [], "raw": "0x0",
+    }}})
+    framing_failure = _Proc(json.dumps({
+        "ok": False,
+        "error": aw._VENDOR_HEARTBEAT_FRAME_ERROR,
+        "error_type": "ProtocolError",
+    }), 1)
+    if failure_at == "stop":
+        responses = [
+            _Proc(power),
+            framing_failure,
+            _Proc(good) if retry_succeeds else framing_failure,
+        ]
+        if retry_succeeds:
+            responses.append(_Proc(good))
+    else:
+        responses = [_Proc(power), _Proc(good), framing_failure]
+
+    sleeps = []
+    mover = aw.TurntableMover(
+        attest_rig_clear=True,
+        run=lambda *_, **__: responses.pop(0),
+        sleep=sleeps.append,
+    )
+    trail = _RecordingTrail()
+    walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
+
+    assert walk._serve(aw.Pending(1, 1, 7, "onax")) == expected
+    assert sleeps == ([aw._VENDOR_RETRY_S] if failure_at == "stop" else [])
+    if failure_at == "stop":
+        assert event_fields(caplog, "arm_walk.vendor_tool_retried") == {
+            "subcommand": "stop",
+            "attempt": "2",
+        }
+    else:
+        assert event_records(caplog, "arm_walk.vendor_tool_retried") == []
+    if expected is None:
+        assert trail.one("moved")["degrees"] == 7
+    else:
+        assert trail.error("move_failed")["subcommand"] == failure_at
 
 
 def test_an_adapter_that_cannot_be_launched_is_a_failed_move():

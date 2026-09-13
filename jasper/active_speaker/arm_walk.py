@@ -100,6 +100,11 @@ DEFAULT_UNREADABLE_CEILING_S = 60.0
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
 DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")
 
+# Issue #2516: the vendor retries offset/probe/position itself; stop is safe to
+# repeat here because it is idempotent before the absolute position re-homes.
+_VENDOR_HEARTBEAT_FRAME_ERROR = "heartbeat byte appeared inside a protocol frame"
+_VENDOR_RETRY_S = 1.0
+
 #: Every adapter verb this module may emit. ``set-zero`` is deliberately
 #: absent: no automated walk may redefine the saved acoustic-axis zero.
 _TOOL_SUBCOMMANDS = frozenset({"power", "stop", "position", "offset"})
@@ -322,6 +327,7 @@ class TurntableMover:
     timeout_s: float = 300.0
     python: str = field(default_factory=lambda: sys.executable)
     run: Callable[..., Any] = subprocess.run
+    sleep: Callable[[float], None] = time.sleep
     move_failure: Mapping[str, Any] = field(init=False, default_factory=dict)
     _stderr_tail: str = field(init=False, default="")
 
@@ -329,22 +335,40 @@ class TurntableMover:
         if subcommand not in _TOOL_SUBCOMMANDS:
             raise AssertionError(f"not an allowed adapter verb: {subcommand!r}")
         argv = [self.python, str(self.tool_path), "--json", subcommand, *rest]
-        try:
-            proc = self.run(
-                argv, capture_output=True, text=True, timeout=self.timeout_s
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            self._stderr_tail = ""
-            return 1, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        try:
-            payload = json.loads(str(getattr(proc, "stdout", "") or ""))
-        except ValueError:
-            payload = {"ok": False, "error": "adapter did not answer JSON"}
-        if not isinstance(payload, Mapping):
-            payload = {"ok": False, "error": "adapter did not answer an object"}
-        stderr = str(getattr(proc, "stderr", "") or "").rstrip()
-        self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
-        return int(getattr(proc, "returncode", 1)), payload
+        for attempt in (1, 2):
+            try:
+                proc = self.run(
+                    argv, capture_output=True, text=True, timeout=self.timeout_s
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                self._stderr_tail = ""
+                return 1, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                payload = json.loads(str(getattr(proc, "stdout", "") or ""))
+            except ValueError:
+                payload = {"ok": False, "error": "adapter did not answer JSON"}
+            if not isinstance(payload, Mapping):
+                payload = {"ok": False, "error": "adapter did not answer an object"}
+            stderr = str(getattr(proc, "stderr", "") or "").rstrip()
+            self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
+            code = int(getattr(proc, "returncode", 1))
+            error = f"{stderr}\n{payload.get('error', '')}"
+            if (
+                attempt == 1
+                and subcommand == "stop"
+                and code
+                and _VENDOR_HEARTBEAT_FRAME_ERROR in error
+            ):
+                log_event(
+                    logger,
+                    "arm_walk.vendor_tool_retried",
+                    subcommand=subcommand,
+                    attempt=2,
+                )
+                self.sleep(_VENDOR_RETRY_S)
+                continue
+            return code, payload
+        raise AssertionError("vendor retry loop exhausted")
 
     def power(self) -> PowerVerdict:
         _, payload = self._invoke("power")
