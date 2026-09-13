@@ -321,7 +321,7 @@ def extract_harmonic_ir(
         if start <= neighbor_center + neighbor_half_width and end > (
             neighbor_center - neighbor_half_width
         ):
-            raise ValueError("harmonic window overlaps a neighboring order")
+            raise HarmonicWindowOutOfRange("harmonic window overlaps a neighboring order")
     window = np.hanning(end - start)
     return full_ir[start:end] * window
 

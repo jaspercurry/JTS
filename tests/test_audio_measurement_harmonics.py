@@ -17,6 +17,7 @@ from jasper.audio_measurement.analysis import (
     tracking_error_db,
 )
 from jasper.audio_measurement.deconv import (
+    HarmonicWindowOutOfRange,
     extract_harmonic_ir,
     harmonic_magnitude_response,
     harmonic_time_advance_s,
@@ -130,12 +131,14 @@ def test_third_octave_bands_and_power_mean_levels():
     assert levels == pytest.approx((-2.596, -20.0), abs=0.001)
 
 
-def test_extract_harmonic_ir_rejects_window_collision():
+@pytest.mark.parametrize("f1,f2,duration", [(10.0, 500.0, 8.0), (1000.0, 4000.0, 0.003)])
+def test_extract_harmonic_ir_rejects_window_collision(f1, f2, duration):
     _, meta = synchronized_swept_sine(
-        f1=10.0, f2=500.0, duration_approx_s=8.0, sample_rate=SR
+        f1=f1, f2=f2, duration_approx_s=duration, sample_rate=SR
     )
     full_ir = np.zeros(1000)
-    with pytest.raises(ValueError, match="crosses"):
+    full_ir[500] = 1.0
+    with pytest.raises(HarmonicWindowOutOfRange):
         extract_harmonic_ir(full_ir, SR, 500, meta, 2)
     assert harmonic_time_advance_s(meta, 2) == pytest.approx(meta.L * math.log(2))
 
