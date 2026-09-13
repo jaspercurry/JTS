@@ -102,7 +102,16 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
             gains = {role: gain + delta for role, gain in gains.items()}
         return excitation.measure_program(gains)
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-    backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+    solved = getattr(conductor, "_gain_plan_db", None)
+    if stimulus_dbfs is not None:
+        backoff = BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+    elif solved:
+        # A run that solved its drivers through the neutral graph plays its summed takes
+        # (the preset without the tune) at that level: the session anchor was leveled
+        # through the applied tune and does not cover a graph without it.
+        backoff = BASE_STIMULUS_PEAK_DBFS - min(solved.values())
+    else:
+        backoff = 0.0
     program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
                else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
     if spec.program_phase == PHASE_VERIFY:

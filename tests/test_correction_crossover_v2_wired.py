@@ -872,6 +872,21 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
     assert program.segment("sweep_t").gain_db == pytest.approx(-57.0 + delta)
 
 
+@pytest.mark.parametrize("gain_plan", [None, {"woofer": -50.0, "tweeter": -57.0}])
+def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.web.correction_run_host import compose_plan_program
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor
+
+    conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
+    spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
+    program = compose_plan_program(conductor, spec, None)
+    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db if gain_plan is None else min(gain_plan.values())
+    assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
+    windowed = compose_plan_program(conductor, spec, -60.0)
+    assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)
+
+
 async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_path, box):
     from dataclasses import replace
     from jasper.active_speaker import plan_run
