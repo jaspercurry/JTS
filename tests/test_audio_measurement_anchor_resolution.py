@@ -965,7 +965,7 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
-            scheduled, next(scores), 0.5
+            scheduled, next(scores) if band_hz is None else 1.0, 0.5
         ),
     )
     prog = _incident_program()
@@ -1079,7 +1079,7 @@ def test_the_guard_compares_a_ratio_and_not_a_difference(
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
-            scheduled, 0.99, next(presence)
+            scheduled, 0.99, next(presence) if band_hz is None else 0.0
         ),
     )
     prog = _incident_program()
@@ -1209,7 +1209,7 @@ def test_a_corrected_anchor_can_also_be_ambiguous(monkeypatch):
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
-            scheduled, 0.99, next(presences)
+            scheduled, 0.99, next(presences) if band_hz is None else 0.0
         ),
     )
     prog = _incident_program()
@@ -1347,7 +1347,7 @@ def test_the_peakedness_margin_prefers_the_EMPTY_window(monkeypatch, caplog):
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.locate._locate_in_window",
         lambda capture, stim, scheduled, n, *, sample_rate, band_hz=None: (
-            scheduled, *next(scores)
+            scheduled, *(next(scores) if band_hz is None else (0.0, 0.0))
         ),
     )
     prog = _measure_program()
@@ -1402,6 +1402,7 @@ def test_a_measure_capture_with_both_pilots_present_keeps_its_timeline():
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is False
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
+    assert _anchor_separation(prog, cap) > ANCHOR_DISCRIMINATION_RATIO * 3
 
     analysis = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
@@ -1516,6 +1517,8 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
     readings = iter([(confidence, 0.0156), (0.1, 0.001)])
 
     def witness(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
+        if band_hz is not None:
+            return scheduled, 0.0, 0.0
         reading = next(readings, None)
         if reading is not None:
             return scheduled, *reading

@@ -180,7 +180,6 @@ def _resolve_anchor(
         _located, confidence, presence = _locate_in_window(
             capture, witness_stim, offset + witness.start_sample,
             witness.n_samples, sample_rate=sample_rate,
-            band_hz=(max(WITNESS_BAND_FLOOR_HZ, witness.f1_hz), witness.f2_hz),
         )
         scored.append((presence, confidence, seg, offset))
     # Ranked on PRESENCE, not peakedness margin (see docstring); the margin
@@ -193,13 +192,14 @@ def _resolve_anchor(
         (row for index, row in enumerate(scored) if index != best_index),
         key=lambda item: item[0],
     )
-    # Re-anchoring requires POSITIVE evidence that the winning witness locate
-    # is a sharp lag, not room noise (a silent driver never played, so
-    # nothing in the window is sharp and re-anchoring on noise would shift
-    # the timeline for no reason). NOT redundant with the presence ranking
-    # (which prefers the later candidate on a garbage capture) and NOT
-    # sufficient alone — a sharp lag is not the witness.
-    corroborated = best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+    # Filtering can prove the timeline but inflates empty-window presence,
+    # so ranking and ambiguity keep the full-band scores.
+    _, band_confidence, _ = _locate_in_window(
+        capture, witness_stim, best_offset + witness.start_sample,
+        witness.n_samples, sample_rate=sample_rate,
+        band_hz=(max(WITNESS_BAND_FLOOR_HZ, witness.f1_hz), witness.f2_hz),
+    )
+    corroborated = max(best_confidence, band_confidence) >= SWEEP_LOCATE_CONFIDENCE_FLOOR
     if not corroborated:
         best_seg, best_offset = first, arrival - first.start_sample
     # Corroboration alone is not discrimination: two candidates both above
@@ -210,7 +210,7 @@ def _resolve_anchor(
     # Multiplication rather than subtraction so a zero runner-up presence
     # resolves rather than divides by zero.
     ambiguous = (
-        corroborated
+        best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
         and runner_up >= SWEEP_LOCATE_CONFIDENCE_FLOOR
         and best_presence < runner_up_presence * ANCHOR_DISCRIMINATION_RATIO
     )
