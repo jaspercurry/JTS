@@ -836,11 +836,13 @@ async def test_check_uses_the_quietest_level_window(monkeypatch, offsets, expect
 
 async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
     manifest = RunManifest("run", _Store(FakeSeams().records), level={"session": {"session_id": "leveled"}})
-    cases = [(0, -20, "a", 70, True, None), (0, -20, "a", 72, True, 2), (0, -20, "a", 90, False, 19),
-             (20, -20, "a", 76, True, 5), (0, -20, "a", 72, True, 1), (0, -30, "a", 60, True, None),
-             (0, -20, "b", 55, True, None), (0, -20, "b", 58, True, 3), (0, -20, "a", 73, True, 1)]
-    for index, (pose, gain, program, observed, accepted, delta) in enumerate(cases):
-        manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}}, attempt=1, pose_index=index)
+    cases = [(0, -20, "a", "", 70, True, None), (0, -20, "a", "", 72, True, 2), (0, -20, "a", "", 90, False, 19),
+             (20, -20, "a", "", 76, True, 5), (0, -20, "a", "", 72, True, 1), (0, -30, "a", "", 60, True, None),
+             (0, -20, "b", "", 55, True, None), (0, -20, "b", "", 58, True, 3), (0, -20, "a", "", 73, True, 1),
+             (0, -20, "a", "fp-cut", 64, True, None), (0, -20, "a", "fp-cut", 65, True, 1)]
+    for index, (pose, gain, program, candidate, observed, accepted, delta) in enumerate(cases):
+        manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}, "candidate_id": candidate},
+                       attempt=1, pose_index=index)
         record = {"take_id": str(index), "level_db": gain, "phase": "measure", "program_id": program,
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
         await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,

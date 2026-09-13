@@ -139,12 +139,15 @@ class RunManifest:
         observed = finite_float(((record.get("capture_integrity") or {}).get("spl") or {}).get("loudest_half_second_db_spl"))
         basis = capture_basis(record)
         gain, program = basis.get("level_db"), basis.get("program_id")
-        # Offsets change the gain and each program composes its own stimulus level;
-        # only repeats of this program at this fader share an expected SPL.
+        candidate = self._context.get("candidate_id")
+        # Offsets change the gain, each program composes its own stimulus level, and
+        # each candidate graph has its own sensitivity; only repeats of this program
+        # on this graph at this fader share an expected SPL.
         accepted = {take["take_id"]: take for take in self.takes
                     if take["quality"]["status"] == TAKE_MEASURED
                     and take["level"].get("level_db") == gain
                     and take["level"].get("program_id") == program
+                    and take.get("candidate_id") == candidate
                     and take["level"]["loudest_half_second_db_spl"] is not None}
         same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
         reference = [take["level"]["loudest_half_second_db_spl"] for take in (same or list(accepted.values()))]
