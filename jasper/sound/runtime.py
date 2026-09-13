@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR, same_config_file, dsp_writer_lock
 from jasper.fanin_coupling import capture_kwargs_for_coupling
 from jasper.log_event import log_event
@@ -21,6 +21,7 @@ from jasper.sound.profile import (
     PROFILE_PATH,
     SoundProfile,
     build_sound_filters,
+    build_sound_filter_slots,
     load_profile,
     save_profile,
 )
@@ -210,7 +211,7 @@ def _render_saved_dsp_on_carrier(
         ) from exc
     out_path = carrier.destination(result, config_path)
     if write:
-        atomic_write_text(out_path, result.yaml, mode=0o640)
+        atomic_write_text(out_path, result.yaml, mode=CONFIG_FILE_MODE)
     return _SavedDspRender(
         output_path=out_path,
         yaml=result.yaml,
@@ -279,6 +280,7 @@ async def load_profile_config(
         sound_config_path,
     )
     from jasper.sound.graph_carrier import (
+        ReemitResult,
         carrier_for_loaded_config,
         eq_block_for_loaded_config,
     )
@@ -295,41 +297,22 @@ async def load_profile_config(
     pre_path = await cam.get_config_file_path(best_effort=False)
     if not pre_path:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
-    pre_block = eq_block_for_loaded_config(
-        profile,
-        current_path=pre_path,
-        config_dir=config_path,
-        output_trim_db=output_trim_db,
-    )
-    if pre_block is not None:
-        raise pre_block
+    carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
+    if carrier.kind == "active":
+        result = carrier.reemit(profile, output_trim_db=output_trim_db)
+    else:
+        pre_block = eq_block_for_loaded_config(
+            profile, current_path=pre_path, config_dir=config_path, output_trim_db=output_trim_db,
+        )
+        if pre_block is not None:
+            raise pre_block
 
     from jasper.active_speaker.baseline_profile import load_composed_graph  # lazy: active graph owner
 
     async with dsp_writer_lock(config_path, source=source):
-        current = await cam.get_config_file_path(best_effort=False)
-        carrier = carrier_for_loaded_config(current, config_dir=config_path)
-        if carrier.kind == "active":
-            result = carrier.reemit(profile, output_trim_db=output_trim_db)
-            target = carrier.destination(result, config_path, audition=audition)
-            prepared = result.applied_profile
-            assert prepared is not None
-            prepared["config"].update(path=str(target), basename=target.name)
-            async with load_composed_graph(
-                result.yaml, prepared["config"]["sha256"], source=source, profile=prepared,
-                load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
-                get_current_config_path=lambda: cam.get_config_file_path(best_effort=True),
-                persist=(lambda: save_profile(profile, profile_path)) if persist_profile else None,
-                record=not audition, room_peq_count=result.room_peq_count, sound_filter_count=len(build_sound_filters(profile)),
-            ) as (state, _applied):
-                return state, target, profile
-
-        out_path = sound_audition_config_path(config_path) if audition else sound_config_path(config_path)
-        # SHARED fan-in→Camilla coupling: resolve the capture/playback-device kwargs
-        # ONCE. ONE transport (ADR-0100) — unconditionally the ring, never {}.
-        # Stereo carriers apply the shm-ring devices; active baselines keep their
-        # own topology-specific paths; grouped pipe sinks keep their own PLAYBACK
-        # (capture still follows).
+        active = carrier.kind == "active"
+        out_path = (carrier.destination(result, config_path, audition=audition) if active else
+                    sound_audition_config_path(config_path) if audition else sound_config_path(config_path))
         coupling_capture_kwargs = capture_kwargs_for_coupling()
 
         # One shot: apply_dsp_config reuses load_config to ROLL BACK, and an
@@ -337,34 +320,24 @@ async def load_profile_config(
         # re-sending the candidate held here would undo exactly that.
         quiet_load: dict[str, str] = {}
 
-        async def _prepare_config() -> dict[str, Any]:
+        async def _render_config() -> tuple[str, ReemitResult]:
             current_path = await cam.get_config_file_path(best_effort=False)
             if not current_path:
                 raise RuntimeError("CamillaDSP did not report a loaded config path")
-            carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
-            result = carrier.reemit(
-                profile,
-                out_path=out_path,
-                profile_id=render_id,
-                output_trim_db=output_trim_db,
+            current_carrier = carrier_for_loaded_config(current_path, config_dir=config_path)
+            rendered = current_carrier.reemit(
+                profile, profile_id=render_id, output_trim_db=output_trim_db,
                 fanin_coupling_capture_kwargs=coupling_capture_kwargs,
             )
-            # Rewriting the file CamillaDSP already runs, with a graph it will
-            # update in place, is as silent as a live edit, so an A/B the listener
-            # is making on purpose does not fade. Loading a DIFFERENT file is a
-            # real swap and keeps its bracket; the statefile transport, standing in
-            # with CamillaDSP down, cannot be asked at all.
+            if current_carrier.kind != carrier.kind:
+                raise RuntimeError("Loaded graph carrier changed during sound preparation")
             if (
-                same_config_file(str(current_path), out_path)
+                same_config_file(current_path, out_path)
                 and does_live_edits(cam)
-                and not (await plan_live_edit_for(cam, result.yaml)).duck
+                and not (await plan_live_edit_for(cam, rendered.yaml)).duck
             ):
-                quiet_load["yaml"] = result.yaml
-            return {
-                "prior_config_path": current_path,
-                "room_peq_count": result.room_peq_count,
-                "sound_filter_count": len(build_sound_filters(profile)),
-            }
+                quiet_load["yaml"] = rendered.yaml
+            return current_path, rendered
 
         async def _load_config(path: str) -> bool:
             raw = quiet_load.pop("yaml", None)
@@ -375,6 +348,32 @@ async def load_profile_config(
                     await cam.set_active_config_raw(raw, best_effort=False, duck=False)
                 )
             return bool(await cam.set_config_file_path(path, best_effort=False))
+
+        if active:
+            prepared = result.applied_profile
+            prepared["config"].update(path=str(out_path), basename=out_path.name)
+
+            async def _prepare_active() -> str:
+                _, rendered = await _render_config()
+                prepared.update(rendered.applied_profile)
+                prepared["config"].update(path=str(out_path), basename=out_path.name)
+                return rendered.yaml
+
+            async with load_composed_graph(
+                result.yaml, prepared["config"]["sha256"], source=source, profile=prepared,
+                prepare=_prepare_active, load_config=_load_config,
+                get_current_config_path=lambda: cam.get_config_file_path(best_effort=True),
+                persist=(lambda: save_profile(profile, profile_path)) if persist_profile else None,
+                record=None if audition else "sound", room_peq_count=result.room_peq_count,
+                sound_filter_count=len(build_sound_filter_slots(profile)),
+            ) as (state, _applied):
+                return state, out_path, profile
+
+        async def _prepare_config() -> dict[str, Any]:
+            current_path, rendered = await _render_config()
+            atomic_write_text(out_path, rendered.yaml, mode=CONFIG_FILE_MODE)
+            return {"prior_config_path": current_path, "room_peq_count": rendered.room_peq_count,
+                    "sound_filter_count": len(build_sound_filters(profile))}
 
         apply_state = await apply_dsp_config(
             source=source,

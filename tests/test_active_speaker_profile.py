@@ -415,7 +415,6 @@ def test_two_way_active_startup_config_is_muted_and_protected():
     yaml = emit_active_speaker_startup_config(
         preset,
         playback_device="hw:ActiveDAC",
-        baseline_id="baseline-test",
     )
 
     assert (

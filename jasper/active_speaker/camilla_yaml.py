@@ -1976,7 +1976,6 @@ def emit_active_speaker_startup_config(
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
-    baseline_id: str | None = None,
 ) -> str:
     """Build a muted/protected active-speaker startup template.
 
@@ -2501,7 +2500,6 @@ def emit_active_speaker_commissioning_config(
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
-    baseline_id: str | None = None,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
 ) -> str:
     """Build the **production** active-speaker graph with a per-output mask.
@@ -3080,7 +3078,6 @@ def emit_active_speaker_program_config(
     measurement_delays_us: Mapping[str, float] | None = None,
     measurement_level_trims_db: Mapping[str, float] | None = None,
     out_path: str | Path | None = None,
-    baseline_id: str | None = None,
 ) -> str:
     """Emit the static channel-routed program graph for CHECK/MEASURE playback.
 
@@ -3355,7 +3352,6 @@ def emit_active_speaker_baseline_config(
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
-    baseline_id: str | None = None,
     bass_extension: Mapping[str, Any] | None = None,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
@@ -3578,7 +3574,6 @@ def emit_active_speaker_driver_domain_config(
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
-    baseline_id: str | None = None,
     bass_extension: Mapping[str, Any] | None = None,
 ) -> str:
     """Build a **driver-domain-only** active-speaker graph for a wireless follower.

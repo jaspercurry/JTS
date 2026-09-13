@@ -13,7 +13,6 @@ into the answer that UI, control, and multiroom gates consume.
 from __future__ import annotations
 
 import os
-from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -342,6 +341,8 @@ def _applied_layer_a_binding(
 ) -> dict[str, Any]:
     """Compare the compiled applied candidate with the loaded graph."""
 
+    from .baseline_profile import active_layer_a_fingerprint  # lazy: baseline readers import setup status
+    from jasper.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
     from .candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
     from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: graph compilation imports NumPy
@@ -380,13 +381,14 @@ def _applied_layer_a_binding(
                 "loaded_fingerprint": None,
                 "differences": [],
             }
-        declaration = load_tuning_declaration(topology)
+        playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
+        declaration = load_tuning_declaration(topology, playback_device=playback_device)
         candidate = candidate_from_applied_profile(topology, applied_profile)
         preference_filters, trim_db = saved_sound_layers()
         expected_yaml = compile_tuning_graph(declaration, candidate=candidate,
             preference_filters=preference_filters, output_trim_db=trim_db)
-        expected = sha256(expected_yaml.encode("utf-8")).hexdigest()
-        loaded = sha256(loaded_yaml.encode("utf-8")).hexdigest()
+        expected = active_layer_a_fingerprint(expected_yaml)
+        loaded = active_layer_a_fingerprint(loaded_yaml)
         matches = expected == loaded
         differences = (
             [] if matches else _layer_a_differences(expected_yaml, loaded_yaml)

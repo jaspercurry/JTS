@@ -253,7 +253,7 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     branch = next(
         step["names"] for step in config["pipeline"]
         if step.get("type") == "Filter"
-        and "active_baseline_headroom" not in step["names"]
+        and "as_full_range_baseline_gain" in step["names"]
     )
     assert [n for n in branch if n.endswith("_baseline_limiter")] == [
         "as_full_range_baseline_limiter"

@@ -823,7 +823,7 @@ def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
 
 
 def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Return the fixed filter slots for stereo graphs and live edits."""
+    """Return the fixed filter slots for saved graphs and live edits."""
 
     # Bypass is spelled as VALUES, not as a missing frame. Emitting nothing
     # would strip the whole frame out of the pipeline, and a pipeline change is what

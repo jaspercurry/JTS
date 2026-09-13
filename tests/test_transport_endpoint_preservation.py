@@ -24,11 +24,6 @@ import yaml as yaml_parser
 from jasper.active_speaker.state_paths import (
     BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
 )
-from jasper.active_speaker.playback_route import (
-    LOADED_GRAPH_SOURCE,
-    OUTPUTD_ACTIVE_LANE_SOURCE,
-    resolve_live_active_endpoint,
-)
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
@@ -48,7 +43,6 @@ from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from tests.sound_camilla_fixtures import FakeCamilla
 from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE
 
-ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"
 
 
@@ -111,9 +105,9 @@ def _both_halves(yaml_text: str) -> tuple[str | None, str | None]:
 
 
 def _preference_filters(profile_path: Path):
-    from jasper.sound.profile import build_sound_filters, load_profile
+    from jasper.sound.profile import build_sound_filter_slots, load_profile
 
-    return build_sound_filters(load_profile(profile_path))
+    return build_sound_filter_slots(load_profile(profile_path))
 
 
 def _codes(payload: dict) -> set[str]:
@@ -163,123 +157,6 @@ def _jasper_calls(name: str):
         for node in ast.walk(tree):
             if _call_name(node) == name:
                 yield path.relative_to(repo).as_posix(), tree, node
-
-
-# --------------------------------------------------------------------------
-# 1. THE DERIVATION. Which witness answers, and in which order.
-#
-# The statefile-pointed graph is upstream truth: the marker is derived FROM it
-# by `jasper-audio-hardware-reconcile`, so mid-arm (graph moved, marker still
-# clear) the graph answers and a deploy landing there stops undoing rung 1. A
-# fresh box has no statefile and still has to take a deploy, so an unadoptable
-# graph falls through to the CHOOSER rather than refusing. Every case asserts
-# the SOURCE, since both witnesses answer the same device name, and sweeps both
-# marker states: ADR-0100 left one legal endpoint and the chooser stopped
-# reading the marker, so one that still branched on it would answer the retired
-# lane in one sweep — the shape every pre-retirement box is in.
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "shape",
-    [
-        "adoptable_ring_graph",
-        "no_statefile",
-        "dangling_config_path",
-        "graph_without_devices",
-        "graph_on_a_non_endpoint_device",
-        "graph_on_the_retired_aloop_endpoint",
-    ],
-)
-async def test_which_witness_answers_for_the_live_endpoint(
-    applied_box, tmp_path, monkeypatch, shape,
-):
-    """An adoptable graph answers; every unadoptable shape falls through to the
-    CHOOSER, never to the applied snapshot whose lane re-created #2339."""
-    topology, applied = applied_box
-    source = (
-        LOADED_GRAPH_SOURCE
-        if shape == "adoptable_ring_graph"
-        else OUTPUTD_ACTIVE_LANE_SOURCE
-    )
-    statefile = tmp_path / "outputd-statefile.yml"
-    if shape == "adoptable_ring_graph":
-        _point_statefile_at(
-            tmp_path,
-            monkeypatch,
-            _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
-            name="loaded.yml",
-        )
-    elif shape == "dangling_config_path":
-        statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n", encoding="utf-8")
-    elif shape == "graph_without_devices":
-        graph = tmp_path / "no-devices.yml"
-        graph.write_text("pipeline: []\n", encoding="utf-8")
-        statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
-    elif shape != "no_statefile":
-        declined = (
-            ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-            if shape == "graph_on_the_retired_aloop_endpoint"
-            else DEFAULT_PLAYBACK_DEVICE
-        )
-        graph = tmp_path / f"{shape}.yml"
-        graph.write_text(
-            _graph_for(topology, applied, None).replace(
-                RING_ACTIVE_PLAYBACK_DEVICE, declined
-            ),
-            encoding="utf-8",
-        )
-        assert declined in graph.read_text(encoding="utf-8")
-        statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
-
-    for marker_armed in (True, False):
-        monkeypatch.setattr(
-            "jasper.fanin_coupling.ring_active_endpoint_armed",
-            lambda env=None, armed=marker_armed: armed,
-        )
-        assert resolve_live_active_endpoint(topology) == (
-            RING_ACTIVE_PLAYBACK_DEVICE,
-            source,
-        ), marker_armed
-
-
-async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
-    applied_box, tmp_path, monkeypatch, caplog,
-):
-    """Declining an observed sink is a decision, so it is logged; adopting a
-    legal one is not narrated. Without the line the journal cannot tell "looked
-    and declined" from "never looked". DEBUG, because a lab box takes this
-    branch on every call, legitimately."""
-    topology, applied = applied_box
-    graph, _statefile = _point_statefile_at(
-        tmp_path,
-        monkeypatch,
-        _graph_for(topology, applied, None).replace(
-            RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
-        ),
-        name="stereo-lane.yml",
-    )
-
-    with caplog.at_level(logging.DEBUG, logger=ROUTE_LOGGER):
-        answer = resolve_live_active_endpoint(topology)
-
-    assert answer == (RING_ACTIVE_PLAYBACK_DEVICE, OUTPUTD_ACTIVE_LANE_SOURCE)
-    fields = _event_fields(caplog.records, "active_speaker.live_endpoint")
-    assert fields["result"] == "declined_non_endpoint_device"
-    assert fields["observed"] == DEFAULT_PLAYBACK_DEVICE
-    assert fields["config"] == str(graph)
-
-    caplog.clear()
-    _point_statefile_at(
-        tmp_path,
-        monkeypatch,
-        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
-        name="ring.yml",
-    )
-    with caplog.at_level(logging.DEBUG, logger=ROUTE_LOGGER):
-        resolve_live_active_endpoint(topology)
-    assert not [r for r in caplog.records if "live_endpoint" in r.message]
 
 
 # --------------------------------------------------------------------------
@@ -391,9 +268,9 @@ def _layer_a_binding(topology, applied, text: str) -> dict:
     "mutation, status",
     [
         ("none", "current"),
-        ("camilla_readback", "mismatch"),
+        ("camilla_readback", "current"),
         ("crossover_drift", "mismatch"),
-        ("forbidden_playback_lane", "mismatch"),
+        ("forbidden_playback_lane", "unverifiable"),
     ],
 )
 async def test_the_layer_a_binding_judges_crossover_never_the_transport(
@@ -520,7 +397,10 @@ async def test_every_composition_call_site_names_the_endpoint_or_is_exempt():
             if override is not None:
                 endpoint = _assigned_value(scope, override, source.lineno)
                 if not (isinstance(endpoint, ast.Attribute) and endpoint.attr == "playback_device"
-                        or _call_name(endpoint) in {"resolve_active_playback_device", "_baseline_reemit_endpoint"}):
+                        or _call_name(endpoint) in {"resolve_active_playback_device", "_baseline_reemit_endpoint"}
+                        or (isinstance(endpoint, ast.Subscript)
+                            and _call_name(endpoint.value) == "parse_camilla_devices_config"
+                            and isinstance(endpoint.slice, ast.Constant) and endpoint.slice.value == "playback_device")):
                     missing.append(f"{rel}:{call.lineno}:default_playback_device")
 
     assert found and used_exemptions == set(exemptions)

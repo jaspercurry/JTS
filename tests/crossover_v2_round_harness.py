@@ -296,6 +296,8 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
             topology, manual_settings=_manual_settings(), driver_research=None, saved_at="2026-09-13T12:00:00Z")
     preview = build_crossover_preview(draft)
     preset, _, _ = baseline_profile_mod.compile_preset_from_crossover_preview(topology, preview)
+    if preset is None:
+        raise ValueError("Previous graph fixture has no crossover preset")
     measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)
     from tests.apply_fixtures import prepare_candidate
     monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: root / "sessions")

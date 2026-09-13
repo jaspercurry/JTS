@@ -1383,10 +1383,11 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
 
 
 def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, monkeypatch):
-    from hashlib import sha256
+    from jasper.active_speaker.baseline_profile import active_layer_a_fingerprint
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
     from tests.apply_fixtures import prepare_candidate
+    from jasper.sound.settings import saved_sound_layers
     from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _run6_measured_candidate
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -1395,9 +1396,11 @@ def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, 
     applied = prepare_candidate(candidate, topology, target, design_draft=load_design_draft(topology=topology))
     applied["status"] = "applied"
     applied["recomposition_snapshot"]["corrections"] = {}
-    expected = compile_tuning_graph(load_tuning_declaration(topology), candidate)
+    preference_filters, trim_db = saved_sound_layers()
+    expected = compile_tuning_graph(load_tuning_declaration(topology), candidate,
+                                    preference_filters=preference_filters, output_trim_db=trim_db)
     assert target.read_text() == expected
     binding = setup_mod._applied_layer_a_binding(topology, applied_profile=applied,
         active_config_path=str(target), active_config_text=None)
     assert binding["status"] == "current"
-    assert binding["expected_fingerprint"] == binding["loaded_fingerprint"] == sha256(expected.encode()).hexdigest()
+    assert binding["expected_fingerprint"] == binding["loaded_fingerprint"] == active_layer_a_fingerprint(expected)

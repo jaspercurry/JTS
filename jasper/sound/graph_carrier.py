@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -91,7 +91,7 @@ class ReemitResult:
 
     yaml: str
     room_peq_count: int
-    applied_profile: dict[str, Any] | None = None
+    applied_profile: dict[str, Any] = field(default_factory=dict)
 
 
 class _StereoHostCarrier:
@@ -383,11 +383,7 @@ class _ActiveGraphCarrier:
                 "on top of it isn't available — your crossover and driver "
                 "protection are unchanged.",
             )
-        # Invariant 7: an active baseline that is grouped (already a bonded member,
-        # OR forming a bond right now — the bonded-leader bake is the one caller
-        # that passes member_kwargs) refuses. The active×grouping composition is
-        # deferred to the Distributed-Active track. member_kwargs is the
-        # bake-context signal because grouping.env may not be active yet mid-bake.
+        # Distributed active graphs cannot host household EQ on the driver instance.
         if member_kwargs is not None or _bonded_active_member():
             raise CarrierCannotHostEq(
                 "eq_on_active_bonded_member",
@@ -406,8 +402,10 @@ class _ActiveGraphCarrier:
     def destination(self, result: ReemitResult, config_dir: str | Path, *, audition: bool = False) -> Path:
         from jasper.active_speaker.baseline_profile import baseline_candidate_config_path, baseline_config_path  # lazy: active graph owner
 
+        if audition:
+            return sound_audition_config_path(config_dir)
         return baseline_candidate_config_path(
-            hashlib.sha256(result.yaml.encode("utf-8")).hexdigest(),
+            result.applied_profile["source"]["measured_candidate_fingerprint"],
             Path(config_dir) / baseline_config_path().name,
         )
 
@@ -420,9 +418,6 @@ class _UnknownCarrier:
 
     def __init__(self, current_path: str | Path | None) -> None:
         self._current_path = current_path
-
-    def destination(self, result: ReemitResult, config_dir: str | Path, *, audition: bool = False) -> Path:
-        raise CarrierCannotHostEq("unknown_config", "The loaded config is not a JTS graph.")
 
     def reemit(
         self,
@@ -458,22 +453,25 @@ def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0) ->
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state, prepare_applied_baseline_profile  # lazy: active graph owner
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
+    from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: active graph compilation
     from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME, classify_bass_extension_graph  # lazy: active graph proof
-    from jasper.sound.profile import build_sound_filters  # lazy: profile DSP imports NumPy
+    from jasper.sound.profile import build_sound_filter_slots  # lazy: profile DSP imports NumPy
 
     applied = load_applied_baseline_profile_state() or {}
     try:
-        declaration = load_tuning_declaration()
+        draft = load_design_draft()
+        declaration = load_tuning_declaration(design_draft=draft)
         candidate = candidate_from_applied_profile(declaration.topology, applied)
         text = compile_tuning_graph(declaration, candidate=candidate,
-            preference_filters=build_sound_filters(profile), output_trim_db=output_trim_db)
+            preference_filters=build_sound_filter_slots(profile), output_trim_db=output_trim_db)
         graph = classify_bass_extension_graph(declaration.topology, evidence_source="desired", graph_text=text,
             applied_baseline_state={"recomposition_snapshot": {"bass_extension": candidate.bass_extension}})
         if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
             raise ValueError(graph.classification)
-        prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft={}, measurements={},
+        prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={},
             config_path="", config_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), provenance=applied)
+        prepared["config"]["sound_layer"] = {"profile": profile.to_dict(), "output_trim_db": output_trim_db}
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not compile the saved speaker tune: {exc}") from exc
     return ReemitResult(text, len(extract_room_peqs_from_config_text(text)), prepared)

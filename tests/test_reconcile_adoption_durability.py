@@ -103,98 +103,42 @@ def _reigning_candidate_box(tmp_path: Path, monkeypatch):
 async def test_a_kept_candidate_survives_the_deploy_reconcile(
     tmp_path: Path, monkeypatch, caplog,
 ):
-    """THE DoD PIN (#2572): mid-series adoption survives a deploy.
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+    from jasper.active_speaker.environment import camilla_statefile_path
+    from jasper.active_speaker.runtime_contract import write_camilla_statefile
 
-    What must survive is the ANCHOR, not the bytes. Pre-fix, a reconcile wrote
-    the graph to ``sound_current.yml`` and re-pointed CamillaDSP at it, so the
-    applied record was displaced from the statefile and the round lost its
-    entry graph.
-
-    Both halves are pinned here, because the fixed frame separated them. A
-    deploy that CHANGES the emitted graph — the frame migration is exactly such
-    a deploy — reports ``reconciled`` and rewrites the candidate IN PLACE; the
-    statefile keeps naming it and the record stays authoritative. The pass
-    after that reports ``unchanged`` and writes nothing at all. A regression in
-    either direction (a second name appearing, or saved intent never reaching
-    the speaker) fails here.
-    """
     candidate, config_dir, camilla = _reigning_candidate_box(tmp_path, monkeypatch)
-    before = candidate.read_bytes()
-    dsp_state_before = None
-
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(), profile_path)
     caplog.set_level(logging.INFO, logger="jasper.sound.runtime")
-
     payload = await reconcile_current_dsp(
-        profile_path=profile_path,
-        config_dir=config_dir,
-        camilla_factory=lambda: camilla,
+        profile_path=profile_path, config_dir=config_dir, camilla_factory=lambda: camilla,
     )
-
     assert payload["carrier_kind"] == "active"
     assert payload["current_config_path"] == str(candidate)
-    # THE INVARIANT: whatever happened to the bytes, the anchor did not move.
     assert not (config_dir / "sound_current.yml").exists()
-    assert camilla.loaded_path in (None, str(candidate))
+    active_path = Path(await camilla.get_config_file_path())
+    assert load_applied_baseline_profile_state()["config"]["path"] == str(active_path)
+    camilla.current_path = str(active_path)
+    camilla.loaded_path = None
+    before = active_path.read_bytes()
+    dsp_state_before = (tmp_path / "dsp.json").read_bytes()
+    caplog.clear()
 
-    if payload["status"] == "reconciled":
-        # Migration pass: the emitted graph changed, so it was refreshed over
-        # the candidate ITSELF rather than appearing under a second name.
-        assert camilla.loaded_path == str(candidate)
-        assert payload["candidate_config_path"] == str(candidate)
-        # Settle to steady state before the no-op assertions below.
-        camilla.loaded_path = None
-        caplog.clear()
-        before = candidate.read_bytes()
-        # The migration pass applied for real, so it legitimately recorded apply
-        # state. What the settled pass must not do is write anything NEW.
-        dsp_state_before = (
-            (tmp_path / "dsp.json").read_bytes()
-            if (tmp_path / "dsp.json").exists()
-            else None
-        )
-        payload = await reconcile_current_dsp(
-            profile_path=profile_path,
-            config_dir=config_dir,
-            camilla_factory=lambda: camilla,
-        )
-
-    # Steady state: nothing written and nothing loaded.
+    payload = await reconcile_current_dsp(
+        profile_path=profile_path, config_dir=config_dir, camilla_factory=lambda: camilla,
+    )
     assert payload["status"] == "unchanged", payload
     assert camilla.loaded_path is None
-    assert not (config_dir / "sound_current.yml").exists()
-    assert candidate.read_bytes() == before
-    dsp_state_after = (
-        (tmp_path / "dsp.json").read_bytes()
-        if (tmp_path / "dsp.json").exists()
-        else None
-    )
-    assert dsp_state_after == dsp_state_before
-
-    # THE CONSEQUENCE THE ISSUE IS ABOUT: the record still names what the
-    # speaker plays, so the round can still name its own entry graph.
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-    )
-
-    # The STRICT form: `""` is "the record is authoritative", which is what the
-    # fixture asserted before the reconcile ran. Asserting merely "not
-    # displaced" would also accept the two could-not-check codes, and a
-    # survival claim that tolerates "we lost the ability to look" is not the
-    # claim this test is making.
-    from jasper.active_speaker.environment import camilla_statefile_path
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    assert active_path.read_bytes() == before
+    assert (tmp_path / "dsp.json").read_bytes() == dsp_state_before
     write_camilla_statefile(camilla_statefile_path(), await camilla.get_config_file_path())
     assert applied_profile_displacement(load_applied_baseline_profile_state()) == ""
-
-    # Observable: ONE line, naming the running config it left in place and the
-    # file it declined to write.
     assert len(event_records(caplog, "sound.reconcile_current_dsp")) == 1
     fields = event_fields(caplog, "sound.reconcile_current_dsp")
     assert fields["result"] == "unchanged"
     assert fields["reason"] == "running_config_matches_intent"
-    assert fields["current"] == str(candidate)
+    assert fields["current"] == str(active_path)
     assert Path(fields["candidate"]).parent == config_dir
 
 

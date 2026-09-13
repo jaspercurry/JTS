@@ -1699,7 +1699,6 @@ def _stage_protected_startup_config_locked(
                 enable_rate_adjust=devices.enable_rate_adjust,
                 audible_outputs=frozenset(),
                 out_path=out_path,
-
             )
             classification = _record_generated_config_classification(
                 emitted_config,
@@ -2058,7 +2057,6 @@ def prepare_driver_commissioning_config(
                 volume_limit_db=volume_limit_db,
                 startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
-
                 filter_mode=filter_mode,
             )
             classification = _record_generated_config_classification(

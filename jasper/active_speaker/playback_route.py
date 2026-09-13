@@ -13,12 +13,10 @@ adds speaker-group demand accounting and route-fit issues.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 from jasper.audio_hardware.dac import by_id as _dac_by_id
-from jasper.log_event import log_event
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     EXPLICIT_SOURCE,
@@ -32,14 +30,11 @@ from jasper.output_topology import (
 
 from ._common import issue as _issue
 
-logger = logging.getLogger(__name__)
-
 # Re-exported: constants moved to jasper.output_topology; kept importable here.
 __all__ = [
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "ACTIVE_PLAYBACK_ROUTE_KIND",
     "EXPLICIT_SOURCE",
-    "LOADED_GRAPH_SOURCE",
     "MISSING_SOURCE",
     "OUTPUTD_ACTIVE_LANE_SOURCE",
     "ActiveLaneCapabilityGap",
@@ -48,15 +43,9 @@ __all__ = [
     "active_lane_capability_gap",
     "active_playback_route_capability",
     "resolve_active_playback_device",
-    "resolve_live_active_endpoint",
 ]
 
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
-
-# Witness for :func:`resolve_live_active_endpoint`: the graph itself, distinct
-# from ``OUTPUTD_ACTIVE_LANE_SOURCE`` ("marker selects" vs "graph IS on").
-LOADED_GRAPH_SOURCE = "loaded_graph"
-
 
 def _active_main_groups(topology: OutputTopology) -> list[SpeakerGroup]:
     return [
@@ -160,36 +149,6 @@ def resolve_active_playback_device(
         playback_device=playback_device,
     )
     return layout.playback_device, layout.playback_device_source
-
-
-def resolve_live_active_endpoint(
-    topology: OutputTopology,
-) -> tuple[str | None, str]:
-    """The playback endpoint this box's active graph is CURRENTLY on."""
-
-    # Lazy: runtime_contract owns which devices are legal active endpoints.
-    from jasper.active_speaker.runtime_contract import OUTPUTD_LEGAL_ENDPOINT_DEVICES
-    from jasper.fanin.ring_readiness import read_loaded_camilla_graph
-
-    graph = read_loaded_camilla_graph()
-    device = graph.devices.get("playback_device")
-    if isinstance(device, str) and device.strip():
-        named = device.strip()
-        if named in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
-            return named, LOADED_GRAPH_SOURCE
-        # Graph names a sink outside the legal set (stale lane, lab PCM, pipe,
-        # or the retired aloop endpoint). DEBUG not WARNING: a lab box hits
-        # this branch legitimately on every call.
-        log_event(
-            logger,
-            "active_speaker.live_endpoint",
-            level=logging.DEBUG,
-            result="declined_non_endpoint_device",
-            observed=named,
-            config=graph.path or "",
-            answered_by="playback_route_chooser",
-        )
-    return resolve_active_playback_device(topology)
 
 
 @dataclass(frozen=True)

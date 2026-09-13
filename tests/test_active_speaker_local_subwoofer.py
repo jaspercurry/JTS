@@ -224,7 +224,7 @@ def _passive_1way_sub_preset() -> ActiveSpeakerPreset:
 
 def _baseline(preset: ActiveSpeakerPreset) -> str:
     return emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM, baseline_id="b1"
+        preset, playback_device=ACTIVE_PCM
     )
 
 

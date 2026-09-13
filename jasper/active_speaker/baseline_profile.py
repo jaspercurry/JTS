@@ -19,11 +19,11 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Sequence
 
 import yaml as yaml_parser
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import (
     PeqFilter,
@@ -209,19 +209,38 @@ async def load_composed_graph(
     load_config: Callable[[str], Awaitable[bool]],
     get_current_config_path: Callable[[], Awaitable[str | None]],
     persist: Callable[[], Any] | None = None,
-    record: bool = True,
+    prepare: Callable[[], Awaitable[str]] | None = None,
+    record: Literal["apply", "sound"] | None = "apply",
     room_peq_count: int | None = None,
     sound_filter_count: int | None = None,
 ) -> AsyncIterator[tuple[DspApplyState, dict[str, Any]]]:
     target = Path(profile["config"]["path"])
     async with dsp_writer_lock(target.parent, source=source):
-        atomic_write_text(target, text, mode=0o640)
+        async def write_graph() -> None:
+            rendered = await prepare() if prepare is not None else text
+            atomic_write_text(target, rendered, mode=CONFIG_FILE_MODE)
+
         state = await apply_dsp_config(
             source=source, candidate_path=target, expected_candidate_sha256=sha256,
+            prepare=write_graph,
             load_config=load_config, get_current_config_path=get_current_config_path,
             persist=persist, room_peq_count=room_peq_count, sound_filter_count=sound_filter_count,
         )
-        applied = persist_applied_baseline_profile(profile, apply_state=state.to_dict()) if record else dict(profile)
+        applied = dict(profile)
+        if record == "apply":
+            applied = persist_applied_baseline_profile(profile, apply_state=state.to_dict())
+        elif record == "sound":
+            saved = load_baseline_profile_state() or {}
+            applied = dict(_applied_profile_anchor(saved) or {})
+            applied["config"] = dict(profile["config"])
+            applied["recomposition_snapshot"]["driver_protection"] = profile["recomposition_snapshot"]["driver_protection"]
+            applied["source"]["driver_protection_fingerprint"] = profile["source"].get("driver_protection_fingerprint")
+            if saved.get("status") == "applied":
+                saved = applied
+            else:
+                saved["applied_recomposition_profile"] = applied
+            atomic_write_text(baseline_profile_state_path(), json.dumps(saved, indent=2, sort_keys=True) + "\n",
+                              mode=CONFIG_FILE_MODE, durable=True)
         if record:
             promote_applied_baseline_candidate(applied)
         yield state, applied
@@ -1172,7 +1191,7 @@ def _applied_profile_anchor(
 def _frozen_applied_profile(
     saved: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Small immutable record sufficient to recompose the running Layer A."""
+    """Return the applied record fields consumed by runtime readers."""
     applied = _applied_profile_anchor(saved)
     if applied is None:
         return None
@@ -1199,30 +1218,10 @@ def _frozen_applied_profile(
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
-        # WHICH speaker groups the applied profile measured. An allowlist
-        # entry for the Gap 3c reason every neighbour here carries: a frozen
-        # view that dropped it would describe a measured profile unable to
-        # name its own measured groups.
         "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
         "linearization": dict(applied.get("linearization") or {}),
-        # Gauge fix (2026-07-24): mirrors "linearization" immediately
-        # above — same top-level convenience copy, same era-tolerant
-        # absence. This is the field setup_status.read_active_speaker_setup_status
-        # reads (via load_applied_baseline_profile_state -> here) to surface
-        # WHY linearization did or didn't run on /state's protected_profile;
-        # dropping it here (an allowlist function, unlike
-        # persist_applied_baseline_profile's whole-object spread) would
-        # silently strip it on every read even though the write side
-        # persists it — see test_frozen_applied_profile_carries_linearization_top_level's
-        # own docstring for the identical Gap 3c bug class this mirrors.
         "linearization_outcome": str(applied.get("linearization_outcome") or ""),
-        # Same allowlist duty as "linearization_outcome" above.
         "trim_decision": dict(applied.get("trim_decision") or {}),
-        # Crossover blend correction (design doc decision 10). Mirrors
-        # "linearization" above exactly: an ALLOWLIST entry, so omitting it
-        # would silently strip on every read a field the write side persists —
-        # the Gap 3c bug class. A list, not a mapping, because it describes the
-        # SUM rather than a driver.
         "blend_correction": list(applied.get("blend_correction") or []),
         "room_correction": dict(applied.get("room_correction") or {}),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
@@ -2799,7 +2798,7 @@ def prepare_applied_baseline_profile(
         if exc.code != "not_found":
             raise
         publish_authored_candidate(candidate)
-    protection = ((provenance or {}).get("recomposition_snapshot") or {}).get("driver_protection") if provenance else design_draft.get("driver_safety_profile")
+    protection = design_draft.get("driver_safety_profile")
     source = _source_payload(
         declaration.topology, design_draft, {}, measurements,
         measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
@@ -2820,7 +2819,7 @@ def prepare_applied_baseline_profile(
     applied = {
         **(provenance or {}),
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
-        "source": {**source, **((provenance or {}).get("source") or {}), "measured_candidate_fingerprint": candidate.fingerprint},
+        "source": {**((provenance or {}).get("source") or {}), **source},
         "config": {**((provenance or {}).get("config") or {}), "path": str(config_path),
                    "basename": Path(config_path).name, "sha256": config_sha256, "exists": True,
                    "playback_device": declaration.playback_device, "domain": "full"},

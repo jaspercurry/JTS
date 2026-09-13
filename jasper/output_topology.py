@@ -1537,12 +1537,6 @@ def resolve_output_layout(
     the lane ROLE, not the transport, so nothing keyed on the SOURCE knows
     about the ring.
 
-    A RE-EMIT of a graph the box is already running asks a different question
-    and does not come through here first. It reads
-    :func:`jasper.active_speaker.playback_route.resolve_live_active_endpoint`,
-    which prefers the statefile-pointed GRAPH — the marker is derived from that
-    graph, so a marker read would be a rung behind mid-ladder — and falls back
-    to this resolution when the graph does not answer.
     """
 
     env = env if env is not None else os.environ

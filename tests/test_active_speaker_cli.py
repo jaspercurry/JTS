@@ -160,8 +160,6 @@ def test_startup_template_cli_writes_yaml_without_check(tmp_path: Path, capsys):
         "hw:ActiveDAC",
         "--output",
         str(out),
-        "--baseline-id",
-        "baseline-cli",
         "--no-check",
     ])
 

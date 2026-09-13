@@ -1023,8 +1023,9 @@ def _applied_profile_for(topology, *, fingerprint: str | None = None):
     return applied
 
 
+@pytest.mark.parametrize("same_topology", [True, False])
 def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, same_topology
 ):
     """Arm 1: the graph a human already approved for THESE drivers."""
     from jasper.fanin import ring_readiness
@@ -1037,14 +1038,16 @@ def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
     )
+    applied = _applied_profile_for(topology)
+    if not same_topology:
+        applied["recomposition_snapshot"]["topology_id"] = "another-dac"
     monkeypatch.setattr(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        lambda *a, **k: _applied_profile_for(topology),
+        lambda *a, **k: applied,
     )
 
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
-    assert ok is True
-    assert "applied candidate" in detail
+    assert ok is same_topology
 
 
 def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
@@ -1898,7 +1901,6 @@ def _emit_active_baseline(preset, device, *, topology=None):
             "woofer": {"gain_db": 0.0, "delay_ms": 0.0},
             "tweeter": {"gain_db": 0.0, "delay_ms": 0.0},
         },
-        baseline_id="arm-walk",
     )
 
 

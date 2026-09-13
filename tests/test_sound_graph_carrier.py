@@ -753,7 +753,7 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
         "jasper.sound.graph_carrier._bonded_active_member", return_value=False
     ), mock.patch(
         "jasper.sound.graph_carrier._compile_active_baseline_with_eq",
-        return_value=ReemitResult("eqd-active-yaml", 0),
+        return_value=ReemitResult("eqd-active-yaml", 0, {"source": {"measured_candidate_fingerprint": "banked-candidate"}}),
     ) as recompose:
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
         result = carrier.reemit(
@@ -1251,41 +1251,140 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path,
 
 
 
-@pytest.mark.parametrize("sound", [SoundProfile(), SoundProfile(enabled=False, simple_eq=SimpleEq(bass_db=2)), SoundProfile(simple_eq=SimpleEq(bass_db=2))])
-async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_path, monkeypatch, sound):
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
-    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
-    from jasper.sound.profile import build_sound_filters
-    from jasper.sound.runtime import load_profile_config, reconcile_current_dsp
+@pytest.fixture
+async def active_sound_box(tmp_path, monkeypatch):
+    import asyncio
+    from jasper.web import correction_crossover_v2_state as v2state
     from tests.test_correction_crossover_v2_endpoints import (
         _seed_baseline_apply_environment, _run6_measured_candidate, _FakeApplyCam, _apply, _bg_run_async,
     )
     from tests.sound_camilla_fixtures import FakeCamilla
 
-    from jasper.web import correction_crossover_v2 as host
-    monkeypatch.setattr(host, "_state_path_override", tmp_path / "v2.json")
+    monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2.json")
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "sound.json"))
     candidate = _run6_measured_candidate(preset)
     initial = _FakeApplyCam()
-    import asyncio
-    await asyncio.to_thread(_apply, {"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()}, _bg_run_async, lambda: initial)
+    await asyncio.to_thread(_apply, {"expected_candidate_fingerprint": candidate.fingerprint,
+                                    "candidate": candidate.to_dict()}, _bg_run_async, lambda: initial)
+    return topology, candidate, FakeCamilla(initial.path), Path(initial.path).parent
+
+
+@pytest.mark.parametrize("sound", [SoundProfile(), SoundProfile(enabled=False, simple_eq=SimpleEq(bass_db=2)), SoundProfile(simple_eq=SimpleEq(bass_db=2))])
+async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_path, monkeypatch, active_sound_box, sound):
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+    from jasper.sound.profile import build_sound_filter_slots
+    from jasper.sound.runtime import load_profile_config, reconcile_current_dsp
+
+    topology, candidate, cam, config_dir = active_sound_box
+    before = baseline_profile.load_baseline_profile_state()
+    bookkeeping = mock.Mock(side_effect=AssertionError("sound save ran apply bookkeeping"))
+    monkeypatch.setattr(baseline_profile, "_bank_applied_base_trim", bookkeeping)
+    monkeypatch.setattr(baseline_profile, "release_staged_startup_hold", bookkeeping)
     declaration = load_tuning_declaration(topology)
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     save_sound_settings(SoundSettings(headroom_trim_db=3.0))
-    cam = FakeCamilla(initial.path)
     profile_path = tmp_path / "sound.json"
-    config_dir = Path(initial.path).parent
     state, target, _ = await load_profile_config(sound, profile_path=profile_path, config_dir=config_dir,
         camilla_factory=lambda: cam, source="sound", persist_profile=True, output_trim_db=3.0)
     assert state.result == "success"
-    expected = compile_tuning_graph(declaration, candidate=candidate, preference_filters=build_sound_filters(sound), output_trim_db=3.0)
+    expected = compile_tuning_graph(declaration, candidate=candidate, preference_filters=build_sound_filter_slots(sound), output_trim_db=3.0)
     assert target.read_text() == expected
     assert not (config_dir / "sound_current.yml").exists()
-    applied = load_applied_baseline_profile_state()
+    applied = baseline_profile.load_applied_baseline_profile_state()
     assert applied["config"]["path"] == str(target)
     assert candidate_from_applied_profile(topology, applied).fingerprint == candidate.fingerprint
-    assert bool([name for name in yaml.safe_load(expected)["filters"] if name.startswith("sound_")]) == bool(build_sound_filters(sound))
+    assert len([name for name in yaml.safe_load(expected)["filters"] if name.startswith("sound_")]) == 15
     result = await reconcile_current_dsp(profile_path=profile_path, config_dir=config_dir, camilla_factory=lambda: cam, force=True)
     assert result["status"] == "reconciled"
     assert Path(result["active_config_path"]).read_text() == expected
+    after = baseline_profile.load_baseline_profile_state()
+    assert {key: after[key] for key in before if key not in {"config", "source", "recomposition_snapshot"}} == {
+        key: before[key] for key in before if key not in {"config", "source", "recomposition_snapshot"}}
+    assert after["config"]["sound_layer"] == {"profile": sound.to_dict(), "output_trim_db": 3.0}
+    bookkeeping.assert_not_called()
+
+
+async def test_active_audition_has_its_own_path_and_keeps_the_apply_record(tmp_path, active_sound_box):
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+    from jasper.sound.camilla_yaml import sound_audition_config_path
+    from jasper.sound.runtime import load_profile_config, reconcile_current_dsp
+
+    _, _, cam, config_dir = active_sound_box
+    before = load_applied_baseline_profile_state()
+    state, target, _ = await load_profile_config(SoundProfile(simple_eq=SimpleEq(bass_db=2)),
+        profile_path=tmp_path / "sound.json", config_dir=config_dir, camilla_factory=lambda: cam,
+        source="sound_audition", persist_profile=False, audition=True)
+    assert state.result == "success"
+    assert target == sound_audition_config_path(config_dir)
+    assert await cam.get_config_file_path() == str(target)
+    assert load_applied_baseline_profile_state() == before
+    result = await reconcile_current_dsp(profile_path=tmp_path / "sound.json", config_dir=config_dir, camilla_factory=lambda: cam)
+    assert result["reason"] == "active_audition"
+
+
+async def test_active_neutral_to_touched_edit_updates_in_place(tmp_path, active_sound_box):
+    from jasper.sound.live_edit import plan_live_edit
+    from jasper.sound.runtime import load_profile_config
+
+    _, _, cam, config_dir = active_sound_box
+    kwargs = dict(profile_path=tmp_path / "sound.json", config_dir=config_dir, camilla_factory=lambda: cam,
+                  source="sound", persist_profile=True)
+    _, target, _ = await load_profile_config(SoundProfile(), **kwargs)
+    cam.running = target.read_text()
+    carrier = carrier_for_loaded_config(target, config_dir=config_dir)
+    touched = SoundProfile(simple_eq=SimpleEq(bass_db=2))
+    assert plan_live_edit(cam.running, carrier.reemit(touched).yaml).method == "parameters"
+    cam.set_calls.clear()
+    _, updated, _ = await load_profile_config(touched, **kwargs)
+    assert updated == target
+    assert cam.ducks == [False]
+    assert cam.set_calls == []
+
+
+@pytest.mark.parametrize("failure", ["compile", "carrier_changed"])
+async def test_active_prepare_failure_in_the_lock_is_recorded(tmp_path, monkeypatch, active_sound_box, failure):
+    from jasper.dsp_apply import DspApplyError, last_dsp_apply_state
+    from jasper.sound import graph_carrier
+    from jasper.sound.runtime import load_profile_config
+
+    _, _, cam, config_dir = active_sound_box
+    boundary = "_compile_active_baseline_with_eq" if failure == "compile" else "carrier_for_loaded_config"
+    original = getattr(graph_carrier, boundary)
+    calls = 0
+    def disappear(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if failure == "compile":
+                raise CarrierCannotHostEq("active_baseline_compile_unavailable", "candidate missing")
+            from types import SimpleNamespace
+            return SimpleNamespace(kind="base_flat", reemit=lambda *a, **k: ReemitResult("", 0))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(graph_carrier, boundary, disappear)
+    with pytest.raises(DspApplyError) as error:
+        await load_profile_config(SoundProfile(), profile_path=tmp_path / "sound.json", config_dir=config_dir,
+                                  camilla_factory=lambda: cam, source="sound", persist_profile=True)
+    assert error.value.state.result == "prepare_failed"
+    assert isinstance(error.value.__cause__, CarrierCannotHostEq if failure == "compile" else RuntimeError)
+    assert last_dsp_apply_state()["result"] == "prepare_failed"
+    assert cam.set_calls == []
+
+
+async def test_active_sound_save_records_the_live_protection(tmp_path, active_sound_box):
+    from jasper.active_speaker.baseline_profile import load_baseline_profile_state
+    from jasper.active_speaker.branch_chain import confirmed_protection_sections
+    from jasper.active_speaker.measurement_emit import load_tuning_declaration
+    from jasper.active_speaker.state_paths import baseline_profile_state_path
+    from jasper.sound.runtime import load_profile_config
+
+    topology, _, cam, config_dir = active_sound_box
+    before = load_baseline_profile_state()
+    before["recomposition_snapshot"]["driver_protection"] = {"targets": []}
+    baseline_profile_state_path().write_text(json.dumps(before))
+    await load_profile_config(SoundProfile(), profile_path=tmp_path / "sound.json", config_dir=config_dir,
+                              camilla_factory=lambda: cam, source="sound", persist_profile=True)
+    recorded = load_baseline_profile_state()["recomposition_snapshot"]["driver_protection"]
+    assert confirmed_protection_sections(recorded) == load_tuning_declaration(topology).protection_sections_by_role

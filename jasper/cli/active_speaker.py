@@ -195,7 +195,6 @@ def _cmd_startup_template(args: argparse.Namespace) -> int:
         preset,
         playback_device=args.playback_device,
         out_path=output,
-        baseline_id=args.baseline_id,
     )
 
     validation = None
@@ -1102,10 +1101,6 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         required=True,
         help="path to write the generated CamillaDSP YAML",
-    )
-    template.add_argument(
-        "--baseline-id",
-        help="optional baseline id embedded in the generated template comment",
     )
     template.add_argument(
         "--check",

@@ -1154,6 +1154,8 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         )
     if applied is not None:
         try:
+            if (applied.get("recomposition_snapshot") or {}).get("topology_id") != topology.topology_id:
+                raise ValueError("applied_topology_mismatch")
             declaration = load_tuning_declaration(topology)
             candidate = candidate_from_applied_profile(topology, applied)
             require_candidate_speaker_identity(candidate, declaration.preset)

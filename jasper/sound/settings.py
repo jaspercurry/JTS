@@ -42,7 +42,7 @@ from ..volume_floor import (
     normalize_volume_floor_db,
 )
 from jasper.camilla_config_contract import FilterSpec
-from .profile import SoundProfile, build_sound_filters, load_profile, loudness_compensation_db
+from .profile import SoundProfile, build_sound_filter_slots, load_profile, loudness_compensation_db
 
 logger = logging.getLogger(__name__)
 
@@ -153,4 +153,4 @@ def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:
 
 def saved_sound_layers() -> tuple[tuple[FilterSpec, ...], float]:
     profile = load_profile()
-    return build_sound_filters(profile), output_trim_db(profile, load_sound_settings())
+    return build_sound_filter_slots(profile), output_trim_db(profile, load_sound_settings())

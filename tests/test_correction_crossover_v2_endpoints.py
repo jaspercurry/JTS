@@ -6402,6 +6402,7 @@ def test_a_measure_only_session_resolves_to_review_never_done():
 @pytest.mark.parametrize("layers", [(), ("room",), ("bass",), ("room", "bass")])
 def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatch, tmp_path, layers):
     import hashlib
+    from jasper.sound.settings import saved_sound_layers
     from jasper.active_speaker.candidate_bank import publish_authored_candidate
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2.conductor_context import measurement_role_channels
@@ -6426,7 +6427,9 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
         preset, topology, measurement_role_channels(preset), resolve_active_playback_device(topology)[0],
         confirmed_protection_sections(draft["driver_safety_profile"]),
     )
-    expected = compile_tuning_graph(declaration, candidate=candidate).encode("utf-8")
+    preference_filters, trim_db = saved_sound_layers()
+    expected = compile_tuning_graph(declaration, candidate=candidate,
+                                    preference_filters=preference_filters, output_trim_db=trim_db).encode("utf-8")
     cam = _FakeApplyCam()
     result = v2apply.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint}, _bg_run_async, lambda: cam)
     assert result["status"] == "applied"
@@ -6528,6 +6531,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
 @pytest.mark.parametrize("measured", [True, False])
 def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, tmp_path, measured):
     from jasper.active_speaker import baseline_profile, driver_base_trim
+    from jasper.sound.settings import saved_sound_layers
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
@@ -6539,8 +6543,10 @@ def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, 
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
     assert applied["recomposition_snapshot"]["domain"] == "full"
+    preference_filters, trim_db = saved_sound_layers()
     assert Path(applied["config"]["path"]).read_text() == compile_tuning_graph(
-        load_tuning_declaration(topology), candidate=candidate_from_applied_profile(topology, applied))
+        load_tuning_declaration(topology), candidate=candidate_from_applied_profile(topology, applied),
+        preference_filters=preference_filters, output_trim_db=trim_db)
     assert applied["level_match"]["applied"] is measured
     record = driver_base_trim.load_base_trim()
     if measured:

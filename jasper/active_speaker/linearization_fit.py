@@ -550,7 +550,6 @@ def complex_correction_response(
 def linearization_filters_by_role(
     linearization_mapping: Mapping[str, Any],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Reduce a persisted ``{role: LinearizationFit.to_dict()}`` mapping to"""
     out: dict[str, list[dict[str, Any]]] = {}
     for role, fit in (linearization_mapping or {}).items():
         if not isinstance(fit, Mapping):
