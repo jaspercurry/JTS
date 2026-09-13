@@ -17,7 +17,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
 )
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
-    candidate_room_peqs,
+    candidate_room_peqs, candidate_on_declaration,
     compile_candidate_config,
     prove_candidate_config,
 )
@@ -103,6 +103,7 @@ def compile_tuning_graph(
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
     require_candidate_speaker_identity(candidate, profile.preset)
+    candidate = candidate_on_declaration(candidate, profile.preset)
     # The shared reducer skips malformed records; refuse before it loses identity.
     if set(candidate.linearization) - set(required_driver_roles(candidate.source_preset.way_count)) or any(
         not isinstance(value, Mapping) or not _filter_list(value.get("filters"))

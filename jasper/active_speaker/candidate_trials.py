@@ -19,32 +19,6 @@ def has_tuning_layers(candidate: Any) -> bool:
     return bool(candidate.room_correction or candidate.bass_extension)
 
 
-def tuning_trial_reference(candidate: Any, trial: Mapping[str, Any] | None) -> dict[str, str] | None:
-    """Compact durable pointer to the exact captured tuning graph, when present."""
-    if not has_tuning_layers(candidate):
-        return None
-    record = trial if isinstance(trial, Mapping) else {}
-    candidate_id = str(record.get("candidate_id") or "")
-    graph_fingerprint = str(record.get("graph_fingerprint") or "")
-    record_path = str(record.get("record_path") or "")
-    if (
-        candidate_id != candidate.fingerprint
-        or record.get("graph_scope") != "candidate"
-        or re.fullmatch(r"[0-9a-f]{16}", graph_fingerprint) is None
-        or not record_path
-    ):
-        raise CandidateBankRefusal(
-            "candidate_trial_required",
-            "Capture this complete tuning candidate before applying it.",
-        )
-    return {
-        "candidate_fingerprint": candidate_id,
-        "graph_scope": "candidate",
-        "graph_fingerprint": graph_fingerprint,
-        "record_path": record_path,
-    }
-
-
 def tuning_trial_matches_candidate(reference: Any, candidate_fingerprint: Any) -> bool:
     """Whether a persisted tuning-trial pointer names this exact candidate."""
     if not isinstance(reference, Mapping):

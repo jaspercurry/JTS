@@ -1219,7 +1219,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # save) still needs that inverse to rebuild its change.
     "accepted_sound_declaration_change",
     "applied",
-    "apply_blocked",
     "attempts_loop",
     "candidate",
     "cloud",

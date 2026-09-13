@@ -10,7 +10,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
 
 * the **durable v2 flow state** (one JSON file) that ``status_payload`` threads
   into the envelope as ``status["crossover_v2"]`` — phase / candidate / verify
-  / failure / apply_blocked / needs_recovery / applied;
+  / failure / needs_recovery / applied;
 * the **session volume plan** singleton (one fixed measurement volume per
   session, §5.5) and its open/close/abandon wiring — including the
   walked-away guarantee: every terminal capture outcome drains the restore-once
@@ -497,7 +497,7 @@ def reset_v2_journey_state() -> None:
                   reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
     clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
              "gain_plan_db": None, "candidate": None, "verify": None, "failure": None,
-             "apply_blocked": None, "verify_priors": None, "evidence": None,
+             "verify_priors": None, "evidence": None,
              ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
     if applied:
         for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile",
@@ -506,6 +506,11 @@ def reset_v2_journey_state() -> None:
     save_v2_state(clean)
     log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
               else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
+
+
+def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:
+    return (lambda path: camilla.set_config_file_path(path, best_effort=False),
+            lambda: camilla.get_config_file_path(best_effort=False))
 
 
 def observe_apply_success(
@@ -543,7 +548,6 @@ def observe_apply_success(
     # The reverse race (a stop landing AFTER this call persists) is already
     # handled: persist_conductor_state preserves ``applied`` once it
     # observes it, for the same session.
-    state["apply_blocked"] = None
     state["previous_candidate_fingerprint"] = (
         previous_candidate_fingerprint
         if isinstance(previous_candidate_fingerprint, str)

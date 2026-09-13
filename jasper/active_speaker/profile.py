@@ -13,7 +13,7 @@ wizard code should consume these dataclasses instead of accepting freeform YAML.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from jasper.camilla_emit import (
@@ -638,19 +638,10 @@ class ActiveSpeakerPreset:
         return self.local_subwoofer is not None
 
     def speaker_identity(self) -> tuple[Any, ...]:
-        """The physical speaker assignment this preset declares.
-
-        ADR-0303 frees tuning values, not the assignment: a driver's declared
-        sensitivity and protection floor and a region's delay and polarity
-        evolve with declarations and tunes, and the emitter reads them from the
-        live profile, so they are not identity.
-        """
+        """Physical driver assignment; tuning and live caps vary (ADR-0303)."""
         drivers = {role: (spec.manufacturer, spec.model) for role, spec in self.drivers.items()}
-        return (self.way_count, self.channel_map, drivers, self.local_subwoofer, tuple(
-            replace(region, delay_ms=None, delay_target_driver=None,
-                    lower_polarity="non-inverted", upper_polarity="non-inverted")
-            for region in self.crossover_regions
-        ))
+        return (self.way_count, self.channel_map, drivers, self.local_subwoofer,
+                tuple((region.lower_driver, region.upper_driver) for region in self.crossover_regions))
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "ActiveSpeakerPreset":

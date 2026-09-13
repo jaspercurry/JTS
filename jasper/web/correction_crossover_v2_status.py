@@ -90,7 +90,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "verify": (state or {}).get("verify"),
         "execution": (state or {}).get("execution"),
         "failure": (state or {}).get("failure"),
-        "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
         "previous_candidate_fingerprint": _offerable_previous_candidate(state),

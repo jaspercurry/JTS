@@ -4401,7 +4401,7 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
 
 
 @pytest.mark.parametrize("change, blocked", [
-    ("woofer_floor", False), ("tweeter_sensitivity", False), ("crossover_fc", True),
+    ("woofer_floor", False), ("tweeter_sensitivity", False), ("crossover_fc", False), ("driver_model", True),
 ])
 def test_apply_compares_the_candidate_by_speaker_identity(tmp_path, change, blocked):
     from dataclasses import replace as _replace
@@ -4416,6 +4416,7 @@ def test_apply_compares_the_candidate_by_speaker_identity(tmp_path, change, bloc
         measured_preset = _replace(preset, crossover_regions=regions)
     else:
         role, field_name, value = (("woofer", "protection_highpass_floor_hz", 40.0) if change == "woofer_floor"
+                                   else ("tweeter", "model", "different") if change == "driver_model"
                                    else ("tweeter", "sensitivity_db", 80.0))
         drivers = dict(preset.drivers)
         drivers[role] = _replace(drivers[role], **{field_name: value})
@@ -6053,7 +6054,7 @@ def test_the_applied_level_match_is_the_evidence_a_level_matched_walk_reads(
     assert dbt.load_base_trim() is None
     assert baseline_profile_mod.measured_level_trims(preset, {}, preview)[0] == {}
 
-    applied = baseline_profile_mod._persist_applied_record(
+    applied = baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6097,14 +6098,14 @@ def test_applying_an_unmeasured_profile_clears_a_stale_banked_trim(
     preset, preview, measured_candidate = _applied_measured_profile(
         tmp_path, measured=True
     )
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         measured_candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
     )
     assert dbt.load_base_trim() is not None
 
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         datasheet_candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "second" / "applied_profile.json",
@@ -6167,7 +6168,7 @@ def test_newer_guided_captures_replace_the_banked_trim_and_the_receipt_says_so(
     assert candidate["level_match"]["base_trim"]["status"] == dbt.STATUS_SUPERSEDED
 
     monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T12:30:00Z")
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6223,13 +6224,13 @@ def test_a_frozen_re_persist_re_banks_the_evidence_time_not_the_persist_time(
         created_at="2026-06-19T12:20:00Z",
     )
     monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T12:30:00Z")
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
     )
     monkeypatch.setattr(dbt, "_utc_now", lambda: "2026-06-19T13:00:00Z")
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6425,7 +6426,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     candidate = _applied_with_sources(tmp_path, sources)
     # A record from an earlier, fully measured apply is standing before each
     # arm runs -- the arms differ only in what they do to it.
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         _applied_with_sources(
             tmp_path / "prior", {"woofer": "measured", "tweeter": "measured"}
         ),
@@ -6435,7 +6436,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     assert dbt.load_base_trim() is not None
     caplog.clear()
 
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6478,7 +6479,7 @@ def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
     candidate["source"] = source
     candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
 
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6504,7 +6505,7 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     datasheet) is conservative; a stale record is not.
     """
     caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6519,7 +6520,7 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     # writer refuses -- the seam must not leave the prior record behind.
     doomed["source"] = {**doomed["source"], "crossover_preview_fingerprint": ""}
     doomed["candidate_fingerprint"] = baseline_candidate_fingerprint(doomed)
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         doomed,
         apply_state={"result": "success"},
         state_path=tmp_path / "next_applied.json",
@@ -6550,7 +6551,7 @@ def test_a_malformed_correction_entry_refuses_instead_of_escaping(
     candidate["corrections"] = {**candidate["corrections"], "tweeter": "-12.0"}
     candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
 
-    payload = baseline_profile_mod._persist_applied_record(
+    payload = baseline_profile_mod.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6579,7 +6580,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
     no_corrections["candidate_fingerprint"] = baseline_candidate_fingerprint(
         no_corrections
     )
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         no_corrections,
         apply_state={"result": "success"},
         state_path=tmp_path / "a.json",
@@ -6587,7 +6588,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
     no_readiness = deepcopy(base)
     no_readiness.pop("automatic_candidate", None)
     no_readiness["candidate_fingerprint"] = baseline_candidate_fingerprint(no_readiness)
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         no_readiness,
         apply_state={"result": "success"},
         state_path=tmp_path / "b.json",
@@ -6609,7 +6610,7 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     of those, so a consolidation that ever routes such a graph through the
     apply seam must not be able to clear a measurement it knows nothing about.
     """
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -6624,7 +6625,7 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
         **follower["recomposition_snapshot"], "domain": "driver",
     }
     follower["candidate_fingerprint"] = baseline_candidate_fingerprint(follower)
-    baseline_profile_mod._persist_applied_record(
+    baseline_profile_mod.persist_applied_baseline_profile(
         follower,
         apply_state={"result": "success"},
         state_path=tmp_path / "follower_applied.json",

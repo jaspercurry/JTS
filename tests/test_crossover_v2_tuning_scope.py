@@ -349,18 +349,13 @@ def test_candidate_compile_accepts_a_redeclared_driver_fact(tuning_profile, fiel
 
 
 @pytest.mark.parametrize("problem, reason", [
-    ("crossover", "measurement_candidate_speaker_mismatch"),
     ("channels", "measurement_candidate_speaker_mismatch"),
     ("unknown_role", "measurement_filters_invalid"),
     ("malformed_filter", "measurement_filters_invalid"),
 ])
 def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem, reason):
     candidate = _trial_candidate(tuning_profile)
-    if problem == "crossover":
-        candidate = replace(candidate, source_preset=replace(candidate.source_preset, crossover_regions=(
-            replace(candidate.source_preset.crossover_regions[0], fc_hz=2300.0),
-        )))
-    elif problem == "channels":
+    if problem == "channels":
         outputs = candidate.source_preset.channel_map.outputs
         candidate = replace(candidate, source_preset=replace(candidate.source_preset, channel_map=replace(
             candidate.source_preset.channel_map, outputs=tuple(replace(output, index=1-output.index) for output in outputs),

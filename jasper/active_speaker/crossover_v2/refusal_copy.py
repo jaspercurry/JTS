@@ -500,7 +500,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
-           ("candidate_trial_required", "trial_candidate", "Complete a trial of this candidate."),
+           ("compose_refused", "review_candidate", "Review the candidate graph and driver declaration."),
+           ("crossover_below_declared_protection_floor", "raise_crossover", "Raise the crossover to the declared driver protection floor."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
     "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),

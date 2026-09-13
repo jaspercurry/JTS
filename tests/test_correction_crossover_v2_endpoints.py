@@ -2119,30 +2119,14 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_VERIFY
 
 
-def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done():
-    """RE-DERIVED from PR-T2's ``…_still_resolves_to_done`` (work order D2).
-
-    T2 pinned that ``applied`` wins over the review branch, which is still
-    true and still the point: re-offering "apply this?" over a speaker that
-    already has it would be the mirror of the bug T2 fixed. What T2 could not
-    yet express is where an applied measure-only session goes INSTEAD, because
-    stage 2 did not exist — so it pinned ``done``, the only other terminal.
-
-    T3 makes that answer wrong: stage 1 measured, the household applied from
-    the review screen, and the post-apply check has not been opened yet. "Your
-    speaker is tuned" over an unverified correction is exactly the class of
-    claim this work order exists to remove. The honest resolution is
-    PHASE_VERIFY, whose screen carries the action that opens stage 2.
-    """
+def test_apply_completes_a_plan_without_verify():
     v2host.save_v2_state({
-        "session_id": "cap_x",
+        "session_id": "cap_x", "applied": False,
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "applied": True,
     })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_VERIFY
-    # …and the review interlude is NOT re-offered.
-    assert v2status.crossover_v2_status_block()["phase"] != "review"
+    v2host.observe_apply_success("candidate")
+    assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE
 
 
 def _tuning_trial_state(*, reference=None, scope="candidate"):
@@ -2196,22 +2180,6 @@ def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatc
         v2host.prepare_v2_session(
             {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
         )
-
-
-@pytest.mark.parametrize("fault", ["missing", "wrong", "stale"])
-def test_an_invalid_tuning_trial_proof_does_not_close_the_apply(fault):
-    state = _tuning_trial_state()
-    if fault == "missing":
-        state.pop("tuning_trial")
-    elif fault == "wrong":
-        state["tuning_trial"]["graph_scope"] = "candidate_branches"
-    else:
-        state["tuning_trial"]["candidate_fingerprint"] = "older-candidate"
-    v2host.save_v2_state(state)
-
-    block = v2status.crossover_v2_status_block()
-    assert block["phase"] == PHASE_VERIFY
-    assert block["post_apply_grade"]["state"] == v2host.GRADE_UNVERIFIED
 
 
 def test_a_session_that_verified_still_resolves_to_done():
@@ -2657,18 +2625,6 @@ def test_observe_apply_success_arms_the_deferred_verify_gate():
     assert v2host._applied_gate() is True
 
 
-def test_observe_apply_success_clears_a_stale_apply_blocked_nudge():
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": False,
-        "apply_blocked": {"id": "baseline_profile_not_ready_to_apply", "message": "x"},
-    })
-    v2host.observe_apply_success("fp-1")
-    assert v2host.load_v2_state()["apply_blocked"] is None
-
-
 def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
     """#2839: the writer fails, not the packet.
 
@@ -2749,18 +2705,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     v2host.reset_v2_journey_state()
     assert v2host.load_v2_state()["attempts_loop"] == loop
-
-
-def test_status_block_surfaces_apply_blocked():
-    v2host.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": False,
-        "apply_blocked": {"id": "measured_candidate_preset_mismatch", "message": "x"},
-    })
-    assert v2status.crossover_v2_status_block()["apply_blocked"] == {
-        "id": "measured_candidate_preset_mismatch", "message": "x",
-    }
 
 
 def test_status_block_reports_an_applied_but_ungraded_result():
@@ -3094,6 +3038,7 @@ def test_a_legacy_fc_selection_is_inert_and_never_refuses():
 
 def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
     prior = _honest_result_state()
+    prior["session_phases"] = [PHASE_VERIFY]
     v2host.save_v2_state(prior)
 
     class TerminalConductor(_StubConductor):
@@ -6532,9 +6477,12 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     ("bank", "not_found"), ("declaration", "driver_safety_profile_not_confirmed"),
     ("floor", "crossover_below_declared_protection_floor"),
     ("graph", "baseline_graph_safety_proof_failed"), ("boost", "boost_over_declared_bound"),
-    ("load", "apply_failed"),
+    ("load", "apply_failed"), ("malformed", "driver_safety_profile_not_confirmed"),
+    ("compose", "compose_refused"), ("live_floor", "crossover_below_declared_protection_floor"),
+    ("identity", "measurement_candidate_speaker_mismatch"),
 ])
-def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, fault, code):
+def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault, code):
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
     from jasper.active_speaker import boost_protection
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
@@ -6542,6 +6490,26 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, fault, code):
         candidate = replace(candidate, source_preset=replace(candidate.source_preset, crossover_regions=tuple(
             replace(region, fc_hz=500.) for region in candidate.source_preset.crossover_regions)))
     _bank_for_apply({"candidate": candidate.to_dict()})
+    if fault in {"malformed", "compose"}:
+        def refuse(*args, **kwargs):
+            exc = ValueError("bad input")
+            exc.code = None
+            raise exc
+        monkeypatch.setattr(v2apply, "confirmed_protection_sections" if fault == "malformed" else "compile_tuning_graph", refuse)
+    if fault in {"live_floor", "identity"}:
+        from jasper.active_speaker.design_draft import build_design_draft
+        path = tmp_path / "design_draft.json"
+        draft = json.loads(path.read_text())
+        tweeter = draft["manual_settings"]["drivers"][1]
+        if fault == "live_floor":
+            tweeter["required_protection_filters"][0]["cutoff_hz"] = 3000.0
+            tweeter["hard_excitation_band_hz"][0] = 3000.0
+            tweeter["measurement_band_hz"][0] = 3000.0
+            draft["manual_settings"]["crossover_candidates"][0]["frequency_hz"] = 3500.0
+        else:
+            tweeter["model"] = "different-driver"
+        draft = build_design_draft(v2apply.load_output_topology(), driver_research=draft["driver_research"], manual_settings=draft["manual_settings"])
+        path.write_text(json.dumps(draft))
     if fault == "declaration":
         path = tmp_path / "design_draft.json"
         draft = json.loads(path.read_text())
@@ -6579,6 +6547,53 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, fault, code):
         with pytest.raises(v2host.CrossoverV2Refused) as refused:
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
         assert refused.value.code == code
+    fields = event_fields(caplog, "correction.crossover_v2_apply")
+    assert fields["status"] == ("apply_failed" if fault == "load" else "blocked")
+    assert fields["code"] == code
     assert cam.path is None
     assert (tmp_path / "design_draft.json").read_bytes() == before
     assert not (tmp_path / "baseline_profile.json").exists()
+
+
+@pytest.mark.parametrize("measured", [True, False])
+def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, tmp_path, measured):
+    from jasper.active_speaker import baseline_profile, driver_base_trim
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    if not measured:
+        candidate = replace(candidate, analysis={"measurement_status": "unmeasured"})
+    cam = _FakeApplyCam()
+    result = _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()}, _bg_run_async, lambda: cam)
+    applied = baseline_profile.load_applied_baseline_profile_state()
+    snapshot, issues = baseline_profile.applied_baseline_hardware_match(topology, applied_profile=applied)
+    assert issues == []
+    assert snapshot["domain"] == "full"
+    recomposed, issues = baseline_profile.recompose_applied_baseline_yaml(topology, applied_profile=applied)
+    assert recomposed is not None and issues == []
+    assert applied["level_match"]["applied"] is measured
+    record = driver_base_trim.load_base_trim()
+    if measured:
+        assert record["trims_db"] == candidate.role_attenuations_db
+        assert record["speaker_group_ids"] == applied["automatic_candidate"]["measured_group_ids"]
+        assert set(applied["corrections_source"].values()) == {"measured"}
+        assert set(applied["gain_provenance"].values()) == {"measured"}
+        assert all(set(fields.values()) == {baseline_profile.PROVENANCE_MEASURED} for fields in applied["corrections_provenance"].values())
+        assert record["measured_at"] == applied["level_match"]["newest_capture_at"]
+    else:
+        assert record is None
+    assert result["status"] == "applied"
+
+
+def test_declaration_record_failure_does_not_hide_a_successful_apply(monkeypatch, tmp_path, caplog):
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    def refuse(**kwargs):
+        raise ValueError("declaration changed")
+    monkeypatch.setattr(v2apply, "apply_measured_crossover_geometry", refuse)
+    cam = _FakeApplyCam()
+    result = _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()}, _bg_run_async, lambda: cam)
+    assert result["status"] == "applied"
+    assert result["apply"]["active_config_path"] == cam.path
+    assert result["declaration_update"]["status"] == "failed"
+    assert result["declaration_update"]["code"] == "ValueError"
+    assert event_records(caplog, "correction.crossover_v2_declaration_update")[0].levelno == logging.WARNING

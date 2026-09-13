@@ -53,12 +53,13 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `bass_table_window_gain_missing` | The bass capture lacks a complete resolved window gain. | Record Main, Aux1 and program identity on each take | `hard_stop` |
 | `bass_target_invalid` | The bass target curve is invalid. | Supply an ordered target curve from 20 to 200 Hz | `hard_stop` |
 | `boost_over_declared_bound` | The measured boost exceeded its bound. Check the restore result before applying another tuning. |  | `hard_stop` |
-| `candidate_trial_required` | Complete a trial of this candidate. | Complete a trial of this candidate. | `hard_stop` |
 | `capture_slot_busy` | Another measurement holds the capture slot. Finish or cancel it, then join again. | Review the active measurement | `hard_stop` |
 | `capture_timeout` | The measurement link timed out. Start over from this page to measure again — the quick microphone check runs first. |  | `session_restart` |
 | `channel_map_mismatch` | JTS could not confirm that the drivers played in the expected order. Return to speaker setup and check the wiring before measuring again. |  | `hard_stop` |
 | `clipped` | That was a touch loud — measuring again a bit quieter. | measuring again a bit quieter. | `silent_auto_retry` |
 | `cloud_geometry_locked` | This dip looks like it belongs to the speaker rather than the room. Take this one from further out and we will use it instead. | Take this one from further out and we will use it instead. | `fix_and_retry` |
+| `compose_refused` | Review the candidate graph and driver declaration. | Review the candidate graph and driver declaration. | `hard_stop` |
+| `crossover_below_declared_protection_floor` | Raise the crossover to the declared driver protection floor. | Raise the crossover to the declared driver protection floor. | `hard_stop` |
 | `delay_exceeds_search_window` | The microphone may be off the spot in the picture. Re-check its placement, then try again. | Re-check its placement, then try again. | `fix_and_retry` |
 | `delay_implausible` | The delay JTS measured between the drivers isn't one this speaker's geometry can produce. Measure again — if it repeats, check that nothing moved during the sweep. | Measure again — if it repeats, check that nothing moved during the sweep. | `fix_and_retry` |
 | `drift_baselines_disagree` | The capture glitched — measuring again. | measuring again. | `silent_auto_retry` |

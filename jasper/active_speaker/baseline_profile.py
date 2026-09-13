@@ -17,8 +17,9 @@ import hashlib
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
 import yaml as yaml_parser
 
@@ -31,6 +32,7 @@ from jasper.camilla_config_contract import (
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
+    DspApplyState,
     apply_dsp_config,
     dsp_writer_lock,
     same_config_file,
@@ -94,7 +96,7 @@ from .level_trim import (
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
-    candidate_room_peqs, driver_corrections, effective_preset,
+    candidate_room_peqs, candidate_on_declaration, driver_corrections, effective_preset,
     room_peqs_from_correction,
 )
 from .playback_route import (
@@ -198,6 +200,26 @@ def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str
 
 def baseline_config_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
+
+
+def baseline_candidate_config_path(sha256: str, path: str | Path | None = None) -> Path:
+    target = baseline_config_path(path)
+    return target.with_name(f"{target.stem}_candidate_{sha256[:12]}{target.suffix}")
+
+
+@asynccontextmanager
+async def load_composed_graph(
+    text: str, sha256: str, *, source: str,
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]],
+) -> AsyncIterator[DspApplyState]:
+    target = baseline_candidate_config_path(sha256)
+    async with dsp_writer_lock(target.parent, source=source):
+        atomic_write_text(target, text, mode=0o640)
+        yield await apply_dsp_config(
+            source=source, candidate_path=target, expected_candidate_sha256=sha256,
+            load_config=load_config, get_current_config_path=get_current_config_path,
+        )
 
 
 def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
@@ -2107,10 +2129,7 @@ def build_baseline_profile_candidate(
         # identity is answered by the content-derived fingerprints
         # (`running_graph_fingerprint`, `_normalized_graph_fingerprint`), which
         # is what the measurement program actually consumes.
-        config_target = config_target.with_name(
-            f"{config_target.stem}_candidate_{source['fingerprint'][:12]}"
-            f"{config_target.suffix}"
-        )
+        config_target = baseline_candidate_config_path(source["fingerprint"], config_target)
     retained_applied = _frozen_applied_profile(applied_anchor)
     applied_profile_proves = _applied_profile_proves_driver_targets(saved, source)
 
@@ -2377,71 +2396,15 @@ def build_baseline_profile_candidate(
     )
     if measured_candidate is not None:
         corrections = measured_candidate.driver_corrections()
-        roles = required_driver_roles(preset.way_count)
-        measured_group_count = sum(
-            group.mode in {"active_2_way", "active_3_way"}
-            for group in topology.speaker_groups
-        )
+        correction_meta = _measured_candidate_metadata(measured_candidate, preset, topology, measurements, now)
         correction_issues: list[dict[str, str]] = []
-        # The ONLY place the repo's two SITTINGS of the level fact can be read
-        # side by side. Both answer one question — see
-        # `_compare_level_sittings` for why a gap between them is a property of
-        # two captures rather than a fault in either number.
-        sitting_notes, sitting_frame = _compare_level_sittings(
-            preset,
-            measurements,
-            dict(measured_candidate.role_attenuations_db),
-        )
+        sitting_notes = correction_meta["level_match"]["sitting_differences"]
         if sitting_notes:
             correction_issues.append(_issue(
-                "warning",
-                "driver_level_sittings_differ",
-                (
-                    "the crossover sweep and the level-match sitting place the "
-                    "driver level more than "
-                    f"{LEVEL_SITTING_TOLERANCE_DB:.0f} dB apart ("
-                    + "; ".join(sitting_notes)
-                    + "); they are separate captures on different axes reading "
-                    "one level fact, not two claims about one capture — the "
-                    "crossover measurement's own value was used"
-                ),
+                "warning", "driver_level_sittings_differ", "; ".join(sitting_notes),
             ))
-            log_event(
-                logger, "baseline_profile.level_sittings_differ",
-                level=logging.WARNING,
-                tolerance_db=LEVEL_SITTING_TOLERANCE_DB,
-                detail="; ".join(sitting_notes),
-            )
-        correction_meta = {
-            "sources": {role: "measured" for role in roles},
-            "gain_provenance": {role: "measured" for role in roles},
-            "provisional": False,
-            "level_match": {
-                "groups_total": measured_group_count,
-                "groups_measured": measured_group_count,
-                "comparison": "strict_measured_candidate",
-                "incomparable_groups": [],
-                "applied": True,
-                # Evidence recency for the bank's ``measured_at``: the v2
-                # session carries no capture clock at this seam, so the compose
-                # instant is the upper bound. Minted per compose — excluded
-                # from ``baseline_candidate_fingerprint`` for exactly that
-                # reason — and frozen only once the applied profile persists,
-                # which is what a frozen re-persist re-reads instead of
-                # re-dating the bank.
-                "newest_capture_at": now,
-                "sitting_differences": list(sitting_notes),
-                "sitting_frame": sitting_frame,
-            },
-            "corrections_provenance": {
-                role: {
-                    "gain_db": PROVENANCE_MEASURED,
-                    "delay_ms": PROVENANCE_MEASURED,
-                    "inverted": PROVENANCE_MEASURED,
-                }
-                for role in roles
-            },
-        }
+            log_event(logger, "baseline_profile.level_sittings_differ", level=logging.WARNING,
+                      tolerance_db=LEVEL_SITTING_TOLERANCE_DB, detail="; ".join(sitting_notes))
     else:
         corrections, correction_issues, correction_meta = _derive_corrections(
             preset,
@@ -2567,27 +2530,13 @@ def build_baseline_profile_candidate(
                 "manual_crossover_preserved",
                 "preserved the currently applied manual crossover corrections",
             ))
-    required_group_ids = sorted(
-        group.id
-        for group in topology.speaker_groups
-        if group.mode in {"active_2_way", "active_3_way"}
-    )
     if measured_candidate is not None:
-        automatic_candidate = {
-            "ready": True,
-            "reason": None,
-            "detail": "The exact reviewed measured candidate is ready to apply.",
-            "required_group_ids": required_group_ids,
-            "measured_group_ids": required_group_ids,
-            "summed_group_ids": required_group_ids,
-            "measurement_comparable": True,
-            "excitation_comparable": True,
-        }
+        automatic_candidate = correction_meta["automatic_candidate"]
     else:
         automatic_candidate = automatic_candidate_readiness(
-            required_group_ids=required_group_ids,
-            level_match=correction_meta["level_match"],
-            measurement_summary=summary,
+            required_group_ids=sorted(group.id for group in topology.speaker_groups
+                                      if group.mode in {"active_2_way", "active_3_way"}),
+            level_match=correction_meta["level_match"], measurement_summary=summary,
             active_comparison_set=measurements.get("active_comparison_set"),
         )
     if tuning_owner == "automatic" and not automatic_candidate["ready"]:
@@ -3427,7 +3376,32 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     )
 
 
-def persist_applied_baseline_profile(
+def _measured_candidate_metadata(
+    candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset,
+    topology: OutputTopology, measurements: Mapping[str, Any], created_at: str,
+) -> dict[str, Any]:
+    roles = required_driver_roles(preset.way_count)
+    groups = sorted(group.id for group in topology.speaker_groups if group.mode in {"active_2_way", "active_3_way"})
+    measured = candidate.analysis.get("measurement_status") != "unmeasured"
+    notes, frame = _compare_level_sittings(preset, measurements, dict(candidate.role_attenuations_db)) if measured else ([], {})
+    origin = PROVENANCE_MEASURED if measured else PROVENANCE_MANUAL
+    return {
+        "sources": {role: "measured" if measured else "operator_pinned" for role in roles},
+        "gain_provenance": {role: "measured" if measured else "operator_pinned" for role in roles},
+        "provisional": False,
+        "corrections_provenance": {role: dict.fromkeys(("gain_db", "delay_ms", "inverted"), origin) for role in roles},
+        "level_match": {"groups_total": len(groups), "groups_measured": len(groups) if measured else 0,
+                        "comparison": "strict_measured_candidate" if measured else "", "incomparable_groups": [],
+                        "applied": measured, "newest_capture_at": created_at if measured else None,
+                        "sitting_differences": list(notes), "sitting_frame": frame},
+        "automatic_candidate": {"ready": measured, "reason": None, "detail": "",
+                                "required_group_ids": groups, "measured_group_ids": groups if measured else [],
+                                "summed_group_ids": groups if measured else [],
+                                "measurement_comparable": measured, "excitation_comparable": measured},
+    }
+
+
+def prepare_applied_baseline_profile(
     candidate: MeasuredCrossoverCandidate,
     *,
     declaration: MeasurementGraphProfile,
@@ -3435,15 +3409,11 @@ def persist_applied_baseline_profile(
     measurements: Mapping[str, Any],
     config_path: str | Path,
     config_sha256: str,
-    apply_state: Mapping[str, Any],
-    state_path: str | Path | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record the loaded candidate and the declaration used to compose it."""
+    """Resolve the complete applied record before changing the DSP graph."""
     from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
-    if apply_state.get("result") != "success":
-        raise ValueError("successful apply proof is required")
     try:
         find_banked_candidate(candidate.fingerprint)
     except CandidateBankRefusal as exc:
@@ -3457,11 +3427,12 @@ def persist_applied_baseline_profile(
     )
     corrections = driver_corrections(candidate)
     linearization = linearization_filters_by_role(candidate.linearization)
+    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, applied_at or _utc_now())
     snapshot = {
         **((provenance or {}).get("recomposition_snapshot") or {}),
-        "schema_version": 1, "topology_id": declaration.topology.topology_id,
+        "schema_version": 1, "domain": "full", "topology_id": declaration.topology.topology_id,
         "topology_fingerprint": source["topology_fingerprint"],
-        "preset": effective_preset(candidate).to_dict(), "corrections": corrections,
+        "preset": effective_preset(candidate_on_declaration(candidate, declaration.preset)).to_dict(), "corrections": corrections,
         "linearization": linearization, "blend_correction": list(candidate.blend_correction),
         "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
         "driver_protection": protection, "playback_device": declaration.playback_device,
@@ -3474,19 +3445,21 @@ def persist_applied_baseline_profile(
         "source": {**source, **((provenance or {}).get("source") or {}), "measured_candidate_fingerprint": candidate.fingerprint},
         "config": {**((provenance or {}).get("config") or {}), "path": str(config_path),
                    "basename": Path(config_path).name, "sha256": config_sha256, "exists": True,
-                   "playback_device": declaration.playback_device},
+                   "playback_device": declaration.playback_device, "domain": "full"},
         "corrections": corrections, "linearization": linearization,
-        "corrections_source": (provenance or {}).get("corrections_source", {}),
+        "corrections_source": (provenance or {}).get("corrections_source", meta["sources"]),
+        **{key: (provenance or {}).get(key, meta[key]) for key in
+           ("gain_provenance", "corrections_provenance", "level_match", "automatic_candidate")},
         "linearization_outcome": (provenance or {}).get("linearization_outcome", candidate.linearization_outcome),
         "trim_decision": (provenance or {}).get("trim_decision", dict(candidate.trim_decision)),
         "tuning_owner": (provenance or {}).get("tuning_owner", "automatic"),
         "blend_correction": snapshot["blend_correction"], "room_correction": snapshot["room_correction"],
         "recomposition_snapshot": snapshot,
     }
-    return _persist_applied_record(applied, apply_state=apply_state, state_path=state_path, applied_at=applied_at)
+    return applied
 
 
-def _persist_applied_record(
+def persist_applied_baseline_profile(
     candidate: Mapping[str, Any], *, apply_state: Mapping[str, Any],
     state_path: str | Path | None = None, applied_at: str | None = None,
 ) -> dict[str, Any]:
@@ -3865,6 +3838,22 @@ async def _apply_baseline_profile_locked(
         graph_fingerprint=graph_fingerprint,
         candidate_fingerprint=candidate_identity,
     )
+    from .candidate_parts import candidate_from_applied_profile  # lazy: candidate parts consumes baseline readers
+
+    prepared = candidate
+    if not driver_domain:
+        bank_candidate = measured_candidate or candidate_from_applied_profile(topology, {**candidate, "status": "applied"})
+        prepared = prepare_applied_baseline_profile(
+            bank_candidate,
+            declaration=MeasurementGraphProfile(
+                preset=bank_candidate.source_preset, topology=topology, role_channels={},
+                playback_device=str(candidate["config"]["playback_device"]),
+            ),
+            design_draft=design_draft, measurements=measurements,
+            config_path=candidate["config"]["path"], config_sha256=candidate["config"]["sha256"],
+            provenance=candidate,
+        )
+
     try:
         apply_state = await apply_dsp_config(
             source="active_speaker_baseline_apply",
@@ -3928,22 +3917,7 @@ async def _apply_baseline_profile_locked(
             "issues": failed["issues"],
         }
 
-    from .candidate_parts import candidate_from_applied_profile  # lazy: candidate parts consumes baseline readers
-
-    if driver_domain:
-        applied = _persist_applied_record(candidate, apply_state=apply_state.to_dict(), state_path=state_target)
-    else:
-        bank_candidate = measured_candidate or candidate_from_applied_profile(topology, {**candidate, "status": "applied"})
-        applied = persist_applied_baseline_profile(
-            bank_candidate,
-            declaration=MeasurementGraphProfile(
-                preset=bank_candidate.source_preset, topology=topology, role_channels={},
-                playback_device=str(candidate["config"]["playback_device"]),
-            ),
-            design_draft=design_draft, measurements=measurements,
-            config_path=candidate["config"]["path"], config_sha256=candidate["config"]["sha256"],
-            apply_state=apply_state.to_dict(), state_path=state_target, provenance=candidate,
-        )
+    applied = persist_applied_baseline_profile(prepared, apply_state=apply_state.to_dict(), state_path=state_target)
     promote_applied_baseline_candidate(applied, config_path=config_path)
     log_event(
         logger,
