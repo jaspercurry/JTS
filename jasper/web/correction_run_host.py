@@ -107,9 +107,11 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
         backoff = BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
     elif solved:
         # A run that solved its drivers through the neutral graph plays its summed takes
-        # (the preset without the tune) at that level: the session anchor was leveled
-        # through the applied tune and does not cover a graph without it.
-        backoff = BASE_STIMULUS_PEAK_DBFS - min(solved.values())
+        # (the preset without the tune) at the least-attenuated role's solved gain: the
+        # preset's role trims place the other roles at theirs, and the leading pilot
+        # pair keeps its SNR. The session anchor was leveled through the applied tune
+        # and does not cover a graph without it.
+        backoff = BASE_STIMULUS_PEAK_DBFS - max(solved.values())
     else:
         backoff = 0.0
     program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
