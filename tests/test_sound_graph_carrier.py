@@ -19,6 +19,7 @@ silently dropping driver protection:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -56,7 +57,6 @@ from tests.test_active_speaker_runtime_contract import (
     _active_topology,
     _flat_yaml,
     _full_range_stereo,
-    _dynamic_bass_descriptor,
 )
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
@@ -301,8 +301,8 @@ def test_emit_sound_config_never_called_for_active_or_unknown(tmp_path):
     with mock.patch(
         "jasper.sound.graph_carrier.emit_sound_config"
     ) as emit, mock.patch(
-        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
-        return_value="active-yaml",
+        "jasper.sound.graph_carrier._compile_active_baseline_with_eq",
+        return_value=ReemitResult("active-yaml", 0),
     ) as recompose, mock.patch(
         "jasper.sound.graph_carrier._bonded_active_member", return_value=False
     ):
@@ -752,8 +752,8 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
     with mock.patch(
         "jasper.sound.graph_carrier._bonded_active_member", return_value=False
     ), mock.patch(
-        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
-        return_value="eqd-active-yaml",
+        "jasper.sound.graph_carrier._compile_active_baseline_with_eq",
+        return_value=ReemitResult("eqd-active-yaml", 0),
     ) as recompose:
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
         result = carrier.reemit(
@@ -762,37 +762,12 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
     assert isinstance(result, ReemitResult)
     assert result.yaml == "eqd-active-yaml"
     assert result.room_peq_count == 0
-    assert recompose.call_args.kwargs["out_path"] == out
-    assert recompose.call_args.kwargs["room_peqs"] is None
+    assert not out.exists()
+    assert carrier.destination(result, tmp_path).read_text() == result.yaml
     # The household's manual headroom / loudness-match trim is forwarded to the
     # active emitter, not silently dropped.
     assert recompose.call_args.kwargs["output_trim_db"] == 3.0
 
-
-def test_solo_active_baseline_replaces_room_peqs_explicitly(tmp_path):
-    out = tmp_path / "sound_current.yml"
-    path = tmp_path / "active_speaker_baseline.yml"
-    path.write_text(_active_baseline_yaml("mono", 2))
-    replacement = [object(), object()]
-    with mock.patch(
-        "jasper.sound.graph_carrier._bonded_active_member", return_value=False
-    ), mock.patch(
-        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
-        return_value="eqd-active-yaml",
-    ) as recompose, mock.patch(
-        "jasper.sound.graph_carrier.extract_room_peqs_from_config"
-    ) as extract:
-        carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
-        result = carrier.reemit(
-            mock.sentinel.profile,
-            out_path=out,
-            profile_id="id",
-            room_peqs=replacement,
-        )
-
-    extract.assert_not_called()
-    assert result.room_peq_count == 2
-    assert recompose.call_args.kwargs["room_peqs"] == replacement
 
 
 def test_bonded_active_baseline_refuses_with_stable_reason(tmp_path):
@@ -820,7 +795,7 @@ def test_active_baseline_refuses_bonded_leader_bake_via_member_kwargs(tmp_path):
     with mock.patch(
         "jasper.sound.graph_carrier._bonded_active_member", return_value=False
     ), mock.patch(
-        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq"
+        "jasper.sound.graph_carrier._compile_active_baseline_with_eq"
     ) as recompose:
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
         with pytest.raises(CarrierCannotHostEq) as err:
@@ -832,96 +807,10 @@ def test_active_baseline_refuses_bonded_leader_bake_via_member_kwargs(tmp_path):
     recompose.assert_not_called()
 
 
-def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
-    # When the saved evidence can no longer produce a baseline, the recompose
-    # wrapper maps the underlying blocker to a typed refusal — it NEVER emits a
-    # partial active graph. (Exercises the wrapper's None -> raise mapping; the
-    # real evidence-derivation is covered in test_active_speaker_baseline_profile.)
-    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
-
-    with mock.patch(
-        "jasper.sound.profile.build_sound_filter_slots", return_value=()
-    ), mock.patch(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        return_value={"status": "applied"},
-    ), mock.patch(
-        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
-        return_value=(None, [{
-            "severity": "blocker",
-            "code": "baseline_crossover_preview_not_ready",
-            "message": "save a fresh crossover preview",
-        }]),
-    ):
-        with pytest.raises(CarrierCannotHostEq) as err:
-            _recompose_active_baseline_with_eq(mock.sentinel.profile, out_path=None)
-    assert err.value.reason_code == "active_baseline_recompose_unavailable"
-    assert "save a fresh crossover preview" in err.value.message
 
 
-@pytest.mark.parametrize("extension", [False, True])
-def test_active_preference_recompose_preserves_saved_bass(tmp_path, extension):
-    from copy import deepcopy
-    from jasper.active_speaker.baseline_profile import applied_bass_extension, recompose_applied_baseline_yaml
-    from jasper.bass_extension.dynamic_graph import validated_base_graph
-    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
-    from jasper.sound.profile import build_sound_filter_slots
-    from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
-
-    topology = _active_topology("mono", "active_2_way")
-    applied = _applied_profile(topology)
-    if extension:
-        applied["recomposition_snapshot"]["bass_extension"] = _dynamic_bass_descriptor()
-    saved = deepcopy(applied)
-    preference = SoundProfile(simple_eq=SimpleEq(bass_db=2))
-    target = tmp_path / "sound_current.yml"
-    with mock.patch("jasper.output_topology.load_output_topology", return_value=topology), mock.patch(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state", return_value=applied,
-    ), mock.patch(
-        "jasper.active_speaker.playback_route.resolve_live_active_endpoint", return_value=(ACTIVE_PCM, "test"),
-    ), mock.patch(
-        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml", wraps=recompose_applied_baseline_yaml,
-    ) as recompose:
-        result = _recompose_active_baseline_with_eq(preference, out_path=target)
-    assert target.read_text() == result
-    assert recompose.call_args.kwargs["out_path"] is None
-    descriptor = applied_bass_extension(saved)
-    assert recompose.call_args.kwargs["bass_extension"] == descriptor
-    graph = yaml.safe_load(result)
-    if extension:
-        graph = validated_base_graph(graph, descriptor, (0,))
-    base, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=saved, bass_extension={},
-        preference_filters=build_sound_filter_slots(preference),
-    )
-    assert not issues and graph == yaml.safe_load(base)
-    assert applied == saved
 
 
-@pytest.mark.parametrize("damage", ["graph", "descriptor"])
-def test_active_recompose_refuses_invalid_bass_before_publishing(tmp_path, damage):
-    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
-
-    topology = _active_topology("mono", "active_2_way")
-    descriptor = _dynamic_bass_descriptor()
-    applied = {"recomposition_snapshot": {"bass_extension": descriptor}}
-    emitted = _active_baseline_yaml("mono", 2, bass_extension=descriptor)
-    tampered = emitted.replace("low_boost: 4.0", "low_boost: 5.0")
-    assert tampered != emitted
-    if damage == "descriptor":
-        applied["recomposition_snapshot"]["bass_extension"] = {"low_boost_db": "invalid"}
-    target = tmp_path / "sound_current.yml"
-    predecessor = b"predecessor graph\n"
-    target.write_bytes(predecessor)
-    with mock.patch("jasper.output_topology.load_output_topology", return_value=topology), mock.patch(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state", return_value=applied,
-    ), mock.patch("jasper.sound.profile.build_sound_filter_slots", return_value=()), mock.patch(
-        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml", return_value=(tampered, []),
-    ) as recompose:
-        with pytest.raises(CarrierCannotHostEq) as exc:
-            _recompose_active_baseline_with_eq(mock.sentinel.profile, out_path=target)
-    assert exc.value.reason_code == "active_baseline_recompose_unavailable"
-    assert target.read_bytes() == predecessor
-    assert recompose.called is (damage == "graph")
 
 
 # --- inv 6: refusals are typed with a stable reason_code ----------------
@@ -1097,8 +986,8 @@ def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
     with mock.patch(
         "jasper.sound.graph_carrier._bonded_active_member", return_value=False
     ), mock.patch(
-        "jasper.sound.graph_carrier._recompose_active_baseline_with_eq",
-        return_value="active-yaml",
+        "jasper.sound.graph_carrier._compile_active_baseline_with_eq",
+        return_value=ReemitResult("active-yaml", 0),
     ) as recompose:
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
         result = carrier.reemit(
@@ -1297,7 +1186,7 @@ def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
     assert "commission_mute" not in result.yaml
 
 
-def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path):
+def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path, monkeypatch):
     """An /sound/eq/ save on a speaker already running a below-floor crossover.
 
     The gate that refuses that graph
@@ -1322,7 +1211,7 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path)
     like on disk today.
     """
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
+    from jasper.sound.graph_carrier import _compile_active_baseline_with_eq
 
     topology, applied = _real_active_applied_baseline(tmp_path)
     snapshot = applied["recomposition_snapshot"]
@@ -1331,6 +1220,9 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path)
     assert floor_hz == 2000.0, "fixture's declared tweeter floor moved"
     # Commissioned below its own declared floor -- what the pre-gate fleet can
     # be carrying right now.
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    declare_applied_fixture(monkeypatch, topology, applied)
     preset["crossover_regions"][0]["fc_hz"] = 1500.0
 
     with mock.patch(
@@ -1342,19 +1234,58 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path)
         "jasper.sound.profile.build_sound_filter_slots", return_value=(),
     ):
         with pytest.raises(CarrierCannotHostEq) as err:
-            _recompose_active_baseline_with_eq(
-                SoundProfile(enabled=False), out_path=None,
+            _compile_active_baseline_with_eq(
+                SoundProfile(enabled=False),
             )
 
     # Typed, with the stable reason_code the /sound/eq/ and /sound/ handlers branch
     # on -- NOT a bare ValueError falling through to a 502.
-    assert err.value.reason_code == "active_baseline_recompose_unavailable"
+    assert err.value.reason_code == "active_baseline_compile_unavailable"
     assert not isinstance(err.value, ActiveSpeakerConfigError)
     # The gate's honest sentence survives the conversion: both numbers and the
     # remedy reach the household rather than being replaced by a generic one.
     message = str(err.value)
     assert "1500 Hz" in message and "2000 Hz" in message
     assert "required_protection_filters" in message
-    assert "crossover and driver protection are unchanged" in message
 
 
+
+
+@pytest.mark.parametrize("sound", [SoundProfile(), SoundProfile(enabled=False, simple_eq=SimpleEq(bass_db=2)), SoundProfile(simple_eq=SimpleEq(bass_db=2))])
+async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_path, monkeypatch, sound):
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+    from jasper.sound.profile import build_sound_filters
+    from jasper.sound.runtime import load_profile_config, reconcile_current_dsp
+    from tests.test_correction_crossover_v2_endpoints import (
+        _seed_baseline_apply_environment, _run6_measured_candidate, _FakeApplyCam, _apply, _bg_run_async,
+    )
+    from tests.sound_camilla_fixtures import FakeCamilla
+
+    from jasper.web import correction_crossover_v2 as host
+    monkeypatch.setattr(host, "_state_path_override", tmp_path / "v2.json")
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    initial = _FakeApplyCam()
+    import asyncio
+    await asyncio.to_thread(_apply, {"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()}, _bg_run_async, lambda: initial)
+    declaration = load_tuning_declaration(topology)
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    save_sound_settings(SoundSettings(headroom_trim_db=3.0))
+    cam = FakeCamilla(initial.path)
+    profile_path = tmp_path / "sound.json"
+    config_dir = Path(initial.path).parent
+    state, target, _ = await load_profile_config(sound, profile_path=profile_path, config_dir=config_dir,
+        camilla_factory=lambda: cam, source="sound", persist_profile=True, output_trim_db=3.0)
+    assert state.result == "success"
+    expected = compile_tuning_graph(declaration, candidate=candidate, preference_filters=build_sound_filters(sound), output_trim_db=3.0)
+    assert target.read_text() == expected
+    assert not (config_dir / "sound_current.yml").exists()
+    applied = load_applied_baseline_profile_state()
+    assert applied["config"]["path"] == str(target)
+    assert candidate_from_applied_profile(topology, applied).fingerprint == candidate.fingerprint
+    assert bool([name for name in yaml.safe_load(expected)["filters"] if name.startswith("sound_")]) == bool(build_sound_filters(sound))
+    result = await reconcile_current_dsp(profile_path=profile_path, config_dir=config_dir, camilla_factory=lambda: cam, force=True)
+    assert result["status"] == "reconciled"
+    assert Path(result["active_config_path"]).read_text() == expected

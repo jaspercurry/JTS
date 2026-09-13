@@ -79,3 +79,5 @@ Owner ruling, 2026-09-08:
 - Gives up: the cheap park. ADR-0018's cost line reverses: the lines start
   earning, and the deadness tests stop being what keeps them honest — the
   production caller and its hardware evidence do.
+
+Status note: the referenced HANDOFF bass plan is retired; use the [tuning operator runbook](../tuning-operator-runbook.md).

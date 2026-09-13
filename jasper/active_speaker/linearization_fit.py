@@ -550,18 +550,7 @@ def complex_correction_response(
 def linearization_filters_by_role(
     linearization_mapping: Mapping[str, Any],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Reduce a persisted ``{role: LinearizationFit.to_dict()}`` mapping to
-    the emitter's input shape: ``{role: [filter_dict, ...]}``.
-
-    ``baseline_profile.recompose_applied_baseline_yaml`` deliberately does
-    NOT call this: its snapshot is already in this function's OUTPUT shape,
-    and calling this on an already-reduced mapping silently returns ``{}``
-    for every role — pinned by
-    ``test_linearization_filters_by_role_on_already_reduced_shape_is_empty``.
-
-    Defensive, not authoritative: the emitter's ``_validated_linearization``
-    is the fail-closed gate.
-    """
+    """Reduce a persisted ``{role: LinearizationFit.to_dict()}`` mapping to"""
     out: dict[str, list[dict[str, Any]]] = {}
     for role, fit in (linearization_mapping or {}).items():
         if not isinstance(fit, Mapping):

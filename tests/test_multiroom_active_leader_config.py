@@ -10,6 +10,9 @@ armed camilla#2), and the unbond restore (always an ACTIVE graph, never passive,
 re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+
+
 import asyncio
 import shutil
 from dataclasses import asdict, replace
@@ -17,6 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
@@ -331,7 +336,9 @@ def test_pair_preserves_applied_tune_without_old_measurements(
         ]
     if unsupported_stage == "headroom":
         snapshot["corrections"]["tweeter"]["gain_db"] = 0.0
-    solo, issues = baseline_profile_mod.recompose_applied_baseline_yaml(
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    declare_applied_fixture(monkeypatch, topology, applied)
+    solo, issues = compile_applied_fixture(
         topology, applied_profile=applied,
     )
     assert not issues

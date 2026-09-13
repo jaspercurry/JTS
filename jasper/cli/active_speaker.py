@@ -484,11 +484,10 @@ def _print_startup_anchor_reemit(
 
 def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     """Re-emit the applied baseline, or re-stage the saved startup anchor."""
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
     from jasper.active_speaker.baseline_profile import (
-        applied_bass_extension,
         load_applied_baseline_profile_state,
         promote_applied_baseline_candidate,
-        recompose_applied_baseline_yaml,
     )
     from jasper.active_speaker.runtime_contract import (
         classify_bass_extension_graph,
@@ -541,20 +540,17 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Bass evidence is split exactly as the /sound recompose splits it: only an
-    # ACCEPTED profile is emitted, while the proof is asked against whatever was
-    # evaluated, so a rejected profile cannot be silently emitted OR silently
-    # excused.
-    yaml, issues = recompose_applied_baseline_yaml(
-        topology,
-        applied_profile=applied,
-        playback_device=device,
-        out_path=None,
-        bass_extension=applied_bass_extension(applied),
-    )
-    if yaml is None or issues:
-        print("ERROR: could not re-emit the applied baseline:")
-        _print_issues(issues or [])
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: baseline command
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: baseline command
+    from jasper.sound.settings import saved_sound_layers  # lazy: household EQ imports NumPy
+
+    try:
+        declaration = load_tuning_declaration(topology, playback_device=device)
+        preference_filters, trim_db = saved_sound_layers()
+        yaml = compile_tuning_graph(declaration, candidate=candidate_from_applied_profile(topology, applied),
+            preference_filters=preference_filters, output_trim_db=trim_db)
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        print(f"ERROR: could not compile the applied baseline: {exc}")
         return 1
 
     # RE-PROOF before any byte lands. This graph is about to become the box's

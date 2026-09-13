@@ -165,32 +165,7 @@ def resolve_active_playback_device(
 def resolve_live_active_endpoint(
     topology: OutputTopology,
 ) -> tuple[str | None, str]:
-    """The playback endpoint this box's active graph is CURRENTLY on.
-
-    ONE derivation for every seam that RE-EMITS or RE-DERIVES an active graph the box
-    already runs -- such a seam must not *choose* an endpoint, only confirm the one the
-    box is on. :func:`resolve_active_playback_device` answers the other question (which
-    endpoint a FRESH emit should target).
-
-    THE GRAPH IS UPSTREAM TRUTH, asked first: the endpoint marker
-    (``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT``) is *derived from* the graph by
-    ``jasper-audio-hardware-reconcile``, so on disagreement the graph is what
-    reconcilers converge toward. Only
-    :data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES` (a
-    ONE-member set since #2285 P2 retired the snd-aloop ACTIVE endpoint) is adopted from
-    the graph; anything else falls through to the chooser below, which already honours
-    an explicit ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE`` override. The MARKER answers
-    only when the graph does not (a fresh box has no statefile) -- DEFAULT-SAFE, not
-    fail-loud.
-
-    ``(None, MISSING_SOURCE)`` passes through unchanged, so a caller threading this into
-    ``recompose_applied_baseline_yaml(playback_device=...)`` lands on that function's
-    own snapshot default.
-
-    COST: one statefile read plus one config read, fresh, per call -- uncached by
-    design, because acting on a stale endpoint is the defect this prevents. A caller on
-    a warm path should snapshot the answer itself.
-    """
+    """The playback endpoint this box's active graph is CURRENTLY on."""
 
     # Lazy: runtime_contract owns which devices are legal active endpoints.
     from jasper.active_speaker.runtime_contract import OUTPUTD_LEGAL_ENDPOINT_DEVICES

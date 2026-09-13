@@ -91,3 +91,5 @@ Owner ruling, 2026-09-08:
   that includes the room's own gain, which is the gain the extension is meant
   to use. Rejected: a required nearfield take as the bass program's first rung
   (a required pose, measuring a quantity the in-room target does not use).
+
+Status note: the referenced HANDOFF bass plan is retired; use the [tuning operator runbook](../tuning-operator-runbook.md).

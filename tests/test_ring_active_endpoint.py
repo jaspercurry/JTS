@@ -1015,22 +1015,12 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
 
 
 def _applied_profile_for(topology, *, fingerprint: str | None = None):
-    """An applied Layer-A record whose snapshot matches ``topology`` by default."""
-    from jasper.output_topology import topology_config_fingerprint
+    from tests.test_active_speaker_audition import _applied_profile
 
-    return {
-        "status": "applied",
-        "recomposition_snapshot": {
-            "schema_version": 1,
-            "domain": "full",
-            "topology_id": topology.topology_id,
-            "topology_fingerprint": (
-                topology_config_fingerprint(topology)
-                if fingerprint is None
-                else fingerprint
-            ),
-        },
-    }
+    applied = _applied_profile(topology)
+    if fingerprint is not None:
+        applied["recomposition_snapshot"]["preset"]["drivers"]["woofer"]["model"] = fingerprint
+    return applied
 
 
 def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
@@ -1040,6 +1030,9 @@ def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
     from jasper.fanin import ring_readiness
 
     topology = _active_topology("mono", "active_2_way")
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    declare_applied_fixture(monkeypatch, topology, _applied_profile_for(topology))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
@@ -1051,7 +1044,7 @@ def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
 
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is True
-    assert "applied active-speaker profile" in detail
+    assert "applied candidate" in detail
 
 
 def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
@@ -1065,6 +1058,9 @@ def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
     from jasper.fanin import ring_readiness
 
     topology = _active_topology("mono", "active_2_way")
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    declare_applied_fixture(monkeypatch, topology, _applied_profile_for(topology))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
@@ -1076,7 +1072,7 @@ def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
 
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is False
-    assert "applied_baseline_snapshot_topology_stale" in detail
+    assert "measurement_candidate_speaker_mismatch" in detail
     assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 
 
@@ -1195,6 +1191,9 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
 
     # 1 + 2: the default refusal, and arm 1 admitting.
     topology = _active_topology("mono", "active_2_way")
+    from tests.active_speaker_fixtures import declare_applied_fixture
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    declare_applied_fixture(monkeypatch, topology, _applied_profile_for(topology))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
         "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
@@ -1878,22 +1877,7 @@ def test_resolve_output_layout_answers_the_ring_without_reading_the_marker(
 
 
 def _emit_active_baseline(preset, device, *, topology=None):
-    """Emit a roleful baseline graph named at ``device``, as production would.
-
-    Composes exactly what ``recompose_applied_baseline_yaml`` composes — the
-    whole ``active_emit_devices`` result, not a hand-picked subset of it. That is
-    load-bearing rather than tidy: while this helper forwarded only the queue
-    pair, every ladder walk below emitted the ring with the box's program-lane
-    FORMAT and its loopback chunk/target, and passed — which is how defect A
-    reached jts3 (2026-08-11, captures/r7b-jts3-arm2-20260811T132227Z) through
-    four green ladder tests.
-
-    Every field is still named EXPLICITLY here, so nothing arrives automatically:
-    a field added to ``ActiveEmitDevices`` and not added to this call is the same
-    subset-forwarding defect one level up.
-    ``test_every_emit_devices_field_reaches_the_emitter`` is the guard that walks
-    ``dataclasses.fields`` at BOTH forwarding sites and fails on exactly that.
-    """
+    """Emit the complete device contract for this fixture."""
     from jasper.active_speaker.camilla_yaml import (
         active_emit_devices,
         emit_active_speaker_baseline_config,
@@ -2045,7 +2029,9 @@ def _recorded_emit_kwargs(
     import jasper.active_speaker.baseline_profile as bp
     import jasper.active_speaker.staging as staging
 
-    for module in (bp, staging):
+    from jasper.active_speaker import measured_crossover_candidate
+
+    for module in (bp, staging, measured_crossover_candidate):
         if hasattr(module, emitter):
             monkeypatch.setattr(module, emitter, recorder)
     call_site()
@@ -2302,20 +2288,21 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     """
     import dataclasses
 
-    from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
+    from tests.active_speaker_fixtures import compile_applied_fixture
     from jasper.active_speaker.camilla_yaml import (
         ActiveEmitDevices,
         active_emit_devices,
     )
 
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     fields = [f.name for f in dataclasses.fields(ActiveEmitDevices)]
     assert fields, "ActiveEmitDevices lost its fields; this guard is now vacuous"
 
     topology, applied = _applied_ring_baseline(tmp_path)
 
     sites = {
-        "recompose_applied_baseline_yaml": (
-            lambda: recompose_applied_baseline_yaml(
+        "compile_tuning_graph": (
+            lambda: compile_applied_fixture(
                 topology,
                 applied_profile=applied,
                 playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
@@ -3033,14 +3020,14 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
         lambda *a, **k: None,
     )
 
-    def _recompose(topology, **kwargs):
-        seen["playback_device"] = kwargs.get("playback_device")
-        return yaml_text, []
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
-        _recompose,
-    )
+    from types import SimpleNamespace
+    monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration",
+                        lambda topology, *, playback_device: SimpleNamespace(playback_device=playback_device))
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.candidate_from_applied_profile", lambda *args: object())
+    def compile_graph(declaration, **kwargs):
+        seen["playback_device"] = declaration.playback_device
+        return yaml_text
+    monkeypatch.setattr("jasper.active_speaker.measurement_emit.compile_tuning_graph", compile_graph)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
         lambda *a, **k: GraphSafety(

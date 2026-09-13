@@ -167,7 +167,6 @@ def test_startup_template_cli_writes_yaml_without_check(tmp_path: Path, capsys):
 
     assert code == 0
     text = out.read_text(encoding="utf-8")
-    assert "baseline_id=baseline-cli" in text
     assert 'device: "hw:ActiveDAC"' in text
     assert "mute: true" in text
     assert "Validation: skipped" in capsys.readouterr().out

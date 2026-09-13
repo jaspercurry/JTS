@@ -12,17 +12,14 @@ from dataclasses import replace
 
 import pytest
 
-from jasper.active_speaker import compile_preset_from_crossover_preview
-from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
 from jasper.active_speaker import candidate_trials
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.boost_protection import (
-    BOOST_OVER_DECLARED_BOUND, boost_finding_path, config_graph_fingerprint, record_boost_finding,
+    BOOST_OVER_DECLARED_BOUND, boost_finding_path, record_boost_finding,
 )
-from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.web import correction_crossover_v2 as v2host, correction_crossover_v2_status as v2status
 from tests.test_active_speaker_baseline_profile import (
-    apply_baseline_profile, _draft, _dual_apple_topology, _measurements, _v2_candidate, _valid_config,
+    _v2_candidate,
 )
 
 PREVIOUS = "fp-previous-measured"
@@ -75,28 +72,20 @@ def test_rollback_available_pairs_and_preflights(
         ("corrupt", False, False, "boost_finding_unreadable"),
     ],
 )
-async def test_apply_refuses_the_graphs_measured_boost_excess(
+def test_apply_refuses_the_graphs_measured_boost_excess(
     monkeypatch, tmp_path, finding, different_graph, different_candidate, expected_code,
 ):
+    import hashlib
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+    from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _apply, _bg_run_async, _FakeApplyCam
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    preset, issues, _ = compile_preset_from_crossover_preview(topology, preview)
-    assert preset is not None, issues
+    declaration = load_tuning_declaration(topology)
     candidate = _v2_candidate(preset)
     config_path = tmp_path / "active.yml"
-    state_path = tmp_path / "baseline.json"
-    inputs = dict(
-        design_draft=draft, crossover_preview=preview,
-        measurements=_measurements(topology, tmp_path), tuning_owner="automatic",
-        state_path=state_path, config_path=config_path, validate=_valid_config,
-    )
-    compiled = build_baseline_profile_candidate(
-        topology, **inputs, measured_candidate=candidate, compile_config=True,
-    )
-    graph = config_graph_fingerprint(compiled)
+    state_path = tmp_path / "baseline_profile.json"
+    graph = hashlib.sha256(compile_tuning_graph(declaration, candidate).encode()).hexdigest()[:16]
     if finding:
         recorded_graph = "0" * 16 if different_graph else graph
         record_boost_finding(recorded_graph, candidate_fingerprint=candidate.fingerprint, round_id="round-1")
@@ -106,30 +95,27 @@ async def test_apply_refuses_the_graphs_measured_boost_excess(
         previous_id = candidate.fingerprint
         candidate = replace(candidate, analysis={**candidate.analysis, "capture_note": "new"})
         assert candidate.fingerprint != previous_id
-        assert config_graph_fingerprint(build_baseline_profile_candidate(
-            topology, **inputs, measured_candidate=candidate, compile_config=True,
-        )) == graph
-    calls = []
-
-    async def load_config(path):
-        calls.append(path)
-        return True
-
+        assert hashlib.sha256(compile_tuning_graph(declaration, candidate).encode()).hexdigest()[:16] == graph
+    from jasper.sound.profile import SoundProfile, SimpleEq, save_profile
+    from jasper.sound.settings import saved_sound_layers
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "sound.json"))
+    save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=2.0)))
+    cam = _FakeApplyCam()
     config_path.write_text("incumbent graph\n")
     state_path.write_text("{}")
-    result = await apply_baseline_profile(
-        topology, **inputs, measured_candidate=candidate, load_config=load_config,
-    )
+    result = _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()}, _bg_run_async, lambda: cam)
 
     assert result["status"] == ("blocked" if expected_code else "applied")
     if expected_code:
-        assert {issue["code"] for issue in result["issues"]} == {expected_code}
-        assert result["apply"] is None
-        assert calls == []
+        assert result["issue"]["code"] == expected_code
+        assert cam.path is None
         assert config_path.read_text() == "incumbent graph\n"
         assert state_path.read_text() == "{}"
     else:
-        assert len(calls) == 1
+        from pathlib import Path
+        preference_filters, trim_db = saved_sound_layers()
+        assert Path(cam.path).read_text() == compile_tuning_graph(declaration, candidate,
+            preference_filters=preference_filters, output_trim_db=trim_db)
 
 
 @pytest.mark.parametrize("code", ["not_found", "ambiguous", "authored_candidate_unreadable"])

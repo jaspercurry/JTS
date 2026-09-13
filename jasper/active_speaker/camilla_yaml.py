@@ -2027,9 +2027,6 @@ def emit_active_speaker_startup_config(
     mixer_yaml = _emit_split_mixer(preset)
     pipeline_yaml = _emit_pipeline(preset)
     metadata_comments = [f"# preset_id={preset.preset_id}"]
-    if baseline_id:
-        baseline_id = _yaml_string(baseline_id, "baseline_id")
-        metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
     if enable_rate_adjust is None:
@@ -2591,9 +2588,6 @@ def emit_active_speaker_commissioning_config(
         f"# audible_gain_db={fmt(audible_gain_db)}",
         f"# filter_mode={filter_mode}",
     ]
-    if baseline_id:
-        baseline_id = _yaml_string(baseline_id, "baseline_id")
-        metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
     if enable_rate_adjust is None:
@@ -3267,9 +3261,6 @@ def emit_active_speaker_program_config(
         # stays byte-identical; the graph then SAYS which branch carries the
         # reverse-null, beside the fingerprint a record names it by.
         metadata_comments.append(f"# inverted_roles={sorted(set(inverted_roles))}")
-    if baseline_id:
-        baseline_id = _yaml_string(baseline_id, "baseline_id")
-        metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
     if enable_rate_adjust is None:
@@ -3446,9 +3437,6 @@ def emit_active_speaker_baseline_config(
     safe_linearization = _validated_linearization(preset, linearization)
     safe_blend_correction = _validated_blend_correction(blend_correction)
 
-    # Verbatim: every caller hands a slot per declared band with the neutral
-    # ones kept, because a filter appearing or disappearing is what forces a
-    # ducked pipeline replace.
     emitted_preference_filters = tuple(preference_filters)
     room_peqs = tuple(room_peqs)
 
@@ -3486,9 +3474,6 @@ def emit_active_speaker_baseline_config(
         preset, filter_yaml, pipeline_yaml, protection_sections_by_role,
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
-    if baseline_id:
-        baseline_id = _yaml_string(baseline_id, "baseline_id")
-        metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
     capture_yaml = f"""  capture:
     type: Alsa
@@ -3686,9 +3671,6 @@ def emit_active_speaker_driver_domain_config(
         f"# program_channel={program_channel}",
         f"# pair_trim_db={pair_trim_db:.3f}",
     ]
-    if baseline_id:
-        baseline_id = _yaml_string(baseline_id, "baseline_id")
-        metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
     if enable_rate_adjust is None:

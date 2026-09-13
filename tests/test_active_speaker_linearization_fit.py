@@ -973,13 +973,7 @@ def test_linearization_filters_by_role_drops_non_mapping_filter_entries():
 
 
 def test_linearization_filters_by_role_on_already_reduced_shape_is_empty():
-    """THE TRAP (#1668 PR-D review SF1): this helper expects the RICH
-    ``{role: {filters: [...]}}`` shape, not its own already-reduced
-    ``{role: [filter_dict, ...]}`` output. Calling it again on the reduced
-    shape returns {} for every role (each value is a list, which fails the
-    isinstance(fit, Mapping) check) -- exactly why
-    baseline_profile.recompose_applied_baseline_yaml does NOT call this
-    helper and instead re-validates the already-reduced snapshot inline."""
+    """The reducer accepts rich fit records."""
     already_reduced = {
         "woofer": [{"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2}],
     }

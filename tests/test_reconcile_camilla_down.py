@@ -65,6 +65,7 @@ from tests.test_active_speaker_baseline_profile import (
     _measurements,
     _valid_config,
 )
+from tests.active_speaker_fixtures import declare_applied_fixture
 from tests.sound_camilla_fixtures import FakeCamilla
 from tests._log_events import event_fields
 
@@ -180,13 +181,6 @@ def _flat_streambox(tmp_path: Path, monkeypatch):
 
 
 def _roleful_box(tmp_path: Path, monkeypatch):
-    """A commissioned active-crossover box, camilla down, statefile stale.
-
-    Same real applied-snapshot fixture the #2572 durability tests use: a real
-    topology with roleful/protected outputs, a real candidate on disk, and the
-    statefile naming it. Returns ``(candidate, config_dir, statefile)``.
-    """
-
     topology = _dual_apple_topology()
     draft = _draft(topology)
     config_dir = tmp_path / "configs"
@@ -206,6 +200,9 @@ def _roleful_box(tmp_path: Path, monkeypatch):
     )
     applied["status"] = "applied"
     candidate = Path(applied["config"]["path"])
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(config_dir / "active_speaker_baseline.yml"))
+    declare_applied_fixture(monkeypatch, topology, applied)
 
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text(json.dumps(topology.to_dict()), encoding="utf-8")

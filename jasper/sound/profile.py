@@ -815,12 +815,7 @@ def sound_filter_slot_names() -> frozenset[str]:
 
 
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Return active sound filters in canonical order.
-
-    What the profile DOES: neutral bands are dropped, so this is the list to
-    count, to draw a response from, and to ask "is this profile audible".
-    :func:`build_sound_filter_slots` is what the GRAPH holds.
-    """
+    """Return active preference filters in canonical order."""
 
     return tuple(
         spec for spec in build_sound_filter_slots(profile) if spec.active()
@@ -828,28 +823,7 @@ def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
 
 
 def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
-    """Return every declared filter in canonical order, neutral ones included.
-
-    What the GRAPH holds, and the list every emitter takes. Shape follows the
-    profile's declaration and never its values, so a live edit's numbers move
-    inside a structure that never changes, and only commissioning restructures
-    it (:meth:`jasper.camilla.CamillaController._graph_mutation`).
-
-    The advanced pool is fixed at :data:`MAX_PARAMETRIC_BANDS` for the same
-    reason: a household can add, remove or reorder bands without the PIPELINE
-    changing at all, because the slots they move between are always running.
-    A band switched off, and every slot past the last declared band, is an
-    idle Peaking at 0 dB — an exact identity, spelled exactly as the editor
-    spells a freshly added band. ``reconcile_current_dsp`` re-anchors a
-    commissioned candidate in place rather than moving this frame (#2572).
-
-    The standing cost is 15 filters per channel on every profile — the curve's
-    two shelves, 5 Simple bands and the 8-slot advanced pool, all identities
-    when idle. The 13-filter frame before the curve pair joined measured
-    +0.43 percentage points of CamillaDSP processing load against a bypassed
-    control (0.451 % -> 0.877 %) on a path already running a crossover and a
-    limiter.
-    """
+    """Return the fixed filter slots for stereo graphs and live edits."""
 
     # Bypass is spelled as VALUES, not as a missing frame. Emitting nothing
     # would strip the whole frame out of the pipeline, and a pipeline change is what

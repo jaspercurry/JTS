@@ -21,14 +21,14 @@ import os
 import time
 import uuid
 from pathlib import Path
+from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.atomic_io import atomic_write_json
 from jasper.log_event import log_event
-from jasper.sound.profile import build_sound_filter_slots, load_profile
-from jasper.sound.settings import load_sound_settings, output_trim_db
+from jasper.sound.settings import saved_sound_layers
 
 logger = logging.getLogger(__name__)
 
@@ -169,44 +169,24 @@ def _refuse_if_graph_is_claimed() -> None:
         )
 
 
-def _household_layers() -> tuple[list[Any], float]:
-
-    profile = load_profile()
-    settings = load_sound_settings()
-    return (
-        list(build_sound_filter_slots(profile)),
-        output_trim_db(profile, settings),
-    )
-
-
 def build_reduced_yaml(
     topology: Any,
     *,
     applied_profile: dict[str, Any],
 ) -> tuple[str | None, list[dict[str, str]]]:
-    """Re-emit the applied graph without its two measured-correction stages.
+    """Compile the applied candidate without driver linearization or blend EQ."""
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
+    from .candidate_parts import candidate_from_applied_profile  # lazy: audition-only graph compilation
+    from .measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: audition-only graph compilation
 
-    The bass profile is evaluated against the UNMUTATED record and passed
-    explicitly: its acceptance is fingerprinted against the profile, so asking
-    after the reduction would drop the stage and add a second difference to
-    an A/B whose value is that there is only one.
-    """
-
-    from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
-    from jasper.active_speaker.baseline_profile import applied_bass_extension
-    from jasper.active_speaker.playback_route import resolve_live_active_endpoint
-    preference_filters, trim_db = _household_layers()
-    device, _source = resolve_live_active_endpoint(topology)
-    return recompose_applied_baseline_yaml(
-        topology,
-        applied_profile=applied_profile,
-        preference_filters=preference_filters,
-        output_trim_db=trim_db,
-        out_path=None,
-        playback_device=device,
-        bass_extension=applied_bass_extension(applied_profile),
-        drop_measured_correction=True,
-    )
+    try:
+        declaration = load_tuning_declaration(topology)
+        candidate = replace(candidate_from_applied_profile(topology, applied_profile), linearization={}, blend_correction=())
+        preference_filters, trim_db = saved_sound_layers()
+        return compile_tuning_graph(declaration, candidate=candidate,
+            preference_filters=preference_filters, output_trim_db=trim_db), []
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        return None, [{"severity": "blocker", "code": getattr(exc, "code", "audition_compile_failed"), "message": str(exc)}]
 
 
 def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:

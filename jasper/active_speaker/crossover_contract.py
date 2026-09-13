@@ -83,7 +83,7 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
         or effective > 0.0
     ):
         return None
-    for name in ("gain_source", "baseline_id", "topology_id", "role"):
+    for name in ("gain_source", "topology_id", "role"):
         if name in value and (
             not isinstance(value[name], str) or not value[name].strip()
         ):
@@ -96,7 +96,7 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
         "effective_peak_dbfs": canonical_effective,
         **{
             name: value[name]
-            for name in ("gain_source", "baseline_id", "topology_id", "role")
+            for name in ("gain_source", "topology_id", "role")
             if name in value
         },
     }
@@ -313,15 +313,12 @@ def summed_decision_evidence_state(
     applied_snapshot = _mapping(applied_profile.get("recomposition_snapshot"))
     expected_corrections = _mapping(applied_snapshot.get("corrections"))
     expected_topology_id = applied_snapshot.get("topology_id")
-    expected_baseline_id = applied_profile.get("baseline_id")
     if (
         applied_profile.get("status") != "applied"
         or applied_profile.get("candidate_fingerprint")
         != expected_profile_context_id
         or not isinstance(expected_topology_id, str)
         or not expected_topology_id
-        or not isinstance(expected_baseline_id, str)
-        or not expected_baseline_id
         or not expected_corrections
     ):
         return refused("summed_evidence_applied_graph_missing")
@@ -335,7 +332,6 @@ def summed_decision_evidence_state(
         excitation.get("schema_version") != 1
         or excitation.get("scope") != "sweep_plus_applied_full_layer_a_graph"
         or excitation.get("topology_id") != expected_topology_id
-        or excitation.get("baseline_id") != expected_baseline_id
         or not isinstance(excitation.get("gain_source"), str)
         or not excitation.get("gain_source")
         or sweep_peak is None

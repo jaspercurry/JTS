@@ -370,9 +370,6 @@ def assert_crossover_honours_declared_floor(preset: Any) -> None:
     legal, below it is refused, an undeclared floor is honoured unchanged, and a
     declared floor with no readable corner is refused.
 
-    It runs here, not only at emit, because the apply transaction saves the
-    Sound declaration BEFORE it emits the graph, so an emit-time refusal leaves
-    ``/sound`` declaring a crossover the speaker cannot be made to play.
     """
 
     floor_hz = declared_protection_floor_hz(preset, _PROTECTED_ROLE)

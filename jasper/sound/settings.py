@@ -41,7 +41,8 @@ from ..volume_floor import (
     VOLUME_FLOOR_MIN_DB,
     normalize_volume_floor_db,
 )
-from .profile import SoundProfile, loudness_compensation_db
+from jasper.camilla_config_contract import FilterSpec
+from .profile import SoundProfile, build_sound_filters, load_profile, loudness_compensation_db
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +144,13 @@ def save_sound_settings(
 
 
 def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:
-    """Total post-EQ attenuation for ``profile`` under ``settings``: the manual
-    headroom trim, plus the profile's loudness compensation when match-loudness
-    is on. Both default to 0, so the default is no trim at all -- boosts boost.
-    (Emitters additionally ignore any trim on a flat profile, which can't clip
-    from EQ.) Shared by the split Sound-page apply path, jasper-control's
-    ``/state``, and jasper-doctor so the policy lives in exactly one place."""
+    """Combine manual output attenuation with the saved loudness compensation."""
     trim = settings.headroom_trim_db
     if settings.match_loudness:
         trim += loudness_compensation_db(profile)
     return round(trim, 3)
+
+
+def saved_sound_layers() -> tuple[tuple[FilterSpec, ...], float]:
+    profile = load_profile()
+    return build_sound_filters(profile), output_trim_db(profile, load_sound_settings())

@@ -718,13 +718,7 @@ def test_a_mirror_only_profile_still_yields_the_delay_it_plays():
 
 
 def test_the_snapshot_wins_when_a_profile_carries_both_copies():
-    """Authoritative, not merely present — the owner's preference, inherited.
-
-    A profile written by the current era carries both copies; the snapshot is
-    what ``recompose_applied_baseline_yaml`` re-emits from, so it is the delay
-    the speaker plays. Pinned with the two copies DISAGREEING, which is the
-    only shape in which the preference is observable.
-    """
+    """Delay evidence comes from the recorded snapshot."""
     profile = _applied_profile(woofer_delay_ms=0.0, tweeter_delay_ms=0.0596)
     profile["corrections"] = {
         "woofer": {"gain_db": -3.0, "delay_ms": 0.5, "inverted": False},

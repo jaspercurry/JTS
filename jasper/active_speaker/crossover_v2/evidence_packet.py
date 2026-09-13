@@ -1763,7 +1763,6 @@ def _incumbent_block(
         ),
         "identity": (
             {
-                "baseline_id": profile.get("baseline_id"),
                 "candidate_fingerprint": profile.get("candidate_fingerprint"),
                 "applied_at": profile.get("applied_at"),
                 "config_sha256": _mapping(profile.get("config")).get("sha256"),

@@ -163,7 +163,7 @@ def test_cli_refusal_banks_nothing(base, bank, tmp_path, capsys, verb):
     assert (answer["ok"], answer["section"], answer["code"]) == (False, "bass", "bass_extension_invalid")
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 @pytest.fixture
-def saved_tune():
+def saved_tune(bank):
 
     topology = mono_output_topology()
     applied = deepcopy(_applied_profile(topology))
@@ -177,31 +177,16 @@ def saved_tune():
     return topology, applied
 
 
-@pytest.mark.parametrize("change, code", [
-    ("topology", "composition_saved_tune_unavailable"),
-    ("delay", "composition_saved_tune_unrepresentable"),
-])
-def test_saved_candidate_refuses_unrepresentable_upstream_tune(saved_tune, change, code):
+def test_saved_candidate_refuses_unrepresentable_delay(saved_tune):
     topology, applied = saved_tune
-    snapshot = applied["recomposition_snapshot"]
-    if change == "topology":
-        snapshot["topology_fingerprint"] = "old-hardware"
-    else:
-        snapshot["corrections"]["tweeter"]["delay_ms"] = 0.22
+    applied["recomposition_snapshot"]["corrections"]["tweeter"]["delay_ms"] = 0.22
     with pytest.raises(CandidateBankRefusal) as refused:
         candidate_from_applied_profile(topology, applied)
-    assert refused.value.code == code
+    assert refused.value.code == "composition_saved_tune_unrepresentable"
 
 
-def test_saved_candidate_carries_the_declared_driver_protection(saved_tune):
+def test_saved_candidate_migration_preserves_driver_attenuations(saved_tune):
     topology, applied = saved_tune
-    applied["recomposition_snapshot"]["driver_protection"] = {"targets": [
-        {"role": role, "target_fingerprint": role, "required_protection_filters": ([{
-            "kind": "highpass", "cutoff_hz": 40,
-            "minimum_slope_db_per_octave": 24,
-        }] if role == "woofer" else [])}
-        for role in ("woofer", "tweeter")
-    ]}
     candidate = candidate_from_applied_profile(topology, applied)
     assert candidate.role_attenuations_db["tweeter"] == applied["recomposition_snapshot"]["corrections"]["tweeter"]["gain_db"]
 
@@ -369,20 +354,19 @@ def test_driver_numeric_refusals_keep_the_judges_code(base, evidence, value):
 
 
 @pytest.mark.parametrize("base_choice", ["saved", "banked"])
-def test_saved_base_preview_and_invalid_composition_never_bank_a_base(bank, saved_tune, tmp_path, monkeypatch, capsys, base_choice):
+def test_saved_base_preview_migrates_once_and_invalid_composition_banks_no_child(bank, saved_tune, tmp_path, monkeypatch, capsys, base_choice):
     topology, applied = saved_tune
     monkeypatch.setattr(crossover_prescriber, "load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(crossover_prescriber, "load_applied_baseline_profile_state", lambda: applied)
     base_name = "saved" if base_choice == "saved" else publish_authored_candidate(candidate_from_applied_profile(topology, applied), root=bank).fingerprint
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps(document(base_name)))
-    count = len(banked_candidates(root=bank))
     assert crossover_prescriber.main(["judge", str(path), "--root", str(bank)]) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
     path.write_text(json.dumps(document(base_name, {"bass": {"low_boost_db": 99}})))
     assert crossover_prescriber.main(["compose", str(path), "--base", base_name, "--root", str(bank)]) == 1
     assert json.loads(capsys.readouterr().out)["section"] == "bass"
-    assert len(banked_candidates(root=bank)) == count
+    assert len(banked_candidates(root=bank)) == 1
 
 
 @pytest.mark.parametrize("explicit_envelope", [False, True])

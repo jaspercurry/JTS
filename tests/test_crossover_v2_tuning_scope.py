@@ -18,11 +18,16 @@ names would pin the test's spelling instead of the product's.
 
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+
+
 from copy import deepcopy
 from dataclasses import replace
 from typing import Sequence
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 from jasper.active_speaker.commissioning_admission import (
@@ -35,7 +40,6 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     MeasureSpec,
 )
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
-from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker import angle_capture as ac, candidate_parts, measurement_programs as mp
 from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
@@ -270,7 +274,7 @@ def test_saved_tune_composes_with_its_declared_driver_protection(tuning_profile)
         ],
     }
     candidate = candidate_from_applied_profile(tuning_profile.topology, saved)
-    expected, issues = recompose_applied_baseline_yaml(
+    expected, issues = compile_applied_fixture(
         tuning_profile.topology, applied_profile=saved, bass_extension={}, room_peqs=(), playback_device="null",
     )
     assert not issues
@@ -297,7 +301,7 @@ def test_program_baselines_keep_every_applied_layer(tuning_profile, purpose):
                          prompts=[stop.prompt for stop in ac.resolve_request(request)])
     assert spec.candidate_id == candidate.fingerprint
     assert candidate.role_attenuations_db == {role: entry["gain_db"] for role, entry in snapshot["corrections"].items()}
-    expected, issues = recompose_applied_baseline_yaml(
+    expected, issues = compile_applied_fixture(
         tuning_profile.topology, applied_profile=saved,
     )
     assert not issues and graph == yaml.safe_load(expected)
@@ -513,3 +517,11 @@ def test_baseline_open_refuses_by_registry_code(monkeypatch, fault):
         candidate_parts.baseline_candidate_id()
     assert refused.value.code == "measurement_baseline_unavailable"
     assert refused.value.code in REASON_REGISTRY
+
+
+def test_banked_applied_candidate_does_not_read_the_retired_snapshot(tuning_profile):
+    applied = _saved_tuning(tuning_profile)
+    candidate = candidate_from_applied_profile(tuning_profile.topology, applied)
+    record = {"status": "applied", "source": {"measured_candidate_fingerprint": candidate.fingerprint},
+              "recomposition_snapshot": {"preset": "retired"}}
+    assert candidate_from_applied_profile(tuning_profile.topology, record) == candidate

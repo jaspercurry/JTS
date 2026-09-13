@@ -5181,12 +5181,6 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     A fourth such key fails this test the moment it is written, without anyone
     having to remember to extend a list.
 
-    **If your new key legitimately wants session scoping** — ``apply_blocked``
-    does, because a blocked apply refuses the deferred VERIFY outright and so
-    never faces a new-session rebind — put it in ``persist_conductor_state``'s
-    session-gated branch and add an exception here WITH that reason. Reaching
-    for the exception first is the mistake this guard exists to make visible.
-
     The re-arm's brand-new session id is the hard case, and the one all three
     bugs hit, so that is what this crosses.
     """
@@ -5732,28 +5726,11 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
     calls under the v2 flow). The reset must serve the clean start screen
     WITHOUT unlinking `applied` + `previous_candidate_fingerprint` — the way
     back's only durable pointer."""
-    from tests.test_active_speaker_baseline_profile import apply_baseline_profile
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-
-
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    draft = json.loads((tmp_path / "design_draft.json").read_text())
-    preview = build_crossover_preview(draft, created_at="2026-07-19T09:00:00Z")
-
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     prior_candidate = _prior_measured_candidate(preset)
     prior_cam = _FakeApplyCam()
-    prior_payload = _bg_run_async(
-        apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements={},
-            load_config=prior_cam.set_config_file_path,
-            get_current_config_path=prior_cam.get_config_file_path,
-            tuning_owner="automatic",
-            measured_candidate=prior_candidate,
-        )
-    )
+    prior_payload = _apply({"expected_candidate_fingerprint": prior_candidate.fingerprint, "candidate": prior_candidate.to_dict()},
+                           _bg_run_async, lambda: prior_cam)
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
 
     run8_candidate = _run6_measured_candidate(preset)
@@ -6003,29 +5980,12 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     the durable v2 state's Undo anchor. The prior candidate is also banked, as
     its own measure session would have left it, so the automatic way back can
     republish it."""
-    from tests.test_active_speaker_baseline_profile import apply_baseline_profile
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-
-
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    draft = json.loads((tmp_path / "design_draft.json").read_text())
-    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
-
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     prior_candidate = _prior_measured_candidate(preset)
     _bank_candidate(monkeypatch, tmp_path, prior_candidate)
     prior_cam = _FakeApplyCam()
-    prior_payload = _bg_run_async(
-        apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements={},
-            load_config=prior_cam.set_config_file_path,
-            get_current_config_path=prior_cam.get_config_file_path,
-            tuning_owner="automatic",
-            measured_candidate=prior_candidate,
-        )
-    )
+    prior_payload = _apply({"expected_candidate_fingerprint": prior_candidate.fingerprint},
+                           _bg_run_async, lambda: prior_cam)
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
 
     candidate = _run6_measured_candidate(preset)
@@ -6502,7 +6462,10 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
             exc = ValueError("bad input")
             exc.code = None
             raise exc
-        monkeypatch.setattr(v2apply, "confirmed_protection_sections" if fault == "malformed" else "compile_tuning_graph", refuse)
+        if fault == "malformed":
+            monkeypatch.setattr("jasper.active_speaker.measurement_emit.confirmed_protection_sections", refuse)
+        else:
+            monkeypatch.setattr(v2apply, "compile_tuning_graph", refuse)
     if fault in {"live_floor", "identity"}:
         from jasper.active_speaker.design_draft import build_design_draft
         path = tmp_path / "design_draft.json"
@@ -6573,11 +6536,11 @@ def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, 
     cam = _FakeApplyCam()
     result = _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()}, _bg_run_async, lambda: cam)
     applied = baseline_profile.load_applied_baseline_profile_state()
-    snapshot, issues = baseline_profile.applied_baseline_hardware_match(topology, applied_profile=applied)
-    assert issues == []
-    assert snapshot["domain"] == "full"
-    recomposed, issues = baseline_profile.recompose_applied_baseline_yaml(topology, applied_profile=applied)
-    assert recomposed is not None and issues == []
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    assert applied["recomposition_snapshot"]["domain"] == "full"
+    assert Path(applied["config"]["path"]).read_text() == compile_tuning_graph(
+        load_tuning_declaration(topology), candidate=candidate_from_applied_profile(topology, applied))
     assert applied["level_match"]["applied"] is measured
     record = driver_base_trim.load_base_trim()
     if measured:

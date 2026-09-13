@@ -3357,7 +3357,6 @@ def test_the_incumbent_is_the_applied_profile_never_the_undo_stash(
         assert packet_incumbent_linearization(packet) == {
             "tweeter": tuple(INCUMBENT_TWEETER),
         }
-        assert block["identity"]["baseline_id"] == "baseline-live"
         assert block["identity"]["config_sha256"] == "0" * 64
         assert isinstance(block["identity"]["candidate_fingerprint"], str)
         assert block["identity"]["candidate_fingerprint"]
