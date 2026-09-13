@@ -3631,6 +3631,9 @@ def prepare_v2_session(
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
             ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
                             if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
+            level_anchor_db_spl=(request.level.resolved.anchor_db_spl
+                                 if not verify_only and request.level.resolved is not None else None),
+            level_offsets_db=(0.0,) if verify_only else tuple(request.level_offsets_db),
         )
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures

@@ -748,7 +748,10 @@ def _solve_gain_plan(
     # Deliberately judged at `target_capture_dbfs`, NOT the solved level —
     # this is the room-quality gate ("is this room quiet enough at all"),
     # a different question from the per-driver solve above.
-    snr_floor_ok = _snr_floor_ok(ambient_report, target)
+    snr_floor_ok = _snr_floor_ok(
+        ambient_report, target,
+        [solve.band_hz for solve in solves.values() if solve.band_hz is not None],
+    )
     return GainPlan(
         gain_db=gains,
         predicted_peak_dbfs=predicted_peak,
@@ -786,25 +789,14 @@ def alignment_snr_gain_adjustment(
     return adjusted
 
 
-def _snr_floor_ok(ambient_report: Mapping[str, Any], target_capture_dbfs: float) -> bool:
-    """False when the ambient report is missing, empty, or every row is
-    unreadable — never raises on a malformed ``level_dbfs``.
-    """
+def _snr_floor_ok(
+    ambient_report: Mapping[str, Any], target_capture_dbfs: float,
+    pilot_bands_hz: Sequence[tuple[float, float]],
+) -> bool:
+    """Judge only occupied bands; missing or unreadable evidence is not a pass."""
     bands = ambient_report.get("bands") if isinstance(ambient_report, Mapping) else None
     if not bands:
         return False
-    worst: float | None = None
-    for b in bands:
-        if not isinstance(b, Mapping):
-            continue
-        try:
-            level = float(b["level_dbfs"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not math.isfinite(level):
-            continue
-        if worst is None or level > worst:
-            worst = level
-    if worst is None:
-        return False
-    return (target_capture_dbfs - worst) >= DRIVER.snr_ok_db
+    worst = max((level for band in pilot_bands_hz
+                 for _lo, _hi, level in _ambient_rows_in_band(band, bands)), default=None)
+    return worst is not None and (target_capture_dbfs - worst) >= DRIVER.snr_ok_db

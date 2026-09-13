@@ -50,6 +50,7 @@ from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt, room_sweep_band_hz
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
+    CHECK_PROBE_BACKOFF_DB,
     COURTESY_PRELUDE_PHASES,
     GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
@@ -142,9 +143,11 @@ def test_the_verify_program_is_the_one_that_shipped():
     assert ex.verify_program().program_id == GOLDEN_DEEP_CAP["verify"]
 
 
-def test_check_pilots_do_not_exceed_the_summed_pilot_pair():
-    ex = _excitation(CAPS)
-    check = ex.check_program()
+@pytest.mark.parametrize("caps", [CAPS, {"woofer": 0.0, "tweeter": 0.0}])
+@pytest.mark.parametrize("extra_backoff_db", [-3.0, 0.0, 6.0])
+def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db):
+    ex = _excitation(caps)
+    check = ex.check_program(extra_backoff_db=extra_backoff_db)
     verify = ex.verify_program()
     summed = {
         segment.segment_id.rsplit("_", 1)[-1]: segment.gain_db
@@ -153,9 +156,14 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair():
     }
 
     assert all(
-        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]]
+        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]] - CHECK_PROBE_BACKOFF_DB
         for segment in check.stimulus_segments()
         if segment.kind == "pilot"
+    )
+    assert all(
+        segment.gain_db == pytest.approx(
+            ex.check_program().segment(segment.segment_id).gain_db - max(0.0, extra_backoff_db))
+        for segment in check.stimulus_segments() if segment.kind == "pilot"
     )
 
 

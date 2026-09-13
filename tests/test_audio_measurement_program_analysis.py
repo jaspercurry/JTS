@@ -4413,7 +4413,7 @@ def test_check_ambient_below_the_usable_fraction_degrades_to_disclosed_no_eviden
 
     assert samples is None
     assert report["bands"] == []
-    assert _snr_floor_ok(report, -10.5) is False
+    assert _snr_floor_ok(report, -10.5, [(150.0, 4000.0)]) is False
 
     # End-to-end, through the real offset recovery: the whole CHECK analysis
     # reaches the disclosed no-evidence bound rather than a solved gain.
@@ -4622,44 +4622,32 @@ def test_ambient_rows_in_band_skips_rows_it_cannot_read():
     assert rows == [(160.0, 350.0, -60.0)]
 
 
-def test_snr_floor_ok_skips_rows_it_cannot_read():
-    """#1831: `_snr_floor_ok` sits one function below `_ambient_rows_in_band`
-    (previous test) and reads the exact same ``level_dbfs`` shape, but until
-    this fix its ``float(b["level_dbfs"])`` was unguarded — a malformed row
-    raised ``ValueError`` instead of costing this gate that row's evidence.
-    Unreachable from today's in-process producer alone (which always writes
-    numeric levels), but the asymmetry with its sibling bites a replayed or
-    legacy-artifact ambient report. Same fixture shape as the sibling test,
-    with a non-mapping row, a missing key, a non-numeric value, and a NaN
-    value all present alongside two genuinely-readable rows.
-
-    Numbers matter here, not just "did it raise": a broken fix that silently
-    coerced the unreadable rows to ``0.0`` dBFS (louder than every real row
-    here) would flip this from PASS (``True``) to FAIL (``False``) — so this
-    also pins that unreadable rows are skipped, not defaulted.
-    """
-    report = {
-        "bands": [
-            {"level_dbfs": -60.0},
-            "not-a-mapping",
-            {"no_level_key": True},
-            {"level_dbfs": "loud"},
-            {"level_dbfs": float("nan")},
-            {"level_dbfs": -90.0},
-        ],
-    }
-    # Worst READABLE level is -60.0 (DRIVER.snr_ok_db == 25.0 dB):
-    # -10.5 - (-60.0) == 49.5 >= 25.0.
-    assert program_analysis._snr_floor_ok(report, target_capture_dbfs=-10.5) is True
-
-
-def test_snr_floor_ok_false_when_no_row_is_readable():
-    """#1831 fail-closed extension: `_snr_floor_ok` already treats an EMPTY
-    ``bands`` list as "no evidence" (``False``); a ``bands`` list present but
-    every row unreadable must resolve the same way — never claim the SNR
-    floor is satisfied from zero real evidence."""
-    report = {"bands": [{"level_dbfs": "loud"}, {"no_level_key": True}, "garbage"]}
-    assert program_analysis._snr_floor_ok(report, target_capture_dbfs=-10.5) is False
+@pytest.mark.parametrize(("report", "expected"), [
+    ({}, False),
+    ({"bands": []}, False),
+    ({"bands": [{"level_dbfs": "loud"}, {"no_level_key": True}, "garbage"]}, False),
+    ({"bands": [{"level_dbfs": -60.0}]}, False),
+    ({"bands": [{"band_hz": [20.0, 80.0], "level_dbfs": -20.0}]}, False),
+    ({"bands": [
+        {"band_hz": [160.0, 350.0], "level_dbfs": -60.0},
+        "not-a-mapping", {"no_level_key": True},
+        {"band_hz": [160.0, 350.0], "level_dbfs": "loud"},
+        {"band_hz": [160.0, 350.0], "level_dbfs": float("nan")},
+    ]}, True),
+    (_ambient(sub_bass=-20.0, upper_bass=-68.4, mid=-75.5), True),
+    (_ambient(upper_bass=-40.0), False),
+    (_ambient(mid=-40.0), False),
+    (_ambient(bass=-40.0), False),
+    (_ambient(upper_bass=-28.2 - DRIVER.snr_ok_db), True),
+    (_ambient(upper_bass=-28.2 - DRIVER.snr_ok_db + 0.01), False),
+])
+def test_snr_floor_ok_uses_readable_rows_overlapping_pilot_bands(report, expected):
+    program = build_check_program(_check_roles())
+    plan = _solve_gain_plan(
+        program, _solve_pilots(program, k_db={"woofer": 0.0, "tweeter": 0.0}), report,
+        MeasurementPriors(target_capture_dbfs=-28.2),
+    )
+    assert plan.snr_floor_ok is expected
 
 
 def test_measure_level_solve_refuses_a_degenerate_ambient_report(caplog):
@@ -4925,21 +4913,6 @@ def test_measure_level_solve_lands_in_a_sane_regime_on_the_field_session():
     # further. Both directions are the mechanism, not a tuned constant.
     assert plan.role_solves["woofer"].reduction_db < 12.0
     assert plan.role_solves["tweeter"].reduction_db > 15.0
-
-
-def test_measure_level_solve_leaves_the_snr_floor_gate_untouched():
-    """`snr_floor_ok` is the room-QUALITY gate (asked of the reference target
-    against the whole ambient report, sub-bass included). The solve answers a
-    different question, and must not move which sessions CHECK accepts."""
-    quiet = _ambient(upper_bass=-62.0, transition=-64.0, mid=-70.0, treble=-78.0)
-    noisy = _ambient(sub_bass=-20.0)
-    assert _solve(quiet).snr_floor_ok is True
-    assert _solve(noisy).snr_floor_ok is False
-    # …even though sub-bass (20-80 Hz) overlaps NEITHER driver's measurement
-    # band, so it never entered a per-role solve.
-    for solve in _solve(noisy).role_solves.values():
-        assert solve.ambient_dbfs is not None
-        assert solve.ambient_dbfs < -20.0
 
 
 def test_measure_level_solve_publishes_a_json_safe_disclosure():

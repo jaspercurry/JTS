@@ -46,6 +46,12 @@ GAIN_CAP_BACKOFF_DB = 0.01
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
+# The neutral drivers graph lacks summed program headroom and linearization
+# cuts: raw drivers can be louder by headroom + the fit budget's largest cut
+# (jts3: 3.1 + 8 = 11.1 dB, rounded up). Pilots need only SNR; the solve sets
+# MEASURE's level.
+CHECK_PROBE_BACKOFF_DB = 12.0
+
 #: The phases whose capture OPENS a session's playback, and so carries the
 #: courtesy prelude (#1677). No env/config switch. :data:`PHASE_ENTRY_BASELINE`
 #: is stage 1's LAST capture rather than an opener, but it PLAYS the announced
@@ -168,10 +174,7 @@ class SessionExcitation:
         return pilot_gains(hi_gain_db)
 
     def check_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        """Clamp per role, then attenuate both pilots together for a retry.
-
-        A per-driver pilot never exceeds the summed program's pilot at the same fader.
-        """
+        """Probe below the summed base, with further paired backoff for retries."""
         summed_base = self._summed_gain()
         role_base = {
             rb.role: min(
@@ -181,7 +184,7 @@ class SessionExcitation:
                     self.caps_dbfs.get(rb.role, 0.0),
                 ),
                 summed_base,
-            ) - max(0.0, extra_backoff_db)
+            ) - CHECK_PROBE_BACKOFF_DB - max(0.0, extra_backoff_db)
             for rb in self.roles
         }
         return build_check_program(
