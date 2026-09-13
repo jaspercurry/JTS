@@ -881,7 +881,7 @@ def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
     program = compose_plan_program(conductor, spec, None)
-    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db if gain_plan is None else min(gain_plan.values())
+    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db if gain_plan is None else max(gain_plan.values())
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
     windowed = compose_plan_program(conductor, spec, -60.0)
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)
