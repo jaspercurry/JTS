@@ -117,7 +117,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         RoundBankError, bank_round,
     )
 
-    from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
+    from .round_views import run_bookkeeping, view_accepts_set  # lazy: wait-only view dispatch
 
     result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, poll_s=DEFAULT_POLL_S)
     if result["status"] != "terminal":
@@ -127,7 +127,9 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     if not session_dir:
         return failed(EXIT_UNREADABLE, "capture_bundle_unavailable", result)
     try:
-        banked = bank_round(Path(session_dir), view_runner=run_bookkeeping)
+        banked = bank_round(
+            Path(session_dir), view_runner=run_bookkeeping, set_scoped=view_accepts_set,
+        )
     except RoundBankError as exc:
         return failed(EXIT_REFUSED, exc.reason, str(exc))
     except OSError as exc:
