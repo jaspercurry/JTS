@@ -22,7 +22,7 @@ from jasper.web.correction_crossover_v2_wired import build_v2_wired_run_and_cons
 async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, restore):
     state = {"session_id": "run", "execution": {"volume_restore": "stale"}}
     saved = []
-    windows = SimpleNamespace(last_window=None)
+    door = SimpleNamespace(opened=None)
     monkeypatch.setattr(host, "load_v2_state", lambda: state)
     monkeypatch.setattr(host, "save_v2_state", lambda value, **kw: saved.append(value["execution"].copy()))
     monkeypatch.setattr(host, "_persist_terminal_failure", lambda *a, **kw: None)
@@ -32,13 +32,13 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
     monkeypatch.setattr(host, "persist_conductor_state", persist)
 
     async def execute(*args, **kwargs):
-        windows.last_window = SimpleNamespace(restore_result=restore) if restore else None
+        door.opened = SimpleNamespace(restore_result=restore)
         if failure is not None and failure is not OSError:
             raise failure()
         return SimpleNamespace(reason="", cancelled=False)
     monkeypatch.setattr(plan_run, "run_plan", execute)
     runner = build_v2_wired_run_and_consume(
-        SimpleNamespace(_measure_gain_ceiling_db={}), windows=windows,
+        SimpleNamespace(_measure_gain_ceiling_db={}), door=door,
         stop_event=threading.Event(), stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=threading.Event(), retake_event=threading.Event(),
         manifest=None, request=None, captures=None, analyze=None, assessor=None, candidate_scopes={},

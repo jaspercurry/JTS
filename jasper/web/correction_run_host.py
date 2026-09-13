@@ -10,7 +10,7 @@ from typing import Any
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
-from jasper.active_speaker.plan_run import LevelWindows
+from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
@@ -125,14 +125,13 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
     return program
 
 
-def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: Any,
-                       manifest: Any, production: Any, conductor: Any, refs: Any,
-                       trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
-                       camilla_factory: Any, verify_only: bool, provenance: Any = None,
-                       level_anchor_db_spl: float | None = None,
-                       level_offsets_db: tuple[float, ...] = (0.0,)) -> tuple[LevelWindows, Any, Any]:
+def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
+                  manifest: Any, production: Any, conductor: Any, refs: Any,
+                  trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
+                  camilla_factory: Any, verify_only: bool, provenance: Any = None,
+                  level_anchor_db_spl: float | None = None) -> tuple[RunDoor, Any, Any]:
     sensitivity = resolved_household_sensitivity(device)
-    check_target = (anchored_check_target(sensitivity, level_anchor_db_spl, level_offsets_db)
+    check_target = (anchored_check_target(sensitivity, level_anchor_db_spl)
                     if level_anchor_db_spl is not None and sensitivity is not None else None)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
@@ -153,8 +152,8 @@ def bind_level_windows(*, host: Any, context: Any, device: Any, evidence_store: 
             ), door.measurement_volume_db, allocate_take_id, level_match_trims_db=trims,
         )
 
-    return LevelWindows(
+    return RunDoor(
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
                        action="measuring", plan=host.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
-        build, context.topology, context.preset, sensitivity, device, ceiling_db_spl, gain_db=context.session_volume_db,
+        build, sensitivity, device, ceiling_db_spl,
     ), analyze, assessor

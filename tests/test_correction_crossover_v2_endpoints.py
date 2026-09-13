@@ -6783,7 +6783,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     monkeypatch.setattr(v2host, "_build_wired_run", build)
     opened = prepared.open()
     assert opened.pi_session.session_id == prepared.session_id
-    assert not bound["windows"].is_open
+    assert not bound["door"].is_open
     assert bound["request"].to_dict() == store.reopen_json_artifact(
         store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert bound["conductor"]._candidate is None

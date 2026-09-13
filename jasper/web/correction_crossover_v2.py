@@ -27,7 +27,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   deaths into the flow's reason vocabulary. It is reached LAZILY. This host
   stays the single writer of the persisted failure state those reasons land in
   (``status["crossover_v2"]["failure"]`` — ``capture_timeout``,
-  ``user_stopped``, …). ``door.isolation_hold`` and ``door.level_window`` own the volume give-back.
+  ``user_stopped``, …). The measurement door owns the volume give-back.
 
 Session binding (§5.6): the durable state is keyed to the capture session id. A
 new ``/v2/session`` POST hydrates through
@@ -78,7 +78,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     summed_sweep_band_hz,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.web.correction_run_host import bind_level_windows, compose_plan_program
+from jasper.web.correction_run_host import bind_run_door, compose_plan_program
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
 from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures
@@ -3365,7 +3365,7 @@ def prepare_v2_session(
         )
 
         if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
-            raise CrossoverV2Refused("An inline v3 plan is required", code="program_plan_shape_invalid")
+            raise CrossoverV2Refused("An inline v4 plan is required", code="program_plan_shape_invalid")
         try:
             request = AngleCaptureRequest.from_mapping(raw["plan"])
         except LateralWalkRefused as exc:
@@ -3497,8 +3497,7 @@ def prepare_v2_session(
                 default_setup_calibration=default_setup_calibration_for_v2(),
             )
         assert spec is not None
-        ceiling_s = wall_clock_ceiling_s(spec.capture_plan.capture_target * (
-            1 if verify_only else max(1, len(request.level_offsets_db))))
+        ceiling_s = wall_clock_ceiling_s(spec.capture_plan.capture_target)
         rc = _mint_wired_session(device, spec)
         if not verify_only:
             rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
@@ -3625,15 +3624,14 @@ def prepare_v2_session(
         manifest = RunManifest(session_id, _record_store(evidence_store, session_id),
                                incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
         from jasper.web import correction_crossover_v2 as host  # lazy: bind this host's seams
-        tuning, analyze, assessor = bind_level_windows(
-            host=host, context=context, device=device, evidence_store=evidence_store,
+        tuning, analyze, assessor = bind_run_door(
+            host=host, device=device, evidence_store=evidence_store,
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
             ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
                             if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
             level_anchor_db_spl=(request.level.resolved.anchor_db_spl
                                  if not verify_only and request.level.resolved is not None else None),
-            level_offsets_db=(0.0,) if verify_only else tuple(request.level_offsets_db),
         )
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
@@ -3651,7 +3649,7 @@ def prepare_v2_session(
         nonlocal held
         source_run = _build_wired_run(
             conductor,
-            windows=tuning,
+            door=tuning,
             stop_event=stop_event,
             stop_lock=stop_lock,
             position_gate=position_gate,

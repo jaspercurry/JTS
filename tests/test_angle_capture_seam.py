@@ -1438,23 +1438,22 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
         assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
-@pytest.mark.parametrize("levels", [(-12.7,), (-20, -14)])
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
-def test_v3_request_round_trip_and_capture_schedule(repeats, candidates, levels):
+def test_request_round_trip_and_capture_schedule(repeats, candidates):
     request = ac.request_for_program(
         mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
-        retries_per_pose=2, level_offsets_db=levels,
+        retries_per_pose=2,
         level=ac.LevelPolicy(resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
     doc = request.to_dict()
-    assert doc["artifact_schema_version"] == 3
+    assert doc["artifact_schema_version"] == 4
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
     assert doc["level"] == {"mode": "hold_reference", "anchor_db_spl": 75.8,
                             "reference_volume_db": -12.7, "mic_serial": "8108494",
                             "session_id": "", "leveled_at": "", "target_db_spl": 75.0}
-    assert (doc["level_offsets_db"], doc["repeats"], doc["retries_per_pose"]) == (list(levels), repeats, 2)
+    assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
     specs = ac.stop_specs(request, baseline_ids={"room": "baseline-room"}, candidate_scopes={"room-fp": "candidate"},
                           prompts=[s.prompt for s in ac.resolve_request(request)])
@@ -1462,7 +1461,7 @@ def test_v3_request_round_trip_and_capture_schedule(repeats, candidates, levels)
     assert [spec.positions for spec in specs] == [
         (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
     ]
-    assert ac.walk_price(request)["captures"] == len(specs) * len(levels)
+    assert ac.walk_price(request)["captures"] == len(specs)
     assert ac.walk_price(request)["mic_moves"] == 3
 
 
@@ -1481,7 +1480,6 @@ def test_invalid_level_policy_refuses_at_construction(fields):
 
 
 @pytest.mark.parametrize("fields, reason", [
-    ({"level_offsets_db": (1.0,)}, ac.WALK_LEVEL_POLICY_INVALID),
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
@@ -1557,11 +1555,11 @@ def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
         assert plan_accepts == (stops == 1)
 
 
-@pytest.mark.parametrize("candidates", [(), ("base", "fp-a")])
-@pytest.mark.parametrize("repeats", [1, 3])
-def test_v3_plan_round_trips_without_a_spool(candidates, repeats):
-    request = ac.request_for_program(mp.program("room", "cloud"), candidates=candidates, repeats=repeats)
-    assert ac.AngleCaptureRequest.from_mapping(request.to_dict()) == request
+def test_previous_request_version_requires_restage():
+    doc = {**ac.summed_at([0]).to_dict(), "artifact_schema_version": 3, "level_offsets_db": [0, -5]}
+    with pytest.raises(ac.LateralWalkRefused) as refused:
+        ac.AngleCaptureRequest.from_mapping(doc)
+    assert refused.value.reason == ac.WALK_SCHEMA_VERSION_UNSUPPORTED
 
 
 def test_a_stale_banked_stop_keeps_its_registered_refusal_code():

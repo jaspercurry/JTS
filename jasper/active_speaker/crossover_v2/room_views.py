@@ -307,11 +307,7 @@ def incumbent_room(
             and row["capture_basis"].get("graph_scope") in scopes)
     )]
     if any("base" in row for row in manifest["sets"]):
-        selected = next((row for row in manifest["sets"] if row["set_id"] == set_id), None)
-        def window(row: Mapping[str, Any]) -> Any:
-            return next((take.get("level_window_db") for take in row.get("takes", ())), None)
-        matches = [row["set_id"] for row in manifest["sets"]
-                   if row.get("base") and (selected is None or window(row) == window(selected))]
+        matches = [row["set_id"] for row in manifest["sets"] if row.get("base")]
     if len(matches) != 1:
         return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {

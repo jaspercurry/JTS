@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from itertools import groupby
 from typing import Any, Mapping
 
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
@@ -64,7 +63,6 @@ class PreflightFacts:
 class ScheduledCapture:
     index: int
     pose: tuple[Any, ...]
-    offset_db: float
     candidate_id: str
     repeat: int
     graph_scope: str | None
@@ -113,7 +111,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
     except CrossoverV2FlowError as exc:
         add(getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
         valid_shape = False
-    captures = len(plan.stops) * plan.repeats * max(1, len(plan.level_offsets_db)) if valid_shape else 0
+    captures = len(plan.stops) * plan.repeats if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
@@ -162,16 +160,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
 
     schedule = tuple(
         ScheduledCapture(index + 1, pose.place,
-                         level, candidate_identity(pose.candidate_id), repeat,
+                         candidate_identity(pose.candidate_id), repeat,
                          ("candidate_branches" if pose.regime == REGIME_BRANCHES else
                           scopes.get(pose.candidate_id) if pose.candidate_id else
                           "candidate" if pose.plays_summed else "drivers"), pose.regime)
-        for index, (pose, level, repeat) in enumerate(
-            (pose, level, repeat)
-            for _place, group in groupby(plan.stops, key=lambda pose: pose.place)
-            for poses in (tuple(group),)
-            for level in plan.level_offsets_db
-            for pose in poses
+        for index, (pose, repeat) in enumerate(
+            (pose, repeat) for pose in plan.stops
             for repeat in range(1, plan.repeats + 1)
         )
     ) if valid_shape else ()

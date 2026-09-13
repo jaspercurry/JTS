@@ -187,17 +187,14 @@ def resolve_candidate_scopes(candidate_ids: Iterable[str]) -> dict[str, str]:
 
 
 @dataclass
-class LevelWindows:
+class RunDoor:
     hold: AbstractAsyncContextManager[IsolationHold]
     build_session: Callable[[OpenMeasurementDoor, Callable[[], str]], TuningSession]
-    topology: Any
-    preset: Any
     sensitivity: Any
     device: Any
     ceiling_db_spl: float | None
-    gain_db: float | None = None
     current: TuningSession | None = None
-    last_window: OpenMeasurementDoor | None = None
+    opened: OpenMeasurementDoor | None = None
 
     @property
     def is_open(self) -> bool:
@@ -212,7 +209,6 @@ class _Work:
     config: int
     size: int
     entry: Any
-    level_db: float | None = None
 
 
 def _pose(stop: Any) -> dict[str, Any]:
@@ -227,7 +223,7 @@ def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
 
 async def run_plan(
     request: AngleCaptureRequest, *, session: TuningSession | None = None, manifest: RunManifest,
-    windows: LevelWindows | None = None,
+    door: RunDoor | None = None,
     analyze: Analyze, gate: PositionGate | None = None,
     candidate_scopes: Mapping[str, str], aborts: Mapping[type[BaseException], str],
     signals: RunSignals | None = None, spl_monitor: str = "",
@@ -248,7 +244,7 @@ async def run_plan(
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)),
         "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
-        "retries_per_pose": request.retries_per_pose, "level_offsets_db": list(request.level_offsets_db),
+        "retries_per_pose": request.retries_per_pose,
     }
     manifest.planned = [_planned_row(index * request.repeats + repeat, repeat, stop)
                         for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
@@ -290,44 +286,30 @@ async def run_plan(
     anchor = request.level.resolved
     if anchor is not None:
         manifest.level = {"session": anchor.session()}
-    gain = (windows.gain_db if windows is not None and windows.gain_db is not None else
-            anchor.reference_volume_db if anchor is not None else session.measurement_level_db if session else None)
-    levels = tuple(gain + offset for offset in request.level_offsets_db) if gain is not None else ()
-    if not levels or (windows is None and (session is None or levels != (session.measurement_level_db,))):
-        raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a session factory for its level windows")
-    quietest_level_index = min(range(len(levels)), key=levels.__getitem__)
+    level = anchor.reference_volume_db if anchor is not None else session.measurement_level_db if session else None
+    if level is None or (door is None and (session is None or level != session.measurement_level_db)):
+        raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
     expanded = []
     planned: list[dict[str, Any]] = []
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
-        rows = list(batch)
-        scheduled: list[tuple[int, int, MeasureSpec | None]] = [
-            (quietest_level_index, offset, spec) for offset, spec in rows
-            if spec is not None and spec.program_phase == PHASE_CHECK
-        ]
-        scheduled.extend((level_index, offset, spec)
-                         for level_index in range(len(levels)) for offset, spec in rows
-                         if spec is None or spec.program_phase != PHASE_CHECK)
-        for level_index, offset, spec in scheduled:
-            level = levels[level_index]
+        for offset, spec in batch:
             stop = {**manifest.planned[offset], "index": len(planned) + 1,
-                    "capture_index": manifest.planned[offset]["index"],
-                    "level_window_db": level, "offset_db": request.level_offsets_db[level_index],
-                    "level_window_index": level_index}
+                    "capture_index": manifest.planned[offset]["index"]}
             planned.append(stop)
             if spec is not None:
-                expanded.append((spec, stop, pose_index, level, stops[offset]))
+                expanded.append((spec, stop, pose_index, stops[offset]))
     manifest.planned = planned
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
-                                 [row[4].prompt for row in expanded], [row[4].candidate_id for row in expanded])
+                                 [row[3].prompt for row in expanded], [row[3].candidate_id for row in expanded])
     work: list[_Work] = []
     for _pose_index, expanded_batch in groupby(enumerate(expanded), key=lambda row: row[1][2]):
         expanded_rows = list(expanded_batch)
-        for config, (index, (played_spec, stop, pose_index, level, resolved_stop)) in enumerate(expanded_rows, 1):
+        for config, (index, (played_spec, stop, pose_index, resolved_stop)) in enumerate(expanded_rows, 1):
             entry = SimpleNamespace(screen={**resolved_stop.screen,
                                     "title": resolved_stop.prompt.headline, "body": resolved_stop.prompt.detail,
                                     **position_screen_keys(resolved_stop.prompt), **screens.get(index + 1, {})})
-            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry, level))
-    return await _run(work, session=session, windows=windows,
+            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry))
+    return await _run(work, session=session, door=door, level=level,
                       manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
                       clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
@@ -380,7 +362,7 @@ async def _grant(gate: PositionGate | None, index: int, attempt: int, entry: Any
 
 async def _run(
     work: Sequence[_Work], *, session: TuningSession | None, manifest: RunManifest, analyze: Analyze,
-    windows: LevelWindows | None = None,
+    door: RunDoor | None = None, level: float | None = None,
     gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
     retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
@@ -418,16 +400,14 @@ async def _run(
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
     progress: dict[str, Any] = {}
-    outer, inner = AsyncExitStack(), AsyncExitStack()
-    active_window: tuple[int, int] | None = None
-    check_window_logged = False
+    stack = AsyncExitStack()
     hold: IsolationHold | None = None
     try:
         await manifest.persist()
-        if windows is not None:
-            if windows.ceiling_db_spl is None:
+        if door is not None:
+            if door.ceiling_db_spl is None:
                 raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
-            hold = await outer.enter_async_context(windows.hold)
+            hold = await stack.enter_async_context(door.hold)
         while offset < len(work):
             if signals.complete.is_set():
                 manifest.reason = "complete_requested"
@@ -439,10 +419,6 @@ async def _run(
                     retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                     retry_was_measured = False
             item = work[offset]
-            window_key = (item.pose_index, item.stop.get("level_window_index", 0))
-            if windows is not None and active_window != window_key:
-                await resilient_restore(inner.aclose())
-                active_window = None
             ledger = ledgers[item.pose_index]
             if retry is not None:
                 if not ledger.can_retry(retry.charge):
@@ -489,19 +465,16 @@ async def _run(
                     if item.pose_index not in moved:
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
-                if windows is not None and active_window is None:
-                    assert hold is not None and item.level_db is not None
+                if session is None:
+                    assert door is not None and hold is not None and level is not None
                     monitor, manifest.spl_monitor = spl_watch(
-                        topology=windows.topology, preset=windows.preset,
-                        sensitivity=windows.sensitivity, device=windows.device,
-                        resolved_ceiling_db_spl=windows.ceiling_db_spl,
+                        topology=None, preset=None, sensitivity=door.sensitivity, device=door.device,
+                        resolved_ceiling_db_spl=door.ceiling_db_spl,
                     )
-                    door = await inner.enter_async_context(level_window(item.level_db, hold=hold, spl_monitor=monitor))
-                    windows.last_window = door
-                    session = windows.build_session(door, manifest.allocate_take_id)
-                    windows.current = session
-                    await inner.enter_async_context(session)
-                    active_window = window_key
+                    door.opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
+                    session = door.build_session(door.opened, manifest.allocate_take_id)
+                    door.current = session
+                    await stack.enter_async_context(session)
                 assert session is not None
                 take_started = clock()
                 if retry is not None:
@@ -510,11 +483,6 @@ async def _run(
                         gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
-                if (not check_window_logged and spec.program_phase == PHASE_CHECK
-                        and item.stop.get("offset_db", 0.0) < 0.0):
-                    log_event(logger, "active_speaker.check_level_window",
-                              level_db=item.level_db, offset_db=item.stop["offset_db"])
-                    check_window_logged = True
                 outcome = await measure(session, spec) if measure else await session.measure(spec)
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
@@ -604,19 +572,13 @@ async def _run(
     finally:
         try:
             try:
-                await resilient_restore(inner.__aexit__(*sys.exc_info()))
+                await resilient_restore(stack.__aexit__(*sys.exc_info()))
             except MeasurementDoorRefused as exc:
                 if not manifest.reason:
                     manifest.reason, manifest.detail = exc.reason, exc.detail
             except BaseException:  # noqa: BLE001 - preserve cleanup failures after finalizing
                 manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
                 raise
-            finally:
-                try:
-                    await resilient_restore(outer.aclose())
-                except BaseException:  # noqa: BLE001 - isolation release is part of run completion
-                    manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
-                    raise
         finally:
             manifest.finalized = True
             if gate:
