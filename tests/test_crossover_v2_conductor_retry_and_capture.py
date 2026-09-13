@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 from dataclasses import replace
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_VERIFY
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -538,45 +537,6 @@ def test_a_check_take_banks_no_curve_because_check_measures_none():
     banked = {meta["phase"]: meta for meta in retained}
     assert banked[PHASE_CHECK]["curves"] == []
     assert banked[PHASE_MEASURE]["curves"] != []
-
-
-def test_a_verify_take_banks_the_kind_its_own_round_can_derive():
-    """VERIFY classifies; it does not bank an unresolved kind it could resolve.
-
-    ``take_kind`` needs two named fingerprints: the graph this capture went
-    through, and the round's pre-apply comparand. By VERIFY the session holds
-    both — the entry baseline stage 1 took is what a post-apply re-measure is
-    post-apply OF — so leaving the comparand unstated would bank ``""`` for a
-    take whose kind the round already knows. CHECK and MEASURE genuinely
-    cannot: CHECK is kindless by design, and MEASURE's comparand is minted
-    after it banks.
-
-    The two fingerprints must also DIFFER, which is what makes this a verify
-    rather than a baseline — the same graph on both sides is the round that
-    changed nothing.
-    """
-    retained: list = []
-    fakes = FakeSeams()
-    c = _conductor(
-        fakes,
-        seams=replace(
-            fakes.seams(),
-            bank_take=bank_into(retained),
-            entry_graph_fingerprint=lambda: "fp-after-the-apply",
-        ),
-        index_phase_map=STAGE2_MAP,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-    )
-    # The fixture's stage-2 baseline, whose graph is "fixture_entry_graph" —
-    # named, and not the post-apply one above.
-    assert c.measure_entry_baseline is not None
-
-    _run_phase(c, VERIFY_INDEX, 1)
-
-    banked = [m for m in retained if m["phase"] == PHASE_VERIFY]
-    assert len(banked) == 1
-    assert banked[0]["measure_kind"] == MEASURE_KIND_VERIFY
 
 
 def test_an_unprompted_take_is_named_the_way_the_entry_baseline_named_its_own():

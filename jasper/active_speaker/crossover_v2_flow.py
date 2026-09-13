@@ -2036,7 +2036,6 @@ class CrossoverV2Session:
         result: Any,
     ) -> None:
         """Bank one take for a phase with no prompted spot."""
-        baseline = self._measure_entry_baseline
         self._seams.bank_take(
             result,
             _spatial.phase_capture_record(
@@ -2045,9 +2044,6 @@ class CrossoverV2Session:
                 attempt=attempt,
                 curves=self._banked_curves(phase, analysis),
                 claim=_spatial.TakeClaim(
-                    baseline_fingerprint=(
-                        baseline.graph_fingerprint if baseline is not None else ""
-                    ),
                     phase_composition=self._phase_composition(analysis),
                 ),
                 **self._capture_stamp(result),

@@ -141,9 +141,8 @@ def prepare_plan_captures(
 ) -> tuple[PlanCapture, ...]:
     """Derive preparation and requested captures together (ADR-0297)."""
     resolved = resolve_request(request)
-    baseline_ids = {stop.purpose or "speaker": BASE_CANDIDATE for stop in request.stops}
-    placed = stop_specs(request, candidate_scopes=candidate_scopes,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_ids=baseline_ids,
+    placed = stop_specs(request,
+                        prompts=tuple(stop.prompt for stop in resolved), baseline_id=BASE_CANDIDATE,
                         roles_bands=roles_bands)
     captures: list[PlanCapture] = []
     if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
@@ -157,8 +156,8 @@ def prepare_plan_captures(
             kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
             headline="", detail="", regime=REGIME_SUMMED),),
                                candidates=(), repeats=1)
-        base_spec, = stop_specs(base_request, candidate_scopes={},
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_ids=baseline_ids,
+        base_spec, = stop_specs(base_request,
+                                prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
         assert base_spec is not None
         captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
@@ -234,12 +233,11 @@ async def run_plan(
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
-    from .candidate_parts import baseline_candidate_ids  # lazy: baseline composition loads DSP analysis
+    from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
     manifest.request_fingerprint = request_fingerprint(request)
     manifest.program = request.program
     manifest.spl_monitor = spl_monitor
-    manifest.baseline_graph = request.baseline_graph_scope
     manifest.asked = {
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)),
@@ -251,16 +249,13 @@ async def run_plan(
     try:
         resolved = resolve_request(request)
         try:
-            # Remove the CLI shape when W1-15 supplies prepared captures to this host.
+            needs_base = (any(stop.plays_summed and not stop.candidate_id for stop in request.stops)
+                          if captures is None else any(capture.spec.candidate_id == BASE_CANDIDATE for capture in captures))
+            baseline_id = baseline_candidate_id() if needs_base else ""
             if captures is None:
-                specs = stop_specs(request, candidate_scopes=candidate_scopes,
-                                   prompts=tuple(stop.prompt for stop in resolved),
-                                   baseline_ids=baseline_candidate_ids(stop.purpose for stop in request.stops
-                                                                       if stop.plays_summed and not stop.candidate_id))
+                specs = stop_specs(request, prompts=tuple(stop.prompt for stop in resolved), baseline_id=baseline_id)
             else:
-                baselines = baseline_candidate_ids(capture.stop.purpose for capture in captures
-                                                   if capture.spec.candidate_id == BASE_CANDIDATE)
-                specs = tuple(replace(capture.spec, candidate_id=baselines[capture.stop.purpose or "speaker"])
+                specs = tuple(replace(capture.spec, candidate_id=baseline_id)
                               if capture.spec.candidate_id == BASE_CANDIDATE else capture.spec for capture in captures)
         except ValueError as exc:
             raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc

@@ -869,7 +869,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
 
 
 @pytest.mark.parametrize("gain_plan", [None, {"woofer": -50.0, "tweeter": -57.0}])
-def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
+def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.web.correction_run_host import compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
@@ -877,7 +877,7 @@ def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
     program = compose_plan_program(conductor, spec, None)
-    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db if gain_plan is None else max(gain_plan.values())
+    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
     windowed = compose_plan_program(conductor, spec, -60.0)
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)

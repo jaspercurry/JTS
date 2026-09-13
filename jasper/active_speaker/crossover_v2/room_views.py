@@ -299,15 +299,7 @@ def incumbent_room(
     snapshot = profile.get("recomposition_snapshot") or {}
     correction = snapshot.get("room_correction", profile.get("room_correction")) or {}
     basis = correction.get("basis") or {}
-    fingerprint = (profile.get("source") or {}).get("measured_candidate_fingerprint")
-    scopes = {"room_tune", "applied"} if correction else {"speaker_tune", "room_tune", "applied"}
-    matches = [row["set_id"] for row in manifest["sets"] if (
-        (fingerprint and row["capture_basis"].get("candidate_id") == fingerprint)
-        or (not row["capture_basis"].get("candidate_id")
-            and row["capture_basis"].get("graph_scope") in scopes)
-    )]
-    if any("base" in row for row in manifest["sets"]):
-        matches = [row["set_id"] for row in manifest["sets"] if row.get("base")]
+    matches = [row["set_id"] for row in manifest["sets"] if row.get("base")]
     if len(matches) != 1:
         return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {

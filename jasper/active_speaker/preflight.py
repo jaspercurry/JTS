@@ -91,7 +91,6 @@ class PreflightReport:
             "issues": [asdict(issue) for issue in self.issues],
             "schedule": [asdict(capture) for capture in self.schedule],
             "mic_moves": self.mic_moves, "price": dict(self.price),
-            "baseline_graph_scope": self.plan.baseline_graph_scope,
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
             "level": {"resolved": self.plan.level.resolved is not None,
                       **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},

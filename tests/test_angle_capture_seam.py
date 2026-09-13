@@ -1386,7 +1386,7 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
         template, graph_scope="drivers", candidate_id="", sweep_band_hz=(), sweep_s=None,
     )
     assert ac.stop_specs(
-        request, baseline_ids={"speaker": "baseline-speaker", "room": "baseline-room", "bass": "baseline-bass"}, candidate_scopes={"fp-a": "candidate"}, prompts=prompts,
+        request, baseline_id="banked-base", prompts=prompts,
     ) == (
         None,
         replace(
@@ -1455,8 +1455,10 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
                             "session_id": "", "leveled_at": "", "target_db_spl": 75.0}
     assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
-    specs = ac.stop_specs(request, baseline_ids={"room": "baseline-room"}, candidate_scopes={"room-fp": "candidate"},
+    specs = ac.stop_specs(request, baseline_id="banked-base",
                           prompts=[s.prompt for s in ac.resolve_request(request)])
+    assert {spec.kind for spec in specs if spec.candidate_id == "banked-base"} == {MEASURE_KIND_VERIFY}
+    assert all(spec.kind == MEASURE_KIND_CANDIDATE for spec in specs if spec.candidate_id == "room-fp")
     assert len(specs) == 3 * max(1, len(candidates)) * repeats
     assert [spec.positions for spec in specs] == [
         (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
@@ -1490,11 +1492,6 @@ def test_invalid_walk_fields_refuse_by_name(fields, reason):
     assert refused.value.reason == reason
 
 
-@pytest.mark.parametrize("program, scope", [("baseline", "preset"), ("room", "speaker"), ("bass", "room")])
-def test_request_names_the_program_baseline(program, scope):
-    assert ac.request_for_program(mp.program(program)).baseline_graph_scope == scope
-
-
 @pytest.mark.parametrize("program,size,mover,reason", [
     ("room", "quick", ac.MOVER_ARM, None),
     ("room", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
@@ -1515,9 +1512,9 @@ def test_program_mover_constraints_refuse_by_name(program, size, mover, reason):
 def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("pure planning opened the candidate bank")
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids", unexpected)
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", unexpected)
     request = ac.summed_at([0, 20])
-    specs = ac.stop_specs(request, candidate_scopes={}, baseline_ids={"speaker": "banked-base"},
+    specs = ac.stop_specs(request, baseline_id="banked-base",
                           prompts=[stop.prompt for stop in ac.resolve_request(request)])
     assert [spec.candidate_id for spec in specs] == ["banked-base", "banked-base"]
     assert {spec.graph_scope for spec in specs} == {"candidate"}

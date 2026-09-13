@@ -142,9 +142,7 @@ _ROUTES: dict[str, _Route] = {
 def _measure_kind(record: Mapping[str, Any]) -> str | None:
     """This record's MEASUREMENT kind under either spelling, or ``None``.
 
-    ``None`` means *not a capture record* and is NOT ``""``:
-    ``spatial.take_kind`` returns ``""`` for a take whose graph resolves
-    neither fingerprint, so the KEY's presence decides, not its truthiness.
+    ``None`` means not a capture record; ``""`` means an unstated measurement kind.
     """
     kind = record.get("kind")
     if isinstance(kind, str) and kind in MEASURE_KINDS:

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -35,7 +35,6 @@ from .measured_crossover_candidate import (
 
 from .measurement_emit import MeasurementGraphRefused
 from .profile import ActiveSpeakerPreset, required_driver_roles
-from .measurement_programs import baseline_scope
 
 COMPOSITION_KIND = "jts_candidate_composition"
 
@@ -57,9 +56,9 @@ def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any]
 
 
 def candidate_from_applied_profile(
-    topology: OutputTopology, applied_profile: Mapping[str, Any], *, purpose: str | None = None,
+    topology: OutputTopology, applied_profile: Mapping[str, Any],
 ) -> MeasuredCrossoverCandidate:
-    """Compose the saved tune or a program baseline from the applied layers."""
+    """Compose the full applied tune."""
     snapshot, issues = applied_baseline_hardware_match(topology, applied_profile=applied_profile)
     if snapshot is None:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", str(issues))
@@ -110,22 +109,13 @@ def candidate_from_applied_profile(
     if any(desired.get(key) != actual.get(key) for key in ("filters", "mixers", "processors", "pipeline")):
         raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "candidate would change saved processing or protection")
     prove_candidate_config(candidate, emitted)
-    scope = baseline_scope(purpose) if purpose is not None else None
-    return candidate if scope is None else replace(candidate, bass_extension={},
-                   room_correction=candidate.room_correction if scope == "room" else {},
-                   linearization={} if scope == "preset" else candidate.linearization,
-                   blend_correction=() if scope == "preset" else candidate.blend_correction)
+    return candidate
 
 
-def baseline_candidate_ids(purposes: Iterable[str | None]) -> dict[str, str]:
-    programs = set(purpose or "speaker" for purpose in purposes)
-    if not programs:
-        return {}
+def baseline_candidate_id() -> str:
     try:
         topology, applied = load_output_topology_strict(), load_applied_baseline_profile_state() or {}
-        return {purpose: publish_authored_candidate(candidate_from_applied_profile(
-            topology, applied, purpose=purpose,
-        )).fingerprint for purpose in sorted(programs)}
+        return publish_authored_candidate(candidate_from_applied_profile(topology, applied)).fingerprint
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
 

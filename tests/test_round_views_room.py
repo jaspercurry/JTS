@@ -18,7 +18,7 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused
-from tests.run_manifest_fixture import write_manifest
+from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import (
@@ -67,10 +67,8 @@ def _run(capsys: pytest.CaptureFixture[str], argv: list[str]) -> dict:
 def room_round(tmp_path):
     root = bank_seat_round(tmp_path, magnitudes_db=_cube())
     session = round_inputs(root).session_dir
-    for row, record in measurement_documents(session):
-        record.update(graph_scope="room_tune", candidate_id="")
-        take_artifact_path(session, row.path).write_text(json.dumps(record))
-    write_manifest(root, program="room")
+    group = manifest_set([(row.path, record) for row, record in measurement_documents(session)])
+    write_manifest(root, program="room", groups=[{**group, "base": True}])
     profile = _applied_profile(_active_topology("mono", "active_2_way"))
     profile.update(kind=BASELINE_PROFILE_KIND, artifact_schema_version=SCHEMA_VERSION)
     profile["recomposition_snapshot"]["room_correction"] = _ROOM_CORRECTION
@@ -284,7 +282,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry):
     (0, "room_incumbent_set_unavailable"), (2, "room_incumbent_set_ambiguous"),
 ])
 def test_room_without_an_incumbent_discloses_null_and_reason(room_round, capsys, matches, reason):
-    groups = [{"set_id": str(index), "capture_basis": {"graph_scope": "room_tune"}, "takes": []}
+    groups = [{"set_id": str(index), "base": True, "capture_basis": {}, "takes": []}
               for index in range(matches)]
     inputs = round_inputs(room_round)
     selection = select_seat_takes(inputs.session_dir)
@@ -318,7 +316,7 @@ def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
     document = room_views.room_document(
         selection.takes, set_id=own, evidence=selection.evidence,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None,
-        manifest={"sets": [{"set_id": own, "capture_basis": {"graph_scope": "room_tune"}, "takes": []}]},
+        manifest={"sets": [{"set_id": own, "base": True, "capture_basis": {}, "takes": []}]},
     )
     assert document["incumbent"]["set_id"] == own
     (room_round / "room.json").write_text(json.dumps(document))

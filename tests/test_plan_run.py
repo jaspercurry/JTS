@@ -46,8 +46,8 @@ def _analysis(_record, _record_id):
 
 
 def fake_program_baselines(monkeypatch):
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids",
-                        lambda purposes: {purpose or "speaker": "baseline-" + (purpose or "speaker") for purpose in purposes})
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id",
+                        lambda: "banked-base")
 
 
 @pytest.fixture(autouse=True)
@@ -214,7 +214,7 @@ def test_interruption_keeps_records_and_names_unmeasured_work(banked):
 @pytest.mark.parametrize("plan", [
     ac.AngleCaptureRequest(candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a"),),
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL)),
-    _walk([0], ("fp-z",)), ac.per_driver_at([0]),
+    ac.per_driver_at([0]),
 ])
 def test_unplayable_plan_records_each_missing_stop(plan):
     result, fakes = asyncio.run(_run_gated(plan))
@@ -588,12 +588,12 @@ def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
 def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepared):
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
     calls = []
-    def baselines(purposes):
-        calls.append(tuple(purposes))
+    def baselines():
+        calls.append(True)
         if not available:
             raise MeasurementGraphRefused("measurement_baseline_unavailable", {})
-        return {"speaker": "banked-base"}
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_ids", baselines)
+        return "banked-base"
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", baselines)
     monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
     request = replace(_walk([0, 20, -20], ("base",)), repeats=2)
     captures = plan_run.prepare_plan_captures(request, candidate_scopes={}) if prepared else None
@@ -617,7 +617,7 @@ def test_manifest_stamps_base_sets_after_graph_resolution(candidate, base):
     groups = result.to_dict()["sets"]
     assert groups and all(group["base"] is base for group in groups)
     assert {group["capture_basis"]["candidate_id"] for group in groups} == {
-        "baseline-speaker" if base else candidate}
+        "banked-base" if base else candidate}
 
 
 @pytest.mark.parametrize("ceiling, sensitivity, reason", [

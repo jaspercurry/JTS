@@ -53,7 +53,6 @@ from .measurement_programs import (
     REGIME_SUMMED,
     REGIME_BRANCHES,
     REGIMES,
-    baseline_scope,
     validated_capture_purpose,
     pose_place,
     validated_pose,
@@ -442,11 +441,6 @@ class AngleCaptureRequest:
         }:
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must match the stop identities")
 
-    @property
-    def baseline_graph_scope(self) -> str | None:
-        scopes = {baseline_scope(stop.purpose) for stop in self.stops}
-        return next(iter(scopes)) if len(scopes) == 1 else None
-
     def to_dict(self) -> dict[str, Any]:
         return {
             **asdict(self), "template": self.template.to_dict(), "level": self.level.to_dict(),
@@ -640,43 +634,26 @@ def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
 def stop_specs(
     request: AngleCaptureRequest,
     *,
-    candidate_scopes: Mapping[str, str],
     prompts: Sequence[CloudPositionPrompt],
-    baseline_ids: Mapping[str, str],
+    baseline_id: str,
     roles_bands: Sequence[RoleBand] = (),
 ) -> tuple[MeasureSpec | None, ...]:
-    """Place resolved candidate IDs; ``None`` for each per-driver take.
-
-    ``baseline_ids`` is banked at run open, keyed by program purpose.
-    Raises ``ValueError`` when a candidate ID or its spec cannot be resolved.
-    """
+    """Place the banked base and named candidates; ``None`` for per-driver takes."""
     placed: list[MeasureSpec | None] = []
     for stop, prompt in zip(request.stops, prompts):
         if not stop.plays_summed:
             placed.append(None)
             continue
-        scope = (
-            candidate_scopes.get(stop.candidate_id) if stop.candidate_id
-            else baseline_scope(stop.purpose)
-        )
-        if scope is None:
-            raise ValueError(
-                f"no graph scope resolves for candidate {stop.candidate_id}"
-            )
         placed.append(replace(
             request.template,
-            kind=(
-                MEASURE_KIND_VERIFY
-                if not stop.candidate_id and scope != "preset"
-                else MEASURE_KIND_CANDIDATE
-            ),
+            kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
             positions=(stop.angle_deg,),
             sweep_band_hz=request.template.sweep_band_hz or (
                 room_sweep_band_hz(roles_bands, (prompt,)) if roles_bands else None
             ) or (),
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
-            candidate_id=stop.candidate_id or baseline_ids.get(stop.purpose or "speaker", ""),
+            candidate_id=stop.candidate_id or baseline_id,
             graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))

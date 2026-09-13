@@ -48,7 +48,6 @@ class RunManifest:
     request_fingerprint: str = ""
     asked: dict[str, Any] = field(default_factory=dict)
     level: dict[str, Any] = field(default_factory=dict)
-    baseline_graph: str | None = None
     planned: list[dict[str, Any]] = field(default_factory=list)
     specs: dict[int, MeasureSpec] = field(default_factory=dict, repr=False)
     outcomes: list[tuple[MeasureOutcome, str]] = field(default_factory=list, repr=False)
@@ -213,7 +212,7 @@ class RunManifest:
             "kind": RUN_MANIFEST_KIND, "schema_version": 1, "run_id": self.run_id,
             "program": self.program, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
-            "baseline_graph": self.baseline_graph, "level": self.level,
+            "level": self.level,
             "honoured": {"spl_monitor": self.spl_monitor, "mic_moves": self.mic_moves,
                          "stops_planned": self.stops_planned, "takes_measured": self.takes_measured,
                          "takes_refused": len({t["take_id"] for t in self.takes if t["quality"]["status"] != TAKE_MEASURED})},
