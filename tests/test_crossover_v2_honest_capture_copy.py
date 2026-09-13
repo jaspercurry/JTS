@@ -31,6 +31,8 @@ evidence, claims nothing the evidence does not carry, and one failure gets ONE
 account of itself across every surface that narrates it.
 """
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 import logging
 
 import pytest
@@ -50,7 +52,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
 )
-from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 from tests.test_crossover_envelope_v2 import _status
@@ -355,9 +356,9 @@ def test_exhaustion_uses_the_addressed_slots_evidence_not_the_global_failure():
 @pytest.fixture
 def isolated_v2_state(tmp_path):
     """Point the v2 state file at a tmp path, like the endpoints suite does."""
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     yield
-    v2host.set_state_path_for_tests(None)
+    v2state.set_state_path_for_tests(None)
 
 
 def _persisted_envelope_verdict():
@@ -387,7 +388,7 @@ def test_the_persisted_failure_reaches_the_envelope_with_its_evidence(
     c = _conductor(fakes)
     capture_reason = _run_phase(c, 1, 1)["reason"]
 
-    v2host.persist_conductor_state(c, failure_code=c.last_failure_code)
+    v2state.persist_conductor_state(c, failure_code=c.last_failure_code)
 
     # The screen the household lands on says what the capture said.
     assert _persisted_envelope_verdict() == capture_reason
@@ -413,9 +414,9 @@ def test_a_persisted_code_never_carries_another_failures_evidence(
     _run_phase(c, 1, 1)
     assert c.last_failure_pilot_heard is True
 
-    v2host.persist_conductor_state(c, failure_code=REASON_CAPTURE_TIMEOUT)
+    v2state.persist_conductor_state(c, failure_code=REASON_CAPTURE_TIMEOUT)
 
-    failure = v2host.load_v2_state()["failure"]
+    failure = v2state.load_v2_state()["failure"]
     assert failure["code"] == REASON_CAPTURE_TIMEOUT
     assert "pilot_heard" not in failure
 

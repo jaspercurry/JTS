@@ -5,6 +5,11 @@
 """Wired capture, host binding, record metadata, and frame integrity."""
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import asyncio
 import io
 import logging
@@ -136,7 +141,7 @@ def test_resolve_prepare_wired_mic_translates_to_a_refusal(
         raise raised("no mic")
 
     monkeypatch.setattr(v2wired, "resolve_v2_wired_mic", _boom)
-    with pytest.raises(v2host.CrossoverV2Refused) as caught:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host._resolve_prepare_wired_mic()
     assert caught.value.code == expected_code
 
@@ -153,18 +158,18 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
     applied True); the evidence store is a bomb."""
     import jasper.active_speaker.branch_chain as branch_chain
 
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         def _no_mic():
             raise WiredMicMissing("no mic")
 
         monkeypatch.setattr(v2wired, "resolve_v2_wired_mic", _no_mic)
         monkeypatch.setattr(
-            v2host, "session_volume_plan",
+            v2volume, "session_volume_plan",
             lambda: SimpleNamespace(needs_recovery=False),
         )
         monkeypatch.setattr(
-            v2host, "reconcile_session_volume_for_new_session",
+            v2volume, "reconcile_session_volume_for_new_session",
             lambda run_async, camilla_factory: None,
         )
         monkeypatch.setattr(
@@ -179,22 +184,22 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
         )
         if preparer == "verify":
             # Stage 2's own preceding gate: an applied durable state.
-            v2host.save_v2_state({"applied": True, "tier": ""})
+            v2state.save_v2_state({"applied": True, "tier": ""})
 
         def _bomb(topology):
             raise AssertionError(
                 "a refused prepare must not open an evidence bundle"
             )
 
-        monkeypatch.setattr(v2host, "open_v2_evidence_store", _bomb)
-        with pytest.raises(v2host.CrossoverV2Refused) as caught:
+        monkeypatch.setattr(v2evidence, "open_v2_evidence_store", _bomb)
+        with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
             v2host.prepare_v2_session(
                 {}, status={}, run_async=None, camilla_factory=None,
                 verify_only=preparer == "verify",
             )
         assert caught.value.code == CODE_WIRED_MIC_MISSING
     finally:
-        v2host.set_state_path_for_tests(None)
+        v2state.set_state_path_for_tests(None)
 
 
 def test_the_mint_opens_the_capture_on_the_resolved_mic(monkeypatch):
@@ -600,13 +605,13 @@ async def test_cancelling_recorder_start_drains_and_aborts_before_return(tmp_pat
 
 
 def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp_path, monkeypatch):
-    monkeypatch.setattr(v2host, "_state_path", lambda: tmp_path / "state.json")
-    monkeypatch.setattr(v2host.time, "time", lambda: 200.0)
-    v2host.save_v2_state({"session_id": "s1", "updated_at": 1.0,
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(v2state.time, "time", lambda: 200.0)
+    v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0,
                           "verify": {"outcome": "pass", "code": "verified"}})
-    assert v2host.load_v2_state()["updated_at"] == 200.0
-    assert v2host._persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
-    state = v2host.load_v2_state()
+    assert v2state.load_v2_state()["updated_at"] == 200.0
+    assert v2state._persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
+    state = v2state.load_v2_state()
     assert state["verify"] == {"outcome": "pass", "code": "verified"}
     assert state["execution"]["cleanup_fault_code"] == "internal_error"
 
@@ -646,9 +651,9 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     door = _run_door(tmp_path, box, fakes, manifest)
     conductor = _conductor(flow)
     control = signals or plan_run.RunSignals()
-    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
     request = replace(_walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
@@ -910,8 +915,8 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     session = SimpleNamespace(session_id=manifest.run_id)
     door = _run_door(tmp_path, box, fakes, manifest, records)
-    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,

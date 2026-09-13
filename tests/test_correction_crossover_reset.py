@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 import pytest
 
 from pathlib import Path
@@ -144,18 +146,17 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
     candidate/verify/failure re-rendered "Ready to start again" with stale
     verify-fail actions and no start button (round-1 finding #4). NOT-applied
     ⇒ the clear is total (nothing worth preserving)."""
-    from jasper.web import correction_crossover_v2 as v2
 
-    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
-        v2.save_v2_state({
+        v2state.save_v2_state({
             "session_id": "cap_x",
             "accepted_phases": ["check", "measure"],
             "applied": False,
             "candidate": {"fingerprint": "fp"},
             "failure": {"code": "capture_timeout"},
         })
-        assert v2.load_v2_state() is not None
+        assert v2state.load_v2_state() is not None
         _reset_scaffold(monkeypatch)
 
         payload, status = flow.handle_reset()
@@ -163,9 +164,9 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
         assert status == 200
         # The durable v2 state is gone — a fresh journey starts at the
         # microphone check, not the stale failure screen.
-        assert v2.load_v2_state() is None
+        assert v2state.load_v2_state() is None
     finally:
-        v2.set_state_path_for_tests(None)
+        v2state.set_state_path_for_tests(None)
 
 
 def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
@@ -174,12 +175,11 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
     back's pointer — while clearing the journey fields so the envelope serves
     the clean start screen. A full clear here would strand the household on
     the applied graph with no way back."""
-    from jasper.web import correction_crossover_v2 as v2
     from jasper.web import correction_crossover_v2_status as v2status
 
-    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
-        v2.save_v2_state({
+        v2state.save_v2_state({
             "session_id": "cap_x",
             "accepted_phases": ["check", "measure"],
             "applied": True,
@@ -194,7 +194,7 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         payload, status = flow.handle_reset()
 
         assert status == 200
-        state = v2.load_v2_state()
+        state = v2state.load_v2_state()
         assert state is not None
         # The way back's pointers preserved…
         assert state["applied"] is True
@@ -210,7 +210,7 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         block = v2status.crossover_v2_status_block()
         assert block is not None and block["phase"] == "check"
     finally:
-        v2.set_state_path_for_tests(None)
+        v2state.set_state_path_for_tests(None)
 
 
 def test_handle_envelope_carries_grouping_member_flag(monkeypatch) -> None:
@@ -260,10 +260,10 @@ def test_active_group_member_reads_grouping_config(monkeypatch) -> None:
 @pytest.mark.parametrize("terminal", ["complete", "stopped", "failed"])
 def test_reset_clears_the_terminal_capture_from_the_page(monkeypatch, terminal):
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-    from jasper.web import correction_capture, correction_handlers, correction_crossover_v2
+    from jasper.web import correction_capture, correction_handlers
 
     _reset_scaffold(monkeypatch)
-    monkeypatch.setattr(correction_crossover_v2, "reset_v2_journey_state", lambda: None)
+    monkeypatch.setattr(v2state, "reset_v2_journey_state", lambda: None)
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
     monkeypatch.setattr(correction_capture, "_capture_slot", {
         "kind": "crossover_v2:session", "status": terminal,

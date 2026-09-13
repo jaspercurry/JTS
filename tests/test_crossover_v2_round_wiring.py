@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_state as v2state
+
 from jasper.active_speaker.delta_probe import classify_delta_probe
 from jasper.active_speaker.crossover_v2 import delta_probe_run
 from tests.test_active_speaker_delta_probe import _GRID_HZ, _band, _commanded_lift
@@ -160,7 +163,7 @@ def real_bundle(monkeypatch, tmp_path):
         info["bundle_dir"], expected_session_id=info["session_id"],
     )
     monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
+        v2evidence, "open_v2_evidence_store",
         lambda topology: (store, store.session_id),
     )
     return store
@@ -390,7 +393,7 @@ def _seed_round_state_proposing(fingerprint: str) -> dict[str, Any]:
     """Stage-1 durable state that DID cross a proposal fingerprint (#2392)."""
     state = _seed_round_state()
     state["verify_priors"]["proposal_fingerprint"] = fingerprint
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     return state
 
 
@@ -773,13 +776,13 @@ def test_the_apply_write_that_creates_the_way_back_is_fsynced(monkeypatch):
     _seed_round_state(previous_candidate=False)
     calls = _recorded_write_calls(monkeypatch)
 
-    v2host.observe_apply_success(
+    v2state.observe_apply_success(
         "fp-stage-1", previous_candidate_fingerprint="fp-previous",
     )
 
     assert calls == ["chmod", "fsync", "replace", "fsync"]
     assert (
-        v2host.load_v2_state()["previous_candidate_fingerprint"] == "fp-previous"
+        v2state.load_v2_state()["previous_candidate_fingerprint"] == "fp-previous"
     )
 
 
@@ -800,7 +803,7 @@ def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
     assert conductor.round_receipt_identity is None
     calls = _recorded_write_calls(monkeypatch)
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    v2state.persist_conductor_state(conductor, failure_code=None)
 
     assert calls == ["chmod", "replace"]
 
@@ -960,7 +963,7 @@ def _seed_full_round_state(*, previous_candidate: bool = True) -> dict[str, Any]
     """:func:`_seed_round_state`, plus the tier the measuring session declared."""
     state = _seed_round_state(previous_candidate=previous_candidate)
     state["tier"] = "full"
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     return state
 
 
@@ -1404,7 +1407,7 @@ def test_a_graded_round_banks_WHICH_EPOCH_its_ordinal_counts_in(
 
     state = _seed_round_state()
     state[coordinator.ROUND_ORDINAL_EPOCH_STATE_KEY] = 2
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
@@ -1440,7 +1443,7 @@ def test_the_status_block_forwards_the_receipt_to_the_screen():
     }
     state = _seed_round_state()
     state["round_receipt"] = receipt
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
 
     block = v2status.crossover_v2_status_block()
 
@@ -1885,7 +1888,7 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
         "load_applied_baseline_profile_state",
         lambda: {"blend_correction": [dict(f) for f in incumbent]},
     )
-    v2host.save_v2_state(_state_carrying_a_banked_instruction())
+    v2state.save_v2_state(_state_carrying_a_banked_instruction())
 
     prepared = v2host.prepare_v2_session(
         _inline_body(), status=_status(), run_async=None, camilla_factory=None,
@@ -2202,8 +2205,8 @@ def test_round_advice_keeps_the_applied_graph(
     if probe is not None:
         assert advice["delta_probe"] == probe.to_dict()
         assert advice["delta_probe"]["advises_against_keep"] is True
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    assert v2host.load_v2_state()["round_receipt"]["advice"] == advice
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    assert v2state.load_v2_state()["round_receipt"]["advice"] == advice
 
 
 @pytest.mark.parametrize("failure", [None, "apply", "unavailable", "displaced", "bank", "grade"])
@@ -2214,7 +2217,7 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
     _seed_round_state(previous_candidate=failure != "unavailable")
     conductor, attempts = _restoring_stage_2(monkeypatch, load_ok=failure != "apply")
     _install_entry_baseline(conductor, scale=0.4)
-    previous_sha = v2host.load_v2_state().get("previous_applied_profile", {}).get("config", {}).get("sha256")
+    previous_sha = v2state.load_v2_state().get("previous_applied_profile", {}).get("config", {}).get("sha256")
     live = {"candidate_fingerprint": "applied", "config": {"sha256": "a" * 64},
             "source": {"measured_candidate_fingerprint": "fp-stage-1"}}
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda *a, **k: live)
@@ -2258,5 +2261,5 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
         assert receipt["protection"] == protection
         assert receipt["evidence_identities"]["tuning_graph_fingerprint"] == "a" * 16
         assert receipt["applied_graph_fingerprint"] == "applied"
-    v2host.persist_conductor_state(conductor, failure_code=result["code"])
-    assert v2host.load_v2_state()["round_receipt"]["protection"] == protection
+    v2state.persist_conductor_state(conductor, failure_code=result["code"])
+    assert v2state.load_v2_state()["round_receipt"]["protection"] == protection

@@ -32,6 +32,10 @@ The ``/sound/`` half of defect 3 (the buried confirm control) is pinned in
 
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_state as v2state
+
 from tests.test_crossover_v2_stage_bridge import _inline_body
 
 import re
@@ -429,7 +433,7 @@ def session_open(monkeypatch, tmp_path, banked_session_level):
     """
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
-    monkeypatch.setattr(v2host, "_state_path", lambda: tmp_path / "v2_state.json")
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "v2_state.json")
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft
@@ -458,7 +462,7 @@ def session_open(monkeypatch, tmp_path, banked_session_level):
             "a refused pre-flight must never reach the wired session mint"
         )
 
-    monkeypatch.setattr(v2host, "open_v2_evidence_store", _evidence_store)
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", _evidence_store)
     monkeypatch.setattr(v2host, "_mint_wired_session", _open_capture)
 
     def _install(profile) -> None:
@@ -510,7 +514,7 @@ def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
     env.install(profile)
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
             v2host.prepare_v2_session(
                 _inline_body(), status=env.status, run_async=None, camilla_factory=None
             )
@@ -540,7 +544,7 @@ def test_a_stale_profile_is_caught_by_the_same_session_open_gate(session_open):
     stale["topology_id"] = "some-other-topology"
     env.install(stale)
 
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
             _inline_body(), status=env.status, run_async=None, camilla_factory=None
         )
@@ -567,7 +571,7 @@ def test_a_missing_profile_refuses_with_the_finish_setup_reason(
     env = session_open
     env.install(profile)
 
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
             _inline_body(), status=env.status, run_async=None, camilla_factory=None
         )
@@ -575,31 +579,6 @@ def test_a_missing_profile_refuses_with_the_finish_setup_reason(
     assert str(excinfo.value) == REASON_REGISTRY[expected].message
     assert "confirm the safety limits" not in str(excinfo.value).lower()
     assert env.calls["open_capture"] == []
-
-
-def test_the_refusal_carries_its_own_resolution_action_for_the_400_body():
-    """S1: a pre-flight refusal never reaches the envelope (no persisted
-    failure), so the action rides the 400 body instead — same registry entry the
-    hard-stop screen reads."""
-
-    refused = v2host.CrossoverV2Refused(
-        "copy", code=REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
-    )
-    assert v2host.refusal_next_action(refused) == (
-        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action
-    )
-    # Mutating the response body must not reach back into the registry.
-    action = v2host.refusal_next_action(refused)
-    assert action is not None
-    action["href"] = "/tampered/"
-    assert REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action[
-        "href"
-    ] == "/sound/speaker/#confirm-safety-limits"
-
-    # An uncoded refusal (the many whose only honest answer is prose) offers no
-    # button rather than a guessed one.
-    assert v2host.refusal_next_action(v2host.CrossoverV2Refused("no code")) is None
-    assert v2host.refusal_next_action(ValueError("not ours")) is None
 
 
 def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):

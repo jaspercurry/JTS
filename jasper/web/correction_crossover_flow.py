@@ -223,7 +223,7 @@ def handle_reset(
     # SELECTIVE (gate ruling): while a candidate is applied, the reset preserves
     # `applied` + `pre_apply_profile` — the stash carrying the way back's
     # pointer — a full clear would strand the household on the applied graph.
-    from .correction_crossover_v2 import reset_v2_journey_state
+    from .correction_crossover_v2_state import reset_v2_journey_state
 
     reset_v2_journey_state()
 

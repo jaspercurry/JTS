@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+
 import asyncio
 import concurrent.futures
 import io
@@ -778,10 +780,9 @@ def test_setup_reference_resolves_the_remembered_calibration(tmp_path, monkeypat
     monkeypatch.setenv(
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    from jasper.web import correction_crossover_v2 as v2host
 
     record = _stored_umik2(tmp_path)
-    resolved = v2host.resolve_setup_calibration(_setup_reference(record), None)
+    resolved = v2evidence.resolve_setup_calibration(_setup_reference(record), None)
     assert resolved is not None
     assert resolved.calibration_id == record.calibration_id
 
@@ -798,7 +799,6 @@ def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch)
         household_mic_from_calibration,
         write_household_mic,
     )
-    from jasper.web import correction_crossover_v2 as v2host
 
     record = calibration.store_calibration(
         text="20 -1\n100 0\n1000 1\n",
@@ -812,7 +812,7 @@ def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch)
         household_mic_from_calibration(record),
         path=tmp_path / "household_mic.json",
     )
-    resolved = v2host.resolve_setup_calibration(
+    resolved = v2evidence.resolve_setup_calibration(
         _setup_reference(record, model="other"), None,
     )
     assert resolved is not None
@@ -839,12 +839,11 @@ def test_setup_reference_refuses_a_different_mic(
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    from jasper.web import correction_crossover_v2 as v2host
 
     record = _stored_umik2(tmp_path)
     before = household_path.read_text()
 
-    resolved = v2host.resolve_setup_calibration(_setup_reference(record), device)
+    resolved = v2evidence.resolve_setup_calibration(_setup_reference(record), device)
 
     if expect_applied:
         assert resolved is not None
@@ -860,10 +859,9 @@ def test_setup_reference_mismatch_is_journalled(tmp_path, monkeypatch, caplog):
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
     caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.household_mic")
-    from jasper.web import correction_crossover_v2 as v2host
 
     record = _stored_umik2(tmp_path)
-    v2host.resolve_setup_calibration(
+    v2evidence.resolve_setup_calibration(
         _setup_reference(record), {"label": "iMM-6C", "device_id": "dayton"},
     )
     assert "event=correction.calibration_device_identity_mismatch" in caplog.text
@@ -877,11 +875,10 @@ def test_setup_reference_without_a_calibration_resolves_to_nothing(
     monkeypatch.setenv(
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    from jasper.web import correction_crossover_v2 as v2host
 
-    assert v2host.resolve_setup_calibration(None, None) is None
-    assert v2host.resolve_setup_calibration({}, None) is None
-    assert v2host.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) \
+    assert v2evidence.resolve_setup_calibration(None, None) is None
+    assert v2evidence.resolve_setup_calibration({}, None) is None
+    assert v2evidence.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) \
         is None
 
 
@@ -891,10 +888,9 @@ def test_a_stale_setup_reference_is_a_named_rejection(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    from jasper.web import correction_crossover_v2 as v2host
 
     with pytest.raises(ValueError, match="no longer available"):
-        v2host.resolve_setup_calibration(
+        v2evidence.resolve_setup_calibration(
             {
                 "calibration": {
                     "mode": "stored",
@@ -912,10 +908,9 @@ def test_a_setup_reference_without_an_id_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    from jasper.web import correction_crossover_v2 as v2host
 
     with pytest.raises(ValueError, match="calibration_id is required"):
-        v2host.resolve_setup_calibration(
+        v2evidence.resolve_setup_calibration(
             {"calibration": {"mode": "stored", "model": "minidsp_umik2"}}, None,
         )
 

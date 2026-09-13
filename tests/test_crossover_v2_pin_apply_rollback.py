@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 from dataclasses import replace
 
 import pytest
@@ -29,13 +31,13 @@ CURRENT = "fp-current-measured"
 
 @pytest.fixture(autouse=True)
 def _isolated_v2_state(tmp_path):
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     yield
-    v2host.set_state_path_for_tests(None)
+    v2state.set_state_path_for_tests(None)
 
 
 def _seed_previous_candidate(*, paired: bool = True) -> None:
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "applied": True,
         "candidate": {"fingerprint": CURRENT},

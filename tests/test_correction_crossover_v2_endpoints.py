@@ -17,6 +17,13 @@ flow-selector refusals the dispatch relies on.
 """
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_grade as v2grade
+from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 from tests.engine_twin import retained_take_writer
 
 import asyncio
@@ -80,16 +87,16 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
-    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
         str(tmp_path / "model_error.json"),
     )
-    v2host.reset_session_measurement_pause_for_tests()
+    v2volume.reset_session_measurement_pause_for_tests()
     yield
-    v2host.set_state_path_for_tests(None)
-    v2host.set_volume_plan_for_tests(None)
-    v2host.reset_session_measurement_pause_for_tests()
+    v2state.set_state_path_for_tests(None)
+    v2volume.set_volume_plan_for_tests(None)
+    v2volume.reset_session_measurement_pause_for_tests()
 
 
 def _bg_run_async(coro, *, timeout=None):
@@ -109,8 +116,8 @@ def test_live_model_error_binding_reports_identity_conflict_to_conductor():
         "context": {"session_id": "session-a"},
     }
 
-    assert v2host._record_live_model_error(**observation) is True
-    assert v2host._record_live_model_error(
+    assert v2state._record_live_model_error(**observation) is True
+    assert v2state._record_live_model_error(
         **{**observation, "realized_db": 0.7},
     ) is False
 
@@ -200,7 +207,7 @@ def _live_measurement_session(
     )
     assert opened is SessionVolumeOpenResult.OPENED
     assert cam.vol == measurement_db
-    v2host.set_volume_plan_for_tests(plan)
+    v2volume.set_volume_plan_for_tests(plan)
     return plan, cam, claim, clock
 
 
@@ -986,7 +993,7 @@ def test_the_scrub_nulls_a_bad_number_without_flattening_a_tri_state():
     survives as a key. Nested, because the blocks are documents rather than
     flat rows.
     """
-    scrubbed = v2host._bankable({
+    scrubbed = v2evidence._bankable({
         "epsilon_ppm": float("nan"),
         "overflowed": float("inf"),
         "polarity_agrees_with_sum": None,
@@ -1064,7 +1071,7 @@ def test_building_the_blocks_never_costs_the_capture(
     losing one.
     """
     with caplog.at_level(logging.WARNING):
-        blocks = v2host._capture_evidence_blocks(_FakeResult(), analysis)
+        blocks = v2evidence._capture_evidence_blocks(_FakeResult(), analysis)
 
     assert set(blocks) == survives
     assert all(isinstance(value, dict) for value in blocks.values())
@@ -1217,7 +1224,7 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         info["bundle_dir"], expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    publish_cloud = v2host.bind_cloud_publisher(
+    publish_cloud = v2evidence.bind_cloud_publisher(
         store, "cap_cloud_session", refs, asyncio.run
     )
 
@@ -1283,7 +1290,7 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     the durable state's own ``pipeline`` sub-key (not re-derived here) and
     the bundle artifact — this is the dashboard-sized read, not a third
     owner of the same data."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_state",
         "cloud": {
             PHASE_CLOUD_MEASURE: {
@@ -1411,7 +1418,7 @@ def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
     exact path PR #2242's review found it unreachable-but-real on — now
     catches it too.
     """
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_overflow",
         "cloud": {
             PHASE_CLOUD_MEASURE: {
@@ -1447,7 +1454,7 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
     actionable piece of copy. Also pins the sibling fix: ``excluded_interval_count``
     is ``None``, never a fabricated ``0``, when the pipeline never became
     available."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_state_locked_unavailable",
         "cloud": {
             PHASE_CLOUD_MEASURE: {
@@ -1474,7 +1481,7 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
 
 
 def test_state_cloud_block_is_none_before_any_group_closes():
-    v2host.save_v2_state({"session_id": "cap_fresh"})
+    v2state.save_v2_state({"session_id": "cap_fresh"})
     assert v2status.crossover_v2_status_block()["cloud"] is None
 
 
@@ -1493,7 +1500,7 @@ def test_cloud_summary_stamps_the_producing_session_id():
             "available": True, "spec": {"overall_within_target": True},
         },
     )
-    summary = v2host._cloud_summary(fake)
+    summary = v2durable._cloud_summary(fake)
     assert summary[PHASE_CLOUD_MEASURE]["session_id"] == "cap_producer_session"
 
 
@@ -1589,7 +1596,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
             },
         },
     }
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_original_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "candidate": {"fingerprint": "fp-original"},
@@ -1617,20 +1624,20 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
                 check=lambda *a, **k: None,
                 candidate=lambda *a, **k: None,
             ),
-            apply_complete=v2host._applied_gate,
-            apply_failed=v2host._apply_failure_gate,
+            apply_complete=v2state._applied_gate,
+            apply_failed=v2state._apply_failure_gate,
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         applied=True,
         index_phase_map={1: PHASE_VERIFY},
     )
-    v2host.persist_conductor_state(
+    v2state.persist_conductor_state(
         conductor, failure_code=None, evidence={"bundle_session_id": "bundle-2"},
     )
 
     # Surface 1: the durable state itself.
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
     assert state["candidate"] == {"fingerprint": "fp-original"}
     assert state["cloud"] == cloud_block
@@ -1646,7 +1653,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
 
     # Surface 3: the envelope.
     monkeypatch.setattr(
-        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+        v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
     status = {
         "active": True,
@@ -1660,7 +1667,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
 
     # Surface 4 (named "all three" in the review, the doctor makes four):
     # the doctor no longer reports "no cloud-measurement session recorded".
-    monkeypatch.setattr(v2host, "load_v2_state", lambda: state)
+    monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
     r = check_crossover_v2_cloud_pipeline()
     # A recorded cloud_measure entry means the check no longer takes its
     # REASON_CLOUD_NOT_RUN "nothing recorded yet" branch; with no
@@ -1685,7 +1692,7 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
     honestly ``None`` for THIS session, never silently inheriting a stale
     verdict from whatever the previous session left behind.
     """
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_stale_prior_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "candidate": {"fingerprint": "fp-stale"},
@@ -1719,17 +1726,17 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
                 check=lambda *a, **k: None,
                 candidate=lambda *a, **k: None,
             ),
-            apply_complete=v2host._applied_gate,
-            apply_failed=v2host._apply_failure_gate,
+            apply_complete=v2state._applied_gate,
+            apply_failed=v2state._apply_failure_gate,
         ),
         driver_spacing_m=0.15,
         accepted_phases=(),
         applied=False,
         index_phase_map={1: PHASE_CLOUD_MEASURE},
     )
-    v2host.persist_conductor_state(conductor, failure_code=None, evidence=None)
+    v2state.persist_conductor_state(conductor, failure_code=None, evidence=None)
 
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["session_id"] == "cap_fresh_session"
     # Honestly None -- "this session has not closed a group yet" -- never
     # the previous session's stale verdict.
@@ -1739,14 +1746,14 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
 
 def _seeded_session_with_a_banked_finding(copy: str) -> None:
     """A completed measuring session whose fit banked one household finding."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_measuring_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "candidate": {"fingerprint": "fp-measured"},
         "applied": True,
         "evidence": {
             "bundle_session_id": "bundle-stage-1",
-            v2host.FINDING_HOUSEHOLD_REFS_KEY: [
+            v2durable.FINDING_HOUSEHOLD_REFS_KEY: [
                 {"household_copy": copy, "at": time.time()},
             ],
         },
@@ -1767,8 +1774,8 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
                 check=lambda *a, **k: None,
                 candidate=lambda *a, **k: None,
             ),
-            apply_complete=v2host._applied_gate,
-            apply_failed=v2host._apply_failure_gate,
+            apply_complete=v2state._applied_gate,
+            apply_failed=v2state._apply_failure_gate,
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -1801,7 +1808,7 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
         "recommended_hz": 1750.0, "margin_db": 1.4, "evaluated": 6,
         "planned": 6, "limits": {}, "refusals": [], "scores": [],
     }
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_measuring_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-measured"},
@@ -1809,21 +1816,21 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
         "fc_selection": legacy,
     })
 
-    v2host.persist_conductor_state(
+    v2state.persist_conductor_state(
         _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
         failure_code=None,
     )
-    assert "fc_selection" not in (v2host.load_v2_state() or {})
+    assert "fc_selection" not in (v2state.load_v2_state() or {})
 
     # The same on the measuring side of the seam — no route writes the key.
-    v2host.persist_conductor_state(
+    v2state.persist_conductor_state(
         _rearm_conductor(
             "cap_fresh_measure",
             index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE},
         ),
         failure_code=None,
     )
-    assert "fc_selection" not in (v2host.load_v2_state() or {})
+    assert "fc_selection" not in (v2state.load_v2_state() or {})
 
 
 _FINDING_COPY = "Two measurements of how this speaker's ranges balance disagreed."
@@ -1832,7 +1839,7 @@ _RIPPLE_RESERVATION = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
 
 def _seeded_session_with_a_reservation(measure: dict) -> None:
     """A completed measuring session whose accepted MEASURE banked one."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_measuring_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "candidate": {"fingerprint": "fp-measured"},
@@ -1869,7 +1876,7 @@ def _dig(payload, path, *, missing=None):
     (
         pytest.param(
             lambda: _seeded_session_with_a_banked_finding(_FINDING_COPY),
-            ("evidence", v2host.FINDING_HOUSEHOLD_REFS_KEY, 0, "household_copy"),
+            ("evidence", v2durable.FINDING_HOUSEHOLD_REFS_KEY, 0, "household_copy"),
             ("findings", 0, "household_copy"),
             _FINDING_COPY,
             id="banked-finding",
@@ -1900,14 +1907,14 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
     disclosure has to reach (durable state, ``/state``, the done screen).
     """
     seed()
-    v2host.persist_conductor_state(
+    v2state.persist_conductor_state(
         _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
         failure_code=None,
         evidence={"bundle_session_id": "bundle-stage-2"},
     )
 
     # Surface 1: the durable state — carried across the bundle hop.
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
     assert state["evidence"]["bundle_session_id"] == "bundle-stage-2"
     assert _dig(state, state_path) == expected
@@ -1923,7 +1930,7 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
         pytest.param(
             lambda: _seeded_session_with_a_banked_finding(
                 "An old finding nobody re-measured."),
-            ("evidence", v2host.FINDING_HOUSEHOLD_REFS_KEY),
+            ("evidence", v2durable.FINDING_HOUSEHOLD_REFS_KEY),
             # REMOVED from the evidence map, not written as None.
             _ABSENT,
             ("findings",),
@@ -1953,13 +1960,13 @@ def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
     seed()
 
     # A fresh full session: its own session_phases include MEASURE.
-    v2host.persist_conductor_state(
+    v2state.persist_conductor_state(
         _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
         failure_code=None,
         evidence={"bundle_session_id": "bundle-fresh"},
     )
 
-    assert _dig(v2host.load_v2_state(), state_path, missing=_ABSENT) is cleared_state
+    assert _dig(v2state.load_v2_state(), state_path, missing=_ABSENT) is cleared_state
     assert _dig(v2status.crossover_v2_status_block(), status_path) == cleared_status
 
 
@@ -1975,8 +1982,8 @@ def _plant_unbankable_v2_state(state: Any) -> None:
     either). Written the way that build would have: the envelope through the
     real writer, the value it now refuses spliced in after.
     """
-    v2host.save_v2_state({"session_id": "cap_placeholder"})
-    path = Path(v2host._state_path())
+    v2state.save_v2_state({"session_id": "cap_placeholder"})
+    path = Path(v2state._state_path())
     envelope = json.loads(path.read_text(encoding="utf-8"))
     path.write_text(
         json.dumps({**envelope, **state}, indent=2, sort_keys=True) + "\n",
@@ -1998,7 +2005,7 @@ def _findings_state(rows: Any) -> None:
         "applied": True,
         "evidence": {
             "bundle_session_id": "bundle-1",
-            v2host.FINDING_HOUSEHOLD_REFS_KEY: rows,
+            v2durable.FINDING_HOUSEHOLD_REFS_KEY: rows,
         },
     })
 
@@ -2100,7 +2107,7 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
     zero-length walk falls through to PHASE_DONE — i.e. a garbled state file
     would tell a household "Your speaker is tuned". Fail toward the fallback
     instead."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK],
         "session_phases": ["nonsense", "also-not-a-phase"],
@@ -2110,7 +2117,7 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
 
     # A partially-recognisable list keeps only what it can name — and that IS
     # enough to walk, so it is used rather than discarded.
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "session_phases": ["nonsense", PHASE_VERIFY],
@@ -2120,12 +2127,12 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
 
 
 def test_apply_completes_a_plan_without_verify():
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x", "applied": False,
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
     })
-    v2host.observe_apply_success("candidate")
+    v2state.observe_apply_success("candidate")
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE
 
 
@@ -2153,19 +2160,19 @@ def _tuning_trial_state(*, reference=None, scope="candidate"):
 def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatch, scope, receipt_key):
     state = _tuning_trial_state(scope=scope)
     state[receipt_key] = state.pop("tuning_trial")
-    v2host.save_v2_state(state)
-    assert "room_trial" not in v2host.load_v2_state()
+    v2state.save_v2_state(state)
+    assert "room_trial" not in v2state.load_v2_state()
     monkeypatch.setattr(v2host, "_applied_graph_boosts", lambda: True)
 
     block = v2status.crossover_v2_status_block()
     assert block["phase"] == "done"
     assert block["post_apply_grade"] == {
-        "state": v2host.GRADE_TUNING_TRIAL_MEASURED,
+        "state": v2grade.GRADE_TUNING_TRIAL_MEASURED,
         "graded": True,
         "verify_outcome": None,
         "post_apply_spec_passed": None,
-        "scope": v2host.GRADE_SCOPE_TUNING_TRIAL,
-        "spatial": v2host.GRADE_SPATIAL_ABSENT,
+        "scope": v2grade.GRADE_SCOPE_TUNING_TRIAL,
+        "spatial": v2grade.GRADE_SPATIAL_ABSENT,
         "spatial_worst_db": None,
         "spatial_worst_hz": None,
         "complete": True,
@@ -2176,7 +2183,7 @@ def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatc
         "absolute_worst_hz": None,
         "candidate_fingerprint": "room-candidate-fingerprint",
     }
-    with pytest.raises(v2host.CrossoverV2Refused):
+    with pytest.raises(refusal_copy.CrossoverV2Refused):
         v2host.prepare_v2_session(
             {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
         )
@@ -2193,7 +2200,7 @@ def test_a_session_that_verified_still_resolves_to_done():
         [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_VERIFY,
          PHASE_CLOUD_VERIFY],
     ):
-        v2host.save_v2_state({
+        v2state.save_v2_state({
             "session_id": "cap_x",
             "accepted_phases": list(phases),
             "session_phases": list(phases),
@@ -2203,7 +2210,7 @@ def test_a_session_that_verified_still_resolves_to_done():
 
 
 def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "session_phases": ["nonsense", "also-not-a-phase"],
@@ -2221,7 +2228,7 @@ def _ready_to_apply(monkeypatch, tmp_path):
     """
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_preflight",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
@@ -2248,8 +2255,8 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
                 check=lambda *a, **k: None,
                 candidate=lambda *a, **k: None,
             ),
-            apply_complete=v2host._applied_gate,
-            apply_failed=v2host._apply_failure_gate,
+            apply_complete=v2state._applied_gate,
+            apply_failed=v2state._apply_failure_gate,
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -2266,7 +2273,7 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     ``cloud`` — a re-arm runs under a brand-new capture session id, so a
     session-id guard would drop it on the first "Try again"."""
     reference = {"values": {"summed": -20.0}, "at": 1_700_000_000.0}
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_original_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
         "applied": True,
@@ -2275,9 +2282,9 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     conductor = _rearm_conductor_for_persist(
         "cap_rearm_session", {1: PHASE_VERIFY},
     )
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    v2state.persist_conductor_state(conductor, failure_code=None)
 
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
     assert state["verify_priors"]["pilot_transfer_reference"] == reference
 
@@ -2287,7 +2294,7 @@ def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
     previous session's reference → the value the verify-only prepare passes as
     ``verify_pilot_transfer_prior`` → a fresh conductor. The comparator stays
     empty; only the history arrives (#1927)."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_original_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
         "applied": True,
@@ -2297,7 +2304,7 @@ def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
             },
         },
     })
-    prior = v2host.pilot_transfer_prior_from_state(v2host.load_v2_state())
+    prior = v2durable.pilot_transfer_prior_from_state(v2state.load_v2_state())
     assert prior["values"] == {"summed": -20.0}
     conductor = _rearm_conductor_for_persist(
         "cap_rearm_session", {1: PHASE_VERIFY},
@@ -2313,7 +2320,7 @@ def test_a_measuring_session_drops_the_prior_level_reference():
     A measuring session drops it rather than letting the next stage-2 verify
     report a graph change as a level-reference move — the misattribution
     #1924 and #1927 both exist to stop."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_original_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
         "applied": True,
@@ -2326,9 +2333,9 @@ def test_a_measuring_session_drops_the_prior_level_reference():
     conductor = _rearm_conductor_for_persist(
         "cap_measure_session", {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
     )
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    v2state.persist_conductor_state(conductor, failure_code=None)
 
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["verify_priors"]["pilot_transfer_reference"] is None
 
 
@@ -2336,8 +2343,8 @@ def test_prepare_refuses_when_volume_needs_recovery():
     class _NeedsRecovery:
         needs_recovery = True
 
-    v2host.set_volume_plan_for_tests(_NeedsRecovery())
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+    v2volume.set_volume_plan_for_tests(_NeedsRecovery())
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
             _inline_body(), status={}, run_async=None, camilla_factory=None
         )
@@ -2347,7 +2354,7 @@ def test_prepare_refuses_when_volume_needs_recovery():
 @pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
 def test_session_requires_an_inline_v3_plan(body):
     from jasper.web._common import refusal_envelope
-    with pytest.raises(v2host.CrossoverV2Refused) as caught:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
     envelope = refusal_envelope(caught.value)
     assert envelope["code"] in {"program_plan_shape_invalid", "walk_schema_version_unsupported"}
@@ -2362,17 +2369,17 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
 
     name = "unbanked"
     request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
-    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *_: None)
+    v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(v2volume, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
         safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=object(),
     ))
-    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda *_: pytest.fail("bundle opened before preflight"))
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda *_: pytest.fail("bundle opened before preflight"))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda *args, **kwargs: ready_facts(
         request,
     ))
-    with pytest.raises(v2host.CrossoverV2Refused) as exc:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
         v2host.prepare_v2_session({"plan": request.to_dict()}, status={}, run_async=None, camilla_factory=None)
     assert exc.value.code == "not_found"
     assert refusal_copy_for(exc.value.code)[1]
@@ -2390,18 +2397,18 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     from jasper.active_speaker import branch_chain
 
     _ready_inline(monkeypatch)
-    v2host.set_volume_plan_for_tests(_Ready())
-    monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *_: None)
+    v2volume.set_volume_plan_for_tests(_Ready())
+    monkeypatch.setattr(v2volume, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(
         v2host, "resolve_conductor_context",
         lambda _status: _inline_context(),
     )
     monkeypatch.setattr(branch_chain, "confirmed_protection_sections", _unrepresentable)
     monkeypatch.setattr(
-        v2host, "open_v2_evidence_store",
+        v2evidence, "open_v2_evidence_store",
         lambda *_: pytest.fail("bundle opened before protection preflight"),
     )
-    with pytest.raises(v2host.CrossoverV2Refused, match="confirmed driver protection"):
+    with pytest.raises(refusal_copy.CrossoverV2Refused, match="confirmed driver protection"):
         v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
 
 
@@ -2442,7 +2449,7 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     mags = [float(i % 5) for i in range(n)]
     raw = {"freqs_hz": freqs, "magnitude_db": mags}
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "cloud": {
             PHASE_CLOUD_MEASURE: {"pipeline": {"available": True, "curve": raw}},
@@ -2493,7 +2500,7 @@ def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
         freqs = np.fft.rfftfreq(n_fft, 1.0 / 48000.0)
         mag_db = np.zeros(freqs.size)
 
-        persisted_pred = v2host._decimate_sum((freqs, mag_db))
+        persisted_pred = v2durable._decimate_sum((freqs, mag_db))
         rendered_pred = v2projection.decimate_curve_for_chart(
             persisted_pred["freqs_hz"], persisted_pred["magnitude_db"],
         )
@@ -2547,10 +2554,10 @@ def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
     mag_db = slow_true_db + fast_ripple_db
     mag_db[0] = slow_true_db[0]  # avoid the f=0 edge
 
-    decimated = v2host._decimate_sum((freqs, mag_db))
+    decimated = v2durable._decimate_sum((freqs, mag_db))
     out_freqs = np.asarray(decimated["freqs_hz"])
     out_mag = np.asarray(decimated["magnitude_db"])
-    assert len(out_freqs) <= v2host.MAX_PERSISTED_SUM_POINTS
+    assert len(out_freqs) <= v2durable.MAX_PERSISTED_SUM_POINTS
     assert len(out_freqs) < freqs.size  # genuinely decimated
 
     below_500 = out_freqs < 500.0
@@ -2567,7 +2574,7 @@ def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
         return freqs[::step], mags[::step]
 
     old_freqs, old_mag = _old_removed_stride_decimate(
-        freqs, mag_db, v2host.MAX_PERSISTED_SUM_POINTS,
+        freqs, mag_db, v2durable.MAX_PERSISTED_SUM_POINTS,
     )
     old_below_500 = old_freqs < 500.0
     old_truth = 3.0 * np.sin(2.0 * np.pi * old_freqs[old_below_500] / 400.0)
@@ -2590,16 +2597,16 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     evaluator refused) ⇒ the curve with ``overall_within_target`` **None** and no
     bands — never ``False``, which would read as a measured failure, and never
     ``True``, which the compact-cloud rule already forbids fabricating."""
-    v2host.save_v2_state({"session_id": "cap_x", "verify_priors": None})
+    v2state.save_v2_state({"session_id": "cap_x", "verify_priors": None})
     assert v2status.crossover_v2_status_block()["prediction"] is None
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "verify_priors": {"predicted_sum": None, "predicted_spec": None},
     })
     assert v2status.crossover_v2_status_block()["prediction"] is None
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "verify_priors": {
             "predicted_sum": {"freqs_hz": [100.0, 200.0], "magnitude_db": [0.0, 0.0]},
@@ -2614,15 +2621,15 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
 
 
 def test_observe_apply_success_arms_the_deferred_verify_gate():
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-1"},
         "applied": False,
     })
-    assert v2host._applied_gate() is False
-    v2host.observe_apply_success("fp-1")
-    assert v2host._applied_gate() is True
+    assert v2state._applied_gate() is False
+    v2state.observe_apply_success("fp-1")
+    assert v2state._applied_gate() is True
 
 
 def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
@@ -2639,31 +2646,31 @@ def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
     ``json.dumps`` raises while evaluating an ARGUMENT, so ``atomic_write_text``
     is never entered and the prior state is still on disk afterwards.
     """
-    v2host.save_v2_state({"session_id": "cap_ok", "applied": False})
-    good = v2host.load_v2_state()
+    v2state.save_v2_state({"session_id": "cap_ok", "applied": False})
+    good = v2state.load_v2_state()
 
     for bad in (float("nan"), float("inf")):
         with pytest.raises(ValueError):
-            v2host.save_v2_state({
+            v2state.save_v2_state({
                 "session_id": "cap_bad",
                 "verify": {"claims": {"residual_db": bad}},
             })
-        assert v2host.load_v2_state() == good
+        assert v2state.load_v2_state() == good
 
 
 def test_observe_apply_success_records_the_way_back_pointer():
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-1"},
         "applied": False,
     })
-    v2host.observe_apply_success("fp-1", previous_candidate_fingerprint="fp-prev")
-    assert v2host.load_v2_state()["previous_candidate_fingerprint"] == "fp-prev"
+    v2state.observe_apply_success("fp-1", previous_candidate_fingerprint="fp-prev")
+    assert v2state.load_v2_state()["previous_candidate_fingerprint"] == "fp-prev"
     # The speaker's first-ever apply has nothing to point back to, and a
     # later apply that displaced a non-measured profile clears the pointer.
-    v2host.observe_apply_success("fp-1", previous_candidate_fingerprint=None)
-    assert v2host.load_v2_state()["previous_candidate_fingerprint"] is None
+    v2state.observe_apply_success("fp-1", previous_candidate_fingerprint=None)
+    assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
 
 
 def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
@@ -2679,7 +2686,7 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
             }
         ],
     }
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
         "applied": True,
@@ -2703,8 +2710,8 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
     }
     assert "history" not in block["attempts_loop"]
 
-    v2host.reset_v2_journey_state()
-    assert v2host.load_v2_state()["attempts_loop"] == loop
+    v2state.reset_v2_journey_state()
+    assert v2state.load_v2_state()["attempts_loop"] == loop
 
 
 def test_status_block_reports_an_applied_but_ungraded_result():
@@ -2712,13 +2719,13 @@ def test_status_block_reports_an_applied_but_ungraded_result():
     says so in its own field rather than leaving an empty `verify` block for
     every surface to read as "nothing to report" — which is how a 10 dB-dark
     profile sat on JTS3 under a green tick."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_ungraded",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": True,
     })
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_UNVERIFIED
+    assert grade["state"] == v2grade.GRADE_UNVERIFIED
     assert grade["graded"] is False
     assert grade["verify_outcome"] is None
 
@@ -2728,7 +2735,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
     the tiers differ in which one they run — express omits the post-apply group
     entirely, so keying only on the cloud would call every express session
     ungraded."""
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_graded_verify",
         "applied": True,
         "verify": {"outcome": "pass"},
@@ -2736,7 +2743,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
     by_verify = v2status.crossover_v2_status_block()["post_apply_grade"]
     # Verified at the mark only — express's whole grade, and distinguishable
     # from a walked post-apply group WITHOUT consulting `tier`.
-    assert by_verify["state"] == v2host.GRADE_MARK_VERIFIED
+    assert by_verify["state"] == v2grade.GRADE_MARK_VERIFIED
     assert by_verify["graded"] is True
 
     # The cloud instrument grading ALONE. #2464 moved this fixture off
@@ -2744,7 +2751,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
     # and pinning it here pinned the mask instead of the claim this test
     # makes. A session whose VERIFY produced no outcome at all is the honest
     # way to ask "does a closed group grade on its own".
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_graded_cloud",
         "applied": True,
         "cloud": {
@@ -2760,7 +2767,7 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
         },
     })
     by_cloud = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert by_cloud["state"] == v2host.GRADE_GRADED
+    assert by_cloud["state"] == v2grade.GRADE_GRADED
     # A grade that exists and FAILED is still a grade — "we checked and it is
     # out of spec" is a different claim from "we never checked", and item 7's
     # headline is what renders the first one.
@@ -2849,7 +2856,7 @@ def _honest_result_state(
     ),
 )
 def test_honest_result_truth_table(changes, expected):
-    v2host.save_v2_state(_honest_result_state(**changes))
+    v2state.save_v2_state(_honest_result_state(**changes))
     block = v2status.crossover_v2_status_block()
     grade = block["post_apply_grade"]
     assert grade.get("outcome") == expected
@@ -2952,7 +2959,7 @@ def test_a_paused_walk_commission_still_grades_verified():
         PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE,
     ]
 
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     block = v2status.crossover_v2_status_block()
     grade = block["post_apply_grade"]
 
@@ -3015,7 +3022,7 @@ def test_a_legacy_fc_selection_is_inert_and_never_refuses():
         "recommend_alternative",
     )
     for legacy in legacy_shapes:
-        v2host.save_v2_state(_no_sweep_state(fc_selection=legacy))
+        v2state.save_v2_state(_no_sweep_state(fc_selection=legacy))
         block = v2status.crossover_v2_status_block()
 
         # Graded from VERIFY alone, identically to the same round without it.
@@ -3033,13 +3040,13 @@ def test_a_legacy_fc_selection_is_inert_and_never_refuses():
         assert "1800" not in text and "measured better than" not in text
 
         # The durable payload is untouched by the read — inert, not scrubbed.
-        assert (v2host.load_v2_state() or {})["fc_selection"] == legacy
+        assert (v2state.load_v2_state() or {})["fc_selection"] == legacy
 
 
 def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
     prior = _honest_result_state()
     prior["session_phases"] = [PHASE_VERIFY]
-    v2host.save_v2_state(prior)
+    v2state.save_v2_state(prior)
 
     class TerminalConductor(_StubConductor):
         verify_outcome = "pass"
@@ -3054,9 +3061,9 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
             )
 
     conductor = TerminalConductor("cap_p04")
-    with caplog.at_level(logging.INFO, logger=v2host.__name__):
-        v2host.persist_conductor_state(conductor, failure_code=None)
-        v2host.persist_conductor_state(conductor, failure_code=None)
+    with caplog.at_level(logging.INFO, logger=v2state.__name__):
+        v2state.persist_conductor_state(conductor, failure_code=None)
+        v2state.persist_conductor_state(conductor, failure_code=None)
         v2status.crossover_v2_status_block()
     fields = event_fields(caplog, "correction.crossover_v2_result_classified")
     assert fields["outcome"] == "verified_best_evaluated"
@@ -3076,8 +3083,8 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     monkeypatch.setattr(
         v2status, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
     )
-    with caplog.at_level(logging.INFO, logger=v2host.__name__):
-        v2host.persist_conductor_state(conductor, failure_code=None)
+    with caplog.at_level(logging.INFO, logger=v2state.__name__):
+        v2state.persist_conductor_state(conductor, failure_code=None)
     fields = event_fields(caplog, "correction.crossover_v2_result_classified")
     assert fields["outcome"] == "inconclusive"
 
@@ -3124,18 +3131,18 @@ def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
     and the failing gauge's own number rides with it so no consumer re-derives
     it. The ruling is grade-and-disclose: the tune stays, the failure is
     loud."""
-    v2host.save_v2_state(_applied_state(
+    v2state.save_v2_state(_applied_state(
         tier="full",
         cloud_verify=_closed_cloud_group(
             passed=False, flatness=_GRADED_AND_FAILED_FLATNESS,
         ),
     ))
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_GRADED  # unchanged vocabulary
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_FAILED
+    assert grade["state"] == v2grade.GRADE_GRADED  # unchanged vocabulary
+    assert grade["spatial"] == v2grade.GRADE_SPATIAL_FAILED
     # A failed grade is a COMPLETED grade — the tier delivered what it
     # promised, and what it delivered is a miss.
-    assert grade["scope"] == v2host.GRADE_SCOPE_SPATIAL
+    assert grade["scope"] == v2grade.GRADE_SCOPE_SPATIAL
     assert grade["complete"] is True
     assert grade["spatial_worst_db"] == pytest.approx(-4.628)
     assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
@@ -3169,9 +3176,9 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
         write_asked_poses(tmp_path, state, [{"deg": 0}])
         monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
                             lambda fingerprint: SimpleNamespace(path=original / "candidate.json"))
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
+    assert grade["scope"] == v2grade.GRADE_SCOPE_MARK
     assert grade["complete"] is complete
     assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
 
@@ -3195,8 +3202,8 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             {"tier": "full", "cloud_verify": _PASSING},
             # No number beside a pass: printing the margin of a pass next to a
             # failure verdict is how the two get confused.
-            {"spatial": v2host.GRADE_SPATIAL_PASSED,
-             "scope": v2host.GRADE_SCOPE_SPATIAL, "complete": True,
+            {"spatial": v2grade.GRADE_SPATIAL_PASSED,
+             "scope": v2grade.GRADE_SCOPE_SPATIAL, "complete": True,
              "spatial_worst_db": None, "spatial_worst_hz": None},
             id="closed-and-passing-group-is-a-complete-spatial-grade",
         ),
@@ -3206,8 +3213,8 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         pytest.param(
             {"tier": "full", "cloud_verify": _closed_cloud_group(
                 passed=False, flatness=_UNMEASURABLE_FLATNESS)},
-            {"spatial": v2host.GRADE_SPATIAL_UNMEASURABLE,
-             "spatial_worst_db": None, "scope": v2host.GRADE_SCOPE_MARK,
+            {"spatial": v2grade.GRADE_SPATIAL_UNMEASURABLE,
+             "spatial_worst_db": None, "scope": v2grade.GRADE_SCOPE_MARK,
              "complete": True},
             id="an-ungradeable-group-is-not-a-failure",
         ),
@@ -3217,7 +3224,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # is the fabricated reading pointed the other way.
         pytest.param(
             {"tier": "full", "cloud_verify": _closed_cloud_group(passed=False)},
-            {"spatial": v2host.GRADE_SPATIAL_FAILED, "spatial_worst_db": None},
+            {"spatial": v2grade.GRADE_SPATIAL_FAILED, "spatial_worst_db": None},
             id="a-failing-group-with-no-gauge-stays-a-failure",
         ),
         # A pre-tier state file, or one from a later build: this build cannot
@@ -3225,7 +3232,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         # about a promise it never read is worse than saying what it said.
         pytest.param(
             {"tier": None},
-            {"scope": v2host.GRADE_SCOPE_MARK, "complete": True},
+            {"scope": v2grade.GRADE_SCOPE_MARK, "complete": True},
             id="an-unreadable-tier-is-judged-on-delivery",
         ),
         pytest.param(
@@ -3234,8 +3241,8 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         ),
         pytest.param(
             {"tier": "full", "verify_outcome": "inconclusive"},
-            {"state": v2host.GRADE_INCONCLUSIVE,
-             "scope": v2host.GRADE_SCOPE_NONE, "complete": False},
+            {"state": v2grade.GRADE_INCONCLUSIVE,
+             "scope": v2grade.GRADE_SCOPE_NONE, "complete": False},
             id="a-verify-that-did-not-pass-delivers-no-scope",
         ),
         # #2464: a failed or undecided mark-VERIFY caps the badge whatever the
@@ -3247,8 +3254,8 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             {"tier": "full", "verify_outcome": "fail",
              "claims": {"integration": {"status": "fail", "max_db": 4.2}},
              "cloud_verify": _PASSING},
-            {"state": v2host.GRADE_FAILED, "graded": False,
-             "spatial": v2host.GRADE_SPATIAL_PASSED,
+            {"state": v2grade.GRADE_FAILED, "graded": False,
+             "spatial": v2grade.GRADE_SPATIAL_PASSED,
              "post_apply_spec_passed": True},
             id="a-failed-verify-is-not-masked-by-a-passing-spatial-grade",
         ),
@@ -3261,7 +3268,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
                         "absolute": {"status": "fail", "max_db": 4.31,
                                      "worst_hz": 1590.4}},
              "cloud_verify": _PASSING},
-            {"state": v2host.GRADE_FAILED, "graded": False,
+            {"state": v2grade.GRADE_FAILED, "graded": False,
              "verify_outcome": "pass"},
             id="a-failed-absolute-claim-caps-the-badge-on-a-clean-capture",
         ),
@@ -3273,7 +3280,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
                         "absolute": {"status": "not_evaluated",
                                      "reason": "no_trusted_region"}},
              "cloud_verify": _PASSING},
-            {"state": v2host.GRADE_FAILED},
+            {"state": v2grade.GRADE_FAILED},
             id="an-outcome-fail-whose-claims-could-not-grade-still-caps",
         ),
         # The same masking defect one arm over: the ``inconclusive`` arm was
@@ -3281,7 +3288,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
         pytest.param(
             {"tier": "full", "verify_outcome": "inconclusive",
              "cloud_verify": _closed_cloud_group(passed=False)},
-            {"state": v2host.GRADE_INCONCLUSIVE, "graded": False},
+            {"state": v2grade.GRADE_INCONCLUSIVE, "graded": False},
             id="an-inconclusive-verify-is-not-masked-by-a-closed-group",
         ),
         # The cap is scoped to a FAILED or undecided VERIFY. On a clean pass
@@ -3292,19 +3299,19 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
              "claims": {"integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "pass", "max_db": 0.8}},
              "cloud_verify": _PASSING},
-            {"state": v2host.GRADE_GRADED, "graded": True, "complete": True},
+            {"state": v2grade.GRADE_GRADED, "graded": True, "complete": True},
             id="a-clean-pass-still-grades-on-the-wider-spatial-claim",
         ),
         # Absence of claims is a pre-R18 state file, never a fail and never a
         # pass-of-claims: the outcome stands as the only record there is.
         pytest.param(
             {"tier": "full", "verify_outcome": "pass", "cloud_verify": _PASSING},
-            {"state": v2host.GRADE_GRADED},
+            {"state": v2grade.GRADE_GRADED},
             id="no-claims-block-graded-on-a-passing-outcome-alone",
         ),
         pytest.param(
             {"tier": "full", "verify_outcome": "fail", "cloud_verify": _PASSING},
-            {"state": v2host.GRADE_FAILED},
+            {"state": v2grade.GRADE_FAILED},
             id="no-claims-block-graded-on-a-failing-outcome-alone",
         ),
     ),
@@ -3317,21 +3324,21 @@ def test_the_post_apply_grade_badge_table(state, expected):
     delivered what it promised. A row asserts only the fields its own shape
     decides — the rest are pinned by the rows that turn on them.
     """
-    v2host.save_v2_state(_applied_state(**state))
+    v2state.save_v2_state(_applied_state(**state))
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     for key, value in expected.items():
         assert grade[key] == value, key
 
 
 def test_status_block_never_asks_an_unapplied_session_for_a_grade():
-    v2host.save_v2_state({"session_id": "cap_none", "applied": False})
+    v2state.save_v2_state({"session_id": "cap_none", "applied": False})
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2host.GRADE_NOT_APPLIED
+    assert grade["state"] == v2grade.GRADE_NOT_APPLIED
     # Nothing promised, so nothing outstanding: `complete=False` here would
     # warn every speaker that has never been commissioned.
     assert grade["complete"] is True
-    assert grade["scope"] == v2host.GRADE_SCOPE_NONE
-    assert grade["spatial"] == v2host.GRADE_SPATIAL_ABSENT
+    assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
+    assert grade["spatial"] == v2grade.GRADE_SPATIAL_ABSENT
     assert grade["graded"] is True
 
 
@@ -3388,8 +3395,8 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
         return _Record()
 
     meta: dict[str, Any] = {}
-    evidence = v2host.CaptureEvidenceCarry()
-    analyze = v2host.bind_production_analyze(
+    evidence = v2evidence.CaptureEvidenceCarry()
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=resolver, meta=meta, evidence=evidence,
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
@@ -3414,7 +3421,7 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
         "curve_fingerprint": json_fingerprint(curve_sentinel.to_dict()),
     }
     assert evidence.take()["capture_calibration"] == meta["calibration"]["verify"]
-    uncalibrated = v2host.bind_production_analyze(evidence=evidence)
+    uncalibrated = v2evidence.bind_production_analyze(evidence=evidence)
     uncalibrated(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry, phase="verify")
     assert evidence.take()["capture_calibration"] == {"applied": False, "calibration_id": None}
 
@@ -3445,7 +3452,7 @@ def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
 
     report = {"frames": 4, "encoded_frames": 4, "block_gaps": 0,
               "block_gap_frames": 0}
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )
     analyze(
@@ -3489,11 +3496,11 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
     meta: dict[str, Any] = {}
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta=meta
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
-    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2_evidence"):
         analyze(
             program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
@@ -3530,7 +3537,7 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
         calibration_id = "cal-umik2"
         model = "minidsp_umik2"
 
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: _Record(), meta={},
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
@@ -3572,7 +3579,7 @@ def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resol
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
@@ -3613,7 +3620,7 @@ def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(mon
     bare_curve = CalibrationCurve(
         freqs_hz=[20.0, 20000.0], correction_db=[0.0, 0.0],
     )
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: bare_curve, meta={},
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
@@ -3651,7 +3658,7 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
     monkeypatch.setattr(
         pa_mod, "analyze_program_capture", lambda *a, **k: "analysis"
     )
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={}
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
@@ -3665,7 +3672,7 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
             },
         },
     )
-    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2_evidence"):
         analyze(
             program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
@@ -3681,15 +3688,15 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
 def test_setup_calibration_observation_is_redacted_safe():
     """The extractor itself: absent / mode-none / stored shapes, and only
     mode + calibration_id ever come back."""
-    assert v2host._setup_calibration_observation(None) == ("absent", "")
-    assert v2host._setup_calibration_observation({}) == ("absent", "")
-    assert v2host._setup_calibration_observation(
+    assert v2evidence._setup_calibration_observation(None) == ("absent", "")
+    assert v2evidence._setup_calibration_observation({}) == ("absent", "")
+    assert v2evidence._setup_calibration_observation(
         {"calibration": {"mode": "none"}}
     ) == ("none", "")
-    assert v2host._setup_calibration_observation(
+    assert v2evidence._setup_calibration_observation(
         {"calibration": {"mode": "stored", "calibration_id": "cal-1"}}
     ) == ("stored", "cal-1")
-    assert v2host._setup_calibration_observation(
+    assert v2evidence._setup_calibration_observation(
         {"calibration": {"mode": "serial", "serial": "810-8494"}}
     ) == ("serial", "")
 
@@ -3698,8 +3705,8 @@ def test_production_analyze_default_resolver_is_the_household_mic_owner():
     """The default resolver IS household_mic.resolve_setup_calibration (the one
     point a capture's setup reference becomes a record) — a no-choice setup
     resolves to None."""
-    assert v2host.resolve_setup_calibration(None, None) is None
-    assert v2host.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) is None
+    assert v2evidence.resolve_setup_calibration(None, None) is None
+    assert v2evidence.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) is None
 
 
 def _seed_household_mic(tmp_path, monkeypatch):
@@ -3738,11 +3745,11 @@ def test_default_setup_calibration_for_v2_reuses_the_household_mic_hint(
     """No household mic ⇒ no hint (fail-soft); a resolvable one ⇒ the SAME
     hint correction_capture._default_setup_calibration_for_spec builds for
     level_ramp, now available to a v2 session too."""
-    assert v2host.default_setup_calibration_for_v2() is None
+    assert v2evidence.default_setup_calibration_for_v2() is None
 
     record = _seed_household_mic(tmp_path, monkeypatch)
 
-    hint = v2host.default_setup_calibration_for_v2()
+    hint = v2evidence.default_setup_calibration_for_v2()
     assert hint is not None
     assert hint.mode == "serial"
     assert hint.calibration_id == record.calibration_id
@@ -3758,7 +3765,7 @@ def test_v2_session_and_verify_specs_carry_the_default_calibration_hint(
     phone actually receives."""
 
     record = _seed_household_mic(tmp_path, monkeypatch)
-    hint = v2host.default_setup_calibration_for_v2()
+    hint = v2evidence.default_setup_calibration_for_v2()
     assert hint is not None
 
     session_spec = build_v2_session_spec(
@@ -3818,7 +3825,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     # resolve_calibration defaults to resolve_setup_calibration — the REAL
     # production seam — proving the fix through the exact path a live
     # v2 session rides, not a test double.
-    analyze = v2host.bind_production_analyze(meta=meta)
+    analyze = v2evidence.bind_production_analyze(meta=meta)
     program = build_verify_program(FC_HZ, sweep_s=0.5)
     result = _FakeResult(
         setup={
@@ -3830,7 +3837,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
         },
         device={"label": "UMIK-2"},
     )
-    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2_evidence"):
         out = analyze(
             program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
@@ -3877,7 +3884,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
     meta: dict[str, Any] = {}
-    analyze = v2host.bind_production_analyze(meta=meta)
+    analyze = v2evidence.bind_production_analyze(meta=meta)
     program = build_verify_program(FC_HZ, sweep_s=0.5)
     result = _FakeResult(
         setup={
@@ -3917,8 +3924,8 @@ def test_status_block_reports_needs_recovery_and_phase():
     class _NeedsRecovery:
         needs_recovery = True
 
-    v2host.set_volume_plan_for_tests(_NeedsRecovery())
-    v2host.save_v2_state({
+    v2volume.set_volume_plan_for_tests(_NeedsRecovery())
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK],
         "applied": False,
@@ -3926,7 +3933,7 @@ def test_status_block_reports_needs_recovery_and_phase():
     block = v2status.crossover_v2_status_block()
     assert block["needs_recovery"] is True
     assert block["phase"] == PHASE_MEASURE
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
@@ -3951,7 +3958,7 @@ def _linearization_summary(linearization=None, *, outcome=None, analysis=None):
         extra["linearization"] = linearization
     if outcome is not None:
         extra["linearization_outcome"] = outcome
-    return v2host._candidate_summary(MeasuredCrossoverCandidate(
+    return v2durable._candidate_summary(MeasuredCrossoverCandidate(
         program_id="prog-abc",
         analysis=analysis or {
             "alignment_confidence": 0.9, "predicted_ripple_db": 1.1,
@@ -4130,7 +4137,7 @@ def test_candidate_summary_carries_whether_the_polarity_was_pinned():
 
 
 def test_candidate_summary_none_candidate_returns_none():
-    assert v2host._candidate_summary(None) is None
+    assert v2durable._candidate_summary(None) is None
 
 
 class _FakeWindow:
@@ -4164,14 +4171,14 @@ def test_session_measurement_pause_is_idempotent(monkeypatch):
     _patch_measurement_window(monkeypatch, log)
 
     async def scenario():
-        assert not v2host.session_measurement_pause_held()
-        await v2host.acquire_session_measurement_pause()
-        assert v2host.session_measurement_pause_held()
-        await v2host.acquire_session_measurement_pause()  # idempotent
-        assert v2host.session_measurement_pause_held()
-        await v2host.release_session_measurement_pause()
-        assert not v2host.session_measurement_pause_held()
-        await v2host.release_session_measurement_pause()  # idempotent
+        assert not v2volume.session_measurement_pause_held()
+        await v2volume.acquire_session_measurement_pause()
+        assert v2volume.session_measurement_pause_held()
+        await v2volume.acquire_session_measurement_pause()  # idempotent
+        assert v2volume.session_measurement_pause_held()
+        await v2volume.release_session_measurement_pause()
+        assert not v2volume.session_measurement_pause_held()
+        await v2volume.release_session_measurement_pause()  # idempotent
 
     asyncio.run(scenario())
     assert log == ["enter", "exit"]  # exactly one enter, one exit
@@ -4195,9 +4202,9 @@ def test_reconcile_drains_residual_owned_active_before_new_session(monkeypatch):
     asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
     assert plan.measurement_volume_db == -20.0
     assert not plan.needs_recovery  # owned-active this process, within ceiling
-    v2host.set_volume_plan_for_tests(plan)
+    v2volume.set_volume_plan_for_tests(plan)
 
-    v2host.reconcile_session_volume_for_new_session(_bg_run_async, lambda: cam)
+    v2volume.reconcile_session_volume_for_new_session(_bg_run_async, lambda: cam)
 
     assert plan.measurement_volume_db is None  # residual drained
     assert not plan.needs_recovery
@@ -4218,17 +4225,17 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatc
     _own_the_fader(monkeypatch, cam)
     asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
     assert cam.vol == -20.0
-    v2host.set_volume_plan_for_tests(plan)
+    v2volume.set_volume_plan_for_tests(plan)
 
     # Within the ceiling: cheap no-op, nothing drained.
-    assert v2host.enforce_session_volume_ceiling_if_stale(
+    assert v2volume.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     ) is False
     assert plan.measurement_volume_db == -20.0
 
     # Past the ceiling: force-drained back to the household volume.
     clock[0] = 2000.0
-    assert v2host.enforce_session_volume_ceiling_if_stale(
+    assert v2volume.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     ) is True
     assert plan.measurement_volume_db is None
@@ -4240,16 +4247,16 @@ def test_a_live_claim_holds_the_pause_when_the_ceiling_drain_defers(monkeypatch)
     log: list = []
     _patch_measurement_window(monkeypatch, log)
     plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
-    asyncio.run(v2host.acquire_session_measurement_pause())
+    asyncio.run(v2volume.acquire_session_measurement_pause())
     clock[0] += 3600.0
 
-    assert v2host.enforce_session_volume_ceiling_if_stale(
+    assert v2volume.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     ) is True, "the caller's gate must still hear that the ceiling expired"
 
     assert plan.measurement_volume_db == -20.0, "a live session was drained"
     assert cam.vol == -20.0, "the drain moved a fader it does not own"
-    assert v2host.session_measurement_pause_held(), (
+    assert v2volume.session_measurement_pause_held(), (
         "the drain freed the isolation a live session is measuring behind"
     )
     assert log == ["enter"], "the measurement window was exited under the session"
@@ -4266,7 +4273,7 @@ def test_a_raising_ceiling_drain_holds_the_pause_under_a_live_claim(monkeypatch)
     log: list = []
     _patch_measurement_window(monkeypatch, log)
     plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
-    asyncio.run(v2host.acquire_session_measurement_pause())
+    asyncio.run(v2volume.acquire_session_measurement_pause())
     clock[0] += 3600.0
 
     def _raise(*_a, **_kw):
@@ -4274,11 +4281,11 @@ def test_a_raising_ceiling_drain_holds_the_pause_under_a_live_claim(monkeypatch)
 
     monkeypatch.setattr(plan, "enforce_ceiling", _raise)
 
-    assert v2host.enforce_session_volume_ceiling_if_stale(
+    assert v2volume.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     ) is True
 
-    assert v2host.session_measurement_pause_held(), (
+    assert v2volume.session_measurement_pause_held(), (
         "a raising drain freed the isolation out from under a live session"
     )
     assert log == ["enter"], "the measurement window was exited under the session"
@@ -4302,10 +4309,10 @@ def test_a_same_level_landed_holds_the_pause_under_a_live_claim(monkeypatch):
         household_db=-20.0,
         measurement_db=-20.0,
     )
-    asyncio.run(v2host.acquire_session_measurement_pause())
+    asyncio.run(v2volume.acquire_session_measurement_pause())
     clock[0] += 3600.0
 
-    assert v2host.enforce_session_volume_ceiling_if_stale(
+    assert v2volume.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     ) is True
 
@@ -4314,7 +4321,7 @@ def test_a_same_level_landed_holds_the_pause_under_a_live_claim(monkeypatch):
     assert plan.measurement_volume_db is None, (
         "expected the LANDED branch; a deferral would leave the intent standing"
     )
-    assert v2host.session_measurement_pause_held(), (
+    assert v2volume.session_measurement_pause_held(), (
         "a coincidental LANDED freed the isolation under a live session"
     )
     assert log == ["enter"], "the measurement window was exited under the session"
@@ -4330,13 +4337,13 @@ def test_recover_on_a_deferral_reports_no_recovery(monkeypatch):
     log: list = []
     _patch_measurement_window(monkeypatch, log)
     _plan, cam, _claim, _clock = _live_measurement_session(monkeypatch)
-    asyncio.run(v2host.acquire_session_measurement_pause())
+    asyncio.run(v2volume.acquire_session_measurement_pause())
 
-    succeeded, recovery = v2host.recover_session_volume(_bg_run_async, lambda: cam)
+    succeeded, recovery = v2volume.recover_session_volume(_bg_run_async, lambda: cam)
 
     assert succeeded is False, "a deferral was reported to the household as recovered"
-    assert recovery == v2host.RECOVERY_DEFERRED
-    assert v2host.session_measurement_pause_held(), (
+    assert recovery == v2volume.RECOVERY_DEFERRED
+    assert v2volume.session_measurement_pause_held(), (
         "recover freed the isolation on a restore that has not happened"
     )
 
@@ -4348,21 +4355,21 @@ def test_the_recovery_deferred_value_tracks_the_enum():
         SessionVolumeRestoreResult,
     )
 
-    assert v2host.RECOVERY_DEFERRED == SessionVolumeRestoreResult.DEFERRED.value
+    assert v2volume.RECOVERY_DEFERRED == SessionVolumeRestoreResult.DEFERRED.value
 
 
 def test_v2_volume_recovery_active_tracks_needs_recovery():
     class _NeedsRecovery:
         needs_recovery = True
 
-    v2host.set_volume_plan_for_tests(_NeedsRecovery())
-    assert v2host.v2_volume_recovery_active() is True
+    v2volume.set_volume_plan_for_tests(_NeedsRecovery())
+    assert v2volume.v2_volume_recovery_active() is True
 
     class _Clean:
         needs_recovery = False
 
-    v2host.set_volume_plan_for_tests(_Clean())
-    assert v2host.v2_volume_recovery_active() is False
+    v2volume.set_volume_plan_for_tests(_Clean())
+    assert v2volume.v2_volume_recovery_active() is False
 
 
 def test_recover_session_volume_routes_to_the_plan(monkeypatch):
@@ -4383,10 +4390,10 @@ def test_recover_session_volume_routes_to_the_plan(monkeypatch):
             drained.append(True)
             return SessionVolumeRestoreResult.EXACT_RESTORED
 
-    v2host.set_volume_plan_for_tests(_Plan())
+    v2volume.set_volume_plan_for_tests(_Plan())
     cam = _FakeVolCam(-20.0)
     _own_the_fader(monkeypatch, cam)
-    succeeded, recovery = v2host.recover_session_volume(_bg_run_async, lambda: cam)
+    succeeded, recovery = v2volume.recover_session_volume(_bg_run_async, lambda: cam)
     assert succeeded is True
     assert recovery == "exact_restored"
     assert drained == [True]
@@ -4403,8 +4410,8 @@ def test_gate_abort_mid_play_cancels_the_play_and_names_the_error(monkeypatch):
     _patch_measurement_window(monkeypatch, log)
 
     async def scenario():
-        await v2host.acquire_session_measurement_pause()
-        target = v2host._session_abort_target
+        await v2volume.acquire_session_measurement_pause()
+        target = v2volume._session_abort_target
         assert target is not None
         started = asyncio.Event()
 
@@ -4412,7 +4419,7 @@ def test_gate_abort_mid_play_cancels_the_play_and_names_the_error(monkeypatch):
             started.set()
             await asyncio.sleep(30)
 
-        play = asyncio.create_task(v2host._play_under_session_pause(play_body))
+        play = asyncio.create_task(v2volume._play_under_session_pause(play_body))
         await started.wait()
         # What the coordinator's refresh task does on a 40 s renew failure.
         target.abort(None)
@@ -4435,15 +4442,15 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
     body_ran: list = []
 
     async def scenario():
-        await v2host.acquire_session_measurement_pause()
-        target = v2host._session_abort_target
+        await v2volume.acquire_session_measurement_pause()
+        target = v2volume._session_abort_target
         target.abort(None)  # no play registered: latch only, no crash
 
         async def play_body():
             body_ran.append(True)
 
         with pytest.raises(MeasurementWindowError) as excinfo:
-            await v2host._play_under_session_pause(play_body)
+            await v2volume._play_under_session_pause(play_body)
         assert "isolation was lost" in str(excinfo.value)
 
     asyncio.run(scenario())
@@ -4465,7 +4472,7 @@ def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch,
     monkeypatch.setattr(door, "bind_measurement_graph", bind_graph)
     monkeypatch.setattr(composition, "bind_program_composer", bind_compose)
     protection = {"woofer": (), "tweeter": ()}
-    play = v2host.bind_production_play(
+    play = v2evidence.bind_production_play(
         program_for_phase=lambda phase: phase, camilla_factory=lambda: None,
         evidence_store=SimpleNamespace(bundle_dir=tmp_path), capture_session_id="capture",
         topology=None, preset=None, role_channels={"woofer": 0, "tweeter": 1},
@@ -4686,7 +4693,7 @@ def _seed_alternative_apply(
         ),
     )
     candidate = _run6_measured_candidate(selected_preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_alternative",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -4733,7 +4740,7 @@ def test_alternative_apply_loads_exact_candidate_then_records_sound(
         "LinkwitzRileyLowpass": (2750.0, 4),
         "LinkwitzRileyHighpass": (2750.0, 4),
     }
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["accepted_sound_revision"] == 2
     assert state["applied"] is True
 
@@ -4766,7 +4773,7 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
 
     with caplog.at_level(logging.INFO):
         with pytest.raises(
-            v2host.CrossoverV2Refused,
+            refusal_copy.CrossoverV2Refused,
             match=(
                 "it crosses at 1500 Hz, below the tweeter's own declared "
                 "protective high-pass floor of"
@@ -4790,7 +4797,7 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
     # so there is nothing for a household to undo and nothing for the next
     # measurement session to read as its configured crossover.
     assert draft["revision"] == 1
-    state = v2host.load_v2_state() or {}
+    state = v2state.load_v2_state() or {}
     assert state.get("accepted_sound_revision") is None
     assert state["applied"] is False
 
@@ -4822,7 +4829,7 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     )
     assert configured_preset is not None, issues
     as_declared = _run6_measured_candidate(configured_preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_stale_selection",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": as_declared.fingerprint},
@@ -4850,7 +4857,7 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     # Byte-for-byte the pre-seam behaviour: an as-declared apply writes Sound
     # nothing, so the revision never moves and there is no inverse to record.
     assert draft["revision"] == 1
-    state = v2host.load_v2_state() or {}
+    state = v2state.load_v2_state() or {}
     assert state.get("accepted_sound_revision") is None
     # The control that keeps this test honest: the contrary record was STILL
     # there while the apply ran. A refactor that cleared it earlier would make
@@ -4965,7 +4972,7 @@ def _open_session_volume_plan(*, household_db: float, measurement_db: float = -2
         is SessionVolumeOpenResult.OPENED
     )
     assert _FakeApplyAndVolumeCam.vol == measurement_db
-    v2host.set_volume_plan_for_tests(plan)
+    v2volume.set_volume_plan_for_tests(plan)
     return plan
 
 
@@ -4996,7 +5003,7 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
     candidate = _boosting_candidate(preset, boost_db=6.0)
     plan = _open_session_volume_plan(household_db=-6.0)
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_run6",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -5020,8 +5027,8 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
     # own, whatever the charge rule of the day makes it.
     assert payload["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
     # Durable, and readable through the very seam the conductor's probe uses.
-    assert v2host.load_v2_state()["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
-    assert v2host._applied_offset_gate() == _APPLY_OFFSET_DB
+    assert v2state.load_v2_state()["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
+    assert v2state._applied_offset_gate() == _APPLY_OFFSET_DB
     # The speaker's commanded level did not move. This is the safety claim.
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
@@ -5039,7 +5046,7 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     candidate = _boosting_candidate(preset, boost_db=6.0)
     plan = _open_session_volume_plan(household_db=-6.0)
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_run6",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -5062,11 +5069,11 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     )
     ensure_crossover_preview_ready()
 
-    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()},
                _bg_run_async, _FakeApplyAndVolumeCam)
     assert refused.value.code == "driver_safety_profile_not_confirmed"
-    assert v2host._applied_offset_gate() == 0.0
+    assert v2state._applied_offset_gate() == 0.0
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
 
@@ -5087,7 +5094,7 @@ def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_p
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _boosting_candidate(preset, boost_db=6.0)
     _open_session_volume_plan(household_db=-6.0)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_run6",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -5101,14 +5108,14 @@ def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_p
         _bg_run_async,
         _FakeApplyAndVolumeCam,
     )
-    assert v2host._applied_offset_gate() == _APPLY_OFFSET_DB
+    assert v2state._applied_offset_gate() == _APPLY_OFFSET_DB
 
     # One more capture in the SAME session, then the re-arm's brand-new one.
     for session_id in ("cap_run6", "cap_rearm"):
-        v2host.persist_conductor_state(
+        v2state.persist_conductor_state(
             _StubConductor(session_id), failure_code=None,
         )
-        assert v2host._applied_offset_gate() == _APPLY_OFFSET_DB, session_id
+        assert v2state._applied_offset_gate() == _APPLY_OFFSET_DB, session_id
 
 
 class _StubConductor:
@@ -5147,15 +5154,15 @@ class _StubConductor:
 
 
 def test_only_verify_rebind_carries_an_accepted_sound_revision():
-    v2host.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
-    v2host.persist_conductor_state(_StubConductor("verify"), failure_code=None)
-    assert (v2host.load_v2_state() or {})["accepted_sound_revision"] == 4
+    v2state.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
+    v2state.persist_conductor_state(_StubConductor("verify"), failure_code=None)
+    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] == 4
 
-    v2host.persist_conductor_state(
+    v2state.persist_conductor_state(
         _StubConductor("measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
         failure_code=None,
     )
-    assert (v2host.load_v2_state() or {})["accepted_sound_revision"] is None
+    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] is None
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
@@ -5185,24 +5192,24 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     """
     # (1) What a persist can rebuild from the conductor alone, with an empty
     # prior so nothing can be carried forward.
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(_StubConductor("s1"), failure_code=None)
+    v2state.save_v2_state({"session_id": "s1"})
+    v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None)
     from_conductor_alone = {
-        key for key, value in (v2host.load_v2_state() or {}).items()
+        key for key, value in (v2state.load_v2_state() or {}).items()
         if value is not None
     }
 
     # (2) What the apply path establishes on top of it.
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "s1", "applied": False,
         "accepted_phases": [PHASE_MEASURE], "candidate": {"fingerprint": "fp"},
     })
-    v2host.observe_apply_success(
+    v2state.observe_apply_success(
         "fp",
         previous_candidate_fingerprint="fp-prior-measured",
         expected_post_apply_offset_db=-22.458,
     )
-    after_apply = dict(v2host.load_v2_state() or {})
+    after_apply = dict(v2state.load_v2_state() or {})
     host_owned = {
         key for key, value in after_apply.items()
         if value is not None and key not in from_conductor_alone
@@ -5215,8 +5222,8 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     assert "previous_candidate_displaced_by" in host_owned
 
     # (3) Cross the seam under the re-arm's BRAND-NEW session id.
-    v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
-    after_persist = v2host.load_v2_state() or {}
+    v2state.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
+    after_persist = v2state.load_v2_state() or {}
     for key in sorted(host_owned):
         assert after_persist.get(key) == after_apply[key], (
             f"{key!r} is written by the apply path and erased by "
@@ -5359,18 +5366,18 @@ def test_a_verify_record_is_persisted_even_on_a_pass(
     conductor.verify_outcome = "pass"
     for name, value in attrs.items():
         setattr(conductor, name, value)
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    v2state.save_v2_state({"session_id": "s1"})
+    v2state.persist_conductor_state(conductor, failure_code=None)
 
-    verify = (v2host.load_v2_state() or {})["verify"]
+    verify = (v2state.load_v2_state() or {})["verify"]
     assert verify[key] == expected
     for absent in also_absent:
         assert absent not in verify
 
     plain = _StubConductor("s1")
     plain.verify_outcome = plain_outcome
-    v2host.persist_conductor_state(plain, failure_code=None)
-    assert key not in (v2host.load_v2_state() or {})["verify"]
+    v2state.persist_conductor_state(plain, failure_code=None)
+    assert key not in (v2state.load_v2_state() or {})["verify"]
 
 
 def test_the_verify_code_is_persisted_beside_its_outcome():
@@ -5386,31 +5393,31 @@ def test_the_verify_code_is_persisted_beside_its_outcome():
     conductor = _StubConductor("s1")
     conductor.verify_outcome = "inconclusive"
     conductor.verify_code = "verify_level_shift"
-    v2host.save_v2_state({"session_id": "s1"})
-    v2host.persist_conductor_state(
+    v2state.save_v2_state({"session_id": "s1"})
+    v2state.persist_conductor_state(
         conductor, failure_code="verify_level_shift",
     )
-    state = v2host.load_v2_state() or {}
+    state = v2state.load_v2_state() or {}
     assert state["verify"]["code"] == "verify_level_shift"
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    state = v2host.load_v2_state() or {}
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    state = v2state.load_v2_state() or {}
     assert state["failure"] is None
     assert state["verify"]["code"] == "verify_level_shift"
 
     # A pass carries no code — nothing rejected it.
     passing = _StubConductor("s1")
     passing.verify_outcome = "pass"
-    v2host.persist_conductor_state(passing, failure_code=None)
-    assert "code" not in (v2host.load_v2_state() or {})["verify"]
+    v2state.persist_conductor_state(passing, failure_code=None)
+    assert "code" not in (v2state.load_v2_state() or {})["verify"]
 
 
 def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
     """``0.0`` is the honest answer for an absent or malformed value — the
     probe then leaves the whole shift visible in ``residual_offset_db``
     instead of claiming it was accounted for."""
-    v2host.save_v2_state({"session_id": "s", "applied": True})
-    assert v2host._applied_offset_gate() == 0.0
+    v2state.save_v2_state({"session_id": "s", "applied": True})
+    assert v2state._applied_offset_gate() == 0.0
     for bad in ("loud", None, True, float("nan"), float("inf")):
         # Planted as a file: two of these are values ``save_v2_state`` refuses
         # since #2839, and it is a state FILE this gate has to survive.
@@ -5418,7 +5425,7 @@ def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
             "session_id": "s", "applied": True,
             "expected_post_apply_offset_db": bad,
         })
-        assert v2host._applied_offset_gate() == 0.0
+        assert v2state._applied_offset_gate() == 0.0
 
 
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
@@ -5443,7 +5450,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     assert "exclusion_evidence" in pre_pr6b_payload
     del pre_pr6b_payload["exclusion_evidence"]  # the pre-PR-6b persisted shape
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_run6",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -5460,7 +5467,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     )
 
     assert payload["status"] == "applied", payload.get("issues")
-    assert v2host._applied_gate() is True
+    assert v2state._applied_gate() is True
 
 
 def _prior_measured_candidate(preset):
@@ -5626,19 +5633,19 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
                     check=lambda *a, **k: None,
                     candidate=lambda *a, **k: None,
                 ),
-                apply_complete=v2host._applied_gate,
-                apply_failed=v2host._apply_failure_gate,
+                apply_complete=v2state._applied_gate,
+                apply_failed=v2state._apply_failure_gate,
             ),
             driver_spacing_m=0.15,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,
             index_phase_map={1: PHASE_VERIFY},
         )
-        v2host.persist_conductor_state(conductor, failure_code=None)
+        v2state.persist_conductor_state(conductor, failure_code=None)
 
     # --- run 1: a v2-written apply, no pre-existing profile to restore to ---
     run1_candidate = _prior_measured_candidate(preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_run1",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": run1_candidate.fingerprint},
@@ -5663,18 +5670,18 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
     ).read_text(encoding="utf-8")
     assert config_path.read_text(encoding="utf-8") == run1_config_text
     # The speaker's first-ever apply displaced no measured candidate.
-    assert v2host.load_v2_state()["previous_candidate_fingerprint"] is None
+    assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
 
     # The deferred VERIFY always auto-arms right after an apply — reproduce
     # its rebind-and-persist before the household ever reaches run 2.
     _simulate_deferred_verify_rearm(verify_session_id="verify_of_run1")
-    assert v2host.load_v2_state()["applied"] is True
-    assert v2host.load_v2_state()["previous_candidate_fingerprint"] is None
+    assert v2state.load_v2_state()["applied"] is True
+    assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
 
     # --- run 2 over run 1: also v2-written, through the SAME production seam ---
     run2_candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
-        **v2host.load_v2_state(),
+    v2state.save_v2_state({
+        **v2state.load_v2_state(),
         "session_id": "cap_run2",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": run2_candidate.fingerprint},
@@ -5700,7 +5707,7 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
     assert config_path.read_text(encoding="utf-8") == run2_config_text
     assert run2_config_text != run1_config_text
 
-    state_after_run2_apply = v2host.load_v2_state()
+    state_after_run2_apply = v2state.load_v2_state()
     assert (
         state_after_run2_apply.get("previous_candidate_fingerprint")
         == run1_candidate.fingerprint
@@ -5709,7 +5716,7 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
     # The P0 assertion: run 2's own deferred VERIFY rebind must NOT wipe the
     # pointer — this is exactly where the stash went null before the fix.
     _simulate_deferred_verify_rearm(verify_session_id="verify_of_run2")
-    state_after_verify_rearm = v2host.load_v2_state()
+    state_after_verify_rearm = v2state.load_v2_state()
     assert state_after_verify_rearm["applied"] is True
     assert (
         state_after_verify_rearm.get("previous_candidate_fingerprint")
@@ -5750,7 +5757,7 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
 
     run8_candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_run8",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": run8_candidate.fingerprint},
@@ -5767,9 +5774,9 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
 
     # Start-over while applied — the selective journey reset.
-    v2host.reset_v2_journey_state()
+    v2state.reset_v2_journey_state()
 
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state is not None
     assert state["applied"] is True
     assert state["previous_candidate_fingerprint"] == prior_candidate.fingerprint
@@ -5805,7 +5812,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     assert on_disk["status"] == "ready_for_protected_staging"
 
     candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_e2e_1",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -5857,7 +5864,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     )
     assert preset_again is not None, issues
     candidate_again = _run6_measured_candidate(preset_again)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_e2e_2",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate_again.fingerprint},
@@ -5891,7 +5898,7 @@ def test_v2_session_start_refuses_by_name_when_draft_cannot_produce_a_ready_prev
         "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path)
     )
 
-    with pytest.raises(v2host.CrossoverV2Refused, match="not ready for measurement"):
+    with pytest.raises(refusal_copy.CrossoverV2Refused, match="not ready for measurement"):
         ensure_crossover_preview_ready()
 
     # The regeneration attempt still ran (the same machinery /sound/ would
@@ -5926,7 +5933,7 @@ def test_check_evidence_artifact_carries_the_per_role_level_solve():
     from jasper.audio_measurement.program_analysis import GainPlan, RoleGainSolve
 
     store = _RecordingEvidenceStore()
-    publish_check, _publish_candidate, refs = v2host.bind_evidence_publishers(
+    publish_check, _publish_candidate, refs = v2evidence.bind_evidence_publishers(
         store, "capture-session", asyncio.run
     )
     plan = GainPlan(
@@ -5964,7 +5971,7 @@ def test_check_evidence_artifact_tolerates_a_plan_without_solves():
     from jasper.audio_measurement.program_analysis import GainPlan
 
     store = _RecordingEvidenceStore()
-    publish_check, _publish_candidate, _refs = v2host.bind_evidence_publishers(
+    publish_check, _publish_candidate, _refs = v2evidence.bind_evidence_publishers(
         store, "capture-session", asyncio.run
     )
     publish_check(
@@ -6022,7 +6029,7 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
 
     candidate = _run6_measured_candidate(preset)
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_apply",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
@@ -6038,7 +6045,7 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
 
-    pointer = (v2host.load_v2_state() or {}).get("previous_candidate_fingerprint")
+    pointer = (v2state.load_v2_state() or {}).get("previous_candidate_fingerprint")
     assert pointer, "the apply must record the displaced measured candidate"
     return pointer
 
@@ -6048,7 +6055,7 @@ def _rearm_verify():
     re-derive the session context (which re-ensures the crossover preview) and
     persist a conductor under a new session id."""
     ensure_crossover_preview_ready()
-    v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
+    v2state.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
 
 
 
@@ -6099,7 +6106,7 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
     clock[0] += 3600.0  # walked away, well past the ceiling
     writes_before = cam.vol
 
-    drained = v2host.enforce_session_volume_ceiling_if_stale(
+    drained = v2volume.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     )
 
@@ -6107,7 +6114,7 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
     assert cam.vol == writes_before, "the drain moved a fader it does not own"
     assert plan.needs_recovery is False, "a live session is not a recovery case"
     assert plan.unresolved_volume_safety is None, "nothing latched"
-    v2host.set_volume_plan_for_tests(None)
+    v2volume.set_volume_plan_for_tests(None)
 
 
 @pytest.mark.parametrize("route,handler_name", [
@@ -6178,9 +6185,9 @@ def _inline_context() -> V2ConductorContext:
 def _inline_prepared(monkeypatch, tmp_path):
     _ready_inline(monkeypatch)
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context())
-    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     _, _, _, store = _retention_bundle(tmp_path, "inline")
-    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda _: (store, store.session_id))
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _: (store, store.session_id))
     return v2host.prepare_v2_session(_inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
 
 
@@ -6192,7 +6199,7 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: pytest.fail("live mic admission before join"))
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.door._measurement_claim", lambda: pytest.fail("claim before join"))
-    before = v2host.load_v2_state()
+    before = v2state.load_v2_state()
     prepared, store = _inline_prepared(monkeypatch, tmp_path)
     kind = correction_capture.CaptureKind(
         label=prepared.label, open=prepared.open, run_and_consume=prepared.run_and_consume,
@@ -6205,10 +6212,10 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert correction_capture._get_capture_slot_for("crossover_v2:")["status"] == "awaiting_join"
     assert correction_capture._get_capture_slot() is None
     assert prepared.position_gate.published() == {"pending": None, "current": None}
-    assert not v2host.session_measurement_pause_held()
+    assert not v2volume.session_measurement_pause_held()
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert plan["stops"] == _inline_body()["plan"]["stops"]
-    assert v2host.load_v2_state() == before
+    assert v2state.load_v2_state() == before
 
 
 def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path):
@@ -6220,7 +6227,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     prepared, store = _inline_prepared(monkeypatch, tmp_path)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-    v2host.set_volume_plan_for_tests(SessionVolumePlan())
+    v2volume.set_volume_plan_for_tests(SessionVolumePlan())
     monkeypatch.setattr(wired, "resolve_v2_wired_mic", _device)
     monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
                         lambda _: ready_facts(AngleCaptureRequest.from_mapping(_inline_body()["plan"])).anchor.sensitivity)
@@ -6261,9 +6268,9 @@ def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
 
 @pytest.mark.parametrize("tier", ["full", "express", "remote", "unrecognised"])
 def test_old_tier_is_read_as_unknown_and_omitted(tmp_path, tier):
-    v2host.set_state_path_for_tests(tmp_path / "state.json")
-    v2host.save_v2_state({"tier": tier, "session_id": "historic"})
-    state = v2host.load_v2_state()
+    v2state.set_state_path_for_tests(tmp_path / "state.json")
+    v2state.save_v2_state({"tier": tier, "session_id": "historic"})
+    state = v2state.load_v2_state()
     assert state["session_id"] == "historic"
     assert "tier" not in state
 
@@ -6278,7 +6285,7 @@ def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypat
     kind = capture.CaptureKind("crossover_v2:session", lambda: None, lambda _: None,
                               session_id="first", join_entry=SimpleNamespace(screen={}))
     first = capture._stage_capture(kind, idle_hold=no_hold)
-    with pytest.raises(v2host.CrossoverV2Refused) as refused:
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         capture._stage_capture(replace(kind, session_id="second"), idle_hold=no_hold)
     assert refused.value.code == "capture_slot_busy"
     assert capture._get_capture_slot_for("crossover_v2:") == first
@@ -6331,7 +6338,7 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run
         assert opens == [True]
         assert gate.join(kind.join_entry)["index"] == 1
         for payload in ({"index": 9, "attempt": 1}, {"index": 1, "attempt": 1, "run_id": "old"}):
-            with pytest.raises(v2host.CrossoverV2Refused) as refused:
+            with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
                 handlers._handle_crossover_v2_position_ready(_fake_handler(json.dumps(payload).encode()))
             assert refused.value.code == "capture_slot_busy"
     finally:
@@ -6343,13 +6350,13 @@ def test_retired_republish_route_cannot_change_state(monkeypatch, tmp_path):
     from jasper.web.correction_setup import _dispatch_crossover
 
     _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    before = v2host.load_v2_state()
+    before = v2state.load_v2_state()
     replies = []
     handler = SimpleNamespace(path="/crossover/v2/republish",
                               _send_json=lambda payload, **kwargs: replies.append((payload, kwargs["status"])))
     _dispatch_crossover(handler)
     assert replies == [({"ok": False, "code": "route_retired"}, 410)]
-    assert v2host.load_v2_state() == before
+    assert v2state.load_v2_state() == before
 
 
 @pytest.mark.parametrize("applied,epoch,receipt,expected", [
@@ -6363,10 +6370,10 @@ def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected
     from jasper.active_speaker.crossover_v2.coordinator import series_position_from_state
     from tests._log_events import event_records, parse_event
 
-    v2host.save_v2_state({"applied": applied, "round_ordinal_epoch": epoch, "round_receipt": receipt})
+    v2state.save_v2_state({"applied": applied, "round_ordinal_epoch": epoch, "round_receipt": receipt})
     with caplog.at_level(logging.INFO):
-        v2host.reset_v2_journey_state()
-    state = v2host.load_v2_state()
+        v2state.reset_v2_journey_state()
+    state = v2state.load_v2_state()
     position = series_position_from_state(state)
     assert (position.ordinal, position.ordinal_epoch) == (1, expected)
     assert (state or {}).get("round_receipt") is None
@@ -6390,19 +6397,19 @@ def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch
     applied = _apply({"candidate": previous.to_dict(), "expected_candidate_fingerprint": previous.fingerprint},
                      _bg_run_async, lambda: cam)
     assert applied["status"] == "applied"
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     state.update(candidate={"fingerprint": selected.fingerprint}, applied=False)
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     applied = _apply({"candidate": selected.to_dict(), "expected_candidate_fingerprint": selected.fingerprint},
                      _bg_run_async, lambda: cam)
     assert applied["status"] == "applied"
     for path in tmp_path.rglob("run_manifest.json"):
         path.unlink()
-    v2host.reset_v2_journey_state()
+    v2state.reset_v2_journey_state()
     restored = v2apply.handle_v2_apply({"expected_candidate_fingerprint": previous.fingerprint},
                                      _bg_run_async, lambda: cam)
     assert restored["status"] == "applied"
-    state = v2host.load_v2_state()
+    state = v2state.load_v2_state()
     assert state["accepted_sound_revision"] == 3
     assert state["accepted_sound_candidate_fingerprint"] == previous.fingerprint
     assert state["accepted_sound_declaration_change"]["previous_hz"] == 2750.
@@ -6423,7 +6430,7 @@ def test_a_measure_only_session_resolves_to_review_never_done():
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
-    v2host.save_v2_state({
+    v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
@@ -6482,7 +6489,7 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     ("identity", "measurement_candidate_speaker_mismatch"),
 ])
 def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault, code):
-    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    caplog.set_level(logging.INFO, logger=v2apply.__name__)
     from jasper.active_speaker import boost_protection
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
@@ -6544,7 +6551,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         if fault == "load":
             assert result["apply"]["result"].startswith("load_failed")
     else:
-        with pytest.raises(v2host.CrossoverV2Refused) as refused:
+        with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
         assert refused.value.code == code
     fields = event_fields(caplog, "correction.crossover_v2_apply")

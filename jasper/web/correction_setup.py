@@ -31,6 +31,8 @@ lightweight setup pages keeps the idle management UI cheap on a 1 GB Pi.
 """
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import asyncio
 import functools
 import logging
@@ -311,9 +313,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
             # the speaker faulting on its own apply path, which #2839's
             # `allow_nan=False` refusal in `save_v2_state` made
             # reachable -- ERROR, and named for what it is.
-            from jasper.web.correction_crossover_v2 import (
-                CrossoverV2Refused,
-            )
+            from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
             if isinstance(e, (BadRequest, CrossoverV2Refused)):
                 log_event(
                     logger,
@@ -346,10 +346,9 @@ def _dispatch_crossover(handler: _Handler) -> None:
             # The v2 session plan is the only source of an unresolved (or
             # crash-hydrated active) session volume in production; the
             # legacy per-step lease has no path left that ever latches one.
-            from . import correction_crossover_v2 as v2host
 
-            if v2host.v2_volume_recovery_active():
-                succeeded, recovery = v2host.recover_session_volume(
+            if v2volume.v2_volume_recovery_active():
+                succeeded, recovery = v2volume.recover_session_volume(
                     correction_runtime.run_async, correction_runtime.camilla_controller
                 )
                 # A deferral is not a failure to recover, so it must
@@ -360,7 +359,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
                     next_step = (
                         "Refresh and continue crossover commissioning."
                     )
-                elif recovery == v2host.RECOVERY_DEFERRED:
+                elif recovery == v2volume.RECOVERY_DEFERRED:
                     next_step = (
                         "A measurement session still holds the volume. "
                         "It is restored when that session finishes."
@@ -461,13 +460,12 @@ def _get_measurements_data(handler: _Handler) -> None:
 
 def _get_crossover_status(handler: _Handler) -> None:
     from . import correction_crossover_flow
-    from . import correction_crossover_v2 as v2host
 
     def _crossover_status(_handler):
         # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
         # a session volume that outlived its 1800 s ceiling is
         # force-drained here (cheap in-memory stale check first).
-        correction_capture._enforce_session_volume_ceiling(v2host)
+        correction_capture._enforce_session_volume_ceiling(v2volume)
         return correction_crossover_flow.handle_status(
             capture=correction_capture._get_capture_slot_for("crossover_v2:"),
         )
@@ -477,12 +475,11 @@ def _get_crossover_status(handler: _Handler) -> None:
 
 def _get_crossover_envelope(handler: _Handler) -> None:
     from . import correction_crossover_flow
-    from . import correction_crossover_v2 as v2host
 
     def _crossover_envelope(_handler):
         # W6.1 E3: the wizard and remote driver both poll this route,
         # so it promptly drains a walked-away or slow-driver session.
-        correction_capture._enforce_session_volume_ceiling(v2host)
+        correction_capture._enforce_session_volume_ceiling(v2volume)
         return correction_crossover_flow.handle_envelope(
             capture=correction_capture._get_capture_slot_for("crossover_v2:"),
         )

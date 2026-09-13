@@ -47,6 +47,9 @@ suites co-run green in either order.
 
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+from jasper.web import correction_crossover_v2_state as v2state
+
 import dataclasses
 import json
 import tempfile
@@ -76,7 +79,6 @@ from jasper.audio_measurement.program_analysis import (
     CaptureIntegrity,
     IntegrityCheck,
 )
-from jasper.web import correction_crossover_v2 as v2host
 
 from tests.crossover_v2_fixtures import (
     FC_HZ,
@@ -584,8 +586,8 @@ def test_a_captured_baseline_reaches_the_durable_state(tmp_path):
     conductor.consume_capture(1, 1, _capture())
     assert conductor.measure_entry_baseline is not None
 
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    state = v2host.load_v2_state() or {}
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    state = v2state.load_v2_state() or {}
 
     written = state["verify_priors"]["entry_baseline"]
     assert written is not None
@@ -594,7 +596,7 @@ def test_a_captured_baseline_reaches_the_durable_state(tmp_path):
     # Round-trips to an EQUAL record, so nothing was lost or reshaped by the
     # serialization the two stages actually communicate through.
     assert (
-        v2host.entry_baseline_prior_from_state(state)
+        v2durable.entry_baseline_prior_from_state(state)
         == conductor.measure_entry_baseline
     )
 
@@ -641,7 +643,7 @@ def test_stage_2_persist_does_not_erase_the_baseline_it_was_handed(monkeypatch):
         == _ENTRY_BASELINE_PROGRAM_ID
     )
     # …and it is still readable as a record, not merely present as a dict.
-    assert v2host.entry_baseline_prior_from_state(state) is not None
+    assert v2durable.entry_baseline_prior_from_state(state) is not None
 
 
 def test_a_measuring_session_replaces_the_baseline_rather_than_inheriting_one(
@@ -676,7 +678,7 @@ def test_stage_2_without_a_baseline_says_so_on_the_capability_line(
     """
     state = _seed_applied_stage_1_state()
     del state["verify_priors"]["entry_baseline"]
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
 
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
         conductor, _state = _stage_2(monkeypatch)
@@ -720,4 +722,4 @@ def test_an_unreadable_record_reads_as_no_baseline_rather_than_raising(record):
     """
     state = {"verify_priors": {"entry_baseline": record}}
 
-    assert v2host.entry_baseline_prior_from_state(state) is None
+    assert v2durable.entry_baseline_prior_from_state(state) is None

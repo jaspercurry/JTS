@@ -105,7 +105,7 @@ BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
         # and republish admission it supplies are the host's. The `GRADE_*`
         # vocabulary is declared beside the producer that selects it.
         "jasper/cli/doctor/correction.py": frozenset({
-            "jasper.web.correction_crossover_v2",
+            "jasper.web.correction_crossover_v2_grade",
             "jasper.web.correction_crossover_v2_status",
         }),
     },

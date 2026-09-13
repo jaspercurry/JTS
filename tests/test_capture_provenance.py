@@ -16,6 +16,9 @@ is this file's pin: it reproduces exactly that pair.
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_volume as v2volume
+
 import asyncio
 import hashlib
 import logging
@@ -48,7 +51,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
 )
-from jasper.web import correction_crossover_v2 as v2host
 from tests._log_events import event_field_maps, event_fields
 
 PROVENANCE_LOGGER = "jasper.active_speaker.capture_provenance"
@@ -509,9 +511,9 @@ def _drive_one_capture(
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
         monkeypatch.setattr(program_admission, name, readmit)
     monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
-    v2host.set_volume_plan_for_tests(plan)
+    v2volume.set_volume_plan_for_tests(plan)
     recorder, carry = CaptureProvenanceRecorder(), CaptureProvenanceRecorder()
-    production = v2host.bind_production_play(
+    production = v2evidence.bind_production_play(
         camilla_factory=lambda: cam,
         evidence_store=_FakeEvidenceStore(tmp_path),
         capture_session_id="cap_provenance_probe",
@@ -553,7 +555,7 @@ def _drive_one_capture(
     assert (record["graph_scope"], record["candidate_id"], record["wav_path"]) == (
         scope, spec.candidate_id, "capture.wav",
     )
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None,
         meta={}, provenance=recorder, carry=carry,
     )
@@ -569,7 +571,7 @@ def _drive_one_capture(
 @pytest.fixture(autouse=True)
 def _reset_volume_plan():
     yield
-    v2host.set_volume_plan_for_tests(None)
+    v2volume.set_volume_plan_for_tests(None)
 
 
 def test_a_household_capture_carries_provenance_with_nothing_to_arm(
@@ -681,7 +683,7 @@ def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
     monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
 
     carry = CaptureProvenanceRecorder()
-    analyze = v2host.bind_production_analyze(
+    analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None,
         meta={},
         provenance=CaptureProvenanceRecorder(),

@@ -14,6 +14,10 @@ hardware.
 """
 from __future__ import annotations
 
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.web import correction_crossover_v2_volume as v2volume
+from jasper.web import correction_crossover_v2_state as v2state
+
 import io
 import json
 import logging
@@ -363,7 +367,6 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_REGISTRY,
     )
-    from jasper.web import correction_crossover_v2 as v2host_mod
 
     monkeypatch.setattr(
         _common, "guard_mutating_request", lambda handler: True
@@ -373,7 +376,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
 
     def _refuse_coded(*_a, **_k):
-        raise v2host_mod.CrossoverV2Refused(
+        raise refusal_copy.CrossoverV2Refused(
             spec.message, code=REASON_PROGRAM_PROFILE_NOT_CONFIRMED
         )
 
@@ -395,7 +398,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     )
 
     def _refuse_uncoded(*_a, **_k):
-        raise v2host_mod.CrossoverV2Refused(
+        raise refusal_copy.CrossoverV2Refused(
             "the woofer and tweeter measurement targets are not both active"
         )
 
@@ -527,7 +530,7 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     # vocabulary that already answers "a v2 route refused".
     caplog.clear()
     monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
-        v2host_mod.CrossoverV2Refused("nothing to apply")
+        refusal_copy.CrossoverV2Refused("nothing to apply")
     ))
     with caplog.at_level(logging.WARNING, logger=correction_capture.logger.name):
         resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
@@ -803,7 +806,7 @@ def test_crossover_envelope_surfaces_the_v2_capture_slot(monkeypatch):
 
     from jasper.web import correction_crossover_v2 as v2host
 
-    v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
+    v2volume.set_volume_plan_for_tests(_CleanSessionVolumePlan())
     correction_capture._set_capture_slot({
         "status": "waiting",
         "kind": v2host.V2_CAPTURE_KIND_SESSION,
@@ -817,7 +820,7 @@ def test_crossover_envelope_surfaces_the_v2_capture_slot(monkeypatch):
         assert body["capture"]["kind"] == "crossover_v2:session"
     finally:
         correction_capture._set_capture_slot(None)
-        v2host.set_volume_plan_for_tests(None)
+        v2volume.set_volume_plan_for_tests(None)
 
 
 def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
@@ -828,7 +831,6 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     import json
 
     from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
-    from jasper.web import correction_crossover_v2 as v2host
 
     monkeypatch.setattr(
         _common, "guard_mutating_request", lambda handler: True
@@ -844,7 +846,7 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
             drained.append(True)
             return SessionVolumeRestoreResult.EXACT_RESTORED
 
-    v2host.set_volume_plan_for_tests(_V2Plan())
+    v2volume.set_volume_plan_for_tests(_V2Plan())
 
     class _Cam:
         async def set_volume_db(self, db, best_effort=False):
@@ -870,7 +872,7 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
         assert body["recovery"] == "exact_restored"
         assert drained == [True]
     finally:
-        v2host.set_volume_plan_for_tests(None)
+        v2volume.set_volume_plan_for_tests(None)
 
 
 def _write_legacy_volume_safety_file(tmp_path) -> None:
@@ -925,18 +927,17 @@ def test_recover_volume_ignores_a_legacy_volume_safety_file(
     session-volume plan alone, never by the retired file."""
     import json
 
-    from jasper.web import correction_crossover_v2 as v2host
 
     _write_legacy_volume_safety_file(tmp_path)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
 
-    v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
+    v2volume.set_volume_plan_for_tests(_CleanSessionVolumePlan())
     try:
         recover_resp = _drive(
             "/crossover/recover-volume", method="POST", body=b"{}"
         )
     finally:
-        v2host.set_volume_plan_for_tests(None)
+        v2volume.set_volume_plan_for_tests(None)
 
     assert b"409" in recover_resp.split(b"\r\n", 1)[0]
     recover_body = json.loads(recover_resp.split(b"\r\n\r\n", 1)[1])
@@ -951,7 +952,7 @@ def test_apply_bank_refusal_returns_a_refusal_envelope(monkeypatch, tmp_path, lo
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
     from tests.test_correction_crossover_v2_endpoints import _bank_for_apply, _seed_alternative_apply
 
-    monkeypatch.setattr(apply_host.host, "_state_path_override", tmp_path / "v2_state.json")
+    monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
     _bank_for_apply({"candidate": candidate.to_dict()})
     def refused(*args, **kwargs):

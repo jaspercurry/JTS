@@ -1050,7 +1050,7 @@ def test_program_and_journey_phase_values_stay_identical():
       stop every banked program JSON from loading.
     * **Journey side.** The values land in ``session_phases`` /
       ``accepted_phases`` in the on-disk flow state
-      (``correction_crossover_v2.DEFAULT_V2_STATE_PATH``), which
+      (``durable_state.DEFAULT_V2_STATE_PATH``), which
       ``crossover_v2_phase`` reads back.
 
     So if this fails, the question is not "which spelling is nicer" but "what

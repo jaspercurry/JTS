@@ -24,6 +24,8 @@ pins that need a real evidence store.
 
 from __future__ import annotations
 
+from jasper.web import correction_crossover_v2_state as v2state
+
 from typing import Any
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
@@ -264,7 +266,7 @@ def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     if previous_candidate:
         state["previous_candidate_fingerprint"] = _PREVIOUS_CANDIDATE_FINGERPRINT
         state["previous_candidate_displaced_by"] = "fp-stage-1"
-    v2host.save_v2_state(state)
+    v2state.save_v2_state(state)
     return state
 
 
@@ -287,7 +289,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     from tests.test_active_speaker_measured_crossover_candidate import _candidate
     from tests.test_crossover_v2_stage_bridge import _topology
 
-    root = v2host._state_path().parent
+    root = v2state._state_path().parent
     topology = _topology()
     with monkeypatch.context() as build_context:
         build_context.setattr("jasper.active_speaker.driver_safety.evaluate_driver_safety_profile", _real_safety_evaluation)
@@ -304,10 +306,10 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     )
     assert (profile.get("config") or {}).get("sha256"), profile["issues"]
     profile["status"] = "applied"
-    state = v2host.load_v2_state() or {}
+    state = v2state.load_v2_state() or {}
     if state.get("previous_candidate_fingerprint"):
         state.update(previous_candidate_fingerprint=measured.fingerprint, previous_applied_profile=profile)
-        v2host.save_v2_state(state)
+        v2state.save_v2_state(state)
     candidate_path = root / "sessions/authored/evidence/v1/artifacts/crossover_v2/previous/candidate.json"
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
     candidate_path.write_text(json.dumps(measured.to_dict()))
@@ -358,7 +360,7 @@ def _household_sentence(conductor: Any, code: str) -> str:
     a speaker that has already been put back. So the assertion has to reach the
     string on the screen.
     """
-    v2host.persist_conductor_state(conductor, failure_code=code)
+    v2state.persist_conductor_state(conductor, failure_code=code)
     envelope = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
