@@ -13,7 +13,6 @@ from typing import Any
 from jasper.active_speaker.bass_comparison import bass_capture_context, compare_bass_takes, selected_take
 from jasper.active_speaker.bass_table import fit_bass_table, level_key
 from jasper.active_speaker.candidate_bank import load_candidate_artifact
-from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 
@@ -24,7 +23,7 @@ def compare_sets(inputs: RoundInputs, args) -> tuple[dict[str, Any], Path]:
     set_ids: list[str] = args.set or []
     if len(set_ids) != 2:
         raise CrossoverV2Refused(code="bass_fit_pairs_unavailable")
-    sets = {row["set_id"]: SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
+    sets = {row["set_id"]: SetTakes.from_row(row)
             for row in read_run_manifest(inputs)["sets"]}
     for set_id in set_ids:
         if set_id not in sets:
@@ -49,7 +48,7 @@ def fit_run(inputs: RoundInputs, args) -> dict[str, Any]:
     baseline: dict[tuple, list[dict]] = defaultdict(list)
     candidates: dict[str, dict[tuple, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for row in manifest["sets"]:
-        selected = SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
+        selected = SetTakes.from_row(row)
         basis = selected.capture_basis
         level = level_key(basis, set_id=selected.set_id)
         path = default_out(inputs, args.round_dir, ARTIFACT_BY_VIEW["bass"].artifact, selected.set_id)
@@ -58,8 +57,6 @@ def fit_run(inputs: RoundInputs, args) -> dict[str, Any]:
             if not entry["selected"]:
                 continue
             take = dict(selected_take(view, entry["take_id"]))
-            if take["record"].get("phase") == PHASE_ENTRY_BASELINE:
-                continue
             if level_key(bass_capture_context(take), take_id=entry["take_id"]) != level:
                 raise CrossoverV2Refused({"set_id": selected.set_id, "take_id": entry["take_id"]},
                                         code="bass_table_capture_context_changed")

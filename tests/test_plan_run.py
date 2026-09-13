@@ -108,8 +108,17 @@ def _takes(document):
     return [take for group in document["sets"] for take in group["takes"]]
 
 
-@pytest.mark.parametrize(("purpose", "expected"), [("room", "room"), (None, "speaker")])
-def test_manifest_banks_resolved_measurement_purpose(purpose, expected):
+@pytest.mark.parametrize(("purpose", "record_fields", "expected"), [
+    ("room", {}, {"pose_kind": "bearing", "mark_distance_m": 1.0,
+                  "seat_offset_m": None, "measurement_purpose": "room"}),
+    (None, {}, {"pose_kind": "bearing", "mark_distance_m": 1.0,
+               "seat_offset_m": None, "measurement_purpose": "speaker"}),
+    (None, {"pose_kind": "seat", "mark_distance_m": None,
+            "seat_offset_m": [0.2, 0.0, 0.1], "measurement_purpose": "room"},
+     {"pose_kind": "seat", "mark_distance_m": None,
+      "seat_offset_m": [0.2, 0.0, 0.1], "measurement_purpose": "room"}),
+])
+def test_manifest_banks_resolved_measurement_purpose(purpose, record_fields, expected):
     records = FakeSeams().records
     manifest = RunManifest("run", records)
     stop = {"index": 1, "repeat": 1, "pose": {"kind": "bearing", "distance_m": 1.0}}
@@ -117,9 +126,27 @@ def test_manifest_banks_resolved_measurement_purpose(purpose, expected):
         stop["purpose"] = purpose
     manifest.begin(stop, attempt=1, pose_index=0)
 
-    asyncio.run(manifest.bank({"take_id": "take"}))
+    asyncio.run(manifest.bank({"take_id": "take", **record_fields}))
 
-    assert records.banked[0]["measurement_purpose"] == expected
+    assert {key: records.banked[0][key] for key in expected} == expected
+
+
+def test_measure_specs_plan_and_bank_speaker_purpose():
+    async def run():
+        fakes = FakeSeams()
+        manifest = RunManifest("run", _Store(fakes.records))
+        async with open_session(replace(fakes, records=manifest),
+                                allocate_take_id=manifest.allocate_take_id) as (session, _):
+            result = await plan_run.run_specs(
+                (ac.design_axis_spec(_walk([0])),), session=session, manifest=manifest,
+                analyze=_analysis, aborts=_ABORTS,
+            )
+        return result, fakes
+
+    result, fakes = asyncio.run(run())
+
+    assert result.planned[0]["purpose"] == "speaker"
+    assert fakes.records.banked[0]["measurement_purpose"] == "speaker"
 
 
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
@@ -800,11 +827,12 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
              (20, -20, 76, True, 5), (0, -20, 72, True, 1), (0, -30, 60, True, None)]
     for index, (pose, gain, observed, accepted, delta) in enumerate(cases):
         manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}}, attempt=1, pose_index=index)
-        record = {"take_id": str(index), "level_db": gain,
+        record = {"take_id": str(index), "level_db": gain, "phase": "measure",
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
         await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,
                               level_observation=plan_run.level_drift_verdict(**manifest.level_observation(record)).evidence)
         row = next(take for take in manifest.takes if take["take_id"] == str(index))
         assert row["level"]["loudest_half_second_db_spl"] == observed
         assert row["level"]["level_delta_db"] == delta
+        assert row["phase"] == "measure"
     assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"

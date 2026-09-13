@@ -16,6 +16,7 @@ from typing import Any, NamedTuple
 
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
+from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
@@ -205,6 +206,11 @@ class SetTakes(NamedTuple):
     capture_basis: Mapping[str, Any]
     takes: tuple[Mapping[str, Any], ...]
 
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> SetTakes:
+        takes = tuple(take for take in row["takes"] if take.get("phase") != PHASE_ENTRY_BASELINE)
+        return cls(row["set_id"], row["capture_basis"], takes)
+
     @property
     def selected_ids(self) -> tuple[str, ...]:
         return tuple(take["take_id"] for take in self.takes if take["selected"])
@@ -253,7 +259,7 @@ def resolve_set(
     if len(matches) != 1:
         raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])
     row, = matches
-    return SetTakes(row["set_id"], row["capture_basis"], tuple(row["takes"]))
+    return SetTakes.from_row(row)
 
 
 def refused_by_name(

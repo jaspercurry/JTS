@@ -339,3 +339,13 @@ def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested
         assert refused.value.detail["take_ids"] == tuple(f"take-{i}" for i, keep in enumerate(selected) if keep)
     else:
         assert resolved.take_id(requested) == expected
+
+
+def test_set_selection_excludes_entry_baseline_takes(two_sets):
+    root, manifest = two_sets
+    group = manifest["sets"][0]
+    group["takes"][0]["phase"] = "entry_baseline"
+
+    selected = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
+
+    assert group["takes"][0]["take_id"] not in selected.selected_ids

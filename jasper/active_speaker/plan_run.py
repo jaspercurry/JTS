@@ -50,7 +50,7 @@ from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
 from .restore_wait import resilient_restore
-from .measurement_programs import POSE_KIND_BEARING
+from .measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER
 from .run_manifest import RunManifest
 
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
@@ -220,6 +220,11 @@ def _pose(stop: Any) -> dict[str, Any]:
             "distance_m": stop.distance_m, "place": stop.place, "seat_offset_m": stop.seat_offset_m}
 
 
+def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
+    return {"index": index, "repeat": repeat, "pose": _pose(stop),
+            "candidate_id": stop.candidate_id, "purpose": stop.purpose}
+
+
 async def run_plan(
     request: AngleCaptureRequest, *, session: TuningSession | None = None, manifest: RunManifest,
     windows: LevelWindows | None = None,
@@ -245,9 +250,7 @@ async def run_plan(
         "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
         "retries_per_pose": request.retries_per_pose, "level_offsets_db": list(request.level_offsets_db),
     }
-    manifest.planned = [{"index": index * request.repeats + repeat, "repeat": repeat,
-                         "pose": _pose(stop), "candidate_id": stop.candidate_id,
-                         "purpose": stop.purpose}
+    manifest.planned = [_planned_row(index * request.repeats + repeat, repeat, stop)
                         for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
     try:
         resolved = resolve_request(request)
@@ -278,9 +281,7 @@ async def run_plan(
 
     if captures is not None:
         stops = [capture.resolved(request) for capture in captures]
-        manifest.planned = [{"index": index, "repeat": capture.repeat,
-                             "pose": _pose(capture.stop), "candidate_id": capture.stop.candidate_id,
-                             "purpose": capture.stop.purpose}
+        manifest.planned = [_planned_row(index, capture.repeat, capture.stop)
                             for index, capture in enumerate(captures, 1)]
         places = [capture.stop.place for capture in captures]
     else:
@@ -341,13 +342,14 @@ async def run_specs(
 ) -> RunManifest:
     manifest.request_fingerprint = json_fingerprint({"specs": [s.to_dict() for s in specs]})
     manifest.spl_monitor = spl_monitor
-    pose = _pose(SimpleNamespace(kind="bearing", angle_deg=(specs[0].positions or (0,))[0],
-                                elevation_deg=specs[0].vertical_deg, distance_m=None,
-                                place=None, seat_offset_m=None))
+    stop = SimpleNamespace(kind="bearing", angle_deg=(specs[0].positions or (0,))[0],
+                           elevation_deg=specs[0].vertical_deg, distance_m=None,
+                           place=None, seat_offset_m=None, candidate_id="", purpose=PURPOSE_SPEAKER)
+    pose = _pose(stop)
     manifest.asked = {"poses": [pose], "candidates": [s.candidate_id or "base" for s in specs],
                       "mover": "fixed",
                       "level": {"reference_volume_db": session.measurement_level_db}, "repeats": 1}
-    manifest.planned = [{"index": i, "repeat": 1, "pose": pose, "candidate_id": spec.candidate_id}
+    manifest.planned = [_planned_row(i, 1, SimpleNamespace(**{**vars(stop), "candidate_id": spec.candidate_id}))
                         for i, spec in enumerate(specs, 1)]
     work = [_Work(spec, stop, 0, i, len(specs), None)
             for i, (spec, stop) in enumerate(zip(specs, manifest.planned), 1)]
