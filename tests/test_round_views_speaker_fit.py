@@ -162,6 +162,25 @@ def test_speaker_fit_reads_the_run_purpose_behind_a_sized_program(speaker_round,
     assert json.loads(capsys.readouterr().out)["set_id"] == "speaker-set"
 
 
+def test_speaker_fit_reads_curves_the_run_banked_on_the_manifest_rows(speaker_round, capsys):
+    root, record, program, *_ = speaker_round
+    inputs = round_inputs(root)
+    row_path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    curves = {curve["role"]: curve for curve in record.pop("curves")}
+    take_artifact_path(inputs.session_dir, row_path).write_text(json.dumps(record))
+    groups = []
+    for role, curve in curves.items():
+        group = manifest_set([(row_path, record)], set_id=f"{role}-set")
+        group["capture_basis"].update(role=role)
+        for take in group["takes"]:
+            take.update(role=role, curve=curve)
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    assert round_views.main(["speaker-fit", str(root), "--set", "woofer-set"]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert set(answer["linearization"]) == {"woofer", "tweeter"}
+
+
 def test_speaker_fit_falls_back_to_the_rounds_banked_base(speaker_round, capsys, monkeypatch):
     from types import SimpleNamespace
     from jasper.active_speaker import candidate_bank

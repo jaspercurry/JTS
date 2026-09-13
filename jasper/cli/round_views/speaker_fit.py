@@ -135,7 +135,7 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     # carries curves itself (older bundles, fixtures) still reads.
     curves = {curve["role"]: curve for curve in record.get("curves") or []} or {
         row["role"]: row["curve"] for group in manifest["sets"] for row in group["takes"]
-        if row["take_id"] == take_id and row.get("curve")}
+        if row["take_id"] == take_id and row.get("role") and row.get("curve")}
     drivers = []
     for role, band in bands.items():
         response = response_from_banked_curve(curves[role])
