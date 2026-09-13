@@ -4396,6 +4396,37 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
 # freshness gate, no new apply path.
 
 
+@pytest.mark.parametrize("change, blocked", [
+    ("woofer_floor", False), ("tweeter_sensitivity", False), ("crossover_fc", True),
+])
+def test_apply_compares_the_candidate_by_speaker_identity(tmp_path, change, blocked):
+    from dataclasses import replace as _replace
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    if change == "crossover_fc":
+        regions = (_replace(preset.crossover_regions[0], fc_hz=preset.crossover_regions[0].fc_hz + 300.0),)
+        measured_preset = _replace(preset, crossover_regions=regions)
+    else:
+        role, field_name, value = (("woofer", "protection_highpass_floor_hz", 40.0) if change == "woofer_floor"
+                                   else ("tweeter", "sensitivity_db", 80.0))
+        drivers = dict(preset.drivers)
+        drivers[role] = _replace(drivers[role], **{field_name: value})
+        measured_preset = _replace(preset, drivers=drivers)
+    assert measured_preset != preset
+    payload = build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview, measurements={}, write=False,
+        state_path=tmp_path / "baseline_profile.json", config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config, tuning_owner="automatic", measured_candidate=_v2_candidate(measured_preset),
+        created_at="2026-07-18T12:20:00Z",
+    )
+    mismatch = [issue for issue in payload.get("issues", []) if issue.get("code") == "measured_candidate_preset_mismatch"]
+    assert bool(mismatch) is blocked
+
+
 def _v2_candidate(
     preset: ActiveSpeakerPreset,
     *,
