@@ -418,8 +418,8 @@ def test_bank_fans_out_views_with_the_base(tmp_path, purpose, base):
             (view, None, None) for view in ("classify-features", "distortion", "directivity", "per-seat")]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
-            ("room-grade", f"trial-{i}", None) for i in range(2) if base]
-        assert banked.provenance["views"][len(groups):] == [
+            ("room-grade", f"trial-{i}", None) for i in range(2) if base] + [("frequency", None, None)]
+        assert banked.provenance["views"][len(groups):-1] == [
             {"view": "room-grade", "set_id": f"trial-{i}", **(
                 {"status": "written", "incumbent_set_id": "base"} if base else
                 {"status": "unavailable", "reason": "room_incumbent_set_unavailable"})} for i in range(2)]
@@ -464,3 +464,10 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
     answer = run_bookkeeping(view, target)
     assert answer["status"] == "written", answer
     assert Path(answer["out"]).is_file()
+    if view == "frequency":
+        if answer["image"] is None:
+            assert answer["reason"] == "plots_extra_missing"
+        else:
+            assert Path(answer["image"]) == target / "frequency.png"
+            assert Path(answer["image"]).read_bytes().startswith(b"\x89PNG")
+        assert len(answer["series"]) == (7 if purpose == "room" else 1)

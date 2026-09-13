@@ -12,6 +12,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, 
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db
 from dataclasses import replace
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +38,7 @@ from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view
 from jasper.active_speaker.frequency_plot import render_frequency_view
+from jasper.active_speaker import frequency_plot
 from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
@@ -196,11 +198,106 @@ def test_image_uses_shared_trust_markings_and_keeps_untrusted_data(tmp_path, mon
     monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
     render_frequency_view(view, tmp_path / "response.png", band_hz=(50, 1000))
     ax = figures[0].axes[0]
-    assert list(ax.lines[0].get_ydata()) == view["runs"][0]["series"][0]["display"]["deviation_db"]
+    plotted = list(ax.lines[0].get_ydata())
+    assert plotted[0] is None
+    assert plotted[1:] == pytest.approx([-1, 0, 1, 2])
     spans = [patch.get_path().transformed(patch.get_patch_transform()).vertices[:, 0]
              for patch in ax.patches]
     assert [(min(xs), max(xs)) for xs in spans] == [(50, 357), (400, 500)]
     assert list(ax.lines[-1].get_xdata()) == [900, 900]
+
+
+@pytest.mark.parametrize("offset,shape", [(-30, False), (-30, True), (12, True)])
+def test_plot_power_reference_smoothing_and_statistics(monkeypatch, offset, shape):
+    calls = []
+    smooth = frequency_plot.smooth_fractional_octave
+
+    def observed(freqs, values, *, fraction):
+        calls.append(fraction)
+        return smooth(freqs, values, fraction=fraction)
+
+    monkeypatch.setattr(frequency_plot, "smooth_fractional_octave", observed)
+    freqs = np.array([25, 35, 45, 55, 70, 100, 150, 300, 1000, 1010, 4000, 9000])
+    raw = np.array([2] * 7 + [0, 0, 10 * np.log10(3), 0, 4]) if shape else np.zeros(12)
+    plot = frequency_plot.prepare_plot_curve({"id": "test", "freqs_hz": freqs[::-1].tolist(), "magnitude_db": (raw + offset)[::-1].tolist()})
+    assert calls == [6]
+    assert plot["freqs_hz"] == freqs.tolist()
+    assert plot["display"] == "normalized"
+    reference = 10 * np.log10(1.5) if shape else 0
+    expected = np.array([2] * 7 + [0, 10 * np.log10(2), 10 * np.log10(2), 0, 4]) - reference if shape else np.zeros(12)
+    assert plot["deviation_db"] == pytest.approx(expected, abs=1e-10)
+    ref = np.asarray(plot["deviation_db"])[(freqs >= 200) & (freqs <= 5000)]
+    assert 10 * np.log10(np.mean(10 ** (ref / 10))) == pytest.approx(0, abs=1e-10)
+    assert plot["rms_db"] == pytest.approx(np.sqrt(np.mean(expected[5:] ** 2)), abs=1e-10)
+    assert plot["peak_to_peak_db"] == pytest.approx(4 if shape else 0, abs=1e-10)
+    assert [band["mean_db"] for band in plot["band_means"]] == pytest.approx(expected[[0, 1, 2, 3, 4, 5, 6, 7]], abs=1e-10)
+
+
+@pytest.mark.parametrize("normalize,mode,levels", [
+    (False, "run_reference", [0, 3]), (True, "normalized", [0, 0]),
+])
+def test_frequency_reference_modes_preserve_or_remove_level_differences(tmp_path, monkeypatch, capsys, normalize, mode, levels):
+    figure = pytest.importorskip("matplotlib.figure")
+    freqs = [25, 35, 45, 55, 70, 100, 150, 300, 1000, 9000]
+    curves = tuple(frequency_series(
+        series_id=str(offset), label=str(offset), kind="measurement", reference_db=-20,
+        freqs_hz=freqs[::-1], magnitude_db=[-20 + offset] * len(freqs), position={"deg": 0},
+    ) for offset in (0, 3))
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(neutral_view(FrequencyRun("trial", "speaker_response", curves))))
+    figures = []
+    monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
+    assert round_views_main([
+        "frequency", str(source), "--image", str(tmp_path / "plot.png"),
+        *(["--normalize"] if normalize else []),
+    ]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    for series, line, level in zip(answer["series"], figures[0].axes[0].lines, levels):
+        assert series["display"] == mode
+        assert series["rms_db"] == pytest.approx(level, abs=1e-10)
+        assert series["peak_to_peak_db"] == pytest.approx(0, abs=1e-10)
+        assert [band["mean_db"] for band in series["band_means"]] == pytest.approx([level] * 8, abs=1e-10)
+        assert list(line.get_xdata()) == freqs
+        assert list(line.get_ydata()) == pytest.approx([level] * len(freqs), abs=1e-10)
+
+
+@pytest.mark.parametrize("candidates,labels", [
+    (("base", "candidate-123456"), ["applied", "candidat"]),
+    (("base", "abcdefghijkl-one", "abcdefghijkl-two", "abcdefghijkl-one"),
+     ["applied", "abcdefghijkl-o", "abcdefghijkl-t"]),
+])
+def test_image_groups_configurations_by_pose(tmp_path, monkeypatch, candidates, labels):
+    figure = pytest.importorskip("matplotlib.figure")
+    curves = tuple(frequency_series(
+        series_id=f"{pose}:{index}", label=candidate, kind="measurement",
+        freqs_hz=[20, 100, 1000, 10000, 20000], magnitude_db=[-10] * 5,
+        position={"deg": pose}, candidate_id=candidate, base=candidate == "base",
+    ) for pose in (-20, 20) for index, candidate in enumerate(candidates))
+    figures = []
+    monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
+    render_frequency_view(neutral_view(FrequencyRun("trial", "speaker_response", curves)), tmp_path / "plot.png", low_end=True)
+    for index, ax in enumerate(figures[0].axes[:4]):
+        assert ax.get_xscale() == "log"
+        assert ax.get_xlim() == (20, 300 if index % 2 else 20000)
+        assert ax.get_ylim() == (-20, 20)
+        assert [line.get_linestyle() for line in ax.lines[:2]] == ["--", "-"]
+        assert [text.get_text() for text in ax.get_legend().get_texts()] == labels
+        assert [tick for tick in ax.get_xticks()] == ([20, 50, 100, 200] if index % 2 else [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000])
+
+
+@pytest.mark.parametrize("with_image", [False, True])
+def test_frequency_without_matplotlib_writes_json(tmp_path, monkeypatch, capsys, with_image):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(neutral_view(frequency_run(_packet("test")))))
+    output, png = tmp_path / "view.json", tmp_path / "view.png"
+    monkeypatch.setitem(sys.modules, "matplotlib.figure", None)
+    flags = ["--image", str(png), "--low-end"] if with_image else []
+    assert round_views_main(["frequency", str(source), "--out", str(output), *flags]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["image"] is None
+    assert answer.get("reason") == ("plots_extra_missing" if with_image else None)
+    assert output.is_file() and not png.exists()
+    assert answer["series"][0]["rms_db"] == pytest.approx(np.sqrt(5 / 3))
 
 
 def test_frequency_view_adds_optional_run_b_without_changing_run_a():
@@ -747,6 +844,10 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     asyncio.run(bank("bass", scope="candidate", candidate="bass-6db", setup={
         "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
     }))
+    write_manifest(bundle, program="bass", groups=[
+        {"set_id": "base", "base": True, "takes": [{"take_id": "baseline"}]},
+        {"set_id": "trial", "base": False, "takes": [{"take_id": "bass"}]},
+    ])
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
     assert ExcitationProgram.from_dict(record["program"]).program_id == program.program_id
@@ -768,6 +869,7 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     assert view["runs"][0]["metadata"]["take_count"] == 2
     assert baseline["candidate_id"] == "baseline-fp"
     assert bass["candidate_id"] == "bass-6db"
+    assert [baseline["base"], bass["base"]] == [True, False]
     assert [s["graph_scope"] for s in (baseline, bass)] == ["candidate", "candidate"]
     assert [s["level_db"] for s in (baseline, bass)] == [-20, -20]
     assert [s["stimulus_dbfs"] for s in (baseline, bass)] == [-14, -14]

@@ -86,6 +86,9 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     run_id = capture.get("session_id") if isinstance(capture, dict) else None
     if not isinstance(capture, dict) or not isinstance(run_id, str) or not run_id:
         return failed(EXIT_UNREADABLE, "run_answer_invalid", payload)
+    if args.wait:
+        args.run = run_id
+        return _cmd_wait(client, args)
     return _answer("run", "Run ready; place the microphone to start.",
                    run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH),
                    status_url=speaker_url(STATUS_PATH),
@@ -183,7 +186,9 @@ def _timeout(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    run = sub.add_parser("run", help="resolve and post a plan; return its handoff link immediately")
+    timeout_args = argparse.ArgumentParser(add_help=False)
+    timeout_args.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
+    run = sub.add_parser("run", parents=[timeout_args], help="resolve and post a plan; optionally wait and bank its views")
     _connection_args(run)
     run.add_argument("--program", choices=("speaker", "room", "bass"))
     poses = run.add_mutually_exclusive_group()
@@ -194,15 +199,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v4 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
+    run.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its views")
     run.set_defaults(func=_cmd_run)
     for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):
-        command = sub.add_parser(verb, help=function.__name__.removeprefix("_cmd_"))
+        command = sub.add_parser(verb, parents=[timeout_args] if verb == "wait" else [], help=function.__name__.removeprefix("_cmd_"))
         _connection_args(command)
         command.add_argument("--run", required=True, help="run id returned by run")
         if verb == "placed":
             command.add_argument("--pose", type=int, help="expected pending pose number")
-        if verb == "wait":
-            command.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
         command.set_defaults(func=function)
     apply = sub.add_parser("apply", help="apply the named banked candidate")
     _connection_args(apply)

@@ -170,6 +170,8 @@ def run_bookkeeping(
     flags = ["--set", set_id] if set_id is not None else []
     if incumbent is not None:
         flags += ["--incumbent", incumbent]
+    if view == "frequency":
+        flags += ["--analyze-wavs", "--image", str(target / "frequency.png"), "--low-end"]
     parser = build_parser()
     verbs = next(action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction))
     if view not in verbs:

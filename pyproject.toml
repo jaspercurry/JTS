@@ -12,7 +12,7 @@ plots = ["matplotlib>=3.8,<4"]
 streambox = [
     # Streambox = local renderers, CamillaDSP, and the assistant reached only
     # through a paired remote's mic (push-to-talk, no wake word). Exactly
-    # [full] minus the wake/mic/AEC/XVF runtimes that path never loads.
+    # [full] minus plots and the wake/mic/AEC/XVF runtimes that path never loads.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     "google-genai==2.22.0",
     "openai[realtime]>=3.12.0",
@@ -37,6 +37,7 @@ streambox = [
 ]
 
 full = [
+    "matplotlib>=3.8,<4",
     "google-genai==2.22.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS

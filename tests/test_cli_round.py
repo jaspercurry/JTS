@@ -318,21 +318,26 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
     assert not opener.posts()
 
 
-def test_wait_banks_and_returns_manifest_and_views(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("verb", ["wait", "run"])
+@pytest.mark.parametrize("timeout", ["--timeout", "--timeout-s"])
+def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch, capsys, tmp_path, verb, timeout):
     from jasper.active_speaker import round_bank
     from jasper.cli.round_views import run_bookkeeping
 
-    views = [{"view": "bass", "status": "written", "out": "bass_view.json"}]
+    views = [{"view": "frequency", "status": "written", "out": "frequency_view.json", "image": "frequency.png"}]
     banked = round_bank.BankedRound(tmp_path, {"manifest": "run_manifest.json", "views": views})
     calls = []
     monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: calls.append((path, kw)) or banked)
     monkeypatch.setattr(cli, "_round_session_dir", lambda run: str(tmp_path))
     opener = _run_opener({"status": "complete", "run": {"status": "complete", "manifest": "run_manifest.json"}})
-    code, body = _run(["wait", "--run", "run-1"], opener, monkeypatch, capsys)
+    opener.pages[wc.SESSION_PATH] = json.dumps({"capture": {"session_id": "run-1"}})
+    argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--poses", "seat_express", "--wait"]
+    code, body = _run([*argv, timeout, "0"], opener, monkeypatch, capsys)
     assert code == 0 and calls == [(tmp_path, {
         "view_runner": run_bookkeeping,
     })]
     assert body["manifest"] == "run_manifest.json" and body["views"] == views
+    assert body["round_dir"] == str(tmp_path)
 
 
 @pytest.mark.parametrize("argv", [["run", "--tier", "express"], ["run", "--stage", "measure"], ["open"], ["bank"]])

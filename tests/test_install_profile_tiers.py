@@ -620,6 +620,7 @@ def test_pyproject_base_install_stays_minimal():
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     assert set(streambox) < set(full)
     assert {_distribution_name(dep) for dep in set(full) - set(streambox)} == {
+        "matplotlib",
         "onnxruntime",
         "pyusb",
         "libusb_package",
