@@ -260,6 +260,21 @@ def test_unresolved_stop_skips_only_capture_quality_refusals(monkeypatch, qualit
     assert all(stop["reason"] == reason for stop in result.not_measured)
 
 
+def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
+    verdicts = iter([
+        TakeVerdict(True),
+        *(TakeVerdict(False, REASON_CLIPPED, next="retake_quieter", next_gain_db=-24,
+                      charge="speaker") for _ in range(7)),
+    ])
+    monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
+
+    result, fakes = asyncio.run(_run_gated(_walk([0, 20, 40])))
+
+    assert result.reason == REASON_CLIPPED
+    assert fakes.play.bearings == [0, *([20] * 7)]
+    assert [stop["index"] for stop in result.not_measured] == [2, 3]
+
+
 @pytest.mark.parametrize("action", ["retake", "complete"])
 def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
     signals, gate = plan_run.RunSignals(), AnsweredGate()

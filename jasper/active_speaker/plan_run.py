@@ -426,6 +426,7 @@ async def _run(
                 if previous is not None:
                     resume, offset = max(offset, previous + 1), previous
                     retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
+                    retry_was_measured = False
             item = work[offset]
             window_key = (item.pose_index, item.stop.get("level_window_index", 0))
             if windows is not None and active_window != window_key:

@@ -65,8 +65,6 @@ REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_CAPTURE_TIMEOUT = "capture_timeout"
-REASON_SPL_LEVEL_UNSETTLED = "spl_level_unsettled"
-REASON_MIC_FEED_LOST = "mic_feed_lost"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # The play seam refused or failed the program (safety re-admission over-cap, a
 # graph-restore failure, a session program error) — distinct from a capture
@@ -153,21 +151,6 @@ REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
-
-CAPTURE_QUALITY_REFUSAL_CODES = frozenset({
-    REASON_AGC_BEHAVIORAL_FAIL,
-    REASON_NOISY_ROOM_LINEARITY,
-    REASON_PILOT_LEVEL_COLLAPSE,
-    REASON_SNR_FLOOR,
-    REASON_ANCHOR_AMBIGUOUS,
-    REASON_ANCHOR_TOO_QUIET,
-    REASON_CLIPPED,
-    REASON_LEVEL_DRIFT_AT_SESSION_GAIN,
-    REASON_DRIFT_BASELINES_DISAGREE,
-    REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
-    REASON_LOCATE_FAILED,
-    REASON_SPL_LEVEL_UNSETTLED,
-})
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
 # The seams raise open-endedly (CamillaUnavailable is a bare Exception,
@@ -413,6 +396,8 @@ class ReasonSpec:
     # derived from this value by :func:`_retriable_reason`, so the diagnosis
     # used at exhaustion and the one inside retry copy have one writer.
     retry_copy: RetryableReasonCopy | None = None
+    # True only for measured-and-rejected recording quality, never a level or safety fault.
+    capture_quality: bool = False
 
 
 def _retriable_reason(
@@ -422,6 +407,7 @@ def _retriable_reason(
     copy: RetryableReasonCopy,
     *,
     auto_retry: bool = False,
+    capture_quality: bool = False,
 ) -> ReasonSpec:
     """Build a retryable registry row from one structured copy source."""
     if retry_budget <= 0:
@@ -433,6 +419,7 @@ def _retriable_reason(
         copy.message if auto_retry else "",
         "" if auto_retry else copy.message,
         retry_copy=copy,
+        capture_quality=capture_quality,
     )
 
 
@@ -445,9 +432,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
        for code, message in (
            ("level_unreachable", "The target level is unreachable at this gain. Check the amplifier and microphone."),
            ("level_ambient_too_high", "The room is too loud to level. Reduce the ambient noise and try again."),
-           (REASON_SPL_LEVEL_UNSETTLED, "The microphone level did not settle. Try again."),
+           ("spl_level_unsettled", "The microphone level did not settle. Try again."),
            ("mic_not_observing", "The microphone did not hear the speaker. Check its position and connection."),
-           (REASON_MIC_FEED_LOST, "The microphone stopped sending samples. Check its connection and try again."),
+           ("mic_feed_lost", "The microphone stopped sending samples. Check its connection and try again."),
            ("mic_clipping", "The microphone clipped. Check the microphone and lower the level."),
            ("volume_latch_unconfirmed", "The amplifier gain could not be confirmed. Check the audio connection."),
            ("fader_above_cap", "The amplifier gain exceeds the 0 dB cap. Lower it before leveling."),
@@ -564,6 +551,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "The two test tones didn't come back at the levels JTS played them.",
             "Re-allow the microphone, then try again.",
         ),
+        capture_quality=True,
     ),
     REASON_NOISY_ROOM_LINEARITY: _retriable_reason(
         REASON_NOISY_ROOM_LINEARITY, TEMPLATE_FIX_AND_RETRY, 1,
@@ -573,6 +561,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             joiner=" — ",
             strip_before_join=".",
         ),
+        capture_quality=True,
     ),
     REASON_PILOT_LEVEL_COLLAPSE: _retriable_reason(
         REASON_PILOT_LEVEL_COLLAPSE, TEMPLATE_FIX_AND_RETRY, 1,
@@ -583,6 +572,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "loud, or the speaker too quiet, for this check.",
             "Quiet the room or move the microphone closer, then try again.",
         ),
+        capture_quality=True,
     ),
     REASON_SNR_FLOOR: _retriable_reason(
         REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1,
@@ -590,6 +580,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "The room is too loud right now, or the microphone is too far away.",
             "Quiet the room or move the microphone closer, then try again.",
         ),
+        capture_quality=True,
     ),
     REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
         REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
@@ -609,6 +600,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "JTS couldn't line that recording up with the test tones it played.",
             "Try that measurement again.",
         ),
+        capture_quality=True,
     ),
     REASON_MEASURE_GAIN_ADJUSTED: _retriable_reason(
         REASON_MEASURE_GAIN_ADJUSTED, TEMPLATE_SILENT_AUTO_RETRY, 1,
@@ -632,6 +624,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_LEVEL_DRIFT_AT_SESSION_GAIN, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy("The microphone read a different level at the same gain — something changed in the room.",
                             "Retake."),
+        capture_quality=True,
     ),
     REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(
         REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
@@ -642,6 +635,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             strip_before_join=".",
         ),
         auto_retry=True,
+        capture_quality=True,
     ),
     REASON_DELAY_EXCEEDS_SEARCH_WINDOW: _retriable_reason(
         REASON_DELAY_EXCEEDS_SEARCH_WINDOW, TEMPLATE_FIX_AND_RETRY, 1,
@@ -649,6 +643,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "The microphone may be off the spot in the picture.",
             "Re-check its placement, then try again.",
         ),
+        capture_quality=True,
     ),
     REASON_LOCATE_FAILED: _retriable_reason(
         REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
@@ -661,6 +656,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             locate_failed_diagnosis(None),
             LOCATE_RETRY_ACTION,
         ),
+        capture_quality=True,
     ),
     REASON_CAPTURE_TIMEOUT: ReasonSpec(
         REASON_CAPTURE_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
@@ -1109,6 +1105,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "JTS heard the speaker, but the test tones were too quiet to line up.",
             LOCATE_RETRY_ACTION,
         ),
+        capture_quality=True,
     ),
 }
 
@@ -1229,6 +1226,9 @@ def reason_diagnosis(
 # reaches a settled slot anyway, not the ordinary path.
 NON_RETRIABLE_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items() if spec.retry_budget == 0
+)
+CAPTURE_QUALITY_REFUSAL_CODES = frozenset(
+    code for code, spec in REASON_REGISTRY.items() if spec.capture_quality
 )
 
 
