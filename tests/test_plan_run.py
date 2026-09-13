@@ -661,28 +661,48 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, ph
     assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])
 
 
-@pytest.mark.parametrize("level", [-14.0, -26.0])
-async def test_check_plays_at_the_session_level(tmp_path, box, level):
+@pytest.mark.parametrize("requested,level", [(None, -15), (-25, -25), (0, 0)])
+async def test_check_plays_at_the_session_level(tmp_path, box, requested, level):
     from tests.test_correction_crossover_v2_wired import _run_door
 
     fakes = FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
-        level=ac.LevelPolicy(resolved=ac.ResolvedLevel(75, level, "1234")),
+        level=ac.LevelPolicy(level_db=requested, resolved=ac.ResolvedLevel(75, -15, "1234")),
     )
     door = _run_door(tmp_path, box, fakes, manifest)
     door.build_session = Mock(wraps=door.build_session)
+
+    async def measure(session, spec):
+        assert box.volume_db == await box.get_loudness_volume_db() == level
+        return await session.measure(spec)
+
     result = await plan_run.run_plan(
         request, door=door, manifest=manifest, analyze=_analysis,
-        aborts=_ABORTS,
+        aborts=_ABORTS, measure=measure,
         captures=plan_run.prepare_plan_captures(request),
         assessor=lambda *_args, **_kwargs: TakeVerdict(True),
     )
     door.build_session.assert_called_once()
     assert result.status == "complete"
+    assert manifest.to_dict()["level"] == {"session": request.level.resolved.session(),
+                                          "run": {"level_db": level, "offset_db": level + 15}}
+    assert {row["capture_basis"]["level_db"] for row in manifest.to_dict()["sets"]} == {level}
     assert [(call["spec"].program_phase, call["level_db"]) for call in fakes.play.calls] == [
         (phase, level) for phase in ("check", "entry_baseline", "measure")]
+
+
+@pytest.mark.parametrize("level", [-20, -25])
+async def test_run_requires_the_chosen_level_in_an_open_session(level):
+    request = replace(_walk([0]), level=ac.LevelPolicy(level_db=level, resolved=ac.ResolvedLevel(75, -15, "1234")))
+    if level == -25:
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            await _run_gated(request)
+        assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
+    else:
+        result, _ = await _run_gated(request)
+        assert result.status == "complete"
 
 
 async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_path, box):
@@ -718,14 +738,14 @@ async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_
 
 async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
     manifest = RunManifest("run", _Store(FakeSeams().records), level={"session": {"session_id": "leveled"}})
-    cases = [(0, -20, "a", "", 70, True, None), (0, -20, "a", "", 72, True, 2), (0, -20, "a", "", 90, False, 19),
-             (20, -20, "a", "", 76, True, 5), (0, -20, "a", "", 72, True, 1), (0, -30, "a", "", 60, True, None),
-             (0, -20, "b", "", 55, True, None), (0, -20, "b", "", 58, True, 3), (0, -20, "a", "", 73, True, 1),
-             (0, -20, "a", "fp-cut", 64, True, None), (0, -20, "a", "fp-cut", 65, True, 1)]
+    cases = [(0, -15, "a", "", 70, True, None), (0, -15, "a", "", 72, True, 2), (0, -15, "a", "", 90, False, 19),
+             (20, -15, "a", "", 76, True, 5), (0, -15, "a", "", 72, True, 1), (0, -25, "a", "", 60, True, None),
+             (0, -15, "b", "", 55, True, None), (0, -15, "b", "", 58, True, 3), (0, -15, "a", "", 73, True, 1),
+             (0, -15, "a", "fp-cut", 64, True, None), (0, -15, "a", "fp-cut", 65, True, 1)]
     for index, (pose, gain, program, candidate, observed, accepted, delta) in enumerate(cases):
         manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}, "candidate_id": candidate},
                        attempt=1, pose_index=index)
-        record = {"take_id": str(index), "level_db": gain, "phase": "measure", "program_id": program,
+        record = {"take_id": str(index), "level_db": -99, "provenance": {"session_volume_db": gain}, "phase": "measure", "program_id": program,
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
         await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,
                               level_observation=plan_run.level_drift_verdict(**manifest.level_observation(record)).evidence)

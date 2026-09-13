@@ -1054,16 +1054,14 @@ def test_bass_fit_weights_positions_equally_and_stays_inside_measured_range(targ
     kwargs = {'candidate_id': 'boost', 'descriptor': {'low_boost_db': 12, 'reference_level_db': 0,
               'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30},
               'target': {'freqs_hz': [50, 200], 'magnitude_db': [target_db, target_db]}}
-    if has_bass:
-        monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
-                            lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension={"low_boost_db": 6})))
-        with pytest.raises(CrossoverV2Refused) as refused:
-            fit_bass_shape(pairs, **kwargs)
-        assert refused.value.code == "bass_fit_requires_room_baseline_and_exact_candidate"
-        return
+    base_descriptor = {**kwargs['descriptor'], 'low_boost_db': 6} if has_bass else None
+    monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
+                        lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension=base_descriptor)))
     result = fit_bass_shape(pairs, **kwargs)
     repeated = fit_bass_shape([pairs[0]] * 5 + pairs[1:], **kwargs)
     assert result['selected_scale'] == pytest.approx(expected_scale)
+    assert result['choices'][0]['descriptor'] == base_descriptor
+    assert result['choices'][-1]['realized_boost_db'] == pytest.approx([6 if has_bass else 3] * len(result['freqs_hz']))
     assert repeated['selected_scale'] == pytest.approx(result['selected_scale'])
     assert repeated['position_count'] == 2
     assert repeated['take_pair_count'] == 6
@@ -1105,44 +1103,58 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact',
                         lambda _: SimpleNamespace(fingerprint='boost', bass_extension=descriptor))
     takes = []
-    for volume, gain in [(-10, 10), (-30, 6), (-20, 3)]:
+    volumes = (-10, -30, -20)
+    roots = [tmp_path / f'round-{volume}' for volume in volumes]
+    for volume, gain in zip(volumes, (10, 6, 3)):
         for index, take in enumerate(copy.deepcopy(bass_fit_pairs[0])):
-            take['record'].update(level_db=volume, loudness_volume_db=volume + 10,
-                                  take_id=f'take-{len(takes)}')
+            take['record'].update(level_db=volume, loudness_volume_db=volume,
+                                  take_id=f'take-{len(takes)}', run_id=f'run-{volume}')
             take['record_path'] = f'capture-{len(takes)}.json'
             take['fundamental_db'] = [volume - 6 + index * gain] * len(take['freqs_hz'])
             take['fundamental_qualified'] = [True] * len(take['freqs_hz'])
             take['frequency_curve']['magnitude_db'] = [volume] * 3
             takes.append(take)
-    (tmp_path / 'bundle' / 'session').mkdir(parents=True)
     target = tmp_path / 'target.json'
     target.write_text(json.dumps({'freqs_hz': [60, 100], 'magnitude_db': [0, 0]}))
     out = tmp_path / 'table.json'
-    argv = ['bass-fit-table', str(tmp_path), '--run', 'fixture', '--candidate', 'candidate.json',
+    argv = ['bass-fit-table', *map(str, roots), '--candidate', 'candidate.json',
             '--target', str(target), '--tolerance-db', '1', '--out', str(out)]
 
     def write(takes=takes, change_basis=None, selected=None):
-        groups = {}
-        for take in takes:
-            record = take['record']
-            key = record.get('candidate_id'), record.get('level_db'), record.get('loudness_volume_db')
-            groups.setdefault(key, []).append(take)
-        manifest_groups = []
-        for number, group in enumerate(groups.values()):
-            row = manifest_set([(take['record_path'], take['record']) for take in group],
-                               set_id=f'set-{number}', selected=selected)
-            if change_basis:
-                change_basis(row)
-            manifest_groups.append(row)
-            (tmp_path / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/1', 'takes': group}))
-        return write_manifest(tmp_path, program='bass', groups=list(reversed(manifest_groups)))
+        manifests = []
+        for root, volume in zip(roots, volumes):
+            directory = root / 'bundle/session/evidence/v1/artifacts/crossover_v2' / f'run-{volume}'
+            directory.mkdir(parents=True, exist_ok=True)
+            groups = {}
+            for take in takes:
+                record = take['record']
+                if record['run_id'] != f'run-{volume}':
+                    continue
+                key = record.get('candidate_id'), record.get('level_db'), record.get('loudness_volume_db')
+                groups.setdefault(key, []).append(take)
+            manifest_groups = []
+            for number, group in enumerate(groups.values()):
+                row = manifest_set([(take['record_path'], take['record']) for take in group],
+                                   set_id=f'set-{number}', selected=selected)
+                for entry, take in zip(row['takes'], group):
+                    entry['repeat'] = take['record'].get('repeat', 0)
+                if change_basis:
+                    change_basis(row)
+                manifest_groups.append(row)
+                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/1', 'takes': group}))
+            manifest = write_manifest(root, program='bass', groups=list(reversed(manifest_groups)))
+            manifest['run_id'] = f'run-{volume}'
+            path = directory / 'run_manifest.json'
+            path.write_text(json.dumps(manifest))
+            manifests.append(path)
+        return manifests
 
-    return SimpleNamespace(takes=takes, write=write, argv=argv, out=out, descriptor=descriptor)
+    return SimpleNamespace(takes=takes, write=write, argv=argv, out=out, descriptor=descriptor, roots=roots)
 
 
 @pytest.mark.parametrize('fault,reason', [
     (None, None), ('coverage', None), ('zero_coverage', None), ('measured_pass', None),
-    ('stimulus', 'bass_table_capture_context_changed'),
+    *[(field, 'bass_table_capture_context_changed') for field in ('stimulus', 'graph_fingerprint', 'played_graph')],
     ('integrity', 'bass_table_capture_integrity_failed'),
     ('reference', 'bass_table_window_gain_missing'),
     ('after_reference', 'bass_table_window_gain_missing'),
@@ -1159,6 +1171,11 @@ def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_run, capsys, 
     elif fault == 'stimulus':
         for take in takes[:2]:
             take['record']['stimulus_dbfs'] = -14
+    elif fault == 'graph_fingerprint':
+        takes[0]['record']['graph_fingerprint'] = 'changed'
+    elif fault == 'played_graph':
+        for take in takes[::2]:
+            take['record']['provenance'] = {'graph': {'fingerprint': 'first' if take is takes[0] else 'other'}}
     elif fault == 'integrity':
         takes[1]['diagnostics'] = {'integrity_failed': True}
     elif fault in ('reference', 'after_reference', 'after_level', 'program'):
@@ -1193,14 +1210,14 @@ def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_run, capsys, 
         return
     assert code == 0
     run = json.loads(bass_run.out.read_text())
-    assert run['run_id'] == 'fixture'
+    assert run['run_ids'] == ['run--10', 'run--30', 'run--20']
     table, = run['tables']
     assert table['tested_volume_range_db'] == [-30, -10]
     assert table['target']['freqs_hz'] == [60, 100]
     assert [row['level_key'] for row in table['levels']] == [
-        {'level_db': level, 'loudness_volume_db': level + 10, 'program_id': 'sweep'} for level in (-30, -20, -10)]
+        {'level_db': level, 'loudness_volume_db': level, 'program_id': 'sweep'} for level in (-30, -20, -10)]
     assert [row['loudness_boost_db'] for row in table['levels']] == [
-        loudness_boost_db(level + 10, DynamicBassDescriptor(**bass_run.descriptor)) for level in (-30, -20, -10)]
+        loudness_boost_db(level, DynamicBassDescriptor(**bass_run.descriptor)) for level in (-30, -20, -10)]
     assert [row['selected_scale'] for row in table['levels']] == [1, 1, None if fault == 'zero_coverage' else 1 if fault == 'measured_pass' else pytest.approx(.6)]
     assert [row['outcome'] for row in table['levels']] == [
         'target_met', 'target_not_met', 'target_met' if fault == 'measured_pass' else
@@ -1213,20 +1230,30 @@ def test_bass_table_cli_preserves_levels_and_qualifies_target(bass_run, capsys, 
         assert table['levels'][-1]['next_action'] == REASON_REGISTRY[table['levels'][-1]['code']].next_action
 
 
-def test_bass_table_accepts_program_id_per_volume_window(bass_run, capsys):
+@pytest.mark.parametrize("has_bass", [False, True])
+def test_bass_table_joins_rounds_with_the_bases_boost(bass_run, capsys, monkeypatch, has_bass):
+    base = {**bass_run.descriptor, "low_boost_db": 4, "reference_level_db": -10} if has_bass else None
+    monkeypatch.setattr("jasper.active_speaker.bass_fit.find_banked_candidate",
+                        lambda identity: SimpleNamespace(candidate=SimpleNamespace(bass_extension=base)))
     takes = bass_run.takes[:4]
     program_ids = {-10: 'sweep-loud', -30: 'sweep-quiet'}
     for take in takes:
         take['record']['program_id'] = program_ids[take['record']['level_db']]
     bass_run.write(takes)
+    bass_run.argv.remove(str(bass_run.roots[-1]))
 
     assert round_views_main(bass_run.argv) == 0
     capsys.readouterr()
     table, = json.loads(bass_run.out.read_text())['tables']
     assert [row['level_key'] for row in table['levels']] == [
-        {'level_db': -30, 'loudness_volume_db': -20, 'program_id': 'sweep-quiet'},
-        {'level_db': -10, 'loudness_volume_db': 0, 'program_id': 'sweep-loud'},
+        {'level_db': -30, 'loudness_volume_db': -30, 'program_id': 'sweep-quiet'},
+        {'level_db': -10, 'loudness_volume_db': -10, 'program_id': 'sweep-loud'},
     ]
+    for row, gain in zip(table['levels'], (6, 10)):
+        measured = row['fit']['choices'][-1]
+        base_boost = loudness_boost_db(row['level_key']['loudness_volume_db'], DynamicBassDescriptor(**base)) if base else 0
+        assert measured['realized_boost_db'] == pytest.approx([gain + base_boost] * len(row['fit']['freqs_hz']))
+        assert row['fit']['choices'][0]['descriptor'] == base
 
 
 @pytest.mark.parametrize('field', ['level_db', 'loudness_volume_db', 'program_id'])
@@ -1242,7 +1269,7 @@ def test_bass_table_requires_the_manifest_level_key(bass_run, capsys, field):
 def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
     bass_run.write()
     out = bass_run.out.parent / 'comparison.json'
-    assert round_views_main(['bass-compare', str(out.parent), str(out.parent), '--before-set', 'set-0', '--after-set', 'set-1',
+    assert round_views_main(['bass-compare', str(bass_run.roots[0]), str(bass_run.roots[0]), '--before-set', 'set-0', '--after-set', 'set-1',
                              '--change', 'candidate', '--out', str(out)]) == 0
     assert json.loads(capsys.readouterr().out)['available']
     comparison = json.loads(out.read_text())
@@ -1251,7 +1278,7 @@ def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
 
 
 @pytest.mark.parametrize('case,reason', [
-    ('one_level', None), ('same_main', None), ('repeat', None), ('two_candidates', None),
+    ('fingerprint', None), ('one_level', None), ('repeat', None), ('two_candidates', None), ('partial_levels', None),
     ('unselected', None), ('entry_baseline', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
     ('duplicate', 'bass_fit_pairs_unavailable'), ('run', 'bass_fit_run_mismatch'),
     ('candidate', 'bass_fit_candidate_unreadable'), ('base_candidate', 'bass_fit_candidate_unreadable'),
@@ -1261,9 +1288,8 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
     selected = None
     if case == 'one_level':
         takes = takes[:2]
-    elif case == 'same_main':
-        for take in takes[2:4]:
-            take['record']['level_db'] = -10
+    elif case == 'partial_levels':
+        takes = takes[:-1]
     elif case == 'entry_baseline':
         entry = copy.deepcopy(takes[0])
         entry['record'].update(take_id='entry', phase=PHASE_ENTRY_BASELINE)
@@ -1287,8 +1313,10 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
                                                              bass_extension=bass_run.descriptor))
     elif case == 'missing_pose':
         takes[1]['record']['position_deg'] = 20
-    elif case == 'run':
-        bass_run.argv[bass_run.argv.index('--run') + 1] = 'another-run'
+    elif case == 'fingerprint':
+        monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact', lambda _: None)
+        monkeypatch.setattr('jasper.cli.round_views._bass_inputs.find_banked_candidate',
+                            lambda _: SimpleNamespace(candidate=SimpleNamespace(fingerprint='boost', bass_extension=bass_run.descriptor)))
     elif case == 'candidate':
         monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact', lambda _: None)
     elif case == 'base_candidate':
@@ -1296,12 +1324,11 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
             raise CandidateBankRefusal('not_found', 'not found')
 
         monkeypatch.setattr('jasper.active_speaker.bass_fit.find_banked_candidate', missing_candidate)
-    manifest = bass_run.write(takes, selected=selected)
-    if case == 'repeat':
-        for group in manifest['sets']:
-            for take in group['takes']:
-                take['repeat'] = int(take['take_id'].startswith('copy'))
-        write_manifest(bass_run.out.parent, program='bass', groups=manifest['sets'])
+    manifests = bass_run.write(takes, selected=selected)
+    if case == 'run':
+        manifest = json.loads(manifests[0].read_text())
+        manifest['run_id'] = 'another-run'
+        manifests[0].write_text(json.dumps(manifest))
     code = round_views_main(bass_run.argv)
     answer = json.loads(capsys.readouterr().out)
     if reason:
@@ -1315,7 +1342,7 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         run = json.loads(bass_run.out.read_text())
         tables = run['tables']
         assert len(tables) == (2 if case == 'two_candidates' else 1)
-        assert len(tables[0]['levels']) == (1 if case == 'one_level' else 3)
+        assert len(tables[0]['levels']) == (1 if case == 'one_level' else 2 if case == 'partial_levels' else 3)
         if case == 'entry_baseline':
             assert run['schema'] == 'jts_bass_run_table/1'
             assert [level['outcome'] for level in tables[0]['levels']] == [
@@ -1336,7 +1363,7 @@ def test_bass_fit_verb_is_retired():
 @pytest.mark.parametrize('fault', ['missing', 'json', 'schema'])
 def test_bass_file_errors_keep_the_unreadable_exit(bass_run, capsys, verb, fault):
     bass_run.write()
-    path = bass_run.out.parent / 'bass_view-set-0.json'
+    path = bass_run.roots[0] / 'bass_view-set-0.json'
     if fault == 'missing':
         path.unlink()
     else:
@@ -1382,7 +1409,7 @@ def test_bass_verbs_read_one_manifest_snapshot(bass_run, monkeypatch, capsys, ve
 
     monkeypatch.setattr(Path, 'read_text', read)
     argv = (bass_run.argv if verb == 'bass-fit-table' else
-            [verb, str(bass_run.out.parent), str(bass_run.out.parent), '--before-set', 'set-0', '--after-set', 'set-1', '--change', 'candidate'])
+            [verb, str(bass_run.roots[0]), str(bass_run.roots[0]), '--before-set', 'set-0', '--after-set', 'set-1', '--change', 'candidate'])
     assert round_views_main(argv) == 0
     capsys.readouterr()
-    assert len(reads) == 1
+    assert len(reads) == len(set(reads)) == (3 if verb == 'bass-fit-table' else 1)

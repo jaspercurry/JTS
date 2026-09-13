@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
 from tests.test_active_speaker_measurement_door import box as box
 from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
@@ -814,7 +815,8 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     (None, True, MicSensitivity(-12.07)),
     (74.9, False, None),
 ])
-def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, verify_only, sensitivity):
+@pytest.mark.parametrize("offset", [0, -10, 2])
+def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, verify_only, sensitivity, offset):
     fakes = FlowSeams()
     conductor = _conductor(fakes, index_phase_map={1: "check", 2: "measure", 3: "verify"},
                            gain_plan_db={"woofer": -32.0, "tweeter": -38.0})
@@ -823,7 +825,7 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", resolve)
     monkeypatch.setattr(correction_run_host, "CapturedRecordStore", lambda *_args: records)
     monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
-    target = (sensitivity.dbfs_from_db_spl(anchor) + SWEEP_PEAK_TO_RMS_DB
+    target = (sensitivity.dbfs_from_db_spl(anchor + offset) + SWEEP_PEAK_TO_RMS_DB
               if anchor is not None and sensitivity is not None else None)
     with caplog.at_level(logging.INFO):
         door, analyze, _assessor = correction_run_host.bind_run_door(
@@ -831,7 +833,7 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
             ceiling_s=30, ceiling_db_spl=85, camilla_factory=None, verify_only=verify_only,
-            level_anchor_db_spl=anchor,
+            level=LevelPolicy(level_db=-15 + offset, resolved=ResolvedLevel(anchor, -15, "1234") if anchor is not None else None),
         )
         for index, phase in enumerate(("check", "measure", "verify"), 1):
             expected = (conductor._check_priors() if phase == "check" else
@@ -851,7 +853,7 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     events = event_field_maps(caplog, "active_speaker.check_level_target")
     assert len(events) == (0 if target is None else 1)
     if target is not None:
-        assert float(events[0]["anchor_db_spl"]) == anchor
+        assert float(events[0]["anchor_db_spl"]) == anchor + offset
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
 
 

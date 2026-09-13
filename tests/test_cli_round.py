@@ -227,7 +227,7 @@ def preflight_ready(monkeypatch):
 @pytest.mark.parametrize("source", ["flags", "file", "confirmed"])
 def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
-    argv = ["run", "--program", "room", "--poses", "seat_express"]
+    argv = ["run", "--program", "room", "--poses", "seat_express", "--level-db", "-25"]
     if candidates:
         argv += ["--candidates", candidates]
     if source == "confirmed":
@@ -242,7 +242,8 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert code == 0
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == ([] if candidates is None else [candidates])
-    assert (plan["artifact_schema_version"], body["run_id"]) == (4, "run-1")
+    assert (plan["artifact_schema_version"], body["run_id"]) == (5, "run-1")
+    assert plan["level"]["level_db"] == -25
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["shape"] == shape
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
@@ -425,4 +426,15 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
     code = cli.main(["run", "--dry-run", "--base-url", address], opener=opener)
     body = json.loads(capsys.readouterr().out)
     assert code == 1 and body["reason"] == "dry_run_requires_local_host"
+    assert not opener.requests
+
+
+def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys):
+    opener = _opener()
+    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25", "--dry-run"],
+                      opener, monkeypatch, capsys)
+    assert code == 0 and body["mic_moves"] == 1
+    capture, = body["schedule"]
+    assert capture["regime"] == "summed"
+    assert body["level"]["level_db"] == -25
     assert not opener.requests

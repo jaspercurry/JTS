@@ -19,7 +19,7 @@ from ._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUN
 def add_parser(sub: argparse._SubParsersAction) -> None:
     for name, help_text in (("bass", "bass response, quiet-window SNR and H2/H3"),
                             ("bass-compare", "compare selected bass sets"),
-                            ("bass-fit-table", "fit all candidate/level pairs in a run")):
+                            ("bass-fit-table", "fit candidate/level pairs across rounds")):
         parser = sub.add_parser(name, help=help_text)
         parser.add_argument("--out")
         parser.set_defaults(func=_cmd)
@@ -30,13 +30,13 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             add_set_argument(parser, name="--after-set", take=True)
             parser.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
             continue
-        parser.add_argument("round_dir", type=Path)
         if name == "bass":
+            parser.add_argument("round_dir", type=Path)
             add_set_argument(parser)
             parser.add_argument("--calibration-root", type=Path)
         else:
-            parser.add_argument("--run", required=True, help="run ID recorded in this round's manifest")
-            parser.add_argument("--candidate", type=Path, action="append", required=True, help="measured candidate artifact; repeat for each candidate")
+            parser.add_argument("round_dir", type=Path, nargs="+")
+            parser.add_argument("--candidate", type=Path, action="append", required=True, help="candidate artifact or banked fingerprint; repeat for each candidate")
             parser.add_argument("--target", type=Path, required=True, help="target curve JSON: freqs_hz, magnitude_db")
             parser.add_argument("--tolerance-db", type=float, required=True)
             parser.add_argument("--reference-band-hz", type=float, nargs=2)
@@ -67,8 +67,9 @@ def _cmd(args: argparse.Namespace) -> int:
             payload, destination = _compare(args)
             summary: dict[str, Any] = {key: payload[key] for key in ("available", "context", "bands")}
         else:
-            inputs = round_inputs(args.round_dir)
-            destination = default_out(inputs, args.round_dir, ARTIFACT_BY_VIEW[args.command].artifact,
+            root = args.round_dir if args.command == "bass" else args.round_dir[-1]
+            inputs = round_inputs(root)
+            destination = default_out(inputs, root, ARTIFACT_BY_VIEW[args.command].artifact,
                                       args.set if args.command == "bass" else None)
             if args.command == "bass":
                 from jasper.active_speaker.measurement_bass import bass_view  # lazy: laptop FFT analysis
@@ -80,9 +81,9 @@ def _cmd(args: argparse.Namespace) -> int:
                 from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ  # lazy: laptop array analysis
                 from ._bass_inputs import fit_run  # lazy: laptop array analysis
                 args.reference_band_hz = args.reference_band_hz or REFERENCE_BAND_HZ
-                payload = fit_run(inputs, args)
+                payload = fit_run(args)
                 levels = [row for table in payload["tables"] for row in table["levels"]]
-                summary = {"run_id": payload["run_id"], "level_count": len(levels),
+                summary = {"run_ids": payload["run_ids"], "level_count": len(levels),
                            "outcomes": [row["outcome"] for row in levels]}
     except CrossoverV2Refused as refusal:
         message, action = refusal_copy_for(refusal.code)

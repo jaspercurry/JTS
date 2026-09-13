@@ -3365,7 +3365,7 @@ def prepare_v2_session(
         )
 
         if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
-            raise CrossoverV2Refused("An inline v4 plan is required", code="program_plan_shape_invalid")
+            raise CrossoverV2Refused("An inline v5 plan is required", code="program_plan_shape_invalid")
         try:
             request = AngleCaptureRequest.from_mapping(raw["plan"])
         except LateralWalkRefused as exc:
@@ -3383,7 +3383,7 @@ def prepare_v2_session(
         report = preflight.preflight(request, facts)
         issue = next((issue for issue in report.issues if issue.blocking), None)
         if issue is not None:
-            raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
+            raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
         request = report.plan
         assert request.level.resolved is not None
         captures = prepare_plan_captures(
@@ -3405,7 +3405,7 @@ def prepare_v2_session(
             session_plan, context=context, device=wired_device))
         if report.blocking:
             issue = next(issue for issue in report.issues if issue.blocking)
-            raise CrossoverV2Refused(issue.detail, code=issue.code, next_action=issue.next_action)
+            raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
     plan_shape = _hand_released_plan_shape(plan_shape)
     engine_measure_specs: dict[int, Any] = {}
     engine_level_trims: dict[str, float] = {}
@@ -3630,8 +3630,7 @@ def prepare_v2_session(
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
             ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
                             if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
-            level_anchor_db_spl=(request.level.resolved.anchor_db_spl
-                                 if not verify_only and request.level.resolved is not None else None),
+            level=report.plan.level,
         )
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures

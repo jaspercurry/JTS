@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
@@ -118,10 +119,10 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, verify_only: bool, provenance: Any = None,
-                  level_anchor_db_spl: float | None = None) -> tuple[RunDoor, Any, Any]:
+                  level: LevelPolicy = LevelPolicy()) -> tuple[RunDoor, Any, Any]:
     sensitivity = resolved_household_sensitivity(device)
-    check_target = (anchored_check_target(sensitivity, level_anchor_db_spl)
-                    if level_anchor_db_spl is not None and sensitivity is not None else None)
+    check_target = (anchored_check_target(sensitivity, level.resolved.anchor_db_spl + level.offset_db)
+                    if level.resolved is not None and sensitivity is not None else None)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, verify_only=verify_only, provenance=provenance,
