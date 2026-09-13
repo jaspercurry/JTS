@@ -1503,20 +1503,19 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
 
 def _session_from_real_open(monkeypatch, fakes) -> Any:
     from jasper.active_speaker.crossover_v2.door import OpenMeasurementDoor
-    from jasper.audio_measurement.calibration import MicSensitivity
     from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
     captured = {}
-    real_bind = v2host.bind_level_windows
+    real_bind = v2host.bind_run_door
     monkeypatch.setattr(v2host, "bind_v2_engine_seams", lambda **kwargs: fakes.seams())
     def bind(**kwargs):
-        windows, analyze, assessor = real_bind(**kwargs)
-        level = kwargs["context"].session_volume_db
-        monitor = WiredSplMonitor(MicSensitivity(-12, 18, "1234"), windows.ceiling_db_spl, 0)
+        binding, analyze, assessor = real_bind(**kwargs)
+        level = kwargs["conductor"]._excitation.session_volume_db
+        monitor = WiredSplMonitor(binding.sensitivity, binding.ceiling_db_spl, 0)
         door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, level, "graph", monitor)
-        captured["tuning"] = windows.build_session(door, kwargs["manifest"].allocate_take_id)
-        return windows, analyze, assessor
-    monkeypatch.setattr(v2host, "bind_level_windows", bind)
+        captured["tuning"] = binding.build_session(door, kwargs["manifest"].allocate_take_id)
+        return binding, analyze, assessor
+    monkeypatch.setattr(v2host, "bind_run_door", bind)
     captured["conductor"], _state = _stage_1(monkeypatch)
     return captured
 

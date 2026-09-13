@@ -278,10 +278,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0301](0301-an-intact-trial-capture-is-the-measured-requirement.md) | The listening flag retires; an intact trial capture is the measured requirement; verification is advice | accepted |
 | [0302](0302-the-speaker-program-is-explicit.md) | The Speaker program is explicit | accepted |
 | [0303](0303-a-trial-plays-the-candidate-as-composed.md) | A trial plays the candidate as composed; the layer order is speaker → room → bass; the composer owns inherit/clear semantics | accepted |
-| [0304](0304-the-bass-level-axis-is-fixed-level-windows.md) | The bass level axis is fixed-level windows inside one run; canonical pose sets belong to each program and mover | accepted |
+| [0304](0304-the-bass-level-axis-is-fixed-level-windows.md) | Level windows | superseded by 0311 |
 | [0305](0305-the-measurement-hold-spans-a-whole-run.md) | The measurement hold spans a whole run from the mover's join | accepted |
 | [0306](0306-one-auto-level-tool-levels-a-session-once.md) | One auto-level tool levels a session once | accepted |
 | [0307](0307-only-a-measured-excess-boost-acts.md) | Only a measured excess-boost finding acts | accepted |
 | [0308](0308-the-leveling-verb-levels-with-the-measurement-sweep.md) | The leveling verb levels with the measurement sweep | amended by 0309, 0310 |
 | [0309](0309-the-level-statistic-is-the-loudest-half-second.md) | The level statistic is the loudest half-second | accepted |
 | [0310](0310-leveling-converges-on-two-in-band-readings.md) | Leveling converges on two consecutive in-band readings | accepted |
+| [0311](0311-a-run-plays-at-one-session-level.md) | One run, one level | accepted |

@@ -142,7 +142,7 @@ __all__ = [
 
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
-REQUEST_SCHEMA_VERSION = 3
+REQUEST_SCHEMA_VERSION = 4
 REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 
@@ -393,7 +393,6 @@ class AngleCaptureRequest:
     program: str = ""
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
-    level_offsets_db: tuple[float, ...] = ()
     repeats: int = 1
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
@@ -428,12 +427,6 @@ class AngleCaptureRequest:
     def _validate_policy(self) -> None:
         if not isinstance(self.level, LevelPolicy):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
-        levels = self.level_offsets_db
-        if not isinstance(levels, (tuple, list)) or any(finite_float(v) is None for v in levels):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level offsets must be finite numbers")
-        if any(level > 0 for level in levels):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "window offsets must be non-positive")
-        object.__setattr__(self, "level_offsets_db", tuple(levels) or (0.0,))
         for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -464,14 +457,14 @@ class AngleCaptureRequest:
                  or getattr(stop, f.name) != f.default}
                 for stop in self.stops
             ],
-            "candidates": list(self.candidates), "level_offsets_db": list(self.level_offsets_db),
+            "candidates": list(self.candidates),
             "artifact_schema_version": REQUEST_SCHEMA_VERSION, "kind": REQUEST_KIND,
         }
 
     @classmethod
     def from_mapping(cls, doc: Mapping[str, Any]) -> AngleCaptureRequest:
         if doc.get("artifact_schema_version") != REQUEST_SCHEMA_VERSION:
-            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED, "restage the request as version 3")
+            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED, "restage the request as version 4")
         if doc.get("kind") != REQUEST_KIND:
             raise ValueError("invalid angle request kind")
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
@@ -737,7 +730,6 @@ def request_for_program(
     mover: str = MOVER_HUMAN,
     template: MeasureSpec = DEFAULT_TEMPLATE,
     level: LevelPolicy = LevelPolicy(),
-    level_offsets_db: tuple[float, ...] = (),
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
 ) -> AngleCaptureRequest:
@@ -769,7 +761,7 @@ def request_for_program(
         mover=mover,
         template=template,
         candidates=candidates,
-        level=level, level_offsets_db=level_offsets_db,
+        level=level,
         repeats=repeats, retries_per_pose=retries_per_pose,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
@@ -789,7 +781,7 @@ def walk_price(
     ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
     """
     takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats * max(1, len(request.level_offsets_db))
+    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
     return {
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
@@ -920,7 +912,6 @@ WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
-# Remove with PR 28b, level windows.
 WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 # Remove when W1-13 hosts run_plan in the wizard.
 WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"

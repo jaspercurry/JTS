@@ -78,8 +78,8 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     )
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     assert report.issues == ()
-    assert [(row.pose, row.offset_db, row.candidate_id, row.repeat) for row in report.schedule] == [
-        (stop.place, 0.0, stop.candidate_id or "base", repeat)
+    assert [(row.pose, row.candidate_id, row.repeat) for row in report.schedule] == [
+        (stop.place, stop.candidate_id or "base", repeat)
         for stop in plan.stops for repeat in (1, 2)
     ]
     assert report.mic_moves == report.price["mic_moves"] == 3

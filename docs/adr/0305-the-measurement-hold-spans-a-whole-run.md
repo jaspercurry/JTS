@@ -6,9 +6,9 @@
 ## Context
 
 ADR-0285 described its no-cue exception as capped by a 120-second hold TTL.
-The redesigned executor can run several poses, candidates, attempts, and level
-windows for much longer while renewing the lease. The old stated bound no
-longer describes the operator-visible deafness window.
+The executor can run several poses, candidates, and attempts for much longer
+while renewing the lease. The old bound no longer describes the
+operator-visible deafness window.
 
 The owner ratified option (a) on issue #4942. The why and evidence are in the
 issue's brief v2.1 §§2.1 and 2.3 and evidence comments 2 and 11.
@@ -17,9 +17,9 @@ issue's brief v2.1 §§2.1 and 2.3 and evidence comments 2 and 11.
 ## Decision
 
 One measurement hold spans the whole run, including all poses, candidates,
-retries, and fixed-level windows. The hold starts when a mover joins, not when
-the run is created, returned, viewed, or polled. Before join, the run owns no
-microphone pause or volume resource.
+and retries. The hold starts when a mover joins, not when the run is created,
+returned, viewed, or polled. Before join, the run owns no microphone pause or
+volume resource.
 
 The daemon renews the hold lease while the executor remains live. Release,
 cancellation, terminal refusal, or lease expiry restores exactly the persisted
@@ -38,8 +38,8 @@ shape.
 
 ## Consequences
 
-Audio isolation does not open between poses or level windows, and wake audio
-cannot contaminate a long experiment. Waiting to hand over the link costs no
+Audio isolation does not open between poses, and wake audio cannot
+contaminate a long experiment. Waiting to hand over the link costs no
 hold time and does not silence the speaker.
 
 A legitimate run may be deaf for tens of minutes. The operator initiated that

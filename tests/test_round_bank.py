@@ -398,13 +398,13 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
         assert views[0]["status"] == "written"
 
 
-@pytest.mark.parametrize("purpose,windows", [("room", 0), ("room", 1), ("room", 2), ("speaker", 1)])
-def test_bank_fans_out_views_and_matches_base_windows(tmp_path, purpose, windows):
+@pytest.mark.parametrize("purpose,base", [("room", False), ("room", True), ("speaker", True)])
+def test_bank_fans_out_views_with_the_base(tmp_path, purpose, base):
     session, state = _live_session(tmp_path)
-    groups = [{"set_id": f"base-{i}", "base": True, "capture_basis": {"candidate_id": "base-graph"},
-               "takes": [{"level_window_db": -20 + i}]} for i in range(windows)]
-    groups += [{"set_id": f"trial-{i}", "base": False, "capture_basis": {"candidate_id": "trial"},
-                "takes": [{"level_window_db": -20 + i}]} for i in range(2)]
+    groups = [{"set_id": "base", "base": True, "capture_basis": {"candidate_id": "base-graph"},
+               "takes": []}] if base else []
+    groups += [{"set_id": f"trial-{i}", "base": False, "capture_basis": {"candidate_id": f"trial-{i}"},
+                "takes": []} for i in range(2)]
     write_manifest(session, program=purpose, groups=groups)
     calls = []
 
@@ -418,10 +418,10 @@ def test_bank_fans_out_views_and_matches_base_windows(tmp_path, purpose, windows
             (view, None, None) for view in ("classify-features", "distortion", "directivity", "per-seat")]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
-            ("room-grade", f"trial-{i}", f"base-{i}" if windows > 1 else None) for i in range(windows)]
+            ("room-grade", f"trial-{i}", None) for i in range(2) if base]
         assert banked.provenance["views"][len(groups):] == [
             {"view": "room-grade", "set_id": f"trial-{i}", **(
-                {"status": "written", "incumbent_set_id": f"base-{i}"} if i < windows else
+                {"status": "written", "incumbent_set_id": "base"} if base else
                 {"status": "unavailable", "reason": "room_incumbent_set_unavailable"})} for i in range(2)]
 
 

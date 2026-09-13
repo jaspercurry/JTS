@@ -190,10 +190,9 @@ def build_parser() -> argparse.ArgumentParser:
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
     poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
     run.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
-    run.add_argument("--level-offsets-db", help="comma-separated non-positive offsets from the session gain (default 0)")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
     run.add_argument("--mover", choices=MOVERS)
-    run.add_argument("--plan", help="v3 plan document; used without plan-building flags")
+    run.add_argument("--plan", help="v4 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run.set_defaults(func=_cmd_run)
     for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):

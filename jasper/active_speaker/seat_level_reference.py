@@ -13,7 +13,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
 from jasper.atomic_io import atomic_write_json
@@ -324,19 +324,14 @@ def resolve_anchor_level(
     )
 
 
-def check_target_capture_dbfs(
-    sensitivity: Any, anchor_db_spl: float, level_offsets_db: Sequence[float] = (0.0,),
-) -> float:
-    """The CHECK solve's capture-peak target: the anchor's SPL at the quietest window.
+def check_target_capture_dbfs(sensitivity: Any, anchor_db_spl: float) -> float:
+    """The CHECK solve's capture-peak target at the session anchor.
 
-    CHECK plays at the run's quietest level window, so the solved per-driver
-    gains land on the anchor at the reference window and ``offset`` dB below it
-    elsewhere. The anchor is a loudest-half-second RMS; the solve compares peaks.
+    The anchor is a loudest-half-second RMS; the solve compares peaks.
     """
     from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB  # lazy: keeps this module numpy-free
 
-    check_target_db_spl = float(anchor_db_spl) + min(level_offsets_db or (0.0,))
-    target = float(sensitivity.dbfs_from_db_spl(check_target_db_spl)) + SWEEP_PEAK_TO_RMS_DB
+    target = float(sensitivity.dbfs_from_db_spl(anchor_db_spl)) + SWEEP_PEAK_TO_RMS_DB
     log_event(logger, "active_speaker.check_level_target", anchor_db_spl=anchor_db_spl,
-              check_target_db_spl=check_target_db_spl, target_capture_dbfs=target)
+              target_capture_dbfs=target)
     return target

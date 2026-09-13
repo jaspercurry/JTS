@@ -107,7 +107,7 @@ def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
 def build_v2_wired_run_and_consume(
     conductor: Any, *, stop_event: threading.Event, stop_lock: Any,
     ceiling_s: float, complete_event: threading.Event, retake_event: threading.Event,
-    windows: plan_run.LevelWindows, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
+    door: plan_run.RunDoor, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
     candidate_scopes: Mapping[str, str],
     position_gate: Any = None, evidence_refs: Mapping[str, Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
@@ -142,13 +142,13 @@ def build_v2_wired_run_and_consume(
         try:
             try:
                 result = await plan_run.run_plan(
-                    request, windows=windows, manifest=manifest, analyze=analyze, assessor=assessor,
+                    request, door=door, manifest=manifest, analyze=analyze, assessor=assessor,
                     gate=position_gate, candidate_scopes=candidate_scopes, captures=captures,
                     signals=signals, admit=admit, aborts={CaptureStopped: "user_stopped"},
                     gain_ceiling_db=conductor._measure_gain_ceiling_db,
                 )
             finally:
-                restore = windows.last_window.restore_result if windows.last_window else None
+                restore = door.opened.restore_result if door.opened else None
                 host._persist_execution_result(session_id, volume_restore=restore.value if restore else "failed")
             if result.reason and result.reason != "complete_requested":
                 if result.reason == "user_stopped" or result.cancelled:

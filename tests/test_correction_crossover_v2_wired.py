@@ -610,10 +610,9 @@ def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp
     assert state["execution"]["cleanup_fault_code"] == "internal_error"
 
 
-def _windows(tmp_path, box, fakes, manifest, records=None):
-    from dataclasses import replace
+def _run_door(tmp_path, box, fakes, manifest, records=None):
     from jasper.active_speaker.crossover_v2.door import isolation_hold
-    from jasper.active_speaker.plan_run import LevelWindows
+    from jasper.active_speaker.plan_run import RunDoor
     from jasper.audio_measurement.calibration import MicSensitivity
     from tests.engine_twin import tuning_session
 
@@ -623,38 +622,38 @@ def _windows(tmp_path, box, fakes, manifest, records=None):
                                       records=manifest if records is None else records),
                               session_id=manifest.run_id, measurement_level_db=door.measurement_volume_db,
                               allocate_take_id=allocate)[0]
-    return LevelWindows(
+    return RunDoor(
         isolation_hold(graph=fakes.graph, camilla_factory=lambda: box, action="test",
                        volume_state_path=tmp_path / "volume.json"),
-        build, None, None, MicSensitivity(-12, 18, "1234"), _device(), 85, gain_db=-20,
+        build, MicSensitivity(-12, 18, "1234"), _device(), 85,
     )
 
 
 def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=None):
-    from dataclasses import replace
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.run_manifest import RunManifest
     from tests.engine_twin import FakeSeams as EngineSeams
     from tests.test_plan_run import _Store, _analysis, _walk, _SCOPES
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from jasper.active_speaker.plan_run import PlanCapture
+    from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
     fakes, flow = EngineSeams(), FlowSeams()
     manifest = RunManifest("host-run", _Store(fakes.records))
     session = SimpleNamespace(session_id=manifest.run_id)
-    windows = _windows(tmp_path, box, fakes, manifest)
+    door = _run_door(tmp_path, box, fakes, manifest)
     conductor = _conductor(flow)
     control = signals or plan_run.RunSignals()
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
-    request = replace(_walk([0, 20]), level_offsets_db=(0,))
+    request = replace(_walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
         for stop in request.stops) if phase else None
     runner = v2wired.build_v2_wired_run_and_consume(
-        conductor, windows=windows,
+        conductor, door=door,
         stop_event=control.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=control.complete, retake_event=control.retake,
         manifest=manifest, request=request, captures=captures,
@@ -759,7 +758,6 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
 @pytest.mark.parametrize("clipped_take", [False, True])
 async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, phase, clipped_take):
-    from dataclasses import replace
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.audio_measurement.program import STIMULUS_KINDS
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
@@ -809,15 +807,14 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     assert fakes.published_candidates == []
 
 
-@pytest.mark.parametrize(("anchor", "verify_only", "sensitivity", "offsets"), [
-    (74.9, False, MicSensitivity(-12.07), (0.0,)),
-    (74.9, False, MicSensitivity(-12.07), (0.0, -12.0)),
-    (0.0, False, MicSensitivity(-12.07), (0.0,)),
-    (None, False, MicSensitivity(-12.07), (0.0,)),
-    (None, True, MicSensitivity(-12.07), (0.0,)),
-    (74.9, False, None, (0.0,)),
+@pytest.mark.parametrize(("anchor", "verify_only", "sensitivity"), [
+    (74.9, False, MicSensitivity(-12.07)),
+    (0.0, False, MicSensitivity(-12.07)),
+    (None, False, MicSensitivity(-12.07)),
+    (None, True, MicSensitivity(-12.07)),
+    (74.9, False, None),
 ])
-def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, verify_only, sensitivity, offsets):
+def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, verify_only, sensitivity):
     fakes = FlowSeams()
     conductor = _conductor(fakes, index_phase_map={1: "check", 2: "measure", 3: "verify"},
                            gain_plan_db={"woofer": -32.0, "tweeter": -38.0})
@@ -826,16 +823,15 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", resolve)
     monkeypatch.setattr(correction_run_host, "CapturedRecordStore", lambda *_args: records)
     monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
-    target = (sensitivity.dbfs_from_db_spl(anchor + min(offsets)) + SWEEP_PEAK_TO_RMS_DB
+    target = (sensitivity.dbfs_from_db_spl(anchor) + SWEEP_PEAK_TO_RMS_DB
               if anchor is not None and sensitivity is not None else None)
     with caplog.at_level(logging.INFO):
-        windows, analyze, _assessor = correction_run_host.bind_level_windows(
+        door, analyze, _assessor = correction_run_host.bind_run_door(
             host=SimpleNamespace(session_volume_plan=lambda: None),
-            context=SimpleNamespace(topology=None, preset=None, session_volume_db=-14.809),
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
             ceiling_s=30, ceiling_db_spl=85, camilla_factory=None, verify_only=verify_only,
-            level_anchor_db_spl=anchor, level_offsets_db=offsets,
+            level_anchor_db_spl=anchor,
         )
         for index, phase in enumerate(("check", "measure", "verify"), 1):
             expected = (conductor._check_priors() if phase == "check" else
@@ -851,7 +847,7 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
                 analyze(record, "take")
                 assert fakes.analyzed[-1][3].target_capture_dbfs == pytest.approx(expected.target_capture_dbfs)
     resolve.assert_called_once_with(_device())
-    assert windows.sensitivity is sensitivity
+    assert door.sensitivity is sensitivity
     events = event_field_maps(caplog, "active_speaker.check_level_target")
     assert len(events) == (0 if target is None else 1)
     if target is not None:
@@ -888,9 +884,9 @@ def test_summed_takes_ride_the_solved_level_when_a_run_has_one(gain_plan):
 
 
 async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_path, box):
-    from dataclasses import replace
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.plan_run import PlanCapture
+    from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
@@ -900,7 +896,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = replace(_walk([0]), level_offsets_db=(0,))
+    request = replace(_walk([0]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
                        program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
     manifest = RunManifest("two-rungs", _Store(fakes.records))
@@ -911,12 +907,12 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     session = SimpleNamespace(session_id=manifest.run_id)
-    windows = _windows(tmp_path, box, fakes, manifest, records)
+    door = _run_door(tmp_path, box, fakes, manifest, records)
     monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2host, "_persist_execution_result", lambda *a, **k: None)
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
-        conductor, windows=windows,
+        conductor, door=door,
         stop_event=signals.stop, stop_lock=threading.Lock(), ceiling_s=30,
         complete_event=signals.complete, retake_event=signals.retake,
         manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
