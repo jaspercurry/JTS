@@ -14,7 +14,6 @@ from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
 from .crossover_v2.coordinator import series_position_from_state
 from .crossover_v2.position_gate import RETAKE_ENDPOINT
-from .candidate_trials import tuning_trial_matches_candidate
 from .capture_status import CAPTURE_COMPLETE, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from .crossover_v2.journey import (
     CAPTURE_PHASES,
@@ -769,16 +768,7 @@ def crossover_v2_phase(
         return pending
     if PHASE_VERIFY not in phases:
         if applied:
-            candidate = state.get("candidate") if isinstance(state, Mapping) else None
-            candidate_fingerprint = (
-                candidate.get("fingerprint")
-                if isinstance(candidate, Mapping) else None
-            )
-            if tuning_trial_matches_candidate(
-                (state or {}).get("tuning_trial"), candidate_fingerprint,
-            ):
-                return PHASE_DONE
-            return PHASE_VERIFY
+            return PHASE_DONE
         if review_declined:
             return PHASE_CHECK
         return PHASE_REVIEW

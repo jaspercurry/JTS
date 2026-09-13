@@ -178,9 +178,17 @@ def _as_json(body: str) -> Any:
 def error_of(payload: Any) -> str | dict[str, Any]:
     """Keep a structured refusal intact; bound legacy prose to one line."""
     if isinstance(payload, Mapping):
-        if "code" in payload or "next_action" in payload:
-            return {key: payload[key] for key in ("code", "next_action", "error") if key in payload}
-        return str(payload.get("error") or payload.get("status") or payload)[:200]
+        issues = payload.get("issues")
+        first = next((row for row in issues if isinstance(row, Mapping)), {}) if isinstance(issues, list) else {}
+        issue = payload.get("issue")
+        issue = issue if isinstance(issue, Mapping) else {}
+        code = payload.get("code") or issue.get("code") or issue.get("id") or first.get("code")
+        message = payload.get("error") or issue.get("message") or first.get("message") or payload.get("message")
+        if code or "next_action" in payload:
+            return {**({"code": code} if code else {}),
+                    **({"next_action": payload["next_action"]} if "next_action" in payload else {}),
+                    **({"error": message} if message else {})}
+        return str(message or payload.get("status") or payload)[:200]
     return str(payload)[:200]
 
 
@@ -194,7 +202,8 @@ def apply_by_fingerprint(
     outcome = str(payload.get("status") or "") if isinstance(payload, Mapping) else ""
     applied = http == 200 and outcome == "applied"
     lost = http == 0
-    code = payload.get("code") if isinstance(payload, Mapping) else None
+    error = error_of(payload)
+    code = error.get("code") if isinstance(error, Mapping) else None
     return {
         "status": "applied" if applied else "blocked",
         "refused_by": "" if applied or lost else "wizard",

@@ -788,6 +788,14 @@ def candidate_room_peqs(
     )
 
 
+def candidate_on_declaration(
+    candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset,
+) -> MeasuredCrossoverCandidate:
+    return dataclasses.replace(candidate, source_preset=dataclasses.replace(
+        preset, crossover_regions=candidate.source_preset.crossover_regions,
+    ))
+
+
 def effective_preset(candidate: MeasuredCrossoverCandidate) -> ActiveSpeakerPreset:
     """The preset with the candidate's alignment written into its region fields.
 

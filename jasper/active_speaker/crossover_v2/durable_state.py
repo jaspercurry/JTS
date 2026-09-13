@@ -1310,17 +1310,6 @@ def build_conductor_state(
     # carry-forward line here; a key that genuinely wants session scoping
     # belongs in that test's exception set instead, with its reason.
     #
-    # They carry forward with OPPOSITE session-scoping, by design:
-    #
-    #   * ``previous_candidate_fingerprint`` UNCONDITIONALLY, because the
-    #     deferred VERIFY that auto-arms after every successful apply runs
-    #     under a BRAND-NEW capture session id, so a session-id gate would lose
-    #     the pointer on that first post-apply snapshot.
-    #
-    #   * ``apply_blocked`` session-scoped (#1605), because it is only set on a
-    #     BLOCKED auto-apply, which refuses the deferred VERIFY outright and so
-    #     never has to survive a re-arm's rebind. Gating it drops a stale nudge
-    #     rather than leaking one session's blocker onto the next.
     for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
         if key in prior:
             state[key] = prior[key]
@@ -1345,11 +1334,6 @@ def build_conductor_state(
     for key in ("accepted_sound_revision", "accepted_sound_declaration_change"):
         state[key] = (prior.get(key) if prior.get("accepted_sound_candidate_fingerprint")
                       or PHASE_MEASURE not in snap.session_phases else None)
-    state["apply_blocked"] = (
-        prior.get("apply_blocked")
-        if prior.get("session_id") == snap.session_id
-        else None
-    )
     # WHERE this round's receipt landed — round id plus the bundle artifact's
     # fingerprint, so the next round resolves the previous one by identity
     # instead of scanning bundles. Carried forward rather than session-scoped:

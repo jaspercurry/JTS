@@ -53,15 +53,13 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `bass_table_window_gain_missing` | The bass capture lacks a complete resolved window gain. | Record Main, Aux1 and program identity on each take | `hard_stop` |
 | `bass_target_invalid` | The bass target curve is invalid. | Supply an ordered target curve from 20 to 200 Hz | `hard_stop` |
 | `boost_over_declared_bound` | The measured boost exceeded its bound. Check the restore result before applying another tuning. |  | `hard_stop` |
-| `candidate_trial_evidence_invalid` | Repeat the damaged trial set. | Repeat the damaged trial set. | `hard_stop` |
-| `candidate_trial_graph_mismatch` | Trial the current compiled graph. | Trial the current compiled graph. | `hard_stop` |
-| `candidate_trial_required` | Complete a trial of this candidate. | Complete a trial of this candidate. | `hard_stop` |
 | `capture_slot_busy` | Another measurement holds the capture slot. Finish or cancel it, then join again. | Review the active measurement | `hard_stop` |
 | `capture_timeout` | The measurement link timed out. Start over from this page to measure again — the quick microphone check runs first. |  | `session_restart` |
 | `channel_map_mismatch` | JTS could not confirm that the drivers played in the expected order. Return to speaker setup and check the wiring before measuring again. |  | `hard_stop` |
 | `clipped` | That was a touch loud — measuring again a bit quieter. | measuring again a bit quieter. | `silent_auto_retry` |
 | `cloud_geometry_locked` | This dip looks like it belongs to the speaker rather than the room. Take this one from further out and we will use it instead. | Take this one from further out and we will use it instead. | `fix_and_retry` |
-| `crossover_v2_stage2_preflight_refused` | Complete speaker setup before applying. | Complete speaker setup before applying. | `hard_stop` |
+| `compose_refused` | Review the candidate graph and driver declaration. | Review the candidate graph and driver declaration. | `hard_stop` |
+| `crossover_below_declared_protection_floor` | Raise the crossover to the declared driver protection floor. | Raise the crossover to the declared driver protection floor. | `hard_stop` |
 | `delay_exceeds_search_window` | The microphone may be off the spot in the picture. Re-check its placement, then try again. | Re-check its placement, then try again. | `fix_and_retry` |
 | `delay_implausible` | The delay JTS measured between the drivers isn't one this speaker's geometry can produce. Measure again — if it repeats, check that nothing moved during the sweep. | Measure again — if it repeats, check that nothing moved during the sweep. | `fix_and_retry` |
 | `drift_baselines_disagree` | The capture glitched — measuring again. | measuring again. | `silent_auto_retry` |
@@ -112,7 +110,6 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `seat_level_watchdog_expired` | Leveling timed out. Check the audio connection and try again. |  | `fix_and_retry` |
 | `session_ceiling_expired` | The whole measurement ran out of time while it was still waiting for the microphone to reach a position. Start over from this page once the microphone can be moved through the walk more quickly. |  | `session_restart` |
 | `snr_floor` | The room is too loud right now, or the microphone is too far away. Quiet the room or move the microphone closer, then try again. | Quiet the room or move the microphone closer, then try again. | `fix_and_retry` |
-| `sound_design_revision_unavailable` | Measure the current Sound design. | Measure the current Sound design. | `hard_stop` |
 | `speaker_shape_unsupported` | JTS can measure a single full-range speaker or a two-way active crossover, and this speaker is neither. There is nothing to retry — check the drivers declared in speaker setup. | Open speaker setup | `hard_stop` |
 | `spl_ceiling_exceeded` | The measurement stopped because the microphone heard the speaker louder than the commissioning stop. Lower the level and measure again. |  | `hard_stop` |
 | `spl_level_unsettled` | The microphone level did not settle. Try again. |  | `fix_and_retry` |

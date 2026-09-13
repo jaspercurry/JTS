@@ -175,12 +175,17 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     assert len(opener.posts()) == 1
 
 
-@pytest.mark.parametrize("body", ['{"status": "apply_failed"}', '{"ok": false}'])
+@pytest.mark.parametrize("payload,reason", [
+    ({"status": "apply_failed", "issue": {"code": "apply_failed", "message": "Load failed."}}, "apply_failed"),
+    ({"status": "blocked", "issue": {"id": "boost_over_declared_bound", "message": "Boost exceeded."}}, "boost_over_declared_bound"),
+    ({"status": "blocked", "issue": {}, "issues": [{"code": "driver_safety_profile_not_confirmed", "message": "Confirm limits."}]}, "driver_safety_profile_not_confirmed"),
+    ({"ok": False}, wc.REASON_NOT_APPLIED),
+])
 def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
-    body, monkeypatch, capsys
+    payload, reason, monkeypatch, capsys
 ):
     """200 alone passes `apply_failed`; only 200 AND `applied` is right."""
-    opener = _opener(v2={"candidate": {"fingerprint": _FINGERPRINT}}, apply=body)
+    opener = _opener(v2={"candidate": {"fingerprint": _FINGERPRINT}}, apply=json.dumps(payload))
     code, receipt = _run(
         ["apply", _FINGERPRINT],
         opener, monkeypatch, capsys,
@@ -188,8 +193,13 @@ def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(
 
     assert code == cli.EXIT_REFUSED
     assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
-    assert receipt["reason"] == wc.REASON_NOT_APPLIED
+    assert receipt["reason"] == reason
     assert receipt["detail"]["refused_by"] == "wizard"
+    if reason != wc.REASON_NOT_APPLIED:
+        issue = payload.get("issue") or payload["issues"][0]
+        assert receipt["code"] == reason
+        assert receipt["detail"]["error"]["error"] == issue["message"]
+
 
 # --------------------------------------------------------------------------- #
 # wait

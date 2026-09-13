@@ -12,7 +12,7 @@ from typing import Any, Callable
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.boost_protection import config_graph_fingerprint
 from jasper.web import correction_crossover_v2 as host
-from jasper.web import correction_crossover_backend as backend
+from jasper.web import correction_crossover_v2_apply as apply_host
 from jasper.web import correction_crossover_v2_status as status
 
 
@@ -40,9 +40,8 @@ def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], 
                 outcome["status"] = "previous_profile_unavailable"
             else:
                 try:
-                    result = host.handle_v2_apply(
+                    result = apply_host.handle_v2_apply(
                         {"expected_candidate_fingerprint": previous}, run_async, camilla_factory,
-                        status=backend.status_payload(),
                     )
                     if result.get("status") == "applied":
                         outcome.update(status="restored", restored=True)

@@ -433,55 +433,22 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
     assert event_records(caplog, "correction.crossover_v2_refused")
 
 
-def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
-    """Finding N (a): a blocked apply must not read as success. Before this
-    fix, /crossover/v2/apply always answered 200 regardless of payload
-    contents — a household's browser had no signal that tapping Apply
-    silently did nothing (run6-apply-blocked.log: 200 OK on every attempt)."""
-    from jasper.web import correction_crossover_v2 as v2host_mod
+@pytest.mark.parametrize("status,code", [("blocked", "boost_over_declared_bound"), ("apply_failed", "apply_failed")])
+def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch, status, code):
+    from jasper.web import correction_crossover_v2_apply as apply_host
 
-    monkeypatch.setattr(
-        _common, "guard_mutating_request", lambda handler: True
-    )
-    monkeypatch.setattr(
-        v2host_mod,
-        "handle_v2_apply",
-        # ``status`` is keyword-only and REQUIRED since PR-T3 (the apply runs
-        # the stage-2 openability preflight before committing), so a stub that
-        # does not accept it would no longer stand in for the real handler.
-        lambda raw, run_async, camilla_factory, *, status: {
-            "status": "blocked",
-            "profile": {"status": "blocked"},
-            "apply": None,
-            "issues": [{
-                "severity": "blocker",
-                "code": "measured_candidate_preset_mismatch",
-                "message": (
-                    "the reviewed measured candidate no longer equals the "
-                    "saved crossover"
-                ),
-            }],
-            "issue": {
-                "id": "measured_candidate_preset_mismatch",
-                "message": (
-                    "the reviewed measured candidate no longer equals the "
-                    "saved crossover"
-                ),
-            },
-        },
-    )
-
+    issue = {"code": code, "message": "The config was not loaded."}
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(apply_host, "handle_v2_apply", lambda *args: {"status": status, "issue": issue})
     resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
-
     assert b"409" in resp.split(b"\r\n", 1)[0]
-    body = resp.split(b"\r\n\r\n", 1)[1]
-    assert b"measured_candidate_preset_mismatch" in body
+    assert json.loads(resp.split(b"\r\n\r\n", 1)[1])["issue"] == issue
 
 
 def test_apply_applied_status_still_maps_to_200(monkeypatch):
     """The 409 mapping is status-content-driven, not blanket — a successful
     apply must still read 200."""
-    from jasper.web import correction_crossover_v2 as v2host_mod
+    from jasper.web import correction_crossover_v2_apply as v2host_mod
 
     monkeypatch.setattr(
         _common, "guard_mutating_request", lambda handler: True
@@ -489,7 +456,7 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     monkeypatch.setattr(
         v2host_mod,
         "handle_v2_apply",
-        lambda raw, run_async, camilla_factory, *, status: {
+        lambda raw, run_async, camilla_factory: {
             "status": "applied", "profile": {},
         },
     )
@@ -522,14 +489,14 @@ def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
     Both directions asserted, and each asserted NOT to carry the other's event:
     one arm emitting both names would make the severity split meaningless.
     """
-    from jasper.web import correction_crossover_v2 as v2host_mod
+    from jasper.web import correction_crossover_v2_apply as v2host_mod
 
     monkeypatch.setattr(
         _common, "guard_mutating_request", lambda handler: True
     )
 
     def _raise(exc):
-        def _handler(raw, run_async, camilla_factory, *, status):
+        def _handler(raw, run_async, camilla_factory):
             raise exc
         return _handler
 
@@ -975,3 +942,26 @@ def test_recover_volume_ignores_a_legacy_volume_safety_file(
     recover_body = json.loads(recover_resp.split(b"\r\n\r\n", 1)[1])
     assert recover_body["status"] == "refused"
     assert recover_body["reason"] == "crossover_volume_recovery_not_required"
+
+
+@pytest.mark.parametrize("lookup", ["identity", "record"])
+def test_apply_bank_refusal_returns_a_refusal_envelope(monkeypatch, tmp_path, lookup):
+    import asyncio
+    from jasper.web import correction_crossover_v2_apply as apply_host
+    from jasper.active_speaker.candidate_bank import CandidateBankRefusal
+    from tests.test_correction_crossover_v2_endpoints import _bank_for_apply, _seed_alternative_apply
+
+    monkeypatch.setattr(apply_host.host, "_state_path_override", tmp_path / "v2_state.json")
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    def refused(*args, **kwargs):
+        raise CandidateBankRefusal("ambiguous", "multiple banked candidates")
+    monkeypatch.setattr(apply_host if lookup == "identity" else apply_host.baseline_profile, "find_banked_candidate", refused)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    monkeypatch.setattr(correction_runtime, "run_async", asyncio.run)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: pytest.fail("bank checks precede the DSP load"))
+    resp = _drive("/crossover/v2/apply", method="POST", body=json.dumps({"expected_candidate_fingerprint": candidate.fingerprint}).encode())
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+    assert body["ok"] is False
+    assert body["code"] == "ambiguous"

@@ -10,7 +10,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
 
 * the **durable v2 flow state** (one JSON file) that ``status_payload`` threads
   into the envelope as ``status["crossover_v2"]`` — phase / candidate / verify
-  / failure / apply_blocked / needs_recovery / applied;
+  / failure / needs_recovery / applied;
 * the **session volume plan** singleton (one fixed measurement volume per
   session, §5.5) and its open/close/abandon wiring — including the
   walked-away guarantee: every terminal capture outcome drains the restore-once
@@ -88,7 +88,6 @@ from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import (
     tuning_trial_matches_candidate,
-    tuning_trial_reference,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -128,7 +127,6 @@ from jasper.active_speaker.capture_provenance import (
     record_capture_provenance,
 )
 from jasper.active_speaker.crossover_v2.conductor_context import (
-    ensure_crossover_preview_ready,
     resolve_conductor_context,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
@@ -154,7 +152,6 @@ from jasper.audio_measurement.household_mic import (
     household_mic_path,
     resolve_setup_calibration as resolve_household_setup_calibration,
 )
-from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -438,33 +435,6 @@ def _persist_execution_result(session_id: str, **result: Any) -> None:
         save_v2_state(state, durable=True)
 
 
-def _update_current_review(
-    session_id: str, candidate_fingerprint: str, sound_revision: int | None,
-    updates: Mapping[str, Any], *, allow_applied: bool = False,
-) -> bool:
-    with _state_lock:
-        state = load_v2_state()
-        candidate = (state or {}).get("candidate")
-        if (
-            state is None
-            or str(state.get("session_id") or "") != session_id
-            or not isinstance(candidate, Mapping)
-            or str(candidate.get("fingerprint") or "") != candidate_fingerprint
-            # The JOURNEY phase, not program.PROGRAM_PHASE_MEASURE — both are
-            # the string "measure", so the wrong one reads correct today.
-            or PHASE_MEASURE not in (state.get("accepted_phases") or ())
-            or state.get("accepted_sound_revision") != sound_revision
-            or (state.get("applied") is True and not allow_applied)
-        ):
-            log_event(logger, "correction.crossover_v2_apply_outcome_superseded",
-                      level=logging.WARNING,
-                      candidate_fingerprint=candidate_fingerprint)
-            return False
-        state.update(updates)
-        save_v2_state(state)
-        return True
-
-
 def clear_v2_state() -> None:
     with _state_lock:
         try:
@@ -527,7 +497,7 @@ def reset_v2_journey_state() -> None:
                   reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
     clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
              "gain_plan_db": None, "candidate": None, "verify": None, "failure": None,
-             "apply_blocked": None, "verify_priors": None, "evidence": None,
+             "verify_priors": None, "evidence": None,
              ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
     if applied:
         for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile",
@@ -536,6 +506,11 @@ def reset_v2_journey_state() -> None:
     save_v2_state(clean)
     log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
               else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
+
+
+def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:
+    return (lambda path: camilla.set_config_file_path(path, best_effort=False),
+            lambda: camilla.get_config_file_path(best_effort=False))
 
 
 def observe_apply_success(
@@ -573,7 +548,6 @@ def observe_apply_success(
     # The reverse race (a stop landing AFTER this call persists) is already
     # handled: persist_conductor_state preserves ``applied`` once it
     # observes it, for the same session.
-    state["apply_blocked"] = None
     state["previous_candidate_fingerprint"] = (
         previous_candidate_fingerprint
         if isinstance(previous_candidate_fingerprint, str)
@@ -3705,390 +3679,3 @@ def prepare_v2_session(
             retake_event.set if position_gate is not None else None
         ),
     )
-
-
-# --------------------------------------------------------------------------- #
-# apply (the existing baseline transaction, W4 seam)
-# --------------------------------------------------------------------------- #
-
-
-def handle_v2_apply(
-    raw: Mapping[str, Any],
-    run_async: Any,
-    camilla_factory: Any,
-    *,
-    status: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Apply one named banked trial through the locked DSP transaction."""
-    from jasper.active_speaker.baseline_profile import (
-        applied_program_level_delta_db,
-        apply_baseline_profile,
-        build_baseline_profile_candidate,
-    )
-    from jasper.active_speaker.crossover_declaration import (
-        CrossoverBelowDeclaredFloor,
-        assert_crossover_honours_declared_floor,
-        change_from_record,
-        change_to_record,
-        declaration_change_for_candidate, manual_settings_for_crossover,
-    )
-    from jasper.active_speaker.crossover_preview import build_crossover_preview, load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-    from jasper.active_speaker.crossover_v2.apply_gate import ApplyGraph, apply_preconditions, prepare_trial
-    from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
-    from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN
-    from jasper.output_topology import load_output_topology
-    from jasper.web.sound_setup import apply_measured_crossover_geometry
-
-    expected = str(raw.get("expected_candidate_fingerprint") or "").strip()
-    try:
-        banked = find_banked_candidate(expected)
-    except CandidateBankRefusal as exc:
-        raise CrossoverV2Refused(exc.detail, code=exc.code) from exc
-    candidate = banked.candidate
-    state = load_v2_state() or {}
-    current = (state.get("candidate") or {}).get("fingerprint") == expected
-    review_session_id = str(state.get("session_id") or "") if current else ""
-    applied_tuning_trial = None
-    topology = load_output_topology()
-    pre_draft = load_design_draft(topology=topology)
-    accepted_revision = state.get("accepted_sound_revision") if (state.get("accepted_sound_candidate_fingerprint", expected if current else None) == expected) else None
-    saved_already = (
-        isinstance(accepted_revision, int) and not isinstance(accepted_revision, bool)
-    )
-    change = (
-        change_from_record((state or {}).get("accepted_sound_declaration_change"))
-        if saved_already
-        else declaration_change_for_candidate(
-            source_preset=candidate.source_preset, design_draft=pre_draft)
-    )
-    if accepted_revision is not None and (not saved_already or change is None):
-        raise CrossoverV2Refused(
-            "the saved Sound revision is invalid; review a fresh measurement")
-    selected_label = (
-        _crossover_label(change.selected, change.changes_slope) if change else "")
-    selected_fc_hz = change.selected.fc_hz if change else None
-    alternative = change is not None
-
-    def _saved_not_applied(exc: BaseException) -> CrossoverV2Refused:
-        log_event(logger, "correction.crossover_v2_sound_saved_not_applied",
-                  level=logging.ERROR, selected_fc_hz=selected_fc_hz,
-                  error_type=type(exc).__name__)
-        return CrossoverV2Refused(
-            f"{selected_label} is saved in Sound but was not "
-            "applied to the speaker; retry this same action")
-
-    def _before_dsp(call: Callable[[], Any]) -> Any:
-        try:
-            return call()
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            if change is not None:
-                raise _saved_not_applied(exc) from exc
-            raise
-
-    def _review_replaced() -> CrossoverV2Refused:
-        return CrossoverV2Refused(
-            f"{selected_label} is saved in Sound, but this review was "
-            "replaced before DSP apply; open the fresh Review")
-
-    if change is not None:
-        # HEARING-SAFETY BOUNDARY, and it runs BEFORE the durable declaration
-        # write on purpose. The L0 emit gate refuses this same condition, but it
-        # can only refuse once the declaration already carries the crossover
-        # (``baseline_profile``'s staleness guard requires that ordering) — so an
-        # emit-time refusal alone would leave ``/sound`` declaring a corner the
-        # speaker is not playing and cannot be made to play. Refusing here means
-        # a refused apply displaces nothing at all. See
-        # ``crossover_declaration.assert_crossover_honours_declared_floor``.
-        #
-        # Scoped to THIS arm on purpose, and the resulting asymmetry is
-        # disclosed rather than closed. An as-declared apply (``change is
-        # None``) on a speaker whose declaration is ALREADY below the floor has
-        # no write to run ahead of; it falls through to the L0 emit gate, whose
-        # ``ActiveSpeakerConfigError`` the compose below re-raises RAW. Both
-        # refuse — but only one names itself. Converting that re-raise would
-        # make this function the owner of how EVERY L0 gate reads here (the
-        # unprotected-tweeter gate included), which is #2736's residual to
-        # widen with tests per gate, not this path's to take in passing. The
-        # two are also different situations: this arm refuses a change the
-        # household can still decline, that one describes a graph the speaker
-        # is already playing, whose remedy is the fleet check rather than
-        # "do not do this apply".
-        try:
-            assert_crossover_honours_declared_floor(candidate.source_preset)
-        except CrossoverBelowDeclaredFloor as exc:
-            log_event(logger, "correction.crossover_v2_apply_refused",
-                      level=logging.ERROR, reason=exc.reason,
-                      selected_fc_hz=selected_fc_hz)
-            raise CrossoverV2Refused(str(exc)) from exc
-    draft = pre_draft
-    if change is not None:
-        draft = {**pre_draft, "manual_settings": manual_settings_for_crossover(
-            pre_draft, change.between_roles, change.selected)}
-    preview = build_crossover_preview(draft) if change else load_crossover_preview(current_design_draft=draft)
-    try:
-        measurements = load_measurement_state(topology)
-        reviewed_baseline = build_baseline_profile_candidate(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            write=False,
-            compile_config=True,
-            tuning_owner="automatic",
-            measured_candidate=candidate,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        if saved_already:
-            raise _saved_not_applied(exc) from exc
-        raise
-    if not (reviewed_baseline.get("config") or {}).get("sha256"):
-        issue = _blocking_apply_issue(reviewed_baseline)
-        _persist_apply_blocked(issue)
-        reviewed_baseline.pop("_compiled_graph_text", None)
-        return {"status": "blocked", "profile": reviewed_baseline, "apply": None,
-                "issues": reviewed_baseline.get("issues", []), "issue": issue}
-    incumbent = reviewed_baseline.get("applied_recomposition_profile") or {}
-    restored = state.get("previous_applied_profile") if (
-        state.get("previous_candidate_fingerprint") == expected
-        and state.get("previous_candidate_displaced_by") == (incumbent.get("source") or {}).get("measured_candidate_fingerprint")
-    ) else None
-    trial_evidence = prepare_trial(candidate, reviewed_baseline, restored=restored, bank=banked)
-    manifest = trial_evidence["manifest"]
-    issues = apply_preconditions(
-        ApplyGraph(reviewed_baseline, topology, candidate, openability=lambda: resolve_conductor_context(status)), banked, manifest,
-        restored,
-    )
-    if issues:
-        raise CrossoverV2Refused(issues[0].detail, code=issues[0].code)
-    trial_graph = str((reviewed_baseline.get("config") or {}).get("sha256") or "")[:16]
-    if manifest is not None:
-        record_id = manifest["set"]["takes"][0]["artifacts"]["record_id"]
-        applied_tuning_trial = tuning_trial_reference(candidate, {
-            "candidate_id": expected, "graph_scope": "candidate", "graph_fingerprint": trial_graph,
-            "record_path": str(Path(manifest["bundle"]) / EVIDENCE_ROOT / "artifacts" / record_id),
-        })
-    if change is not None:
-        if not saved_already:
-            measured_revision = state.get("sound_design_revision") if current else None
-            inverse = change_from_record(state.get("accepted_sound_declaration_change"))
-            if (restored and inverse and change.configured == inverse.selected and change.selected == inverse.configured
-                    and state.get("accepted_sound_candidate_fingerprint") == state.get("previous_candidate_displaced_by")):
-                measured_revision = state.get("accepted_sound_revision")
-            if (isinstance(measured_revision, bool)
-                    or not isinstance(measured_revision, int)):
-                raise CrossoverV2Refused(
-                    "the Sound revision measured for this review is missing; "
-                    "review a fresh measurement", code="sound_design_revision_unavailable")
-            try:
-                saved = apply_measured_crossover_geometry(
-                    expected_revision=measured_revision,
-                    between_roles=change.between_roles,
-                    configured=change.configured,
-                    selected=change.selected,
-                )
-            except ValueError as exc:
-                raise CrossoverV2Refused(
-                    "Sound changed since this review; review a fresh measurement") from exc
-            accepted_revision = saved.get("revision")
-            with _state_lock:
-                accepted_state = load_v2_state() or {}
-                accepted_state.update(
-                    accepted_sound_revision=accepted_revision,
-                    accepted_sound_declaration_change=change_to_record(change),
-                    accepted_sound_candidate_fingerprint=expected,
-                )
-                save_v2_state(accepted_state, durable=True)
-            if isinstance(accepted_revision, bool) or not isinstance(accepted_revision, int):
-                raise _review_replaced()
-        preview = _before_dsp(lambda: ensure_crossover_preview_ready(durable=True))
-        draft = _before_dsp(lambda: load_design_draft(topology=topology))
-    else:
-        draft = pre_draft
-        preview = load_crossover_preview(current_design_draft=draft)
-
-    pre_apply_profile = reviewed_baseline.get("applied_recomposition_profile")
-    if not isinstance(pre_apply_profile, Mapping):
-        pre_apply_profile = None
-
-    if alternative and current and not _update_current_review(
-        review_session_id, expected, accepted_revision, {},
-    ):
-        raise _review_replaced()
-    if alternative:
-        draft = _before_dsp(lambda: load_design_draft(topology=topology))
-        if draft.get("revision") != accepted_revision:
-            raise CrossoverV2Refused(
-                "Sound changed after this crossover was saved; review a fresh "
-                "measurement before applying")
-
-    review_identity = (
-        (review_session_id, expected, accepted_revision) if alternative and current else None
-    )
-
-    def _unknown_result(error_type: str) -> CrossoverV2Refused:
-        message = (
-            f"{selected_label} is saved in Sound, but JTS could not "
-            "confirm whether DSP apply finished; review the current speaker "
-            "state before retrying")
-        _persist_apply_blocked({"id": "apply_result_unknown", "message": message},
-                               review_identity)
-        log_event(logger, "correction.crossover_v2_apply_result_unknown",
-                  level=logging.ERROR, selected_fc_hz=selected_fc_hz,
-                  error_type=error_type)
-        return CrossoverV2Refused(message)
-
-    cam = _before_dsp(camilla_factory)
-    try:
-        payload = run_async(apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            load_config=lambda path: cam.set_config_file_path(
-                path, best_effort=False
-            ),
-            get_current_config_path=lambda: cam.get_config_file_path(
-                best_effort=False
-            ),
-            tuning_owner="automatic",
-            expected_tuning_graph_fingerprint=trial_graph,
-            measured_candidate=candidate,
-            trial_evidence=trial_evidence,
-        ))
-    except Exception as exc:  # noqa: BLE001 - DSP result may be ambiguous
-        if alternative:
-            raise _unknown_result(type(exc).__name__) from exc
-        raise
-    if payload.get("status") == "applied":
-        offset_db = applied_program_level_delta_db(
-            pre_apply_profile, payload.get("profile"),
-        )
-        payload["expected_post_apply_offset_db"] = round(offset_db, 3)
-        with _state_lock:
-            if not current or _update_current_review(
-                review_session_id, expected, accepted_revision if alternative else None, {}, allow_applied=True,
-            ):
-                observe_apply_success(
-                    expected,
-                    previous_candidate_fingerprint=str(
-                        ((pre_apply_profile or {}).get("source") or {}).get(
-                            "measured_candidate_fingerprint"
-                        )
-                        or ""
-                    )
-                    or None,
-                    expected_post_apply_offset_db=offset_db,
-                    tuning_trial=applied_tuning_trial,
-                    selected_candidate=_candidate_summary(candidate, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN),
-                    previous_applied_profile=pre_apply_profile,
-                )
-    issue = None
-    if payload.get("status") in {"blocked", "apply_failed"}:
-        issue = _blocking_apply_issue(payload)
-        if (alternative and payload.get("status") == "apply_failed"
-                and not _dsp_apply_is_known_inactive(payload)):
-            raise _unknown_result("returned_apply_failed")
-        if alternative:
-            payload["error"] = (
-                f"{selected_label} is saved in Sound but was not "
-                "applied to the speaker; retry this same action"
-            )
-            issue = {"id": str((issue or {}).get("id") or "apply_blocked"),
-                     "message": payload["error"]}
-        if issue is not None:
-            payload["issue"] = issue
-        _persist_apply_blocked(issue, review_identity)
-        log_event(logger, "correction.crossover_v2_apply_blocked",
-                  level=logging.WARNING, issue_id=(issue or {}).get("id", ""))
-        if alternative and payload.get("status") == "apply_failed":
-            raise CrossoverV2Refused(str(payload.get("error") or "DSP apply failed"))
-    log_event(
-        logger,
-        "correction.crossover_v2_apply",
-        status=payload.get("status"),
-        candidate_fingerprint=expected,
-    )
-    (payload.get("profile") or {}).pop("_compiled_graph_text", None)
-    return payload
-
-
-def _crossover_label(geometry: Any, with_slope: bool) -> str:
-    """One declared crossover as the household reads it.
-
-    ``"2500 Hz"``, or ``"2500 Hz at 24 dB/octave"`` when the slope is part of
-    what moved — named only when it moved, because a slope in a sentence about
-    a frequency change is one more number to hold and nothing to do with.
-    """
-    label = f"{_fc_hz_label(geometry.fc_hz)} Hz"
-    if not with_slope:
-        return label
-    return f"{label} at {geometry.slope_db_per_octave:g} dB/octave"
-
-
-def _blocking_apply_issue(payload: Mapping[str, Any]) -> dict[str, str] | None:
-    """The single most relevant blocker from a blocked apply payload.
-
-    ``payload["issues"]`` already carries the full severity-tagged list; this
-    picks the first blocker (the seam always orders the real cause before any
-    generic trailer issue) so a compact ``{id, message}`` pointer reaches the
-    browser without digging through the composed profile.
-    """
-    issues = payload.get("issues")
-    if not isinstance(issues, list):
-        return None
-    candidates = [issue for issue in issues if isinstance(issue, Mapping)]
-    for issue in candidates:
-        if issue.get("severity") == "blocker":
-            return {
-                "id": str(issue.get("code") or ""),
-                "message": str(issue.get("message") or ""),
-            }
-    if candidates:
-        first = candidates[0]
-        return {
-            "id": str(first.get("code") or ""),
-            "message": str(first.get("message") or ""),
-        }
-    return None
-
-
-def _dsp_apply_is_known_inactive(payload: Mapping[str, Any]) -> bool:
-    apply = payload.get("apply")
-    if not isinstance(apply, Mapping):
-        return False
-    phase, result = str(apply.get("phase") or ""), str(apply.get("result") or "")
-    # The proof-phase set is imported, not transcribed (#2519). Every proof
-    # failure refuses before ``load_config`` runs, so all of them are known
-    # inactive — and a transcribed member list is how the two results that
-    # split out of ``candidate_changed`` would have silently become "we cannot
-    # tell whether the speaker changed", which raises the far scarier
-    # ``apply_result_unknown`` refusal at the household.
-    return bool(apply.get("finished_at")) and (
-        (phase, result) == ("prepare", "prepare_failed")
-        or (phase == "proof" and result in DSP_PROOF_INACTIVE_RESULTS)
-        or (phase == "validate"
-            and result in {"invalid_config", "runner_error", "timeout"})
-        or (apply.get("rollback_attempted") is True
-            and apply.get("rollback_succeeded") is True))
-
-
-def _persist_apply_blocked(
-    issue: Mapping[str, str] | None,
-    current_review: tuple[str, str, Any] | None = None,
-) -> None:
-    """Record (or clear) the last blocked-apply issue for the fix_and_retry
-    screen's nudge (layered onto REASON_APPLY_FAILED at the "applying"
-    phase — owner ruling, 2026-07-20)."""
-    if current_review is not None:
-        session_id, fingerprint, revision = current_review
-        _update_current_review(session_id, fingerprint, revision,
-            {"apply_blocked": dict(issue) if issue else None})
-        return
-    state = load_v2_state()
-    if state is None:
-        return
-    state["apply_blocked"] = dict(issue) if issue else None
-    save_v2_state(state)

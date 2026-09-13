@@ -287,14 +287,11 @@ def _dispatch_crossover(handler: _Handler) -> None:
     if path == "/crossover/v2/apply":
         try:
             payload = correction_handlers._handle_crossover_v2_apply(handler)
-            # Finding N: a blocked apply must not read as success — the
-            # same "compute status from payload contents" shape
-            # the capture routes already use above.
             handler._send_json(
                 payload,
                 status=(
                     HTTPStatus.CONFLICT
-                    if payload.get("status") == "blocked"
+                    if payload.get("status") in {"blocked", "apply_failed"}
                     else HTTPStatus.OK
                 ),
             )

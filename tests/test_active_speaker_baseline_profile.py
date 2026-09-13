@@ -110,7 +110,7 @@ async def apply_baseline_profile(topology, **kwargs):
     if measured is not None:
         inputs = {key: value for key, value in kwargs.items() if key not in (
             "load_config", "get_current_config_path", "expected_candidate_fingerprint",
-            "expected_tuning_graph_fingerprint", "on_candidate_verified", "refresh_inputs")}
+            "on_candidate_verified", "refresh_inputs")}
         profile = build_baseline_profile_candidate(topology, **inputs, write=False, compile_config=True)
         if profile.get("config", {}).get("sha256"):
             await bank_trial_async(measured, profile, topology)
@@ -1656,6 +1656,10 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
         validate=_valid_config,
     )
 
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+
+    banked = find_banked_candidate(payload["profile"]["source"]["measured_candidate_fingerprint"])
+    assert banked.candidate.driver_corrections() == payload["profile"]["corrections"]
     assert payload["status"] == "applied"
     assert payload["profile"]["status"] == "applied"
     assert payload["profile"]["permissions"]["may_apply"] is False
@@ -4397,7 +4401,7 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
 
 
 @pytest.mark.parametrize("change, blocked", [
-    ("woofer_floor", False), ("tweeter_sensitivity", False), ("crossover_fc", True),
+    ("woofer_floor", False), ("tweeter_sensitivity", False), ("crossover_fc", False), ("driver_model", True),
 ])
 def test_apply_compares_the_candidate_by_speaker_identity(tmp_path, change, blocked):
     from dataclasses import replace as _replace
@@ -4412,6 +4416,7 @@ def test_apply_compares_the_candidate_by_speaker_identity(tmp_path, change, bloc
         measured_preset = _replace(preset, crossover_regions=regions)
     else:
         role, field_name, value = (("woofer", "protection_highpass_floor_hz", 40.0) if change == "woofer_floor"
+                                   else ("tweeter", "model", "different") if change == "driver_model"
                                    else ("tweeter", "sensitivity_db", 80.0))
         drivers = dict(preset.drivers)
         drivers[role] = _replace(drivers[role], **{field_name: value})
@@ -4943,8 +4948,7 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
 
 
 @pytest.mark.parametrize("with_room", [False, True])
-@pytest.mark.parametrize("matching_tuning_graph", [True, False])
-async def test_apply_binds_complete_measured_bass_graph(monkeypatch, tmp_path, matching_tuning_graph, with_room):
+async def test_apply_binds_complete_measured_bass_graph(monkeypatch, tmp_path, with_room):
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
@@ -4976,24 +4980,16 @@ async def test_apply_binds_complete_measured_bass_graph(monkeypatch, tmp_path, m
     preview_graph = build_baseline_profile_candidate(
         topology, **kwargs, write=False, compile_config=True, measured_candidate=measured,
     )
-    expected = str(preview_graph["config"]["sha256"])[:16]
     result = await apply_baseline_profile(
         topology, **kwargs, load_config=load_config, measured_candidate=measured,
-        expected_tuning_graph_fingerprint=expected if matching_tuning_graph else "0" * 16,
     )
-    if matching_tuning_graph:
-        assert result["status"] == "applied"
-        assert result["profile"]["config"]["sha256"] == preview_graph["config"]["sha256"]
-        assert result["profile"]["recomposition_snapshot"]["bass_extension"]["low_boost_db"] == 4.
-        assert yaml_lib.safe_load(loaded_graphs[-1])["processors"]
-        snapshot = result["profile"]["recomposition_snapshot"]
-        for layer in ("corrections", "linearization", "blend_correction", "room_correction"):
-            assert snapshot.get(layer) == upstream["recomposition_snapshot"].get(layer)
-    else:
-        assert result["status"] == "blocked"
-        assert "candidate_trial_graph_mismatch" in {issue["code"] for issue in result["issues"]}
-        assert len(loaded_graphs) == 1 + with_room
-
+    assert result["status"] == "applied"
+    assert result["profile"]["config"]["sha256"] == preview_graph["config"]["sha256"]
+    assert result["profile"]["recomposition_snapshot"]["bass_extension"]["low_boost_db"] == 4.
+    assert yaml_lib.safe_load(loaded_graphs[-1])["processors"]
+    snapshot = result["profile"]["recomposition_snapshot"]
+    for layer in ("corrections", "linearization", "blend_correction", "room_correction"):
+        assert snapshot.get(layer) == upstream["recomposition_snapshot"].get(layer)
 
 @pytest.mark.parametrize("change", ["speaker", "room"])
 async def test_bass_apply_uses_its_own_graph_after_saved_upstream_changes(monkeypatch, tmp_path, change):
@@ -5020,9 +5016,7 @@ async def test_bass_apply_uses_its_own_graph_after_saved_upstream_changes(monkey
         "low_boost_db": 4., "reference_level_db": 0., "detector_lowpass_hz": 120.,
         "compressor_threshold_dbfs": -30.,
     })
-    captured = build_baseline_profile_candidate(
-        topology, **kwargs, measured_candidate=bass, write=False, compile_config=True,
-    )["config"]["sha256"][:16]
+
     updated = (_v2_candidate(preset, tweeter_gain_db=-3.) if change == "speaker"
                else replace(speaker, room_correction=_ROOM_CORRECTION))
     changed = await apply_baseline_profile(topology, **kwargs, load_config=load_config,
@@ -5030,7 +5024,6 @@ async def test_bass_apply_uses_its_own_graph_after_saved_upstream_changes(monkey
     assert changed["status"] == "applied", changed
     result = await apply_baseline_profile(
         topology, **kwargs, load_config=load_config, measured_candidate=bass,
-        expected_tuning_graph_fingerprint=captured,
     )
     assert result["status"] == "applied"
     assert len(loaded) == 3
