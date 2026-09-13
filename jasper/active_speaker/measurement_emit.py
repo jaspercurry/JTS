@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
 from jasper.active_speaker import camilla_yaml, candidate_bank
