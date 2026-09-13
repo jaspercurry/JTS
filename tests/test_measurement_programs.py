@@ -43,6 +43,11 @@ def test_shipped_rows(
     assert row.capture_count == captures
 
 
+@pytest.mark.parametrize("purpose", ["room", "bass"])
+def test_summed_bookkeeping_includes_one_frequency_image(purpose):
+    assert ("frequency", False, False) in mp.bookkeeping_views(purpose)
+
+
 def test_express_geometry() -> None:
     """The quick tier: on-axis plus one horizontal pair and one vertical pair."""
 

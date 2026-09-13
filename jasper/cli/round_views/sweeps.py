@@ -126,8 +126,7 @@ def _cmd_windows(args: argparse.Namespace) -> int:
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     written = _write(report, args.out, resolved_out(Path(args.round_dir), ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set))
-    image = render_image(args, report)
-    return answer(args.command, out=written, scope=args.scope, image=image, capture_id=take_id,
+    return answer(args.command, out=written, scope=args.scope, **render_image(args, report), capture_id=take_id,
                   line=f"sweep take: {take_id} -> {written}")
 
 

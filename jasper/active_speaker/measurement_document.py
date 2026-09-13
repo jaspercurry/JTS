@@ -135,6 +135,8 @@ def frequency_run_from_documents(
                 visible_by_default=False,
                 role=role or None,
                 position={
+                    "id": doc_pose_key(document),
+                    "seat_offset_m": document.get("seat_offset_m"),
                     "axis": document.get("position_axis"),
                     "deg": document.get("position_deg"),
                     "vertical_deg": _whole_degrees(document.get("vertical_deg")) or 0,
@@ -143,6 +145,7 @@ def frequency_run_from_documents(
                 take_id=take_id or None,
                 phase=phase or None,
                 candidate_id=document.get("candidate_id"),
+                configuration_kind=document.get("kind"),
                 graph_scope=document.get("graph_scope"),
                 level_db=document.get("level_db"),
                 stimulus_dbfs=document.get("stimulus_dbfs"),

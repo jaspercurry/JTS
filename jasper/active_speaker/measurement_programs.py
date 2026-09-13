@@ -73,8 +73,8 @@ def bookkeeping_views(purpose: str) -> tuple[tuple[str, bool, bool], ...]:
     return {
         PURPOSE_SPEAKER: (("inventory", True, False), ("classify-features", False, False),
                          ("distortion", False, False), ("directivity", False, False), ("per-seat", False, False)),
-        PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True)),
-        PURPOSE_BASS: (("bass", True, False),),
+        PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True), ("frequency", False, False)),
+        PURPOSE_BASS: (("bass", True, False), ("frequency", False, False)),
     }.get(purpose, ())
 
 
