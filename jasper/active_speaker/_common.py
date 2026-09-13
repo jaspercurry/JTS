@@ -79,6 +79,7 @@ MANUAL_DRIVER_FIELDS = {
     "hard_excitation_band_hz",
     "required_protection_filters",
     "measurement_band_hz",
+    "fit_budget",
     "level_duration_limits",
     "cabinet",
     "source",

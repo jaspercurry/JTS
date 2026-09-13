@@ -20,6 +20,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundVi
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import EnvelopeCurve
+from jasper.active_speaker.linearization_budget import DEFAULT_FIT_BUDGET, fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
@@ -100,7 +101,11 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
         raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
-    classes = _resolve_driver_class_by_role(json.loads(inputs.design_draft_path.read_text()))
+    draft = json.loads(inputs.design_draft_path.read_text())
+    classes = _resolve_driver_class_by_role(draft)
+    budgets = fit_budgets_by_role(draft.get("driver_safety_profile") or {})
+    overrides = normalise_fit_budget({key: getattr(args, key) for key in DEFAULT_FIT_BUDGET
+                                     if getattr(args, key) is not None})
     calibration = (record.get("capture_setup") or {}).get("calibration") or {}
     applied = record.get("capture_calibration") or {}
     model = calibration.get("model") if (
@@ -116,7 +121,8 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
         response = response_from_banked_curve(curves[role])
         if response is None:
             raise RoundViewsError(f"fit inputs are not banked for {role}")
-        drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown")))
+        drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown"),
+                                      {**budgets.get(role, {}), **overrides}))
     branches = fit_branches(
         drivers, source_preset=candidate["source_preset"], mic_tiers={driver.role: tier for driver in drivers},
         vocabulary=FitVocabulary(allow_boost=vocabulary == "bounded_boost"),
@@ -149,4 +155,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--set", required=True, help="manifest set containing the Speaker take")
     parser.add_argument("--take", help="selected take ID when the set holds several takes")
     parser.add_argument("--vocabulary", choices=("cut_only", "bounded_boost"), help="override this round's production vocabulary")
+    for key in DEFAULT_FIT_BUDGET:
+        parser.add_argument("--" + key.replace("_", "-"), type=int if key == "max_filters" else float,
+                            help=f"inspection-only {key} override; leaves banked declarations unchanged")
     parser.set_defaults(func=_cmd_speaker_fit)

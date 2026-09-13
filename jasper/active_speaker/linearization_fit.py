@@ -20,7 +20,7 @@ See docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
@@ -37,6 +37,7 @@ from .branch_target import (
     BranchTarget,
     octave_scaled,
 )
+from .linearization_budget import DEFAULT_FIT_BUDGET, normalise_fit_budget
 from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
     EnvelopeCurve,
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 
 # Per-filter cut ceiling, dB. Shared by the shelf stage and the peaking loop's
 # per-bin cap array — design doc "cuts generous (-12 dB, Q<=8)".
-PER_FILTER_CUT_CAP_DB: float = 12.0
+PER_FILTER_CUT_CAP_DB: float = DEFAULT_FIT_BUDGET["max_gain_db"]
 
 # Bound on TOTAL normalization spend across the whole fit — how far below the
 # driver's own core-passband peak the fit may settle. 18 dB covers the
@@ -62,7 +63,7 @@ PER_FILTER_CUT_CAP_DB: float = 12.0
 # ``correction_giveback_db``/``hf_continuation_spend_db``. Can exceed
 # PER_FILTER_CUT_CAP_DB (no single filter may) — a stage's spend is clamped
 # to the REMAINING budget. ``target_level_db`` itself is left UNCLAMPED.
-MAX_NORMALIZATION_SPEND_DB: float = 18.0
+MAX_NORMALIZATION_SPEND_DB: float = DEFAULT_FIT_BUDGET["max_giveback_db"]
 
 # Slope (dB/octave over log2(f)) above which the fit band is a genuine
 # tilted shelf rather than local ripple. Only a RISING slope fires the shelf
@@ -219,8 +220,24 @@ class FitVocabulary:
     #: Empty means "nothing contradicted", not "no evidence available".
     boost_excluded_bands_hz: tuple[tuple[float, float], ...] = ()
 
+    max_filters: int = MAX_FILTERS_PER_DRIVER
+    #: Minimum boost centre in Hz; a biquad's skirts extend below it.
+    boost_floor_hz: float | None = None
+    max_gain_db: float = PER_FILTER_CUT_CAP_DB
+    max_giveback_db: float = MAX_NORMALIZATION_SPEND_DB
+
+    def __post_init__(self) -> None:
+        normalise_fit_budget(self.budget_dict())
+
+    def budget_dict(self) -> dict[str, Any]:
+        return {key: getattr(self, key) for key in DEFAULT_FIT_BUDGET}
+
+    def with_budget(self, budget: Mapping[str, Any]) -> FitVocabulary:
+        return replace(self, **normalise_fit_budget(budget))
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "budget": self.budget_dict(),
             "allow_boost": self.allow_boost,
             "per_filter_boost_cap_db": self.per_filter_boost_cap_db,
             "boost_excluded_bands_hz": [
@@ -465,10 +482,14 @@ class LinearizationFit:
     # centred in a span no branch's capture covers — ships, only NAMED.
     lift_boost_evidence_drops: tuple[BoostEvidenceDrop, ...] = ()
     blind_zone_placements: tuple[BlindZonePlacement, ...] = ()
+    vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY
+    budget_binding: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": self.role,
+            "budget": self.vocabulary.budget_dict(),
+            "budget_binding": list(self.budget_binding),
             "filters": [f.to_dict() for f in self.filters],
             "fit_band_hz": list(self.fit_band_hz),
             "target_level_db": self.target_level_db,
@@ -911,6 +932,8 @@ def _shelf_stage(
     plateau_level_db: float,
     *,
     shape_db: np.ndarray | None = None,
+    vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY,
+    binding: set[str] | None = None,
 ) -> LinearizationFilter | None:
     """Fit ONE cut-only Highshelf if the fit band's smoothed slope rises
     faster than :data:`SHELF_SLOPE_THRESHOLD_DB_PER_OCT`. ``None`` when no
@@ -941,9 +964,12 @@ def _shelf_stage(
 
     # Normalization-budget clamp: budget left after the plateau-vs-target gap.
     remaining_budget_db = max(
-        0.0, MAX_NORMALIZATION_SPEND_DB - (plateau_level_db - target_level_db)
+        0.0, vocabulary.max_giveback_db - (plateau_level_db - target_level_db)
     )
-    shelf_cut_db = min(total_drop_db, PER_FILTER_CUT_CAP_DB, remaining_budget_db)
+    if binding is not None:
+        if remaining_budget_db < min(total_drop_db, vocabulary.max_gain_db):
+            binding.add("max_giveback_db")
+    shelf_cut_db = min(total_drop_db, vocabulary.max_gain_db, remaining_budget_db)
     if shelf_cut_db < _MIN_FILTER_GAIN_DB:
         return None
     return LinearizationFilter(
@@ -1049,6 +1075,8 @@ def _hf_continuation_stage(
     fit_lo_hz: float,
     fit_hi_hz: float,
     filters: Sequence[LinearizationFilter],
+    vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY,
+    binding: set[str] | None = None,
 ) -> _HfContinuation:
     """The CD-horn compensation stage (#1668): measured-inverse top-octave
     lift, realized cut-only via give-back. Runs AFTER the peaking loop.
@@ -1070,7 +1098,7 @@ def _hf_continuation_stage(
     if any(f.biquad_type == "Highshelf" for f in filters):
         return _HF_INERT
     # Applies but the flattening loop spent every slot — named, not silent.
-    if len(filters) >= MAX_FILTERS_PER_DRIVER:
+    if len(filters) >= vocabulary.max_filters:
         return _hf_suppressed("no_filter_budget")
 
     disagreement = _hf_repeat_spread_ok(grid_hz, primary, ceiling_hz)
@@ -1101,7 +1129,7 @@ def _hf_continuation_stage(
     onset_hz = float(grid_hz[onset_idx])
 
     remaining_budget_db = max(
-        0.0, MAX_NORMALIZATION_SPEND_DB - (plateau_level_db - target_level_db)
+        0.0, vocabulary.max_giveback_db - (plateau_level_db - target_level_db)
     )
     # Three independent ceilings: measured deficit, remaining ledger
     # budget, and what a SINGLE Lowshelf can realize (binding today).
@@ -1110,6 +1138,8 @@ def _hf_continuation_stage(
         remaining_budget_db,
         HF_SINGLE_SHELF_SPEND_CAP_DB,
     )
+    if binding is not None and remaining_budget_db < min(measured_deficit_at_ceiling_db, HF_SINGLE_SHELF_SPEND_CAP_DB):
+        binding.add("max_giveback_db")
     if spend < _MIN_FILTER_GAIN_DB:
         return _HF_INERT
 
@@ -1126,10 +1156,7 @@ def _hf_continuation_stage(
     # Cut-domain transform: cut_target <= 0 everywhere.
     cut_target_db = compensation_db - spend
 
-    # Cut-domain realization: Lowshelf backbone + peaking residual. The
-    # shelf's gain is CLAMPED at PER_FILTER_CUT_CAP_DB — past the cap the
-    # shelf carries the first 12 dB and the peaking residual absorbs the rest.
-    shelf_gain_db = -min(spend, PER_FILTER_CUT_CAP_DB)
+    shelf_gain_db = -min(spend, vocabulary.max_gain_db)
     lowshelf = LinearizationFilter(
         biquad_type="Lowshelf", freq=onset_hz, q=_HIGHSHELF_Q, gain=shelf_gain_db,
     )
@@ -1139,7 +1166,7 @@ def _hf_continuation_stage(
 
     # Reserve slots: 1 for the lowshelf, 1 for a taper if the policy wants one.
     policy = HF_CONTINUATION_POLICY[envelope.driver_class]
-    slots_free = MAX_FILTERS_PER_DRIVER - len(filters)
+    slots_free = vocabulary.max_filters - len(filters)
     peaking_slots = slots_free - 1
     if policy == "taper" and peaking_slots >= 1:
         peaking_slots -= 1
@@ -1147,7 +1174,7 @@ def _hf_continuation_stage(
 
     # Fit the residual with peaking cuts in the TRUSTED band; the top
     # octave gets NO peaking filter — its lift arrives via the give-back.
-    per_bin_cap_db = -np.minimum(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)
+    per_bin_cap_db = -np.minimum(vocabulary.max_gain_db, envelope.allowed_depth_db)
     hf_peaks: list[LinearizationFilter] = []
     if peaking_slots > 0:
         peqs = design_peq(
@@ -1182,7 +1209,7 @@ def _hf_continuation_stage(
     emitted = [lowshelf, *hf_peaks]
     if (
         policy == "taper"
-        and len(filters) + len(emitted) < MAX_FILTERS_PER_DRIVER
+        and len(filters) + len(emitted) < vocabulary.max_filters
         and ceiling_hz < _HF_TAPER_NYQUIST_HZ
     ):
         # One trailing Highshelf CUT above the ceiling, appended LAST
@@ -1193,7 +1220,7 @@ def _hf_continuation_stage(
             ceiling_hz * _HF_TAPER_CORNER_RATIO,
             math.sqrt(ceiling_hz * _HF_TAPER_NYQUIST_HZ),
         )
-        taper_gain = -min(spend / 2.0, HF_TAPER_MAX_DB)
+        taper_gain = -min(spend / 2.0, HF_TAPER_MAX_DB, vocabulary.max_gain_db)
         if -taper_gain >= _MIN_FILTER_GAIN_DB:
             emitted.append(LinearizationFilter(
                 biquad_type="Highshelf", freq=taper_hz,
@@ -1521,6 +1548,7 @@ def _lift_stage(
     lift_mask: np.ndarray | None = None,
     contribution: np.ndarray | None = None,
     gain_permitted: np.ndarray | None = None,
+    binding: set[str] | None = None,
 ) -> _Lift:
     """Raise the bands a cut-only fit had to leave dark.
 
@@ -1574,11 +1602,17 @@ def _lift_stage(
     )
     from_reduced_cuts_db = float(np.max(delivered)) if delivered.size else 0.0
     residue = np.clip(wanted - delivered, 0.0, None)
+    if vocabulary.boost_floor_hz is not None:
+        below_floor = grid_hz < vocabulary.boost_floor_hz
+        if binding is not None and np.any(residue[below_floor] >= _MIN_FILTER_GAIN_DB):
+            binding.add("boost_floor_hz")
+        residue = np.where(below_floor, 0.0, residue)
+        wanted_mask = wanted_mask & ~below_floor
     residue_peak_db = float(np.max(residue)) if residue.size else 0.0
     if residue_peak_db < _MIN_FILTER_GAIN_DB:
         return _Lift(tuple(reduced), requested_db, from_reduced_cuts_db, 0.0, "")
 
-    slots_free = MAX_FILTERS_PER_DRIVER - len(reduced)
+    slots_free = vocabulary.max_filters - len(reduced)
     if slots_free <= 0:
         return _Lift(
             tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
@@ -1595,7 +1629,7 @@ def _lift_stage(
         f_low=f_low, f_high=f_high,
         max_filters=slots_free,
         max_cut_db=0.0,
-        max_boost_db=min(residue_peak_db, vocabulary.per_filter_boost_cap_db),
+        max_boost_db=min(residue_peak_db, vocabulary.per_filter_boost_cap_db, vocabulary.max_gain_db),
         cuts_only=False,
         flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
         # Explicit: bounds the #1967 drop radius. See _PEAKING_Q_MIN.
@@ -1714,6 +1748,32 @@ LIFT_SUPPRESSION_REASONS: frozenset[str] = frozenset({
 })
 
 
+def _limit_giveback(
+    filters: Sequence[LinearizationFilter], grid_hz: np.ndarray,
+    measured_db: np.ndarray, level_mask: np.ndarray, cap_db: float,
+) -> tuple[list[LinearizationFilter], float]:
+    before = _power_band_average_db(measured_db, level_mask)
+
+    def scaled(scale: float) -> list[LinearizationFilter]:
+        return [replace(f, gain=f.gain * scale) for f in filters] if scale else []
+
+    def spend(scale: float) -> float:
+        correction = complex_correction_response(scaled(scale), grid_hz)
+        after = measured_db + 20.0 * np.log10(np.maximum(np.abs(correction), 1e-12))
+        return before - _power_band_average_db(after, level_mask)
+
+    if not filters or spend(1.0) <= cap_db:
+        return list(filters), 1.0
+    lo, hi = 0.0, 1.0
+    for _ in range(_CUT_REDUCTION_BISECTION_STEPS):
+        mid = (lo + hi) / 2.0
+        if spend(mid) <= cap_db:
+            lo = mid
+        else:
+            hi = mid
+    return [f for f in scaled(lo) if abs(f.gain) >= _MIN_FILTER_GAIN_DB], lo
+
+
 def fit_driver_linearization(
     primary: DriverResponse,
     envelope: EnvelopeCurve,
@@ -1779,7 +1839,7 @@ def fit_driver_linearization(
 
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
     if not envelope_mask.any():
-        return _empty_fit(envelope)
+        return replace(_empty_fit(envelope), vocabulary=vocabulary)
 
     level_mask = _core_or_fallback_mask(envelope, envelope_mask)
     target_level_db, plateau_level_db = _target_and_plateau_db(smoothed_db, level_mask)
@@ -1837,13 +1897,15 @@ def fit_driver_linearization(
 
     filters: list[LinearizationFilter] = []
     working_db = smoothed_db.copy()
-    remaining_filters = MAX_FILTERS_PER_DRIVER
+    remaining_filters = vocabulary.max_filters
+    binding: set[str] = set()
 
     if fit_hi_idx > fit_lo_idx:
         shelf = _shelf_stage(
             grid_hz, smoothed_db, band_mask, fit_lo_hz, fit_hi_hz,
             target_level_db, plateau_level_db,
             shape_db=None if centred_target is None else centred_target.shape_db,
+            vocabulary=vocabulary, binding=binding,
         )
         if shelf is not None:
             working_db = working_db + _highshelf_response_db(
@@ -1857,7 +1919,7 @@ def fit_driver_linearization(
         # measured THROUGH its own crossover read that crossover's rolloff as a
         # driver deficit. It is now the branch's own crossover shape at the same
         # level.
-        per_bin_cap_db = -np.minimum(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)
+        per_bin_cap_db = -np.minimum(vocabulary.max_gain_db, envelope.allowed_depth_db)
         peqs = design_peq(
             working_db, target_curve_db, grid_hz,
             f_low=fit_lo_hz, f_high=fit_hi_hz,
@@ -1881,7 +1943,7 @@ def fit_driver_linearization(
     # CD-horn compensation stage (#1668), runs AFTER the peaking loop.
     hf = _hf_continuation_stage(
         grid_hz, working_db, target_curve_db, target_level_db, plateau_level_db,
-        envelope, primary, fit_lo_hz, fit_hi_hz, filters,
+        envelope, primary, fit_lo_hz, fit_hi_hz, filters, vocabulary, binding,
     )
     if hf.filters:
         # Lowshelf backbone to position 0 (shelf-before-peaks contract).
@@ -1890,6 +1952,14 @@ def fit_driver_linearization(
             np.maximum(np.abs(complex_correction_response(hf.filters, grid_hz)), 1e-12)
         )
 
+    filters, scale = _limit_giveback(filters, grid_hz, smoothed_db, level_mask, vocabulary.max_giveback_db)
+    if scale < 1.0:
+        binding.add("max_giveback_db")
+        hf = replace(hf, spend_db=hf.spend_db * scale)
+        working_db = smoothed_db + 20.0 * np.log10(np.maximum(
+            np.abs(complex_correction_response(filters, grid_hz)), 1e-12,
+        ))
+
     # Lift stage, runs LAST, in the CD-horn's give-back frame if it fired.
     lift = _lift_stage(
         grid_hz, working_db, target_curve_db - hf.spend_db, envelope,
@@ -1897,13 +1967,17 @@ def fit_driver_linearization(
         # The MEASUREMENT, not the working curve — #2599's bound exists
         # because the two disagree once cuts are placed.
         measured_db=smoothed_db,
-        lift_mask=lift_mask,
+        lift_mask=lift_mask, binding=binding,
         contribution=None if centred_target is None else centred_target.contribution,
         gain_permitted=(
             None if centred_target is None else centred_target.gain_permitted
         ),
     )
     filters = list(lift.filters)
+    if len(filters) == vocabulary.max_filters:
+        binding.add("max_filters")
+    if any(abs(f.gain) >= vocabulary.max_gain_db - 1e-6 for f in filters):
+        binding.add("max_gain_db")
 
     # Restore the emitter's taper-last contract: ``_lift_stage`` appends
     # boosts, so a trailing CD-horn taper stops being trailing whenever one
@@ -1946,10 +2020,10 @@ def fit_driver_linearization(
 
     # Per-filter caps are HARD invariants; re-prove here rather than trust
     # each stage's own clamp.
-    if any(f.gain < -PER_FILTER_CUT_CAP_DB - 1e-6 for f in filters):
+    if any(f.gain < -vocabulary.max_gain_db - 1e-6 for f in filters):
         raise RuntimeError("linearization fit exceeded the per-filter cut cap")
     if any(
-        f.gain > vocabulary.per_filter_boost_cap_db + 1e-6 for f in filters
+        f.gain > min(vocabulary.per_filter_boost_cap_db, vocabulary.max_gain_db) + 1e-6 for f in filters
     ):
         raise RuntimeError("linearization fit exceeded the per-filter boost cap")
 
@@ -1961,6 +2035,14 @@ def fit_driver_linearization(
             _power_band_average_db(smoothed_db, level_mask)
             - _power_band_average_db(working_db, level_mask)
         )
+    if correction_giveback_db > vocabulary.max_giveback_db + 1e-6:
+        raise RuntimeError("linearization fit exceeded the giveback budget")
+    if len(filters) > vocabulary.max_filters:
+        raise RuntimeError("linearization fit exceeded the filter budget")
+    if vocabulary.boost_floor_hz is not None and any(
+        f.gain > 0 and f.freq < vocabulary.boost_floor_hz for f in filters
+    ):
+        raise RuntimeError("linearization fit boosted below the frequency floor")
 
     # Give-back frame: when the CD-horn stage fired, the honest reference
     # for claims below is the target curve MINUS spend (0 if it didn't fire).
@@ -2023,4 +2105,5 @@ def fit_driver_linearization(
         lift_boost_excluded_residual=lift.boost_excluded_residual,
         lift_boost_evidence_drops=lift.boost_evidence_drops,
         blind_zone_placements=blind_zone_placements,
+        vocabulary=vocabulary, budget_binding=tuple(sorted(binding)),
     )

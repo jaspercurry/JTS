@@ -647,6 +647,7 @@ class CrossoverV2Session:
         measure_alignment_objective: str = "",
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
+        fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
@@ -711,6 +712,7 @@ class CrossoverV2Session:
         self._series_position = series_position
         self._speaker_id = str(speaker_id or "unknown")
         self._tuning_attempt_id = str(tuning_attempt_id or "")
+        self._fit_budget_by_role = fit_budget_by_role or {}
         # Layer-1a per-role driver class (#1668 PR-C); empty matches
         # ``compose_envelope``'s own "unknown".
         self._driver_class_by_role = (
@@ -3615,6 +3617,7 @@ class CrossoverV2Session:
             program_for_phase=self.program_for_phase,
             roles=self._role_names,
             driver_class_by_role=self._driver_class_by_role,
+            fit_budget_by_role=self._fit_budget_by_role,
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
             plan_linearization=plan_linearization,

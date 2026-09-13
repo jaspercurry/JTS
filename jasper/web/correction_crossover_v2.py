@@ -72,6 +72,7 @@ from typing import (
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+from jasper.active_speaker.linearization_budget import fit_budgets_by_role
 from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
     summed_sweep_band_hz,
@@ -3568,6 +3569,7 @@ def prepare_v2_session(
                 seams=seams,
                 driver_spacing_m=context.driver_spacing_m,
                 driver_class_by_role=context.driver_class_by_role,
+                fit_budget_by_role=fit_budgets_by_role(context.safety_profile),
                 radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
                 tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -3608,6 +3610,7 @@ def prepare_v2_session(
                 post_apply_verifies=opening.plan.post_apply_verifies,
                 driver_spacing_m=context.driver_spacing_m,
                 driver_class_by_role=context.driver_class_by_role,
+                fit_budget_by_role=fit_budgets_by_role(context.safety_profile),
                 radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 lateral_prompts=lateral_prompts,

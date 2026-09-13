@@ -3957,3 +3957,76 @@ def test_a_shelf_corner_inside_a_hole_is_not_named():
     assert len(named) == 1
     assert named[0].gain_db == pytest.approx(-1.7577)
     assert named[0].freq_hz == pytest.approx(in_hole_hz)
+
+
+def _budget_response():
+    magnitude = sum(_bell(_NATIVE_FREQS_HZ, center, 10, 0.1) for center in (300, 550, 1000, 1800, 3200))
+    response = _driver_response("woofer", magnitude)
+    return response, _envelope("woofer", response, excited_band_hz=(150, 4000))
+
+
+@pytest.mark.parametrize("field,value,shape", [
+    ("max_filters", 3, "peaks"),
+    ("max_filters", 1, "horn"),
+    ("boost_floor_hz", 1000, "dip"),
+    ("max_gain_db", 2, "peaks"),
+    ("max_gain_db", 2, "dip"),
+    ("max_gain_db", 2, "horn"),
+    ("max_giveback_db", 1, "peaks"),
+    ("max_giveback_db", 4, "horn"),
+    pytest.param("max_giveback_db", 0, "horn", id="no-normalization-down"),
+])
+def test_declared_fit_budget_bounds_the_realized_fit(field, value, shape):
+    response, envelope = _budget_response()
+    if shape == "dip":
+        response, envelope = _dip_response(center_hz=500)
+    elif shape == "horn":
+        response = _tweeter_response(_cd_horn_db(_NATIVE_FREQS_HZ))
+        envelope = _envelope("tweeter", response, excited_band_hz=(2000, 20000), driver_class="compression_horn")
+    vocabulary = FitVocabulary(allow_boost=shape == "dip")
+    before = fit_driver_linearization(response, envelope, vocabulary=vocabulary)
+    fit = fit_driver_linearization(response, envelope, vocabulary=vocabulary.with_budget({field: value}))
+    assert ("max_filters" in fit.budget_binding) == (len(fit.filters) == fit.vocabulary.max_filters)
+    assert ("max_gain_db" in fit.budget_binding) == any(
+        abs(f.gain) >= fit.vocabulary.max_gain_db - 1e-6 for f in fit.filters
+    )
+    if field not in {"max_filters", "max_gain_db"}:
+        assert field in fit.budget_binding
+    assert fit.to_dict()["budget"][field] == value
+    assert fit.to_dict()["budget_binding"] == list(fit.budget_binding)
+    if field == "max_filters":
+        assert len(fit.filters) <= value < len(before.filters)
+    elif field == "boost_floor_hz":
+        assert any(f.gain > 0 and f.freq < value for f in before.filters)
+        assert all(f.freq >= value for f in fit.filters if f.gain > 0)
+    elif field == "max_gain_db":
+        assert max(abs(f.gain) for f in before.filters) > value
+        assert fit.filters or shape == "horn"
+        assert all(abs(f.gain) <= value for f in fit.filters)
+    else:
+        assert fit.correction_giveback_db <= value < before.correction_giveback_db
+        assert all(abs(f.gain) >= _MIN_FILTER_GAIN_DB for f in fit.filters)
+        if shape == "peaks":
+            assert len(before.filters) == 8
+            assert 0 < len(fit.filters) < fit.vocabulary.max_filters
+            assert "max_filters" not in fit.budget_binding
+        if value == 0:
+            assert fit.correction_giveback_db == fit.hf_continuation_spend_db == 0
+        measured = _ladder_smooth(envelope.freqs_hz, np.interp(envelope.freqs_hz, response.freqs_hz, response.magnitude_db))
+        mask = _core_or_fallback_mask(envelope, envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB)
+        corrected = measured + 20 * np.log10(np.abs(complex_correction_response(fit.filters, envelope.freqs_hz)))
+        assert fit.correction_giveback_db == pytest.approx(
+            _power_band_average_db(measured, mask) - _power_band_average_db(corrected, mask), abs=1e-9,
+        )
+
+
+def test_absent_budget_preserves_the_existing_fit():
+    response, envelope = _budget_response()
+    default = fit_driver_linearization(response, envelope)
+    explicit = fit_driver_linearization(response, envelope, vocabulary=FitVocabulary().with_budget({
+        "max_filters": 8, "boost_floor_hz": None, "max_gain_db": 12, "max_giveback_db": 18,
+    }))
+    assert default.to_dict() == explicit.to_dict()
+    assert len(default.filters) == 8
+    assert default.correction_giveback_db == pytest.approx(4.870345031568821, abs=1e-9)
+    assert default.residual_rms_db == pytest.approx(2.388350442230124, abs=1e-9)
