@@ -10,12 +10,14 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.distortion import read_segment_distortion, required_pre_guard_s
+from jasper.audio_measurement.deconv import HarmonicWindowOutOfRange
+from jasper.audio_measurement.distortion import read_segment_distortion, required_pre_guard_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
 
+from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import AnalyzedMeasurement, analyzed_measurements
 
 BASS_BANDS_HZ = tuple(zip((20., 30., 40., 50., 63., 80., 100., 125., 160.),
@@ -58,29 +60,34 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
     anchor = next(loc.scheduled_start for loc in analysis.locations if loc.segment_id == segment.segment_id)
     diagnostics = analysis_diagnostic_summary(analysis)
     valid = not diagnostics.get("integrity_failed") and not analysis.glitch_detected
-    reading = read_segment_distortion(
-        program, take.samples, segment.segment_id, anchor, band_hz=(20, 200),
-        calibration=take.calibration.curve if take.calibration else None,
-        epsilon=analysis.drift.epsilon_ppm / 1e6 if analysis.drift else 0.0,
-    )
     quiet, quiet_samples = _quiet(take)
-    bands = sweep_band_levels(take.samples, quiet, take.sample_rate, reading.sweep, anchor, BASS_BANDS_HZ)
+    bands = sweep_band_levels(take.samples, quiet, take.sample_rate, segment_sweep_meta(segment), anchor, BASS_BANDS_HZ)
     for band in bands:
         snr = band["estimated_snr_db"]
         band["fundamental_qualified"] = valid and snr is not None and snr >= DRIVER.snr_warn_db
-    harmonic_qualified = _qualified(reading.freqs_hz, bands)
     orders = {}
-    for order in reading.orders:
-        required = required_pre_guard_s(reading.sweep, (order,))
-        timing_valid = reading.preceding_silence_s >= required
-        mask = harmonic_qualified & ~reading.floor_limited(order) & timing_valid
-        orders[str(order)] = {
-            "freqs_hz": _finite(reading.freqs_hz),
-            "relative_db": _finite(reading.relative_db[order]),
-            "floor_relative_db": _finite(reading.floor_relative_db[order]),
-            "qualified": mask.tolist(), "timing_valid": timing_valid,
-            "clearance_s": reading.preceding_silence_s - required,
-        }
+    distortion: dict[str, Any] = {"available": True}
+    try:
+        reading = read_segment_distortion(
+            program, take.samples, segment.segment_id, anchor, band_hz=(20, 200),
+            calibration=take.calibration.curve if take.calibration else None,
+            epsilon=analysis.drift.epsilon_ppm / 1e6 if analysis.drift else 0.0,
+        )
+    except HarmonicWindowOutOfRange:
+        distortion = {"available": False, "reason": "harmonic_window_out_of_range"}
+    else:
+        harmonic_qualified = _qualified(reading.freqs_hz, bands)
+        for order in reading.orders:
+            required = required_pre_guard_s(reading.sweep, (order,))
+            timing_valid = reading.preceding_silence_s >= required
+            mask = harmonic_qualified & ~reading.floor_limited(order) & timing_valid
+            orders[str(order)] = {
+                "freqs_hz": _finite(reading.freqs_hz),
+                "relative_db": _finite(reading.relative_db[order]),
+                "floor_relative_db": _finite(reading.floor_relative_db[order]),
+                "qualified": mask.tolist(), "timing_valid": timing_valid,
+                "clearance_s": reading.preceding_silence_s - required,
+            }
     curve = next(curve for curve in document["curves"] if curve["role"] == "summed")
     frequencies = np.asarray(curve["freqs_hz"])
     bass = (frequencies >= 20) & (frequencies <= 200)
@@ -97,11 +104,15 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
         "freqs_hz": _finite(frequencies),
         "fundamental_db": _finite(np.asarray(curve["magnitude_db"])[bass]),
         "fundamental_qualified": _qualified(frequencies, bands).tolist(), "harmonics": orders,
+        "distortion": distortion,
     }
 
 
-def bass_view(bundle_dir: Path, *, calibration_root: Path | None = None) -> dict[str, Any]:
-    takes = [bass_take(take) for take in analyzed_measurements(bundle_dir, calibration_root=calibration_root)]
+def bass_view(
+    bundle_dir: Path, *, take_ids: tuple[str, ...], calibration_root: Path | None = None,
+) -> dict[str, Any]:
+    paths = (record_path(row) for row, record in measurement_documents(bundle_dir) if record.get("take_id") in take_ids)
+    takes = [bass_take(take) for take in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=paths)]
     if not takes:
         raise ValueError("measurement_captures_missing")
     return {
