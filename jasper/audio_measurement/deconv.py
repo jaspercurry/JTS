@@ -255,6 +255,10 @@ HARMONIC_WINDOW_GAP_FRACTION = 0.4
 HARMONIC_PEAK_SEARCH_RADIUS_S = 0.002
 
 
+class HarmonicWindowOutOfRange(ValueError):
+    pass
+
+
 def harmonic_time_advance_s(meta: SweepMeta, order: int) -> float:
     """Return how far the order-N harmonic image leads the linear IR."""
 
@@ -285,7 +289,7 @@ def extract_harmonic_ir(
     search_start = max(0, predicted_center - search_radius)
     search_end = min(len(full_ir), predicted_center + search_radius + 1)
     if search_start >= search_end:
-        raise ValueError("harmonic window crosses t=0 or the capture boundary")
+        raise HarmonicWindowOutOfRange("harmonic window crosses t=0 or the capture boundary")
     center = search_start + int(np.argmax(np.abs(full_ir[search_start:search_end])))
     neighboring_orders = (2,) if order == 1 else (order - 1, order + 1)
     neighboring_centers = [
@@ -301,7 +305,7 @@ def extract_harmonic_ir(
     start = center - half_width
     end = center + half_width + 1
     if start < 0 or end > len(full_ir):
-        raise ValueError("harmonic window crosses t=0 or the capture boundary")
+        raise HarmonicWindowOutOfRange("harmonic window crosses t=0 or the capture boundary")
     for neighbor, neighbor_center in zip(neighboring_orders, neighboring_centers):
         adjacent = (2,) if neighbor == 1 else (neighbor - 1, neighbor + 1)
         neighbor_gap = min(abs(

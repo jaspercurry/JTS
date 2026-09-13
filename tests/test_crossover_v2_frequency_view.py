@@ -43,7 +43,7 @@ from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, pred
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
 from jasper.cli._refusal import EXIT_UNREADABLE
-from jasper.cli.round_views import build_parser, main as round_views_main
+from jasper.cli.round_views import build_parser, main as round_views_main, run_bookkeeping
 from jasper.web import correction_measurements
 
 
@@ -794,29 +794,32 @@ def summed_capture_bundle(tmp_path, request):
     signal = np.concatenate([np.zeros(800), pcm * 0.4 * 10 ** (-20 / 20), np.zeros(5000)])
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
-    recording = WiredRecording(
-        ((raw * (2 ** 31 - 1)).astype("<i4").tobytes(),), signal.size,
-        0, 0, False, program.sample_rate_hz, 2,
-    )
 
-    class Recorder:
-        def start(self):
-            pass
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, render_gap_frames=0, **fields):
+        anchor = 800 + program.segment("sweep_verify").start_sample
+        samples = np.delete(raw, np.s_[anchor - render_gap_frames:anchor], axis=0)
+        recording = WiredRecording(
+            ((samples * (2 ** 31 - 1)).astype("<i4").tobytes(),), len(samples),
+            0, 0, False, program.sample_rate_hz, 2,
+        )
 
-        def finish(self, **kwargs):
-            return recording
+        class Recorder:
+            def start(self):
+                pass
 
-        def abort(self):
-            pass
+            def finish(self, **kwargs):
+                return recording
 
-    capture = WiredStimulusCapture(
-        WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
-        bundle, recorder_factory=lambda *_: Recorder(),
-    )
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, **fields):
+            def abort(self):
+                pass
+
         async def play():
             pass
-        configured = replace(capture, setup_reference=lambda: setup)
+
+        configured = WiredStimulusCapture(
+            WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
+            bundle, recorder_factory=lambda *_: Recorder(), setup_reference=lambda: setup,
+        )
         records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured)
         await configured.around(play, program=program)
         answer = configured.take_answer()
@@ -965,6 +968,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     ]) == 0
     view = json.loads(out.read_text())
     first, repeat = view['takes']
+    assert first['distortion'] == repeat['distortion'] == {'available': True}
     assert first['program_id'] == first['record']['program_id'] == program.program_id
     assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
@@ -978,6 +982,37 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
     repeat['record']['program_id'] = 'different-program'
     assert compare_bass_takes(first, repeat, change='candidate')['context']['incompatible_fields'] == ['program_id']
+
+
+@pytest.mark.parametrize("selected_broken", [False, True])
+def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
+    summed_capture_bundle, tmp_path, monkeypatch, selected_broken,
+):
+    monkeypatch.chdir(tmp_path)
+    bundle, _, _, bank = summed_capture_bundle
+    records = []
+    for take_id, gap in (("baseline", 0), ("broken", 2316), ("other-set", 0)):
+        path = asyncio.run(bank(take_id, render_gap_frames=gap,
+                               wav_hash="0" * 64 if take_id == "other-set" else None))
+        records.append((path, json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())))
+    accepted = ("baseline", "broken") if selected_broken else ("baseline",)
+    selected = manifest_set(records[:2], set_id="bass", selected=accepted)
+    if not selected_broken:
+        selected["takes"][1]["quality"] = {"status": "refused", "fault": "capture_render_gap"}
+    write_manifest(bundle, program="bass", groups=[selected, manifest_set(records[2:], set_id="other")])
+    answer = run_bookkeeping("bass", bundle, set_id="bass")
+    assert answer["status"] == "written"
+    assert answer["takes"] == len(accepted)
+    takes = json.loads(Path(answer["out"]).read_text())["takes"]
+    assert tuple(take["record"]["take_id"] for take in takes) == accepted
+    assert takes[0]["distortion"] == {"available": True}
+    if selected_broken:
+        broken = takes[1]
+        assert broken["distortion"] == {"available": False, "reason": "harmonic_window_out_of_range"}
+        assert broken["harmonics"] == {}
+        assert broken["bands"]
+        assert all(np.isfinite(band["signal_plus_noise_dbfs"]) for band in broken["bands"])
+        assert broken["freqs_hz"] and broken["fundamental_db"]
 
 
 @pytest.mark.parametrize('change,main_delta,stimulus_delta,mismatch,field', [

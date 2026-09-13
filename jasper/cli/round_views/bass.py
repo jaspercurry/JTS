@@ -74,8 +74,7 @@ def _cmd(args: argparse.Namespace) -> int:
             if args.command == "bass":
                 from jasper.active_speaker.measurement_bass import bass_view  # lazy: laptop FFT analysis
                 selected = resolve_set(inputs, args.set)
-                payload = bass_view(inputs.session_dir, calibration_root=args.calibration_root)
-                payload["takes"] = [take for take in payload["takes"] if take["record"]["take_id"] in selected.selected_ids]
+                payload = bass_view(inputs.session_dir, take_ids=selected.selected_ids, calibration_root=args.calibration_root)
                 summary = {"takes": len(payload["takes"])}
             else:
                 from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ  # lazy: laptop array analysis

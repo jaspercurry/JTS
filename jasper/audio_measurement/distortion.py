@@ -373,7 +373,7 @@ def _phantom_floor_ir(
     center = direct_peak_idx - int(round(advance * sample_rate))
     start, end = center - half_width, center + half_width + 1
     if half_width < 1 or start < 0 or end > len(full_ir):
-        raise ValueError(
+        raise deconv.HarmonicWindowOutOfRange(
             f"phantom floor window for order {order} crosses the impulse "
             f"response boundary"
         )
@@ -651,7 +651,7 @@ def read_segment_distortion(
     # exactly the condition worth refusing -- the images then wrapped.
     requested_samples = int(round(needed * sample_rate))
     if pre_effective < requested_samples:
-        raise ValueError(
+        raise deconv.HarmonicWindowOutOfRange(
             f"segment {segment_id!r}: capture has {pre_effective / sample_rate:.3f} s "
             f"before the sweep but orders {tuple(orders)} need "
             f"{needed:.3f} s — the harmonic images would wrap. The capture "
