@@ -277,6 +277,8 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
+    from jasper.cli.round_views import view_accepts_set  # lazy: round views imports this module
+
     from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
@@ -310,10 +312,22 @@ def _bookkeeping(
 
     results = []
     for view in views:
+        if not view_accepts_set(view):
+            results.append(view_runner(view, target) if view_runner else {
+                "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+            })
+            continue
         for row in sets:
             set_id = row["set_id"]
-            if view == "room-grade" and (base_set is None or set_id == base_set):
-                continue
+            if view == "room-grade":
+                if base_set is None:
+                    results.append({
+                        "view": view, "set_id": set_id,
+                        "status": "unavailable", "reason": "base_set_ambiguous",
+                    })
+                    continue
+                if set_id == base_set:
+                    continue
             flags = ["--set", set_id]
             if view == "room-grade" and base_set is not None:
                 flags += ["--incumbent", base_set]

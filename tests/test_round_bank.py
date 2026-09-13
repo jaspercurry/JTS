@@ -451,6 +451,51 @@ def test_bank_runs_trial_bookkeeping_per_set_and_keeps_one_set_calls_bare(tmp_pa
          "incumbent_set_id": "base-set"},
     ]
 
+    manifest["program"] = "speaker"
+    path.write_text(json.dumps(manifest))
+    calls.clear()
+    speaker = bank_round(
+        session, campaign_root=tmp_path / "speaker", state_path=state, view_runner=run,
+    )
+    assert calls == [
+        ("inventory", "--set", "base-set"),
+        ("inventory", "--set", "candidate-set"),
+        ("classify-features",),
+        ("distortion",),
+        ("directivity",),
+        ("per-seat",),
+    ]
+    assert speaker.provenance["views"] == [
+        {"view": "inventory", "status": "written", "set_id": "base-set"},
+        {"view": "inventory", "status": "written", "set_id": "candidate-set"},
+        {"view": "classify-features", "status": "written"},
+        {"view": "distortion", "status": "written"},
+        {"view": "directivity", "status": "written"},
+        {"view": "per-seat", "status": "written"},
+    ]
+
+    windows = [json.loads(json.dumps(base)) for _ in range(2)]
+    for number, window in enumerate(windows, 1):
+        window["set_id"] = f"base-window-{number}"
+    manifest.update(program="room", sets=windows, asked={"candidates": ["base"]})
+    path.write_text(json.dumps(manifest))
+    calls.clear()
+    ambiguous = bank_round(
+        session, campaign_root=tmp_path / "ambiguous", state_path=state, view_runner=run,
+    )
+    assert calls == [
+        ("room", "--set", "base-window-1"),
+        ("room", "--set", "base-window-2"),
+    ]
+    assert ambiguous.provenance["views"] == [
+        {"view": "room", "status": "written", "set_id": "base-window-1"},
+        {"view": "room", "status": "written", "set_id": "base-window-2"},
+        {"view": "room-grade", "set_id": "base-window-1",
+         "status": "unavailable", "reason": "base_set_ambiguous"},
+        {"view": "room-grade", "set_id": "base-window-2",
+         "status": "unavailable", "reason": "base_set_ambiguous"},
+    ]
+
 
 @pytest.mark.parametrize("purpose,view", [
     (purpose, view)
