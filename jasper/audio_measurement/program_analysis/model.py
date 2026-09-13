@@ -32,6 +32,9 @@ CAPTURE_BOUND_MARGIN_S = 10.0
 # Downsampled rate for the global-offset locate, so the whole-capture
 # correlation never allocates hundreds of MB.
 LOCATOR_RATE_HZ = 16_000
+# Room modal tails below ~200 Hz put tall competitors inside the ±30 ms
+# search window; the witness only needs to prove the timeline.
+WITNESS_BAND_FLOOR_HZ = 200.0
 # Clip run: consecutive samples at/above full scale (threshold owned by quality_model).
 CLIP_RUN_SAMPLES = 3
 CLIP_ABS_THRESHOLD = DRIVER.clip_abs_threshold
