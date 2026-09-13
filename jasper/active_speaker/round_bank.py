@@ -276,7 +276,7 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    from .measurement_programs import PURPOSES, bookkeeping_views, program  # lazy: bank-only program registry
+    from .measurement_programs import bookkeeping_views, run_purpose  # lazy: bank-only program registry
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 
@@ -285,8 +285,7 @@ def _bookkeeping(
     if manifest is None or not manifest.is_file():
         return None, []
     document = json.loads(manifest.read_text())
-    name, _, size = str(document.get("program") or "").partition("/")
-    purpose = name if not name or name in PURPOSES else program(name, size or None).purpose
+    purpose = run_purpose(document.get("program"))
     views = bookkeeping_views(purpose)
     sets = [row for row in document.get("sets", ())
             if isinstance(row, Mapping) and isinstance(row.get("set_id"), str)]

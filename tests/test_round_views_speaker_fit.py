@@ -151,6 +151,46 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize("run_program", ["speaker", "speaker/full"])
+def test_speaker_fit_reads_the_run_purpose_behind_a_sized_program(speaker_round, capsys, run_program):
+    root, record, program, *_ = speaker_round
+    group = manifest_set([(next(row.path for row, _ in measurement_documents(round_inputs(root).session_dir)
+                               if row.phase == "measure"), record)], set_id="speaker-set")
+    group["capture_basis"].update(role="woofer")
+    write_manifest(root, program=run_program, groups=[group])
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
+    assert json.loads(capsys.readouterr().out)["set_id"] == "speaker-set"
+
+
+def test_speaker_fit_falls_back_to_the_rounds_banked_base(speaker_round, capsys, monkeypatch):
+    from types import SimpleNamespace
+    from jasper.active_speaker import candidate_bank
+    from jasper.cli.round_views import speaker_fit as view
+
+    root, record, program, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    stored = json.loads((directory / "candidate.json").read_text())
+    (directory / "candidate.json").unlink()
+    manifest = json.loads((root / "run_manifest.json").read_text()) if (root / "run_manifest.json").is_file() else None
+    row_path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    measured = manifest_set([(row_path, record)], set_id="speaker-set")
+    measured["capture_basis"].update(role="woofer")
+    base = manifest_set([(row_path, record)], set_id="base-set")
+    base["capture_basis"].update(graph_scope="candidate", candidate_id="base-fp")
+    write_manifest(root, groups=[base, measured])
+    looked_up = []
+
+    def find(fingerprint):
+        looked_up.append(fingerprint)
+        return SimpleNamespace(candidate=SimpleNamespace(to_dict=lambda: stored))
+
+    monkeypatch.setattr(candidate_bank, "find_banked_candidate", find)
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
+    assert looked_up == ["base-fp"]
+    del manifest, view
+
+
 def test_unknown_set_uses_registry_refusal(speaker_round, capsys):
     root, *_ = speaker_round
     assert round_views.main(["speaker-fit", str(root), "--set", "unknown"]) == round_views.EXIT_REFUSED

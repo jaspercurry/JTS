@@ -22,6 +22,7 @@ from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import EnvelopeCurve
 from jasper.active_speaker.linearization_budget import DEFAULT_FIT_BUDGET, fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary
+from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER, run_purpose
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
@@ -56,6 +57,21 @@ def _read_candidate(path: Path) -> dict[str, Any]:
     return candidate
 
 
+def _round_candidate(directory: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """The tune the fit builds on: the round's own candidate, else its banked base."""
+    path = directory / "candidate.json"
+    if path.is_file():
+        return _read_candidate(path)
+    from jasper.active_speaker.candidate_bank import find_banked_candidate  # lazy: bank scan cost
+
+    base = next((group["capture_basis"].get("candidate_id") for group in manifest["sets"]
+                 if group["capture_basis"].get("graph_scope") == "candidate"
+                 and group["capture_basis"].get("candidate_id")), None)
+    if not base:
+        raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
+    return find_banked_candidate(base).candidate.to_dict()
+
+
 def _production_vocabulary(inputs: RoundInputs, candidate: dict[str, Any]) -> str:
     if inputs.state_path is None:
         raise RoundViewsError("production vocabulary requires the capture's journey state")
@@ -81,13 +97,13 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     record = json.loads(path.read_text())
     program = ExcitationProgram.from_dict(record["program"])
     manifest = read_run_manifest(inputs)
-    if manifest["program"] != "speaker" or program.phase != "measure":
+    if run_purpose(manifest["program"]) != PURPOSE_SPEAKER or program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
     if program.program_id != selected.capture_basis["program_id"] or record["take_id"] != take_id:
         raise RoundViewsError("selected take does not match its manifest")
     directory, _ = round_artifact_dir(inputs.session_dir)
     assert directory is not None
-    candidate = stage(EXIT_UNREADABLE, (OSError, ValueError, TypeError), _read_candidate, directory / "candidate.json")
+    candidate = stage(EXIT_UNREADABLE, (OSError, ValueError, TypeError, LookupError), _round_candidate, directory, manifest)
     vocabulary = args.vocabulary or stage(
         EXIT_UNREADABLE, (OSError, ValueError, KeyError, TypeError), _production_vocabulary, inputs, candidate,
     )
@@ -115,7 +131,11 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     bands = _primary_sweep_bands(program)
     if not 1 <= len(bands) <= 2:
         raise RoundViewsError("speaker-fit requires one or two measured driver roles")
-    curves = {curve["role"]: curve for curve in record["curves"]}
+    # The run banks each role's analyzed curve on its manifest row; a record that
+    # carries curves itself (older bundles, fixtures) still reads.
+    curves = {curve["role"]: curve for curve in record.get("curves") or []} or {
+        row["role"]: row["curve"] for group in manifest["sets"] for row in group["takes"]
+        if row["take_id"] == take_id and row.get("curve")}
     drivers = []
     for role, band in bands.items():
         response = response_from_banked_curve(curves[role])
