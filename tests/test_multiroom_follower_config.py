@@ -327,17 +327,7 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
 def test_typod_ring_wire_refusal_surfaces_as_follower_error(
     monkeypatch, tmp_path
 ) -> None:
-    """The SAME ``except``, one seam earlier: the candidate's device derivation.
-
-    An ARMED box resolves its sink to the active ring, so the follower's build
-    reaches ``active_emit_devices`` — and a typo'd
-    ``JASPER_FANIN_RING_WIRE_FORMAT`` refuses there, ABOVE the L0 emit gate the
-    test above provokes. #2338 gives that refusal the ``ActiveSpeakerConfigError``
-    type precisely so it lands in this same clause: the wire parser raises a
-    BARE ``ValueError``, which this ``except`` (a subclass) does not catch, so
-    an armed + bonded box with one typo'd env line would abort the grouping
-    reconcile oneshot rather than fall back to solo. CamillaDSP is never loaded.
-    """
+    """See #2338: invalid wire declarations must reach the follower fallback."""
     from jasper.fanin_coupling import (
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
         RING_WIRE_FORMAT_ENV_VAR,
@@ -363,7 +353,7 @@ def test_typod_ring_wire_refusal_surfaces_as_follower_error(
 
     with pytest.raises(fc.ActiveFollowerError) as exc:
         asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
-    assert exc.value.reason == "baseline_not_ready"
+    assert exc.value.reason == "driver_domain_emit_refused"
     assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
 
 

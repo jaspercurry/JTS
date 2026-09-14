@@ -1904,36 +1904,16 @@ def _emit_active_baseline(preset, device, *, topology=None):
     )
 
 
-def _applied_ring_baseline(tmp_path):
-    """A real APPLIED profile on the jts3-shaped box, for the production seam.
-
-    Built from ``tests/active_speaker_fixtures`` — the suite's SHARED builders,
-    not a sibling test module — so the topology this guard drives is the same
-    bench box every other active-speaker test means.
-    """
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from tests.active_speaker_fixtures import (
-        mono_output_topology,
-        standard_design_draft,
-        standard_measurements,
-        valid_camilla_config,
+def _ring_composer_box(monkeypatch, tmp_path):
+    from tests.test_correction_crossover_v2_endpoints import (
+        _FakeApplyCam,
+        _seed_baseline_apply_environment,
     )
 
-    topology = mono_output_topology()
-    draft = standard_design_draft(topology)
-    applied = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=build_crossover_preview(draft),
-        measurements=standard_measurements(topology, tmp_path),
-        write=False,
-        state_path=tmp_path / "active-speaker-profile.json",
-        config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
-        validate=valid_camilla_config,
-    )
-    applied["status"] = "applied"
-    return topology, applied
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr("jasper.sound.settings.saved_sound_layers", lambda: ([], 0.0))
+    return topology, _FakeApplyCam()
 
 
 def _startup_anchor_site(topology, out_dir, *, playback_device=None):
@@ -2005,87 +1985,60 @@ def _driver_commissioning_site(topology, out_dir, *, playback_device):
 def _recorded_emit_kwargs(
     monkeypatch, call_site, emitter="emit_active_speaker_baseline_config"
 ):
-    """Run ``call_site``, returning the kwargs it handed ``emitter``.
-
-    ``emitter`` names which emit function to record, because the candidate
-    builder has TWO branches and they take the same device contract: the solo
-    baseline emit and the wireless follower's driver-domain emit.
-    """
     from jasper.active_speaker import camilla_yaml as cy
 
-    seen: dict = {}
+    seen: list[dict] = []
     real = getattr(cy, emitter)
 
     def recorder(preset, **kwargs):
-        seen.update(kwargs)
+        seen.append(kwargs)
         return real(preset, **kwargs)
 
     monkeypatch.setattr(cy, emitter, recorder)
-    # baseline_profile and staging each imported their emitter by name at module
-    # import, so those production seams have their own binding to rebind. Sites
-    # whose import is function-local — crossover-v2's Stage 1 emit resolves the
-    # attribute at call time — have no second binding, and neither module
-    # imported their emitter at all. Rebinding what exists is not a weakening: a
-    # site whose binding this MISSES records nothing, and the caller's walk then
-    # reports every field missing rather than passing quietly.
-    import jasper.active_speaker.baseline_profile as bp
     import jasper.active_speaker.staging as staging
 
     from jasper.active_speaker import measured_crossover_candidate
 
-    for module in (bp, staging, measured_crossover_candidate):
+    for module in (staging, measured_crossover_candidate):
         if hasattr(module, emitter):
             monkeypatch.setattr(module, emitter, recorder)
     call_site()
     return seen
 
 
-def _ring_candidate_site(
-    topology,
-    tmp_path,
-    *,
-    driver_domain=False,
-    playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-):
-    """Drive ``build_baseline_profile_candidate``'s WRITE emit against the ring.
-
-    The production CANDIDATE site (#2338), and the reason this guard grew past
-    two entries: its sink is marker-aware (``resolve_active_playback_device``)
-    while its capture lane and latency geometry took the emitter's ALSA-lane
-    defaults — playback=ring meeting capture=tap, the same half-moved graph one
-    emit site over. Both of its branches take the whole contract, so both are
-    walked: the solo baseline emit and the wireless follower's driver-domain
-    emit.
-
-    ``playback_device`` is overridable ONLY so a caller can drive the SAME site
-    at the ALSA active lane as a control — a ring-specific claim proven without
-    one is a claim about the site, not about the ring.
-    """
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from tests.active_speaker_fixtures import (
-        standard_design_draft,
-        standard_measurements,
-        valid_camilla_config,
-    )
-
-    draft = standard_design_draft(topology)
-    out = tmp_path / ("driver_domain" if driver_domain else "solo")
+def _commissioning_apply_site(cam):
+    import asyncio
+    from jasper.active_speaker import baseline_profile
 
     def call_site():
-        build_baseline_profile_candidate(
-            topology,
-            design_draft=draft,
-            crossover_preview=build_crossover_preview(draft),
-            measurements=standard_measurements(topology, out),
-            write=True,
-            state_path=out / "active-speaker-profile.json",
-            config_path=out / "configs" / "active-speaker-baseline.yml",
-            playback_device=playback_device,
-            driver_domain=driver_domain,
-            program_channel="left" if driver_domain else None,
-            validate=valid_camilla_config,
+        text, reviewed = baseline_profile.compile_commissioning_profile()
+        assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
+        result = asyncio.run(baseline_profile.apply_commissioning_profile(
+            expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
+            load_config=cam.set_config_file_path,
+            get_current_config_path=cam.get_config_file_path,
+        ))
+        assert result["status"] == "applied", result["issues"]
+        assert cam.path == result["profile"]["config"]["path"]
+        assert Path(cam.path).read_text() == text
+        return result["profile"]
+
+    return call_site
+
+
+def _grouping_site(topology, tmp_path):
+    from jasper.multiroom.active_profile import build_grouped_profile
+    from tests.active_speaker_fixtures import valid_camilla_config
+
+    def call_site():
+        result = build_grouped_profile(
+            topology, state_path=str(tmp_path / "grouped.json"),
+            config_path=str(tmp_path / "grouped.yml"),
+            program_channel="left", trim_db=-3.0, validate=valid_camilla_config,
         )
+        assert result["status"] == "ready_to_apply", result["issues"]
+        assert (tmp_path / "grouped.yml").exists()
+        return result
 
     return call_site
 
@@ -2216,102 +2169,66 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
 def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
     tmp_path, monkeypatch
 ):
-    """A typo'd ``JASPER_FANIN_RING_WIRE_FORMAT`` refuses as the TYPED class.
-
-    This site derives its device block BEFORE it has an ``issues`` list to put a
-    blocker in — the cached fast-return exits above that point, and the
-    fingerprint has to describe the graph that will actually be emitted — so it
-    refuses by raising, and the TYPE of the raise is the whole contract. The
-    parser hands up a bare ``ValueError``
-    (:func:`jasper.fanin_coupling.resolve_ring_wire_format`); what leaves this
-    function must be ``ActiveSpeakerConfigError``, the class
-    ``jasper.multiroom.follower_config`` catches on its way to
-    ``fall_back_to_solo()``. That ``except`` names a SUBCLASS, so it does not
-    catch the bare parent: with one, an armed + bonded box carrying one typo'd
-    env line falls back to solo and logs
-    ``multiroom.reconcile.active_follower_blocked``; without one it aborts the
-    grouping reconcile inside the gate whose documented job is that fallback.
-
-    Being a ``ValueError`` subclass, the typed class leaves every surface that
-    already renders this as a clean refusal exactly as it was.
-    """
-    import jasper.active_speaker as active_speaker
+    import asyncio
+    from dataclasses import replace
+    from jasper.active_speaker import ActiveSpeakerConfigError, baseline_profile
+    from jasper.active_speaker.candidate_parts import candidate_from_design_draft
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
-    from tests.active_speaker_fixtures import mono_output_topology
 
+    topology, cam = _ring_composer_box(monkeypatch, tmp_path)
+    draft = load_design_draft(topology=topology)
+    declaration = load_tuning_declaration(topology, design_draft=draft)
+    candidate = candidate_from_design_draft(topology, draft)
+    _, reviewed = baseline_profile.compile_commissioning_profile()
+    assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 
-    topology = mono_output_topology()
-    with pytest.raises(active_speaker.ActiveSpeakerConfigError) as caught:
-        _ring_candidate_site(topology, tmp_path / "ring")()
+    for call_site in (
+        lambda: compile_tuning_graph(declaration, candidate=candidate),
+        _grouping_site(topology, tmp_path),
+    ):
+        with pytest.raises(ActiveSpeakerConfigError) as caught:
+            call_site()
+        assert type(caught.value.__cause__) is ValueError
+        assert caught.value.args == caught.value.__cause__.args
 
-    # NON-DEGENERATE: assert the raise really is the wire parser's, and that the
-    # conversion carries its sentence rather than a type name. The operator has
-    # to see the var and the token they typed.
-    detail = str(caught.value)
-    assert RING_WIRE_FORMAT_ENV_VAR in detail
-    assert "s32le" in detail, "the operator needs to see the value they typed"
+    result = asyncio.run(baseline_profile.apply_commissioning_profile(
+        expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
+        load_config=cam.set_config_file_path,
+        get_current_config_path=cam.get_config_file_path,
+    ))
+    assert result["status"] == "blocked"
+    assert result["issues"][0]["code"] == "compose_refused"
+    assert cam.path is None
+    assert not list(tmp_path.glob("*.yml"))
 
-    # CONTROL: the same site, the same typo'd file, the ALSA active lane. The
-    # wire is resolved only for a ring sink, so a typo cannot block an unarmed
-    # box's ordinary candidate build — a conversion that refused every box would
-    # satisfy the assertions above.
-    _ring_candidate_site(
-        topology,
-        tmp_path / "alsa",
-        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-    )()
+    control = compile_tuning_graph(
+        replace(declaration, playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE), candidate=candidate,
+    )
+    assert parse_camilla_devices_config(control)["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 
 
 def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
-    """WALK ``dataclasses.fields(ActiveEmitDevices)`` at EVERY forwarding site.
-
-    This PR's whole defect class is a caller taking a SUBSET of a derived device
-    contract — the ring re-emit forwarded the queue pair and let the format,
-    latency geometry and capture lane default. Every site that forwards the
-    contract now names every field explicitly, which is the readable shape but
-    also the re-armable one: adding a field to ``ActiveEmitDevices`` and
-    forgetting one call site fails silently in exactly the original way.
-
-    So the guard is a WALK, not a list: it drives each site with a recording
-    emitter and asserts that for EVERY field, the value that reached the emitter
-    is the value the derivation produced. Same shape as
-    ``test_every_active_lane_write_site_writes_the_pair`` — enumerate the sites,
-    do not assert "the helper exists".
-
-    Each entry names the DEVICE it is driven at, and the expectation is derived
-    per site from that device rather than once for all of them. Every site runs
-    at the ring, where every field's answer differs from the emitter's default —
-    including the seventh, which could not until #2412's Wave 3 replaced
-    ``prepare_driver_commissioning_config``'s blanket ring refusal with a
-    both-ends coherence proof (see ``_driver_commissioning_site``).
-    """
+    """See #2338: forwarding a device-contract subset can silently change the wire."""
     import dataclasses
 
     from tests.active_speaker_fixtures import compile_applied_fixture
+    from jasper.active_speaker import baseline_profile
     from jasper.active_speaker.camilla_yaml import (
         ActiveEmitDevices,
         active_emit_devices,
     )
 
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     fields = [f.name for f in dataclasses.fields(ActiveEmitDevices)]
     assert fields, "ActiveEmitDevices lost its fields; this guard is now vacuous"
 
-    topology, applied = _applied_ring_baseline(tmp_path)
+    topology, cam = _ring_composer_box(monkeypatch, tmp_path)
 
     sites = {
-        "compile_tuning_graph": (
-            lambda: compile_applied_fixture(
-                topology,
-                applied_profile=applied,
-                playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            ),
-            "emit_active_speaker_baseline_config",
-            RING_ACTIVE_PLAYBACK_DEVICE,
-        ),
         "tests._emit_active_baseline": (
             lambda: _emit_active_baseline(
                 _mono_two_way_preset(),
@@ -2321,50 +2238,40 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
             "emit_active_speaker_baseline_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
-        "build_baseline_profile_candidate": (
-            _ring_candidate_site(topology, tmp_path),
+        "build_grouped_profile(declared)": (
+            _grouping_site(topology, tmp_path),
             "emit_active_speaker_baseline_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
-        "build_baseline_profile_candidate(driver_domain)": (
-            _ring_candidate_site(topology, tmp_path, driver_domain=True),
-            "emit_active_speaker_driver_domain_config",
+        "apply_commissioning_profile": (
+            _commissioning_apply_site(cam),
+            "emit_active_speaker_baseline_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
-        # Issue #2450 — the fifth instance, and the first outside the
-        # baseline/driver-domain family: crossover-v2's Stage 1 emit. It is in
-        # the walk for the same reason the others are, but it is also why the
-        # walk had to stop being a family: this site lives in ``jasper.web``
-        # and emits a DIFFERENT emitter, so nothing about the four entries
-        # above could have covered it.
-        #
-        # Wave 6b moved the emit from the per-stimulus body to the session's
-        # one measurement graph (PC-3); the door PR moved it out of the web
-        # host into ``active_speaker.measurement_emit``, which two front ends
-        # now share. Same emitter, same forwarding, one site — and a subset
-        # poisons every stimulus of every session, so the entry stays and gets
-        # stricter, not weaker.
+        "build_grouped_profile(applied)": (
+            _grouping_site(topology, tmp_path),
+            "emit_active_speaker_baseline_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
+        ),
+        "compile_tuning_graph": (
+            lambda: compile_applied_fixture(
+                topology,
+                applied_profile=baseline_profile.load_applied_baseline_profile_state(),
+                playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            ),
+            "emit_active_speaker_baseline_config",
+            RING_ACTIVE_PLAYBACK_DEVICE,
+        ),
         "measurement_emit.emit_measurement_graph": (
             _crossover_v2_program_site(topology),
             "emit_active_speaker_program_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
-        # Issue #2364 — the sixth instance, and the one the arm ladder walks
-        # over: the all-muted durable BOOT anchor. It forwarded only the device
-        # NAME, so a mid-commission box re-staged at the ring got a ring sink
-        # over the snd-aloop tap in the artifact it BOOTS from. A third emitter
-        # again, and a third module binding, which is why the recorder rebinds
-        # `staging` too.
         "stage_protected_startup_config(boot anchor)": (
             _startup_anchor_site(topology, tmp_path / "anchor"),
             "emit_active_speaker_commissioning_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
-        # Issue #2412 — the seventh instance, and the anchor's own twin: the
-        # AUDIBLE per-driver commissioning emit, in the same module, calling the
-        # same emitter. It forwarded only the device NAME, so a caller re-pointed
-        # at any ring PCM got a sink there over the snd-aloop tap. Driven at the
-        # ring since Wave 3 lifted the refusal that kept it off — see its helper.
         "prepare_driver_commissioning_config(audible emit)": (
             _driver_commissioning_site(
                 topology,
@@ -2377,17 +2284,14 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     }
     for label, (call_site, emitter, device) in sites.items():
         expected = active_emit_devices(device, topology=topology)
-        seen = _recorded_emit_kwargs(monkeypatch, call_site, emitter)
-        missing = [name for name in fields if name not in seen]
-        assert not missing, (
-            f"{label} does not forward {missing} from ActiveEmitDevices — the "
-            "subset-forwarding defect, re-armed"
-        )
-        for name in fields:
-            assert seen[name] == getattr(expected, name), (
-                f"{label} forwarded {name}={seen[name]!r}, but the derivation "
-                f"says {getattr(expected, name)!r}"
-            )
+        with monkeypatch.context() as patch:
+            records = _recorded_emit_kwargs(patch, call_site, emitter)
+        assert records, label
+        for seen in records:
+            missing = [name for name in fields if name not in seen]
+            assert not missing, (label, missing)
+            for name in fields:
+                assert seen[name] == getattr(expected, name), (label, name, seen[name])
 
 
 def _derived_marker(graph_yaml, topology, *, cap=8):
