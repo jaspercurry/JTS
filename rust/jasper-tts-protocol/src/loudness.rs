@@ -11,6 +11,9 @@
 
 use std::collections::VecDeque;
 
+use anyhow::Result;
+use jasper_env::{env_f32, env_f32_fallback};
+
 use jasper_daemon::json::{
     push_key as push_json_key, push_kv_bool as push_json_bool, push_kv_u64 as push_json_u64,
 };
@@ -67,6 +70,76 @@ impl Default for AssistantLoudnessConfig {
             held_content_ttl_sec: 600.0,
             assistant_envelope_offset_limit_lu: 8.0,
         }
+    }
+}
+
+impl AssistantLoudnessConfig {
+    pub fn from_env() -> Result<Self> {
+        let loudness_defaults = Self::default();
+        let held_content_ttl_sec = env_f32(
+            "JASPER_FANIN_HELD_CONTENT_TTL_SEC",
+            loudness_defaults.held_content_ttl_sec,
+        )?;
+        if !(1.0..=86_400.0).contains(&held_content_ttl_sec) {
+            anyhow::bail!(
+                "JASPER_FANIN_HELD_CONTENT_TTL_SEC={} out of range 1..=86400",
+                held_content_ttl_sec
+            );
+        }
+        let assistant_envelope_offset_limit_lu = env_f32(
+            "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU",
+            loudness_defaults.assistant_envelope_offset_limit_lu,
+        )?;
+        if !(0.0..=24.0).contains(&assistant_envelope_offset_limit_lu) {
+            anyhow::bail!(
+                "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU={} out of range 0..=24",
+                assistant_envelope_offset_limit_lu
+            );
+        }
+
+        let max_peak_dbfs = env_f32_fallback(
+            "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS",
+            "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
+            loudness_defaults.max_peak_dbfs,
+        )?;
+        if max_peak_dbfs > 0.0 {
+            anyhow::bail!(
+                "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS (or its JASPER_OUTPUTD_ fallback)={} \
+                 must be <= 0 (a peak ceiling above full scale is never allowed)",
+                max_peak_dbfs
+            );
+        }
+
+        Ok(Self {
+            assistant_offset_lu: env_f32_fallback(
+                "JASPER_FANIN_ASSISTANT_OFFSET_LU",
+                "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
+                loudness_defaults.assistant_offset_lu,
+            )?,
+            max_peak_dbfs,
+            fallback_source_lufs: env_f32_fallback(
+                "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_LUFS",
+                "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
+                loudness_defaults.fallback_source_lufs,
+            )?,
+            fallback_source_peak_dbfs: env_f32_fallback(
+                "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
+                "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
+                loudness_defaults.fallback_source_peak_dbfs,
+            )?,
+            default_tts_envelope_lufs: env_f32_fallback(
+                "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                loudness_defaults.default_tts_envelope_lufs,
+            )?,
+            content_silence_lufs: env_f32_fallback(
+                "JASPER_FANIN_CONTENT_SILENCE_LUFS",
+                "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
+                loudness_defaults.content_silence_lufs,
+            )?,
+            held_content_ttl_sec,
+            assistant_envelope_offset_limit_lu,
+        })
     }
 }
 

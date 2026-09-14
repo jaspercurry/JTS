@@ -1862,6 +1862,7 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            assistant_loudness: Default::default(),
             active_lane: false,
             // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
             // runs. `dual_test_config` below overrides ring_active_endpoint rather
