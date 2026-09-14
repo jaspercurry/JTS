@@ -1701,8 +1701,8 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
     outputd reads; CamillaDSP is not in that path, so no camilla playback device
     is published — a consumer that compared one would be comparing against a
     lane camilla does not drive. `content.source` is what outputd actually
-    publishes for such a box: `alsa`, because `shm_ring` is only published while
-    the CENTRAL ring is attached.
+    publishes for such a box: `dac_content_ring`, its own resolved bridge mode
+    (#4807 R-261).
     """
     from jasper.multiroom.dac_content_ring import (
         DAC_CONTENT_RING_FILE,
@@ -1714,7 +1714,7 @@ def test_a_bonded_member_resolves_its_own_shape_and_declares_no_ring_b():
     )
 
     assert topology.name == TRANSPORT_DAC_CONTENT_RING
-    assert topology.outputd_content_source == "alsa"
+    assert topology.outputd_content_source == "dac_content_ring"
     assert "camilla_playback_device" not in topology.camilla_to_outputd
     assert topology.camilla_to_outputd["path"] == DAC_CONTENT_RING_FILE
     assert topology.camilla_to_outputd["outputd_capture_pcm"] == DAC_CONTENT_RING_PCM
