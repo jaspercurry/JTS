@@ -46,6 +46,9 @@ from .drift import _estimate_drift, _sweep_occurrences_by_role
 from .locate import _global_offset, _locate_segments
 from .model import (
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SUMMED_FIT,
+    SUMMED_FIT_MIN_MARGIN,
+    SummedFitVerdict,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
@@ -62,6 +65,7 @@ from .model import (
     logger,
     MeasurementGeometry,
     MeasurementPriors,
+    SummedAlignmentReference,
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     SegmentLocation,
@@ -85,6 +89,7 @@ from .response import (
     _raw_sweep_segment,
     _ripple_db,
     _select_alignment_pair,
+    _select_summed_alignment_pair,
     solve_branch_trims,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
@@ -308,6 +313,7 @@ def _repeat_driver_responses(
     fc_hz: float | None,
     n_fft: int,
     priors: MeasurementPriors,
+    alignment_band_hz: tuple[float, float] | None = None,
 ) -> tuple[DriverResponse, ...]:
     """Deconvolve + gate + TF every occurrence AFTER the first (design item 7).
 
@@ -332,6 +338,7 @@ def _repeat_driver_responses(
             calibration=calibration, ambient_report=ambient_report,
             fc_hz=fc_hz, n_fft=n_fft,
             radiated_band_hz=_radiated_band_hz(seg),
+            alignment_band_hz=alignment_band_hz,
             capture_segment=_raw_sweep_segment(
                 capture, seg, global_offset + seg.start_sample,
             ),
@@ -360,6 +367,9 @@ def _analyze_measure(
     )
     if seg_t is not None and fc_hz is None:
         raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
+    alignment_band_hz = overlap_band_hz(
+        fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+    ) if seg_t is not None and fc_hz is not None else None
     epsilon = drift.epsilon_ppm / 1e6
     # Deconvolve both sweeps anchored at their SCHEDULE window (with a shared
     # pre-guard) so relative timing survives (the aligner relies on this); the
@@ -399,7 +409,7 @@ def _analyze_measure(
                 role=resp.role,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
-                priors=priors,
+                priors=priors, alignment_band_hz=alignment_band_hz,
             ),
         )
         for resp in (
@@ -408,6 +418,7 @@ def _analyze_measure(
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
                 radiated_band_hz=_radiated_band_hz(seg),
+                alignment_band_hz=alignment_band_hz,
                 capture_segment=_raw_sweep_segment(
                     capture, seg, global_offset + seg.start_sample,
                 ),
@@ -445,6 +456,7 @@ def _analyze_measure(
             woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
             alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
             branch_snr_insufficient=branch_snr_insufficient,
+            summed_alignment=priors.summed_alignment, geometry=geometry,
             applied_alignment=priors.applied_alignment,
             explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
             explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
@@ -470,6 +482,9 @@ def _analyze_measure(
                 seed_delay_us=alignment.delay_us,
                 confidence_source="gcc_phat_seed",
             )
+        if candidate.alignment_objective == ALIGNMENT_COMMITTED_SUMMED_FIT:
+            alignment = replace(alignment, confidence=candidate.confidence,
+                                confidence_source=ALIGNMENT_COMMITTED_SUMMED_FIT)
     else:
         # One branch radiates the whole band, so the model IS that branch.
         predicted_sum = (responses[0].freqs_hz, responses[0].magnitude_db)
@@ -513,6 +528,8 @@ def _build_candidate(
     applied_alignment: AppliedAlignment | None = None,
     explicit_alignment_delay_us: float | None = None,
     explicit_alignment_polarity_sign: int | None = None,
+    summed_alignment: SummedAlignmentReference | None = None,
+    geometry: MeasurementGeometry | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -587,10 +604,21 @@ def _build_candidate(
             snap_found = True
         else:
             seed_delay_us = anchor_delay_us
-    # A refused estimate is not a seed to search around: nothing downstream
-    # applies its delay or polarity, so scoring one would grade a pair that
-    # can never ship.
-    selection = (
+    summed_selection = None
+    if (summed_alignment is not None and anchor_delay_us is not None and geometry is not None
+            and (geometry.position_deg, geometry.vertical_deg) == (summed_alignment.position_deg, summed_alignment.vertical_deg)):
+        summed_selection = _select_summed_alignment_pair(
+            freqs, W, T, reference=summed_alignment,
+            woofer_role=woofer_role, tweeter_role=tweeter_role,
+            fc_hz=fc_hz, anchor_delay_us=anchor_delay_us,
+            seed_delay_us=seed_delay_us, seed_polarity_sign=alignment.polarity_sign,
+            delay_bounds_us=alignment_delay_bounds_us,
+        )
+    fit_rms_db = None if summed_selection is None else summed_selection.summed_fit_rms_db
+    fit_margin = None if summed_selection is None else summed_selection.summed_fit_margin
+    fit_verdict: SummedFitVerdict = ("unavailable" if fit_margin is None else
+                                   "committed" if fit_margin >= SUMMED_FIT_MIN_MARGIN else "inconclusive")
+    selection = summed_selection if fit_verdict == "committed" else (
         _select_alignment_pair(
             freqs, W, T,
             fc_hz=fc_hz, lo_hz=lo_clamped, hi_hz=hi,
@@ -640,6 +668,7 @@ def _build_candidate(
             ),
             woofer_role=woofer_role, tweeter_role=tweeter_role,
             objective=selection.objective,
+            summed_fit_verdict=fit_verdict, summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin,
             fc_hz=round(float(fc_hz), 3),
             band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
             polarity=polarity_label(selection.polarity_sign),
@@ -820,7 +849,12 @@ def _build_candidate(
         polarity=polarity_label(polarity_sign),
         delay_us=delay_us,
         predicted_ripple_db=ripple,
-        confidence=alignment.confidence,
+        # Dimensionless RMS ratio: 1x -> 0 confidence, 2x -> 0.5, infinite -> 1.
+        confidence=(1.0 - 1.0 / max(selection.summed_fit_margin, 1.0)
+                    if selection is not None and selection.objective == ALIGNMENT_COMMITTED_SUMMED_FIT and selection.summed_fit_margin is not None
+                    else alignment.confidence),
+        summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin, summed_fit_verdict=fit_verdict,
+        delay_interval_us=None if selection is None else selection.delay_interval_us,
         alignment_seed_ripple_db=seed_ripple_db,
         flatness_improvement_db=flatness_improvement_db,
         anchor_delay_us=anchor_delay_us,

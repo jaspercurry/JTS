@@ -19,6 +19,7 @@ import dataclasses
 import logging
 import secrets
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from jasper.active_speaker import preflight, preflight_live
 from typing import Any, Callable, Mapping
@@ -439,7 +440,10 @@ def bind_v2_stage_seams(
     banked_evidence = v2evidence.CaptureEvidenceCarry()
     from jasper.web.correction_crossover_v2_restore import bind_boost_restore, current_graph_fingerprint  # lazy: host binding cycle
 
+    from jasper.active_speaker.crossover_v2.summed_alignment import session_reference  # lazy: NumPy analysis boundary
+
     return V2FlowSeams(
+        summed_alignment_reference=partial(session_reference, Path(evidence_store.bundle_dir)),
         analyze=v2evidence.bind_production_analyze(
             meta=refs, provenance=provenance, carry=banked_provenance,
             evidence=banked_evidence,

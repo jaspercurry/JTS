@@ -60,6 +60,7 @@ from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.audio_measurement.branch_program import build_branch_program, is_branch_program
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
+from jasper.active_speaker.crossover_v2.summed_alignment import cached_session_reference
 from jasper.active_speaker.crossover_v2 import verification as _verification
 from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
@@ -455,6 +456,7 @@ class V2FlowSeams:
     # #2611: the Layer-A profile the speaker is playing right now. Its absence is
     # NOT a fallback to the raw-crossover axis — the probe reports ``unavailable``.
     applied_profile: Callable[[], Mapping[str, Any] | None] | None = None
+    summed_alignment_reference: Callable[[Any, Any], Any] | None = None
     # S3: once per newly accepted applied-candidate VERIFY.
     record_model_error: RecordModelError | None = None
     # #2291: which DSP graph the entry baseline was measured through, read at accept
@@ -979,6 +981,7 @@ class CrossoverV2Session:
             source_preset=self._preset,
             protection_sections_by_role=self._measurement_protection_sections_by_role,
             ambient_report=self._check_ambient_report,
+            summed_alignment=cached_session_reference(self),
             # Derived here: its producer is shared with the plausibility gate.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
@@ -1639,11 +1642,13 @@ class CrossoverV2Session:
 
     def _capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
         """Apply the plan's analysis purpose to this capture."""
-        exemption = None
+        spec = self._measure_specs_by_index.get(index)
+        position, vertical, exemption = (spec.positions or (0,))[0] if spec else 0, spec.vertical_deg if spec else 0, None
         if phase in GROUP_PHASES:
             prompt = self._prompt_shown_for(phase, index)
+            position, vertical = position_angle_deg(prompt), position_elevation_deg(prompt)
             exemption = gate_exemption(resolved_measurement_purpose(prompt.purpose, prompt.kind))
-        return replace(self._geometry, gate_exempt_reason=exemption) if exemption else self._geometry
+        return replace(self._geometry, gate_exempt_reason=exemption, position_deg=position, vertical_deg=vertical)
 
     def consume_capture(
         self, index: int, attempt: int, result: Any,
