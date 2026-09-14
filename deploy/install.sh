@@ -1550,9 +1550,12 @@ install_peering_template() {
 
 regenerate_audio_cues() {
     # Bake the speaker's audible-failure cues so they're ready before
-    # the daemon ever needs them. The daemon retries on every startup
-    # if this fails, so a no-internet-at-install scenario is tolerated
-    # — we just warn and continue.
+    # the daemon ever needs them. With no voice provider configured yet,
+    # jasper-cues falls back to a provider-free chime instead of failing
+    # (AGENTS.md non-negotiable 6, issue #4814), so this succeeds even on
+    # a genuinely fresh box. The daemon retries on every startup
+    # regardless, so a real failure here is still non-fatal — we just
+    # warn and continue.
     if [[ ! -x /opt/jasper/.venv/bin/jasper-cues ]]; then
         echo "  (jasper-cues not on PATH yet — will run on first daemon boot)"
         return 0
@@ -1565,7 +1568,7 @@ regenerate_audio_cues() {
     # those vars into the shell's environment first, where load_env_files's
     # setdefault preserves them and the wizard file can't override.
     if ! /opt/jasper/.venv/bin/jasper-cues regenerate; then
-        echo "  WARNING: cue regenerate failed (network down or API key not set?). " \
+        echo "  WARNING: cue regenerate failed unexpectedly. " \
              "Daemon will retry at startup. To force a refresh later: " \
              "sudo systemctl restart jasper-voice"
     fi
@@ -1716,6 +1719,12 @@ INSTALL_STEPS=(
     "wifi_airplay|both|tune_wifi_for_airplay|disable WiFi power-save on the active wlan0 connection"
     "jasper|full|install_jasper|copy the Python package and build the full-tier venv"
     "jasper|streambox|install_streambox_jasper|copy the Python package and build the streambox venv"
+    # install_jasper has jasper-cues on PATH by now, and this has to land
+    # before systemd_units: jasper-aec-reconcile (inside install_systemd_units)
+    # can restart jasper-voice, whose no-provider park would otherwise fire
+    # before any cue WAV exists (AGENTS.md non-negotiable 6, issue #4814). A
+    # row that produces something a unit needs sits before the unit rows.
+    "audio_cues|full|regenerate_audio_cues|regenerate the local audio cues"
     "secrets_perms|both|reassert_secrets_compartment_perms|re-assert the /var/lib/jasper-secrets compartment"
     "intsecrets_perms|both|reassert_intsecrets_compartment_perms|re-assert the /var/lib/jasper-intsecrets compartment"
     "mic_cal_sign|both|migrate_calibration_sign_convention|repair mic calibrations stored under the wrong sign convention"
@@ -1748,7 +1757,6 @@ INSTALL_STEPS=(
     "nginx_site|full|install_nginx_site|install the full-tier nginx route set"
     "nginx_site|streambox|install_streambox_nginx_site|install the streambox nginx route set"
     "camillagui|full|install_camillagui|install the socket-activated CamillaGUI backend"
-    "audio_cues|full|regenerate_audio_cues|regenerate the local audio cues"
     "control_env_modes|both|widen_control_secret_env_modes|widen the config/state files jasper-control reads"
     # ADR-0172: the manifest is the LAST mutation, so reaching it proves every
     # row above succeeded under set -e. The doctor row after it is read-only.

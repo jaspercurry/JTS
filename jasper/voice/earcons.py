@@ -197,6 +197,13 @@ _CHIME_DESCENDING = _Recipe(
     shimmer=_CHIME_SHIMMER,
 )
 
+# Promoted (not renamed — `_CHIME_ASCENDING` stays this module's own name)
+# for `jasper.cues.generator.ChimeTTSGenerator`, the only consumer outside
+# this module: a provider-free cue fallback needs a designed chime with no
+# committed asset and no cloud TTS call (issue #4814), and this is the same
+# ascending-fifth "listening chirp" wake earcon already tuned for the box.
+LISTENING_CHIRP_RECIPE = _CHIME_ASCENDING
+
 # SPARKLE — a quick four-note arpeggio twinkle. Unmute is cuelume's
 # sparkle verbatim: an ascending A-major arpeggio A6→C#7→E7→A7. Mute
 # mirrors it: the same arpeggio one octave lower, descending A6→E6→C#6→A5,
@@ -358,7 +365,11 @@ def _bake(buf: list[float], *, wide: bool) -> bytes:
     return _to_pcm32(buf) if wide else _to_pcm16(buf)
 
 
-def _render_recipe(recipe: _Recipe, *, wide: bool = False) -> bytes:
+def render_recipe(recipe: _Recipe, *, wide: bool = False) -> bytes:
+    """Render one tone recipe to plain PCM. Public: the one seam a caller
+    outside this module (`jasper.cues.generator.ChimeTTSGenerator`, issue
+    #4814) can hand a recipe through, rather than reimplementing a
+    sine+envelope synthesizer as a third concern."""
     buf = _render_layers(recipe.layers)
     if recipe.shimmer is not None:
         buf = _apply_shimmer(buf, recipe.shimmer)
@@ -374,7 +385,7 @@ def _generate_mute_click(*, going_on: bool, wide: bool = False) -> bytes:
     Named `_generate_mute_click` for historical reasons — see the module
     docstring. Rendered once at startup and cached by the caller; not a
     registered TTS cue (those are spoken text)."""
-    return _render_recipe(
+    return render_recipe(
         _SPARKLE_ASCENDING if going_on else _SPARKLE_DESCENDING, wide=wide
     )
 
@@ -387,6 +398,6 @@ def _generate_listening_chirp(*, going_on: bool, wide: bool = False) -> bytes:
 
     Named `_generate_listening_chirp` for historical reasons — see the
     module docstring. Rendered once at startup and cached by the caller."""
-    return _render_recipe(
+    return render_recipe(
         _CHIME_ASCENDING if going_on else _CHIME_DESCENDING, wide=wide
     )

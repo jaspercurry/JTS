@@ -37,9 +37,11 @@ class CueDef:
     slug: str
     template: str
     description: str
-    # Played instead while this cue has no baked WAV: cues are
-    # synthesised through the provider whose outage they announce.
-    # Remove once cues are baked by a local TTS that needs no provider.
+    # Played instead while this cue has no baked WAV of its own — e.g. a
+    # cue whose outage announcement needs the very provider it is
+    # reporting down, or a newer slug an older install hasn't baked yet.
+    # A never-configured box no longer needs this: build_env_cue_manager
+    # bakes every slug with a provider-free chime instead (issue #4814).
     fallback: str | None = None
 
 
@@ -173,10 +175,12 @@ CUES: tuple[CueDef, ...] = (
             "acts. Names the remedy, not the "
             "cause: the household can act on 'pick a voice service', not on "
             "'JASPER_VOICE_PROVIDER unset'. A box that was NEVER configured "
-            "has no baked WAV for this cue — nothing has run `jasper-cues "
-            "regenerate` with a key yet — so its first park stays silent. "
-            "Also the fallback for voice_assets_missing: on a box upgraded "
-            "into that newer slug this one is already baked."
+            "has no provider to speak this in — build_env_cue_manager bakes "
+            "it with a local chime instead (ChimeTTSGenerator) so this first "
+            "park is audible, not silent (issue #4814); picking a provider "
+            "later re-bakes it as real speech. Also the fallback for "
+            "voice_assets_missing: on a box upgraded into that newer slug "
+            "this one is already baked."
         ),
     ),
     CueDef(
