@@ -13,12 +13,10 @@ import pytest
 
 from jasper.google_oauth import (
     GOOGLE_OAUTH_CALLBACK_BASE,
-    default_google_redirect_uri,
     resolved_google_redirect_uri,
 )
 from jasper.spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE,
-    default_spotify_redirect_uri,
     resolved_spotify_redirect_uri,
 )
 
@@ -35,7 +33,6 @@ class Provider(NamedTuple):
     """
     constant: str
     base: str
-    default_uri: Callable[[str], str]
     resolved_uri: Callable[[], str]
     env_var: str
     owner: str
@@ -46,7 +43,6 @@ PROVIDERS = [
         Provider(
             constant=SPOTIFY_OAUTH_CALLBACK_BASE,
             base="https://jaspercurry.github.io/spotify-oauth-callback/",
-            default_uri=default_spotify_redirect_uri,
             resolved_uri=resolved_spotify_redirect_uri,
             env_var="SPOTIFY_REDIRECT_URI",
             owner="jasper/spotify_oauth.py",
@@ -57,7 +53,6 @@ PROVIDERS = [
         Provider(
             constant=GOOGLE_OAUTH_CALLBACK_BASE,
             base="https://jaspercurry.github.io/google-oauth-callback/",
-            default_uri=default_google_redirect_uri,
             resolved_uri=resolved_google_redirect_uri,
             env_var="GOOGLE_REDIRECT_URI",
             owner="jasper/google_oauth.py",
@@ -106,23 +101,12 @@ def string_constants_by_module() -> dict[str, list[str]]:
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
-def test_default_redirect_uri_preserves_exact_hostname(provider: Provider) -> None:
-    assert provider.constant == provider.base
-    assert provider.default_uri("kitchen.local") == (
-        f"{provider.base}?host=kitchen.local"
-    )
-    # Hostname fallback/validation belongs to each caller. The shared builder
-    # must not silently normalize a blank or otherwise caller-supplied value.
-    assert provider.default_uri("") == f"{provider.base}?host="
-
-
-@pytest.mark.parametrize("provider", PROVIDERS)
 def test_resolved_redirect_uri_prefers_the_env_override(
     provider: Provider, monkeypatch,
 ) -> None:
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
     monkeypatch.delenv(provider.env_var, raising=False)
-    assert provider.resolved_uri() == provider.default_uri("jts3.local")
+    assert provider.resolved_uri() == f"{provider.base}?host=jts3.local"
     monkeypatch.setenv(provider.env_var, "https://example.test/callback")
     assert provider.resolved_uri() == "https://example.test/callback"
 
@@ -140,7 +124,7 @@ def test_resolved_redirect_uri_uses_the_recorded_hostname(
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
     monkeypatch.delenv(provider.env_var, raising=False)
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
-    assert provider.resolved_uri() == provider.default_uri("jts5.local")
+    assert provider.resolved_uri() == f"{provider.base}?host=jts5.local"
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)

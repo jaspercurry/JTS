@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from ..identity.speaker_name import runtime_name as speaker_runtime_name
 from ..platform import wire
@@ -24,15 +24,13 @@ from ..volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
 )
+from ..volume_state import VolumeState
 
 # Every `# lazy: import cost` below defers for one reason: jasper-control is
 # resident, so the coordinator/actuator graph (~16 modules, ~1.5 MB) must stay
 # off the resident set of a box that never reaches those endpoints.
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from ..volume_coordinator import VolumeState
 
 # Compatibility re-export retained for server.py and older importers.
 SPOTIFY_OAUTH_CALLBACK_BASE = _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE
@@ -57,8 +55,6 @@ def read_volume_state() -> "VolumeState":
     stays persistence-only: no Camilla socket, renderer probe, Spotify account
     registry, or OAuth client construction.
     """
-    from ..volume_coordinator import VolumeState  # lazy: import cost
-
     persistence = VolumePersistence(volume_state_path())
     return VolumeState.from_record(persistence.load())
 

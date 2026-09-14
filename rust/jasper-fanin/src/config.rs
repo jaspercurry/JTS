@@ -15,7 +15,7 @@
 //! `jasper.fanin.coupling_reconcile`.
 
 use anyhow::Result;
-use jasper_env::{env_f32, env_parse, env_str};
+use jasper_env::{env_f32, env_f32_fallback, env_parse, env_str};
 
 use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 
@@ -384,9 +384,6 @@ impl Config {
                 period_frames,
             );
         }
-
-        let loudness_defaults = AssistantLoudnessConfig::default();
-
         // The ring is the ONLY fan-in → CamillaDSP transport (ADR-0100), so this
         // key selects nothing; it exists to REFUSE a declaration this daemon
         // cannot serve. Unset / empty means "no declaration" (empty is how the
@@ -665,42 +662,6 @@ impl Config {
                 tts_cue_duck_db
             );
         }
-        let held_content_ttl_sec = env_f32(
-            "JASPER_FANIN_HELD_CONTENT_TTL_SEC",
-            AssistantLoudnessConfig::default().held_content_ttl_sec,
-        )?;
-        if !(1.0..=86_400.0).contains(&held_content_ttl_sec) {
-            anyhow::bail!(
-                "JASPER_FANIN_HELD_CONTENT_TTL_SEC={} out of range 1..=86400",
-                held_content_ttl_sec
-            );
-        }
-        let assistant_envelope_offset_limit_lu = env_f32(
-            "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU",
-            AssistantLoudnessConfig::default().assistant_envelope_offset_limit_lu,
-        )?;
-        if !(0.0..=24.0).contains(&assistant_envelope_offset_limit_lu) {
-            anyhow::bail!(
-                "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU={} out of range 0..=24",
-                assistant_envelope_offset_limit_lu
-            );
-        }
-
-        // The JASPER_OUTPUTD_* spellings of the assistant loudness keys are
-        // read as fallbacks for one release; drop the fallback names next.
-        let max_peak_dbfs = env_f32_fallback(
-            "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS",
-            "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
-            loudness_defaults.max_peak_dbfs,
-        )?;
-        if max_peak_dbfs > 0.0 {
-            anyhow::bail!(
-                "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS (or its JASPER_OUTPUTD_ fallback)={} \
-                 must be <= 0 (a peak ceiling above full scale is never allowed)",
-                max_peak_dbfs
-            );
-        }
-
         let tts_duck_attack_ms = env_u32("JASPER_FANIN_TTS_DUCK_ATTACK_MS", 15)?;
         if !(1..=200).contains(&tts_duck_attack_ms) {
             anyhow::bail!(
@@ -735,36 +696,7 @@ impl Config {
             tts_cue_duck_db,
             tts_duck_attack_ms,
             tts_duck_release_ms,
-            assistant_loudness: AssistantLoudnessConfig {
-                assistant_offset_lu: env_f32_fallback(
-                    "JASPER_FANIN_ASSISTANT_OFFSET_LU",
-                    "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
-                    loudness_defaults.assistant_offset_lu,
-                )?,
-                max_peak_dbfs,
-                fallback_source_lufs: env_f32_fallback(
-                    "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_LUFS",
-                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
-                    loudness_defaults.fallback_source_lufs,
-                )?,
-                fallback_source_peak_dbfs: env_f32_fallback(
-                    "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
-                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
-                    loudness_defaults.fallback_source_peak_dbfs,
-                )?,
-                default_tts_envelope_lufs: env_f32_fallback(
-                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
-                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    loudness_defaults.default_tts_envelope_lufs,
-                )?,
-                content_silence_lufs: env_f32_fallback(
-                    "JASPER_FANIN_CONTENT_SILENCE_LUFS",
-                    "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
-                    loudness_defaults.content_silence_lufs,
-                )?,
-                held_content_ttl_sec,
-                assistant_envelope_offset_limit_lu,
-            },
+            assistant_loudness: AssistantLoudnessConfig::from_env()?,
             assistant_reference_path: env_str(
                 "JASPER_FANIN_ASSISTANT_REFERENCE_PATH",
                 "/var/lib/jasper/assistant_volume_reference.json",
@@ -848,13 +780,6 @@ fn env_u32_positive(name: &str, default: u32) -> Result<u32> {
 
 fn env_u64(name: &str, default: u64) -> Result<u64> {
     env_parse(name, default, "a non-negative integer")
-}
-
-fn env_f32_fallback(name: &str, fallback_name: &str, default: f32) -> Result<f32> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => jasper_env::parse_f32(name, &s),
-        _ => env_f32(fallback_name, default),
-    }
 }
 
 fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result<u32> {

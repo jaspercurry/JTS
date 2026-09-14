@@ -999,6 +999,15 @@ def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str
     return corrections
 
 
+def profile_corrections_provenance(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not profile_driver_corrections(profile):
+        return {}
+    snapshot = (profile or {}).get("recomposition_snapshot")
+    layer = snapshot if isinstance(snapshot, Mapping) and isinstance(snapshot.get("corrections"), Mapping) else profile or {}
+    provenance = layer.get("corrections_provenance")
+    return provenance if isinstance(provenance, Mapping) else {}
+
+
 def applied_program_level_delta_db(
     previous_profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,

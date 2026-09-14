@@ -28,9 +28,9 @@ import pytest
 from jasper import bluealsa_probe
 from jasper import volume_coordinator
 from jasper import volume_observers as observer_mod
+from jasper.music_sources import Source
 from jasper.renderer import RendererClient
 from jasper.volume_observers import VolumeObserver
-from jasper.volume_coordinator import Source
 
 from tests._async_wait import wait_signalled
 from tests._librespot_state import write_librespot_state

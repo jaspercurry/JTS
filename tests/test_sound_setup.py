@@ -6590,7 +6590,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         "status": "started",
         "volume_floor_db": -24.0,
         "percent": 1,
-        "db": -24.0,
+        "db": round(percent_to_db(1, floor_db=-24.0), 3),
     }
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert FakeVolumeFloorToneRunner.instances[0].started is True
@@ -6598,7 +6598,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), True,
     )
     assert fake.events[1] == ("mute", False, False)
-    assert fake.db == pytest.approx(-24.0)
+    assert fake.db == pytest.approx(percent_to_db(1, floor_db=-24.0))
     assert fake.muted is False
     assert not settings_path.exists()
 
@@ -6615,7 +6615,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), True),
         ("mute", False, False),
     ]
-    assert fake.db == pytest.approx(-36.0)
+    assert fake.db == pytest.approx(percent_to_db(1, floor_db=-36.0))
     assert fake.muted is False
 
     stop_payload = await session.stop(

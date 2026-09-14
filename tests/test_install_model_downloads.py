@@ -11,9 +11,9 @@ from jasper.model_downloads import (
     DEFAULT_MAX_BYTES,
     ModelDownloadError,
     StageAsset,
-    openwakeword_stage_assets,
     stage_model_assets,
 )
+from jasper.wake_models import openwakeword_stage_assets
 
 
 def _asset(path: Path, *, required: bool = True) -> StageAsset:
