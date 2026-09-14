@@ -159,9 +159,8 @@ MUTE_DB_EPSILON = 1e-6
 
 @dataclass
 class _OutboundStamp:
-    """Per-source last-outbound timestamp + the value we wrote."""
+    """Per-source last-outbound timestamp, for the same-source echo window."""
     at_mono: float
-    level: int
 
 
 @dataclass(frozen=True)
@@ -236,8 +235,6 @@ class SourceHandoff:
     settled_ms: int = 0
     result: str = "ok"
     detail: str = ""
-    started_at_mono: float = 0.0
-    prepared_at_mono: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -1064,10 +1061,10 @@ class VolumeCoordinator:
             persist=True,
         )
         if guarded:
-            self._record_push_guard(
+            volume_diagnostics.record_push_guard(
                 source,
-                level,
-                guard_db,
+                level=level,
+                guard_db=guard_db,
                 reason=reason,
                 context=context,
                 previous_db=previous_db,
@@ -1186,7 +1183,6 @@ class VolumeCoordinator:
         until its volume carrier is safe for the canonical state's
         effective level.
         """
-        started = time.monotonic()
         self._refresh_from_disk()
         level = self._effective_level()
         prev_mode = volume_mode(prev_source)
@@ -1218,8 +1214,6 @@ class VolumeCoordinator:
                 settled_ms=settled_ms,
                 result=result,
                 detail=detail,
-                started_at_mono=started,
-                prepared_at_mono=time.monotonic(),
             )
 
         if prev_source == current_source:
@@ -1335,10 +1329,10 @@ class VolumeCoordinator:
                 result="failed",
                 detail="push_failed_camilla_guard_catchdown_failed",
             )
-        self._record_push_guard(
+        volume_diagnostics.record_push_guard(
             current_source,
-            level,
-            guard_db,
+            level=level,
+            guard_db=guard_db,
             reason=volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED,
             context="source_handoff_push_degraded",
             previous_db=camilla_before,
@@ -1385,10 +1379,10 @@ class VolumeCoordinator:
                         )
                         if guarded:
                             reason = volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED
-                            self._record_push_guard(
+                            volume_diagnostics.record_push_guard(
                                 handoff.current_source,
-                                latest_level,
-                                guard_db,
+                                level=latest_level,
+                                guard_db=guard_db,
                                 reason=reason,
                                 context="source_handoff_push_finalize_degraded",
                                 previous_db=previous_db,
@@ -2340,6 +2334,37 @@ class VolumeCoordinator:
             self._persistence.save_now(db)
         return bool(ok)
 
+    def _log_push_guard_clear_failed(
+        self,
+        source: Source,
+        level: int,
+        *,
+        previous_db: float | None,
+        previous_mute: bool | None,
+        context: str,
+        reason: str | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {
+            "source": source.value,
+            "level": level,
+            "previous_db": (
+                "unknown" if previous_db is None else f"{previous_db:.1f}"
+            ),
+            "previous_mute": (
+                "unknown" if previous_mute is None else str(previous_mute).lower()
+            ),
+            "context": context,
+        }
+        if reason is not None:
+            fields["reason"] = reason
+        log_event(
+            logger,
+            "volume.push_guard_clear_failed",
+            level=logging.WARNING,
+            # `level` field collides with log_event's level= param → fields=.
+            fields=fields,
+        )
+
     async def _clear_confirmed_push_guard(
         self, source: Source, level: int, *, context: str,
     ) -> bool:
@@ -2380,27 +2405,13 @@ class VolumeCoordinator:
                 context=context,
                 ok=False,
             )
-            log_event(
-                logger,
-                "volume.push_guard_clear_failed",
-                level=logging.WARNING,
-                # `level` field collides with log_event's level= param → fields=.
-                fields={
-                    "source": source.value,
-                    "level": level,
-                    "previous_db": (
-                        "unknown"
-                        if effective_previous_db is None
-                        else f"{effective_previous_db:.1f}"
-                    ),
-                    "previous_mute": (
-                        "unknown"
-                        if current_mute is None
-                        else str(current_mute).lower()
-                    ),
-                    "context": context,
-                    "reason": "duck_active",
-                },
+            self._log_push_guard_clear_failed(
+                source,
+                level,
+                previous_db=effective_previous_db,
+                previous_mute=current_mute,
+                context=context,
+                reason="duck_active",
             )
             return False
         cleared = await self._set_camilla_db(
@@ -2444,26 +2455,12 @@ class VolumeCoordinator:
                 context=context,
                 ok=False,
             )
-            log_event(
-                logger,
-                "volume.push_guard_clear_failed",
-                level=logging.WARNING,
-                # `level` field collides with log_event's level= param → fields=.
-                fields={
-                    "source": source.value,
-                    "level": level,
-                    "previous_db": (
-                        "unknown"
-                        if effective_previous_db is None
-                        else f"{effective_previous_db:.1f}"
-                    ),
-                    "previous_mute": (
-                        "unknown"
-                        if current_mute is None
-                        else str(current_mute).lower()
-                    ),
-                    "context": context,
-                },
+            self._log_push_guard_clear_failed(
+                source,
+                level,
+                previous_db=effective_previous_db,
+                previous_mute=current_mute,
+                context=context,
             )
         return bool(cleared)
 
@@ -2567,29 +2564,8 @@ class VolumeCoordinator:
         record = self._persistence.load()
         return record.main_volume_db if record is not None else None
 
-    def _record_push_guard(
-        self,
-        source: Source,
-        level: int,
-        guard_db: float,
-        *,
-        reason: str,
-        context: str,
-        previous_db: float | None,
-    ) -> None:
-        volume_diagnostics.record_push_guard(
-            source,
-            level=level,
-            guard_db=guard_db,
-            reason=reason,
-            context=context,
-            previous_db=previous_db,
-        )
-
-    def _stamp_outbound(self, source: Source, level: int) -> None:
-        self._last_outbound[source] = _OutboundStamp(
-            at_mono=time.monotonic(), level=level,
-        )
+    def _stamp_outbound(self, source: Source) -> None:
+        self._last_outbound[source] = _OutboundStamp(at_mono=time.monotonic())
 
     def _is_own_echo(self, source: Source, observed_level: int) -> bool:
         stamp = self._last_outbound.get(source)
@@ -2690,7 +2666,7 @@ class VolumeCoordinator:
                     ),
                     timeout=DEVICES_TIMEOUT_SEC,
                 )
-                self._stamp_outbound(Source.SPOTIFY, level)
+                self._stamp_outbound(Source.SPOTIFY)
                 volume_diagnostics.record_source_push(
                     Source.SPOTIFY,
                     level=level,
@@ -2756,7 +2732,7 @@ class VolumeCoordinator:
             bus="--system",
         )
         if ok:
-            self._stamp_outbound(Source.BLUETOOTH, level)
+            self._stamp_outbound(Source.BLUETOOTH)
             volume_diagnostics.record_source_push(
                 Source.BLUETOOTH,
                 level=level,
@@ -2879,13 +2855,6 @@ class VolumeCoordinator:
         )
         return bool(ok)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def aclose(self) -> None:
-        """Retained lifecycle hook; this coordinator owns no async resources."""
-
 
 # ----------------------------------------------------------------------
 # DBus helpers — protocol/property policy stays here while the shared busctl
@@ -2940,11 +2909,8 @@ async def env_canonical_target_db() -> float:
             librespot_state_path=librespot_state.configured_path(),
         ),
     )
-    try:
-        coord.load_persisted_level()
-        return await coord.get_camilla_target_db()
-    finally:
-        await coord.aclose()
+    coord.load_persisted_level()
+    return await coord.get_camilla_target_db()
 
 
 def install_env_canonical_target_provider() -> None:

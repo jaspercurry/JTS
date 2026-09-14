@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import re
 import subprocess
 from functools import lru_cache
@@ -44,20 +45,7 @@ def _strip_comment_lines(text: str, *, markers: tuple[str, ...]) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# The emitter side: the NESTED key tree a hand-rolled Rust STATUS writer
-# builds.
-#
-# LIMITATION: parsed from the writer source, never executed — the pytest lane
-# has no cargo, and the daemon crates need ALSA headers to build at all — so
-# the tree is the UNION of every conditional block (a key only one config
-# reaches is still present), and a subtree that arrives as an opaque fragment
-# from another crate is marked OPAQUE and accepts any path below it.
-# ---------------------------------------------------------------------------
-
-#: Child marker for a node whose subtree the source cannot show: a value
-#: pushed as a pre-rendered fragment (``host_clock``, ``tap``) or an object
-#: whose key is a runtime variable (``dac_content``'s per-transport path).
+# Source-derived fan-in subtrees may be opaque; outputd uses Rust-verified JSON.
 OPAQUE = "*"
 
 _RUST_FN_RE = re.compile(r"^(?P<indent> *)(?:pub )?fn (?P<name>\w+)[(<]", re.MULTILINE)
@@ -130,13 +118,20 @@ def _parse_rust_emitter(
                 )
 
 
-@lru_cache(maxsize=None)
-def _rust_status_key_tree(path: Path) -> dict:
-    """The nested key structure ``snapshot_json`` emits, as nested dicts.
+def _merge_json_keys(value: object, tree: dict) -> None:
+    for node in value if isinstance(value, list) else [value]:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                _merge_json_keys(child, tree.setdefault(key, {}))
 
-    Test-only assertions are cut at ``#[cfg(test)]`` so they cannot satisfy
-    the production contract.
-    """
+
+@lru_cache(maxsize=None)
+def _status_key_tree(path: Path) -> dict:
+    if path == OUTPUTD_STATE_RS:
+        tree: dict = {}
+        for line in (REPO / "tests/fixtures/outputd-snapshots.jsonl").read_text().splitlines():
+            _merge_json_keys(json.loads(line), tree)
+        return tree
     src = path.read_text().split("#[cfg(test)]", 1)[0]
     src = _strip_comment_lines(src, markers=("//",))
     bodies = _rust_fn_bodies(src)
@@ -158,7 +153,7 @@ def _rust_emitted_json_keys(path: Path) -> set[str]:
             names |= flatten(child)
         return names
 
-    return flatten(_rust_status_key_tree(path))
+    return flatten(_status_key_tree(path))
 
 
 def _emits_path(tree: dict, path: tuple[str, ...]) -> bool:
@@ -410,7 +405,7 @@ def test_python_status_reads_match_the_rust_emitters_nesting():
                 f"{consumer_rel} — its reads moved, or the roots did"
             )
         for daemon, paths in sorted(found.items()):
-            tree = _rust_status_key_tree(STATUS_RS[daemon])
+            tree = _status_key_tree(STATUS_RS[daemon])
             # The one way this guard passes vacuously: an OPAQUE at the root
             # accepts every path under it.
             assert OPAQUE not in tree, f"{daemon} emitter tree — extractor broke?"
@@ -439,7 +434,7 @@ def test_status_path_exceptions_stay_accurate():
             f"read — dead entry; remove it."
         )
         for daemon in daemons:
-            assert not _emits_path(_rust_status_key_tree(STATUS_RS[daemon]), path), (
+            assert not _emits_path(_status_key_tree(STATUS_RS[daemon]), path), (
                 f"exception ({consumer_rel}, {dotted}) ({reason}) IS emitted "
                 f"now — the contract is live; remove the exception."
             )

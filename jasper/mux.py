@@ -357,9 +357,6 @@ class Mux:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            if self._volume_coordinator is not None:
-                with contextlib.suppress(Exception):
-                    await self._volume_coordinator.aclose()
 
     def notify_source_changed(self, source: Source, via: str) -> None:
         """Record a wake hint without making or applying a routing decision."""

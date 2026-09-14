@@ -981,6 +981,10 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "starved_long_frames", metrics.starved_long_frames());
                 buf.push(',');
+                // Mirrors the ring's `stall_log_dropped` for the TTS mixer
+                // thread's own `fanin-ring-log` events (issue #4787).
+                push_kv_u64(buf, "log_dropped", metrics.log_dropped());
+                buf.push(',');
                 push_kv_bool(buf, "program_duck_active", metrics.program_duck_active());
                 buf.push(',');
                 // Render through the shared writer so fan-in and outputd cannot
@@ -1280,11 +1284,6 @@ mod tests {
 
     #[test]
     fn snapshot_json_always_carries_host_clock_block() {
-        // C7: the combo-mode host-clock block is a top-level, always-present
-        // sibling of `tap` — the disabled block when the feature is off, so the
-        // key is byte-stable. It must parse as valid JSON (the fragment is
-        // rendered by the shared crate; here we prove the fold-in is well-formed
-        // and the disabled default shows through).
         let server = make_test_server();
         let j = server.snapshot_json();
         assert!(
@@ -1299,7 +1298,7 @@ mod tests {
             "disabled fixture ⇒ enabled:false"
         );
         assert_eq!(hc["ladder"].as_str(), Some("disabled"));
-        assert!(hc["probe"]["response_ratio"].is_null());
+        assert!(hc["probe"]["final_response_ratio"].is_null());
         // Sibling of tap, not nested inside it.
         assert!(parsed["tap"].is_object());
     }
@@ -1575,6 +1574,7 @@ mod tests {
         assert!(j.contains(r#""tts_clients":0"#));
         assert!(j.contains(r#""frame_timeouts":0"#));
         assert!(j.contains(r#""stale_commands_dropped":0"#));
+        assert!(j.contains(r#""log_dropped":0"#));
         assert!(j.contains(r#""program_duck_active":false"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
         assert!(j.contains(r#""decision_seen":false"#));
