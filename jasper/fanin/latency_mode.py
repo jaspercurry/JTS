@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persisted USB input-latency presets and their fan-in mapping."""
 from __future__ import annotations
 
 import os
@@ -11,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from jasper.atomic_io import atomic_write_text
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE as SAMPLE_RATE
 from jasper.fanin.status import USBSINK_INPUT_LABEL
 from jasper.paths import resolve_state_path
 
@@ -18,7 +18,6 @@ STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"
 VALID_MODES = ("low", "medium", "high")
 DEFAULT_STATE_PATH = "/var/lib/jasper/usb_latency.env"
-SAMPLE_RATE = 48_000
 
 
 @dataclass(frozen=True)
