@@ -17,7 +17,6 @@ Which processes call this is pinned by
 """
 from __future__ import annotations
 
-from .volume_coordinator import VolumeCoordinator
 from .volume_owner import VolumeOwner, install_volume_owner
 from .volume_persistence import VolumePersistence, configured_path as volume_state_path
 
@@ -29,6 +28,7 @@ async def env_canonical_target_db() -> float:
     from jasper import librespot_state
     from jasper.camilla import primary_controller
     from jasper.renderer import RendererClient
+    from jasper.volume_coordinator import VolumeCoordinator
 
     coord = VolumeCoordinator(
         camilla=primary_controller(),
