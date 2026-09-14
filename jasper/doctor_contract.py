@@ -69,6 +69,7 @@ class CheckResult:
     # what tests and other automation pin. Each domain module declares its
     # own closed vocabulary as module-level REASON_* constants.
     reason: str = ""
+    applied_identity: dict[str, str | None] | None = None
 
     def __post_init__(self) -> None:
         if self.status not in CHECK_STATUSES:
@@ -97,6 +98,7 @@ def check_row(result: CheckResult) -> dict:
         "detail": result.detail,
         "reason": result.reason,
         "speaker_silent": result.speaker_silent,
+        **({"applied_identity": result.applied_identity} if result.applied_identity is not None else {}),
     }
 
 

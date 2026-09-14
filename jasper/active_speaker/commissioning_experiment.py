@@ -26,6 +26,17 @@ from .measured_crossover_candidate import MeasuredCrossoverAlignment, MeasuredCr
 from .profile import required_driver_roles
 
 
+def commissioning_experiment_summary(candidate: MeasuredCrossoverCandidate) -> dict[str, Any]:
+    packet = candidate.analysis.get("evidence", {}).get("commissioning") or {}
+    return {
+        "candidate_fingerprint": candidate.fingerprint if packet else None,
+        "alignment": {
+            "status": "measured" if packet.get("status") == "awaiting_apply" else packet.get("status", "declared"),
+            "reason": packet.get("reason") or None,
+        },
+    }
+
+
 def commissioning_candidate(
     topology: OutputTopology, draft: Mapping[str, Any], *, root: Path | None = None,
 ) -> MeasuredCrossoverCandidate:

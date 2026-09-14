@@ -88,6 +88,7 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline_profile.json"))
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
         str(tmp_path / "model_error.json"),

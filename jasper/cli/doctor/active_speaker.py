@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 
+from jasper.active_speaker.applied_identity import applied_identity
+
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import REASON_TOPOLOGY_UNREADABLE, CheckResult
@@ -443,28 +445,15 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
 
 @doctor_check(label="active speaker applied graph")
 def check_active_speaker_applied_graph() -> CheckResult:
-    """Is the durable graph the one the applied profile names?
-
-    A crossover-v2 round that ends on a verify rejection banks no adoption but
-    has already repointed CamillaDSP's persisted ``config_file_path`` at the
-    rejected candidate, leaving the anchor's per-driver values disagreeing with
-    the applied profile's. ``setup_status`` binds the two; this reads the
-    binding out.
-
-    Compared at the DURABLE anchor, never at the running graph: runtime-only
-    swaps (audition, ADR-0193; the measurement session graph; the per-driver
-    commissioning load) install through ``set_active_config_raw`` and leave the
-    statefile alone, so none can read as drift. A staged/commissioning anchor
-    IS a durable repoint and is excluded by name instead.
-
-    WARN, never FAIL: the anchor is the audible truth either way.
-    """
+    """Compare the durable anchor with the applied profile (ADR-0193)."""
 
     from ...active_speaker.setup_status import IN_SEQUENCE_CAPTURE_ANCHOR_REASON
+    from ...active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: baseline imports measurement
 
     label = "active speaker applied graph"
     try:
         status = evidence.active_speaker_setup_status()
+        identity = applied_identity(load_applied_baseline_profile_state())
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
         return CheckResult(
             label, "warn", f"could not read speaker setup: {exc}",
@@ -475,9 +464,12 @@ def check_active_speaker_applied_graph() -> CheckResult:
     if not isinstance(binding, dict):
         return CheckResult(
             label, "skipped", "no applied active-speaker profile to bind",
-            reason=REASON_APPLIED_GRAPH_NO_PROFILE,
+            reason=REASON_APPLIED_GRAPH_NO_PROFILE, applied_identity=identity,
         )
     issues = status.get("issues")
+    names = "candidate {} record {}".format(
+        str((identity or {}).get("candidate") or "")[:12], (identity or {}).get("record") or "",
+    )
     if any(
         isinstance(issue, dict)
         and issue.get("code") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
@@ -485,21 +477,23 @@ def check_active_speaker_applied_graph() -> CheckResult:
     ):
         return CheckResult(
             label, "skipped",
-            "a commissioning/staged graph is the durable anchor by design",
+            f"a commissioning/staged graph is the durable anchor by design; {names}",
             reason=REASON_APPLIED_GRAPH_STAGED_ANCHOR,
+            applied_identity=identity,
         )
     if binding.get("matches") is True:
         return CheckResult(
             label, "ok",
             "the durable graph is the one the applied profile names "
-            f"(layer_a={binding.get('loaded_fingerprint')})",
+            f"({names})", applied_identity=identity,
         )
     if binding.get("status") != "mismatch":
         return CheckResult(
             label, "skipped",
             "applied-profile graph binding not evaluated "
-            f"({binding.get('status') or 'absent'})",
+            f"({binding.get('status') or 'absent'}); {names}",
             reason=REASON_APPLIED_GRAPH_NOT_EVALUATED,
+            applied_identity=identity,
         )
     fields = "; ".join(
         f"{item.get('field')} profile={item.get('expected')} "
@@ -510,13 +504,14 @@ def check_active_speaker_applied_graph() -> CheckResult:
     return CheckResult(
         label, "warn",
         f"the durable graph at {status.get('active_config_path')} is not the one "
-        "the applied profile names: layer_a profile="
+        f"the applied profile names ({names}): layer_a profile="
         f"{binding.get('expected_fingerprint')} graph="
         f"{binding.get('loaded_fingerprint')}"
         + (f" [{fields}]" if fields else "")
         + " — apply that crossover again, or republish the banked candidate "
         "and apply it, to make the two agree",
         reason=REASON_APPLIED_GRAPH_MISMATCH,
+        applied_identity=identity,
     )
 
 

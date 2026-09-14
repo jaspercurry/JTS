@@ -14,7 +14,6 @@ from typing import Any, Callable
 
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.boost_protection import config_graph_fingerprint
-from jasper.web import correction_crossover_v2 as host
 from jasper.web import correction_crossover_v2_apply as apply_host
 from jasper.web import correction_crossover_v2_status as status
 
@@ -36,10 +35,10 @@ def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], 
                 return dict(outcome)
             outcome.update(status="restore_failed", restored=False)
             state = v2state.load_v2_state()
-            previous = status.previous_candidate_fingerprint(state)
+            previous = status.rollback_candidate(state)
             if not graph_fingerprint or current_graph_fingerprint() != graph_fingerprint:
                 outcome["status"] = "graph_displaced"
-            elif previous is None or not host.previous_candidate_paired(state):
+            elif previous is None:
                 outcome["status"] = "previous_profile_unavailable"
             else:
                 try:

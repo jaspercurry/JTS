@@ -2702,12 +2702,17 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
   const confirmedTopology = confirmedActiveTwoWayTopology();
   const applied = {
     exists: true, stands: true, candidate_fingerprint: "0123456789abcdef".repeat(4), applied_at: "2026-09-13T12:00:00Z",
-    config_path: "/var/lib/camilladsp/applied.yml", disclosures: [],
+    config_path: "/var/lib/camilladsp/applied.yml", record: "7edfa758981e", disclosures: [],
   };
   const reviewPath = "/var/lib/camilladsp/review.yml";
   const blocker = {severity: "blocker", code: "baseline_profile_apply_failed", message: "Restore failed at the DSP load."};
-  for (const [stands, hasPrevious, restoreStatus] of [[true, true, "applied"], [true, false],
-    [false, true, "applied"], [true, true, "apply_failed"], [true, true, "unexpected"]]) {
+  for (const [stands, hasPrevious, restoreStatus, alignment, timing] of [
+    [true, true, "applied", {status: "measured", reason: null}, "timing measured"],
+    [true, false, undefined, {status: "declared", reason: null}, "timing declared"],
+    [false, true, "applied", {status: "alignment_unmeasured", reason: "delay_out_of_bounds"},
+      "timing declared (delay_out_of_bounds)"],
+    [true, true, "apply_failed"], [true, true, "unexpected"],
+  ]) {
     applied.stands = stands;
     const restores = [];
     let profileReads = 0;
@@ -2723,7 +2728,7 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
       "./active-speaker/commissioning-view": () => Promise.resolve(response(
         profileCommissioningView({
           status: "applied", current_step: "profile",
-          applied_profile: applied,
+          applied_profile: applied, first_experiment: {alignment},
           stepStatuses: {layout: "done", research: "done", experiment: "done", profile: "done"},
         })
       )),
@@ -2742,11 +2747,14 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
     await loadAndSetActiveState(harness);
 
     const html = harness.elements.get("view-body").innerHTML;
+    if (timing && !html.includes(timing)) fail("Apply card timing is missing", {alignment, timing});
+    if (!timing && html.includes("timing declared")) fail("Missing evidence invented timing");
+    if (html.includes('<p class="setting-row__hint"></p>')) fail("Empty timing left a blank hint");
     if (!html.includes(applied.config_path) || html.includes(reviewPath)) {
       fail("Applied profile card used the wrong config path", {applied, reviewPath});
     }
     for (const expected of ["Driver levels", "0 dB (reference)", "-7.5 dB", "Measured",
-      applied.candidate_fingerprint.slice(0, 12), applied.applied_at]) {
+      applied.candidate_fingerprint.slice(0, 12), applied.record, applied.applied_at]) {
       if (!html.includes(expected)) fail("Applied profile details are missing", {expected, stands, hasPrevious});
     }
     if (html.includes(applied.candidate_fingerprint)) fail("The card should abbreviate the fingerprint");

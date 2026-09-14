@@ -234,6 +234,7 @@ export function subwooferCrossoverBand(topology) {
   };
 }
 
+// These endpoints return HTTP 200 even when a guard blocks, so the card reads the body's status.
 export function commissionPayloadFailure(payload) {
   if (!payload || typeof payload !== 'object') return '';
   if (payload.status === 'refused') {
@@ -266,6 +267,13 @@ export function commissionPayloadFailure(payload) {
     if (gates[i] && gates[i].passed === false) return commissionGateReason(gates[i].id);
   }
   return 'This driver can’t be tested yet — finish the earlier setup steps first.';
+}
+
+export function commissioningTimingLabel(view) {
+  var alignment = ((view || {}).first_experiment || {}).alignment;
+  if (!alignment) return '';
+  if (alignment.status === 'measured') return 'timing measured';
+  return 'timing declared' + (alignment.reason ? ' (' + alignment.reason + ')' : '');
 }
 
 function commissionIssueCodes(payload) {
@@ -478,4 +486,3 @@ export function levelMatchSummary(baseline) {
     guidance: NEARFIELD_LEVEL_MATCH_GUIDANCE
   };
 }
-
