@@ -34,6 +34,8 @@ REPO_ROOT = _INSTALL_SH.parent.parent
 _INSTALL_LIB_DIR = Path(__file__).parent.parent / "deploy" / "lib" / "install"
 _RENDERERS_LIB = _INSTALL_LIB_DIR / "renderers.sh"
 _MODEL_DOWNLOADS = Path(__file__).parent.parent / "jasper" / "model_downloads.py"
+_MODEL_DOWNLOADS_CLI = Path(__file__).parent.parent / "jasper" / "cli" / "model_downloads.py"
+_WAKE_MODELS = Path(__file__).parent.parent / "jasper" / "wake_models.py"
 _ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
 
 
@@ -1840,9 +1842,11 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
     install; inactive stock rows are allowed to stay unavailable."""
     shell_text = "\n".join(_installer_shell_texts().values())
     model_text = _MODEL_DOWNLOADS.read_text(encoding="utf-8")
+    cli_text = _MODEL_DOWNLOADS_CLI.read_text(encoding="utf-8")
+    wake_text = _WAKE_MODELS.read_text(encoding="utf-8")
 
-    assert "urllib.request.urlretrieve" not in shell_text + model_text
-    assert "python\" -m jasper.model_downloads" in shell_text
+    assert "urllib.request.urlretrieve" not in shell_text + model_text + cli_text
+    assert "python\" -m jasper.cli.model_downloads" in shell_text
     assert "stage --registry openwakeword --required" in shell_text
     assert "stage --registry wake --optional" in shell_text
     assert "stage --registry dtln --optional" in shell_text
@@ -1850,12 +1854,12 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
     assert "timeout_seconds=" in model_text
     assert "retries=" in model_text
     assert "max_bytes" in model_text
-    assert "required_openwakeword_assets" in model_text
-    assert "fallback_openwakeword_assets" in model_text
-    assert "openwakeword_asset_for_model(active_model)" in model_text
+    assert "required_openwakeword_assets" in wake_text
+    assert "fallback_openwakeword_assets" in wake_text
+    assert "openwakeword_asset_for_model(active_model)" in wake_text
     assert "required_failures" in model_text
     assert "optional_failures" in model_text
-    assert "unavailable rows will be disabled in /assistant/wake/" in model_text
+    assert "unavailable rows will be disabled in /assistant/wake/" in cli_text
 
 
 def test_base_source_builds_use_hash_checked_archives():

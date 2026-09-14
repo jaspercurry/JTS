@@ -44,6 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from jasper.model_downloads import StageAsset
+
 
 # Where install.sh stages downloaded DTLN models. Files here survive
 # package reinstalls because they live under /var/lib, not /opt/jasper
@@ -133,3 +135,22 @@ def default() -> DTLNModelEntry:
             "fix jasper/aec_engines/dtln_models.py"
         )
     return entry
+
+
+def dtln_stage_assets(*, required: bool) -> list[StageAsset]:
+    """install.sh staging list. jasper.model_downloads is a leaf; this
+    registry builds its own StageAsset list rather than being reached into."""
+    assets: list[StageAsset] = []
+    for entry in REGISTRY:
+        for path, url, expected_sha in entry.files(DTLN_MODELS_DIR):
+            assets.append(
+                StageAsset(
+                    key=f"dtln-{entry.size}-{path.name}",
+                    label="DTLN model",
+                    dest=path,
+                    url=url,
+                    expected_sha256=expected_sha,
+                    required=required,
+                )
+            )
+    return assets
