@@ -521,4 +521,116 @@ impl OutputdState {
             buf.push(',');
         }
     }
+
+    pub(super) fn chip_ref_progress_json(
+        &self,
+        buf: &mut String,
+        uptime_ms: u64,
+        chip_ref_last_enqueued_sequence: Option<u64>,
+        chip_ref_last_written_sequence: Option<u64>,
+        chip_ref_sequence_lag: Option<u64>,
+        chip_ref_recent_writes: &[super::ChipRefObservation],
+    ) {
+        push_kv_u64(
+            buf,
+            "write_underrun_count",
+            self.chip_ref_write_underrun_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "write_xrun_count",
+            self.chip_ref_write_xrun_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "write_recovery_count",
+            self.chip_ref_write_recovery_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "write_error_count",
+            self.chip_ref_write_error_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "dropped_periods_due_to_full_queue",
+            self.chip_ref_dropped_full_periods.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "dropped_periods_due_to_disconnected_writer",
+            self.chip_ref_dropped_disconnected_periods
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "dropped_periods_while_unavailable",
+            self.chip_ref_dropped_unavailable_periods
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            buf,
+            "last_write_age_ms",
+            event_age_ms(
+                uptime_ms,
+                self.chip_ref_last_write_ms.load(Ordering::Relaxed),
+            ),
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            buf,
+            "last_enqueued_reference_sequence",
+            chip_ref_last_enqueued_sequence,
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            buf,
+            "last_written_reference_sequence",
+            chip_ref_last_written_sequence,
+        );
+        buf.push(',');
+        push_kv_u64_opt(buf, "reference_sequence_lag", chip_ref_sequence_lag);
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "recent_writes_capacity",
+            super::CHIP_REF_RECENT_WRITES as u64,
+        );
+        buf.push(',');
+        // Oldest first. Ages are relative to THIS snapshot, so the reader can
+        // place every observation on its own clock from one read.
+        buf.push_str(r#""recent_writes":["#);
+        for (index, observation) in chip_ref_recent_writes.iter().enumerate() {
+            if index > 0 {
+                buf.push(',');
+            }
+            buf.push('{');
+            push_kv_u64(buf, "frames_written", observation.frames_written);
+            buf.push(',');
+            push_kv_u64(buf, "snd_pcm_delay_frames", observation.delay_frames);
+            buf.push(',');
+            push_kv_u64_opt(
+                buf,
+                "reference_sequence",
+                unpack_optional_u64(observation.reference_sequence),
+            );
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "age_ms",
+                uptime_ms.saturating_sub(observation.uptime_ms),
+            );
+            buf.push('}');
+        }
+        buf.push(']');
+        buf.push('}');
+        buf.push(',');
+    }
 }
