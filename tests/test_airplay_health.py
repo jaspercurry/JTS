@@ -17,6 +17,7 @@ from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
 )
+from jasper.music_sources import MUSIC_SOURCE_SPECS
 from tests._log_events import event_fields, event_records
 from tests.status_socket_fixtures import JsonStatusSocket
 
@@ -1228,3 +1229,77 @@ def test_receiver_is_none_when_pid_comm_does_not_match_shairport() -> None:
     sampler._tick()
 
     assert sampler.snapshot()["current"]["link"]["receiver"] is None
+
+
+def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> None:
+    now = [1000.0]
+    status = {
+        "input_buffer_frames": 4096,
+        "selected_input": "usbsink",
+        "inputs": [
+            {
+                "label": "usbsink",
+                "source": "direct",
+                "frames_read": 100,
+                "xrun_count": 2,
+                "rms_dbfs": -20.0,
+                "direct": {
+                    "health": "capturing",
+                    "stream_starts": 2,
+                    "stream_stops": 1,
+                    "buffer_frames": 768,
+                    "drain_avail": {"max": 516},
+                },
+                "resampler": {
+                    "health": "steady",
+                    "locked": True,
+                    "clamp_count": 7,
+                    "anti_windup_count": 2,
+                    "lock_count": 18,
+                    "unlock_count": 17,
+                    "fill_frames": 512,
+                    "target_fill_frames": 512,
+                    "held_target_frames": 1024,
+                    "decay": {"enabled": True, "floor_frames": 1024, "demand_ppm": 125.33},
+                },
+            }
+        ],
+        "output": {
+            "frames_written": 100,
+            "xrun_count": 0,
+            "snd_pcm_delay_frames": 864,
+            "snd_pcm_delay_ms": 18.0,
+        },
+        "watchdog": {"last_progress_age_ms": 0, "pings_skipped": 0},
+        "host_clock": {"enabled": True, "ladder": "l0_locked"},
+    }
+    sampler = _sampler(
+        fanin_probe=lambda: status,
+        journal_reader=lambda *_args: [],
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+
+    sampler.sample_once()
+    fanin = sampler.snapshot()["current"]["fanin"]
+    assert set(fanin["inputs"]) == {
+        spec.id.value for spec in MUSIC_SOURCE_SPECS
+    }
+    assert fanin["inputs"]["usbsink"]["health"] == "capturing"
+    assert fanin["inputs"]["usbsink"]["direct"]["drain_avail"]["max"] == 516
+    assert fanin["inputs"]["usbsink"]["resampler"]["unlock_count"] == 17
+    # The #3464 rail counters ride the curated view alongside the ratio.
+    assert fanin["inputs"]["usbsink"]["resampler"]["clamp_count"] == 7
+    assert fanin["inputs"]["usbsink"]["resampler"]["anti_windup_count"] == 2
+    assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["enabled"] is True
+    # The decontamination gauge rides the wholesale decay deepcopy (#3466).
+    assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["demand_ppm"] == 125.33
+    assert fanin["inputs"]["spotify"]["present"] is False
+    assert fanin["host_clock"]["ladder"] == "l0_locked"
+
+    status["inputs"][0]["frames_read"] += 48000
+    now[0] += 1.0
+    sampler.sample_once()
+    fanin = sampler.snapshot()["current"]["fanin"]
+    assert fanin["inputs"]["usbsink"]["frames_per_sec"] == 48000.0
