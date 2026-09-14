@@ -357,9 +357,6 @@ class Mux:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            if self._volume_coordinator is not None:
-                with contextlib.suppress(Exception):
-                    await self._volume_coordinator.aclose()
 
     def notify_source_changed(self, source: Source, via: str) -> None:
         """Record a wake hint without making or applying a routing decision."""
@@ -1644,12 +1641,11 @@ class Mux:
         """Tier 2 escalation: try-restart librespot.service to force an
         active instance to drop its FD on the Spotify fan-in lane.
 
-        librespot exits and closes its private Spotify lane writer
-        (`librespot_substream`, or that lane's SHM ring on a box armed for ring
-        ingress — the arbitration is identical either way); fan-in then reads
-        silence on that lane while the new winner's continues. systemd respawns
-        librespot in ~2-3 s (Restart=always), and during that gap the new winner
-        is heard alone. After respawn librespot is back as an idle Spotify
+        librespot exits and closes its private Spotify lane writer,
+        `librespot_substream`; fan-in then reads silence on that lane while
+        the new winner's continues. systemd respawns librespot in ~2-3 s
+        (Restart=always), and during that gap the new winner is heard alone.
+        After respawn librespot is back as an idle Spotify
         Connect device: the credential cache (--system-cache
         /var/cache/librespot) persists, so the phone re-sees the speaker in the
         Connect picker without re-authenticating, but any state inside the

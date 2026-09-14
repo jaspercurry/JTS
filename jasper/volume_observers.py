@@ -47,7 +47,8 @@ from . import librespot_state
 from .bluealsa_probe import active_transport_path
 from .busctl import run_busctl
 from .log_event import log_event
-from .volume_coordinator import Source, VolumeCoordinator
+from .music_sources import Source
+from .volume_coordinator import VolumeCoordinator
 
 logger = logging.getLogger(__name__)
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)

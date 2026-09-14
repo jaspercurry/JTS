@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from ...audio_profile_state import (
     AEC_MODE_AUTO,
-    AecIntent,
     normalize_aec_mode,
     resolve_audio_input_intent,
 )
@@ -20,10 +19,8 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult
 from .aec import (
-    _aec_mode_setting,
-    _aec_profile_setting,
     _chip_aec_available_for_doctor,
-    _wake_leg_setting,
+    _doctor_aec_intent,
 )
 
 # Warn threshold: a box can sit idle overnight, so under a day is not stale.
@@ -303,22 +300,8 @@ def check_wake_legs_configured() -> CheckResult:
     Skips when AEC is disabled — leg booleans are meaningless without the
     bridge emitting on the UDP ports they consume — and on a push-to-talk-only
     speaker, which arms no legs by design."""
-    aec_mode = _aec_mode_setting()
-    raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
-    dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
-    chip_aec = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False)
-    chip_aec_150 = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC_150", False)
-    chip_aec_210 = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC_210", False)
     effective = resolve_audio_input_intent(
-        AecIntent(
-            mode=aec_mode,
-            raw_enabled=raw,
-            dtln_enabled=dtln,
-            chip_aec_enabled=chip_aec,
-            chip_aec_150_enabled=chip_aec_150,
-            chip_aec_210_enabled=chip_aec_210,
-            profile_selection=_aec_profile_setting(),
-        ),
+        _doctor_aec_intent(),
         chip_available=_chip_aec_available_for_doctor(),
     )
     # Only worth a control-plane round-trip when AEC (and thus the legs) is

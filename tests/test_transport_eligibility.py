@@ -443,7 +443,8 @@ def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
 
 
 def test_unclassified_reaches_no_household_surface():
-    from jasper.control.audio_health import _state_issues, _transport_park_signal
+    from jasper.control.audio_health import _transport_park_signal
+    from jasper.control.audio_state_issues import _state_issues
 
     state = transport_eligibility.snapshot(_left_only(), {})
     assert _transport_park_signal(state) is None
@@ -622,7 +623,8 @@ def test_no_named_park_also_reports_an_unproven_endpoint(
 def test_an_unproven_endpoint_reaches_no_household_surface():
     """Operator-only. The box plays today and is unproven rather than named
     silent afterwards; there is no household action either way."""
-    from jasper.control.audio_health import _state_issues, _transport_park_signal
+    from jasper.control.audio_health import _transport_park_signal
+    from jasper.control.audio_state_issues import _state_issues
 
     state = transport_eligibility.snapshot(_stereo_plus_subwoofer(), {})
     assert state["unproven_endpoint"] is True
@@ -887,7 +889,8 @@ def test_the_doctor_names_a_converge_refusal(monkeypatch, refusal, expected_reas
 def test_a_converge_refusal_reaches_no_household_surface(monkeypatch):
     """Operator-only, like the ADR-0184 seam: the box is not claimed silent,
     and there is no household action either way."""
-    from jasper.control.audio_health import _state_issues, _transport_park_signal
+    from jasper.control.audio_health import _transport_park_signal
+    from jasper.control.audio_state_issues import _state_issues
 
     _loaded_graph(monkeypatch, converged=False)
     state = transport_eligibility.snapshot(
@@ -984,7 +987,7 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
 def test_a_live_park_writes_one_household_incident_per_class(
     topology, env, park_class, issue, remedy
 ):
-    from jasper.control.audio_health import _state_issues
+    from jasper.control.audio_state_issues import _state_issues
 
     state = transport_eligibility.snapshot(topology, env)
     issues = _state_issues(
@@ -1000,7 +1003,8 @@ def test_a_live_park_writes_one_household_incident_per_class(
 
 
 def test_a_live_park_takes_the_household_headline():
-    from jasper.control.audio_health import PARKED_HEADLINE, _transport_park_signal
+    from jasper.control.audio_health import _transport_park_signal
+    from jasper.control.audio_signal_path import PARKED_HEADLINE
 
     state = transport_eligibility.snapshot(_mono_awaiting_its_output(), {})
     signal = _transport_park_signal(state)
@@ -1020,11 +1024,8 @@ def test_a_live_park_says_which_shape_parked_the_box(
     Both household writers compose from the same table, so the incident row
     and the card cannot say different things about one park.
     """
-    from jasper.control.audio_health import (
-        PARKED_DETAIL,
-        _state_issues,
-        _transport_park_signal,
-    )
+    from jasper.control.audio_health import PARKED_DETAIL, _transport_park_signal
+    from jasper.control.audio_state_issues import _state_issues
 
     state = transport_eligibility.snapshot(topology, env)
     rows = {
@@ -1047,7 +1048,8 @@ def test_a_live_park_says_which_shape_parked_the_box(
 
 
 def test_each_park_class_gets_its_own_household_sentence():
-    from jasper.control.audio_health import PARKED_DETAIL, _park_detail
+    from jasper.control.audio_health import PARKED_DETAIL
+    from jasper.control.audio_signal_path import _park_detail
 
     details = set()
     for case in _PARK_CASES:
@@ -1066,12 +1068,9 @@ def test_an_unnamed_park_class_keeps_the_canned_sentence():
     It degrades to what every class said before this table existed, which is
     the one thing a park must never do: go quiet.
     """
-    from jasper.control.audio_health import (
-        PARKED_DETAIL,
-        PARKED_HEADLINE,
-        _state_issues,
-        _transport_park_signal,
-    )
+    from jasper.control.audio_health import PARKED_DETAIL, _transport_park_signal
+    from jasper.control.audio_signal_path import PARKED_HEADLINE
+    from jasper.control.audio_state_issues import _state_issues
 
     state = {
         "status": "parked",

@@ -84,7 +84,7 @@ ALLOWLIST: dict[str, str] = {
         "interactive commissioning tool; `amixer sget` readback has no "
         "bound today. Operator present at the terminal."
     ),
-    "jasper/control/restart_broker.py:394": (
+    "jasper/control/restart_broker.py:395": (
         "_spawn_detached's Popen is fired-and-forgotten by the broker itself "
         "(a systemctl transition that can kill the broker before it answers) "
         "-- but its handle is captured into `proc` to hand to a daemon reaper "

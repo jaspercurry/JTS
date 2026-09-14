@@ -382,7 +382,7 @@ run_contained_build() {
     _build_sandbox_log "contained" "label=${label} unit=${unit}"
     local -a run=(
         systemd-run --scope --quiet --collect
-        "--unit=${unit}" "${props[@]}" --
+        "--unit=${unit}" ${props[@]+"${props[@]}"} --
     )
     # choom sets the build's oom_score_adj (the scope-compatible substitute
     # for the OOMScoreAdjust property a --scope unit rejects). Empty when

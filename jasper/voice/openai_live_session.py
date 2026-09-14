@@ -21,6 +21,7 @@ from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import failure_detail, is_transient
+from ._tasks import await_cleanup_owned
 from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
@@ -329,6 +330,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._backend_model = backend_model
         self._connect = connect
         self._client = None
+        self._client_prepare_task: asyncio.Task[None] | None = None
         self._session_cm = None
         self._session = None
         self._started = asyncio.Event()
@@ -348,17 +350,52 @@ class OpenAILiveConnection(BaseLiveConnection):
     async def start(self, registry, system_instruction) -> None:
         self._registry = registry
         self._system_instruction_provider = system_instruction if callable(system_instruction) else lambda: system_instruction
+        self._set_state(ConnectionState.CONNECTING)
         try:
-            self._prepare_client()
+            await self._prepare_client()
         except Exception as exc:  # noqa: BLE001 — a later wake can retry without restarting voice
-            self._outage.on_failure(exc, literals=self._secret_literals())
+            if self._stopping.is_set():
+                return
             log_event(
                 logger, "provider.client_prepare_failed", provider=self.PROVIDER_NAME,
-                detail=self._outage.detail, level=logging.WARNING,
+                detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING,
             )
-        self._set_state(ConnectionState.CONNECTED)
+            ready = ConnectionState.FAILED
+        else:
+            ready = ConnectionState.CONNECTED
+        if not self._stopping.is_set() and self._active_turn is None:
+            self._set_state(ready)
 
-    def _prepare_client(self) -> None:
+    def is_paused(self) -> bool:
+        # Live retries a failed local preparation on the next wake; it has
+        # no idle connection supervisor that could clear a failed pause.
+        return self._state is not ConnectionState.FAILED and super().is_paused()
+
+    def last_failure_detail(self) -> str | None:
+        detail = super().last_failure_detail()
+        task = self._client_prepare_task
+        if detail is None and task is not None and task.done() and not task.cancelled():
+            if (error := task.exception()) is not None:
+                return failure_detail(error, literals=self._secret_literals())
+        return detail
+
+    async def _prepare_client(self) -> None:
+        if self._stopping.is_set():
+            raise RuntimeError("Live connection is stopping")
+        if self._connect is None:
+            task = self._client_prepare_task
+            if task is None or (task.done() and task.exception() is not None):
+                task = self._client_prepare_task = asyncio.create_task(
+                    asyncio.to_thread(self._build_client), name="openai-live-client-prepare",
+                )
+                task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+            # A cancelled wake cannot cancel the thread, or another waiter
+            # could build a second client while the first was still running.
+            await asyncio.shield(task)
+        if self._stopping.is_set():
+            raise RuntimeError("Live connection is stopping")
+
+    def _build_client(self) -> None:
         if self._connect is None:
             from openai import AsyncOpenAI  # lazy — optional provider SDK
             if self._client is None:
@@ -369,6 +406,8 @@ class OpenAILiveConnection(BaseLiveConnection):
 
     async def acquire_turn(self) -> OpenAILiveTurn:
         async with self._turn_lock:
+            if self._stopping.is_set():
+                raise RuntimeError("Live connection is stopping")
             if self._active_turn is not None:
                 raise RuntimeError("Live conversation already active")
             self._set_state(ConnectionState.CONNECTING)
@@ -386,7 +425,10 @@ class OpenAILiveConnection(BaseLiveConnection):
                     await self._teardown_session()
                 finally:
                     self._active_turn = None
-                    self._set_state(ConnectionState.CONNECTED)
+                    if not self._stopping.is_set():
+                        self._set_state(
+                            ConnectionState.CONNECTED if self._connect is not None else ConnectionState.FAILED,
+                        )
                 if isinstance(exc, Exception):
                     raise RuntimeError(failure_detail(exc, literals=self._secret_literals())) from None
                 raise
@@ -428,7 +470,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         # Held locally: a concurrent `stop()` nulls the shared field while
         # this awaits, and the attempt still owns the turn it opened for.
         turn = self._active_turn
-        self._prepare_client()
+        await self._prepare_client()
         self._session_cm = self._connect()
         self._session = await self._session_cm.__aenter__()
         self._receive_task = asyncio.create_task(self._receive(turn))
@@ -505,6 +547,9 @@ class OpenAILiveConnection(BaseLiveConnection):
         # Set before the release, so an acquire still dialling fails its
         # open instead of handing back a turn on a closed connection.
         self._stopping.set()
+        await await_cleanup_owned(self._stop_with_client(), task_name="openai-live-stop")
+
+    async def _stop_with_client(self) -> None:
         # Released first: only the turn's own path sends `session.close` and
         # settles the billable interval. `super().stop()` then tears down
         # what is left, idempotently.
@@ -522,6 +567,13 @@ class OpenAILiveConnection(BaseLiveConnection):
                     level=logging.WARNING,
                 )
         await super().stop()
+        if self._client_prepare_task is not None:
+            try:
+                await asyncio.shield(self._client_prepare_task)
+            except Exception:  # noqa: BLE001 — preparation already reported its failure
+                pass
+            self._client_prepare_task = None
         if self._client is not None:
             client, self._client = self._client, None
+            self._connect = None
             await client.close()

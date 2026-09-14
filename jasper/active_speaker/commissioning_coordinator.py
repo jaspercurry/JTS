@@ -124,6 +124,7 @@ def build_commissioning_view(
         "driver_target_proof": {**checks, "complete": checks_complete and assigned > 0 and unverified == 0,
                                 "output_identity_complete": assigned > 0 and unverified == 0,
                                 "driver_checks_complete": checks_complete},
+        "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "driver_checks": checks,
         "summed_validation": {"complete": bool(summary.get("summed_validation_complete")),
                               "validated": int(summary.get("validated_summed_group_count") or 0),

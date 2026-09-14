@@ -39,10 +39,11 @@ from jasper.log_event import log_event
 from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
-    from ..volume_coordinator import VolumeState
+    from ..volume_state import VolumeState
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
+from ..music_sources import Source
 from ..platform.control_client import CONTROL_PORT
 from . import (
     debug_control,
@@ -336,9 +337,6 @@ def _make_handler(
         long-lived observer retry an initial value that arrived before its
         source became active, instead of reading HTTP 200 as applied.
         """
-        # Lazy import to keep the full volume_coordinator graph out of
-        # server.py's module load.
-        from ..volume_coordinator import Source
         try:
             source_enum = Source(source_name)
         except ValueError:

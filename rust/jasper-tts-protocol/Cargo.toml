@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+anyhow = "1"
+jasper-env = { path = "../jasper-env" }
 jasper-daemon = { path = "../jasper-daemon" }
 jasper-resampler = { path = "../jasper-resampler" }
 serde = { version = "1", features = ["derive"] }
