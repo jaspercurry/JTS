@@ -42,6 +42,7 @@ from jasper.active_speaker import frequency_plot
 from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
+from tests.crossover_v2_banked_round import bank_executor_take
 from jasper.cli._refusal import EXIT_UNREADABLE
 from jasper.cli.round_views import build_parser, main as round_views_main, run_bookkeeping
 from jasper.web import correction_measurements
@@ -1185,6 +1186,20 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
         return manifests
 
     return SimpleNamespace(takes=takes, write=write, argv=argv, out=out, descriptor=descriptor, roots=roots)
+
+
+def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, monkeypatch):
+    for index, take in enumerate(bass_run.takes):
+        original = take["record"]
+        take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
+            raw_record={key: value for key, value in original.items() if key not in {"stimulus_dbfs", "program_id"}})
+        take["record"].update(run_id=original["run_id"], loudness_volume_db=original["loudness_volume_db"])
+    bass_run.write()
+    assert round_views_main(bass_run.argv) == 0
+    capsys.readouterr()
+    table, = json.loads(bass_run.out.read_text())["tables"]
+    assert {context["basis_status"] for context in table["capture_context"]} == {"compatible"}
+    assert all(context["unknown_fields"] == [] for context in table["capture_context"])
 
 
 @pytest.mark.parametrize('fault,reason', [

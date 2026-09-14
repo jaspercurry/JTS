@@ -2,57 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One banked round, as the FLOW banks it — the shared real-shape fixture.
-
-A fixture library that IS a fixture library, on
-``tests/crossover_v2_round_harness.py``'s precedent and for its reason: a
-shared builder living in a collected test module makes that module
-undeletable. This one is imported by the round-views and forward-model
-suites.
-
-**Every artifact here is written by the product's own writer.** The bundle is
-:func:`~jasper.active_speaker.bundles.open_bundle`'s; the paths are
-:class:`~jasper.active_speaker.crossover_v2.record_store.BankedRecordStore`'s;
-the take records are :mod:`~jasper.active_speaker.crossover_v2.spatial`'s four
-builders; the banked VERIFY curve is
-:func:`~jasper.active_speaker.crossover_v2.durable_state._decimate_verify_measured`'s
-output. Nothing below hand-types a record shape, so a writer that changes
-fails the suites that read it instead of leaving a fixture agreeing with
-nothing that ships.
-
-**The two shapes are DISJOINT, and that is the finding they exist to hold.**
-``jasper.web.correction_crossover_v2``'s own words: *"stage 2 opens a new
-bundle under a new capture session id"*. So one ``bank-crossover-round.sh`` run
-banks ONE stage, and:
-
-* :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
-  carrying both per-driver solos, the lateral walk pose(s), and the ENTRY BASELINE.
-  Its flow state carries no VERIFY curve because stage 1 measures no VERIFY.
-* :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state
-  carrying ``verify_priors.verify_measured``. No per-driver solos: a verify
-  stage walks none.
-* :func:`bank_seat_round` — the ``seat/cube`` walk (ADR-0260): one
-  ungated summed take per pose of the shipped program's own resolved walk, so
-  a reader of categorized poses gets seven takes that differ only in where the
-  microphone was. No solos and no VERIFY curve — a seat walk measures neither.
-
-No round carries both a prediction basis and a measured VERIFY sum, which is
-issue #3482's root fact; no round carries both an entry baseline and a graded
-spec, which is #3478's.
-
-**The cloud group is deliberately absent from BOTH.** Stage 2 banks one, but
-no reader these suites pin opens it, and the only way to build a
-``cloud_verify.json`` from its own writer is
-``spatial.assemble_cloud_group_result`` over a combiner result built from live
-captures. A hand-typed cloud payload here would be the one part of this
-fixture that could drift, so the position-graded views keep the payload
-builder that already lives with them. :func:`bank_cloud_echo_band` is the one
-exception and stays one: it banks that group's echo BAND and nothing else of
-it, for the readers that ask only which band the null detector ran on.
-
-Measure and verify fixtures carry no WAVs. Seat fixtures retain captures for
-the room analyzer; room statistics tests supply documents at its output.
-"""
+"""Shared rounds written through production capture and evidence stores."""
 
 from __future__ import annotations
 
@@ -61,12 +11,22 @@ from tests.run_manifest_fixture import write_manifest
 import asyncio
 import json
 import math
+from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from jasper.audio_measurement.bundles import record_artifact
+from jasper.audio_measurement.calibration import store_calibration
+from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
+from jasper.active_speaker.capture_provenance import CaptureProvenance, CaptureProvenanceRecorder
+from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
+from jasper.active_speaker.run_manifest import RunManifest
+from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
+from jasper.web.correction_run_host import bind_plan_analysis
+from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _verify_analysis
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import encode_wav_s32
 from jasper.active_speaker.bundles import open_bundle
@@ -594,3 +554,48 @@ def bank_cloud_echo_band(
         "echo_band_hz": [float(band_hz[0]), float(band_hz[1])],
         "echo_band_provenance": {"source": source},
     })
+
+
+def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None):
+    program = program or build_verify_program(2500, sweep_s=1.5)
+    raw_record = raw_record or {}
+    calibration_root = root / "calibration"
+    calibration = store_calibration(text="20 -1\n1000 1\n20000 0\n", provider="minidsp",
+        model="minidsp_umik2", label="miniDSP UMIK-2", source="fixture", root=calibration_root)
+    with monkeypatch.context() as patch:
+        patch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(calibration_root))
+        analysis = (_measure_analysis(program) if program.phase == "measure" else _verify_analysis(program))
+        def analyzed(*args, **kwargs):
+            if analysis_error is not None:
+                raise analysis_error
+            return analysis
+        patch.setattr("jasper.audio_measurement.program_analysis.analyze_program_capture", analyzed)
+        info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
+        store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
+        manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
+        manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "distance_m": 1.25}},
+                       attempt=1, pose_index=0)
+        wav, _ = encode_wav_s32(np.zeros(32, dtype=np.int32), sample_rate_hz=48000)
+        answer = WiredCaptureAnswer(wav=wav, program=program.to_dict(),
+            device={"card": "UMIK2", "usb_id": "2752:002b", "model_key": "minidsp_umik2",
+                    "pcm": "hw:CARD=UMIK2,DEV=0", "channel_selected": 0},
+            setup={"calibration": {"mode": "stored", "calibration_id": calibration.calibration_id,
+                                    "model": calibration.model}})
+        capture = SimpleNamespace(take_answer=lambda: answer, read_loudness_volume_db=lambda: -20.0)
+        records = CapturedRecordStore(manifest, capture)
+        conductor, refs = _conductor(FakeSeams(), index_phase_map={1: program.phase}), {}
+        conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))
+        provenance = CaptureProvenanceRecorder()
+        provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
+            session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
+        analyze, _ = bind_plan_analysis(conductor, records, manifest=manifest, evidence=refs, provenance=provenance)
+        async def bank():
+            record_id = await records.bank({"take_id": "executor-take", "kind": "candidate",
+                "graph_scope": "candidate", "candidate_id": "speaker-candidate", "graph_fingerprint": "submitted",
+                "program_phase": program.phase, "position_axis": "horizontal", "position_deg": 0,
+                "level_db": -20.0, "stimulus_dbfs": None, **raw_record})
+            record = json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
+            if analysis_error is None:
+                analyze(record, record_id)
+            return record
+        return asyncio.run(bank())

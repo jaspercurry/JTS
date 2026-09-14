@@ -28,7 +28,7 @@ from jasper.audio_measurement.program_analysis import (
     AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis, RealizedLevelMatch,
 )
 from jasper.cli import round_views
-from tests.crossover_v2_banked_round import bank_measure_round
+from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
 
 
@@ -231,6 +231,19 @@ def test_mic_tier_uses_the_recorded_calibration(speaker_round, capsys, applied):
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert {entry["fit"]["mic_tier"] for entry in result["linearization"].values()} == {"consumer" if applied else "phone"}
+
+
+def test_speaker_fit_uses_executor_umik2_provenance(speaker_round, capsys, tmp_path, monkeypatch):
+    root, record, program, *_ = speaker_round
+    executor = bank_executor_take(tmp_path / "executor", monkeypatch, program=program)
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    for key in ("capture_setup", "capture_calibration", "gating_applied", "stimulus_dbfs", "mark_distance_m", "side"):
+        record[key] = executor[key]
+    take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert {entry["fit"]["mic_tier"] for entry in result["linearization"].values()} == {"reference"}
 
 
 def test_a_program_shared_by_takes_cannot_identify_the_banked_analysis(speaker_round, capsys):

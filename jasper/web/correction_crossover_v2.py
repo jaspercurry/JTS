@@ -398,6 +398,7 @@ def bind_v2_stage_seams(
     run_async: Any,
     camilla_factory: Any = None,
     provenance: CaptureProvenanceRecorder | None = None,
+    layout: str | None = None,
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
 
@@ -489,7 +490,7 @@ def bind_v2_stage_seams(
         apply_failed=v2state._apply_failure_gate,
         bank_take=v2evidence.bind_position_retention(
             evidence_store, refs,
-            provenance=banked_provenance, evidence=banked_evidence,
+            provenance=banked_provenance, evidence=banked_evidence, layout=layout,
         ),
         applied_offset_db=v2state._applied_offset_gate,
         # #2611: the graph an apply replaces, for the commanded axis. Bound on
@@ -881,7 +882,7 @@ def prepare_v2_session(
             publish_candidate=publish_candidate,
             run_async=run_async,
             camilla_factory=camilla_factory,
-            provenance=capture_provenance,
+            provenance=capture_provenance, layout=context.preset.channel_map.layout,
         )
         if verify_only:
             conductor = CrossoverV2Session(
