@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -27,10 +27,70 @@ from .frequency_view import build_frequency_view, manifest_frequency_run, FREQUE
 from .speaker_fit import speaker_fit
 from .measurement_programs import PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
+from .run_manifest import RUN_MANIFEST_KIND, RunManifest
+from .crossover_v2.refusal_copy import CrossoverV2Refused
 
 PACKET_FILENAME = "packet.json"
 PICTURE_FILENAME = "frequency.png"
 INDEX_FILENAME = "index.md"
+
+
+class RoundPacket:
+    def __init__(self, manifest: RunManifest, schedule: Mapping[str, Any]) -> None:
+        self.manifest, self.schedule = manifest, schedule
+        self.runs: dict[str, Mapping[str, Any]] = {}
+        self.finalized = False
+
+    def to_dict(self) -> dict[str, Any]:
+        runs = list(self.runs.values())
+        sets: dict[str, dict[str, Any]] = {}
+        for run in runs:
+            for group in run["sets"]:
+                merged = sets.setdefault(group["set_id"], {**group, "takes": []})
+                merged["takes"].extend({**take, "run_id": run["run_id"]} for take in group["takes"])
+        first = runs[0] if runs else self.manifest.to_dict()
+        return {**first, "run_id": self.manifest.run_id, "sets": list(sets.values()),
+                "schedule": self.schedule,
+                "runs": [{key: run[key] for key in ("run_id", "level", "status", "reason", "request_fingerprint")}
+                         for run in runs],
+                "level": {"session": first["level"].get("session")},
+                "finalized": self.finalized,
+                "status": "complete" if self.finalized and runs and all(run["status"] == "complete" for run in runs)
+                          and not self.manifest.reason else "partial",
+                "reason": self.manifest.reason or next((run["reason"] for run in runs if run["reason"]), ""),
+                "honoured": {**first["honoured"], **{
+                    key: sum(run["honoured"][key] for run in runs)
+                    for key in ("mic_moves", "stops_planned", "takes_measured", "takes_refused")}},
+                "attempts": sum(run["attempts"] for run in runs),
+                "wall_s": [value for run in runs for value in run["wall_s"]],
+                "not_measured": [{**take, "run_id": run["run_id"]} for run in runs for take in run["not_measured"]]}
+
+    async def bank(self, record: Mapping[str, Any]) -> str:
+        if record.get("kind") == RUN_MANIFEST_KIND:
+            self.runs[record["run_id"]] = record
+            record = self.to_dict()
+        return await self.manifest.records.bank(record)
+
+    async def finish(self) -> None:
+        self.finalized = True
+        self.manifest.path = await self.manifest.records.bank(self.to_dict())
+
+
+def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
+    destination = round_dir / PACKET_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    if len({run["level"]["run"]["level_db"] for run in manifest.get("runs", ())}) < 2:
+        return destination
+    candidates = sorted({row["capture_basis"]["candidate_id"] for row in manifest["sets"] if not row["base"]})
+    try:
+        table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
+        table = json.loads(table_path.read_text())
+    except (CrossoverV2Refused, OSError, ValueError, KeyError) as exc:
+        table = {"status": "unavailable", "code": getattr(exc, "code", "bass_fit_inputs_missing"),
+                 "error_type": type(exc).__name__}
+    packet = json.loads(destination.read_text())
+    atomic_write_json(destination, {**packet, "bass_table": table})
+    return destination
 
 
 def _stats(plot: Mapping[str, Any]) -> dict[str, Any]:
@@ -207,6 +267,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     packet = {"schema": "jts_round_packet/1", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "level": manifest.get("level"),
+              **({"runs": manifest["runs"]} if "runs" in manifest else {}),
               "applied": {"candidate_fingerprint": profile.get("candidate_fingerprint"), "applied_at": profile.get("applied_at"),
                           "layers": {"driver": profile_linearization(profile),
                                      "room": snapshot.get("room_correction", profile.get("room_correction")),

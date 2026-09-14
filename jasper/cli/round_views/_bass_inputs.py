@@ -58,6 +58,8 @@ def fit_run(args, *, target: Mapping[str, Any] | None = None) -> dict[str, Any]:
             basis = selected.capture_basis
             level = level_key(basis, set_id=selected.set_id)
             path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, selected.set_id)
+            if len(manifest["sets"]) == 1 and not path.is_file():
+                path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact)
             view = json.loads(path.read_text())
             for entry in entries:
                 take = dict(selected_take(view, entry["take_id"]))
@@ -72,9 +74,17 @@ def fit_run(args, *, target: Mapping[str, Any] | None = None) -> dict[str, Any]:
                                             code="bass_fit_candidate_unreadable")
                 bucket = candidates[candidate_id] if candidate_id in descriptors else baseline
                 bucket[key].append(take)
+    target = json.loads(args.target.read_text()) if target is None else target
+    if not descriptors and baseline:
+        baseline_takes = [take for rows in baseline.values() for take in rows]
+        candidate_ids = {take["record"]["candidate_id"] for take in baseline_takes}
+        tables = [fit_bass_table([(take, take) for take in baseline_takes if take["record"]["candidate_id"] == candidate_id],
+                                candidate_id=candidate_id, descriptor=None, target=target,
+                                tolerance_db=args.tolerance_db, reference_band_hz=tuple(args.reference_band_hz))
+                  for candidate_id in sorted(candidate_ids)]
+        return {"schema": "jts_bass_run_table/1", "run_ids": run_ids, "tables": tables}
     if not candidates:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
-    target = json.loads(args.target.read_text()) if target is None else target
     tables = []
     for candidate_id, takes in sorted(candidates.items()):
         levels = {key[0] for key in takes}

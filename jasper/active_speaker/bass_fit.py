@@ -29,10 +29,10 @@ class BassFitCoverageUnavailable(CrossoverV2Refused):
 
 def fit_bass_shape(
     pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
-    candidate_id: str, descriptor: Mapping[str, Any], target: Mapping[str, Any],
+    candidate_id: str, descriptor: Mapping[str, Any] | None, target: Mapping[str, Any],
     reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ,
 ) -> dict[str, Any]:
-    settings = validate_dynamic_bass_descriptor(descriptor)
+    settings = validate_dynamic_bass_descriptor(descriptor) if descriptor is not None else None
     tf = np.asarray(target["freqs_hz"], dtype=float)
     ty = np.asarray(target["magnitude_db"], dtype=float)
     if (tf.ndim != 1 or len(tf) < 2 or ty.shape != tf.shape or not np.isfinite(tf).all()
@@ -112,11 +112,12 @@ def fit_bass_shape(
     base_boost = loudness_boost_db(first["loudness_volume_db"], DynamicBassDescriptor(**base_descriptor)) if base_descriptor else 0.0
     base_low_boost = base_descriptor["low_boost_db"] if base_descriptor else 0.0
     choices = []
-    for scale in sorted({0.0, fraction, 1.0}):
+    for scale in sorted({0.0, fraction, 1.0} if settings is not None else {0.0}):
         prediction = a[:, valid] + scale * delta
         rms = np.sqrt(np.mean((prediction - desired[valid]) ** 2, axis=1))
-        fitted = (base_descriptor if scale == 0 else settings if scale == 1 else
-                  {**settings, "low_boost_db": base_low_boost + scale * (settings["low_boost_db"] - base_low_boost)})
+        fitted = base_descriptor if scale == 0 else settings
+        if 0 < scale < 1 and settings is not None:
+            fitted = {**settings, "low_boost_db": base_low_boost + scale * (settings["low_boost_db"] - base_low_boost)}
         choices.append({"scale": scale, "descriptor": fitted,
                         "realized_boost_db": (base_boost + scale * np.median(delta, axis=0)).tolist(),
                         "mean_pose_rms_db": float(np.mean(rms)), "per_pose_rms_db": rms.tolist(),

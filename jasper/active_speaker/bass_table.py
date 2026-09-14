@@ -38,7 +38,7 @@ def level_key(basis: Mapping[str, Any], **identity: Any) -> tuple[float, float, 
 
 def fit_bass_table(
     pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
-    candidate_id: str, descriptor: Mapping[str, Any], target: Mapping[str, Any],
+    candidate_id: str, descriptor: Mapping[str, Any] | None, target: Mapping[str, Any],
     tolerance_db: float, reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ,
 ) -> dict[str, Any]:
     tolerance = finite_float(tolerance_db)
@@ -47,10 +47,10 @@ def fit_bass_table(
     if not pairs:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
     try:
-        descriptor = validate_dynamic_bass_descriptor(descriptor)
+        descriptor = validate_dynamic_bass_descriptor(descriptor) if descriptor is not None else None
     except ValueError as exc:
         raise CrossoverV2Refused({"candidate_id": candidate_id}, code="bass_fit_candidate_unreadable") from exc
-    settings = DynamicBassDescriptor(**descriptor)
+    settings = DynamicBassDescriptor(**descriptor) if descriptor is not None else None
     first: dict[str, Any] = {}
     interventions = (*CHANGE_FIELDS["volume"], "pose_key")
     groups: dict[tuple[float, float, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = defaultdict(list)
@@ -71,7 +71,7 @@ def fit_bass_table(
         contexts.append(comparison)
     levels = []
     for key, group in sorted(groups.items()):
-        row = {"level_key": dict(zip(LEVEL_FIELDS, key)), "loudness_boost_db": loudness_boost_db(key[1], settings),
+        row = {"level_key": dict(zip(LEVEL_FIELDS, key)), "loudness_boost_db": loudness_boost_db(key[1], settings) if settings else None,
                "sources": [{"before": before["record_path"], "after": after["record_path"]} for before, after in group]}
         try:
             fit = fit_bass_shape(group, candidate_id=candidate_id, descriptor=descriptor,

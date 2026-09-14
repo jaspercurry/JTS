@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run measurements, commission a speaker, inspect packets and apply candidates."""
+"""Run a plan or bass level sequence, place the microphone, bank its packet, commission a speaker and apply candidates."""
 from __future__ import annotations
 
 import argparse
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
@@ -65,6 +66,7 @@ def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> 
 
 
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
+    from jasper.active_speaker.bass_levels import BassLevelLadder  # lazy: run-only measurement imports
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: run-only
     from ._run_request import resolve_run  # lazy: run-only measurement imports
 
@@ -77,7 +79,10 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         return EXIT_REFUSED if report.blocking else EXIT_OK
     if report.blocking:
         return failed(EXIT_REFUSED, report.issues[0].code, report.to_dict())
-    http, payload = client.open_session(report.plan.to_dict())
+    request = (replace(report.plan, level=replace(report.plan.level, level_db=None))
+               if isinstance(report, BassLevelLadder) else report.plan)
+    http, payload = client.open_session(request.to_dict(), **(
+        {"levels": args.levels or "auto"} if isinstance(report, BassLevelLadder) else {}))
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "run_refused", {"http": http}, payload)
@@ -143,7 +148,8 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         RoundBankError, bank_round,
     )
     from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
-    from jasper.active_speaker.round_packet import wait_answer  # lazy: packet summary
+    from .round_views._bass_inputs import join_bass_rounds  # lazy: wait-only bass analysis
+    from jasper.active_speaker.round_packet import finish_bass_packet, wait_answer  # lazy: wait-only packet assembly
 
     result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout)
     if result["status"] != "terminal":
@@ -156,6 +162,9 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         banked = bank_round(
             Path(session_dir), view_runner=run_bookkeeping,
         )
+        manifest = banked.provenance.get("manifest")
+        if manifest and Path(manifest).is_file():
+            finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
     except RoundBankError as exc:
         return failed(EXIT_REFUSED, exc.reason, str(exc))
     except OSError as exc:
@@ -213,14 +222,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_args = argparse.ArgumentParser(add_help=False, parents=[timeout_args])
     _connection_args(run_args)
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
-    run = sub.add_parser("run", parents=[run_args], help="resolve and post a plan; optionally wait and bank its packet")
+    levels = run_args.add_mutually_exclusive_group()
+    levels.add_argument("--levels", help="bass levels: auto uses admissible session offsets; or comma-separated absolute dB levels")
+    levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; bass otherwise uses auto levels")
+    run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit bass levels; optionally wait and bank its packet")
     run.add_argument("--program", choices=("speaker", "room", "bass"))
     poses = run.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
     poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
     run.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
-    run.add_argument("--level-db", type=float, help="absolute run fader level in dB; defaults to the session anchor")
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
@@ -229,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     trial = sub.add_parser("trial", parents=[run_args], help=trial_help, description=trial_help)
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
     trial.add_argument("--mover", choices=("arm", "human"))
-    trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, level_db=None, dry_run=False)
+    trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, dry_run=False)
     for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):
         command = sub.add_parser(verb, parents=[timeout_args] if verb == "wait" else [], help=function.__name__.removeprefix("_cmd_"))
         _connection_args(command)
