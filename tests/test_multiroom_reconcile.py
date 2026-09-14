@@ -2878,89 +2878,77 @@ def test_main_solo_does_not_provision(tmp_path, monkeypatch):
     assert "provision" not in order
 
 
-# ---------- _restart_unit: reset-failed before a deliberate restart ----------
+# ---------- _restart_unit: routes through the restart broker ----------
 # Regression for the 2026-06-24 jts.local follower reboot: six /grouping/set
 # POSTs from the leader in 44 s each restarted jasper-outputd; with no
 # reset-failed the 6th tripped outputd's StartLimitBurst and systemd escalated
 # to StartLimitAction=reboot, rebooting the Pi from deliberate config churn.
+# restart_broker.reset_then_manage now owns that reset-before-restart
+# sequencing and the unit/verb allowlist (#4816); these pins cover only that
+# reconcile.py wires each call site into it with the right unit/verb/no_block.
 
 
-def test_restart_unit_resets_failed_before_restart(monkeypatch):
-    """A reconciler restart is a DELIBERATE config-apply: it MUST run
-    `systemctl reset-failed <unit>` FIRST so a rapid grouping-config burst
-    cannot spend the target's StartLimitBurst and escalate to a Pi reboot."""
-    import subprocess as sp
+@pytest.mark.parametrize(
+    ("unit", "no_block", "active_only", "expected_verb"),
+    [
+        pytest.param(
+            "jasper-outputd.service", False, False, "restart",
+            id="blocking_restart",
+        ),
+        pytest.param(
+            reconcile_mod.AEC_RECONCILE_UNIT, True, False, "restart",
+            id="cross_owner_kick_no_block",
+        ),
+        pytest.param(
+            reconcile_mod.SHAIRPORT_UNIT, False, True, "try-restart",
+            id="active_only_try_restart",
+        ),
+    ],
+)
+def test_restart_unit_routes_through_broker(
+    monkeypatch, unit, no_block, active_only, expected_verb,
+):
+    """Each call site asks the broker to reset-failed the target FIRST, then
+    run the verb/no_block combination it selected — reconcile.py no longer
+    builds a systemctl argv of its own."""
+    from jasper.control import restart_broker as rb
 
-    calls: list[list[str]] = []
+    calls: list[tuple[str, str, bool]] = []
 
-    def fake_run(argv, **kw):
-        calls.append(list(argv))
-        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+    def fake_manage_units(*units, verb="restart", no_block=True, **_kw):
+        calls.append((units[0], verb, no_block))
+        return {"ok": True}
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._restart_unit("jasper-outputd.service") is True
-    # reset-failed strictly precedes restart, both targeting the same unit.
-    assert calls[0] == ["systemctl", "reset-failed", "jasper-outputd.service"]
-    assert calls[1][:2] == ["systemctl", "restart"]
-    assert calls[1][-1] == "jasper-outputd.service"
-
-
-def test_restart_unit_can_queue_cross_owner_restart_no_block(monkeypatch):
-    """A grouping voice-route change kicks the AEC reconciler, which owns
-    jasper-voice/jasper-aec-bridge. That cross-owner handoff must be queued so
-    grouping cannot wait behind voice startup and wedge the unit graph."""
-    import subprocess as sp
-
-    calls: list[list[str]] = []
-
-    def fake_run(argv, **kw):
-        calls.append(list(argv))
-        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(rb, "manage_units", fake_manage_units)
     assert (
         reconcile_mod._restart_unit(
-            reconcile_mod.AEC_RECONCILE_UNIT,
-            no_block=True,
+            unit, no_block=no_block, active_only=active_only,
         )
         is True
     )
-    assert calls[0] == [
-        "systemctl",
-        "reset-failed",
-        reconcile_mod.AEC_RECONCILE_UNIT,
-    ]
-    assert calls[1] == [
-        "systemctl",
-        "--no-block",
-        "restart",
-        reconcile_mod.AEC_RECONCILE_UNIT,
+    assert calls == [
+        (unit, "reset-failed", False),
+        (unit, expected_verb, no_block),
     ]
 
 
-def test_restart_unit_active_only_never_resurrects_airplay_off(monkeypatch):
-    """A grouping offset change refreshes AirPlay only when it is active."""
-    import subprocess as sp
+def test_restart_unit_surfaces_broker_refusal(monkeypatch, caplog):
+    """A broker-side refusal (crash budget, allowlist, unreachable broker)
+    reaches the caller as the same False a direct-systemctl failure used to,
+    still observable in the journal."""
+    from jasper.control import restart_broker as rb
 
-    calls: list[list[str]] = []
+    def fake_manage_units(*units, verb="restart", **_kw):
+        if verb == "reset-failed":
+            return {"ok": True}
+        return {"ok": False, "rc": 1, "error": "unit(s) not in allowlist: x"}
 
-    def fake_run(argv, **kw):
-        calls.append(list(argv))
-        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+    monkeypatch.setattr(rb, "manage_units", fake_manage_units)
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._restart_unit("jasper-outputd.service") is False
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert (
-        reconcile_mod._restart_unit(
-            reconcile_mod.SHAIRPORT_UNIT,
-            active_only=True,
-        )
-        is True
-    )
-    assert calls[1] == [
-        "systemctl",
-        "try-restart",
-        reconcile_mod.SHAIRPORT_UNIT,
-    ]
+    fields = event_fields(caplog, "multiroom.reconcile.unit_restart_failed")
+    assert fields["unit"] == "jasper-outputd.service"
 
 
 def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
@@ -3155,114 +3143,6 @@ def test_converge_sources_barrier_gated_by_role_change(
     assert bool(start_calls) is expect_start
     if not expect_start:
         assert calls == []
-
-
-def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):
-    """reset-failed is best-effort: a reset-failed failure must NOT block the
-    restart it precedes — the restart is the load-bearing action."""
-    import subprocess as sp
-
-    calls: list[list[str]] = []
-
-    def fake_run(argv, **kw):
-        calls.append(list(argv))
-        if argv[1] == "reset-failed":
-            raise FileNotFoundError("systemctl")
-        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._restart_unit("jasper-camilla.service") is True
-    assert ["systemctl", "restart", "jasper-camilla.service"] in calls
-
-
-def test_restart_unit_reset_timeout_is_fail_soft(monkeypatch):
-    """A wedged best-effort reset cannot consume the whole reconcile pass."""
-    import subprocess as sp
-
-    calls: list[tuple[list[str], float]] = []
-
-    def fake_run(argv, **kw):
-        calls.append((list(argv), kw["timeout"]))
-        if argv[1] == "reset-failed":
-            raise sp.TimeoutExpired(argv, kw["timeout"])
-        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._restart_unit("jasper-camilla.service") is True
-    assert calls == [
-        (
-            ["systemctl", "reset-failed", "jasper-camilla.service"],
-            reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        ),
-        (
-            ["systemctl", "restart", "jasper-camilla.service"],
-            reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
-        ),
-    ]
-
-
-@pytest.mark.parametrize(
-    ("no_block", "expected_timeout"),
-    [
-        (False, reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC),
-        (True, reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC),
-    ],
-)
-def test_restart_unit_timeout_matches_blocking_mode(
-    monkeypatch,
-    no_block,
-    expected_timeout,
-):
-    """Detached manager requests stay short; blocking jobs get the full bound."""
-    import subprocess as sp
-
-    def fake_run(argv, **kw):
-        if argv[1] == "reset-failed":
-            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
-        assert kw["timeout"] == expected_timeout
-        raise sp.TimeoutExpired(argv, kw["timeout"])
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert (
-        reconcile_mod._restart_unit(
-            "jasper-outputd.service",
-            no_block=no_block,
-        )
-        is False
-    )
-
-
-def test_restart_unit_reports_real_restart_failure(monkeypatch):
-    """reset-failed succeeding must not mask a real restart failure — the
-    caller still sees False (and flips the reconcile exit code)."""
-    import subprocess as sp
-
-    def fake_run(argv, **kw):
-        if argv[1] == "reset-failed":
-            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
-        raise sp.CalledProcessError(1, argv, stderr="Job for unit failed.")
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._restart_unit("jasper-outputd.service") is False
-
-
-def test_restart_unit_contains_spawn_oserror(monkeypatch, caplog):
-    """A restart spawn failure is visible and cannot abort the reconciler."""
-    import subprocess as sp
-
-    def fake_run(argv, **_kw):
-        if argv[1] == "reset-failed":
-            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
-        raise OSError("cannot allocate process")
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-
-    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
-        assert reconcile_mod._restart_unit("jasper-outputd.service") is False
-
-    fields = event_fields(caplog, "multiroom.reconcile.unit_restart_failed")
-    assert fields["unit"] == "jasper-outputd.service"
-    assert fields["error"] == "cannot allocate process"
 
 
 def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):

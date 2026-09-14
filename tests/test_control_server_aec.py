@@ -31,15 +31,6 @@ _IMPORTED_FIXTURES = (
 )
 
 
-class _SystemctlResult:
-    """Stand-in for the `subprocess.CompletedProcess` a stubbed `systemctl` returns."""
-
-    def __init__(self, returncode: int = 0, stderr: str = "") -> None:
-        self.returncode = returncode
-        self.stderr = stderr
-        self.stdout = ""
-
-
 def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
     """Leg changes use the same restart kick as the software-AEC3 toggle.
 
@@ -625,203 +616,37 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
     ]
 
 
-def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
-    commands = []
-    events = []
-
-    monkeypatch.setattr(
-        aec_endpoints.subprocess,
-        "run",
-        lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
-    )
-    monkeypatch.setattr(
-        aec_endpoints,
-        "log_event",
-        lambda _logger, event, **fields: events.append((event, fields)),
-    )
+def test_usb_mic_recompose_routes_through_broker(monkeypatch):
+    """Restarting the durable descriptor/producer apply job goes through the
+    restart broker (reset-failed, then a no-block restart) instead of a
+    hand-rolled systemctl call, so the crash budget and verb allowlist
+    apply."""
+    calls = _record_broker(monkeypatch)
 
     assert aec_endpoints._schedule_usb_gadget_recompose() is True
 
-    assert commands == [
-        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
-        [
-            "systemctl", "restart", "--no-block",
-            "jasper-usbmic-apply.service",
-        ],
-    ]
-    assert events == [(
-        "usb_mic.recompose_scheduled",
-        {
-            "unit": "jasper-usbmic-apply.service",
-            "grace_ms": 350,
-            "max_attempts": 4,
-        },
-    )]
+    unit = aec_endpoints._USB_MIC_APPLY_UNIT
+    assert calls == [("reset-failed", [unit]), ("restart", [unit])]
 
 
-def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
-    events = []
-
-    def run(command, **_kwargs):
-        if "restart" in command:
-            return _SystemctlResult(1, "access denied\n")
-        return _SystemctlResult()
-
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
-    monkeypatch.setattr(
-        aec_endpoints,
-        "log_event",
-        lambda _logger, event, **fields: events.append((event, fields)),
-    )
+def test_usb_mic_recompose_surfaces_broker_refusal(monkeypatch):
+    """A broker refusal (crash budget, allowlist, unreachable broker) reaches
+    the caller as the same False a direct-systemctl failure used to."""
+    _record_broker(monkeypatch, ok=False)
 
     assert aec_endpoints._schedule_usb_gadget_recompose() is False
-
-    assert events == [(
-        "usb_mic.recompose_failed",
-        {
-            "unit": "jasper-usbmic-apply.service",
-            "phase": "enqueue",
-            "returncode": 1,
-            "detail": "access denied",
-            "level": aec_endpoints.logging.ERROR,
-        },
-    )]
-
-
-def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch):
-    """#3237: jasper-usbmic-apply.service is a bare oneshot with no
-    RemainAfterExit, so systemd normally GCs it between runs and
-    reset-failed exits nonzero as routine idle state. That must not abort
-    the recompose before the restart is attempted, and it must not be
-    reported through the same event as an actual scheduling failure.
-    """
-    commands = []
-    events = []
-
-    def run(command, **_kwargs):
-        commands.append(command)
-        if "reset-failed" in command:
-            return _SystemctlResult(
-                1, "Unit jasper-usbmic-apply.service not loaded.\n",
-            )
-        return _SystemctlResult()
-
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
-    monkeypatch.setattr(
-        aec_endpoints,
-        "log_event",
-        lambda _logger, event, **fields: events.append((event, fields)),
-    )
-
-    assert aec_endpoints._schedule_usb_gadget_recompose() is True
-
-    assert commands == [
-        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
-        [
-            "systemctl", "restart", "--no-block",
-            "jasper-usbmic-apply.service",
-        ],
-    ]
-    assert events == [
-        (
-            "usb_mic.reset_failed_skipped",
-            {
-                "unit": "jasper-usbmic-apply.service",
-                "returncode": 1,
-                "detail": "Unit jasper-usbmic-apply.service not loaded.",
-                "level": aec_endpoints.logging.WARNING,
-            },
-        ),
-        (
-            "usb_mic.recompose_scheduled",
-            {
-                "unit": "jasper-usbmic-apply.service",
-                "grace_ms": 350,
-                "max_attempts": 4,
-            },
-        ),
-    ]
-
-
-def test_usb_mic_recompose_survives_reset_failed_raising(monkeypatch):
-    """An exception from the best-effort reset-failed step (e.g. a
-    subprocess timeout) must not skip the restart either.
-    """
-    commands = []
-    events = []
-
-    def run(command, **_kwargs):
-        commands.append(command)
-        if "reset-failed" in command:
-            raise aec_endpoints.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
-        return _SystemctlResult()
-
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
-    monkeypatch.setattr(
-        aec_endpoints,
-        "log_event",
-        lambda _logger, event, **fields: events.append((event, fields)),
-    )
-
-    assert aec_endpoints._schedule_usb_gadget_recompose() is True
-    assert commands == [
-        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
-        [
-            "systemctl", "restart", "--no-block",
-            "jasper-usbmic-apply.service",
-        ],
-    ]
-    assert [event for event, _fields in events] == [
-        "usb_mic.reset_failed_skipped",
-        "usb_mic.recompose_scheduled",
-    ]
-
-
-def test_usb_mic_recompose_fails_when_restart_raises(monkeypatch):
-    """The restart step stays fatal even when systemctl itself errors, and
-    no recompose_scheduled event follows the failure.
-    """
-    commands = []
-    events = []
-
-    def run(command, **_kwargs):
-        commands.append(command)
-        if "restart" in command:
-            raise aec_endpoints.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
-        return _SystemctlResult()
-
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", run)
-    monkeypatch.setattr(
-        aec_endpoints,
-        "log_event",
-        lambda _logger, event, **fields: events.append((event, fields)),
-    )
-
-    assert aec_endpoints._schedule_usb_gadget_recompose() is False
-    assert commands == [
-        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
-        [
-            "systemctl", "restart", "--no-block",
-            "jasper-usbmic-apply.service",
-        ],
-    ]
-    assert [event for event, _fields in events] == ["usb_mic.recompose_failed"]
 
 
 def test_aec_commission_starts_oneshot_when_idle(
     monkeypatch, server_with_coordinator,
 ):
     """POST /aec/commission on an idle box resets then no-block-starts the
-    root measurement oneshot and answers 202 with the full /aec status body."""
+    root measurement oneshot through the restart broker and answers 202 with
+    the full /aec status body."""
     base, _ = server_with_coordinator
 
-    commands: list[list[str]] = []
+    calls = _record_broker(monkeypatch)
     monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: False)
-    monkeypatch.setattr(
-        aec_endpoints.subprocess,
-        "run",
-        lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
-    )
     monkeypatch.setattr(
         aec_endpoints,
         "_aec_full_status",
@@ -836,10 +661,8 @@ def test_aec_commission_starts_oneshot_when_idle(
         "status": "accepted",
         "commission": {"running": True},
     }
-    assert commands == [
-        ["systemctl", "reset-failed", "jasper-aec-commission.service"],
-        ["systemctl", "start", "--no-block", "jasper-aec-commission.service"],
-    ]
+    unit = aec_endpoints._AEC_COMMISSION_SERVICE
+    assert calls == [("reset-failed", [unit]), ("start", [unit])]
 
 
 def test_aec_commission_409_while_a_run_is_active(

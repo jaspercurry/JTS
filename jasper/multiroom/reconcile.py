@@ -1297,40 +1297,41 @@ def _restart_unit(
     reflects a failure in the exit code; the doctor's drift checks surface a lane
     left unwired).
 
-    reset-failed FIRST (see :func:`_reset_failed_unit`) so a config-apply restart
-    does not inherit the target's accumulated crash-reboot budget.
+    Routes through :func:`restart_broker.reset_then_manage`, which runs
+    reset-failed FIRST so a config-apply restart does not inherit the target's
+    accumulated crash-reboot budget, and enforces the broker's unit/verb
+    allowlist. Never raises: an unreachable broker falls back to a direct
+    ``systemctl`` here because this reconciler runs as root (see the module
+    docstring on :mod:`jasper.control.restart_broker`).
 
     `no_block` is for cross-owner kicks whose target owns its own downstream
     startup graph (grouping -> AEC -> voice). Ordered, same-owner restarts stay
     blocking so the reconciler still fails loudly when an apply step it owns does
     not land.
     """
-    _reset_failed_unit(unit)
-    cmd = ["systemctl"]
-    if no_block:
-        cmd.append("--no-block")
-    verb = "try-restart" if active_only else "restart"
-    cmd.extend((verb, unit))
     try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=(
-                _SYSTEMCTL_CONTROL_TIMEOUT_SEC
-                if no_block
-                else _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
-            ),
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        stderr = getattr(e, "stderr", "") or ""
+        from jasper.control import restart_broker  # lazy: mirrors jasper.fanin.coupling_reconcile — a broken control package must degrade to a reported failure, not kill the reconcile
+    except ImportError:  # pragma: no cover - control pkg always present in prod
+        return False
+    verb = "try-restart" if active_only else "restart"
+    resp = restart_broker.reset_then_manage(
+        unit,
+        verb=verb,
+        reason="grouping_env_changed",
+        no_block=no_block,
+        timeout=(
+            _SYSTEMCTL_CONTROL_TIMEOUT_SEC
+            if no_block
+            else _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+        ),
+    )
+    if not resp.get("ok"):
         log_event(
             logger,
             "multiroom.reconcile.unit_restart_failed",
             unit=unit,
-            error=e,
-            stderr=stderr.strip(),
+            error=str(resp.get("error") or f"rc={resp.get('rc')}"),
+            stderr=(resp.get("stderr") or "").strip(),
             level=logging.ERROR,
         )
         return False
