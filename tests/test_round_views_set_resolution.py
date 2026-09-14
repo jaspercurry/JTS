@@ -111,7 +111,7 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
 
 
 @pytest.mark.parametrize("program,first", [
-    ("speaker", ("inventory", "classify-features", "distortion", "directivity", "per-seat")),
+    ("speaker", ("inventory",)),
     ("room", ("room", "room-grade")),
     ("bass", ("bass",)),
 ])

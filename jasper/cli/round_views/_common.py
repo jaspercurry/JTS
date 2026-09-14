@@ -15,15 +15,16 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
-from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
+from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.round_inputs import (
+    RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
+    resolve_set as resolve_set, ROUND_INPUT_ERRORS as _ROUND_TOOL_ERRORS,
     ROOM_ARTIFACT, RoundInputs, default_out as default_out, set_artifact_name as set_artifact_name,
-    round_artifact_dir,
+    round_artifact_dir as round_artifact_dir,
     banked_round_of,
     recent_round_sessions,
     round_inputs,
@@ -107,7 +108,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
-    "frequency": ViewArtifact("frequency_view.json"),
+    "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME),
     "bass": ViewArtifact("bass_view.json", TAKES_SET),
     "bass-compare": ViewArtifact("bass_comparison.json", (
         "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
@@ -134,27 +135,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
 }
 
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
-
-#: A round directory is operator-pulled evidence, not a validated
-#: input — the documented failure shapes it can hand back are broader than
-#: the product module's own typed :class:`RoundViewsError`. A malformed
-#: evidence document can be missing a key (``KeyError``), hold the wrong type
-#: at one (``TypeError``), or not parse at all (``ValueError``, which
-#: ``json.JSONDecodeError`` subclasses); and any of the files this tool reads
-#: — or the one it WRITES, where an operator can name an ``--out`` they may
-#: not create — can simply not exist or not be permitted (``OSError``, which
-#: ``PermissionError`` subclasses). The LOAD stage claims this whole tuple;
-#: :func:`main` takes what no stage claimed, so no subcommand can grow a
-#: traceback of its own.
-#:
-#: ``struct.error`` was here for one reader that no longer exists: a
-#: header-truncated dump-ring WAV raised it out of ``scipy.io.wavfile.read``
-#: while ``verify_pose_curve`` still deconvolved raw ring bytes. That view
-#: reads the round's banked curve now, no code on this path opens a WAV, and
-#: catching an exception nothing can raise is not how it is caught.
-_ROUND_TOOL_ERRORS: tuple[type[Exception], ...] = (
-    RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError,
-)
 
 #: The named ``reason`` each failing stage publishes. The bucket is the STAGE,
 #: never the exception type — one ``RoundViewsError`` is raised both for a
@@ -193,78 +173,6 @@ def _write(
 def answer(view: str, *, out: Path | None = None, line: str, **fields: Any) -> int:
     """Print scalar results and an artifact pointer (ADR-0237)."""
     return answered(report_answer(view, out, **fields), line)
-
-
-class RoundSetRefused(ValueError):
-    def __init__(self, reason: str, **detail: Any) -> None:
-        self.reason, self.detail = reason, detail
-        super().__init__(reason)
-
-
-class SetTakes(NamedTuple):
-    set_id: str
-    capture_basis: Mapping[str, Any]
-    takes: tuple[Mapping[str, Any], ...]
-
-    @classmethod
-    def from_row(cls, row: Mapping[str, Any]) -> SetTakes:
-        takes = tuple(take for take in row["takes"] if take.get("phase") != PHASE_ENTRY_BASELINE)
-        return cls(row["set_id"], row["capture_basis"], takes)
-
-    @property
-    def selected_ids(self) -> tuple[str, ...]:
-        return tuple(take["take_id"] for take in self.takes if take["selected"])
-
-    @property
-    def on_axis(self) -> tuple[Mapping[str, Any], ...]:
-        return tuple(take for take in self.takes if take["selected"]
-                     and take["pose"].get("kind") == POSE_KIND_BEARING
-                     and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0)
-
-    def take_id(self, requested: str | None = None) -> str:
-        ids = self.selected_ids
-        if requested is not None:
-            if requested not in ids:
-                raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested, take_ids=ids)
-            return requested
-        if len(ids) == 1:
-            return ids[0]
-        on_axis = [take["take_id"] for take in self.on_axis]
-        if len(on_axis) == 1:
-            return on_axis[0]
-        raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
-
-
-def read_run_manifest(
-    inputs: RoundInputs, *, manifest: Mapping[str, Any] | None = None,
-) -> Mapping[str, Any]:
-    if manifest is None:
-        directory, _ = round_artifact_dir(inputs.session_dir)
-        path = directory / RUN_MANIFEST_FILENAME if directory else inputs.session_dir / RUN_MANIFEST_FILENAME
-        if directory is None or not path.is_file():
-            raise RoundSetRefused("round_manifest_missing", path=str(path))
-        manifest = json.loads(path.read_text())
-    assert manifest is not None
-    if manifest.get("finalized") is not True:
-        raise RoundSetRefused("round_manifest_unfinalized", run_id=manifest.get("run_id"))
-    return manifest
-
-
-def resolve_set(
-    inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
-) -> SetTakes:
-    """Resolve the executor's set without rebuilding its identity (ADR-0299)."""
-    sets = read_run_manifest(inputs, manifest=manifest)["sets"]
-    if set_id is None and len(sets) > 1:
-        raise RoundSetRefused("set_required", sets=[
-            {"set_id": row["set_id"], "candidate_id": row["capture_basis"].get("candidate_id")}
-            for row in sets
-        ])
-    matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
-    if len(matches) != 1:
-        raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])
-    row, = matches
-    return SetTakes.from_row(row)
 
 
 def refused_by_name(
