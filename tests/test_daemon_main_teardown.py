@@ -223,8 +223,10 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     async def _initialize(**_kw):
         return (42, "test")
 
+    # No entry for volume_coordinator: `run()` registers no release for it
+    # (the coordinator owns no async resource to close).
     patch("VolumeCoordinator", lambda **k: _resource(
-        trace, "volume_coordinator", "aclose", is_async=True,
+        trace, "volume_coordinator", "aclose", is_async=True, enter=False,
         volume_owner=SimpleNamespace(),
         get_camilla_target_db=lambda: 0.0,
         initialize=_initialize,
@@ -505,6 +507,5 @@ async def test_an_early_raise_releases_what_was_registered_before_it(
         await _run_daemon_once(teardown_trace)
 
     assert teardown_trace.exited() == [
-        "volume_observer", "volume_coordinator",
-        "ha", "transit", "weather", "usage",
+        "volume_observer", "ha", "transit", "weather", "usage",
     ]

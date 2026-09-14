@@ -787,9 +787,7 @@ mod decay;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jasper_host_clock::{
-        Action, HostClock, HostClockConfig, Ladder, Obs, ObsMode, ProbeResult,
-    };
+    use jasper_host_clock::{Action, HostClock, HostClockConfig, Ladder, Obs, ProbeResult};
     use jasper_resampler::clamp_i16;
 
     const RATE: u32 = 48_000;
@@ -1474,7 +1472,6 @@ mod tests {
             let mut clock = HostClock::new(HostClockConfig {
                 enabled: true,
                 probe_ppm: 300.0,
-                obs_mode: ObsMode::Correction,
                 log_prefix: "fanin",
             });
             clock.startup_neutralize();

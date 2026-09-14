@@ -202,12 +202,12 @@ class _RecordingCoordinator(VolumeCoordinator):
 
     async def _set_spotify(self, level: int) -> bool:
         self.spotify_writes.append(level)
-        self._stamp_outbound(Source.SPOTIFY, level)
+        self._stamp_outbound(Source.SPOTIFY)
         return True
 
     async def _set_bluetooth(self, level: int) -> bool:
         self.bt_writes.append(level)
-        self._stamp_outbound(Source.BLUETOOTH, level)
+        self._stamp_outbound(Source.BLUETOOTH)
         return True
 
     async def _set_camilla(self, level: int) -> bool:
@@ -229,7 +229,7 @@ class _BlockingMuteCoordinator(_RecordingCoordinator):
         if level == 0:
             self.mute_push_started.set()
             await self.release_mute_push.wait()
-        self._stamp_outbound(Source.SPOTIFY, level)
+        self._stamp_outbound(Source.SPOTIFY)
         return True
 
 
@@ -312,12 +312,6 @@ def _event_fields(caplog, event: str) -> dict[str, str]:
     return dict(
         token.split("=", 1) for token in matches[0].split() if "=" in token
     )
-
-
-async def test_aclose_is_safe_without_owned_observer_tasks(tmp_path):
-    coord, _, _ = _coord(tmp_path, active={})
-
-    await coord.aclose()
 
 
 # ---------- outbound dispatch ----------------------------------------------
@@ -584,7 +578,7 @@ async def test_set_spotify_pins_diagnostic_by_scenario(
     assert push_result["ok"] is expect_ok
     assert push_result["reason"] == expect_reason
     if case == "ok":
-        assert coord._last_outbound[Source.SPOTIFY].level == 55
+        assert Source.SPOTIFY in coord._last_outbound
         assert volume_calls == [listening_level_to_spotify_percent(55)]
     else:
         assert Source.SPOTIFY not in coord._last_outbound

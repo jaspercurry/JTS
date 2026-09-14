@@ -999,6 +999,15 @@ def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str
     return corrections
 
 
+def profile_corrections_provenance(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not profile_driver_corrections(profile):
+        return {}
+    snapshot = (profile or {}).get("recomposition_snapshot")
+    layer = snapshot if isinstance(snapshot, Mapping) and isinstance(snapshot.get("corrections"), Mapping) else profile or {}
+    provenance = layer.get("corrections_provenance")
+    return provenance if isinstance(provenance, Mapping) else {}
+
+
 def applied_program_level_delta_db(
     previous_profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
@@ -1332,10 +1341,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
       ALONE, neither banking nor clearing. Pinning one driver by hand does not
       un-measure the speaker, so the prior full measurement is still the best
       evidence anyone has and destroying it on the strength of a pin loses
-      real information. This is the arm that was missing: such a candidate
-      reads ``automatic`` to
-      :func:`~jasper.active_speaker.crossover_contract._snapshot_owner`, the
-      predicate this seam claims to mirror, and used to CLEAR here.
+      real information.
     * **anything else** — CLEAR. No measured role at all, or a role that fell
       back to the datasheet (``sensitivity``/``estimate``) or to a preserved
       manual crossover. That is weaker evidence, not a pin, and a banked trim
