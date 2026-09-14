@@ -324,13 +324,31 @@ def test_connect_new_never_puts_psk_on_argv(monkeypatch):
     ok, _ = wifi_setup.connect_new("MyNet", psk)
 
     assert ok is True
+    assert captured  # sanity: connect_new actually shelled out
+    for cmd, _secret in captured:
+        assert all(psk not in arg for arg in cmd)
+
     connect_calls = [(cmd, secret) for cmd, secret in captured if "connect" in cmd]
     assert connect_calls
     for cmd, secret in connect_calls:
-        assert all(psk not in arg for arg in cmd)
         assert "--ask" in cmd
         # ... and the mechanism that keeps it off argv actually got it.
         assert secret == psk
+
+
+def test_run_nmcli_stdin_secret_reaches_child_not_log(caplog):
+    """Pins the real `subprocess.run` wiring the non-negotiable rests on:
+    every other test here monkeypatches `_run_nmcli` itself, so
+    `input=...` was never exercised against a real child process. `cat`
+    echoes stdin to stdout without ever taking the secret on its own
+    argv, standing in for nmcli's `--ask` prompt read."""
+    psk = "real-stdin-secret-psk"
+    caplog.set_level(logging.INFO, logger=wifi_setup.logger.name)
+
+    proc = wifi_setup._run_nmcli(["cat"], stdin_secret=psk)
+
+    assert psk not in caplog.text
+    assert psk in proc.stdout
 
 
 def test_set_radio_passes_on_off(monkeypatch):
@@ -576,6 +594,36 @@ def test_post_connect_emits_one_redacted_action_event(
     assert record.getMessage().splitlines() == [record.getMessage()]
     assert psk not in caplog.text
     assert backend_message not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "bad_password", ["line\nbreak", "carriage\rreturn", "both\r\ncombined"],
+)
+def test_post_connect_rejects_newline_password_before_connect_new(
+    monkeypatch, bad_password,
+):
+    """A PSK holding `\\r`/`\\n` would silently truncate at nmcli's stdin
+    (`--ask` reads one line); argv rejected it outright. Reject it here,
+    before connect_new ever runs, with the 400 JSON shape /connect's other
+    validation failures already use."""
+    calls = []
+
+    def fake_connect_new(*args, **kwargs):
+        calls.append((args, kwargs))
+        return True, "should not have been called"
+
+    monkeypatch.setattr(wifi_setup, "connect_new", fake_connect_new)
+
+    body = json.dumps({"ssid": "HomeNet", "password": bad_password}).encode()
+    h, captured = _valid_post("/connect", body)
+    h.do_POST()
+
+    assert captured["status"] == 400
+    assert json.loads(h.wfile.getvalue()) == {
+        "ok": False,
+        "message": "password must not contain newlines",
+    }
+    assert calls == []
 
 
 @pytest.mark.parametrize("ok", [True, False])
