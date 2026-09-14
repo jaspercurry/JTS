@@ -97,7 +97,7 @@ INTEGRITY_NOT_EVALUATED = "not_evaluated"
 
 # Frame accounting, asked before anything about the signal (both read
 # FrameLedger; independently caused losses need both checks).
-INTEGRITY_CHECK_RENDER_GAP = "capture_render_gap"
+INTEGRITY_CHECK_CAPTURE_OVERRUN = "capture_overrun"
 INTEGRITY_CHECK_FRAME_LEDGER = "frame_ledger"
 # The checks a single summed sweep CAN answer.
 INTEGRITY_CHECK_SWEEP_HEARD = "summed_sweep_heard"
@@ -116,9 +116,7 @@ _INTEGRITY_STEP_NEEDS_MORE_SWEEPS = (
 )
 _INTEGRITY_NO_SUMMED_SWEEP = "no summed sweep located in this capture"
 _INTEGRITY_NO_STIMULUS = "no stimulus segment located in this capture"
-_INTEGRITY_NO_RENDER_REPORT = (
-    "the capture page reported no render-block counters"
-)
+_INTEGRITY_NO_CAPTURE_REPORT = "the recorder reported no capture-gap counters"
 _INTEGRITY_NO_FRAME_COUNT = "the capture page declared no frame count"
 _INTEGRITY_SWEEP_NOT_HEARD = (
     "the summed sweep was not confidently located, so its schedule residual "

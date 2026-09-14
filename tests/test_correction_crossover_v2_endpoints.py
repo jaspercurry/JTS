@@ -824,7 +824,7 @@ def _lossy_page_report():
     """A page report the host's own count disagrees with — a real defect."""
     return {
         "frames": DECLARED_FRAMES, "encoded_frames": DECLARED_FRAMES,
-        "block_gaps": 0, "block_gap_frames": 0, "zero_run_count": 0,
+        "capture_gaps": 0, "capture_gap_frames": 0, "zero_run_count": 0,
     }
 
 
@@ -3450,8 +3450,8 @@ def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
-    report = {"frames": 4, "encoded_frames": 4, "block_gaps": 0,
-              "block_gap_frames": 0}
+    report = {"frames": 4, "encoded_frames": 4, "capture_gaps": 0,
+              "capture_gap_frames": 0}
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )

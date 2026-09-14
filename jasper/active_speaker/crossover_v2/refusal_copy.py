@@ -62,6 +62,7 @@ REASON_CLIPPED = "clipped"
 REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
+REASON_CAPTURE_OVERRUN = "capture_overrun"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_CAPTURE_TIMEOUT = "capture_timeout"
@@ -615,6 +616,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         RetryableReasonCopy("The microphone read a different level at the same gain — something changed in the room.",
                             "Retake."),
         capture_quality=True,
+    ),
+    REASON_CAPTURE_OVERRUN: _retriable_reason(
+        REASON_CAPTURE_OVERRUN, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy("The wizard could not keep up with the microphone.",
+                            "Stop polling it during a take."),
+        auto_retry=True, capture_quality=True,
     ),
     REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(
         REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,

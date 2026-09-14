@@ -49,8 +49,8 @@ FC_HZ = 2000.0
 
 #: A take the recorder says arrived whole, in the kernel's own wire spelling.
 _INTACT = {
-    "frames": 4096, "encoded_frames": 4096, "block_gaps": 0,
-    "block_gap_frames": 0, "zero_run_count": 0, "zero_runs": [],
+    "frames": 4096, "encoded_frames": 4096, "capture_gaps": 0,
+    "capture_gap_frames": 0, "zero_run_count": 0, "zero_runs": [],
 }
 
 
@@ -1129,7 +1129,7 @@ def test_a_measured_row_carries_what_the_recorder_said_about_the_take(
             "zero_fill_runs",
         ),
         ({**_INTACT, "encoded_frames": 4000}, "worklet->encoder"),
-        ({**_INTACT, "block_gap_frames": 64}, "render_graph"),
+        ({**_INTACT, "capture_gap_frames": 64}, "capture_overrun"),
         ({**_INTACT, "truncated": True}, "truncated"),
     ],
     ids=["zero-runs", "unbalanced", "block-gaps", "truncated"],

@@ -239,8 +239,8 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out["frames_received"] = ledger.received_frames
         out["frames_declared"] = ledger.declared_frames
         out["frames_encoded"] = ledger.encoded_frames
-        out["frames_render_gaps"] = ledger.render_gaps
-        out["frames_render_gap_frames"] = ledger.render_gap_frames
+        out["frames_capture_gaps"] = ledger.capture_gaps
+        out["frames_capture_gap_frames"] = ledger.capture_gap_frames
         out["frames_lost_at"] = ",".join(ledger.lost_at)
 
     summed_response = getattr(analysis, "summed_response", None)

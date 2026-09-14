@@ -43,7 +43,7 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_DISCONTINUITY_STEP,
     INTEGRITY_CHECK_FRAME_LEDGER,
-    INTEGRITY_CHECK_RENDER_GAP,
+    INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_REPEAT_LEVEL,
     INTEGRITY_CHECK_SWEEP_HEARD,
@@ -762,7 +762,7 @@ def test_verify_clean_capture_records_a_real_integrity_verdict():
         # #2094: this fixture hands in raw samples, so there is no browser
         # report to reconcile and both frame-accounting checks say so by name
         # rather than passing on evidence nobody supplied.
-        INTEGRITY_CHECK_RENDER_GAP: INTEGRITY_NOT_EVALUATED,
+        INTEGRITY_CHECK_CAPTURE_OVERRUN: INTEGRITY_NOT_EVALUATED,
         INTEGRITY_CHECK_FRAME_LEDGER: INTEGRITY_NOT_EVALUATED,
         INTEGRITY_CHECK_SWEEP_HEARD: INTEGRITY_PASS,
         INTEGRITY_CHECK_SWEEP_SCHEDULE: INTEGRITY_PASS,

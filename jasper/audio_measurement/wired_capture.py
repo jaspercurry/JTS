@@ -31,8 +31,8 @@ from a stream-start anchor; cross-clock drift within one capture is the analyzer
 **Frame accounting mirrors the browser's, into the same wire keys** (the seam contract,
 :mod:`jasper.active_speaker.crossover_v2.capture_source`): ``frames`` (ALSA-accumulated,
 counted in the read loop), ``encoded_frames`` (counted INDEPENDENTLY at encode time so a
-dropped frame unbalances the ledger instead of vanishing), ``block_gaps`` (EXACT discontinuity
-count: overruns and zero-length reads), and ``block_gap_frames`` (an ESTIMATE derived from
+dropped frame unbalances the ledger instead of vanishing), ``capture_gaps`` (EXACT discontinuity
+count: overruns and zero-length reads), and ``capture_gap_frames`` (an ESTIMATE derived from
 per-chunk monotonic timestamps, floored at 1/event — an upper bound, but its bias can't change
 a verdict since the ledger fails on ANY nonzero value).
 
@@ -66,8 +66,8 @@ from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
     REPORT_KEY_FRAMES,
-    REPORT_KEY_RENDER_GAPS,
-    REPORT_KEY_RENDER_GAP_FRAMES,
+    REPORT_KEY_CAPTURE_GAPS,
+    REPORT_KEY_CAPTURE_GAP_FRAMES,
 )
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
@@ -692,8 +692,8 @@ def build_capture_integrity_report(
     report: dict[str, Any] = {
         REPORT_KEY_FRAMES: int(recording.frames),
         REPORT_KEY_ENCODED_FRAMES: int(encoded_frames),
-        REPORT_KEY_RENDER_GAPS: int(recording.gap_count),
-        REPORT_KEY_RENDER_GAP_FRAMES: int(recording.gap_frames),
+        REPORT_KEY_CAPTURE_GAPS: int(recording.gap_count),
+        REPORT_KEY_CAPTURE_GAP_FRAMES: int(recording.gap_frames),
         "zero_run_count": int(zero_run_count),
         "zero_runs": list(zero_runs),
         "zero_run_quantum": ZERO_RUN_MIN_SAMPLES,

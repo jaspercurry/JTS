@@ -162,6 +162,8 @@ def _assess_recording(
         return refuse(code, next="retake_louder" if adjusted else "fix_and_retake",
                       charge="speaker" if adjusted else charge, targets=adjusted)
 
+    if analysis.frame_ledger and analysis.frame_ledger.capture_gap_frames:
+        return refuse(reasons.REASON_CAPTURE_OVERRUN, next="retake_same", charge="speaker")
     if evidence["frame_loss"]:
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
     if not _stimulus_locate_ok(analysis):

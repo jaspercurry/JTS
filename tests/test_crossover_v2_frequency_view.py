@@ -795,9 +795,9 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, render_gap_frames=0, **fields):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
-        samples = np.delete(raw, np.s_[anchor - render_gap_frames:anchor], axis=0)
+        samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
         recording = WiredRecording(
             ((samples * (2 ** 31 - 1)).astype("<i4").tobytes(),), len(samples),
             0, 0, False, program.sample_rate_hz, 2,
@@ -992,13 +992,13 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
     bundle, _, _, bank = summed_capture_bundle
     records = []
     for take_id, gap in (("baseline", 0), ("broken", 2316), ("other-set", 0)):
-        path = asyncio.run(bank(take_id, render_gap_frames=gap,
+        path = asyncio.run(bank(take_id, capture_gap_frames=gap,
                                wav_hash="0" * 64 if take_id == "other-set" else None))
         records.append((path, json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())))
     accepted = ("baseline", "broken") if selected_broken else ("baseline",)
     selected = manifest_set(records[:2], set_id="bass", selected=accepted)
     if not selected_broken:
-        selected["takes"][1]["quality"] = {"status": "refused", "fault": "capture_render_gap"}
+        selected["takes"][1]["quality"] = {"status": "refused", "fault": "capture_overrun"}
     write_manifest(bundle, program="bass", groups=[selected, manifest_set(records[2:], set_id="other")])
     answer = run_bookkeeping("bass", bundle, set_id="bass")
     assert answer["status"] == "written"

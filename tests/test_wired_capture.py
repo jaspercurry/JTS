@@ -11,7 +11,7 @@ What is pinned, and why each pin exists:
   must NEVER select the wired source, and a playback-only device must not
   either.
 * **Counter exactness** — the four frame-ledger counters come from real read
-  accounting: an injected overrun changes ``block_gaps``/``block_gap_frames``
+  accounting: an injected overrun changes ``capture_gaps``/``capture_gap_frames``
   by exactly the injected amount, and the clean path balances the ledger.
   These are the counters the host's screening ladder grades, so they are
   mutation-sensitive by design (drop the accounting and a test here names it).
@@ -44,8 +44,8 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
     REPORT_KEY_FRAMES,
-    REPORT_KEY_RENDER_GAPS,
-    REPORT_KEY_RENDER_GAP_FRAMES,
+    REPORT_KEY_CAPTURE_GAPS,
+    REPORT_KEY_CAPTURE_GAP_FRAMES,
     reconcile_capture_frames,
 )
 from jasper.audio_measurement.wired_capture import (
@@ -194,8 +194,8 @@ def test_clean_capture_counts_exactly_and_balances():
     )
     ledger = reconcile_capture_frames(report, received_frames=encoded)
     assert ledger.balanced
-    assert ledger.render_gap_evaluated  # reported, never "not evaluated"
-    assert ledger.render_gap_frames == 0
+    assert ledger.capture_gap_evaluated  # reported, never "not evaluated"
+    assert ledger.capture_gap_frames == 0
 
 
 def test_an_injected_overrun_books_exactly_one_gap_with_clock_frames():
@@ -209,12 +209,12 @@ def test_an_injected_overrun_books_exactly_one_gap_with_clock_frames():
         recording, encoded_frames=recording.frames,
         zero_run_count=0, zero_runs=[],
     )
-    assert report[REPORT_KEY_RENDER_GAPS] == 1
-    assert report[REPORT_KEY_RENDER_GAP_FRAMES] == 48
+    assert report[REPORT_KEY_CAPTURE_GAPS] == 1
+    assert report[REPORT_KEY_CAPTURE_GAP_FRAMES] == 48
     # The ledger grades it exactly as a browser render gap: FAIL material.
     ledger = reconcile_capture_frames(report, received_frames=recording.frames)
-    assert ledger.render_gap_frames == 48
-    assert "render_graph" in ledger.lost_at
+    assert ledger.capture_gap_frames == 48
+    assert "capture_overrun" in ledger.lost_at
 
 
 def test_two_overruns_book_two_gaps():
@@ -399,9 +399,9 @@ def test_budget_stops_the_reader_and_a_truncated_take_fails_the_ladder():
     )
     assert report["truncated"] is True
     ledger = reconcile_capture_frames(report, received_frames=recording.frames)
-    assert ledger.render_gap_evaluated
-    assert ledger.render_gap_frames >= 1  # FAIL material — never clean
-    assert "render_graph" in ledger.lost_at
+    assert ledger.capture_gap_evaluated
+    assert ledger.capture_gap_frames >= 1  # FAIL material — never clean
+    assert "capture_overrun" in ledger.lost_at
 
 
 def test_open_failure_raises_wired_capture_error():
@@ -542,8 +542,8 @@ def test_encoded_frames_is_counted_from_what_was_written():
     report = {
         REPORT_KEY_FRAMES: 100,
         REPORT_KEY_ENCODED_FRAMES: encoded,
-        REPORT_KEY_RENDER_GAPS: 0,
-        REPORT_KEY_RENDER_GAP_FRAMES: 0,
+        REPORT_KEY_CAPTURE_GAPS: 0,
+        REPORT_KEY_CAPTURE_GAP_FRAMES: 0,
     }
     ledger = reconcile_capture_frames(report, received_frames=encoded)
     assert not ledger.balanced
@@ -602,8 +602,8 @@ def test_report_counters_are_the_recorders_own_numbers():
     )
     assert report[REPORT_KEY_FRAMES] == recording.frames
     assert report[REPORT_KEY_ENCODED_FRAMES] == recording.frames
-    assert report[REPORT_KEY_RENDER_GAPS] == recording.gap_count == 1
-    assert report[REPORT_KEY_RENDER_GAP_FRAMES] == recording.gap_frames
+    assert report[REPORT_KEY_CAPTURE_GAPS] == recording.gap_count == 1
+    assert report[REPORT_KEY_CAPTURE_GAP_FRAMES] == recording.gap_frames
 
 
 # --------------------------------------------------------------------------- #
@@ -724,5 +724,5 @@ def test_mint_wired_answer_is_the_whole_answer():
     assert answer.device["model_key"] == "minidsp_umik2"
     assert answer.device["channel_selected"] == 0
     assert answer.capture_integrity[REPORT_KEY_FRAMES] == recording.frames
-    assert answer.capture_integrity[REPORT_KEY_RENDER_GAPS] == 1
+    assert answer.capture_integrity[REPORT_KEY_CAPTURE_GAPS] == 1
     assert set(INTEGRITY_COUNTER_KEYS) <= set(answer.capture_integrity)
