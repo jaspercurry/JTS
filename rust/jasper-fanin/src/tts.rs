@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use log::{info, warn};
 
-use crate::mixer::CHANNELS;
+use crate::mixer::{send_drop_counted, FaninLogEvent, CHANNELS};
 use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
@@ -80,6 +80,7 @@ pub struct TtsMetrics {
     program_duck_active: Arc<AtomicBool>,
     flush_requests: Arc<AtomicU64>,
     flushed_frames: Arc<AtomicU64>,
+    log_dropped: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
     content_anchor_lufs_x10: Arc<AtomicI64>,
     assistant_decision_seen: Arc<AtomicBool>,
@@ -121,6 +122,7 @@ impl Default for TtsMetrics {
             program_duck_active: Arc::new(AtomicBool::new(false)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
+            log_dropped: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             content_anchor_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             assistant_decision_seen: Arc::new(AtomicBool::new(false)),
@@ -197,6 +199,14 @@ impl TtsMetrics {
 
     pub fn flushed_frames(&self) -> u64 {
         self.flushed_frames.load(Ordering::Relaxed)
+    }
+
+    /// A [`FaninLogEvent`] this daemon could not hand to `fanin-ring-log`
+    /// (issue #4787) — the writer thread wedged or exited. Mirrors the
+    /// ring's `stall_log_dropped` (ADR-0254): every failure counts, so a
+    /// gauge reading 0 while lines are silently lost is never the answer.
+    pub fn log_dropped(&self) -> u64 {
+        self.log_dropped.load(Ordering::Relaxed)
     }
 
     pub fn loudness_snapshot(&self) -> TtsLoudnessSnapshot {
@@ -384,6 +394,10 @@ impl TtsMetrics {
         self.flushed_frames.fetch_add(frames, Ordering::Relaxed);
     }
 
+    fn mark_log_dropped(&self) {
+        self.log_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn mark_loudness(
         &self,
         content_short_lufs: Option<f32>,
@@ -466,6 +480,10 @@ pub struct TtsInput {
     pub assistant_loudness: AssistantLoudnessConfig,
     pub assistant_reference: Option<HeldLoudnessReference>,
     pub assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
+    /// `fanin-ring-log`'s sender, cloned in by `Mixer::new` (issue #4787) —
+    /// `None` only in a test that builds a `TtsMixer` directly, where a
+    /// dropped log event is a no-op, not a hidden real drop.
+    pub log_tx: Option<SyncSender<FaninLogEvent>>,
 }
 
 pub type TtsChannelBundle = (
@@ -500,6 +518,8 @@ pub struct TtsMixer {
     assistant_reference_disqualified_serial: Option<u64>,
     gain_ramp: GainRamp,
     assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
+    /// See [`TtsInput::log_tx`].
+    log_tx: Option<SyncSender<FaninLogEvent>>,
     loudness: AssistantLoudness,
     /// Per-segment playout accounting behind the FLUSH_SYNC ack. Drained at
     /// the mix-commit point (see [`crate::playout`]).
@@ -541,6 +561,7 @@ impl TtsMixer {
             assistant_reference_disqualified_serial: None,
             gain_ramp: GainRamp::default(),
             assistant_reference_tx: input.assistant_reference_tx,
+            log_tx: input.log_tx,
             loudness,
             ledger: PlayoutLedger::new(TTS_SAMPLE_RATE),
             last_payload_width: None,
@@ -1005,20 +1026,37 @@ impl TtsMixer {
 
     fn begin_segment_gain(&mut self, kind: SegmentKind, profile: Option<AssistantProfile>) -> f32 {
         self.assistant_segment_playback = None;
-        let decision = self.loudness.decide_gain(profile);
+        // `Arc`'d BEFORE logging: the log event and `active_segment_decision`
+        // share the one allocation, so handing a clone to `fanin-ring-log` is
+        // an atomic refcount bump on this SCHED_FIFO thread, not a second
+        // decision's worth of `String` fields (issue #4787).
+        let decision = Arc::new(self.loudness.decide_gain(profile));
         let gain_db = decision.final_gain_db;
-        log_assistant_loudness_decision(kind, &decision);
+        self.send_log_event(FaninLogEvent::AssistantLoudness {
+            kind,
+            decision: Arc::clone(&decision),
+        });
         self.metrics.mark_loudness(
             self.loudness.content_short_lufs(),
             self.loudness.content_anchor_lufs(),
-            Some(&decision),
+            Some(decision.as_ref()),
         );
         self.active_segment_gain_db = Some(gain_db);
         self.active_segment_kind = Some(kind);
-        self.active_segment_decision = Some(Arc::new(decision));
+        self.active_segment_decision = Some(decision);
         self.active_segment_serial = self.next_segment_serial;
         self.next_segment_serial = self.next_segment_serial.saturating_add(1);
         gain_db
+    }
+
+    /// Hand a [`FaninLogEvent`] to `fanin-ring-log` instead of formatting or
+    /// writing it here on the SCHED_FIFO mixer thread (issue #4787). `None`
+    /// only in a test that built this `TtsMixer` directly — production
+    /// always wires a real sender in `Mixer::new`.
+    fn send_log_event(&self, event: FaninLogEvent) {
+        if let Some(tx) = &self.log_tx {
+            send_drop_counted(tx, event, || self.metrics.mark_log_dropped());
+        }
     }
 
     fn target_gain_db(&self, block: &QueuedAudioBlock) -> f32 {
@@ -1092,10 +1130,17 @@ impl TtsMixer {
         self.metrics.mark_flush(requests, flushed);
         self.metrics.mark_pending(0);
         let summary = FlushSummary::from_parts(requests, pending, flushed, events);
-        info!(
-            "event=fanin.tts_flush requests={} pending_frames={} flushed_frames={} segments={} max_audio_played_ms={}",
-            requests, pending, flushed, summary.segments, summary.max_audio_played_ms
-        );
+        // Formatted and logged off this SCHED_FIFO thread by `fanin-ring-log`
+        // (issue #4787): `prepare_period` runs this every period a FLUSH_SYNC
+        // landed, and `info!` both allocates the line and writes journald's
+        // socket synchronously.
+        self.send_log_event(FaninLogEvent::TtsFlush {
+            requests,
+            pending_frames: pending,
+            flushed_frames: flushed,
+            segments: summary.segments,
+            max_audio_played_ms: summary.max_audio_played_ms,
+        });
         for ack in ack_txs {
             let _ = ack.send(summary.clone());
         }
@@ -1431,7 +1476,11 @@ fn unpack_reference_kind(value: u64) -> Option<&'static str> {
     }
 }
 
-fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDecision) {
+/// `pub(crate)`: called from `TtsMixer::begin_segment_gain` on the SCHED_FIFO
+/// mixer thread ONLY to build the [`crate::mixer::FaninLogEvent`] it hands to
+/// `fanin-ring-log` — `run_ring_stall_log_writer` is what actually calls this
+/// (off that thread) to format and log it (issue #4787).
+pub(crate) fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDecision) {
     info!(
         "event=fanin.assistant_loudness kind={} provider={} model={} voice={} reference={} calibrated={} confidence={:.2} baseline_lufs={:.1} target_lufs={:.1} target_speaker_lufs={} envelope_offset_lu={} source_lufs={:.1} source_peak_dbfs={:.1} requested_gain_db={:.1} peak_cap_gain_db={:.1} final_gain_db={:.1} reason={}",
         kind.as_str(),
@@ -1646,6 +1695,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -1700,6 +1750,7 @@ mod tests {
                 assistant_loudness: AssistantLoudnessConfig::default(),
                 assistant_reference: None,
                 assistant_reference_tx: None,
+                log_tx: None,
             });
             (tx, flush_tx, mixer)
         }
@@ -1768,6 +1819,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -1830,6 +1882,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
 
         let profile = |source_lufs, source_peak_dbfs| AssistantProfile {
@@ -1917,6 +1970,7 @@ mod tests {
                 calibration_offset_lu: 0.0,
             }),
             assistant_reference_tx: Some(reference_tx),
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2018,6 +2072,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: Some(reference_tx),
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2108,6 +2163,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: Some(reference_tx),
+            log_tx: None,
         });
         for command in [
             TtsCommand::VolumeContext(VolumeContext {
@@ -2190,6 +2246,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: Some(held),
             assistant_reference_tx: None,
+            log_tx: None,
         });
         let accepted = VolumeContext {
             canonical_db: -20.0,
@@ -2233,6 +2290,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: Some(reference_tx),
+            log_tx: None,
         });
         for command in [
             TtsCommand::VolumeContext(VolumeContext {
@@ -2314,6 +2372,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2338,6 +2397,77 @@ mod tests {
         assert_eq!(ack.flushed_frames, 2);
     }
 
+    /// `begin_segment_gain`/`drain_flushes` must hand their log lines to
+    /// `fanin-ring-log` over `log_tx`, never format or log them inline
+    /// (issue #4787) — the TTS-thread half of what `run_ring_stall_log_writer`
+    /// drains.
+    #[test]
+    fn tts_log_events_ship_over_the_off_thread_channel() {
+        let (_tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let (log_tx, log_rx) = std::sync::mpsc::sync_channel(4);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            cue_duck_db: -6.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+            log_tx: Some(log_tx),
+        });
+
+        mixer.begin_segment_gain(SegmentKind::Cue, None);
+        match log_rx
+            .try_recv()
+            .expect("begin_segment_gain must ship its log event")
+        {
+            FaninLogEvent::AssistantLoudness { kind, .. } => assert_eq!(kind, SegmentKind::Cue),
+            other => panic!("expected AssistantLoudness, got {other:?}"),
+        }
+
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 0,
+                ack: None,
+            })
+            .unwrap();
+        mixer.drain_flushes();
+        match log_rx
+            .try_recv()
+            .expect("drain_flushes must ship its log event")
+        {
+            FaninLogEvent::TtsFlush { requests, .. } => assert_eq!(requests, 1),
+            other => panic!("expected TtsFlush, got {other:?}"),
+        }
+    }
+
+    /// A TTS log event that cannot reach `fanin-ring-log` (writer thread
+    /// gone) must still be counted — the ring's `stall_log_dropped` twin for
+    /// the TTS side (issue #4787).
+    #[test]
+    fn tts_log_drop_is_counted_when_the_writer_thread_is_gone() {
+        let (_tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let (log_tx, log_rx) = std::sync::mpsc::sync_channel(1);
+        drop(log_rx); // No writer thread draining it: every send is `Disconnected`.
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            cue_duck_db: -6.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+            log_tx: Some(log_tx),
+        });
+
+        mixer.begin_segment_gain(SegmentKind::Cue, None);
+        assert_eq!(metrics.log_dropped(), 1);
+    }
+
     #[test]
     fn flush_sync_ack_reports_audio_played_ms_for_mid_segment_barge_in() {
         // 4800-frame period = 100 ms at 48 kHz, so the barge-in "within one
@@ -2355,6 +2485,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
 
         // One assistant segment carrying 1000 ms (48000 frames) of audio.
@@ -2436,6 +2567,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         // A flushed segment so the `events` array is non-empty and its keys
         // are exercised too.
@@ -2491,6 +2623,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2523,6 +2656,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
 
         run_tts_client_payload(
@@ -2571,6 +2705,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         let (mut client, handle) = spawn_test_tts_client(&tx, &flush_tx, &epoch, &metrics);
 
@@ -2623,6 +2758,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         mixer.program_duck_idle_release_ttl = Duration::from_secs(60);
         tx.send(QueuedTtsCommand {
@@ -2658,6 +2794,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         mixer.program_duck_idle_release_ttl = Duration::from_millis(1);
         tx.send(QueuedTtsCommand {
@@ -2697,6 +2834,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         mixer.program_duck_idle_release_ttl = Duration::from_millis(1);
         tx.send(QueuedTtsCommand {
@@ -2724,6 +2862,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2760,6 +2899,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         flush_tx
             .send(QueuedFlush {
@@ -2795,6 +2935,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         flush_tx
             .send(QueuedFlush {
@@ -2829,6 +2970,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2876,6 +3018,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         (tx, flush_tx, mixer)
     }
@@ -3008,6 +3151,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
