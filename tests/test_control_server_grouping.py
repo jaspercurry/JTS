@@ -456,6 +456,26 @@ def test_grouping_trailing_delay_file_is_clamped_and_rounded(
     assert delay_file.read_text() == "60\n"
 
 
+def test_grouping_trailing_delay_write_is_atomic_and_leaves_no_tempfile(
+    monkeypatch, tmp_path,
+):
+    import jasper.control.handlers.grouping as srv_mod
+
+    # Its own subdirectory, isolated from other fixtures' files under
+    # tmp_path: the pin below asserts this is the ONLY file present.
+    delay_file = tmp_path / "run" / "grouping-reconcile-trailing-delay"
+    monkeypatch.setattr(
+        srv_mod,
+        "_GROUPING_RECONCILE_TRAILING_DELAY_FILE",
+        str(delay_file),
+    )
+
+    srv_mod._write_grouping_reconciler_trailing_delay(5.0)
+
+    assert delay_file.read_text() == "5\n"
+    assert list(delay_file.parent.iterdir()) == [delay_file]
+
+
 def test_grouping_set_rejects_invalid_role_without_writing(
     monkeypatch, tmp_path, server_with_coordinator,
 ):

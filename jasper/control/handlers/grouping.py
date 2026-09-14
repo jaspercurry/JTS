@@ -13,11 +13,10 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 
 from ...active_speaker.setup_status import read_active_speaker_setup_status
-from ...atomic_io import locked_update_env_file
+from ...atomic_io import atomic_write_text, locked_update_env_file
 from ...env_load import GROUPING_ENV_FILE
 from ...log_event import log_event
 from ...multiroom.config import (
@@ -75,9 +74,16 @@ def _write_grouping_reconciler_trailing_delay(delay_s: float) -> None:
             math.ceil(_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS),
         ),
     )
-    path = Path(_GROUPING_RECONCILE_TRAILING_DELAY_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{delay_seconds}\n", encoding="ascii")
+    # 0o660: matches this daemon's UMask=0007 default for its other /run and
+    # /var/lib/jasper state (deploy/systemd/jasper-control.service) — group
+    # jasper stays able to read/replace it even though only this process
+    # writes it today. The root-run trailing-kick oneshot that reads it
+    # ignores the mode entirely.
+    atomic_write_text(
+        _GROUPING_RECONCILE_TRAILING_DELAY_FILE,
+        f"{delay_seconds}\n",
+        mode=0o660,
+    )
 
 
 def _arm_grouping_reconciler_trailing_service(delay_s: float) -> dict[str, Any]:
