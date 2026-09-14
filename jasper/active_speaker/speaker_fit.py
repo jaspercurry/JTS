@@ -23,7 +23,7 @@ from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, REGIME_PER_DRIVER, run_purpose
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, REGIME_SUMMED, run_purpose
 from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
@@ -82,8 +82,8 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
         role = group["capture_basis"].get("role")
         for take in group["takes"]:
             pose = take["pose"]
-            regime = take.get("regime", take.get("stimulus", group["capture_basis"].get("stimulus")))
-            if role and (take.get("role") or role) == role and regime in (None, REGIME_PER_DRIVER) and (
+            # The manifest's role is the per-driver statement; a set's stimulus names its geometry.
+            if role and role != REGIME_SUMMED and (take.get("role") or role) == role and (
                 take["selected"] and take.get("phase") == "measure" and
                 pose.get("kind") == POSE_KIND_BEARING and pose.get("deg") is not None
             ):
