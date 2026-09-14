@@ -59,10 +59,13 @@ _BEARER_RE = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
 # named whose value clears `_SECRET_WORD_RE`'s 8-character WPA floor, below
 # which a diagnostic sentence ("authorization: user is not authorized to
 # …") would lose its prose; a bare value. The lookahead spares a value
-# `_BEARER_RE` already took, which would otherwise redact a second time.
+# `_BEARER_RE` already took, which would otherwise redact a second time —
+# but only a placeholder ending its token, mirroring `_SECRET_WORD_RE`: a
+# secret glued directly onto `<redacted>` (e.g. from a literal replaced
+# first) must still redact, not hide behind a bare prefix match.
 _AUTHORIZATION_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])(authorization['\"]?[ \t]*[=:][ \t]*)"
-    r"(?!(?:[A-Za-z]+[ \t]+)?<redacted>)"
+    r"(?!(?:[A-Za-z]+[ \t]+)?<redacted>(?![^\s'\"]))"
     rf"(?:{_QUOTED}"
     r"|digest[ \t]+.*"
     rf"|(?:basic|bearer|token|negotiate|ntlm)[ \t]+(?:{_QUOTED}|[^\s'\"]+)"

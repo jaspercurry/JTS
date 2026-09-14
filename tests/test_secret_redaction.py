@@ -322,6 +322,17 @@ def test_a_caller_held_literal_is_replaced_whatever_shape_it_has(literal: str) -
     )
 
 
+def test_authorization_value_glued_to_the_placeholder_still_redacts() -> None:
+    """A literal replaced first can glue a further secret directly onto the
+    `<redacted>` placeholder before `_AUTHORIZATION_RE` ever sees it; its
+    guard must skip only a whole placeholder token, mirroring
+    `_SECRET_WORD_RE`'s fix for the identical hole."""
+    assert (
+        redact_secrets("Authorization: sekrit123abcXYZ", literals=["sekrit123"])
+        == "Authorization: <redacted>"
+    )
+
+
 @pytest.mark.parametrize("name", SECRET_ENV_NAMES)
 def test_the_suffix_rule_is_the_convention_without_the_key_predating_it(
     name: str,
