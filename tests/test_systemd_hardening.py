@@ -31,6 +31,7 @@ from jasper.audio_hardware.dac import APPLE_DONGLE_USB_ID
 from jasper.cli.doctor import drift as doctor_drift
 from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
+from tests.install_surface import rendered_reconcile_timeout_dropins
 from tests.systemd_unit_helpers import (
     exec_argv_for,
     never_stays_complete,
@@ -75,17 +76,21 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     "jasper-fanin-coupling-auto": str(
         int(coupling_reconcile.COUPLING_AUTO_TIMEOUT_START_SEC)
     ),
-    "jasper-grouping-reconcile": str(
-        int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)
-    ),
-    "jasper-source-intent-reconcile": str(
-        int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)
-    ),
     # The udev dongle recovery blocks on a chain of `systemctl start` clients;
     # the arithmetic is derived and pinned by
     # test_dongle_recover_timeout_covers_its_whole_blocking_start_chain below.
     "jasper-dongle-recover": "550",
 }
+
+# jasper-grouping-reconcile and jasper-source-intent-reconcile ship no
+# TimeoutStartSec= at all: render_reconcile_oneshot_timeout_dropins
+# (deploy/lib/install/systemd-units.sh) renders it from the Python constant
+# into an install-time drop-in instead, so a hand edit to the unit file can no
+# longer drift from jasper.multiroom.reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC
+# / jasper.source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS (#4810 row R-163:
+# the hand-copy drifted three times). See
+# test_reconcile_oneshot_timeout_dropins_come_from_python_constants below.
+RENDERED_TIMEOUT_UNITS = {"jasper-grouping-reconcile", "jasper-source-intent-reconcile"}
 
 RECONCILE_ONESHOTS = {
     "jasper-aec-reconcile": ROOT / "deploy/systemd/jasper-aec-reconcile.service",
@@ -276,14 +281,19 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
     blocking child sneaks in; timeout turns that into an observable failure."""
     pairs = set(_directives(path))
     assert ("Type", "oneshot") in pairs
+    if unit in RENDERED_TIMEOUT_UNITS:
+        assert not any(key == "TimeoutStartSec" for key, _ in pairs), (
+            f"{unit}: TimeoutStartSec is rendered into an install-time "
+            "drop-in by render_reconcile_oneshot_timeout_dropins, not "
+            "hand-copied into the unit file."
+        )
+        return
     # jasper-fanin-coupling-auto holds the #1252 entry lock across its full
     # pass (worst case ~75s+: <=10s lock wait + usbsink/outputd restarts + the
     # coordinated camilla stop->fanin->start sequence + a possible 15s
     # audio-hardware-reconcile kick); a kill mid-sequence leaves CamillaDSP
     # cleanly stopped where OnFailure cannot catch it, so its timeout must
-    # outlast the pass (review #1252 SF-1). Grouping may wait for one prior
-    # source activation before it queues a guaranteed-fresh role pass, and
-    # source intent owns its own complete multi-source transaction.
+    # outlast the pass (review #1252 SF-1).
     # jasper-aec-reconcile starts jasper-aec-init blocking and inherits its whole
     # bounded runtime. Their finite outer bounds cover those declared child
     # budgets. The other reconcilers keep 60.
@@ -293,6 +303,23 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
         f"dependency mistakes fail visibly instead of wedging voice offline "
         f"(expected TimeoutStartSec={expected_timeout})."
     )
+
+
+def test_reconcile_oneshot_timeout_dropins_come_from_python_constants(tmp_path):
+    """render_reconcile_oneshot_timeout_dropins is the one place
+    jasper-grouping-reconcile's and jasper-source-intent-reconcile's
+    TimeoutStartSec comes from. Pin its rendered output against the Python
+    constants instead of a copied number in the unit file (#4810 row R-163:
+    the hand-copy drifted three times: 2703<->2693, 2737<->2727, 6534)."""
+    rendered = rendered_reconcile_timeout_dropins(tmp_path)
+    assert rendered == {
+        "jasper-grouping-reconcile": (
+            multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC
+        ),
+        "jasper-source-intent-reconcile": (
+            source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
+        ),
+    }
 
 
 HOTPLUG_BURST_RECONCILERS = {
@@ -347,10 +374,8 @@ def test_grouping_timeout_covers_every_bounded_owner_handoff_step():
         required_before_margin + multiroom_reconcile._RECONCILE_TIMEOUT_MARGIN_SEC
     )
     assert multiroom_reconcile._RECONCILE_TIMEOUT_MARGIN_SEC > 0
-
-    grouping_unit = RECONCILE_ONESHOTS["jasper-grouping-reconcile"]
-    configured = dict(_directives(grouping_unit))["TimeoutStartSec"]
-    assert float(configured) == multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC
+    # test_reconcile_oneshot_timeout_dropins_come_from_python_constants pins
+    # that the unit's rendered TimeoutStartSec equals this constant.
 
 
 def test_accessory_parallel_budget_matches_owner_and_caller_barriers():

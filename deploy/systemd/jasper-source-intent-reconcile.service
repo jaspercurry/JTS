@@ -33,10 +33,12 @@ RuntimeDirectory=jasper-source-intent
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 # The pass always visits all four sources and every child operation has its own
-# shorter ceiling. 2727 s is the final finite boot/request boundary with margin
-# over the declared worst-case path; the synchronous broker waits 2737 s for
-# PID 1 to report the terminal result.
-TimeoutStartSec=2727
+# shorter ceiling. TimeoutStartSec is rendered into this unit's
+# jasper-source-intent-reconcile.service.d/10-timeout.conf at install time
+# from jasper.source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS (#4810 row
+# R-163) — tests pin the derivation, not a copied number here. The
+# synchronous broker waits RECONCILE_BROKER_TIMEOUT_SECONDS (that value + 10s)
+# for PID 1 to report the terminal result.
 # Do not use Restart= here. Persistent malformed intent or hardware failure
 # must park after one observable pass, not create a rate-dependent retry loop.
 # Web requests retry once only when the first activation lacks a fresh exact

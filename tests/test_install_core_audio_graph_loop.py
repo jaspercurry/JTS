@@ -64,6 +64,12 @@ EXPECTED_DSTS = (
     "jasper-camilla-recover",
     "jasper-camilla-crossover-guard",
     "jasper-fanin-pitch-neutralize",
+    # render_reconcile_oneshot_timeout_dropins installs this basename twice,
+    # once under jasper-grouping-reconcile.service.d/ and once under
+    # jasper-source-intent-reconcile.service.d/; _attempted_dsts collapses by
+    # basename (see test_all_units_installed_on_clean_run's stronger,
+    # full-path check for both).
+    "10-timeout.conf",
 )
 
 
@@ -176,6 +182,14 @@ def test_all_units_installed_on_clean_run(tmp_path):
         f"missing={set(EXPECTED_DSTS) - attempted}, "
         f"unexpected={attempted - set(EXPECTED_DSTS)}"
     )
+    # "10-timeout.conf" above collapses two distinct destinations to one
+    # basename; check both full paths landed rather than just one.
+    raw_log = (tmp_path / "install.log").read_text(encoding="utf-8")
+    for unit in ("jasper-grouping-reconcile", "jasper-source-intent-reconcile"):
+        assert f"{unit}.service.d/10-timeout.conf" in raw_log, (
+            f"render_reconcile_oneshot_timeout_dropins did not install a "
+            f"TimeoutStartSec drop-in for {unit}"
+        )
     # daemon-reload ran.
     assert (tmp_path / "reload.log").exists()
 

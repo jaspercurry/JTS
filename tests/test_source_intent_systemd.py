@@ -10,7 +10,7 @@ from jasper import source_intent
 from jasper.control import restart_broker
 from jasper.local_sources import local_source_lifecycles
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
-from tests.install_surface import installer_text
+from tests.install_surface import installer_text, rendered_reconcile_timeout_dropins
 from tests.systemd_unit_helpers import (
     never_stays_complete,
     pulled_ordered_dependencies,
@@ -95,13 +95,20 @@ def test_grouping_effective_role_fact_has_root_owned_persistent_parent() -> None
     assert "Group=" not in text
 
 
-def test_source_intent_reconcile_is_bounded_without_bluez_ordering_cycle() -> None:
+def test_source_intent_reconcile_is_bounded_without_bluez_ordering_cycle(
+    tmp_path: Path,
+) -> None:
     pairs = set(_directives())
     assert ("Type", "oneshot") in pairs
+    assert not any(key == "TimeoutStartSec" for key, _value in pairs), (
+        "TimeoutStartSec is rendered into an install-time drop-in by "
+        "render_reconcile_oneshot_timeout_dropins, not hand-copied here"
+    )
+    rendered = rendered_reconcile_timeout_dropins(tmp_path)
     assert (
-        "TimeoutStartSec",
-        str(int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
-    ) in pairs
+        rendered["jasper-source-intent-reconcile"]
+        == source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
+    )
     assert not any(key == "Restart" for key, _value in pairs)
     assert not any(key == "RestartSec" for key, _value in pairs)
     assert ("StartLimitIntervalSec", "0") in pairs
@@ -149,10 +156,8 @@ def test_source_reconcile_timeout_hierarchy_covers_all_owner_waits() -> None:
         )
         == source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS
     )
-    assert (
-        "TimeoutStartSec",
-        str(int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
-    ) in set(_directives())
+    # test_source_intent_reconcile_is_bounded_without_bluez_ordering_cycle pins
+    # that the unit's rendered TimeoutStartSec equals this constant.
     installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8"
     )

@@ -30,9 +30,10 @@ StateDirectoryMode=0755
 # prior activation, then synchronously converge the completed role), manager
 # probes, and a final margin. The handoff uses `start`, never restart, so an
 # ordered source transition is not cut in half; grouping succeeds only after
-# source park/restore does. Tests derive this 6534 s value from the child
-# bounds.
-TimeoutStartSec=6534
+# source park/restore does. TimeoutStartSec is rendered into this unit's
+# jasper-grouping-reconcile.service.d/10-timeout.conf at install time from
+# jasper.multiroom.reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC (#4810 row R-163)
+# — tests pin the derivation, not a copied number here.
 EnvironmentFile=-/etc/jasper/jasper.env
 # grouping.env is wizard-owned data, not a process environment. The Python
 # reconciler parses that fixed file itself; importing it here would let a

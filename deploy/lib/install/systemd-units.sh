@@ -132,6 +132,14 @@ install_local_audio_graph_unit_files() {
             failed="${failed}${failed:+, }${dst}"
         fi
     done
+    # jasper-grouping-reconcile.service lands later (install_grouping_unit_files)
+    # but its start-timeout drop-in is rendered here alongside
+    # jasper-source-intent-reconcile.service's: one Python call derives both,
+    # and systemd only needs a unit's drop-in and its main file present
+    # together by the next daemon-reload, not installed in a particular order.
+    if ! render_reconcile_oneshot_timeout_dropins; then
+        failed="${failed}${failed:+, }reconcile-oneshot-timeout-dropins"
+    fi
     # Guaranteed daemon-reload: even if a row failed and `set -e` later aborts
     # the caller before its central daemon-reload, the units that DID land are
     # now known to systemd — so a newly-added unit takes effect on this deploy
@@ -147,6 +155,42 @@ install_local_audio_graph_unit_files() {
     # jasper-unpark's own — has proven it installed: an rm before that could
     # leave a box with neither script if the loop above never reached here.
     rm -f "${LOCAL_SBIN_DIR}/jasper-outputd-unpark"
+}
+
+# jasper-grouping-reconcile.service and jasper-source-intent-reconcile.service
+# hand-copied TimeoutStartSec= drifted from the Python constants that derive
+# it three times (#4810 row R-163): 2703<->2693, 2737<->2727, and a hand edit
+# to 6534. The static unit files below carry no TimeoutStartSec= of their own
+# any more; a drop-in overrides a value in the main file anyway, but the
+# point is one owner. Retirement: delete this function, the two
+# `.service.d/10-timeout.conf` drop-ins it writes, and restore a literal
+# TimeoutStartSec= to each unit file if these ever become plain constants
+# instead of derived ones.
+render_reconcile_oneshot_timeout_dropins() {
+    local rendered unit seconds venv_python
+    # Same venv-or-python3 + explicit PYTHONPATH fallback as the USB network
+    # plan renderer above (install_usb_network_files): a venv-less test/CI
+    # host still resolves the checked-out `jasper` package.
+    venv_python="${INSTALL_DIR:-/opt/jasper}/.venv/bin/python"
+    if [[ ! -x "${venv_python}" ]]; then
+        venv_python=python3
+    fi
+    if ! rendered="$(PYTHONPATH="${REPO_DIR}" "${venv_python}" -c '
+from jasper.multiroom.reconcile import _RECONCILE_SYSTEMD_TIMEOUT_SEC
+from jasper.source_intent import RECONCILE_SYSTEMD_TIMEOUT_SECONDS
+print(f"jasper-grouping-reconcile.service={int(_RECONCILE_SYSTEMD_TIMEOUT_SEC)}")
+print(f"jasper-source-intent-reconcile.service={int(RECONCILE_SYSTEMD_TIMEOUT_SECONDS)}")
+' 2>&1)"; then
+        echo "  ERROR: failed to derive reconcile TimeoutStartSec from jasper.multiroom.reconcile / jasper.source_intent: ${rendered}" >&2
+        return 1
+    fi
+    # Piped straight into `install` (no scratch file/dir to clean up).
+    while IFS='=' read -r unit seconds; do
+        [[ -n "${unit}" ]] || continue
+        install -d -m 0755 "${SYSTEMD_DIR}/${unit}.d"
+        printf '[Service]\nTimeoutStartSec=%s\n' "${seconds}" \
+            | install -m 0644 /dev/stdin "${SYSTEMD_DIR}/${unit}.d/10-timeout.conf"
+    done <<< "${rendered}"
 }
 
 _snapshot_unit_install_destination() {

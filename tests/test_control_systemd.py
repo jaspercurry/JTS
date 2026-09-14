@@ -23,6 +23,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.install_surface import rendered_reconcile_timeout_dropins
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,
@@ -40,9 +41,6 @@ GROUPING_TRAILING_HELPER_PATH = (
 )
 GROUPING_KICK_HELPER_PATH = (
     REPO / "deploy" / "bin" / "jasper-grouping-reconcile-kick"
-)
-GROUPING_RECONCILE_SERVICE_PATH = (
-    REPO / "deploy" / "systemd" / "jasper-grouping-reconcile.service"
 )
 
 
@@ -133,15 +131,18 @@ def test_grouping_reconcile_kick_joins_then_queues_fresh_pass(tmp_path):
     ]
 
 
-def test_grouping_kick_drain_outlasts_legal_reconcile_activation():
+def test_grouping_kick_drain_outlasts_legal_reconcile_activation(tmp_path):
+    """TimeoutStartSec is rendered into an install-time drop-in
+    (render_reconcile_oneshot_timeout_dropins), not carried in the unit file
+    read here -- see #4810 row R-163."""
     helper = GROUPING_KICK_HELPER_PATH.read_text()
-    unit = GROUPING_RECONCILE_SERVICE_PATH.read_text()
     drain_match = re.search(r'^drain_timeout="(\d+)s"$', helper, re.MULTILINE)
-    unit_timeout = _value_for(unit, "TimeoutStartSec")
+    unit_timeout = rendered_reconcile_timeout_dropins(tmp_path)[
+        "jasper-grouping-reconcile"
+    ]
 
     assert drain_match is not None
-    assert unit_timeout is not None
-    assert int(drain_match.group(1)) > int(unit_timeout.rstrip("s"))
+    assert int(drain_match.group(1)) > unit_timeout
 
 
 def test_readwritepaths_pins_control_write_contracts():
