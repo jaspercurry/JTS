@@ -85,8 +85,6 @@ PARK_TOLERANCE_DEG = 0.05
 
 DEFAULT_POLL_S = 3.0
 
-#: Nothing pending for this long: the session finished, never opened, or
-#: does not need the arm.
 DEFAULT_IDLE_CEILING_S = 1200.0
 
 DEFAULT_STUCK_ALARM_S = 300.0
@@ -117,7 +115,6 @@ EXIT_OK = 0
 EXIT_POWER_VOID = 3
 #: A move was refused or did not complete. The arm is parked.
 EXIT_MOVE_FAILED = 4
-#: In flight, nothing pending, no progress -- a capture is awaiting a human.
 EXIT_STUCK = 6
 #: The session itself reported ``status="failed"``; its error is on the line.
 EXIT_SESSION_FAILED = 7
