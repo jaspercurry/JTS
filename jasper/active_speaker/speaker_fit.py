@@ -139,13 +139,16 @@ def _production_vocabulary(
         cloud = clouds.get(role)
         design_cloud = override is None and cloud is not None and cloud.n_positions >= 3 and not candidate.get("exclusion_evidence")
         ready = design_cloud and bool(cloud and cloud.band_spread) and any(s.highpass for s in sections.get(role, ()))
-        allowed = override == "bounded_boost" if plan is None else boost_allowed(
-            post_apply_verifies=plan.post_apply_verifies,
-            cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
-            cloud_present=ready or bool(candidate.get("exclusion_evidence")),
-        )
+        # The design cloud is its own evidence: the bound below and the apply-time
+        # checks are the safeguards, not the session's phase list.
         if design_cloud:
-            allowed = allowed and ready
+            allowed = ready
+        else:
+            allowed = override == "bounded_boost" if plan is None else boost_allowed(
+                post_apply_verifies=plan.post_apply_verifies,
+                cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
+                cloud_present=bool(candidate.get("exclusion_evidence")),
+            )
         vocabulary = FitVocabulary(allow_boost=allowed).with_budget(budget)
         if design_cloud and allowed:
             vocabulary = replace(vocabulary, per_filter_boost_cap_db=_DESIGN_BOOST_CAP_DB, composed_boost_cap_db=_DESIGN_BOOST_CAP_DB,

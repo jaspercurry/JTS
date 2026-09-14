@@ -170,8 +170,8 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     pytest.param({"role": "woofer"}, "cut_only", id="lowpass"),
     pytest.param({"role": "main"}, "cut_only", id="one-way"),
     pytest.param({"exclusion": True}, "bounded_boost", id="existing-exclusion"),
-    pytest.param({"verifies": False}, "cut_only", id="no-verify"),
-    pytest.param({"verifies": False, "cloud_planned": False}, "cut_only", id="no-cloud-or-verify"),
+    pytest.param({"verifies": False}, "bounded_boost", id="no-verify"),
+    pytest.param({"verifies": False, "cloud_planned": False}, "bounded_boost", id="no-cloud-or-verify"),
     pytest.param({"floor": 100.0}, "bounded_boost", id="lower-budget-floor"),
     pytest.param({"floor": 8000.0}, "bounded_boost", id="higher-budget-floor"),
     pytest.param({"override": "bounded_boost", "verifies": False}, "bounded_boost", id="operator-boost"),
@@ -488,7 +488,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
                and f["residual_rms_db"] is not None and f["budget"] for f in packet["fits"])
     for fit in packet["fits"]:
         count = pose_count if fit["set_id"].startswith("True-") else candidate_count
-        bounded = fit["role"] == "tweeter" and count == 3 and verifies
+        bounded = fit["role"] == "tweeter" and count == 3
         assert fit["vocabulary"] == ("bounded_boost" if bounded else "cut_only")
         assert fit["cloud"]["design_poses"] == count
         assert fit["composed_boost_cap_db"] == (3.0 if bounded else None)
