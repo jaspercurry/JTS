@@ -1294,6 +1294,7 @@ def test_airplay_uses_sync_evidence_without_numeric_latency_claim() -> None:
 
     assert airplay_card["timing"]["status"] == "ok"
     assert airplay_card["timing"]["kind"] == "sync"
+    assert latency["summary"] == airplay_card["timing"]["headline"]
     assert latency["details"] == []
     assert "estimate" not in latency
     assert "ms" not in latency["summary"]
