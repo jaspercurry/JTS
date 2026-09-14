@@ -104,6 +104,63 @@ async def delegate(turn, delegation, response_id, name, args):
     }))
 
 
+@pytest.mark.parametrize("failure_stage", [None, "construct", "bind"])
+async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation_failure(
+    monkeypatch, caplog, failure_stage,
+):
+    key = "private-test-credential"
+    steps = []
+    failed = False
+
+    def step(stage):
+        nonlocal failed
+        steps.append(stage)
+        if stage == failure_stage and not failed:
+            failed = True
+            raise RuntimeError(f"SDK preparation failed for {key}")
+
+    class Client:
+        def __init__(self, *, api_key):
+            assert api_key == key
+            step("construct")
+
+        @property
+        def live(self):
+            step("bind")
+            return self
+
+        def connect(self):
+            step("dial")
+            return LiveSocket()
+
+        async def close(self):
+            step("close")
+
+    monkeypatch.setattr("openai.AsyncOpenAI", Client)
+    conn = OpenAILiveConnection(api_key=key)
+    try:
+        await conn.start(ToolRegistry(), "Be brief.")
+        assert steps == (["construct"] if failure_stage == "construct" else ["construct", "bind"])
+        assert not conn.is_paused()
+        if failure_stage:
+            assert conn.last_failure_detail() and key not in conn.last_failure_detail()
+            assert key not in caplog.text
+            assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+        turn = await conn.acquire_turn()
+        assert steps == {
+            None: ["construct", "bind", "dial"],
+            "construct": ["construct", "construct", "bind", "dial"],
+            "bind": ["construct", "bind", "bind", "dial"],
+        }[failure_stage]
+        assert not turn.turn_lost()
+        assert conn.last_failure_detail() is None
+        await turn.release()
+    finally:
+        await conn.stop()
+        await conn.stop()
+    assert steps.count("close") == 1
+
+
 async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
     socket = LiveSocket()
     registry = ToolRegistry()
