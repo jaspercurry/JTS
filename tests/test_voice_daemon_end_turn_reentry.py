@@ -171,13 +171,15 @@ def _start_playback(wl):
 @pytest.mark.parametrize("end_path", ["callback", "frame"])
 @pytest.mark.parametrize("mode", [
     "refused", "error", "paused_error", "partial_error", "accepted", "empty", "measurement", "interrupt",
-    "lost_reply", "lost_after_complete",
+    "lost_reply", "lost_without_input", "lost_after_complete",
 ])
 async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_path, caplog):
     wl, turn = await _response_loop(b"" if mode == "empty" else bytes(8))
     failed = mode in {"refused", "error", "paused_error", "partial_error"}
-    accepted = mode in {"partial_error", "accepted", "lost_reply", "lost_after_complete"}
-    lost_reply = mode == "lost_reply"
+    accepted = mode in {"partial_error", "accepted", "lost_reply", "lost_without_input", "lost_after_complete"}
+    lost_reply = mode in {"lost_reply", "lost_without_input"}
+    if mode == "lost_without_input":
+        turn._bytes_sent = 0
     turn.turn_lost = lambda: mode.startswith("lost_")
     turn.server_turn_complete = lambda: mode == "lost_after_complete"
     wl._wake_telemetry.stage = AsyncMock()
