@@ -75,6 +75,18 @@ def _decision(contract: Mapping[str, Any]) -> str:
     return json.dumps({"required": schema.get("required", []), "fields": fields, "bounds": bounds}, separators=(",", ":"))
 
 
+
+def _span(rows: list[Mapping[str, Any]], key: str) -> str:
+    """One value when the takes agree, else the range they cover."""
+    values = [row.get(key) for row in rows]
+    distinct = sorted({str(value) for value in values})
+    if len(distinct) == 1:
+        return distinct[0]
+    numbers = [value for value in values if isinstance(value, (int, float))]
+    if len(numbers) == len(values):
+        return f"{min(numbers)}–{max(numbers)}"
+    return ", ".join(distinct)
+
 def packet_index(
     packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]], manifest: Mapping[str, Any],
 ) -> str:
@@ -118,10 +130,15 @@ def packet_index(
               "Stats: dB from each series reference; tilt over 100–10000 Hz; band means use octave centers in Hz.",
               "Low-end means: power means in Hz ranges; null means no usable bins."]
     takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"] for take in group["takes"]}
-    for (set_id, take_id, role), take in takes.items():
-        lines.append(f"{set_id} / {take_id} / {role}: gate {take['gate_window_ms']} ms; "
-                     f"validity floor {take['validity_floor_hz']} Hz; trusted floor {take['trusted_floor_hz']} Hz; "
-                     f"source {take['floor_source']}")
+    by_role: dict[str, list[Mapping[str, Any]]] = {}
+    for (_set_id, _take_id, role), take in takes.items():
+        by_role.setdefault(role, []).append(take)
+    for role, rows in by_role.items():
+        lines.append(f"gate {role}: " + "; ".join(
+            f"{label} {_span(rows, key)}" for label, key in (
+                ("window ms", "gate_window_ms"), ("validity floor Hz", "validity_floor_hz"),
+                ("trusted floor Hz", "trusted_floor_hz"), ("source", "floor_source")))
+            + f" ({len(rows)} takes)")
     for series in packet["series"]:
         take = takes.get((series["set_id"], series["take_id"], series["role"]), {})
         stats = []
