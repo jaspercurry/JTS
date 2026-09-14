@@ -6,14 +6,20 @@ import pytest
 
 from jasper.chip_aec.health import ACTION_RECOMMISSION, AlignmentHealth
 from jasper.audio_profile_state import (
+    PROFILE_CUSTOM,
+    PROFILE_XVF_SOFTWARE_AEC3,
     AecIntent,
     MicProbe,
     RuntimeAecEnv,
     build_audio_profile_status,
+    infer_audio_input_profile,
+    intent_from_env,
     profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
+from jasper.cli.doctor import aec as doctor_aec
+from jasper.wake_corpus import runtime_probe
 
 
 def test_runtime_env_from_mapping_prefers_fresh_env_file_over_process_env():
@@ -637,3 +643,87 @@ def test_the_ready_arm_claims_no_chip_beam_it_was_never_allowed_to_arm(
     assert status["audio_profile"]["state"] == "unavailable"
     assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
     assert status["microphone"]["wake_legs"] == []
+
+
+# ---------------------------------------------------------------------------
+# intent_from_env — the one WAKE_LEG_DEFAULTS reader; runtime_probe and the
+# doctor used to hand-retype it and silently drop chip_aec_150/210.
+# ---------------------------------------------------------------------------
+
+
+_WAKE_LEG_ENV_CASES = {
+    "every_key_set_non_default": (
+        {
+            "JASPER_WAKE_LEG_RAW": "0",
+            "JASPER_WAKE_LEG_DTLN": "1",
+            "JASPER_WAKE_LEG_CHIP_AEC": "1",
+            "JASPER_WAKE_LEG_CHIP_AEC_150": "1",
+            "JASPER_WAKE_LEG_CHIP_AEC_210": "1",
+        },
+        AecIntent(
+            raw_enabled=False,
+            dtln_enabled=True,
+            chip_aec_enabled=True,
+            chip_aec_150_enabled=True,
+            chip_aec_210_enabled=True,
+        ),
+        PROFILE_CUSTOM,
+    ),
+    "every_key_absent_falls_back_to_build_defaults": (
+        {},
+        AecIntent(),
+        PROFILE_XVF_SOFTWARE_AEC3,
+    ),
+    # ADR-0101/review gap: a pre-profile file with only a per-beam leg armed.
+    # A reader that drops chip_aec_150/210 sees raw-on/chip-off and infers
+    # software AEC3 instead of custom — exactly the drift the two lossy
+    # copies (runtime_probe.read_aec_intent, doctor._doctor_aec_intent)
+    # produced before they consumed intent_from_env.
+    "chip_aec_150_leg_alone_pre_profile": (
+        {"JASPER_WAKE_LEG_CHIP_AEC_150": "1"},
+        AecIntent(chip_aec_150_enabled=True),
+        PROFILE_CUSTOM,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("values", "expected", "expected_profile"),
+    _WAKE_LEG_ENV_CASES.values(),
+    ids=_WAKE_LEG_ENV_CASES.keys(),
+)
+def test_intent_from_env_matches_field_by_field_and_reaches_every_consumer(
+    monkeypatch, tmp_path, values, expected, expected_profile,
+):
+    result = intent_from_env(values)
+
+    assert (
+        result.raw_enabled,
+        result.dtln_enabled,
+        result.chip_aec_enabled,
+        result.chip_aec_150_enabled,
+        result.chip_aec_210_enabled,
+    ) == (
+        expected.raw_enabled,
+        expected.dtln_enabled,
+        expected.chip_aec_enabled,
+        expected.chip_aec_150_enabled,
+        expected.chip_aec_210_enabled,
+    )
+    assert infer_audio_input_profile(result) == expected_profile
+
+    mode_path = tmp_path / "aec_mode.env"
+    mode_path.write_text(
+        "".join(f"{key}={value}\n" for key, value in values.items()),
+    )
+
+    monkeypatch.setattr(runtime_probe, "AEC_MODE_PATH", mode_path)
+    probe_intent = runtime_probe.read_aec_intent()
+    assert probe_intent.chip_aec_150_enabled == expected.chip_aec_150_enabled
+    assert probe_intent.chip_aec_210_enabled == expected.chip_aec_210_enabled
+
+    monkeypatch.setattr(doctor_aec, "DEFAULT_AEC_MODE_PATH", mode_path)
+    doctor_intent = doctor_aec._doctor_aec_intent()
+    assert doctor_intent.chip_aec_150_enabled == expected.chip_aec_150_enabled
+    assert doctor_intent.chip_aec_210_enabled == expected.chip_aec_210_enabled
+    assert doctor_aec._doctor_audio_input_selection() == expected_profile
