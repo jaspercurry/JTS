@@ -117,6 +117,9 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     "check_google_routes",
     "check_home_assistant",
     "check_citibike",
+    "check_subway",
+    "check_bus",
+    "check_weather",
 })
 
 

@@ -24,6 +24,29 @@ from jasper.voice.catalog import PROVIDERS, default_model_id, provider_ids_manif
 
 from .doctor_test_support import _fresh_cfg
 
+
+@pytest.mark.parametrize(("check", "env", "weather", "status", "reason"), [
+    ("subway", {}, {}, "ok", "subway_not_configured"),
+    ("subway", {"JASPER_SUBWAY_STATION_ID": "R31"}, {}, "ok", "subway_configured"),
+    ("subway", {"JASPER_SUBWAY_STATION_ID": "unknown"}, {}, "warn", "subway_station_unknown"),
+    ("subway", {"JASPER_TRANSIT_CITIES": "", "JASPER_SUBWAY_STATION_ID": "R31"}, {}, "ok", "subway_not_configured"),
+    ("bus", {}, {}, "ok", "bus_not_configured"),
+    ("bus", {"JASPER_BUS_STOPS": "MTA_302680|4 Av"}, {}, "warn", "bus_key_missing"),
+    ("bus", {"JASPER_BUS_STOPS": "MTA_302680|4 Av", "JASPER_MTA_BUSTIME_KEY": "test-bustime-key"}, {}, "ok", "bus_configured"),
+    ("bus", {"JASPER_TRANSIT_CITIES": "", "JASPER_BUS_STOPS": "MTA_302680"}, {}, "ok", "bus_not_configured"),
+    ("weather", {}, {}, "ok", "weather_no_default"),
+    ("weather", {}, {"weather_default_location": "Brooklyn"}, "ok", "weather_configured"),
+    ("weather", {}, {"weather_default_lat": 40.7, "weather_default_lon": -74.0}, "ok", "weather_configured"),
+])
+def test_transit_and_weather_setup_checks(check, env, weather, status, reason):
+    cfg = SimpleNamespace(**{
+        "hostname": "jts.local", "weather_default_lat": None,
+        "weather_default_lon": None, "weather_default_location": "", **weather,
+    })
+    with patch.dict("os.environ", env, clear=True):
+        result = getattr(doctor_voice, f"check_{check}")(cfg)
+    assert (result.status, result.reason) == (status, reason)
+
 # -------------------------------------------------- provider-aware key check
 #
 # "Which provider is active?" is answered by the wizard-owned SSOT file, not
