@@ -106,9 +106,10 @@ def test_write_wav_atomic_and_format(tmp_path: Path) -> None:
     path = tmp_path / "clip.wav"
     wake_enroll.write_wav(path, samples.tobytes())
 
-    # File exists; tmpfile cleaned up.
+    # File exists; no temp file left behind (atomic_io's own pin covers the
+    # publish mechanics — this checks the call site wires it up).
     assert path.is_file()
-    assert not path.with_suffix(path.suffix + ".tmp").exists()
+    assert not any(tmp_path.glob("*.tmp"))
 
     with wave.open(str(path)) as w:
         assert w.getnchannels() == wake_enroll.CHANNELS

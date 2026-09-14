@@ -95,7 +95,7 @@ ALLOWLIST: dict[str, str] = {
         "longer leaks the reaper thread forever, just delays its exit by the "
         "ceiling."
     ),
-    "jasper/cli/wake_enroll.py:246": (
+    "jasper/cli/wake_enroll.py:248": (
         "systemctl(action, unit) restarts jasper-voice (Type=notify) "
         "synchronously; a safe bound has to exceed the unit's own "
         "TimeoutStartSec, not an arbitrary short literal that would "
