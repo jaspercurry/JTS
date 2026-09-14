@@ -348,7 +348,24 @@ class OpenAILiveConnection(BaseLiveConnection):
     async def start(self, registry, system_instruction) -> None:
         self._registry = registry
         self._system_instruction_provider = system_instruction if callable(system_instruction) else lambda: system_instruction
+        try:
+            self._prepare_client()
+        except Exception as exc:  # noqa: BLE001 — a later wake can retry without restarting voice
+            self._outage.on_failure(exc, literals=self._secret_literals())
+            log_event(
+                logger, "provider.client_prepare_failed", provider=self.PROVIDER_NAME,
+                detail=self._outage.detail, level=logging.WARNING,
+            )
         self._set_state(ConnectionState.CONNECTED)
+
+    def _prepare_client(self) -> None:
+        if self._connect is None:
+            from openai import AsyncOpenAI  # lazy — optional provider SDK
+            if self._client is None:
+                self._client = AsyncOpenAI(api_key=self._api_key)
+            # The SDK loads `.live` lazily; moving only the constructor
+            # would leave that cost on the first wake.
+            self._connect = self._client.live.connect
 
     async def acquire_turn(self) -> OpenAILiveTurn:
         async with self._turn_lock:
@@ -411,12 +428,8 @@ class OpenAILiveConnection(BaseLiveConnection):
         # Held locally: a concurrent `stop()` nulls the shared field while
         # this awaits, and the attempt still owns the turn it opened for.
         turn = self._active_turn
-        connect = self._connect
-        if connect is None:
-            from openai import AsyncOpenAI  # lazy — optional provider SDK
-            self._client = AsyncOpenAI(api_key=self._api_key)
-            connect = self._connect = self._client.live.connect
-        self._session_cm = connect()
+        self._prepare_client()
+        self._session_cm = self._connect()
         self._session = await self._session_cm.__aenter__()
         self._receive_task = asyncio.create_task(self._receive(turn))
         await self._send({"type": "session.start", "session": {
@@ -510,4 +523,5 @@ class OpenAILiveConnection(BaseLiveConnection):
                 )
         await super().stop()
         if self._client is not None:
-            await self._client.close()
+            client, self._client = self._client, None
+            await client.close()
