@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
@@ -37,7 +38,8 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
-from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits
+from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
+from jasper.active_speaker.speaker_fit import design_clouds, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -408,6 +410,107 @@ def test_speaker_fit_reads_declared_budgets_and_only_overrides_stdout(speaker_ro
 
 def test_empty_manifest_has_no_packet_fits(speaker_round):
     assert _fits(round_inputs(speaker_round[0]), {}) == []
+
+
+@pytest.mark.parametrize("other_identity", [
+    {"candidate_id": "other"}, {"graph_fingerprint": "other"},
+])
+def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, other_identity):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    state = json.loads(inputs.state_path.read_text())
+    state["session_phases"].insert(1, "cloud_measure")
+    inputs.state_path.write_text(json.dumps(state))
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    group = manifest_set([(path, record)], set_id="first")
+    group["capture_basis"].update(role="tweeter", candidate_id="base", graph_fingerprint="graph")
+    original = group["takes"][0]
+    group["takes"] = [{**original, "take_id": f"pose-{deg}", "role": "tweeter", "analysis": analysis,
+                       "curve": record["curves"][1], "pose": {"kind": "bearing", "deg": deg},
+                       "attempt": 1, "selected": deg != -20} for deg in (-20, 0, 20)]
+    latest = {**group["takes"][0], "take_id": "retake", "selected": True, "attempt": 2}
+    retake = {**group, "set_id": "retaken", "takes": [latest]}
+    stale = {**retake, "set_id": "older", "takes": [{**latest, "attempt": 1, "curve": {"role": "bad"}}]}
+    other = {**group, "set_id": "other", "capture_basis": {**group["capture_basis"], **other_identity},
+             "takes": [{**original, "role": "tweeter", "analysis": analysis, "curve": record["curves"][1],
+                        "pose": {"kind": "bearing", "deg": 0}}]}
+    manifest = write_manifest(root, groups=[retake, group, stale, other])
+    clouds = design_clouds(inputs, manifest)
+    assert {key: cloud.n_positions for key, cloud in clouds.items()} == {"first": 3, "retaken": 3, "older": 3, "other": 1}
+    assert len(clouds["retaken"].boost_responses) == 3
+    for selected, expected in (("first", 3), ("other", 1)):
+        take = group["takes"][1] if selected == "first" else other["takes"][0]
+        take["take_id"] = record["take_id"]
+        result = speaker_fit(inputs, manifest, selected, take["take_id"])
+        assert result["cloud"]["design_poses"] == expected
+        assert result["vocabulary"] == ("bounded_boost" if expected == 3 else "cut_only")
+
+
+@pytest.mark.parametrize("held,declared,fault", [(False, False, "capture_clipped"), (True, True, None)])
+def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared, fault):
+    root, record, program, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    candidate = CrossoverCandidate(trim_db={"woofer": 0, "tweeter": -3}, delay_us=120 if held else 191,
+        polarity="normal" if held else "inverted", predicted_ripple_db=0.348, confidence=0 if held else 0.9,
+        alignment_objective=ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR if held else "summed_fit_committed",
+        summed_fit_rms_db=0.348, summed_fit_margin=1.1 if held else 2.12,
+        summed_fit_verdict="ambiguous" if held else "committed", delay_interval_us=(181, 201), seed_polarity_sign=1)
+    analysis = analysis_json(ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+        candidate=candidate, alignment=AlignmentEstimate(delay_us=candidate.delay_us, raw_delay_us=candidate.delay_us,
+            parallax_us=4.5 if declared else 0, polarity=candidate.polarity, polarity_sign=1 if held else -1,
+            confidence=candidate.confidence, seed_delay_us=120)))
+    expected = {"objective": candidate.alignment_objective, "delay_us": candidate.delay_us, "polarity": candidate.polarity,
+                "confidence": candidate.confidence, "summed_fit_rms_db": 0.348, "summed_fit_margin": candidate.summed_fit_margin,
+                "delay_interval_us": [181, 201], "summed_fit_verdict": candidate.summed_fit_verdict,
+                "alignment_seed_delay_us": 120, "seed_polarity": "normal", "parallax_us": 4.5 if declared else 0,
+                "parallax_from_declared_spacing": declared,
+                "snr": {"woofer": {"verdict": "ok", "shortfall_db": 0},
+                        "tweeter": {"verdict": "insufficient", "shortfall_db": 8.5}}}
+    profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied",
+               "source": {"measured_candidate_fingerprint": "applied-candidate"}, "config": {"sha256": "a" * 64},
+               "corrections": {"woofer": {"delay_ms": 0, "inverted": False}, "tweeter": {"delay_ms": 0.12, "inverted": False}},
+               "corrections_provenance": {role: {"delay_ms": "manual", "inverted": "manual"} for role in expected["snr"]}}
+    (root / "applied-profile.json").write_text(json.dumps(profile))
+    if declared:
+        draft_path = root / "design-draft.json"
+        draft = json.loads(draft_path.read_text())
+        draft["manual_settings"]["driver_spacing_mm"] = 150
+        draft_path.write_text(json.dumps(draft))
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    group = manifest_set([(path, record)], set_id="timing")
+    group["capture_basis"].update(role="woofer")
+    take = group["takes"][0]
+    evidence = {"snr": {role: {"alignment": {"worst_relevant": value}} for role, value in expected["snr"].items()}}
+    if held:
+        evidence = {f"snr.{role}.alignment.{key}": value for role, row in expected["snr"].items() for key, value in row.items()}
+    take.update(analysis=analysis, role="woofer", pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
+                quality={"evidence": evidence}, timing={"ended_s": 2})
+    refused = {**take, "take_id": "refused", "selected": False}
+    if fault:
+        refused["fault"] = fault
+    group["takes"] += [refused, {**take, "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20},
+                               "analysis": {**analysis, "delay_us": 900}, "timing": {"ended_s": 3}}]
+    manifest = write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
+        **group["capture_basis"], "role": "tweeter"}}])
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    pair, = packet["alignment"]
+    fit = speaker_fit(round_inputs(root), manifest, "timing", take["take_id"])
+    for answer in (pair, json.loads(json.dumps(fit["alignment"]))):
+        assert {key: answer[key] for key in expected} == expected
+        assert answer["applied"]["candidate"] == "applied-candidate"
+        assert answer["applied"]["record"] == "a" * 12
+        assert answer["applied"]["corrections"] == profile["corrections"]
+        assert answer["applied"]["corrections_provenance"] == profile["corrections_provenance"]
+    assert pair["take_id"] == take["take_id"]
+    lines = (root / INDEX_FILENAME).read_text().splitlines()
+    timing, = (line for line in lines if line.startswith("timing:"))
+    assert all(str(value) in timing for value in (candidate.alignment_objective, candidate.delay_us,
+               candidate.polarity, candidate.summed_fit_margin, "[181, 201]"))
+    assert ("parallax 0 (driver spacing undeclared)" in timing) is (not declared)
+    assert [line for line in lines if line.startswith("retakes:")] == ([f"retakes: refused {fault}"] if fault else [])
 
 
 @pytest.mark.parametrize("refused", [False, True])

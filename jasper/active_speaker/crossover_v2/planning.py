@@ -203,6 +203,7 @@ def analysis_json(
         "polarity_pinned": bool(cand.polarity_pinned) if cand else False,
         "left_anchor_lobe": bool(cand.left_anchor_lobe) if cand else None,
         "alignment_confidence": round(float(align.confidence), 4) if align else None,
+        "parallax_us": align.parallax_us if align else None,
         "alignment_confidence_source": align.confidence_source if align else None,
         "trim_db": (
             {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None

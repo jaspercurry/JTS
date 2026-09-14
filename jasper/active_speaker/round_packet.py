@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 from jasper.atomic_io import atomic_write_json
 
 from .applied_identity import applied_identity
+from .alignment_evidence import round_alignment
 from .baseline_profile import profile_linearization
 from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment
@@ -196,6 +197,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                    **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest) if purpose == PURPOSE_SPEAKER else [],
+              "alignment": round_alignment(manifest, sources.get("draft") or {}, profile) if purpose == PURPOSE_SPEAKER else [],
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if purpose == PURPOSE_SPEAKER:
         try:

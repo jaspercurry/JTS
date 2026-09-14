@@ -13,6 +13,8 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
+from jasper.active_speaker.alignment_evidence import alignment_evidence
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
@@ -76,18 +78,24 @@ def _round_candidate(directory: Path, manifest: Mapping[str, Any]) -> dict[str, 
 
 
 def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str, CloudFitTerms]:
-    clouds = {}
+    groups: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for group in manifest.get("sets", ()):
+        basis = group["capture_basis"]
+        identity = (basis.get("candidate_id"), basis.get("graph_fingerprint"))
+        key = (*identity, basis.get("side"), basis.get("role"),
+               group["set_id"] if not any(identity) else None)
+        groups.setdefault(key, []).append(group)
+    clouds: dict[str, CloudFitTerms] = {}
+    for (_, _, _, role, _), members in groups.items():
         bearings: dict[float, Mapping[str, Any]] = {}
-        role = group["capture_basis"].get("role")
-        for take in group["takes"]:
+        for take in sorted((take for group in members for take in group["takes"]),
+                           key=lambda t: ((t.get("timing") or {}).get("ended_s", 0), t.get("attempt", 0))):
             pose = take["pose"]
-            # The manifest's role is the per-driver statement; a set's stimulus names its geometry.
             if role and role != REGIME_SUMMED and (take.get("role") or role) == role and (
                 take["selected"] and take.get("phase") == "measure" and
                 pose.get("kind") == POSE_KIND_BEARING and pose.get("deg") is not None
             ):
-                bearings.setdefault(pose["deg"], take)
+                bearings[pose["deg"]] = take
         cloud = CloudFitTerms(n_positions=len(bearings))
         if len(bearings) >= 3:
             try:
@@ -114,7 +122,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
                 cloud = replace(cloud, band_spread=_band_spread(grid, stacked), boost_responses=tuple(responses))
             except (OSError, ValueError, TypeError, LookupError, StopIteration):
                 pass
-        clouds[group["set_id"]] = cloud
+        clouds.update((group["set_id"], cloud) for group in members)
     return clouds
 
 
@@ -205,7 +213,7 @@ def speaker_fit(
     clouds = {}
     if vocabulary is None:
         if clouds_by_set is None:
-            clouds_by_set = design_clouds(inputs, {"sets": [selected._asdict()]})
+            clouds_by_set = design_clouds(inputs, manifest)
         if cloud := clouds_by_set.get(selected.set_id):
             clouds[selected.capture_basis.get("role") or ""] = cloud
     try:
@@ -240,15 +248,7 @@ def speaker_fit(
     return dict(
         set_id=selected.set_id, take_id=take_id,
         vocabulary=selected_fit["vocabulary"], cloud=selected_fit["cloud"], linearization=linearization,
-        alignment={
-            "committed": {"delay_us": analysis.get("delay_us"), "polarity": analysis.get("polarity"),
-                          "ripple_db": analysis.get("predicted_ripple_db")},
-            "seed": {"delay_us": analysis.get("alignment_seed_delay_us"), "polarity": analysis.get("seed_polarity"),
-                     "ripple_db": analysis.get("alignment_seed_ripple_db")},
-            "objective": analysis.get("alignment_objective"),
-            **{key: analysis.get(key) for key in (
-                "drift_us", "flatness_improvement_db", "anchor_delay_us", "snap_delta_us",
-            )},
-        },
+        alignment=alignment_evidence(analysis, take.get("quality") or {}, draft,
+                                     load_applied_baseline_profile_state(inputs.applied_profile_path) if inputs.applied_profile_path else None),
         trim=analysis.get("trim_decision"),
     )

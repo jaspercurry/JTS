@@ -117,8 +117,18 @@ def packet_index(
              f"Measured: poses {'; '.join(poses)}; level: {json.dumps(packet['level'])}",
              f"Applied: candidate {str(packet['applied']['candidate'] or '')[:12]} · record {packet['applied']['record']} · "
              f"{json.dumps(packet['applied']['layers'], separators=(',', ':'))}",
-             f"Result: {packet['result']}; reason: {packet['reason']}",
-             "## Decisions"]
+             f"Result: {packet['result']}; reason: {packet['reason']}"]
+    for pair in packet.get("alignment", ()):
+        parallax = json.dumps(pair["parallax_us"])
+        if pair["parallax_us"] == 0 and not pair["parallax_from_declared_spacing"]:
+            parallax = "0 (driver spacing undeclared)"
+        lines.append(f"timing: {'/'.join(pair['roles'])} · {pair['take_id']} · {pair['objective']}; "
+                     f"delay {pair['delay_us']} us; polarity {pair['polarity']}; margin {pair['summed_fit_margin']}; "
+                     f"interval {json.dumps(pair['delay_interval_us'])} us; parallax {parallax}")
+    lines += list(dict.fromkeys(f"retakes: {take['take_id']} {fault}"
+                               for group in manifest.get("sets", ()) for take in group["takes"]
+                               if not take["selected"] and (fault := take.get("fault") or (take.get("quality") or {}).get("fault"))))
+    lines.append("## Decisions")
     commissioning = packet.get("commissioning") or {}
     if commissioning.get("candidate_fingerprint"):
         lines.insert(4, f"commissioning: apply {commissioning['candidate_fingerprint']} to finish")
