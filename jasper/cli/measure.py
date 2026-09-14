@@ -1114,7 +1114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # speaker was measured through.
     logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     from jasper.env_load import load_env_files
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     load_env_files()
     # Installs this process's VolumeOwner AND the canonical target the duck

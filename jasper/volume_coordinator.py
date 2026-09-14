@@ -47,7 +47,7 @@ from .assistant_volume import (
     volume_context_stamp_boot_ns,
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
-from .busctl import run_busctl
+from . import busctl
 from .log_event import log_event
 from .music_sources import (
     MUSIC_SOURCE_VALUES,
@@ -60,7 +60,7 @@ from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from .volume_owner import VolumeClaimRefused, VolumeOwner, install_volume_owner
+from .volume_owner import VolumeClaimRefused, VolumeOwner
 from .volume_scales import (
     listening_level_to_bt_volume,
     listening_level_to_spotify_percent,
@@ -69,7 +69,6 @@ from .volume_scales import (
 from .volume_state import SourceHandoff, VolumeState, _OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
-    configured_path as volume_state_path,
     percent_to_db,
     regress_listening_level_if_stale,
 )
@@ -2588,7 +2587,7 @@ class VolumeCoordinator:
                 "bluetooth volume set: no active transport, skipping",
             )
             return False
-        ok = await _busctl_set_property(
+        ok = await busctl.set_property(
             "org.bluealsa", path,
             "org.bluez.MediaTransport1",
             "Volume",
@@ -2719,107 +2718,3 @@ class VolumeCoordinator:
             },
         )
         return bool(ok)
-
-
-# ----------------------------------------------------------------------
-# DBus helpers — protocol/property policy stays here while the shared busctl
-# boundary owns one-shot subprocess lifecycle and timeout cleanup.
-# ----------------------------------------------------------------------
-
-async def _busctl_set_property(
-    bus_name: str,
-    object_path: str,
-    interface: str,
-    prop: str,
-    signature: str,
-    value: str,
-    *,
-    bus: str = "--system",
-) -> bool:
-    """Run `busctl set-property` for one property. Returns True on
-    success, False on any error (logged at debug)."""
-    # `--` before the typed value keeps a leading-`-` value out of busctl's
-    # option parser. The shared runner uses asyncio.timeout (not wait_for),
-    # preserving this directly-awaited transition chain's cancellation rule.
-    result = await run_busctl(
-        "set-property",
-        bus_name, object_path, interface, prop, signature, "--", value,
-        bus=bus,
-    )
-    if result is None:
-        logger.debug("busctl set-property %s.%s failed", interface, prop)
-        return False
-    if result.returncode != 0:
-        logger.debug(
-            "busctl set-property %s.%s rc=%d stderr=%s",
-            interface, prop, result.returncode,
-            result.stderr.decode("utf-8", "replace") if result.stderr else "",
-        )
-        return False
-    return True
-
-
-async def env_canonical_target_db() -> float:
-    """Read current household intent through the active source coordinator."""
-    # lazy: import cost — every wizard, CLI and daemon that imports this module
-    # to read the projection would otherwise load the whole actuator graph.
-    from jasper import librespot_state
-    from jasper.camilla import primary_controller
-    from jasper.renderer import RendererClient
-
-    coord = VolumeCoordinator(
-        camilla=primary_controller(),
-        persistence=VolumePersistence(volume_state_path()),
-        backend=RendererClient(
-            librespot_state_path=librespot_state.configured_path(),
-        ),
-    )
-    coord.load_persisted_level()
-    return await coord.get_camilla_target_db()
-
-
-def install_env_canonical_target_provider() -> None:
-    """Register this process's canonical main_volume target AND its fader owner.
-
-    Both, from one call: a process with one but not the other would be
-    half-arbitrated, and every existing call site gets the owner without an
-    edit of its own — so the two cannot drift apart.
-
-    Every process that performs a CamillaDSP graph swap needs one. A swap's
-    duck release lands at ``min(canonical, current + own depth)``; with no
-    canonical target it falls back to the entry snapshot, which an interleaved
-    voice cue may already have ducked, stranding the fader tens of dB quiet
-    inside the band `maybe_reconcile_camilla` refuses to heal. Every swap that
-    ducks now uses the canonical target, with no exception.
-
-    A process that already owns a long-lived coordinator registers that
-    coordinator's own :meth:`VolumeCoordinator.get_camilla_target_db` instead
-    (jasper-voice does), and registers that coordinator's ``volume_owner`` as
-    the process owner rather than building a second. The rest call this: the
-    coordinator is built per call rather than held, because a release happens
-    once per graph swap and a socket-activated wizard has to stay light.
-
-    **The owner is held, not per call** — unlike the target reader above. It
-    carries the claim ledger, so a fresh one per call would be a fresh set of
-    claims and no arbitration at all. Its controller is lazy (``_ensure``
-    connects on first use), so holding one costs a wizard nothing until
-    something actually claims the fader.
-
-    Which processes call it is pinned by
-    ``tests/test_canonical_target_registration.py``.
-    """
-    # lazy: import cost — see env_canonical_target_db above.
-    from jasper.camilla import primary_controller, set_canonical_target_db_provider
-
-    set_canonical_target_db_provider(env_canonical_target_db)
-
-    # Bound with best_effort=True: the owner's doors must report failure, not
-    # raise it (``volume_latch.FADER_IO_ERRORS`` states that contract, and
-    # ``CamillaUnavailable`` is deliberately not in it).
-    fader = primary_controller()
-    install_volume_owner(
-        VolumeOwner(
-            set_fader_db=lambda db: fader.set_volume_db(db, best_effort=True),
-            get_fader_db=lambda: fader.get_volume_db(best_effort=True),
-        )
-    )

@@ -983,7 +983,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # The live pair-balance trim patches the graph from this process, so its
     # swap duck needs a canonical target to release to.
-    from ..volume_coordinator import install_env_canonical_target_provider
+    from ..volume_process import install_env_canonical_target_provider
 
     install_env_canonical_target_provider()
 

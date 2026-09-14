@@ -1696,7 +1696,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # `reconcile_current_dsp` swaps the live graph from this process, so its
     # swap duck needs a canonical target to release to.
-    from jasper.volume_coordinator import (  # lazy: import cost, CLI-only (ADR-0226)
+    from jasper.volume_process import (  # lazy: import cost, CLI-only (ADR-0226)
         install_env_canonical_target_provider,
     )
 

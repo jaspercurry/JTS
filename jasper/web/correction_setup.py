@@ -748,7 +748,7 @@ def _start(args, tracker) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     from . import _wizard_cli
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     # Crossover applies swap the live graph from this process, so their
     # swap duck needs a canonical target to release to.

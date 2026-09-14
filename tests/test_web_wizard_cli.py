@@ -99,10 +99,10 @@ def wizard_harness_fixture(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_claim_crossover_state_owners", lambda: None
     )
-    from jasper import volume_coordinator
+    from jasper import volume_process
 
     monkeypatch.setattr(
-        volume_coordinator,
+        volume_process,
         "install_env_canonical_target_provider",
         lambda: None,
     )

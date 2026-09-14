@@ -1770,7 +1770,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     # Step 5 below swaps the live CamillaDSP graph, so its swap duck needs a
     # canonical target to release to.
-    from jasper.volume_coordinator import install_env_canonical_target_provider  # lazy: import cost — only main()'s CLI oneshot needs this; callers that import this module for its pure plan()/probe functions never reach main()
+    from jasper.volume_process import install_env_canonical_target_provider  # lazy: import cost — only main()'s CLI oneshot needs this; callers that import this module for its pure plan()/probe functions never reach main()
 
     install_env_canonical_target_provider()
 

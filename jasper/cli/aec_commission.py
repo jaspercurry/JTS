@@ -922,7 +922,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # owner. Registered AFTER the `--emit-class-entry` early exit: that
     # path prints a registry row and touches no hardware, so it should not
     # build a Camilla controller. See tests/test_canonical_target_registration.py.
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     install_env_canonical_target_provider()
     handlers = {

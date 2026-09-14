@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -90,3 +93,36 @@ async def system_busctl(
     if result is None or result.returncode != 0:
         return None
     return result.stdout
+
+
+async def set_property(
+    bus_name: str,
+    object_path: str,
+    interface: str,
+    prop: str,
+    signature: str,
+    value: str,
+    *,
+    bus: str = "--system",
+) -> bool:
+    """Run `busctl set-property` for one property. Returns True on
+    success, False on any error (logged at debug)."""
+    # `--` before the typed value keeps a leading-`-` value out of busctl's
+    # option parser. The shared runner uses asyncio.timeout (not wait_for),
+    # preserving this directly-awaited transition chain's cancellation rule.
+    result = await run_busctl(
+        "set-property",
+        bus_name, object_path, interface, prop, signature, "--", value,
+        bus=bus,
+    )
+    if result is None:
+        logger.debug("busctl set-property %s.%s failed", interface, prop)
+        return False
+    if result.returncode != 0:
+        logger.debug(
+            "busctl set-property %s.%s rc=%d stderr=%s",
+            interface, prop, result.returncode,
+            result.stderr.decode("utf-8", "replace") if result.stderr else "",
+        )
+        return False
+    return True

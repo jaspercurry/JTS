@@ -546,7 +546,7 @@ def main() -> int:
     configure_logging()
     # `/sound/eq/` and `/sound/` apply generated DSP configs from this process, so
     # their graph swaps need a canonical target to release the swap duck to.
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     install_env_canonical_target_provider()
 
