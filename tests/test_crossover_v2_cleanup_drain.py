@@ -7,7 +7,6 @@ from __future__ import annotations
 from jasper.web import correction_crossover_v2_state as v2state
 
 import asyncio
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -40,8 +39,7 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
     monkeypatch.setattr(plan_run, "run_plan", execute)
     runner = build_v2_wired_run_and_consume(
         SimpleNamespace(_measure_gain_ceiling_db={}), door=door,
-        stop_event=threading.Event(), stop_lock=threading.Lock(), ceiling_s=30,
-        complete_event=threading.Event(), retake_event=threading.Event(),
+        signals=plan_run.RunSignals(), ceiling_s=30,
         manifest=None, request=None, captures=None, analyze=None, assessor=None,
     )
     if failure:

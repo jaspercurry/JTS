@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
 from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
+from jasper.active_speaker.plan_run import RunSignals
 from tests.test_active_speaker_measurement_door import box as box
 from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
@@ -225,18 +226,14 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
         return "wired-run"
 
     monkeypatch.setattr(v2wired, "build_v2_wired_run_and_consume", _wired_builder)
-    complete = threading.Event()
-    retake = threading.Event()
+    signals = RunSignals()
 
     assert v2host._build_wired_run(
         "conductor",
-        stop_event=threading.Event(), stop_lock=threading.Lock(),
-        position_gate=None, evidence_refs={},
-        ceiling_s=42.0, complete_event=complete, retake_event=retake,
+        signals=signals, position_gate=None, evidence_refs={}, ceiling_s=42.0,
     ) == "wired-run"
     assert built["ceiling_s"] == 42.0
-    assert built["complete_event"] is complete
-    assert built["retake_event"] is retake
+    assert built["signals"] is signals
 
 
 # --------------------------------------------------------------------------- #

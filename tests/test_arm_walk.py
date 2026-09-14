@@ -207,7 +207,7 @@ def _walk(mover, session, *, clock=None, trail=None, **cfg):
     clock = clock or FakeWalkClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
-        "stuck_alarm_s": 300.0, "unreadable_ceiling_s": 60.0, **cfg,
+        "unreadable_ceiling_s": 60.0, **cfg,
     })
     return aw.ArmWalk(
         mover, session, config,
