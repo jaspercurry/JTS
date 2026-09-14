@@ -190,10 +190,18 @@ fn classify_ring_attach_error(lane: &str, path: &str, e: io::Error) -> anyhow::E
 /// jasper-fanin's `watchdog.rs::notify_stopping`/heartbeat `run()` use the
 /// same non-fatal match-and-log pattern for the same reason: a `NOTIFY_SOCKET`
 /// hiccup is not a reason to stop mixing or to lose a runtime error's exit
-/// classification.
-fn notify_best_effort(state: NotifyState<'_>, event: &str) {
-    if let Err(e) = jasper_daemon::notify(state) {
-        eprintln!("event={event} detail={e}");
+/// classification. Returns whether the send succeeded so a watchdog ping is
+/// counted only on success — jasper-fanin's heartbeat `fetch_add`s
+/// `pings_sent` only in its `Ok` arm for the same reason: a climbing
+/// `pings_sent` must never mask a live `NOTIFY_SOCKET` failure until
+/// `WatchdogSec` kills the unit.
+fn notify_best_effort(state: NotifyState<'_>, event: &str) -> bool {
+    match jasper_daemon::notify(state) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("event={event} detail={e}");
+            false
+        }
     }
 }
 
@@ -233,8 +241,9 @@ fn run_fake(
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
-            notify_best_effort(NotifyState::Watchdog, "outputd.sd_notify_watchdog_failed");
-            state.mark_watchdog_ping();
+            if notify_best_effort(NotifyState::Watchdog, "outputd.sd_notify_watchdog_failed") {
+                state.mark_watchdog_ping();
+            }
             last_watchdog = Instant::now();
         }
         thread::sleep(period);
@@ -703,8 +712,9 @@ fn run_alsa(
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
-            notify_best_effort(NotifyState::Watchdog, "outputd.sd_notify_watchdog_failed");
-            state.mark_watchdog_ping();
+            if notify_best_effort(NotifyState::Watchdog, "outputd.sd_notify_watchdog_failed") {
+                state.mark_watchdog_ping();
+            }
             last_watchdog = Instant::now();
         }
     }
