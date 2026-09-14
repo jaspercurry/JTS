@@ -12,7 +12,6 @@ import asyncio
 import logging
 import os
 import secrets
-import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
@@ -107,8 +106,7 @@ def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
 
 
 def build_v2_wired_run_and_consume(
-    conductor: Any, *, stop_event: threading.Event, stop_lock: Any,
-    ceiling_s: float, complete_event: threading.Event, retake_event: threading.Event,
+    conductor: Any, *, signals: plan_run.RunSignals, ceiling_s: float,
     door: plan_run.RunDoor, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
     position_gate: Any = None, evidence_refs: Mapping[str, Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
@@ -117,10 +115,9 @@ def build_v2_wired_run_and_consume(
 
         session_id = pi_session.session_id
         deadline = monotonic() + ceiling_s
-        signals = plan_run.RunSignals(retake_event, complete_event, stop_event)
 
         def admit(index: int, attempt: int, entry: Any, ledger: Any) -> None:
-            if stop_event.is_set():
+            if signals.stop.is_set():
                 raise CaptureStopped("capture stopped")
             if monotonic() > deadline:
                 raise CaptureBeginRefused("session_ceiling_expired", "The run exceeded its time limit")
@@ -131,7 +128,7 @@ def build_v2_wired_run_and_consume(
             envelope = refusal_envelope(exc)
             code = envelope["code"] or "internal_error"
             if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):
-                code = "user_stopped"
+                code = signals.stop_reason
             envelope = refusal_envelope(code=code)
             if position_gate is not None:
                 position_gate.abandon_hold()
@@ -144,14 +141,14 @@ def build_v2_wired_run_and_consume(
                 result = await plan_run.run_plan(
                     request, door=door, manifest=manifest, analyze=analyze, assessor=assessor,
                     gate=position_gate, captures=captures,
-                    signals=signals, admit=admit, aborts={CaptureStopped: "user_stopped"},
+                    signals=signals, admit=admit, aborts={},
                     gain_ceiling_db=conductor._measure_gain_ceiling_db,
                 )
             finally:
                 restore = door.opened.restore_result if door.opened else None
                 v2state._persist_execution_result(session_id, volume_restore=restore.value if restore else "failed")
             if result.reason and result.reason != "complete_requested":
-                if result.reason == "user_stopped" or result.cancelled:
+                if result.reason == signals.stop_reason or result.cancelled:
                     raise CaptureStopped("capture stopped")
                 raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm

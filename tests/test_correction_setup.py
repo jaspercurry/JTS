@@ -67,7 +67,7 @@ def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
                 label="crossover_sweep:driver",
                 open=open_capture,
                 run_and_consume=run_and_consume,
-                request_stop=stop_event.set,
+                request_stop=lambda reason: stop_event.set(),
             ),
             idle_hold=no_hold,
         )
@@ -299,7 +299,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
             label="crossover_v2:session",
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
-            request_stop=lambda: None,
+            request_stop=lambda reason: None,
             # An ungated session carries no position gate; the field is
             # stated rather than omitted so this stub keeps matching the real
             # V2PreparedSession the dispatch reads.
@@ -392,7 +392,7 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
             ),
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
-            request_stop=lambda: None,
+            request_stop=lambda reason: None,
             position_gate=None,
             request_complete=None,
             request_retake=None, join_spec=None, session_id="test",
@@ -423,7 +423,7 @@ def test_capture_stop_callback_is_atomic_with_starting_state():
     try:
         assert correction_capture._begin_capture_slot(
             kind,
-            request_stop=stopped.set,
+            request_stop=lambda reason: stopped.set(),
         )
         response = correction_capture._request_capture_stop("crossover_sweep:")
         assert response["status"] == "stopping"

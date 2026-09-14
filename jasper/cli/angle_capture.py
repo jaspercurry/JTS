@@ -136,18 +136,18 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--idle-ceiling-s", type=float, default=arm_walk.DEFAULT_IDLE_CEILING_S,
-        help="give up when nothing is pending this long (default: %(default)s)",
+        help="give up after this long without session progress (default: %(default)s)",
     )
     parser.add_argument(
         "--stuck-alarm-s", type=float, default=arm_walk.DEFAULT_STUCK_ALARM_S,
         help=(
-            "in flight, nothing pending, nothing released this long is a "
-            "capture awaiting a human -- name it and stop (default: %(default)s)"
+            "stop an in-flight run after this long without executor progress "
+            "or a mic release (default: %(default)s)"
         ),
     )
     parser.add_argument(
         "--trail", type=Path, default=None,
-        help="append one JSON object per event to this file",
+        help="append JSON event rows with the joined session id; keep previous runs",
     )
 
 

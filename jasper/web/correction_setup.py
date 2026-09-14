@@ -392,7 +392,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
             return
 
         if path == "/crossover/capture-cancel":
-            handler._send_json(correction_handlers._handle_crossover_capture_cancel())
+            handler._send_json(correction_handlers._handle_crossover_capture_cancel(correction_runtime.read_json_body(handler)))
             return
 
         if path == "/crossover/reset":

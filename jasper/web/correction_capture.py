@@ -29,7 +29,7 @@ from typing import Any
 
 from ..active_speaker.capture_status import CAPTURE_COMPLETE, CAPTURE_STOPPED, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from ..audio_measurement import household_mic
-from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_USER_STOPPED
 from ..log_event import log_event
 
 from ._common import refusal_envelope
@@ -47,7 +47,7 @@ _join_lock = threading.Lock()  # Serialize HTTP joins without holding the loop-s
 
 _capture_slot: dict[str, Any] | None = None
 _pending_capture: tuple[CaptureKind, Callable[[str], AbstractContextManager[Any]]] | None = None
-_capture_stop_request: Callable[[], None] | None = None
+_capture_stop_request: Callable[[str], None] | None = None
 _capture_position_gate: Any | None = None
 _capture_complete_request: Callable[[], None] | None = None
 _capture_retake_request: Callable[[], None] | None = None
@@ -149,7 +149,7 @@ def _begin_capture_slot(
     kind_label: str,
     *,
     session_id: str = "",
-    request_stop: Callable[[], None] | None = None,
+    request_stop: Callable[[str], None] | None = None,
     position_gate: Any | None = None,
     request_complete: Callable[[], None] | None = None,
     request_retake: Callable[[], None] | None = None,
@@ -194,7 +194,7 @@ def _publish_capture_waiting(kind_label: str, *, joined: bool = False) -> dict[s
         return dict(_capture_slot)
 
 
-def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
+def _request_capture_stop(kind_prefix: str, reason: str = REASON_USER_STOPPED) -> dict[str, Any]:
     """Signal the active matching capture owner and expose Stop as in progress.
 
     The owner publishes ``stopped`` only after its capture worker, audio
@@ -227,7 +227,7 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
             # Request callbacks are deliberately non-blocking signals. Fire
             # one under the same lock as the public state so another tab can
             # never observe ``stopping`` before the owner is actually signaled.
-            callback()
+            callback(reason)
         except (OSError, RuntimeError, ValueError) as exc:
             _capture_slot = {
                 **capture,
@@ -257,7 +257,7 @@ class CaptureKind:
     label: str
     open: Callable[[], Any]
     run_and_consume: Callable[[Any], Awaitable[None]]
-    request_stop: Callable[[], None] | None = None
+    request_stop: Callable[[str], None] | None = None
     position_gate: Any | None = None
     #: The session's all-spots-measured signal, or None. Routed to
     #: POST /crossover/v2/complete via the slot, with the same lifecycle
