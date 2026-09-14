@@ -417,17 +417,19 @@ PY
 # Remove once the /wifi/ wizard is the only way WiFi gets provisioned (no
 # Imager/raspi-config pre-set WiFi left to adopt).
 migrate_wifi_guardian() {
-    # Un-escape one nmcli terse-format field. `nmcli -t` escapes a
-    # literal ':' as '\:' and a literal '\' as '\\'; collapse '\\'
-    # first so a literal backslash immediately before a real ':' isn't
-    # mistaken for an escape of it. Nested (not top-level) so
-    # tests/test_install_wifi_guardian_migration.py's function-body
-    # extraction keeps seeing exactly one `migrate_wifi_guardian`.
+    # Nested (not top-level): tests/test_install_wifi_guardian_migration.py
+    # extracts this function body with `sed '/^migrate_wifi_guardian()/,/^}/'`,
+    # which stops at the first column-0 '}' — a top-level helper defined
+    # before it would be left out of the extracted snippet.
+    #
+    # `nmcli -t` escapes a literal ':' in a value as '\:'; reverse that so a
+    # NAME/SSID containing one (e.g. "Cafe:Work") is matched rather than
+    # truncated. A literal '\' is left as-is, matching
+    # deploy/bin/jasper-wifi-guardian's nm_unescape — the canonical
+    # full-fidelity parser is jasper.web.wifi_setup._parse_terse if ever
+    # needed.
     _migrate_wifi_unescape_nmcli() {
-        local v="$1" sentinel=$'\x01'
-        v="${v//\\\\/${sentinel}}"
-        v="${v//\\:/:}"
-        printf '%s' "${v//${sentinel}/\\}"
+        printf '%s' "${1//\\:/:}"
     }
 
     local stash="${STATE_DIR}/wifi_guardian.env"
@@ -440,14 +442,13 @@ migrate_wifi_guardian() {
     # host. Don't bother seeding.
     command -v nmcli >/dev/null 2>&1 || return 0
 
-    # Find the active wifi profile NAME. `nmcli` field "TYPE" reports
-    # `802-11-wireless` for wifi connections. TYPE is always the last
-    # field and never contains ':', so $NF lands on it even when NAME
-    # has an escaped ':' that a plain `awk -F: '$2 ...'` would
-    # misparse into a silent no-op.
+    # Find the active wifi profile NAME. TYPE comes first in `-f TYPE,NAME`
+    # so the first ':' is an unambiguous field boundary even when NAME
+    # contains one (TYPE never does) — same query
+    # deploy/bin/jasper-wifi-guardian's ACTIVE_NAME uses.
     local active
-    active=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
-             | awk -F: '$NF ~ /wifi|wireless/ { sub(/:[^:]*$/, ""); print; exit }')
+    active=$(nmcli -t -f TYPE,NAME connection show --active 2>/dev/null \
+             | awk -F: '$1 ~ /wifi|wireless/ { sub(/^[^:]*:/, ""); print; exit }')
     active="$(_migrate_wifi_unescape_nmcli "${active}")"
     [[ -z "${active}" ]] && return 0
 

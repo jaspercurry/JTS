@@ -30,12 +30,17 @@ def _write_fake_nmcli(
     *,
     active: str,
     secrets: str,
+    secrets_name: str = "",
 ) -> None:
     """Write a fake nmcli that responds to the two queries the
     migration helper makes.
 
-    `active`: response for `nmcli -t -f NAME,TYPE connection show --active`
+    `active`: response for `nmcli -t -f TYPE,NAME connection show --active`
     `secrets`: response for `nmcli -s -t -f 802-11-... connection show NAME`
+    `secrets_name`: when non-empty, the secrets response is withheld unless
+    nmcli's `connection show` NAME argument (its last positional arg)
+    equals this exactly — proves the caller unescaped the active profile
+    name before using it as an nmcli argument.
     """
     fake = bin_dir / "nmcli"
     fake.write_text(rf"""#!/bin/bash
@@ -51,12 +56,16 @@ NMCLI_ACTIVE
     exit 0
 fi
 
-# Show-secrets variant for `connection show <NAME>`.
+# Show-secrets variant for `connection show <NAME>`. NAME is nmcli's last
+# positional argument.
 secrets_flag=0
 for a in "$@"; do
     [[ "$a" == "-s" ]] && secrets_flag=1
 done
 if [[ "$secrets_flag" == "1" ]]; then
+    if [[ -n "{secrets_name}" && "${{!#}}" != "{secrets_name}" ]]; then
+        exit 0
+    fi
     cat <<'NMCLI_SECRETS'
 {secrets}
 NMCLI_SECRETS
@@ -72,6 +81,7 @@ def _run_migrate(
     *,
     active: str = "",
     secrets: str = "",
+    secrets_name: str = "",
     pre_stash: str | None = None,
     with_nmcli: bool = True,
 ) -> subprocess.CompletedProcess[str]:
@@ -88,7 +98,7 @@ def _run_migrate(
         assert target is not None, f"{name} is required for this test"
         (bin_dir / name).symlink_to(target)
     if with_nmcli:
-        _write_fake_nmcli(bin_dir, active=active, secrets=secrets)
+        _write_fake_nmcli(bin_dir, active=active, secrets=secrets, secrets_name=secrets_name)
 
     # Build a shell wrapper that sources only the helper definitions
     # (NOT the full install run — install.sh isn't designed to be
@@ -138,7 +148,7 @@ def test_migrate_wifi_guardian_seeds_from_active_profile(tmp_path):
     the live NM profile."""
     proc = _run_migrate(
         tmp_path,
-        active="Home:802-11-wireless\n",
+        active="802-11-wireless:Home\n",
         secrets=(
             "802-11-wireless.ssid:Home\n"
             "802-11-wireless-security.psk:homepsk\n"
@@ -156,7 +166,7 @@ def test_migrate_wifi_guardian_seeded_file_is_mode_0600(tmp_path):
     """The stash contains the PSK — must be root-readable only."""
     _run_migrate(
         tmp_path,
-        active="Home:802-11-wireless\n",
+        active="802-11-wireless:Home\n",
         secrets=(
             "802-11-wireless.ssid:Home\n"
             "802-11-wireless-security.psk:p\n"
@@ -178,7 +188,7 @@ def test_migrate_wifi_guardian_idempotent_when_stash_exists(tmp_path):
     )
     _run_migrate(
         tmp_path,
-        active="DifferentNet:802-11-wireless\n",
+        active="802-11-wireless:DifferentNet\n",
         secrets=(
             "802-11-wireless.ssid:DifferentNet\n"
             "802-11-wireless-security.psk:differentpsk\n"
@@ -204,7 +214,7 @@ def test_migrate_wifi_guardian_noop_without_active_wifi(tmp_path):
     create an empty stash."""
     proc = _run_migrate(
         tmp_path,
-        active="eth0:802-3-ethernet\n",
+        active="802-3-ethernet:eth0\n",
     )
     assert proc.returncode == 0
     assert not (tmp_path / "state" / "wifi_guardian.env").exists()
@@ -215,7 +225,7 @@ def test_migrate_wifi_guardian_skips_enterprise(tmp_path):
     refuse to act on."""
     proc = _run_migrate(
         tmp_path,
-        active="EnterpriseNet:802-11-wireless\n",
+        active="802-11-wireless:EnterpriseNet\n",
         secrets=(
             "802-11-wireless.ssid:EnterpriseNet\n"
             "802-11-wireless-security.psk:\n"
@@ -229,16 +239,21 @@ def test_migrate_wifi_guardian_skips_enterprise(tmp_path):
 def test_migrate_wifi_guardian_unescapes_colon_in_profile_name(tmp_path):
     """nmcli terse output escapes a literal ':' in a field as '\\:'. A
     NAME containing one (e.g. "Kitchen:Office") must still be matched
-    against TYPE and recovered verbatim, not silently no-op or leave
-    the SSID with a stray backslash."""
+    against TYPE and recovered verbatim — both for the stashed SSID and
+    for the NAME argument passed to the second nmcli call, not silently
+    no-op or leave the SSID with a stray backslash. `secrets_name`
+    withholds the secrets response unless nmcli is asked to
+    `connection show` the UNESCAPED name, so a still-escaped NAME
+    fails this test rather than merely looking wrong in the stash."""
     proc = _run_migrate(
         tmp_path,
-        active=r"Kitchen\:Office:802-11-wireless" + "\n",
+        active=r"802-11-wireless:Kitchen\:Office" + "\n",
         secrets=(
             r"802-11-wireless.ssid:Kitchen\:Office" + "\n"
             "802-11-wireless-security.psk:homepsk\n"
             "802-11-wireless-security.key-mgmt:wpa-psk\n"
         ),
+        secrets_name="Kitchen:Office",
     )
     assert proc.returncode == 0, proc.stderr
     fields = _stash_lines(tmp_path)
@@ -253,7 +268,7 @@ def test_migrate_wifi_guardian_psk_not_in_stdout(tmp_path):
     secret_psk = "ultra-secret-install-time-psk"
     proc = _run_migrate(
         tmp_path,
-        active="Home:802-11-wireless\n",
+        active="802-11-wireless:Home\n",
         secrets=(
             f"802-11-wireless.ssid:Home\n"
             f"802-11-wireless-security.psk:{secret_psk}\n"
