@@ -73,7 +73,7 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_FRAME_LEDGER,
-    INTEGRITY_CHECK_RENDER_GAP,
+    INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_SWEEP_HEARD,
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
@@ -280,7 +280,7 @@ def test_verify_diag_discloses_integrity_on_pass_and_on_refusal(caplog):
     # check is disclosed by name — never which name comes first.
     not_evaluated = fields["integrity_not_evaluated"].split(",")
     assert INTEGRITY_CHECK_REPEAT_EPSILON in not_evaluated
-    assert INTEGRITY_CHECK_RENDER_GAP in not_evaluated
+    assert INTEGRITY_CHECK_CAPTURE_OVERRUN in not_evaluated
     assert INTEGRITY_CHECK_FRAME_LEDGER in not_evaluated
     assert fields["integrity_locate_confidence_min"] == "0.9"
     assert fields["integrity_residual_ms_worst"] == "0.0"

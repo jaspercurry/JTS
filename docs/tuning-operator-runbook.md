@@ -53,6 +53,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `bass_table_window_gain_missing` | The bass capture lacks a complete resolved window gain. | Record Main, Aux1 and program identity on each take | `hard_stop` |
 | `bass_target_invalid` | The bass target curve is invalid. | Supply an ordered target curve from 20 to 200 Hz | `hard_stop` |
 | `boost_over_declared_bound` | The measured boost exceeded its bound. Check the restore result before applying another tuning. |  | `hard_stop` |
+| `capture_overrun` | The wizard could not keep up with the microphone. Stop polling it during a take. | Stop polling it during a take. | `silent_auto_retry` |
 | `capture_slot_busy` | Another measurement holds the capture slot. Finish or cancel it, then join again. | Review the active measurement | `hard_stop` |
 | `capture_timeout` | The measurement link timed out. Start over from this page to measure again — the quick microphone check runs first. |  | `session_restart` |
 | `channel_map_mismatch` | JTS could not confirm that the drivers played in the expected order. Return to speaker setup and check the wiring before measuring again. |  | `hard_stop` |

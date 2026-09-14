@@ -18,11 +18,17 @@ silently dropping driver protection:
 """
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import declared_profile_fixture
+
 import json
 from pathlib import Path
 from unittest import mock
 
 import pytest
+
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 from jasper.active_speaker.runtime_contract import (
@@ -79,28 +85,20 @@ def classify_camilla_graph(*args, **kwargs):
 
 
 def _real_active_applied_baseline(tmp_path):
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from tests.test_active_speaker_baseline_profile import (
         _draft,
         _dual_apple_topology,
         _measurements,
-        _valid_config,
     )
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    applied = build_baseline_profile_candidate(
+    applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        crossover_preview=build_crossover_preview(draft),
         measurements=_measurements(topology, tmp_path),
         write=False,
-        state_path=tmp_path / "active-speaker-profile.json",
         config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
-        validate=_valid_config,
     )
     applied["status"] = "applied"
     return topology, applied
@@ -1223,6 +1221,7 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path,
     from tests.active_speaker_fixtures import declare_applied_fixture
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     declare_applied_fixture(monkeypatch, topology, applied)
+    applied["source"].pop("measured_candidate_fingerprint")
     preset["crossover_regions"][0]["fc_hz"] = 1500.0
 
     with mock.patch(

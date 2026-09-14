@@ -37,7 +37,7 @@ from jasper.active_speaker.crossover_v2.verification import (
 )
 from jasper.audio_measurement.frame_ledger import (
     LOST_AT_ENCODER_TO_HOST,
-    LOST_AT_RENDER_GRAPH,
+    LOST_AT_CAPTURE_OVERRUN,
     LOST_AT_WORKLET_TO_ENCODER,
     LOST_AT_WORKLET_TO_HOST,
     FrameLedger,
@@ -51,7 +51,7 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.program_analysis import (
     CAPTURE_BOUND_MARGIN_S,
     INTEGRITY_CHECK_FRAME_LEDGER,
-    INTEGRITY_CHECK_RENDER_GAP,
+    INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_NOT_EVALUATED,
     INTEGRITY_PASS,
     MeasurementPriors,
@@ -128,8 +128,8 @@ def _page_report(frames: int, **overrides) -> dict:
         "frames": frames,
         "encoded_frames": frames,
         "blocks": frames // RENDER_QUANTUM,
-        "block_gaps": 0,
-        "block_gap_frames": 0,
+        "capture_gaps": 0,
+        "capture_gap_frames": 0,
         "silent_blocks": 0,
     }
     report.update(overrides)
@@ -177,17 +177,15 @@ def test_the_analyzer_alone_cannot_see_one_lost_render_quantum():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_render_gap_is_reported_even_though_every_count_agrees():
-    """The 2026-08-03 shape. The skipped quantum was never handed to anyone, so
-    worklet, encoder and host all agree — a counts-only ledger would call this
-    balanced, which is exactly why the gap is a separate question."""
+@pytest.mark.parametrize("gap_keys", [("capture_gaps", "capture_gap_frames"), ("block_gaps", "block_gap_frames")])
+def test_a_capture_gap_is_reported_even_though_every_count_agrees(gap_keys):
     ledger = reconcile_capture_frames(
-        _page_report(480_000, block_gaps=1, block_gap_frames=RENDER_QUANTUM),
+        {"frames": 480_000, "encoded_frames": 480_000, **dict(zip(gap_keys, (1, RENDER_QUANTUM)))},
         received_frames=480_000,
     )
     assert ledger.balanced is True
-    assert ledger.lost_at == (LOST_AT_RENDER_GRAPH,)
-    assert ledger.render_gap_frames == RENDER_QUANTUM
+    assert ledger.lost_at == (LOST_AT_CAPTURE_OVERRUN,)
+    assert ledger.capture_gap_frames == RENDER_QUANTUM
 
 
 def test_each_broken_link_names_the_hop_it_lies_between():
@@ -213,12 +211,12 @@ def test_each_broken_link_names_the_hop_it_lies_between():
 def test_both_losses_are_reported_together_earliest_first():
     ledger = reconcile_capture_frames(
         _page_report(
-            480_000, block_gaps=2, block_gap_frames=256,
+            480_000, capture_gaps=2, capture_gap_frames=256,
             encoded_frames=480_000 - 8,
         ),
         received_frames=480_000 - 8,
     )
-    assert ledger.lost_at == (LOST_AT_RENDER_GRAPH, LOST_AT_WORKLET_TO_ENCODER)
+    assert ledger.lost_at == (LOST_AT_CAPTURE_OVERRUN, LOST_AT_WORKLET_TO_ENCODER)
     assert ledger.balanced is False
 
 
@@ -226,7 +224,7 @@ def test_a_clean_take_names_nothing():
     ledger = reconcile_capture_frames(_page_report(480_000), received_frames=480_000)
     assert ledger.lost_at == ()
     assert ledger.balanced is True
-    assert ledger.render_gap_evaluated is True
+    assert ledger.capture_gap_evaluated is True
     assert ledger.balance_evaluated is True
 
 
@@ -235,8 +233,8 @@ def test_an_absent_report_is_unreported_never_zero():
     ledger = reconcile_capture_frames(None, received_frames=480_000)
     assert ledger.declared_frames is None
     assert ledger.encoded_frames is None
-    assert ledger.render_gap_frames is None
-    assert ledger.render_gap_evaluated is False
+    assert ledger.capture_gap_frames is None
+    assert ledger.capture_gap_evaluated is False
     assert ledger.balance_evaluated is False
     assert ledger.lost_at == ()
 
@@ -270,7 +268,7 @@ def test_a_non_mapping_report_degrades_to_unreported():
 
 def test_to_dict_is_json_safe_and_carries_every_count():
     ledger = reconcile_capture_frames(
-        _page_report(480_000, block_gaps=1, block_gap_frames=RENDER_QUANTUM),
+        _page_report(480_000, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM),
         received_frames=480_000,
     )
     record = json.loads(json.dumps(ledger.to_dict()))
@@ -278,9 +276,9 @@ def test_to_dict_is_json_safe_and_carries_every_count():
         "received_frames": 480_000,
         "declared_frames": 480_000,
         "encoded_frames": 480_000,
-        "render_gaps": 1,
-        "render_gap_frames": RENDER_QUANTUM,
-        "lost_at": [LOST_AT_RENDER_GRAPH],
+        "capture_gaps": 1,
+        "capture_gap_frames": RENDER_QUANTUM,
+        "lost_at": [LOST_AT_CAPTURE_OVERRUN],
     }
 
 
@@ -288,7 +286,7 @@ def test_a_bare_ledger_reports_only_what_the_host_can_always_count():
     bare = FrameLedger(received_frames=99)
     assert bare.lost_at == ()
     assert bare.balance_evaluated is False
-    assert bare.render_gap_evaluated is False
+    assert bare.capture_gap_evaluated is False
 
 
 # --------------------------------------------------------------------------- #
@@ -296,24 +294,24 @@ def test_a_bare_ledger_reports_only_what_the_host_can_always_count():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_reported_render_gap_makes_the_capture_unusable():
+def test_a_reported_capture_gap_makes_the_capture_unusable():
     """RED→GREEN. Before #2094 this exact take graded USABLE /
     ``capture_integrity_clean``: the page had measured the lost quantum and the
     host read nothing it said."""
     prog = _verify_program()
     cap = _synthesize(prog)
     res = _analyze(prog, cap, _page_report(
-        cap.size, block_gaps=1, block_gap_frames=RENDER_QUANTUM,
+        cap.size, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM,
     ))
     integrity = res.capture_integrity
     assert integrity is not None
-    assert integrity.failed == (INTEGRITY_CHECK_RENDER_GAP,)
+    assert integrity.failed == (INTEGRITY_CHECK_CAPTURE_OVERRUN,)
     # The one-bit projection every durable position record already carries.
     assert res.glitch_detected is True
     verdict = evaluate_capture_validity(integrity)
     assert verdict.status is CaptureValidity.UNUSABLE
     assert verdict.reason == CAPTURE_INTEGRITY_FAILED
-    assert INTEGRITY_CHECK_RENDER_GAP in verdict.evidence["failed"]
+    assert INTEGRITY_CHECK_CAPTURE_OVERRUN in verdict.evidence["failed"]
 
 
 def test_frames_that_never_arrived_make_the_capture_unusable():
@@ -337,7 +335,7 @@ def test_a_balanced_report_passes_both_checks_and_stays_usable():
     integrity = res.capture_integrity
     assert integrity is not None
     statuses = {c.name: c.status for c in integrity.checks}
-    assert statuses[INTEGRITY_CHECK_RENDER_GAP] == INTEGRITY_PASS
+    assert statuses[INTEGRITY_CHECK_CAPTURE_OVERRUN] == INTEGRITY_PASS
     assert statuses[INTEGRITY_CHECK_FRAME_LEDGER] == INTEGRITY_PASS
     assert integrity.failed == ()
     assert evaluate_capture_validity(integrity).reason == CAPTURE_INTEGRITY_CLEAN
@@ -353,10 +351,10 @@ def test_a_page_that_reports_nothing_is_not_refused_for_it():
     integrity = res.capture_integrity
     assert integrity is not None
     statuses = {c.name: c.status for c in integrity.checks}
-    assert statuses[INTEGRITY_CHECK_RENDER_GAP] == INTEGRITY_NOT_EVALUATED
+    assert statuses[INTEGRITY_CHECK_CAPTURE_OVERRUN] == INTEGRITY_NOT_EVALUATED
     assert statuses[INTEGRITY_CHECK_FRAME_LEDGER] == INTEGRITY_NOT_EVALUATED
     reasons = {c.name: c.reason for c in integrity.checks}
-    assert reasons[INTEGRITY_CHECK_RENDER_GAP]
+    assert reasons[INTEGRITY_CHECK_CAPTURE_OVERRUN]
     assert reasons[INTEGRITY_CHECK_FRAME_LEDGER]
     assert evaluate_capture_validity(integrity).status is CaptureValidity.USABLE
 
@@ -368,7 +366,7 @@ def test_the_frame_checks_are_asked_before_any_signal_question():
     prog = _verify_program()
     res = _analyze(prog, _synthesize(prog), _page_report(1))
     names = [c.name for c in res.capture_integrity.checks]
-    assert names[:2] == [INTEGRITY_CHECK_RENDER_GAP, INTEGRITY_CHECK_FRAME_LEDGER]
+    assert names[:2] == [INTEGRITY_CHECK_CAPTURE_OVERRUN, INTEGRITY_CHECK_FRAME_LEDGER]
 
 
 # --------------------------------------------------------------------------- #
@@ -430,11 +428,11 @@ def test_a_measure_capture_carries_the_ledger_too():
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
         capture_report=_page_report(
-            cap.size, block_gaps=1, block_gap_frames=RENDER_QUANTUM,
+            cap.size, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM,
         ),
     )
     assert res.frame_ledger is not None
-    assert res.frame_ledger.lost_at == (LOST_AT_RENDER_GRAPH,)
+    assert res.frame_ledger.lost_at == (LOST_AT_CAPTURE_OVERRUN,)
 
 
 def test_a_measure_capture_is_reported_but_not_refused_by_the_ledger():
@@ -451,10 +449,10 @@ def test_a_measure_capture_is_reported_but_not_refused_by_the_ledger():
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
         capture_report=_page_report(
-            cap.size, block_gaps=1, block_gap_frames=RENDER_QUANTUM,
+            cap.size, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM,
         ),
     )
-    assert res.frame_ledger.lost_at == (LOST_AT_RENDER_GRAPH,)
+    assert res.frame_ledger.lost_at == (LOST_AT_CAPTURE_OVERRUN,)
     assert res.capture_integrity is None
     assert res.glitch_detected is False
     assert res.drift is not None
@@ -483,11 +481,11 @@ def test_a_lossy_capture_warns_and_names_where(caplog):
     cap = _synthesize(prog)
     with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
         _analyze(prog, cap, _page_report(
-            cap.size, block_gaps=1, block_gap_frames=RENDER_QUANTUM,
+            cap.size, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM,
         ))
     fields = event_fields(caplog, "program_analysis.frame_ledger")
-    assert fields["lost_at"] == LOST_AT_RENDER_GRAPH
-    assert fields["render_gap_frames"] == str(RENDER_QUANTUM)
+    assert fields["lost_at"] == LOST_AT_CAPTURE_OVERRUN
+    assert fields["capture_gap_frames"] == str(RENDER_QUANTUM)
 
 
 def test_a_clean_capture_does_not_warn(caplog):
@@ -504,14 +502,14 @@ def test_the_retained_sidecar_summary_carries_the_ledger_flat():
     prog = _verify_program()
     cap = _synthesize(prog)
     summary = analysis_diagnostic_summary(_analyze(prog, cap, _page_report(
-        cap.size, block_gaps=1, block_gap_frames=RENDER_QUANTUM,
+        cap.size, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM,
     )))
     assert summary["frames_received"] == cap.size
     assert summary["frames_declared"] == cap.size
     assert summary["frames_encoded"] == cap.size
-    assert summary["frames_render_gaps"] == 1
-    assert summary["frames_render_gap_frames"] == RENDER_QUANTUM
-    assert summary["frames_lost_at"] == LOST_AT_RENDER_GRAPH
+    assert summary["frames_capture_gaps"] == 1
+    assert summary["frames_capture_gap_frames"] == RENDER_QUANTUM
+    assert summary["frames_lost_at"] == LOST_AT_CAPTURE_OVERRUN
 
 
 def test_the_worklets_frame_count_is_the_buffer_it_transfers():
@@ -526,7 +524,7 @@ def test_the_worklets_frame_count_is_the_buffer_it_transfers():
         encoding="utf-8"
     )
     assert "'var out=new Float32Array(total);var pos=0;'" in src
-    assert "'frames:total,blocks:this.blocks,block_gaps:this.gaps,'" in src
+    assert "'frames:total,blocks:this.blocks,capture_gaps:this.gaps,'" in src
 
 
 def test_silent_blocks_counts_only_the_input_starved_callbacks():

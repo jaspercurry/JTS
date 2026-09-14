@@ -1328,20 +1328,14 @@ import {
       summed.complete === true;
   }
   function baselineProfileAppliedRecord() {
-    // The rebuild's own status cannot reach 'applied' for a measured profile;
-    // `applied_profile_stands` is the payload's verdict. See ADR-0195.
-    var profile = activeSpeaker.baselineProfile || {};
-    if (profile.applied_profile_stands === true) {
-      var anchor = profile.applied_recomposition_profile;
-      if (anchor && typeof anchor === 'object') return anchor;
-    }
-    // The save-and-apply response replaces this state with the record it just
-    // wrote — the record itself, not a rebuild, so it carries no verdict and
-    // its own status is the answer.
-    return profile.status === 'applied' ? profile : null;
+    var view = activeSpeaker.commissioningView || {};
+    var record = view.applied_profile;
+    return record && record.exists === true ? record : null;
   }
+
   function baselineProfileApplied() {
-    return baselineProfileAppliedRecord() !== null;
+    var record = baselineProfileAppliedRecord();
+    return record !== null && record.stands === true;
   }
   function appliedProfileCorrections(record) {
     // What the basic door would not re-emit, named for the household.
@@ -2732,9 +2726,9 @@ import {
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
     var appliedRecord = baselineProfileAppliedRecord();
-    var config = (appliedRecord || profile).config || {};
+    var config = appliedRecord ? {path: appliedRecord.config_path} : (profile.config || {});
     var permissions = profile.permissions || {};
-    var applied = appliedRecord !== null;
+    var applied = baselineProfileApplied();
     var readyToApply = permissions.may_apply === true;
     var mayCompile = summedValidationComplete();
     var applyBlocked = baselineProfileApplyBlocked(profile);
@@ -2747,9 +2741,12 @@ import {
     }).slice(0, 3).map(function(issue) {
       return '<li>' + escapeHtml(baselineProfileIssueMessage(issue)) + '</li>';
     }).join('');
-    var body = applied ?
-      '<p class="setting-row__hint">This is now your active speaker profile: ' +
-        escapeHtml(config.basename || config.path || 'active speaker baseline') + '.</p>' :
+    var body = appliedRecord ?
+      '<p class="setting-row__hint">' + (applied ? 'This is now your active speaker profile: ' :
+        'This saved speaker profile is not active: ') +
+        escapeHtml(config.basename || config.path || 'active speaker baseline') + '.</p>' +
+      '<p class="setting-row__hint">Candidate: ' + escapeHtml(String(appliedRecord.candidate_fingerprint || '').slice(0, 12)) +
+        ' · Applied: ' + escapeHtml(appliedRecord.applied_at || '') + '</p>' :
       (applyBlocked ?
         '<p class="setting-row__hint">This profile cannot be made active from this page yet. Review the setup issue below.</p>' :
       (readyToApply ?
@@ -2764,10 +2761,8 @@ import {
     var actionLabel = busy ?
       'Saving and applying' :
       'Save and apply';
-    // Applied: the basic door stays reachable — the household may want it —
-    // but it is never the primary here and never offered without saying what
-    // it replaces (ADR-0195).
-    var replaces = appliedProfileCorrections(appliedRecord);
+    // See ADR-0312: saved-profile identity is separate from the composer's review.
+    var replaces = appliedProfileCorrections(profile);
     var actions = applyBlocked ? '' : (applied ?
       (replaces ?
         '<div class="active-speaker-actions active-speaker-profile-actions">' +
@@ -2788,9 +2783,9 @@ import {
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and confirmed outputs.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
+          escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
-      renderLevelMatchSummary(appliedRecord || profile) +
+      renderLevelMatchSummary(profile) +
       (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +
     '</div>';

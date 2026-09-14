@@ -824,7 +824,7 @@ def _lossy_page_report():
     """A page report the host's own count disagrees with — a real defect."""
     return {
         "frames": DECLARED_FRAMES, "encoded_frames": DECLARED_FRAMES,
-        "block_gaps": 0, "block_gap_frames": 0, "zero_run_count": 0,
+        "capture_gaps": 0, "capture_gap_frames": 0, "zero_run_count": 0,
     }
 
 
@@ -3435,7 +3435,6 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert seen["geometry"] is geometry
     assert seen["geometry"].driver_spacing_m == pytest.approx(0.15)
     assert seen["rate"] == 48000
-    # The evidence annotation records the applied calibration.
     assert meta["calibration"]["verify"] == {
         "applied": True, "calibration_id": "cal-123",
         "curve_fingerprint": json_fingerprint(curve_sentinel.to_dict()),
@@ -3443,7 +3442,9 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert evidence.take()["capture_calibration"] == meta["calibration"]["verify"]
     uncalibrated = v2evidence.bind_production_analyze(evidence=evidence)
     uncalibrated(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry, phase="verify")
-    assert evidence.take()["capture_calibration"] == {"applied": False, "calibration_id": None}
+    assert evidence.take()["capture_calibration"] == {
+        "applied": False, "calibration_id": None, "curve_fingerprint": None,
+    }
 
 
 def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
@@ -3470,8 +3471,8 @@ def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
-    report = {"frames": 4, "encoded_frames": 4, "block_gaps": 0,
-              "block_gap_frames": 0}
+    report = {"frames": 4, "encoded_frames": 4, "capture_gaps": 0,
+              "capture_gap_frames": 0}
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )
@@ -3528,7 +3529,7 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
         )
     # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
     assert seen["calibration"] is None
-    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None, "curve_fingerprint": None}
     # W6.13 round-5 diagnostic: the WARN names what the phone-reported setup
     # actually held at resolve time — here nothing at all.
     fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
@@ -3925,7 +3926,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 
     assert out == "analysis"
     assert seen["calibration"] is None  # never mis-applied
-    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None, "curve_fingerprint": None}
     assert event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
     assert event_records(caplog, "correction.calibration_device_identity_mismatch")
 
@@ -5443,20 +5444,6 @@ def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
 
 
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
-    """Era tolerance at the LIVE surface, not just in ``from_mapping``.
-
-    The blocker this pins: ``to_dict()`` always writes ``exclusion_evidence``,
-    so a ``candidate.json`` published by a build that predates the field fails
-    ``from_mapping``'s reopen comparison unless it is setdefaulted — and that
-    comparison is on the apply path (``handle_v2_apply`` →
-    ``find_banked_candidate`` → ``from_mapping``). The household-visible
-    symptom was a ``candidate_tampered`` refusal telling them their persisted
-    correction had been altered when the file was merely older than the field.
-
-    Drives the SAME real ``apply_baseline_profile`` path as the sibling test
-    above, with the key deleted from the payload — it must load, keep its
-    fingerprint, and apply.
-    """
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
 
@@ -5786,13 +5773,6 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
 def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     monkeypatch, tmp_path,
 ):
-    """The full real journey: no preview on disk -> session start ensures one
-    (asserted on disk, ready) -> measure-shaped candidate baked against the
-    resolved preset -> handle_v2_apply SUCCEEDS through the real
-    apply_baseline_profile guard -> Start-over (the REAL handle_reset)
-    deletes the preview by design -> a fresh session start re-ensures it from
-    the (unchanged) design draft -> apply succeeds again. The test never
-    once hand-writes active_speaker_crossover_preview.json."""
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.web import correction_crossover_flow as reset_flow
 

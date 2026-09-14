@@ -2,45 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""v2 measured-crossover apply extension — trims + optional delay/polarity.
+"""Measured crossover candidates and their graph proof.
 
-Wave 4 of the crossover-measurement v2 redesign
-(``docs/historical/crossover-measurement-productization-design.md`` §5.8). The
-small, self-contained candidate shape the check→measure→review/apply→verify
-flow constructs; the v1 null-walk/evidence-store candidate it replaced is
-deleted.
-
-**The apply mechanism reuses everything, invents nothing new:**
-
-- Delay and polarity are written into the *preset's* ``CrossoverRegion``
-  fields (``delay_ms``/``delay_target_driver``, ``upper_polarity``) — the
-  same persisted, first-class fields a manual ``/sound/`` entry uses (see
-  ``test_derive_corrections_manual_tier_sets_polarity_and_delay_from_region``
-  in ``tests/test_active_speaker_baseline_profile.py``).
-- :func:`driver_corrections` derives the compiler-ready
-  ``{role: {gain_db, delay_ms, inverted}}`` mapping from that preset via
-  ``camilla_yaml._role_polarity`` — the exact shared reduction
-  ``jasper.active_speaker.baseline_profile._derive_corrections`` already
-  uses, so this module adds no new polarity-to-inversion translation.
-- :func:`compile_candidate_config` calls
-  ``emit_active_speaker_baseline_config`` directly — the one Layer-A emitter,
-  unchanged. Polarity rides the per-driver Gain filter (``inverted=...``), not
-  the split mixer (``emit_active_speaker_baseline_config`` always emits the
-  mixer as a no-op inverter — see ``_emit_split_mixer``'s docstring — so this
-  is the *only* inversion mechanism a baseline graph has; there is no risk of
-  double inversion).
-- :func:`prove_candidate_config` re-proves the compiled text with the exact
-  primitives named in the design doc: ``graph_safety.unprotected_tweeter_outputs``
-  and a new one-shot
-  ``jasper.audio_measurement.delay_graph.prove_static_delay_binding`` (added
-  alongside this module) for "exactly one requested Delay filter, on the
-  right channels, at the right value."
-
-Absent alignment (``delay_us``/``delay_role``/``polarity`` all ``None``) is
-byte-for-byte today's trims-only apply: :func:`effective_preset` returns the
-source preset unchanged and :func:`driver_corrections` emits an all-zero delay
-with each role's *existing* region polarity — exactly what
-``_derive_corrections`` already produces for a plain trims candidate.
+Delay and polarity use the preset's CrossoverRegion fields. Baseline graphs
+apply polarity through the per-driver Gain filter; the split mixer must stay
+a no-op inverter so the two stages cannot cancel the intended inversion.
+Absent alignment preserves the source preset's existing delay and polarity.
 """
 
 from __future__ import annotations
@@ -865,10 +832,8 @@ def compile_candidate_config(
 ) -> str:
     """Compile the candidate's baseline YAML — the one Layer-A emission path.
 
-    Shared with ``baseline_profile.build_baseline_profile_candidate``: the
-    emitter derives delay and inversion from ``corrections`` only, never a
-    region's delay or polarity fields (``apply_region_polarity=False``).
-    An emitter that starts reading those fields must revisit both call sites.
+    Delay and inversion come from ``corrections`` only; region polarity is
+    excluded by ``apply_region_polarity=False``.
     """
 
     from .linearization_fit import linearization_filters_by_role

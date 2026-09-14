@@ -230,7 +230,7 @@ class CapturedRecordStore:
         metadata = await asyncio.to_thread(self.enrich, answer, record) if self.enrich else {}
         # Analysis owns pose/attempt identity. Engine facts name what actually played.
         payload = {**metadata, **record, **{name: metadata[name] for name in
-            ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt") if name in metadata}}
+            ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt", "stimulus_dbfs") if name in metadata}}
         error = ""
         try:
             loudness = await _maybe_call(getattr(self.capture, "read_loudness_volume_db", None))

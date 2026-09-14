@@ -336,10 +336,6 @@ def active_emit_devices(
     """The device block an active emit against ``playback_device`` needs, in ONE
     derivation.
 
-    ONE home for "what does an emit against THIS device have to declare", so a
-    caller re-pointing an active graph at the ring cannot forget half of it.
-    Every non-ring device gets today's values back byte-identically.
-
     Ring membership is over ALL THREE ring PCMs
     (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`), not one ``==`` against the
     active ring, so this is the site that answers for a ring PCM rather than the
@@ -387,7 +383,10 @@ def active_emit_devices(
             queuelimit=None,
             enable_rate_adjust=resolve_enable_rate_adjust(playback_device),
         )
-    wire_format = resolve_ring_wire(topology).sample_format
+    try:
+        wire_format = resolve_ring_wire(topology).sample_format
+    except ValueError as exc:
+        raise ActiveSpeakerConfigError(str(exc)) from exc
     return ActiveEmitDevices(
         capture_device=capture_device_for_playback(playback_device),
         capture_format=wire_format,

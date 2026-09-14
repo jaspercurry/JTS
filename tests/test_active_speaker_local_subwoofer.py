@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 import yaml
@@ -771,68 +770,3 @@ def test_local_subwoofer_falls_back_to_default_corner() -> None:
     assert issues == []
     assert sub is not None
     assert sub.crossover_fc_hz == DEFAULT_SUB_CROSSOVER_HZ == 80.0
-
-
-def test_passive_mains_sub_builds_and_reproves_at_topology_fc(tmp_path) -> None:
-    # The headline of this slice: a full_range_passive + sub topology now COMPILES
-    # end-to-end through the active multi-output emitter (the degenerate 1-way bass-
-    # management path), with NO crossover preview / active measurements, and the
-    # emitted graph re-proves as an approved active runtime with the sub LP + mains
-    # HP at the user-set topology corner (120 Hz, not the 80 Hz default).
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
-
-    topology = _passive_1way_sub_topology_fc(120.0)
-    config_path = tmp_path / "passive_sub_baseline.yml"
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft={"status": "ready"},
-        crossover_preview={},  # passive mains produce no active preview
-        measurements={},  # no active per-driver / summed measurements
-        write=True,
-        state_path=tmp_path / "passive_sub_state.json",
-        config_path=config_path,
-    )
-
-    assert payload["status"] == "ready_to_apply", payload.get("issues")
-    assert payload["permissions"]["may_apply"] is True
-    assert payload["preset"]["way_count"] == 1
-    assert payload["config"]["playback_device_source"] == "outputd_active_lane"
-
-    # #1666: candidate lands on a source-fingerprinted sibling, not config_path.
-    text = Path(payload["config"]["path"]).read_text(encoding="utf-8")
-    graph = classify_camilla_graph(topology=topology, text=text)
-    assert graph.allowed is True, [i["code"] for i in graph.issues]
-    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-
-    payload_yaml = yaml.safe_load(text)
-    assert payload_yaml["filters"]["as_sub_lowpass"]["parameters"]["freq"] == 120.0
-    assert payload_yaml["filters"]["as_full_range_bass_mgmt_hp"]["parameters"]["freq"] == 120.0
-
-
-def test_subless_passive_with_nothing_measured_does_not_compile_an_active_preset(
-    tmp_path,
-) -> None:
-    """The flat lane is the default, and only a MEASURED round moves it.
-
-    A subless passive topology with nothing measured for it has no
-    bass-management split and no inter-driver crossover, so it takes the flat
-    ``emit_sound_config`` lane; this call brings neither a candidate nor an
-    applied profile naming one, so the build path must not hijack it.
-    """
-    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
-
-    topology = _subless_passive_topology()
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft={"status": "ready"},
-        crossover_preview={},
-        measurements={},
-        write=False,
-        state_path=tmp_path / "subless_state.json",
-        config_path=tmp_path / "subless_baseline.yml",
-    )
-
-    assert payload["status"] == "blocked"
-    codes = {i["code"] for i in payload["issues"]}
-    assert "baseline_crossover_preview_not_ready" in codes
-    assert payload.get("preset", {}).get("way_count") in (None,)

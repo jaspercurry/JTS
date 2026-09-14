@@ -25,8 +25,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
+from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
 from jasper.active_speaker.installation import installation_view
-from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
+from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
 
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
@@ -1089,25 +1090,9 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
 
 
 def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
-    """Mint the AI-operator handoff prompt and the binding it was minted for.
-
-    Read-only and audio-free. Readiness comes from the same baseline-profile
-    payload the page renders its active-profile card from, so the route cannot
-    offer a handoff the card beside it hides.
-    """
-
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.tuning_handoff import build_tuning_handoff
-
-    design_draft = load_design_draft()
     payload = build_tuning_handoff(
-        # Recompiled on the click rather than read off the page: a tab left
-        # open since before a declaration edit must not mint a handoff for a
-        # baseline that no longer stands.
-        baseline_profile=_active_speaker_baseline_profile_payload(
-            design_draft=design_draft
-        ),
-        design_draft=design_draft,
+        commissioning_view=commissioning_coordinator.load_commissioning_view(),
+        design_draft=design_draft_store.load_design_draft(),
     )
     log_event(
         logger,
@@ -3415,12 +3400,8 @@ async def _active_speaker_summed_test_payload(
         calibration_level_payload,
         load_calibration_level_state,
     )
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
     from jasper.active_speaker.commissioning_coordinator import (
-        build_commissioning_view,
-        read_applied_profile_verdict,
+        load_commissioning_view,
     )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
@@ -3484,22 +3465,7 @@ async def _active_speaker_summed_test_payload(
         safe_session_id=safe_session.get("session_id"),
         protected_startup_loaded=protected_loaded,
     )
-    baseline_profile = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=False,
-    )
-    commissioning_view = build_commissioning_view(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        baseline_profile=baseline_profile,
-        calibration_level=calibration_level,
-        applied_profile_verdict=read_applied_profile_verdict(baseline_profile),
-    )
+    commissioning_view = load_commissioning_view(topology)
     driver_target_proof = commissioning_view.get("driver_target_proof")
     driver_target_proof_complete = (
         isinstance(driver_target_proof, dict)

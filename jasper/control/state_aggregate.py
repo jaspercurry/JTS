@@ -146,22 +146,11 @@ def _usbsink_renderer_playing(fanin_status: dict[str, Any] | None) -> bool:
 def _active_speaker_level_match_provisional(
     setup: dict[str, Any] | None,
 ) -> bool | None:
-    """Whether the APPLIED active-speaker baseline's per-driver level match is a
-    datasheet estimate rather than a phone measurement.
-
-    Read from the readiness snapshot (`setup`) the caller already computed via
-    `read_active_speaker_setup_status`, so `active_speaker_baseline_profile.json`
-    has one reader here. The `status == "applied"` gate is load-bearing: the
-    candidate only carries that status when it returns the persisted applied
-    profile verbatim (see `build_baseline_profile_candidate`), so `provisional`
-    then equals the on-disk value. Fail-soft: None when there is no applied
-    active baseline (passive speaker, unreadable topology, or a superseded /
-    not-yet-applied profile).
-    """
+    """Report the saved profile's legacy trim provenance."""
     if not isinstance(setup, dict):
         return None
-    profile = setup.get("baseline_profile")
-    if not isinstance(profile, dict) or profile.get("status") != "applied":
+    profile = setup.get("protected_profile")
+    if not isinstance(profile, dict) or profile.get("status") != "ready":
         return None
     return bool(profile.get("provisional"))
 

@@ -21,9 +21,6 @@ HANDOFF_NOT_READY = "not_ready"
 #: USING the speaker, so the handoff appears only once the executor chain has
 #: produced a playing baseline — never earlier, and never as a gate on sound.
 NO_APPLIED_BASELINE = "no_applied_baseline"
-#: An applied record exists but its inputs moved under it, so the page is
-#: asking for a fresh profile rather than offering this one (ADR-0195).
-REVALIDATION_PENDING = "revalidation_pending"
 
 #: Installed console-script paths, not bare names: an SSH session gets no
 #: ``EnvironmentFile=`` and /opt/jasper/.venv is not on the default PATH.
@@ -78,28 +75,14 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
 
 def build_tuning_handoff(
     *,
-    baseline_profile: Mapping[str, Any],
+    commissioning_view: Mapping[str, Any],
     design_draft: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Device-bound programs for the /sound/speaker/ cards.
-
-    Readiness is ``applied_profile_stands``, read from the same baseline-profile
-    payload the page renders its active-profile card from (ADR-0195): a second
-    reading of that SSOT answers a looser question and would hand out a prompt
-    the page itself hides.
-
-    The binding is minted either way so the card can name the speaker while
-    holding the prompt back; ``prompt`` is empty until there is a baseline.
-    """
+    """See ADR-0312: declaration changes do not revoke an applied proof."""
     binding = build_tuning_handoff_binding(design_draft)
-    ready = baseline_profile.get("applied_profile_stands") is True
-    revalidation = baseline_profile.get("revalidation")
-    if ready:
-        reason = None
-    elif isinstance(revalidation, Mapping) and revalidation.get("required") is True:
-        reason = REVALIDATION_PENDING
-    else:
-        reason = NO_APPLIED_BASELINE
+    applied = commissioning_view.get("applied_profile")
+    ready = isinstance(applied, Mapping) and applied.get("stands") is True
+    reason = None if ready else NO_APPLIED_BASELINE
     return {
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,
         "reason": reason,

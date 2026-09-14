@@ -3980,75 +3980,62 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
   return { compiledProfileApplyBlockStaysUnderstandable: true };
 }
 
-// A measured v2 profile is applied and standing, with the combined check
-// still outstanding — the state the coordinator actually emits for a
-// phone-measured apply. The card must render it as active, and may offer the
-// basic door only NAMED for what it replaces. See ADR-0195.
-async function testLiveMeasuredProfileNamesTheBasicDoorItOffers() {
+async function testAppliedProfileCardUsesCommissioningRecord() {
   const confirmedTopology = confirmedActiveTwoWayTopology();
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(
-      profileCommissioningView({
-        status: "needs_combined_check",
-        current_step: "safety",
-        stepStatuses: {
-          layout: "done",
-          research: "done",
-          map: "done",
-          safety: "active",
-          profile: "done",
-        },
-      })
-    )),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "ready_for_baseline",
-      summary: summedSummary({}, {
-        validated_summed_group_count: 1,
-        summed_validation_complete: true,
-        latest_summed_validations: {
-          main: { validated: true, outcome: "blend_ok" },
-        },
-      }),
-      permissions: { may_compile_baseline: true },
-      issues: [],
-    })),
-    "./active-speaker/baseline-profile": () => Promise.resolve(response({
-      status: "ready_to_compile",
-      permissions: { may_compile: true, may_apply: false },
-      config: { basename: "active_speaker_baseline_candidate_55dee33aa48a.yml" },
-      revalidation: { required: false, status: "not_required" },
-      applied_profile_stands: true,
-      applied_recomposition_profile: {
-        status: "applied",
-        linearization: { tweeter: [{ type: "Peaking" }] },
-        blend_correction: [{ type: "Peaking" }],
-        config: { basename: "active_speaker_baseline_candidate_f7e91712ceff.yml" },
-      },
-      issues: [],
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
+  const applied = {
+    exists: true, stands: true, candidate_fingerprint: "0123456789abcdef".repeat(4), applied_at: "2026-09-13T12:00:00Z",
+    config_path: "/var/lib/camilladsp/applied.yml", disclosures: [],
+  };
+  const reviewPath = "/var/lib/camilladsp/review.yml";
+  for (const [stands, corrected] of [[true, true], [true, false], [false, true]]) {
+    applied.stands = stands;
+    const fetchHandler = baseFetch({
+      "./output-topology": () => Promise.resolve(response({
+        output_topology: confirmedTopology,
+        channel_identity: confirmedTopology.channel_identity,
+      })),
+      "./active-speaker/commissioning-view": () => Promise.resolve(response(
+        profileCommissioningView({
+          status: "applied", current_step: "profile",
+          applied_profile: applied,
+          stepStatuses: {layout: "done", research: "done", map: "done", safety: "done", profile: "done"},
+        })
+      )),
+      "./active-speaker/baseline-profile": () => Promise.resolve(response({
+        status: "ready_to_compile", candidate_fingerprint: "review-fp",
+        permissions: { may_compile: true, may_apply: false },
+        config: { path: reviewPath }, issues: [],
+        corrections: { woofer: { gain_db: 0 }, tweeter: { gain_db: -7.5 } },
+        corrections_source: { woofer: "measured", tweeter: "measured" },
+        linearization: corrected ? { tweeter: [{ type: "Peaking" }] } : {},
+        blend_correction: corrected ? [{ type: "Peaking" }] : [],
+      })),
+    });
+    const harness = setupHarness(fetchHandler);
+    await loadAndSetActiveState(harness);
 
-  const html = harness.elements.get("view-body").innerHTML;
-  if (html.includes(">Save and apply</button>")) {
-    fail("A live measured profile must not be offered an unnamed save-apply door", { html });
+    const html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes(applied.config_path) || html.includes(reviewPath)) {
+      fail("Applied profile card used the wrong config path", {applied, reviewPath});
+    }
+    for (const expected of ["Driver levels", "0 dB (reference)", "-7.5 dB", "Measured",
+      applied.candidate_fingerprint.slice(0, 12), applied.applied_at]) {
+      if (!html.includes(expected)) fail("Applied profile details are missing", {expected, stands, corrected});
+    }
+    if (html.includes(applied.candidate_fingerprint)) fail("The card should abbreviate the fingerprint");
+    if (html.includes('>active</span>') !== stands) fail("Active badge disagrees with displacement", {stands});
+    if (stands && corrected) {
+      for (const expected of ["Replace with basic profile", "per-driver linearization", "blend correction"]) {
+        if (!html.includes(expected)) fail("The basic door must say what it replaces", {expected});
+      }
+    } else if (html.includes("Replace with basic profile")) {
+      fail("The basic replacement door requires an active corrected profile", {stands, corrected});
+    }
+    if (html.includes('>Save and apply</button>') === stands) {
+      fail("The primary apply door disagrees with displacement", {stands});
+    }
   }
-  if (!html.includes("Replace with basic profile") ||
-    !html.includes("per-driver linearization")) {
-    fail("The basic door must stay offered and say what it replaces", { html });
-  }
-  if (!html.includes("active_speaker_baseline_candidate_f7e91712ceff.yml")) {
-    fail("The card must name the applied profile, not the rebuild candidate", { html });
-  }
-  if (html.includes("active_speaker_baseline_candidate_55dee33aa48a.yml")) {
-    fail("The card must not name a candidate the speaker never applied", { html });
-  }
-  return { liveMeasuredProfileNamesTheBasicDoorItOffers: true };
+  return { appliedProfileCardUsesCommissioningRecord: true };
 }
 
 async function testVisibleCrossoverSettingsWinOverImportedJson() {
@@ -6721,9 +6708,9 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
     issues: [],
   };
   const baselineApplied = {
-    status: "applied",
+    status: "applied", candidate_fingerprint: "applied-fp", applied_at: "2026-09-13T12:00:00Z",
     permissions: { may_compile: false, may_apply: false },
-    config: { basename: "active_speaker_baseline.yml" },
+    config: { path: "/var/lib/camilladsp/configs/active_speaker_baseline.yml" },
     issues: [],
   };
   const finishPosts = [];
@@ -6747,13 +6734,16 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
         apply: { result: "success" },
         output_safety: {
           safety_muted: false,
-          active_config_path: "/var/lib/camilladsp/configs/active_speaker_baseline.yml",
+          active_config_path: baselineApplied.config.path,
         },
         issues: [],
       }));
     },
     "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: "ready_to_save_profile",
+      status: finishPosts.length ? "applied" : "ready_to_save_profile",
+      applied_profile: {exists: finishPosts.length > 0, stands: finishPosts.length > 0,
+        candidate_fingerprint: baselineApplied.candidate_fingerprint,
+        applied_at: baselineApplied.applied_at, config_path: baselineApplied.config.path},
       test_level: levelPayload(-72).test_signal,
       combined_groups: [{
         group_id: "main",
@@ -8512,11 +8502,15 @@ async function testTuningHandoffCardMintsAndGoesStale() {
         status: "ready_for_review", revision: pageRevision, summary: {}, operator_inputs: {},
       })),
       "./active-speaker/baseline-profile": () => Promise.resolve(response({
-        status: "applied", tuning_programs: programs,
+        status: "ready_to_compile", tuning_programs: programs,
         permissions: { may_compile: false, may_apply: false },
         config: { basename: "active_speaker_baseline.yml" },
         issues: [],
       })),
+      "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
+        status: "applied", applied_profile: {exists: true, stands: true, candidate_fingerprint: "applied-fp",
+          applied_at: "2026-09-13T12:00:00Z", config_path: "/var/lib/camilladsp/applied.yml"},
+      }))),
       "./active-speaker/tuning-handoff": (path) => {
         mints.push(path);
         return Promise.resolve(response({
@@ -9020,7 +9014,7 @@ results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
-results.push(await testLiveMeasuredProfileNamesTheBasicDoorItOffers());
+results.push(await testAppliedProfileCardUsesCommissioningRecord());
 results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop());

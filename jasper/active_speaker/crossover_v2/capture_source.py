@@ -26,8 +26,8 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
     REPORT_KEY_FRAMES,
-    REPORT_KEY_RENDER_GAPS,
-    REPORT_KEY_RENDER_GAP_FRAMES,
+    REPORT_KEY_CAPTURE_GAPS,
+    REPORT_KEY_CAPTURE_GAP_FRAMES,
 )
 
 
@@ -76,8 +76,8 @@ class CaptureStopped(RuntimeError):
 INTEGRITY_COUNTER_KEYS = (
     REPORT_KEY_FRAMES,
     REPORT_KEY_ENCODED_FRAMES,
-    REPORT_KEY_RENDER_GAPS,
-    REPORT_KEY_RENDER_GAP_FRAMES,
+    REPORT_KEY_CAPTURE_GAPS,
+    REPORT_KEY_CAPTURE_GAP_FRAMES,
 )
 
 

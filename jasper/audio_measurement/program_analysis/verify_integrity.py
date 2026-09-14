@@ -21,7 +21,7 @@ from .model import (
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_DISCONTINUITY_STEP,
     INTEGRITY_CHECK_FRAME_LEDGER,
-    INTEGRITY_CHECK_RENDER_GAP,
+    INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_REPEAT_LEVEL,
     INTEGRITY_CHECK_SWEEP_HEARD,
@@ -29,7 +29,7 @@ from .model import (
     INTEGRITY_CHECK_WITHIN_ROLE_DESYNC,
     INTEGRITY_FAIL,
     _INTEGRITY_NO_FRAME_COUNT,
-    _INTEGRITY_NO_RENDER_REPORT,
+    _INTEGRITY_NO_CAPTURE_REPORT,
     _INTEGRITY_NO_REPEAT_PAIR,
     _INTEGRITY_NO_STIMULUS,
     _INTEGRITY_NO_SUMMED_SWEEP,
@@ -46,25 +46,17 @@ from .model import (
 
 
 def _frame_accounting_checks(ledger: FrameLedger) -> list[IntegrityCheck]:
-    """The two frame-accounting checks, most fundamental first.
-
-    ``capture_render_gap`` asks whether the browser's render graph handed the
-    recorder every quantum; ``frame_ledger`` asks whether every frame the
-    page declared reached this host (see
-    :mod:`jasper.audio_measurement.frame_ledger`). A page that reported
-    nothing leaves both ``not_evaluated``, never failed —
-    ``verification.evaluate_capture_validity`` treats that as usable.
-    """
+    """Check microphone loss and frame transfer; absent counters stay unevaluated."""
     checks: list[IntegrityCheck] = []
-    if not ledger.render_gap_evaluated:
+    if not ledger.capture_gap_evaluated:
         checks.append(IntegrityCheck(
-            INTEGRITY_CHECK_RENDER_GAP, INTEGRITY_NOT_EVALUATED,
-            _INTEGRITY_NO_RENDER_REPORT,
+            INTEGRITY_CHECK_CAPTURE_OVERRUN, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_NO_CAPTURE_REPORT,
         ))
     else:
         checks.append(IntegrityCheck(
-            INTEGRITY_CHECK_RENDER_GAP,
-            INTEGRITY_FAIL if ledger.render_gap_frames else INTEGRITY_PASS,
+            INTEGRITY_CHECK_CAPTURE_OVERRUN,
+            INTEGRITY_FAIL if ledger.capture_gap_frames else INTEGRITY_PASS,
         ))
     if not ledger.balance_evaluated:
         checks.append(IntegrityCheck(
@@ -96,8 +88,8 @@ def _log_frame_ledger(program: ExcitationProgram, ledger: FrameLedger) -> None:
         received_frames=ledger.received_frames,
         declared_frames=ledger.declared_frames,
         encoded_frames=ledger.encoded_frames,
-        render_gaps=ledger.render_gaps,
-        render_gap_frames=ledger.render_gap_frames,
+        capture_gaps=ledger.capture_gaps,
+        capture_gap_frames=ledger.capture_gap_frames,
         lost_at=",".join(lost),
     )
 

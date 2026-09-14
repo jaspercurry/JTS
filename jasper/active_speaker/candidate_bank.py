@@ -143,6 +143,10 @@ def status_bank_lookup(
     return result
 
 
+def status_banked_candidate(fingerprint: str) -> BankedCandidate:
+    return status_bank_lookup(("candidate", fingerprint), lambda: find_banked_candidate(fingerprint))
+
+
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
     """The bounded discovery listing, with each candidate verified."""
     return _verified_candidates(candidate_artifact_paths(_bank_root(root)))
