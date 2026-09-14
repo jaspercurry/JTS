@@ -14,6 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
+from jasper.active_speaker.bass_levels import BassLevelRun, bass_level_ladder, run_bass_levels
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -28,6 +29,7 @@ from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
 from tests.crossover_v2_fixtures import _loc
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
+from tests.test_preflight import ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 
 _ABORTS = {SeamFailure: "seam_failed"}
@@ -704,11 +706,19 @@ async def test_run_requires_the_chosen_level_in_an_open_session(level):
         assert result.status == "complete"
 
 
+async def test_bass_levels_refuse_when_no_level_is_admissible():
+    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
+    ladder = bass_level_ladder(request, ready_facts(request, commissioning_stop_db_spl=None))
+    hold, prepare = Mock(), Mock()
+    with pytest.raises(ac.LateralWalkRefused) as refused:
+        await run_bass_levels(ladder, hold=hold, prepare=prepare, gate=AnsweredGate(), aborts=_ABORTS)
+    assert refused.value.reason == "walk_commissioning_stop_unset"
+    assert not hold.mock_calls and not prepare.mock_calls
+
+
 @pytest.mark.parametrize("partial", [False, True])
 async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial):
-    from jasper.active_speaker.bass_levels import BassLevelRun, bass_level_ladder, run_bass_levels
     from tests.test_correction_crossover_v2_wired import _run_door
-    from tests.test_preflight import ready_facts
 
     request = _walk([0, 20], candidates=("base",))
     request = replace(request, stops=tuple(replace(stop, purpose="bass") for stop in request.stops))
