@@ -10,32 +10,40 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .bundles import sessions_dir
-from .candidate_bank import CandidateBankRefusal, find_banked_candidate
-from .crossover_v2.round_inputs import iter_round_sessions, round_artifact_dir
+from .candidate_bank import CandidateBankRefusal, _candidate_roots, status_banked_candidate
+from .commissioning_evidence_store import EVIDENCE_ROOT
 from .run_manifest import RUN_MANIFEST_FILENAME
 
 
 def _manifest_path(state: Mapping[str, Any]) -> Path | None:
+    candidate = state.get("candidate")
+    evidence = state.get("evidence")
+    fingerprint = str(candidate.get("fingerprint") or "") if isinstance(candidate, Mapping) else ""
+    bundle_id = str(evidence.get("bundle_session_id") or "") if isinstance(evidence, Mapping) else ""
+    session_id = str(state.get("session_id") or "")
     # A recovery VERIFY has its own one-pose manifest. The candidate's original
     # run still owns the promise after that re-arm (#2098).
-    candidate = state.get("candidate")
-    if isinstance(candidate, Mapping) and candidate.get("fingerprint"):
+    if fingerprint:
         try:
-            banked = find_banked_candidate(str(candidate["fingerprint"]))
+            banked = status_banked_candidate(fingerprint)
             return banked.path.with_name(RUN_MANIFEST_FILENAME)
         except CandidateBankRefusal:
             pass
-    evidence = state.get("evidence")
-    bundle_id = evidence.get("bundle_session_id") if isinstance(evidence, Mapping) else None
-    if not isinstance(bundle_id, str) or not bundle_id or Path(bundle_id).name != bundle_id:
+    if not all(value and Path(value).name == value for value in (bundle_id, session_id)):
         return None
-    live = sessions_dir() / bundle_id
-    bundles = (live,) if live.is_dir() else iter_round_sessions(live)
-    for bundle in bundles:
-        if bundle.name == bundle_id:
-            directory, _ = round_artifact_dir(bundle)
-            if directory is not None and directory.name == state.get("session_id"):
-                return directory / RUN_MANIFEST_FILENAME
+    root = sessions_dir()
+    relative = Path(EVIDENCE_ROOT) / "artifacts/crossover_v2" / session_id / RUN_MANIFEST_FILENAME
+    live = root / bundle_id / relative
+    if live.is_file():
+        return live
+    receipt = state.get("round_receipt") or {}
+    for round_id in (receipt.get("round_id"), session_id, bundle_id):
+        if not isinstance(round_id, str) or Path(round_id).name != round_id:
+            continue
+        for store in _candidate_roots(root):
+            path = store / round_id / "bundle" / bundle_id / relative
+            if path.is_file():
+                return path
     return None
 
 

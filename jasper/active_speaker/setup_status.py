@@ -20,6 +20,7 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
+from .candidate_bank import status_banked_candidate
 from .capture_geometry import comparison_set_valid
 from .crossover_contract import (
     crossover_snapshot_state,
@@ -382,7 +383,8 @@ def _applied_layer_a_binding(
             }
         playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
         declaration = load_tuning_declaration(topology, playback_device=playback_device)
-        candidate = candidate_from_applied_profile(topology, applied_profile)
+        candidate = candidate_from_applied_profile(topology, applied_profile,
+            find_candidate=lambda fingerprint: status_banked_candidate(fingerprint, applied_profile=applied_profile))
         preference_filters, trim_db = saved_sound_layers()
         expected_yaml = compile_tuning_graph(declaration, candidate=candidate,
             preference_filters=preference_filters, output_trim_db=trim_db)
@@ -567,7 +569,8 @@ def read_active_speaker_setup_status(
     try:
         design_draft = load_design_draft()
         measurements = load_measurement_state(topology)
-        _, profile = compile_commissioning_profile(topology=topology, design_draft=design_draft)
+        _, profile = compile_commissioning_profile(topology=topology, design_draft=design_draft,
+                                                 find_candidate=status_banked_candidate)
         applied_profile = load_applied_baseline_profile_state(baseline_state_path)
     except _READINESS_DERIVATION_ERRORS as exc:
         profile = None
