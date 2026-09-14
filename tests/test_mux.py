@@ -100,9 +100,6 @@ class _FakeVolumeCoordinator:
         self.volume_context_publishes += 1
         self.events.append("publish_volume_context")
 
-    async def aclose(self):
-        pass
-
 
 @pytest.fixture
 def mux(tmp_path, monkeypatch):
