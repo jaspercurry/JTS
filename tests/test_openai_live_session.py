@@ -104,6 +104,63 @@ async def delegate(turn, delegation, response_id, name, args):
     }))
 
 
+@pytest.mark.parametrize("failure_stage", [None, "construct", "bind"])
+async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation_failure(
+    monkeypatch, caplog, failure_stage,
+):
+    key = "private-test-credential"
+    steps = []
+    failed = False
+
+    def step(stage):
+        nonlocal failed
+        steps.append(stage)
+        if stage == failure_stage and not failed:
+            failed = True
+            raise RuntimeError(f"SDK preparation failed for {key}")
+
+    class Client:
+        def __init__(self, *, api_key):
+            assert api_key == key
+            step("construct")
+
+        @property
+        def live(self):
+            step("bind")
+            return self
+
+        def connect(self):
+            step("dial")
+            return LiveSocket()
+
+        async def close(self):
+            step("close")
+
+    monkeypatch.setattr("openai.AsyncOpenAI", Client)
+    conn = OpenAILiveConnection(api_key=key)
+    try:
+        await conn.start(ToolRegistry(), "Be brief.")
+        assert steps == (["construct"] if failure_stage == "construct" else ["construct", "bind"])
+        assert not conn.is_paused()
+        if failure_stage:
+            assert conn.last_failure_detail() and key not in conn.last_failure_detail()
+            assert key not in caplog.text
+            assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+        turn = await conn.acquire_turn()
+        assert steps == {
+            None: ["construct", "bind", "dial"],
+            "construct": ["construct", "construct", "bind", "dial"],
+            "bind": ["construct", "bind", "bind", "dial"],
+        }[failure_stage]
+        assert not turn.turn_lost()
+        assert conn.last_failure_detail() is None
+        await turn.release()
+    finally:
+        await conn.stop()
+        await conn.stop()
+    assert steps.count("close") == 1
+
+
 async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
     socket = LiveSocket()
     registry = ToolRegistry()
@@ -628,6 +685,95 @@ async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeyp
         await turn.on_event(output_audio(QUIET_PCM))
         assert turn.audio_chunks_pending() == 3
         assert turn.chunks_received() == 2
+
+
+@pytest.mark.parametrize("finish", ["filled", "short", "continuation", "new_answer", "cancel", "release", "lost"])
+async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkeypatch, finish):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    if finish in {"cancel", "release", "lost"}:
+        monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 1.0)
+    pcm = AUDIBLE_PCM * 20  # 100 ms: two deltas cross the 150 ms reserve.
+    async with live_turn() as turn:
+        audio = turn.audio_out_chunks()
+        pending = asyncio.create_task(anext(audio))
+        release = None
+        closing = asyncio.Event()
+        try:
+            await turn.on_event(output_audio(pcm))
+            await asyncio.sleep(0.01)
+            assert not pending.done()
+            assert turn.audio_chunks_pending() == 1
+            if finish in {"cancel", "release", "lost"}:
+                if finish == "cancel":
+                    pending.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await pending
+                else:
+                    if finish == "release":
+                        async def close():
+                            await closing.wait()
+
+                        monkeypatch.setattr(turn._conn, "_close_live_session", close)
+                        release = asyncio.create_task(turn.release())
+                    else:
+                        turn._on_connection_lost()
+                    with pytest.raises(StopAsyncIteration):
+                        await asyncio.wait_for(pending, 0.2)
+                    if finish == "release":
+                        assert not release.done()
+                        closing.set()
+                        await release
+                assert turn._queued_bytes == 0
+                return
+            if finish == "short":
+                assert (await asyncio.wait_for(pending, 0.4)).pcm == pcm
+                return
+            await turn.on_event(output_audio(pcm))
+            assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+            assert (await anext(audio)).pcm == pcm
+            assert turn.audio_chunks_pending() == 0
+            if finish in {"continuation", "new_answer"}:
+                clock.now += 0.1 if finish == "continuation" else SILENCE_BRIDGE_SEC + 0.1
+                pending = asyncio.create_task(anext(audio))
+                await asyncio.sleep(0)
+                await turn.on_event(output_audio(pcm))
+                if finish == "new_answer":
+                    await asyncio.sleep(0.01)
+                    assert not pending.done()
+                    await turn.on_event(output_audio(pcm))
+                assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            await audio.aclose()
+            closing.set()
+            if release is not None:
+                await release
+
+
+@pytest.mark.parametrize("finish", ["close", "lost", "interrupt"])
+async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypatch, finish):
+    pcm = b"\x00\x40" * 2
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", len(pcm))
+    async with live_turn() as turn:
+        audio = turn.audio_out_chunks()
+        try:
+            await turn.on_event(output_audio(pcm))
+            await turn.on_event(output_audio(pcm))
+            assert turn.audio_dropped_bytes() == len(pcm)
+            assert (await anext(audio)).pcm == pcm
+            if finish == "lost":
+                turn._on_connection_lost()
+            await audio.aclose()
+            assert turn.audio_dropped_bytes() == len(pcm)
+            if finish == "interrupt":
+                turn.drop_pending_audio()
+            expected = 0 if finish == "interrupt" else len(pcm)
+            await turn.release()
+            assert turn.audio_dropped_bytes() == expected
+        finally:
+            await audio.aclose()
 
 
 async def test_a_dismissal_survives_a_delegation_that_cancels_its_round():

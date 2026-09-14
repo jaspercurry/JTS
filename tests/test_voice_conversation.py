@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,6 +20,7 @@ from jasper.voice.openai_live_session import OpenAILiveConnection, OpenAILiveTur
 from jasper.voice.turn_lifecycle import State
 from jasper.voice.turn_playback import PlaybackReport, play_responses
 from jasper.voice.session import AudioOutChunk
+from jasper.voice import conversation, openai_live_session, turn_playback
 from tests._async_wait import wait_until
 from tests._live_turn_fake import FakeLiveTurn
 from tests._playout import FakeTts
@@ -189,6 +191,105 @@ async def test_playout_acceptance_updates_after_the_first_answer():
     started = time.monotonic()
     await play_responses(turn, FakeTts(), report=report)
     assert report.last_accepted_at >= started
+
+
+@pytest.mark.parametrize("completion, answer, followup, correction, acknowledged, expected", [
+    (10.0, 11.0, 5, False, True, 18.0),
+    (10.0, 11.0, 0, False, True, 18.0),
+    (10.0, 9.0, 5, False, True, 18.0),
+    (10.0, None, 5, False, True, 18.0),
+    (28.0, None, 5, False, True, 31.0),
+    (10.0, None, 5, True, True, 35.0),
+    (10.0, None, 5, False, False, 9.0),
+])
+async def test_live_backend_handoff_has_a_bounded_grace(
+    monkeypatch, completion, answer, followup, correction, acknowledged, expected,
+):
+    now, accepted, speech_started, last_speech = 2.0, 2.0, 0.5, 1.0
+    if not acknowledged:
+        accepted = 0.0
+    clock = SimpleNamespace(monotonic=lambda: now)
+    monkeypatch.setattr(conversation, "time", clock)
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
+
+    async def delegate(identity):
+        await turn.on_event({"type": "session.delegation.created", "delegation": {"id": identity}})
+
+    await delegate("original")
+
+    async def tick(seconds):
+        nonlocal now, accepted, speech_started, last_speech
+        now += seconds
+        if correction and now == 5.0:
+            speech_started, last_speech, accepted = 4.0, 5.0, 5.0
+            await delegate("correction")
+        if now == completion or now == completion + 1:
+            await turn.on_event({
+                "type": "response.event", "delegation_id": "original",
+                "event": {"type": "response.completed", "response": {"id": "r1"}},
+            })
+        if now == answer:
+            accepted = now
+        await turn.on_event({
+            "type": "session.output_transcript.delta", "delta": ".", "start_ms": 0, "end_ms": 1,
+        })
+        assert now <= 36
+
+    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    reason = await continuous_watchdog(
+        turn, FakeTts(), followup_seconds=followup, stall_seconds=120,
+        user_activity=lambda: (speech_started, last_speech), last_accepted_at=lambda: accepted,
+    )
+    assert now == expected
+    assert reason == ("response_stalled" if correction or not accepted else "followup_timeout")
+
+
+@pytest.mark.parametrize("finish_write", [True, False])
+async def test_live_dequeued_write_survives_idle_but_is_bounded(monkeypatch, finish_write):
+    now = 100.0
+    clock = SimpleNamespace(monotonic=lambda: now)
+    monkeypatch.setattr(conversation, "time", clock)
+    monkeypatch.setattr(turn_playback, "time", clock)
+    turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
+    turn._enqueue_audio(AudioOutChunk(b"\x00\x40" * 120))
+    report = PlaybackReport(accepted_audio=True, last_accepted_at=90)
+    entered, unblock = asyncio.Event(), asyncio.Event()
+    tts = FakeTts()
+    original_write = tts.write_segment
+
+    async def write(*args, **kwargs):
+        entered.set()
+        await unblock.wait()
+        return await original_write(*args, **kwargs)
+
+    tts.write_segment = write
+    playback = asyncio.create_task(play_responses(turn, tts, report=report))
+    await entered.wait()
+    assert turn.audio_chunks_pending() == 0
+    assert report.write_started_at == 100
+
+    async def tick(seconds):
+        nonlocal now
+        now += seconds
+        if now == 101 and finish_write:
+            unblock.set()
+            await wait_until(lambda: report.write_started_at == 0)
+        assert now <= 106
+
+    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    try:
+        reason = await continuous_watchdog(
+            turn, tts, followup_seconds=5, stall_seconds=2,
+            user_activity=lambda: (80, 85), last_accepted_at=lambda: report.last_accepted_at,
+            write_started_at=lambda: report.write_started_at,
+        )
+        assert reason == ("followup_timeout" if finish_write else "playout_stalled")
+        assert now == (106 if finish_write else 102)
+    finally:
+        playback.cancel()
+        await asyncio.gather(playback, return_exceptions=True)
+    assert report.write_started_at == 0
 
 
 @pytest.mark.parametrize("reason", ["response_stalled", "playout_stalled"])

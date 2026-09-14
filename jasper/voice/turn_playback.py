@@ -27,6 +27,7 @@ PRE_RESPONSE_CAPPED_REASON = "pre_response_capped"
 class PlaybackReport:
     accepted_audio: bool = False
     last_accepted_at: float = 0.0
+    write_started_at: float = 0.0
     stop_reason: str | None = None
 
 
@@ -114,21 +115,25 @@ async def play_responses(
             async for chunk in chunks:
                 if not chunk.pcm:
                     continue
-                if not response_started:
-                    response_started = True
-                    if on_response_started is not None:
-                        try:
-                            await on_response_started()
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning("turn response observer failed: %s", e)
-                if interrupt.done():
-                    return
-                accepted = await tts.write_segment(
-                    chunk.pcm,
-                    provider_item_id=chunk.provider_item_id,
-                    segment_kind=chunk.kind,
-                    on_first_write=first_write,
-                )
+                report.write_started_at = time.monotonic()
+                try:
+                    if not response_started:
+                        response_started = True
+                        if on_response_started is not None:
+                            try:
+                                await on_response_started()
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning("turn response observer failed: %s", e)
+                    if interrupt.done():
+                        return
+                    accepted = await tts.write_segment(
+                        chunk.pcm,
+                        provider_item_id=chunk.provider_item_id,
+                        segment_kind=chunk.kind,
+                        on_first_write=first_write,
+                    )
+                finally:
+                    report.write_started_at = 0.0
                 if not accepted:
                     report.stop_reason = admission_refusal() if admission_refusal else None
                     if report.stop_reason is None:

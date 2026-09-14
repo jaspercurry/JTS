@@ -24,7 +24,7 @@ use anyhow::Result;
 use log::{info, warn};
 
 use crate::mixer::CHANNELS;
-use crate::playout::{PlayoutEvent, PlayoutLedger};
+use crate::playout::{frames_to_ms, PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
     AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, HeldLoudnessReference,
@@ -47,6 +47,23 @@ const TTS_SAMPLE_RATE: u32 = 48_000;
 // a shorter TTL could un-duck program audio during a legitimate quiet turn.
 // If operations raise `JASPER_IDLE_TIMEOUT_SEC` above 30 s, retune this too.
 const PROGRAM_DUCK_IDLE_RELEASE_TTL: Duration = Duration::from_secs(30);
+/// Shortest starved run that earns a log line. Every dropout is counted in
+/// STATUS regardless; this only keeps a chronically underfed lane from writing
+/// a line per 5 ms period on a memory-constrained box.
+const STARVED_LOG_MIN_MS: u64 = 10;
+/// Longest starved run still treated as an audible break in speech.
+///
+/// A segment stays open for a whole assistant response — `tts_playout` only
+/// closes one when the provider item changes or the turn ends — so the lane
+/// also runs dry for reasons that are not dropouts at all. The first
+/// measurement on jts.local split cleanly either side of this value: the short
+/// population ran 16-138 ms, the next run up was 502 ms, and nothing landed
+/// between. The threshold is drawn through that empty band.
+///
+/// A run above it is recorded as `starved_long_runs`/`starved_long_frames` and
+/// nothing more: this code cannot see WHY the lane was dry, so the long bucket
+/// is "not a break in speech", never a claim about model latency.
+const STARVED_DROPOUT_MAX_MS: u64 = 250;
 const LIVE_VOLUME_RAMP_FRAMES: u32 = TTS_SAMPLE_RATE / 10;
 const PACKED_DB_NONE: i64 = i64::MIN;
 
@@ -80,6 +97,11 @@ pub struct TtsMetrics {
     program_duck_active: Arc<AtomicBool>,
     flush_requests: Arc<AtomicU64>,
     flushed_frames: Arc<AtomicU64>,
+    starved_runs: Arc<AtomicU64>,
+    starved_frames: Arc<AtomicU64>,
+    starved_max_run_frames: Arc<AtomicU64>,
+    starved_long_runs: Arc<AtomicU64>,
+    starved_long_frames: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
     content_anchor_lufs_x10: Arc<AtomicI64>,
     assistant_decision_seen: Arc<AtomicBool>,
@@ -121,6 +143,11 @@ impl Default for TtsMetrics {
             program_duck_active: Arc::new(AtomicBool::new(false)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
+            starved_runs: Arc::new(AtomicU64::new(0)),
+            starved_frames: Arc::new(AtomicU64::new(0)),
+            starved_max_run_frames: Arc::new(AtomicU64::new(0)),
+            starved_long_runs: Arc::new(AtomicU64::new(0)),
+            starved_long_frames: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             content_anchor_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             assistant_decision_seen: Arc::new(AtomicBool::new(false)),
@@ -197,6 +224,47 @@ impl TtsMetrics {
 
     pub fn flushed_frames(&self) -> u64 {
         self.flushed_frames.load(Ordering::Relaxed)
+    }
+
+    /// One run of periods short enough to be an audible break in speech: an
+    /// OPEN segment had nothing left to mix and playout emitted silence
+    /// instead. A run ended by the segment closing is the tail, and a run
+    /// longer than [`STARVED_DROPOUT_MAX_MS`] is the model between phrases;
+    /// neither is recorded here.
+    pub(crate) fn mark_starved_run(&self, frames: u64) {
+        self.starved_runs.fetch_add(1, Ordering::Relaxed);
+        self.starved_frames.fetch_add(frames, Ordering::Relaxed);
+        self.starved_max_run_frames
+            .fetch_max(frames, Ordering::Relaxed);
+    }
+
+    /// One dry run too long to be a break in speech. What it IS — model
+    /// latency, a tool round, a pause between phrases — this cannot say; it
+    /// records duration so the split can be judged rather than assumed.
+    pub(crate) fn mark_starved_long_run(&self, frames: u64) {
+        self.starved_long_runs.fetch_add(1, Ordering::Relaxed);
+        self.starved_long_frames
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    pub fn starved_runs(&self) -> u64 {
+        self.starved_runs.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_frames(&self) -> u64 {
+        self.starved_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_max_run_frames(&self) -> u64 {
+        self.starved_max_run_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_long_runs(&self) -> u64 {
+        self.starved_long_runs.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_long_frames(&self) -> u64 {
+        self.starved_long_frames.load(Ordering::Relaxed)
     }
 
     pub fn loudness_snapshot(&self) -> TtsLoudnessSnapshot {
@@ -509,6 +577,20 @@ pub struct TtsMixer {
     /// speaks one width for a daemon's whole lifetime, so this is one line per
     /// lifetime, not per connection — the client reconnecting does not re-arm it.
     last_payload_width: Option<TtsWireWidth>,
+    /// Samples of silence emitted so far in the CURRENT unbroken run of
+    /// starved periods. Non-zero only between a dry period and the period that
+    /// resolves it; see `observe_starvation`.
+    starved_run_samples: u64,
+    /// Which segment the open starved run belongs to. A run whose segment
+    /// changed under it spans a boundary and is not a gap inside one
+    /// utterance — `SEGMENT_END` and `SEGMENT_START` can both land in one
+    /// period, so the serial is the only thing that separates those.
+    starved_run_segment: u64,
+    /// Serial of the segment audio was most recently mixed from. Silence
+    /// before a segment's FIRST audio is waiting for the utterance to start,
+    /// not a break in one: `SEGMENT_START` opens the segment gain, so without
+    /// this the wait for the opening chunk would be charged as a dropout.
+    played_segment: Option<u64>,
 }
 
 impl TtsMixer {
@@ -544,6 +626,9 @@ impl TtsMixer {
             loudness,
             ledger: PlayoutLedger::new(TTS_SAMPLE_RATE),
             last_payload_width: None,
+            starved_run_samples: 0,
+            starved_run_segment: 0,
+            played_segment: None,
         }
     }
 
@@ -644,6 +729,7 @@ impl TtsMixer {
         // `pop_front`, not per frame. `gain_ramp.next_frame()` below stays per
         // frame: that is the glide.
         let mut head_target_gain_db: Option<f32> = None;
+        let mut played_segment: Option<u64> = None;
         for frame_sum in sum.chunks_exact_mut(CHANNELS as usize) {
             let Some(front) = self.queue.front() else {
                 break;
@@ -653,6 +739,7 @@ impl TtsMixer {
                 None => *head_target_gain_db.insert(self.target_gain_db(front)),
             };
             let segment_serial = front.segment_serial;
+            played_segment = Some(segment_serial);
             let assistant_reference_eligible = front.assistant_reference_eligible;
             let starts_assistant_playback = assistant_reference_eligible
                 && !muted
@@ -751,6 +838,67 @@ impl TtsMixer {
         self.ledger
             .advance_played(popped_samples / (CHANNELS as u64));
         self.metrics.mark_pending(self.pending_frames());
+        if played_segment.is_some() {
+            self.played_segment = played_segment;
+        }
+        self.observe_starvation(sum.len() as u64, popped_samples, queued_samples_before);
+    }
+
+    /// Account for the frames this period left as silence because the queue
+    /// ran out mid-`mix_period`. The loop above breaks on an empty queue, so
+    /// those frames reach the DAC as digital silence with no other trace.
+    ///
+    /// A run counts as a break in speech only when all three hold: the segment
+    /// is still open, audio has ALREADY been mixed from that same segment (so
+    /// this is not the wait for its opening chunk), and the segment did not
+    /// change under the run. Otherwise the silence is the gap between
+    /// utterances, the wait for one to start, or a boundary — none of them a
+    /// break in continuous speech.
+    ///
+    /// `queued_samples_before` is the queue depth at the START of this period,
+    /// i.e. what had arrived by the time the run ended. The post-mix
+    /// `pending_frames` gauge cannot say that: it is read after the pop.
+    fn observe_starvation(
+        &mut self,
+        requested_samples: u64,
+        popped_samples: u64,
+        queued_samples_before: u64,
+    ) {
+        let short_samples = requested_samples.saturating_sub(popped_samples);
+        let segment_open = self.active_segment_gain_db.is_some();
+        let serial = self.active_segment_serial;
+        let same_segment = segment_open && self.starved_run_segment == serial;
+        // Any audio at all ends the run — a period the queue only PARTLY
+        // filled still resumed speech, and closing only on a fully fed period
+        // would let a chronically underfed lane run forever uncounted.
+        if self.starved_run_samples > 0 && (popped_samples > 0 || !same_segment) {
+            let frames = self.starved_run_samples / (CHANNELS as u64);
+            self.starved_run_samples = 0;
+            if same_segment && frames > 0 {
+                let ms = frames_to_ms(frames, TTS_SAMPLE_RATE);
+                if ms > STARVED_DROPOUT_MAX_MS {
+                    self.metrics.mark_starved_long_run(frames);
+                } else {
+                    self.metrics.mark_starved_run(frames);
+                    if ms >= STARVED_LOG_MIN_MS {
+                        warn!(
+                            "event=fanin.tts_starved frames={} ms={} segment={} queued_frames_at_resume={}",
+                            frames,
+                            ms,
+                            serial,
+                            queued_samples_before / (CHANNELS as u64),
+                        );
+                    }
+                }
+            }
+        }
+        // Waiting for a segment's own opening chunk is not a break in speech.
+        if segment_open && short_samples > 0 && self.played_segment == Some(serial) {
+            if self.starved_run_samples == 0 {
+                self.starved_run_segment = serial;
+            }
+            self.starved_run_samples = self.starved_run_samples.saturating_add(short_samples);
+        }
     }
 
     fn apply_volume_context(&mut self, context: VolumeContext) {
@@ -3085,6 +3233,192 @@ mod tests {
                 .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
             "a coherent box must not warn",
         );
+        drop(flush_tx);
+    }
+
+    fn starvation_mixer() -> (
+        SyncSender<QueuedTtsCommand>,
+        SyncSender<QueuedFlush>,
+        TtsMixer,
+        TtsMetrics,
+    ) {
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let probe = metrics.clone();
+        let mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db: -24.0,
+            cue_duck_db: -6.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+        });
+        (tx, flush_tx, mixer, probe)
+    }
+
+    fn send_assistant_segment_start(tx: &SyncSender<QueuedTtsCommand>) {
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: None,
+                profile: None,
+            },
+        })
+        .unwrap();
+    }
+
+    fn send_audio_frames(tx: &SyncSender<QueuedTtsCommand>, frames: usize) {
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1_000; frames * CHANNELS as usize]),
+        })
+        .unwrap();
+    }
+
+    fn mix_one_period(mixer: &mut TtsMixer, frames: usize) {
+        let mut sum = vec![0i64; frames * CHANNELS as usize];
+        mixer.prepare_period();
+        mixer.mix_period(&mut sum);
+    }
+
+    #[test]
+    fn starved_run_is_recorded_when_audio_resumes_inside_the_segment() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 0, "a fed period is not a dropout");
+
+        // Two periods with an OPEN segment and nothing queued: the run is
+        // still in progress, so nothing is recorded yet.
+        mix_one_period(&mut mixer, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 0, "an open run is not yet a dropout");
+
+        // Audio resumes inside the same segment: the gap was audible.
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 1);
+        assert_eq!(probe.starved_frames(), 4);
+        assert_eq!(probe.starved_max_run_frames(), 4);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn run_ended_by_segment_end_is_the_tail_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        // Dry period while the segment is still open...
+        mix_one_period(&mut mixer, 2);
+        // ...then the segment closes. That silence is the ordinary gap
+        // between utterances, not a dropout.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+        mix_one_period(&mut mixer, 2);
+
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn dry_run_longer_than_a_dropout_is_model_latency_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        // A segment stays open while the model thinks, so the lane runs dry
+        // for far longer than any audible break in speech.
+        let dropout_max_frames = (STARVED_DROPOUT_MAX_MS * TTS_SAMPLE_RATE as u64) / 1_000;
+        let mut starved_frames = 0;
+        while starved_frames <= dropout_max_frames {
+            mix_one_period(&mut mixer, 480);
+            starved_frames += 480;
+        }
+
+        // Speech resumes: the gap is real, but it is latency, not a dropout.
+        send_audio_frames(&tx, 480);
+        mix_one_period(&mut mixer, 480);
+        assert_eq!(probe.starved_runs(), 0, "not an audible dropout");
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.starved_long_runs(), 1, "but still counted");
+        assert!(probe.starved_long_frames() > 0, "with its duration kept");
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn waiting_for_a_segments_opening_chunk_is_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        // SEGMENT_START opens the segment gain before any audio exists, so
+        // this silence is the wait for the utterance to begin.
+        send_assistant_segment_start(&tx);
+        mix_one_period(&mut mixer, 2);
+        mix_one_period(&mut mixer, 2);
+
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.starved_long_runs(), 0);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn a_run_spanning_a_segment_boundary_is_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        // Dry, then END and START land together in one period — the silence
+        // straddles two utterances and belongs to neither.
+        mix_one_period(&mut mixer, 2);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn a_flush_discards_the_open_run_rather_than_charging_it() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        mix_one_period(&mut mixer, 2);
+
+        // A barge-in flush clears the queue and the segment with it.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::FlushSync,
+        })
+        .unwrap();
+        mix_one_period(&mut mixer, 2);
+
+        // A later utterance must not inherit the pre-flush run.
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
         drop(flush_tx);
     }
 }

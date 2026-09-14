@@ -256,8 +256,10 @@ class TurnLifecycle:
         self.session_id = self._usage_store.open_session(
             provider=self._output.cfg.voice_provider,
         )
+        t_after_usage_open = time.monotonic()
         if (release := self.take_pending_release()) is not None:
             await asyncio.gather(release, return_exceptions=True)
+        t_after_pending_release = time.monotonic()
         self.turn = await self._connection.acquire_turn()
         t_after_acquire = time.monotonic()
         self._check_admission(input_epoch)
@@ -269,14 +271,17 @@ class TurnLifecycle:
 
         logger.info(
             "turn acquire done in %.0fms "
-            "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f acquire=%.0f) "
+            "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f "
+            "usage_open=%.0f pending_release=%.0f connect=%.0f) "
             "(wake→activity_start)",
             (time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
             (t_after_loudness_prepare - t_after_state) * 1000,
             (t_after_duck - t_after_loudness_prepare) * 1000,
-            (t_after_acquire - t_after_duck) * 1000,
+            (t_after_usage_open - t_after_duck) * 1000,
+            (t_after_pending_release - t_after_usage_open) * 1000,
+            (t_after_acquire - t_after_pending_release) * 1000,
         )
         # Drain the recent-mic ring into the turn so the user's first phoneme,
         # which preceded the wake firing, reaches the model. The frame that
@@ -305,6 +310,7 @@ class TurnLifecycle:
                 stall_seconds=self._output.cfg.response_stall_timeout_sec,
                 user_activity=lambda: (self.continuous_speech_started, self.continuous_last_speech),
                 last_accepted_at=lambda: self.playback_report.last_accepted_at,
+                write_started_at=lambda: self.playback_report.write_started_at,
                 spend_allowed=self._spend_cap.allowed,
             ) if continuous else idle_watchdog(
                 self.turn,

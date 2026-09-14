@@ -1235,6 +1235,7 @@ class TtsPlayout:
                     continue
                 raise
         paced_sec = 0.0
+        oversleep_sec = 0.0
         accepted = False
 
         async def commit_chunk() -> None:
@@ -1256,7 +1257,13 @@ class TtsPlayout:
             now = time.monotonic()
             pace_excess = (self._ring_end_monotonic or now) - now - _OUTPUTD_PACE_AHEAD_SEC
             if pace_excess > 0:
+                slept_at = time.monotonic()
                 await _pace_sleep(pace_excess)
+                # What the loop actually gave back beyond what was asked for:
+                # the observable form of event-loop lag on this path (#5091).
+                oversleep_sec += max(
+                    0.0, time.monotonic() - slept_at - pace_excess,
+                )
                 paced_sec += pace_excess
                 self._paced_total_sec += pace_excess
             try:
@@ -1276,10 +1283,20 @@ class TtsPlayout:
         write_ms = (queued_at - write_start) * 1000 - paced_sec * 1000
         chunk_ms = chunk_duration_sec * 1000
         if write_ms > chunk_ms + 100:
-            logger.warning(
-                "fan-in TTS IPC write slow: %.0fms for %.0fms of audio "
-                "(%d frames @ %d Hz)",
-                write_ms, chunk_ms, len(mono), _OUTPUTD_SAMPLE_RATE,
+            # This timer is LOCAL — setup, scheduling, locks, socket writes and
+            # callbacks all land in it. It says nothing about when the provider
+            # sent the audio; pair it with `provider.output_gap` to tell a
+            # network gap from a local delivery stall (#5091).
+            log_event(
+                logger,
+                "tts_fanin.write_slow",
+                write_ms=int(write_ms),
+                chunk_ms=int(chunk_ms),
+                paced_ms=int(paced_sec * 1000),
+                oversleep_ms=int(oversleep_sec * 1000),
+                frames=len(mono),
+                rate=_OUTPUTD_SAMPLE_RATE,
+                level=logging.WARNING,
             )
         return accepted
 

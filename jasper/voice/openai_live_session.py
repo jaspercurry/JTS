@@ -15,7 +15,7 @@ import base64
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
@@ -50,8 +50,27 @@ FRONTEND_INSTRUCTIONS = (
 # follow-up window never opens (`continuous_watchdog` in .conversation).
 SILENCE_BRIDGE_SEC = 0.8
 
+# Trial reserve for the measured 40–110 ms delivery deficits. Short replies
+# cannot wait for more PCM indefinitely: the fill has the same wall-time cap.
+PLAYOUT_RESERVE_SEC = 0.15
+
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
+
+# How far the provider may fall BEHIND REAL TIME between output deltas before
+# it is worth reporting.
+#
+# Raw spacing cannot answer this. Live streams answer audio in chunks, so a
+# delta carrying 100 ms of audio arriving 100 ms after the last one is the
+# provider keeping up exactly; measuring spacing alone would fire on healthy
+# streaming and stay silent on a real shortfall of the same size. What starves
+# the lane is arrival time EXCEEDING the audio delivered, so that deficit is
+# what is measured. Set below the smallest dropout worth attributing (#5091
+# measured 10-128 ms) because the deficit, unlike spacing, is ~0 when healthy.
+OUTPUT_DELTA_DEFICIT_SEC = 0.04
+
+# Live output PCM: mono int16 at the rate `session.start` asks for.
+OUTPUT_PCM_RATE = 24000
 
 # Ceiling on waiting for the server's `session.close` ack. Live bills per
 # connected minute, so the close is still sent and the transport still
@@ -109,6 +128,12 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
+        # Arrival of the PREVIOUS output delta, audible or quiet, and how much
+        # audio it carried. Used only to report the provider falling behind.
+        self._last_delta_at = 0.0
+        self._last_delta_audio_sec = 0.0
+        self._playout_available = asyncio.Event()
+        self._reserve_playout = True
         self._finalized = False
         self._delegation_id = None
         # Delegation the in-flight tool round answers; a correction moves
@@ -166,6 +191,63 @@ class OpenAILiveTurn(BaseLiveTurn):
         # Live needs silence as well as speech to advance its audio timeline.
         self._end_input_at_monotonic = time.monotonic()
 
+    def _enqueue_audio(self, chunk: AudioOutChunk) -> None:
+        super()._enqueue_audio(chunk)
+        self._playout_available.set()
+
+    def _on_connection_lost(self) -> None:
+        super()._on_connection_lost()
+        self._playout_available.set()
+
+    def drop_pending_audio(self, *, preserve_overflow: bool = False) -> int:
+        overflow = self._audio_dropped_bytes
+        dropped = super().drop_pending_audio()
+        if preserve_overflow:
+            self._audio_dropped_bytes = overflow
+        self._reserve_playout = True
+        self._playout_available.set()
+        return dropped
+
+    async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
+        try:
+            while not self._released and not self._turn_lost:
+                if self._audio_q.empty():
+                    self._playout_available.clear()
+                    await self._playout_available.wait()
+                    continue
+                if self._reserve_playout:
+                    self._reserve_playout = False
+                    loop = asyncio.get_running_loop()
+                    started = loop.time()
+                    result = "filled"
+                    try:
+                        async with asyncio.timeout(PLAYOUT_RESERVE_SEC):
+                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * 48_000):
+                                self._playout_available.clear()
+                                await self._playout_available.wait()
+                                if self._released or self._turn_lost:
+                                    return
+                    except TimeoutError:
+                        result = "timeout"
+                    log_event(
+                        logger, "provider.playout_reserve", result=result,
+                        waited_ms=round((loop.time() - started) * 1000),
+                        queued_ms=round(self._queued_bytes / 48),
+                    )
+                if self._released or self._turn_lost:
+                    return
+                try:
+                    chunk = self._audio_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    continue
+                if chunk is None:
+                    return
+                self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
+                yield chunk
+        finally:
+            # Final accounting reads overflow after playback is cancelled.
+            self.drop_pending_audio(preserve_overflow=True)
+
     def usage(self) -> TurnUsage:
         # Live bills the frontend session per minute, not per token, so
         # this replaces the base turn's token counts with the metered
@@ -185,6 +267,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             return
         self._released = True
         self.discard_input()
+        self.drop_pending_audio(preserve_overflow=True)
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
         try:
@@ -230,7 +313,8 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._delegation_id = delegation["id"]
             self._response_ids.clear()
             self._calls.clear()
-            self.backend_pending = True
+            self._set_backend_pending(True, "delegation_started")
+            self.backend_completed_at = 0.0
             self._note_activity()
 
     def _on_output_audio(self, pcm: bytes) -> None:
@@ -244,7 +328,24 @@ class OpenAILiveTurn(BaseLiveTurn):
         if not pcm:
             return
         now = time.monotonic()
+        if self._last_delta_at:
+            # Elapsed since the previous delta, minus the audio that delta
+            # carried: what the provider failed to cover in real time.
+            deficit = (now - self._last_delta_at) - self._last_delta_audio_sec
+            if deficit >= OUTPUT_DELTA_DEFICIT_SEC:
+                log_event(
+                    logger, "provider.output_deficit",
+                    provider=self._conn.PROVIDER_NAME,
+                    deficit_ms=int(deficit * 1000),
+                    elapsed_ms=int((now - self._last_delta_at) * 1000),
+                    audio_ms=int(self._last_delta_audio_sec * 1000),
+                    chunks_received=self._chunks_received,
+                )
+        self._last_delta_at = now
+        self._last_delta_audio_sec = len(pcm) / 2 / OUTPUT_PCM_RATE
         if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
+            if not self._last_chunk_at or now - self._last_chunk_at > SILENCE_BRIDGE_SEC:
+                self._reserve_playout = True
             self._last_chunk_at = now
             self._chunks_received += 1
             self._note_activity()
@@ -298,10 +399,26 @@ class OpenAILiveTurn(BaseLiveTurn):
                 self._round_delegation = delegation
                 self._start_tool_calls([_parse_call(c) for c in calls])
             else:
-                self.backend_pending = False
+                self._set_backend_pending(False, "response_completed")
+                self.backend_completed_at = time.monotonic()
         elif kind in {"response.failed", "response.incomplete"}:
-            self.backend_pending = False
+            self._set_backend_pending(False, kind.replace("response.", "response_"))
             self._on_connection_lost()
+
+    def _set_backend_pending(self, pending: bool, reason: str) -> None:
+        """Move the backend-obligation flag, recording why.
+
+        This flag is what buys a slow answer the 30-second allowance instead
+        of the follow-up window, so a turn that ends before the user's answer
+        is spoken turns on exactly when and why it cleared. See #5091.
+        """
+        if self.backend_pending == pending:
+            return
+        self.backend_pending = pending
+        log_event(
+            logger, "provider.backend_pending", provider=self._conn.PROVIDER_NAME,
+            pending=pending, reason=reason,
+        )
 
     def _tools_may_run(self) -> bool:
         return not self._released and self._round_delegation == self._delegation_id
@@ -348,7 +465,24 @@ class OpenAILiveConnection(BaseLiveConnection):
     async def start(self, registry, system_instruction) -> None:
         self._registry = registry
         self._system_instruction_provider = system_instruction if callable(system_instruction) else lambda: system_instruction
+        try:
+            self._prepare_client()
+        except Exception as exc:  # noqa: BLE001 — a later wake can retry without restarting voice
+            self._outage.on_failure(exc, literals=self._secret_literals())
+            log_event(
+                logger, "provider.client_prepare_failed", provider=self.PROVIDER_NAME,
+                detail=self._outage.detail, level=logging.WARNING,
+            )
         self._set_state(ConnectionState.CONNECTED)
+
+    def _prepare_client(self) -> None:
+        if self._connect is None:
+            from openai import AsyncOpenAI  # lazy — optional provider SDK
+            if self._client is None:
+                self._client = AsyncOpenAI(api_key=self._api_key)
+            # The SDK loads `.live` lazily; moving only the constructor
+            # would leave that cost on the first wake.
+            self._connect = self._client.live.connect
 
     async def acquire_turn(self) -> OpenAILiveTurn:
         async with self._turn_lock:
@@ -411,15 +545,15 @@ class OpenAILiveConnection(BaseLiveConnection):
         # Held locally: a concurrent `stop()` nulls the shared field while
         # this awaits, and the attempt still owns the turn it opened for.
         turn = self._active_turn
-        connect = self._connect
-        if connect is None:
-            from openai import AsyncOpenAI  # lazy — optional provider SDK
-            self._client = AsyncOpenAI(api_key=self._api_key)
-            connect = self._connect = self._client.live.connect
-        self._session_cm = connect()
+        opened_at = time.monotonic()
+        client_was_ready = self._connect is not None
+        self._prepare_client()
+        client_ready_at = time.monotonic()
+        self._session_cm = self._connect()
         self._session = await self._session_cm.__aenter__()
+        socket_open_at = time.monotonic()
         self._receive_task = asyncio.create_task(self._receive(turn))
-        await self._send({"type": "session.start", "session": {
+        start_event = {"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
             "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
             "delegation": {"type": "responses", "responses": {
@@ -427,8 +561,26 @@ class OpenAILiveConnection(BaseLiveConnection):
                 "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],
                 "tool_choice": "auto", "parallel_tool_calls": False,
             }},
-        }})
+        }}
+        configured_at = time.monotonic()
+        # Size only. The payload carries the system instruction and the tool
+        # schemas, so its CONTENT must never reach the journal.
+        config_bytes = len(json.dumps(start_event))
+        await self._send(start_event)
+        sent_at = time.monotonic()
         await self._started.wait()
+        started_at = time.monotonic()
+        log_event(
+            logger, "provider.session_open_phases", provider=self.PROVIDER_NAME,
+            client_was_ready=client_was_ready,
+            client_init_ms=int((client_ready_at - opened_at) * 1000),
+            socket_open_ms=int((socket_open_at - client_ready_at) * 1000),
+            config_build_ms=int((configured_at - socket_open_at) * 1000),
+            config_bytes=config_bytes,
+            start_send_ms=int((sent_at - configured_at) * 1000),
+            started_ack_ms=int((started_at - sent_at) * 1000),
+            total_ms=int((started_at - opened_at) * 1000),
+        )
         if turn.turn_lost() or self._stopping.is_set():
             raise RuntimeError("Live session failed during startup")
 
@@ -510,4 +662,5 @@ class OpenAILiveConnection(BaseLiveConnection):
                 )
         await super().stop()
         if self._client is not None:
-            await self._client.close()
+            client, self._client = self._client, None
+            await client.close()
