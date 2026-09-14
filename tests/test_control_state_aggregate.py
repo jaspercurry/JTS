@@ -86,24 +86,19 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
 
 
 def test_level_match_provisional_none_when_no_applied_baseline() -> None:
-    # C3b-3: the value is read from the readiness snapshot the caller already
-    # computed, not from a second off-disk open. No applicable active baseline ->
-    # None: a passive speaker (no baseline_profile), a non-dict setup, and an
-    # active baseline whose candidate is not `applied` (e.g. superseded /
-    # not-yet-applied) all return None.
     assert _active_speaker_level_match_provisional(None) is None
-    assert _active_speaker_level_match_provisional({"baseline_profile": None}) is None
+    assert _active_speaker_level_match_provisional({"protected_profile": None}) is None
     assert _active_speaker_level_match_provisional({
-        "baseline_profile": {"status": "ready_to_apply", "provisional": True},
+        "protected_profile": {"status": "ready_to_apply", "provisional": True},
     }) is None
 
 
 def test_level_match_provisional_reads_applied_baseline() -> None:
     assert _active_speaker_level_match_provisional({
-        "baseline_profile": {"status": "applied", "provisional": True},
+        "protected_profile": {"status": "ready", "provisional": True},
     }) is True
     assert _active_speaker_level_match_provisional({
-        "baseline_profile": {"status": "applied", "provisional": False},
+        "protected_profile": {"status": "ready", "provisional": False},
     }) is False
 
 
@@ -130,7 +125,7 @@ def test_level_match_provisional_deduped_from_snapshot_setup(
             "volume_allowed": True,
             "grouping_allowed": True,
             "reason": None,
-            "baseline_profile": {"status": "applied", "provisional": True},
+            "protected_profile": {"status": "ready", "provisional": True},
             "issues": [],
         }
 

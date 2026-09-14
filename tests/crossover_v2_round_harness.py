@@ -277,7 +277,7 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
 
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
-    """Bank the displaced graph; leave admission and DSP apply intact."""
+    from jasper.active_speaker import staging
     from dataclasses import replace
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.web import correction_crossover_v2_apply as apply_host
@@ -295,7 +295,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
         draft["driver_safety_profile"] = build_driver_safety_profile(
             topology, manual_settings=_manual_settings(), driver_research=None, saved_at="2026-09-13T12:00:00Z")
     preview = build_crossover_preview(draft)
-    preset, _, _ = baseline_profile_mod.compile_preset_from_crossover_preview(topology, preview)
+    preset, _, _ = staging.compile_preset_from_crossover_preview(topology, preview)
     if preset is None:
         raise ValueError("Previous graph fixture has no crossover preset")
     measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)

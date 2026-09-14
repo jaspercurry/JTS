@@ -237,8 +237,7 @@ def observe_apply_success(
     # failure code. In the ordinary happy path it is already None (MEASURE's
     # own accept clears it before the conductor ever triggers auto-apply) —
     # but a terminal session-death code (a Stop, a capture timeout) can
-    # land WHILE the auto-apply background thread's apply_baseline_profile
-    # transaction is still in flight. If that race lands the stop FIRST,
+    # land while the apply transaction is in flight. If the stop lands first,
     # clobbering it here would erase the evidence that the household
     # stopped even though the crossover genuinely got applied (this call
     # proves it) — the envelope needs BOTH facts to render an honest

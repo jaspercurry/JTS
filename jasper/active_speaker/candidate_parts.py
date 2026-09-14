@@ -77,15 +77,14 @@ def candidate_from_applied_profile(
 def candidate_from_design_draft(
     topology: OutputTopology, design_draft: Mapping[str, Any],
 ) -> MeasuredCrossoverCandidate:
-    """Bank the declared crossover and trims without measured layers."""
+    """Build the declared crossover and trims in memory, without measured layers."""
     preview = build_crossover_preview(design_draft)
     preset = resolve_commission_preset(topology, crossover_preview=preview)
     gains, _, _, issues = declared_driver_gains(required_driver_roles(preset.way_count), preview["drivers"])
-    candidate = MeasuredCrossoverCandidate(
+    return MeasuredCrossoverCandidate(
         program_id="jts_declared_crossover", analysis={"measurement_status": "unmeasured", "issues": issues},
         source_preset=preset, role_attenuations_db=gains,
     )
-    return publish_authored_candidate(candidate).candidate
 
 
 def _migrate_applied_candidate(applied_profile: Mapping[str, Any]) -> MeasuredCrossoverCandidate:

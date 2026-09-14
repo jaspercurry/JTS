@@ -23,7 +23,6 @@ from jasper.output_topology import (
 
 from ._common import finite_float as _finite_float
 from .measurement import active_summed_targets
-from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 
@@ -587,18 +586,11 @@ def build_commissioning_view(
     startup_load: Mapping[str, Any] | None = None,
     baseline_profile: Mapping[str, Any] | None = None,
     calibration_level: Mapping[str, Any] | None = None,
+    applied_profile: Mapping[str, Any] | None = None,
     applied_profile_verdict: str = "",
 ) -> dict[str, Any]:
-    """Compose active-speaker setup state into one UI-facing view model.
-
-    ``applied_profile_verdict`` is one of
-    :func:`baseline_profile.applied_profile_displacement`'s verdicts, or ``""``
-    for "checked, and the speaker holds it"; this composer performs no IO, so
-    the loader answers it. Only ``APPLIED_PROFILE_DISPLACED`` revokes the
-    profile; a "could not check" verdict discloses a caveat. See ADR-0195.
-    """
-
-    from .baseline_profile import APPLIED_PROFILE_DISPLACED
+    """Compose review readiness and the saved playback record. See ADR-0312."""
+    from .baseline_profile import APPLIED_PROFILE_DISPLACED, reviewed_candidate_refusal  # lazy: baseline imports measurement
 
     measurements = measurements if isinstance(measurements, Mapping) else {}
     summary = (
@@ -614,58 +606,19 @@ def build_commissioning_view(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
-    revalidation = (
-        (baseline_profile or {}).get("revalidation")
-        if isinstance((baseline_profile or {}).get("revalidation"), Mapping)
-        else {}
-    )
-    revalidation_required = revalidation.get("required") is True
-    # The rebuild's own status cannot reach "applied" for a measured profile;
-    # `applied_profile_stands` is the payload's own verdict. See ADR-0195.
-    applied_profile_stands = (
-        (baseline_profile or {}).get("applied_profile_stands") is True
-    )
+    review = baseline_profile or {}
+    review_ready = bool((review.get("permissions") or {}).get("may_compile")
+                        or (review.get("permissions") or {}).get("may_apply"))
     verdict = str(applied_profile_verdict or "")
-    profile_applied = applied_profile_stands and verdict != APPLIED_PROFILE_DISPLACED
-    # Applied, and JTS could not confirm the speaker is holding it. Disclosed
-    # rather than revoked, with the recovery door left open.
+    profile_applied = applied_profile is not None and verdict != APPLIED_PROFILE_DISPLACED
     profile_applied_caveat = verdict if profile_applied else ""
-    applied_anchor = (baseline_profile or {}).get("applied_recomposition_profile")
-    # What the basic save-and-apply door would NOT re-emit: it compiles the
-    # chosen crossover plus driver trims, while linearization and blend come
-    # only from a measured candidate.
-    applied_profile_carries_correction = bool(
-        isinstance(applied_anchor, Mapping)
-        and (
-            applied_anchor.get("linearization")
-            or applied_anchor.get("blend_correction")
-        )
-    )
-    # The builder's own compared-and-clean grant, consumed rather than
-    # re-derived; it rides even a blocked payload.
-    applied_profile_proves_drivers = (
-        (baseline_profile or {}).get("driver_target_proof_from_applied_profile")
-        is True
-    )
-    driver_target_proof_satisfied_by_revalidation = (
-        not raw_driver_checks_complete
-        and output_identity_complete
-        and (
-            applied_profile_revalidation_satisfies_driver_target_proof(revalidation)
-            or applied_profile_proves_drivers
-        )
-    )
-    driver_proof_source = (
-        "applied_profile"
-        if driver_target_proof_satisfied_by_revalidation
-        and applied_profile_proves_drivers
-        else "applied_profile_revalidation"
-        if driver_target_proof_satisfied_by_revalidation
-        else ""
-    )
-    driver_checks_complete = (
-        raw_driver_checks_complete or driver_target_proof_satisfied_by_revalidation
-    )
+    disclosures = []
+    if applied_profile is not None:
+        refusal = reviewed_candidate_refusal(review, str(applied_profile.get("candidate_fingerprint") or ""))
+        if refusal:
+            disclosures = [{**refusal["issues"][-1], "severity": "warning", "status": "disclosed_stale"}]
+    driver_proof_from_applied = profile_applied and output_identity_complete
+    driver_checks_complete = raw_driver_checks_complete or driver_proof_from_applied
     captured_driver_count = int(
         summary.get("captured_driver_check_count")
         or summary.get("captured_driver_count")
@@ -779,9 +732,9 @@ def build_commissioning_view(
                 else "No combined driver test applies to this layout."
                 if has_layout and not active_setup
                 else "Existing active profile covers driver/output proof; "
-                "revalidate the combined crossover."
+                "check the combined crossover."
                 if step_status["safety"] == "active"
-                and driver_target_proof_satisfied_by_revalidation
+                and driver_proof_from_applied
                 else "Run the combined speaker test through the saved crossover."
                 if step_status["safety"] == "active"
                 else _waiting_message(baton_step, "test the combined speaker")
@@ -803,8 +756,6 @@ def build_commissioning_view(
                 # gated on the subless shape, not on `not active_setup`.
                 else "No active speaker profile is needed for this layout."
                 if step_status["profile"] == STEP_STATUS_NOT_REQUIRED
-                else "Save and apply a fresh profile after revalidation."
-                if revalidation_required
                 else "Save the active speaker profile after the combined check."
             ),
         ),
@@ -857,54 +808,19 @@ def build_commissioning_view(
         next_action = _action(
             "save_profile",
             "Save active profile",
-            enabled=True,
+            enabled=review_ready,
             endpoint="./active-speaker/baseline-profile/save-and-apply",
         )
-    # The basic door compiles the chosen crossover with driver trims only. It
-    # stays reachable in every state but is never the recommendation over a
-    # measured tune, and never offered without saying what it replaces
-    # (ADR-0195, ruling S10: disclose, do not block).
-    secondary_action: dict[str, Any] | None = None
-    offer_basic = applied_profile_carries_correction and (
-        (profile_applied and next_action is None)
-        or str((next_action or {}).get("id") or "") == "save_profile"
-    )
-    if offer_basic:
-        secondary_action = _action(
-            "save_basic_profile",
-            "Replace with basic profile",
-            enabled=True,
-            endpoint="./active-speaker/baseline-profile/save-and-apply",
-            message=(
-                "Compiles the saved crossover with driver trims only. This "
-                "replaces the measured profile applied now — its per-driver "
-                "linearization and blend correction are not re-emitted."
-            ),
-        )
-        if next_action is not None:
-            next_action = _action(
-                "remeasure_crossover",
-                "Re-measure",
-                enabled=True,
-                method="GET",
-                endpoint="/sound/speaker/crossover/",
-                message=(
-                    "Active speaker setup changed after the measured profile "
-                    "was applied. Re-measure to carry that tune forward."
-                ),
-            )
-
     status = (
         # `not next_action`: "applied" is terminal, so it may not stand beside
         # a rung this speaker still owes.
         "applied" if profile_applied and not next_action else
-        "ready_to_save_profile" if summed_complete and not profile_applied else
+        ("ready_to_save_profile" if review_ready else "blocked") if summed_complete and not profile_applied else
         "needs_driver_values" if has_layout and not driver_values_complete else
         "needs_driver_target_proof" if driver_values_complete and not driver_target_proof_complete else
         # The terminal state for a subless passive speaker. Sits AFTER the
         # proof gate so an unconfirmed passive layout still reports what it owes.
         VIEW_STATUS_NOT_REQUIRED if commissioning_not_required else
-        "needs_revalidation" if revalidation_required else
         "needs_combined_check" if driver_target_proof_complete else
         "needs_layout"
     )
@@ -917,13 +833,19 @@ def build_commissioning_view(
             # "" while the speaker is confirmed to hold it; otherwise the
             # verdict that qualifies the claim.
             "verdict": profile_applied_caveat,
-            "carries_correction": applied_profile_carries_correction,
+            "exists": applied_profile is not None,
+            "candidate_fingerprint": (applied_profile or {}).get("candidate_fingerprint"),
+            "applied_at": (applied_profile or {}).get("applied_at"),
+            "config_path": ((applied_profile or {}).get("config") or {}).get("path"),
+            "disclosures": disclosures,
         },
         "steps": steps,
         "current_step": current_step,
         "combined_groups": combined_groups,
         "next_action": dict(next_action or {}),
-        "secondary_action": dict(secondary_action or {}),
+        "secondary_action": {},
+        "review": {"ready": review_ready, "may_apply": review_ready,
+                   "status": review.get("status"), "issues": list(review.get("issues") or [])},
         "driver_values": driver_values,
         "output_identity": {
             "assigned_channel_count": assigned_count,
@@ -933,8 +855,8 @@ def build_commissioning_view(
         "driver_target_proof": {
             "complete": driver_target_proof_complete,
             "source": (
-                driver_proof_source
-                if driver_target_proof_satisfied_by_revalidation
+                "applied_profile"
+                if driver_proof_from_applied
                 else "measurements"
                 if raw_driver_checks_complete
                 else "not_required"
@@ -949,8 +871,8 @@ def build_commissioning_view(
         "driver_checks": {
             "complete": driver_checks_complete,
             "source": (
-                driver_proof_source
-                if driver_target_proof_satisfied_by_revalidation
+                "applied_profile"
+                if driver_proof_from_applied
                 else "measurements"
                 if raw_driver_checks_complete
                 else "missing"
@@ -963,7 +885,6 @@ def build_commissioning_view(
             "validated": int(summary.get("validated_summed_group_count") or 0),
             "required": int(summary.get("required_summed_group_count") or 0),
         },
-        "revalidation": dict(revalidation),
         "test_level": (
             dict(combined_groups[0]["test_level"])
             if combined_groups else _combined_test_level(calibration_level)
@@ -990,7 +911,7 @@ def load_commissioning_view(
     ``None`` composes identical steps.
     """
     from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
+        compile_commissioning_profile, load_applied_baseline_profile_state,
     )
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.crossover_preview import load_crossover_preview
@@ -1005,13 +926,8 @@ def load_commissioning_view(
     preview = load_crossover_preview(current_design_draft=design_draft)
     measurements = load_measurement_state(topology)
     calibration_level = load_calibration_level_state()
-    baseline = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=False,
-    )
+    _, baseline = compile_commissioning_profile(topology=topology, design_draft=design_draft)
+    applied = load_applied_baseline_profile_state()
     return build_commissioning_view(
         topology,
         design_draft=design_draft,
@@ -1021,11 +937,12 @@ def load_commissioning_view(
         startup_load={"state": load_startup_load_state()},
         baseline_profile=baseline,
         calibration_level=calibration_level,
-        applied_profile_verdict=read_applied_profile_verdict(baseline),
+        applied_profile=applied,
+        applied_profile_verdict=read_applied_profile_verdict(applied),
     )
 
 
-def read_applied_profile_verdict(baseline_profile: Mapping[str, Any]) -> str:
+def read_applied_profile_verdict(applied: Mapping[str, Any] | None) -> str:
     """Ask the speaker whether it is still playing the applied profile.
 
     ``""`` when it is. Otherwise one of
@@ -1043,11 +960,7 @@ def read_applied_profile_verdict(baseline_profile: Mapping[str, Any]) -> str:
         applied_profile_displacement,
     )
 
-    applied = baseline_profile.get("applied_recomposition_profile")
-    if (
-        not isinstance(applied, Mapping)
-        or baseline_profile.get("applied_profile_stands") is not True
-    ):
+    if applied is None:
         return ""
     verdict = applied_profile_displacement(applied)
     if verdict:

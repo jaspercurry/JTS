@@ -2,46 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Put this speaker back on the basic profile, from a shell on the speaker.
+"""Review and apply the commissioning profile through the wizard API.
 
-**What the basic profile is.** Structure plus trim, and nothing else: the
-crossover preset the ``/sound/speaker/`` wizard holds (regions, orders, channel
-map) together with the per-role ``gain_db`` / ``delay_ms`` / ``inverted``
-corrections. No per-driver linearization, no summed blend correction, and
-``tuning_owner`` back to ``manual``. It is what
-:func:`jasper.active_speaker.baseline_profile.build_baseline_profile_candidate`
-compiles when no measured candidate is handed to it, applied by
-:func:`~jasper.active_speaker.baseline_profile.apply_baseline_profile` under
-the DSP writer lock. ADR-0195 is where this door's content is pinned down: the
-wizard once recommended it over a live measured tune saying nothing, so the
-offer now has to disclose what it replaces. ADR-0203 retires the incumbent tune
-and requires the next campaign to inherit nothing response-shaped, which is
-what this profile is -- so it is also the recommissioning entry point.
-
-**It replaces the live tune; it deletes no evidence.** Every linearization
-filter and blend correction a measured profile was carrying is gone from the
-graph the moment this applies -- the door emits what it compiles, never a
-merge. The banked rounds, candidates and measurement journey are untouched:
-clearing THOSE is ``POST /crossover/reset`` on the correction wizard, a
-different verb this tool deliberately does not offer.
-
-**The freshness gate is the door's.** ``expected_candidate_fingerprint`` names
-the candidate you reviewed; the door recompiles and refuses
-``baseline_candidate_fingerprint_mismatch`` when the speaker's inputs moved
-under you. ``apply`` reviews first and sends the fingerprint it just read, so
-the gate binds this invocation rather than a stale one.
-
-**``review`` writes nothing at all, and ``apply`` sends exactly one POST.**
-Both read the candidate over the door's GET. Its POST arm is a COMPILE
-(``write=True``): it rewrites the baseline CamillaDSP YAML and the candidate
-state JSON, which on a speaker whose draft moved since the last apply would
-replace the file the CamillaDSP statefile still selects -- a graph nobody
-applied, played at the next restart. Save-and-apply re-reviews and compiles
-inside its own transaction, so the GET's fingerprint is all the apply needs.
-
-This exists so a machine client does not have to reverse-engineer the wizard's
-cookie/CSRF/Host flow to reach a transaction the household already has a button
-for. See ``docs/tuning-operator-runbook.md``'s "the other apply door".
+The composer retains the banked tune or starts from the declared crossover.
+Apply binds the reviewed fingerprint and runs under the DSP writer lock.
+See ADR-0312.
 """
 
 from __future__ import annotations

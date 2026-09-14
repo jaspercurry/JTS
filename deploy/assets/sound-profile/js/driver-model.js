@@ -527,13 +527,6 @@ function candidateConfidenceRank(candidate) {
   ] || 0;
 }
 function proposeSensitivityTrims(driversByRole) {
-  // Propose a starting level trim from the sensitivity gap so a hotter
-  // compression/horn driver is never left at full level relative to the
-  // woofer. The operator reviews/confirms the value; the server enforces the
-  // same fail-safe (baseline_profile.py:_derive_corrections). The pure
-  // sensitivity→trim math lives in sensitivityTrimsFromGap (parity-pinned to
-  // that Python source); here we only collect the inputs and apply the result
-  // to empty fields — never clobbering an operator/research-supplied trim.
   var sensitivities = {};
   Object.keys(driversByRole).forEach(function(role) {
     var sens = manualNumberValue(driversByRole[role].sensitivity_db_2v83_1m);

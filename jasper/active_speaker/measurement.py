@@ -578,41 +578,6 @@ def _latest_current_summed_records(
     dict[str, dict[str, dict[str, dict[str, Any] | None]]],
     int,
 ]:
-    """Latest current summed evidence, both flat (in-phase) and paired.
-
-    Returns ``(latest_in_phase_by_group, latest_pairs_by_group, stale_count)``:
-
-    * ``latest_in_phase_by_group`` is what every existing consumer reads as
-      ``latest_summed_by_group`` / ``latest_summed_validations`` — the
-      automatic-candidate readiness check (``crossover_contract.
-      automatic_candidate_readiness``), the automatic tuning tier's delay/
-      polarity refinement (``baseline_profile._derive_corrections``), and the
-      ``validated_groups`` completion check in ``_summarise`` below. All of
-      those intend "does the crossover blend cleanly in phase?" — a reverse-
-      polarity capture (``acoustic.expect_null`` true) answers a DIFFERENT
-      question ("does it null when deliberately inverted?") and must not
-      silently replace the in-phase answer just because it was captured more
-      recently. Before this pairing existed, both kinds shared one
-      latest-wins slot, so a reverse capture recorded after an in-phase one
-      (or vice versa) silently overwrote it everywhere at once — this is the
-      fix. A record with no ``acoustic`` block at all (pure operator
-      listening check) still counts as in-phase-eligible, unchanged from
-      prior behavior.
-    * ``latest_pairs_by_group`` is ``{group_id: {region_key: {"in_phase":
-      rec|None, "reverse": rec|None}}}``, newest-per-kind within the newest
-      comparison set for that region, built only from records that carry a
-      real acoustic verdict (a kind) AND a resolvable region — the record's
-      own stamped ``region``, or, on a 2-way only, the legacy fallback in
-      ``_TWO_WAY_REGION_KEY``. This prevents a new in-phase capture from being
-      paired with an old reverse capture taken at a different placement/run.
-      Legacy records without comparison-set proof pair only with other legacy
-      records in this historical summary. They are never decision-authorizing:
-      ``crossover_contract.summed_decision_evidence_state`` re-proves the full
-      current comparison/profile, playback, placement, and region contract
-      before the proposal reads a null. A 3-way's region-less legacy record has
-      no unambiguous home and is left out of pairing (though it can still be
-      in-phase-eligible above).
-    """
     target_by_group = {target["speaker_group_id"]: target for target in targets}
     latest: dict[str, dict[str, Any]] = {}
     pairs: dict[str, dict[str, dict[str, dict[str, Any] | None]]] = {}
