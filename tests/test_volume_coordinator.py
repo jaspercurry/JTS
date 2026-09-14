@@ -85,6 +85,19 @@ def test_clamping_below_zero_and_above_100():
     assert listening_level_to_bt_volume(150) == BT_VOLUME_MAX
 
 
+@pytest.mark.parametrize("level", range(1, 101))
+def test_main_mute_predicates_agree_for_every_audible_level(level):
+    # R-006: a level and its own dB must not disagree on mute, or the
+    # coordinator re-mutes an audible level forever.
+    assert VolumeCoordinator._main_mute_for_level(level) == (
+        VolumeCoordinator._main_mute_for_db(percent_to_db(level))
+    )
+
+
+def test_level_one_is_strictly_above_the_mute_floor():
+    assert percent_to_db(1) > percent_to_db(0)
+
+
 # ---------- doubles and builders -------------------------------------------
 
 

@@ -20,14 +20,14 @@ from jasper.volume_curve import (
 )
 
 
-def test_zero_and_one_share_floor_db():
+def test_zero_is_mute_one_is_audible_above_floor():
     assert percent_to_db(0) == DEFAULT_VOLUME_FLOOR_DB
-    assert percent_to_db(1) == DEFAULT_VOLUME_FLOOR_DB
+    assert percent_to_db(1) > DEFAULT_VOLUME_FLOOR_DB
     assert percent_to_db(100) == 0.0
 
 
 def test_nonzero_percent_round_trips_above_floor():
-    for percent in [10, 25, 50, 75, 90, 100]:
+    for percent in [1, 10, 25, 50, 75, 90, 100]:
         assert db_to_percent(percent_to_db(percent)) == percent
 
 
@@ -36,7 +36,7 @@ def test_floor_db_maps_to_zero_for_legacy_db_callers():
 
 
 def test_custom_floor_changes_curve_span():
-    assert percent_to_db(1, floor_db=-20.0) == -20.0
+    assert percent_to_db(1, floor_db=-20.0) > -20.0
     assert percent_to_db(50, floor_db=-20.0) == pytest.approx(-10.101, abs=0.001)
     assert db_to_percent(-10.101, floor_db=-20.0) == 50
 
