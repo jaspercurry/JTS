@@ -322,6 +322,24 @@ def test_a_caller_held_literal_is_replaced_whatever_shape_it_has(literal: str) -
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "headers={'Authorization': 'Bearer abcdefgh12345678'}",
+        "Authorization=Bearer abcdefgh12345678&next=1",
+        "[Authorization: Basic abcdefgh12345678]",
+        "Authorization: Bearer abcdefgh12345678; Content-Type: t",
+    ],
+)
+def test_redacting_twice_keeps_the_delimiter_after_the_placeholder(text: str) -> None:
+    """The doctor redacts a detail it was already handed redacted; the second
+    pass must not eat the brace, `&`, bracket or `;` that follows the
+    placeholder."""
+    once = redact_secrets(text)
+    assert redact_secrets(once) == once
+    assert once.endswith(text[-1])
+
+
 def test_authorization_value_glued_to_the_placeholder_still_redacts() -> None:
     """A literal replaced first can glue a further secret directly onto the
     `<redacted>` placeholder before `_AUTHORIZATION_RE` ever sees it; its
