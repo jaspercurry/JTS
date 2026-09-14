@@ -24,6 +24,7 @@ STATUS_PATH = "/sound/speaker/crossover/status"
 
 SESSION_PATH = "/sound/speaker/crossover/v2/session"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
+CAPTURE_CANCEL_PATH = "/sound/speaker/crossover/capture-cancel"
 
 REASON_NO_FINGERPRINT = "no_fingerprint_named"
 REASON_NOT_APPLIED = "apply_not_applied"
@@ -95,8 +96,6 @@ class WizardClient:
             },
         )
 
-    # -- the round's three verbs -------------------------------------------- #
-
     def get_json(self, path: str) -> tuple[int, Any]:
         status, body = self.open(path)
         return status, _as_json(body)
@@ -161,6 +160,16 @@ class WizardClient:
             return 409, {"code": "position_mismatch", "run_id": run_id}
         return self.post_json(POSITION_READY_ENDPOINT, {"index": pending["index"],
                               "attempt": pending["attempt"], "run_id": run_id})
+
+    def stop(self, run_id: str) -> tuple[int, Any]:
+        from .crossover_v2.refusal_copy import REASON_USER_STOPPED  # lazy: stop-only measurement imports
+
+        http, status = self.run_status(run_id)
+        if http != 200:
+            return http, status
+        if status.get("status") in SESSION_ENDED_STATUSES:
+            return 409, {"code": "run_not_live", "run_id": run_id}
+        return self.post_json(CAPTURE_CANCEL_PATH, {"reason": REASON_USER_STOPPED})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
         """Post the banked identity; the daemon owns admission."""

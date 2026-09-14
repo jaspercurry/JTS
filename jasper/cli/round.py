@@ -29,7 +29,7 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads)"
+AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply` write; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 
 
@@ -72,6 +72,11 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
 
     try:
         report = resolve_run(args)
+    except PermissionError as exc:
+        return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
+                      code="local_state_unreadable", next_action={
+                          "id": "run_as_root", "label": "run on the speaker as root (`sudo -n`)",
+                      })
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
     if args.dry_run:
@@ -129,6 +134,14 @@ def _cmd_placed(client: WizardClient, args: argparse.Namespace) -> int:
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "placement_refused", {"run_id": args.run, "http": http}, payload)
+    return answered(payload)
+
+
+def _cmd_stop(client: WizardClient, args: argparse.Namespace) -> int:
+    http, payload = client.stop(args.run)
+    if http != 200:
+        return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
+                               "stop_refused", {"run_id": args.run, "http": http}, payload)
     return answered(payload)
 
 
@@ -241,7 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
     trial.add_argument("--mover", choices=("arm", "human"))
     trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, dry_run=False)
-    for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):
+    for verb, function in (("placed", _cmd_placed), ("stop", _cmd_stop), ("status", _cmd_status), ("wait", _cmd_wait)):
         command = sub.add_parser(verb, parents=[timeout_args] if verb == "wait" else [], help=function.__name__.removeprefix("_cmd_"))
         _connection_args(command)
         command.add_argument("--run", required=True, help="run id returned by run")
