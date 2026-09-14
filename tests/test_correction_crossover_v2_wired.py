@@ -931,16 +931,24 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]
 
 
-@pytest.mark.parametrize("analysis_error", [None, ValueError("analysis failed")])
+@pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
 def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error):
     record = bank_executor_take(tmp_path, monkeypatch, analysis_error=analysis_error)
     assert record["side"] == "mono"
     assert record["mark_distance_m"] == 1.25
     assert record["provenance"]["graph"]["speaker_candidate_id"] == "speaker-candidate"
     assert record["provenance"]["stimulus"]["wav_sha256"] == "a" * 64
+    wav_path, = (tmp_path / "sessions").glob(f"*/{record['wav_path']}")
+    raw = wav_path.read_bytes()
+    assert len(raw) == record["wav_bytes"]
+    assert decode_wav_to_mono(raw)[0].size == 32
     if analysis_error is not None:
         assert "capture_calibration" not in record
+        assert record["analysis_error"] == {
+            "code": refusal_copy.REASON_INTERNAL_ERROR, "error_type": type(analysis_error).__name__,
+        }
         return
+    assert "analysis_error" not in record
     calibration = record["capture_calibration"]
     assert calibration["applied"] is True
     assert isinstance(calibration["calibration_id"], str)

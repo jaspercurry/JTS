@@ -524,7 +524,7 @@ def test_the_worklets_frame_count_is_the_buffer_it_transfers():
         encoding="utf-8"
     )
     assert "'var out=new Float32Array(total);var pos=0;'" in src
-    assert "'frames:total,blocks:this.blocks,block_gaps:this.gaps,'" in src
+    assert "'frames:total,blocks:this.blocks,capture_gaps:this.gaps,'" in src
 
 
 def test_silent_blocks_counts_only_the_input_starved_callbacks():

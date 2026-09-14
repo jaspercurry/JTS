@@ -19,7 +19,7 @@ from jasper.audio_measurement.household_mic import resolved_household_sensitivit
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
-from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict, PhaseVerdict
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
@@ -44,9 +44,10 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 phase = conductor._phase_of_index(record.get("capture_index", record["index"]))
                 result = analyze_capture({**record, "program": program}, capture)
                 fields = evidence.get("capture_provenance", {}).get(phase, {})
-            except (ValueError, KeyError, OSError) as exc:
-                # Preserve the raw capture; the executor reports the analysis failure.
+            except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
+        if isinstance(result, Exception):
+            fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         answers[record["take_id"]] = capture, result
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
