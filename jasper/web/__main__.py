@@ -57,7 +57,6 @@ from jasper.install_profile import (
     VALID_INSTALL_PROFILES,
     Capability,
     install_profile_has_capability,
-    install_role_for_profile,
     read_install_profile,
 )
 from jasper.log_event import log_event
@@ -516,7 +515,7 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
 
 def _active_install_role() -> str:
     try:
-        return install_role_for_profile(read_install_profile())
+        return read_install_profile()
     except ValueError as e:
         log_event(
             logger,

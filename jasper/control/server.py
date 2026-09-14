@@ -56,7 +56,7 @@ from . import (
 from ..install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_profile_allows_voice_brain,
-    install_role_for_profile,
+    normalize_install_profile,
     read_install_profile,
 )
 from . import control_token
@@ -181,9 +181,8 @@ def _control_route_allowed_for_install_profile(
     method: str,
     path: str,
 ) -> bool:
-    role = install_role_for_profile(profile)
+    role = normalize_install_profile(profile)
     if role != STREAMBOX_INSTALL_PROFILE:
-        # Full speakers allow every route.
         return True
     if method == "GET":
         return path in _STREAMBOX_ALLOWED_GET_ROUTES
