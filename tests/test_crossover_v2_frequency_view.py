@@ -1195,7 +1195,12 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('round_count', [1, 2])
 @pytest.mark.parametrize('missing_set', [None, '4dc59eaec1e3', '8b2a90f77f31'])
-def test_bass_table_joins_only_sets_with_lateral_bass_takes(bass_run, capsys, round_count, missing_set):
+@pytest.mark.parametrize('ignored_phase,ignored_purpose', [
+    (PHASE_ENTRY_BASELINE, 'bass'), ('lateral', 'room'), ('measure', 'bass'),
+])
+def test_bass_table_joins_only_sets_with_lateral_bass_takes(
+    bass_run, capsys, round_count, missing_set, ignored_phase, ignored_purpose,
+):
     manifests = bass_run.write()
     for index, path in enumerate(manifests[:round_count]):
         manifest = json.loads(path.read_text())
@@ -1209,7 +1214,7 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(bass_run, capsys, ro
         verify = copy.deepcopy(manifest['sets'][-1])
         verify['set_id'] = 'd0b471e20e39'
         verify['capture_basis'].update(program_id='verify', stimulus_dbfs=-30)
-        verify['takes'][0].update(take_id='entry', phase=PHASE_ENTRY_BASELINE)
+        verify['takes'][0].update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose)
         manifest['sets'].insert(0, verify)
         path.write_text(json.dumps(manifest))
     if missing_set:
@@ -1234,7 +1239,7 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(bass_run, capsys, ro
     assert len(table['levels']) == round_count
     assert {level['level_key']['level_db'] for level in table['levels']} == set((-10, -30)[:round_count])
     assert [level['fit']['take_pair_count'] for level in table['levels']] == [1] * round_count
-    assert {tuple(source.values()) for level in table['levels'] for source in level['sources']} == {
+    assert {(source['before'], source['after']) for level in table['levels'] for source in level['sources']} == {
         (f'capture-{index}.json', f'capture-{index + 1}.json') for index in range(0, 2 * round_count, 2)
     }
 
