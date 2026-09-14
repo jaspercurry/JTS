@@ -993,7 +993,7 @@ def main(argv: list[str] | None = None) -> int:
     sampler.start()
     # The ONE resident audio-monitor thread: it composes the AirPlay probes
     # with cheap outputd state and slow route-certification reads.
-    from .audio_health import AudioHealthSampler
+    from .audio_health_sampler import AudioHealthSampler
     from .audio_incidents import IncidentStore
     audio_health_sampler = AudioHealthSampler(
         camilla_host=args.camilla_host,

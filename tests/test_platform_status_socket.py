@@ -22,7 +22,7 @@ import pytest
 
 from jasper import audio_validation
 from jasper.cli import system_soak
-from jasper.control import audio_health
+from jasper.control import audio_health_sampler
 from jasper.control.airplay_health import AirPlayHealthSampler
 from jasper.fanin.status import read_fanin_status
 from jasper.platform import status_socket
@@ -252,7 +252,7 @@ def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
         ("fanin.read_fanin_status", lambda path: read_fanin_status(
             str(path), timeout_sec=_DRIBBLE_TIMEOUT_SEC,
         )),
-        ("audio_health._read_local_status", lambda path: audio_health._read_local_status(
+        ("audio_health_sampler._read_local_status", lambda path: audio_health_sampler._read_local_status(
             str(path), timeout_sec=_DRIBBLE_TIMEOUT_SEC,
         )),
         ("system_soak._status_socket", lambda path: system_soak._status_socket(
@@ -276,7 +276,7 @@ def test_converged_caller_bounds_a_dribbling_status_server(label, call):
 
 
 @pytest.mark.parametrize("consumer", [
-    read_fanin_status, audio_health._read_local_status, system_soak._status_socket,
+    read_fanin_status, audio_health_sampler._read_local_status, system_soak._status_socket,
 ])
 @pytest.mark.parametrize("body, expected", [(b"{}", {}), (b"{} ", None), (b"[]", None), (b"x", None)])
 def test_converged_consumers_keep_limits_and_failure_policy(monkeypatch, consumer, body, expected):
@@ -289,7 +289,7 @@ def test_converged_consumers_keep_limits_and_failure_policy(monkeypatch, consume
 
 @pytest.mark.parametrize("consumer, cap", [
     (read_fanin_status, 64 * 1024),
-    (audio_health._read_local_status, 1024 * 1024),
+    (audio_health_sampler._read_local_status, 1024 * 1024),
     (system_soak._status_socket, 64 * 1024),
     (status_socket.read_status_socket, 1024 * 1024),
 ])

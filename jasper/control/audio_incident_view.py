@@ -7,9 +7,9 @@ the dashboard renders: impact sentence, likely area, evidence rows, and the
 30-minute recurrence rollup.
 
 :func:`~jasper.control.audio_health.compose_audio_health` and
-:class:`~jasper.control.audio_health.AudioHealthSampler` are this module's
-only callers; a raw ``IssueTracker``/``IncidentStore`` record never reaches a
-management surface unmapped by :func:`_present_incident`.
+:class:`~jasper.control.audio_health_sampler.AudioHealthSampler` are this
+module's only callers; a raw ``IssueTracker``/``IncidentStore`` record never
+reaches a management surface unmapped by :func:`_present_incident`.
 """
 from __future__ import annotations
 
