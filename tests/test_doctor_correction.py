@@ -296,10 +296,9 @@ def _hand_written_config_on_the_jts_ring():
 
 def _patch_v2_state(monkeypatch, state):
     monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
-    monkeypatch.setattr("jasper.web.correction_crossover_v2_status.load_applied_baseline_profile_state", lambda: (
+    monkeypatch.setattr("jasper.web.correction_crossover_v2_status.load_applied_baseline_profile_state", lambda:
         {"source": {"measured_candidate_fingerprint": "applied-content"}, "config": {"sha256": "a" * 64}}
-        if (state or {}).get("applied") else None
-    ))
+    )
     monkeypatch.setattr(
         v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )

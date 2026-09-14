@@ -2749,6 +2749,7 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
     const html = harness.elements.get("view-body").innerHTML;
     if (timing && !html.includes(timing)) fail("Apply card timing is missing", {alignment, timing});
     if (!timing && html.includes("timing declared")) fail("Missing evidence invented timing");
+    if (html.includes('<p class="setting-row__hint"></p>')) fail("Empty timing left a blank hint");
     if (!html.includes(applied.config_path) || html.includes(reviewPath)) {
       fail("Applied profile card used the wrong config path", {applied, reviewPath});
     }

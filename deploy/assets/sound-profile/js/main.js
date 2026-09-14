@@ -2145,6 +2145,7 @@ import {
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
     var appliedRecord = baselineProfileAppliedRecord();
+    var timing = commissioningTimingLabel(activeSpeaker.commissioningView);
     var config = appliedRecord ? {path: appliedRecord.config_path} : (profile.config || {});
     var permissions = profile.permissions || {};
     var applied = baselineProfileApplied();
@@ -2195,7 +2196,7 @@ import {
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
-      '<p class="setting-row__hint">' + escapeHtml(commissioningTimingLabel(activeSpeaker.commissioningView)) + '</p>' +
+      (timing ? '<p class="setting-row__hint">' + escapeHtml(timing) + '</p>' : '') +
       renderLevelMatchSummary(profile) +
       (issueRows ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +

@@ -10,7 +10,8 @@ from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_apply as v2apply, correction_crossover_v2_restore as v2restore
 from jasper.web import sound_active_speaker
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _bg_run_async
+from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _bg_run_async, _StubConductor
+from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE
 
 from dataclasses import replace
 
@@ -37,11 +38,16 @@ def _isolated_v2_state(tmp_path):
     v2state.set_state_path_for_tests(None)
 
 
-@pytest.mark.parametrize("paired,offerable", [(False, False), (False, True), (True, False), (True, True)])
-def test_rollback_candidate_agrees_across_surfaces(monkeypatch, tmp_path, paired, offerable):
+@pytest.mark.parametrize("paired,offerable,applied_record", [
+    (False, False, True), (False, True, True), (True, False, True), (True, True, True), (True, True, False),
+])
+def test_rollback_candidate_agrees_across_surfaces(monkeypatch, tmp_path, paired, offerable, applied_record):
     _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(v2status, "load_applied_baseline_profile_state", lambda: (
+        {"source": {"measured_candidate_fingerprint": CURRENT}} if applied_record else None
+    ))
     state = {
-        "applied": True, "candidate": {"fingerprint": CURRENT},
+        "session_id": "round-1", "applied": applied_record, "candidate": {"fingerprint": CURRENT},
         "previous_candidate_fingerprint": PREVIOUS,
         "previous_candidate_displaced_by": CURRENT if paired else "older-apply",
         "previous_applied_profile": {
@@ -50,7 +56,12 @@ def test_rollback_candidate_agrees_across_surfaces(monkeypatch, tmp_path, paired
         },
     }
     v2state.save_v2_state(state)
-    expected = PREVIOUS if paired and offerable else None
+    v2state.persist_conductor_state(
+        _StubConductor("round-2", applied=False, session_phases=(PHASE_CHECK, PHASE_MEASURE)), failure_code=None,
+    )
+    state = v2state.load_v2_state()
+    assert state["candidate"] is None and state["applied"] is False
+    expected = PREVIOUS if paired and offerable and applied_record else None
     assert v2status.rollback_candidate(state) == expected
     assert v2host._previous_candidate_known() is (expected is not None)
     assert v2status.crossover_v2_status_block()["previous_candidate_fingerprint"] == expected

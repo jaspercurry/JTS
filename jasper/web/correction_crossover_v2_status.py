@@ -32,11 +32,10 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 def rollback_candidate(state: Mapping[str, Any] | None) -> str | None:
-    """The offerable candidate displaced by the current candidate's apply."""
+    """The offerable candidate displaced by the durable applied record."""
     state = state or {}
     fingerprint = state.get("previous_candidate_fingerprint")
-    candidate = state.get("candidate")
-    published = candidate.get("fingerprint") if isinstance(candidate, Mapping) else None
+    published = (applied_identity(load_applied_baseline_profile_state()) or {}).get("candidate")
     applied = state.get("previous_applied_profile") or {}
     if (published and state.get("previous_candidate_displaced_by") == published
             and isinstance(fingerprint, str) and fingerprint and applied.get("status") == "applied"
@@ -85,7 +84,8 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "execution": (state or {}).get("execution"),
         "failure": (state or {}).get("failure"),
         "needs_recovery": needs_recovery,
-        "applied": applied_identity(load_applied_baseline_profile_state()),
+        "applied": bool(state and state.get("applied")),
+        "applied_identity": applied_identity(load_applied_baseline_profile_state()),
         "previous_candidate_fingerprint": rollback_candidate(state),
         "session_id": session_id,
         "attempts_loop": {
