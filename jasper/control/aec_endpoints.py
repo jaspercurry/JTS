@@ -88,12 +88,14 @@ def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-# These two kicks answer a POST jasper-web proxies with a 5 s timeout
-# (jasper.web.wake_setup's /aec/usb-mic and /aec/commission `proxy_post`
-# calls) that turns an overrun into a 502. A `--no-block` systemctl call
-# itself returns in ms regardless of this bound; keep it small so a genuinely
-# wedged broker leg cannot alone eat the whole proxy budget the way the
-# broker's ordinary 5 s default would.
+# These kicks (and jasper.control.handlers.aec's AEC-bridge restart) answer a
+# POST jasper-web proxies with a `proxy_post` timeout
+# (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC, 15 s) sized to clear two
+# broker legs at this bound plus the broker's client socket margin
+# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s each) -- 2 * (2 + 5) = 14 s.
+# A `--no-block` systemctl call itself returns in ms regardless of this
+# bound; keep it small so raising the proxy timeout does not have to chase a
+# larger one here.
 _ONESHOT_KICK_TIMEOUT_SEC = 2.0
 
 

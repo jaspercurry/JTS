@@ -309,7 +309,10 @@ class AecRoutes(ControlHandlerMixin):
                 verb="restart",
                 reason="usb_mic_leg",
                 no_block=True,
-                timeout=5.0,
+                # jasper-web's /aec/usb-mic-leg proxy_post budgets for two
+                # legs at this bound (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC).
+                timeout=aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
+                reset_timeout=aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
             )
             if not restart.get("ok"):
                 failed_status = aec_endpoints._aec_full_status()

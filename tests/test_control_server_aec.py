@@ -350,7 +350,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
                 "verb": "reset-failed",
                 "reason": "usb_mic_leg",
                 "no_block": False,
-                "timeout": 5.0,
+                "timeout": aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
             },
         ),
         (
@@ -360,7 +360,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
                 "verb": "restart",
                 "reason": "usb_mic_leg",
                 "no_block": True,
-                "timeout": 5.0,
+                "timeout": aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
             },
         ),
     ]
