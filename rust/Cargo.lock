@@ -252,7 +252,9 @@ dependencies = [
 name = "jasper-tts-protocol"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "jasper-daemon",
+ "jasper-env",
  "jasper-resampler",
  "serde",
  "serde_json",

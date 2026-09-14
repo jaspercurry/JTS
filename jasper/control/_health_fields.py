@@ -11,12 +11,39 @@ module instead of through each other. Not
 :mod:`jasper.json_fields` — that one raises on a bad field and coerces to
 ``float``; these return ``None`` and keep an ``int`` an ``int``, which is what
 a dashboard field that may simply be absent needs.
+
+Also the shared home for ``_MONITOR_ERRORS``, the fail-soft exception tuple
+every observability probe across the audio-health split degrades on, and for
+``RESTART_REMEDY``/``DIAGNOSTICS_REMEDY``, the two household remedy sentences
+several leaves splice into their own text -- for the same downward-only
+reason: two leaves (e.g. the composer and a source/timing card) must share
+the constant without importing each other.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+
+# Expected failures at optional/cached observability boundaries. Programming
+# errors outside this set should not be hidden; a dead sampler is surfaced as
+# stale by snapshot() instead of silently retrying a broken implementation.
+_MONITOR_ERRORS = (
+    AttributeError,
+    KeyError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+# Household register for every sentence the audio-health card writes: what is
+# wrong with the household's sound and what they can do about it, never a
+# daemon name, a unit, a systemd state, or a command (#2472) -- that half
+# lives in `jasper-doctor` and `/state.audio_health.technical`. Both remedies
+# name buttons on the same /system/ page as the card.
+RESTART_REMEDY = "Try Restart audio."
+DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 
 
 def _finite_number(value: Any) -> int | float | None:

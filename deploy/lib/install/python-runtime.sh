@@ -330,12 +330,12 @@ install_jasper() {
     # openwakeword without its declared deps, then install its non-tflite
     # runtime deps explicitly.
     "${INSTALL_DIR}/.venv/bin/pip" install --no-deps openwakeword==0.6.0
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
+    "${INSTALL_DIR}/.venv/bin/pip" install ${pip_constraints[@]+"${pip_constraints[@]}"} \
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
 
-    install_staged_dependencies "${extra}" "${pip_constraints[@]}"
+    install_staged_dependencies "${extra}" ${pip_constraints[@]+"${pip_constraints[@]}"}
     publish_staged_install_tree
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" --no-deps \
+    "${INSTALL_DIR}/.venv/bin/pip" install ${pip_constraints[@]+"${pip_constraints[@]}"} --no-deps \
         -e "${INSTALL_DIR}[${extra}]"
 
     # jasper_aec3 — pybind11 bindings for WebRTC AEC3. Two engines:
@@ -401,7 +401,7 @@ PY
     flock -u "${enhanced_aec_lock_fd}"
     exec {enhanced_aec_lock_fd}>&-
 
-    # Stage runtime model assets through jasper.model_downloads so the
+    # Stage runtime model assets through jasper.cli.model_downloads so the
     # exists/hash/download/failure-count logic stays unit-testable.
     stage_openwakeword_assets
     stage_wake_models
@@ -539,9 +539,9 @@ install_streambox_jasper() {
         echo "  applying Pi-generated pip constraints: ${constraints_file}"
         pip_constraints=(-c "${constraints_file}")
     fi
-    install_staged_dependencies "${extra}" "${pip_constraints[@]}"
+    install_staged_dependencies "${extra}" ${pip_constraints[@]+"${pip_constraints[@]}"}
     publish_staged_install_tree
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" --no-deps \
+    "${INSTALL_DIR}/.venv/bin/pip" install ${pip_constraints[@]+"${pip_constraints[@]}"} --no-deps \
         -e "${INSTALL_DIR}[${extra}]"
 
     local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"

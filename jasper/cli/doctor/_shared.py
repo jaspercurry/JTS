@@ -431,14 +431,14 @@ def _loopback_playback_active() -> bool:
     Gates the AEC bridge FAIL: ref-silent windows only diagnose a broken
     reference chain while music is actually routed through the loopback.
 
-    Blind spots — False means "no snd-aloop renderer lane is open", NOT
+    Blind spot — False means "no snd-aloop renderer lane is open", NOT
     "nothing is playing": USB Audio Input is DIRECT-captured by jasper-fanin
-    from hw:UAC2Gadget, and a lane armed for ring ingress writes a
-    per-renderer SHM ring instead of its aloop substream. A caller needing
-    true output silence must consult those too.
+    from hw:UAC2Gadget. A caller needing true output silence must consult
+    that too.
 
-    Delete once no renderer lane can use snd-aloop any more (#2285),
-    together with its callers' music-active gates.
+    Renderer ingress has exactly these two shapes and no third (ADR-0281):
+    the per-renderer SHM ring this used to also disclose as a blind spot
+    was retired with that decision, so aloop is the only ingress left here.
     """
     from ._evidence import evidence  # lazy: _evidence imports _shared
 
@@ -459,7 +459,7 @@ def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-# jasper-control's signal-path vocabulary (audio_health.SIGNAL_PATH_CODES) split
+# jasper-control's signal-path vocabulary (audio_signal_path.SIGNAL_PATH_CODES) split
 # three ways; the partition is pinned in tests/test_doctor_resilience.py.
 _SIGNAL_PATH_PLAYING_CODES = frozenset({
     "clean",

@@ -10,6 +10,9 @@
 //! commands return a JSON error. `jasper-control /state`,
 //! `jasper-doctor`, and an operator can all consume the same surface.
 
+#[path = "snapshot.rs"]
+mod snapshot;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -868,11 +871,14 @@ impl OutputdState {
     }
 
     pub fn snapshot_json(&self) -> String {
+        self.snapshot_json_at(self.uptime_ms())
+    }
+
+    fn snapshot_json_at(&self, uptime_ms: u64) -> String {
         // Sized for the payload this actually builds: the chip-reference
         // sample ring alone is ~100 B an entry (~25.6 KiB at full capacity) on
         // a chip-AEC box, and 1 KiB meant a dozen reallocations per read.
         let mut buf = String::with_capacity(32 * 1024);
-        let uptime_ms = self.uptime_ms();
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
         let dac_xrun_count = self.dac_xrun_count.load(Ordering::Relaxed);
@@ -886,326 +892,13 @@ impl OutputdState {
         push_kv_str(&mut buf, "sched_policy", self.sched_policy());
         buf.push(',');
 
-        buf.push_str(r#""content":{"#);
-        // The resolved bridge mode IS the source — same string as
-        // `content_bridge.mode` below, not a re-derived guess from
-        // `shm_ring_path` (which stayed false for `DacContentRing`, #4807 R-261).
-        push_kv_str(&mut buf, "source", &self.content_bridge_mode);
-        buf.push(',');
-        // The DECLARED wire of the content hop. Nothing negotiates it here: the
-        // ring's own attach validates the declaration against the writer's
-        // header, so this is the value that got the ring open.
-        push_kv_str(&mut buf, "format", self.declared_content_format.as_str());
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "period_frames",
-            self.content_period_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "buffer_frames",
-            self.content_buffer_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "frames_read",
-            self.content_frames_read.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "empty_periods",
-            self.content_empty_period_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "consecutive_empty_periods",
-            self.content_consecutive_empty_periods
-                .load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_bool(&mut buf, "deaf", self.content_deaf.load(Ordering::Relaxed));
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "partial_periods",
-            self.content_partial_period_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "eagain_count",
-            self.content_eagain_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(&mut buf, "xrun_count", content_xrun_count);
-        buf.push(',');
-        push_kv_u64_opt(
-            &mut buf,
-            "last_xrun_age_ms",
-            event_age_ms(uptime_ms, self.last_content_xrun_ms.load(Ordering::Relaxed)),
-        );
-        buf.push(',');
-        push_kv_f64(
-            &mut buf,
-            "xrun_rate_per_hour",
-            rate_per_hour(content_xrun_count, uptime_ms),
-            3,
-        );
-        // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
-        // content source, outputd reads the post-DSP program from an n-slot SHM
-        // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
-        // above is a synthetic period-sized stand-in (neither sink opens a content
-        // PCM at all — ADR-0100 leaves the ring as outputd's one upstream).
-        // This sub-block reports the TRUE Ring B capacity that
-        // outputd requires of the writer — n_slots x slot_frames — so the synthetic
-        // is clearly labeled and jasper-doctor validates the ring geometry instead
-        // of mis-applying the ALSA ">= 2x period" jitter floor (which a bounded
-        // n-slot queue is not). Full runtime health (occupancy, empty reads, writer
-        // liveness) stays in the top-level `shm_ring` block; this is the buffering
-        // capacity contract that sits next to `content.buffer_frames`.
-        if self.shm_ring_path.is_some() {
-            let slots = self.shm_ring_slots.load(Ordering::Relaxed);
-            let slot_frames = self.shm_ring_slot_frames.load(Ordering::Relaxed);
-            buf.push(',');
-            buf.push_str(r#""ring":{"#);
-            push_kv_u64(&mut buf, "slots", slots);
-            buf.push(',');
-            push_kv_u64(&mut buf, "slot_frames", slot_frames);
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "capacity_frames",
-                slots.saturating_mul(slot_frames),
-            );
-            buf.push('}');
-        }
-        buf.push('}');
-        buf.push(',');
+        self.content_json(&mut buf, uptime_ms, content_xrun_count);
+        self.content_bridge_json(&mut buf);
 
-        buf.push_str(r#""content_bridge":{"#);
-        push_kv_str(&mut buf, "mode", &self.content_bridge_mode);
-        buf.push('}');
-        buf.push(',');
+        self.shm_ring_json(&mut buf);
+        self.dac_content_json(&mut buf);
 
-        // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
-        // enabled:false with no further fields when unconfigured (default-off,
-        // zero noise), full metrics when the flag armed it. `occupancy` is the
-        // live W-R depth; empty_reads split startup vs steady like the local
-        // pipe; writer_alive/pid/heartbeat_age surface the cross-process writer.
-        buf.push_str(r#""shm_ring":{"#);
-        match self.shm_ring_path.as_deref() {
-            Some(path) => {
-                push_kv_bool(&mut buf, "enabled", true);
-                buf.push(',');
-                push_kv_str(&mut buf, "path", path);
-                buf.push(',');
-                push_kv_bool(
-                    &mut buf,
-                    "attached",
-                    self.shm_ring_attached.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "slots",
-                    self.shm_ring_slots.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "slot_frames",
-                    self.shm_ring_slot_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // The wire: the two axes ring v2 made per-box, read out of the
-                // one cell together so the pair is always the SAME source. See
-                // the `shm_ring_wire` field for their provenance.
-                let (wire_format, wire_channels) = self.shm_ring_wire.get().copied().unwrap_or((
-                    self.declared_content_format.as_str(),
-                    self.declared_content_channels,
-                ));
-                push_kv_str(&mut buf, "format", wire_format);
-                buf.push(',');
-                push_kv_u64(&mut buf, "channels", wire_channels);
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "occupancy",
-                    self.shm_ring_occupancy.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "frames_read",
-                    self.shm_ring_frames_read.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "startup_empty_reads",
-                    self.shm_ring_startup_empty_reads.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "empty_reads",
-                    self.shm_ring_empty_reads.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "epoch_resets",
-                    self.shm_ring_epoch_resets.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "reader_resyncs",
-                    self.shm_ring_reader_resyncs.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_bool(
-                    &mut buf,
-                    "writer_alive",
-                    self.shm_ring_writer_alive.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "writer_pid",
-                    self.shm_ring_writer_pid.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // u64::MAX = "writer never heartbeated" (see jasper_ring's
-                // RingMetrics). Serialize the sentinel as JSON null rather than
-                // 18446744073709551615, which exceeds JS Number.MAX_SAFE_INTEGER
-                // and would deserialize lossily in the /state dashboard. Uses the
-                // same OPTIONAL_U64_NONE convention as the pcm_delay fields.
-                push_kv_u64_opt(
-                    &mut buf,
-                    "writer_heartbeat_age_ms",
-                    unpack_optional_u64(
-                        self.shm_ring_writer_heartbeat_age_ms
-                            .load(Ordering::Relaxed),
-                    ),
-                );
-            }
-            None => {
-                push_kv_bool(&mut buf, "enabled", false);
-            }
-        }
-        buf.push('}');
-        buf.push(',');
-
-        // Multi-room round-trip lane — DAEMON-TRUTH health
-        // for /state + jasper-doctor (never a Python mirror of env
-        // intent). enabled:false with no further fields when the lane is
-        // not configured (solo — zero cost, zero noise).
-        buf.push_str(r#""dac_content":{"#);
-        match self.dac_content_lane.as_ref() {
-            Some(path) => {
-                push_kv_bool(&mut buf, "enabled", true);
-                buf.push(',');
-                push_kv_str(&mut buf, "transport", "ring");
-                buf.push(',');
-                push_kv_str(&mut buf, "ring", path);
-                buf.push(',');
-                push_kv_str(&mut buf, "channel", &self.dac_content_channel);
-                buf.push(',');
-                buf.push_str(&format!("\"trim_db\":{:.1}", self.dac_content_trim_db()));
-                buf.push(',');
-                push_kv_bool(
-                    &mut buf,
-                    "serving_fifo",
-                    self.dac_content_serving_fifo.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "fifo_periods",
-                    self.dac_content_fifo_periods.load(Ordering::Relaxed),
-                );
-            }
-            None => {
-                push_kv_bool(&mut buf, "enabled", false);
-            }
-        }
-        buf.push('}');
-        buf.push(',');
-
-        // Bonded-member TTS lane — daemon truth for /state +
-        // doctor. enabled:false when the lane is off (solo: fanin owns
-        // TTS) — zero noise, mirroring dac_content.
-        buf.push_str(r#""tts":{"#);
-        match self.tts.get() {
-            Some((socket, m)) => {
-                push_kv_bool(&mut buf, "enabled", true);
-                buf.push(',');
-                push_kv_str(&mut buf, "socket", socket);
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "pending_frames",
-                    m.pending_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(&mut buf, "budget_frames", m.max_pending_frames);
-                buf.push(',');
-                push_kv_u64(&mut buf, "requests", m.requests.load(Ordering::Relaxed));
-                buf.push(',');
-                let counters = &m.counters;
-                push_kv_u64(
-                    &mut buf,
-                    "dropped_audio_frames",
-                    counters.dropped_audio_frames(),
-                );
-                buf.push(',');
-                push_kv_u64(&mut buf, "dropped_commands", counters.dropped_commands());
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "connections_rejected",
-                    counters.connections_rejected(),
-                );
-                buf.push(',');
-                push_kv_u64(&mut buf, "tts_clients", counters.tts_clients());
-                buf.push(',');
-                push_kv_u64(&mut buf, "frame_timeouts", counters.frame_timeouts());
-                buf.push(',');
-                push_kv_u64(&mut buf, "protocol_errors", counters.protocol_errors());
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "flush_requests",
-                    m.flush_requests.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "flushed_frames",
-                    m.flushed_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // The same assistant_loudness object fan-in exposes, rendered
-                // through the shared writer so the two /state shapes cannot
-                // drift (pinned by ASSISTANT_LOUDNESS_STATUS_KEYS on both).
-                buf.push_str(r#""assistant_loudness":"#);
-                jasper_tts_protocol::loudness::render_assistant_loudness(
-                    &mut buf,
-                    &m.loudness_snapshot(),
-                );
-            }
-            None => {
-                push_kv_bool(&mut buf, "enabled", false);
-            }
-        }
-        buf.push('}');
-        buf.push(',');
+        self.tts_json(&mut buf);
 
         buf.push_str(r#""dac":{"#);
         push_kv_str(&mut buf, "pcm", &self.dac_pcm);
@@ -1354,26 +1047,7 @@ impl OutputdState {
             buf.push(',');
         }
 
-        buf.push_str(r#""mix":{"#);
-        push_kv_u64(
-            &mut buf,
-            "reference_sequence",
-            self.reference_sequence.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "last_period_clipped_samples",
-            self.last_period_clipped_samples.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "clipped_samples",
-            self.total_clipped_samples.load(Ordering::Relaxed),
-        );
-        buf.push('}');
-        buf.push(',');
+        self.mix_json(&mut buf);
 
         buf.push_str(r#""reference_outputs":{"#);
         push_kv_str(
@@ -1709,17 +1383,7 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
-        buf.push_str(r#""watchdog":{"#);
-        let last_progress_ms = self.last_progress_ms.load(Ordering::Relaxed);
-        let age_ms = uptime_ms.saturating_sub(last_progress_ms);
-        push_kv_u64(
-            &mut buf,
-            "pings_sent",
-            self.watchdog_pings_sent.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(&mut buf, "last_progress_age_ms", age_ms);
-        buf.push('}');
+        self.watchdog_json(&mut buf, uptime_ms);
 
         buf.push('}');
         buf
@@ -1859,6 +1523,7 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            assistant_loudness: Default::default(),
             active_lane: false,
             // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
             // runs. `dual_test_config` below overrides ring_active_endpoint rather
@@ -1926,6 +1591,148 @@ mod tests {
     fn parse_snapshot_json(snapshot: &str) -> serde_json::Value {
         serde_json::from_str(snapshot)
             .unwrap_or_else(|error| panic!("complete STATUS snapshot must be valid JSON: {error}"))
+    }
+
+    #[test]
+    fn snapshot_json_scripted_bytes_are_stable() {
+        // Raw bytes, including field order and numeric formatting. See #4806 R-063.
+        let mut hash = 0xcbf29ce484222325u64;
+        let mut expected = include_str!("../../../tests/fixtures/outputd-snapshots.jsonl").lines();
+        let mut capture = |state: &OutputdState| {
+            let json = state.snapshot_json_at(120_000);
+            let _ = parse_snapshot_json(&json);
+            assert_eq!(expected.next(), Some(json.as_str()));
+            for byte in json.bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        };
+        for cfg in [
+            test_config(),
+            Config {
+                shm_ring: Some("/dev/shm/jts-ring/content.ring".to_string()),
+                ..test_config()
+            },
+            Config {
+                content_bridge_mode: ContentBridgeMode::DacContentRing,
+                dac_content_ring: Some("/dev/shm/jts-ring/dac-content.ring".to_string()),
+                dac_content_channel: crate::dac_content::ChannelPick::Right,
+                dac_content_trim_db: -3.5,
+                ..test_config()
+            },
+            Config {
+                shm_ring: Some("/dev/shm/jts-ring/active-content.ring".to_string()),
+                chip_ref_pcm: Some("hw:CARD=Array,DEV=0".to_string()),
+                reference_udp_target: Some("127.0.0.1:18200".to_string()),
+                chip_ref_observe: true,
+                ..dual_test_config()
+            },
+        ] {
+            let state = OutputdState::new(&cfg);
+            capture(&state);
+            state.latch_sched_policy("fifo".to_string());
+            state.set_dac_format(SampleFormat::S24_3Le);
+            state.mark_period(
+                IoCounters {
+                    content_frames_read: 8192,
+                    dac_frames_written: 12288,
+                    content_empty_period_count: 3,
+                    content_partial_period_count: 5,
+                    content_eagain_count: 7,
+                    content_xrun_count: 11,
+                    dac_xrun_count: 13,
+                },
+                41,
+                17,
+            );
+            state.mark_content_fill(19, true);
+            state.mark_watchdog_ping();
+            state.mark_dac_delay(257);
+            state.mark_shm_ring_wire(SampleFormat::S32Le, 4);
+            state.mark_shm_ring(RingMetrics {
+                attached: true,
+                occupancy: 1,
+                frames_read: 8192,
+                startup_empty_reads: 3,
+                empty_reads: 5,
+                epoch_resets: 7,
+                reader_resyncs: 11,
+                writer_pid: 4242,
+                writer_heartbeat_age_ms: u64::MAX,
+                writer_alive: false,
+                n_slots: 2,
+                slot_frames: 1024,
+                ..RingMetrics::default()
+            });
+            state.mark_dac_content(DacContentMetrics {
+                serving_fifo: true,
+                fifo_periods: 23,
+            });
+            state.mark_dual_apple_status(&CompositeStatus {
+                dac_a_pcm: "hw:CARD=A,DEV=0".to_string(),
+                dac_b_pcm: "hw:CARD=B,DEV=0".to_string(),
+                linked: true,
+                delay_delta_frames: Some(-7),
+                delay_delta_baseline_frames: Some(-5),
+                delay_delta_error_frames: Some(-2),
+                max_delay_delta_frames: 2,
+                dac_a_xruns: 31,
+                dac_b_xruns: 17,
+                group_recoveries: 43,
+                delay_baseline_relatches: 29,
+                reprime_alignment_failures: 11,
+            });
+            let metrics = TtsMetrics::new(96_000);
+            metrics.pending_frames.store(123, Ordering::Relaxed);
+            metrics.flushed_frames.store(7, Ordering::Relaxed);
+            state.set_tts("/run/jasper-outputd/tts.sock".to_string(), metrics);
+            state.mark_reference_udp_active(true);
+            state.mark_reference_udp_dropped();
+            state.mark_chip_ref_queue_admitted(320);
+            state.mark_chip_ref_enqueued(41);
+            state.mark_chip_ref_dropped_full();
+            state.mark_chip_ref_dropped_disconnected();
+            state.mark_chip_ref_write(ChipRefWrite {
+                frames_written: 640,
+                delay_frames: Some(83),
+                reference_sequence: Some(37),
+                underruns: 3,
+                xruns: 5,
+                recoveries: 7,
+                write_failed: false,
+            });
+            for timestamp in [
+                &state.last_content_xrun_ms,
+                &state.last_dac_xrun_ms,
+                &state.last_progress_ms,
+                &state.dac_snd_pcm_delay_sample_ms,
+                &state.chip_ref_snd_pcm_delay_sample_ms,
+                &state.chip_ref_last_write_ms,
+            ] {
+                timestamp.store(119_000, Ordering::Relaxed);
+            }
+            {
+                let mut ring = state.chip_ref_writes.lock().unwrap();
+                for entry in &mut ring.entries {
+                    entry.uptime_ms = 119_000;
+                }
+            }
+            capture(&state);
+            state.mark_chip_ref_open_error();
+            state.mark_chip_ref_retry();
+            capture(&state);
+            state.mark_chip_ref_terminal_failure();
+            capture(&state);
+            state.mark_chip_ref_writer_active(true);
+            {
+                let mut estimator = state.sro_estimator.lock().unwrap();
+                for step in 1..=40u64 {
+                    estimator.update(step * 48_000, 257, step * 16_000, 83, 16_000);
+                }
+            }
+            capture(&state);
+        }
+        assert!(expected.next().is_none());
+        assert_eq!(hash, 13_254_872_796_562_678_660);
     }
 
     #[test]

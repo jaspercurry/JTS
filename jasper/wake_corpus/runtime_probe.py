@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -34,8 +35,8 @@ from jasper.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC_TESTING,
     env_value,
     infer_audio_input_profile,
+    intent_from_env,
     normalize_audio_input_profile,
-    parse_env_bool,
 )
 from jasper.chip_aec.policy import effective_chip_aec_dac_gate
 from jasper.aec.bridge_config import (
@@ -392,17 +393,9 @@ def read_aec_intent() -> AecIntent:
     """Read production wake/audio intent from the wizard-owned state file."""
     env = read_env_file(str(AEC_MODE_PATH))
     mode = (env.get(AEC_MODE_ENV) or "auto").strip().strip("'\"") or "auto"
-    return AecIntent(
+    return replace(
+        intent_from_env(env),
         mode=mode,
-        raw_enabled=parse_env_bool(
-            env.get("JASPER_WAKE_LEG_RAW", "1"), default=True,
-        ),
-        dtln_enabled=parse_env_bool(
-            env.get("JASPER_WAKE_LEG_DTLN", "0"), default=False,
-        ),
-        chip_aec_enabled=parse_env_bool(
-            env.get("JASPER_WAKE_LEG_CHIP_AEC", "0"), default=False,
-        ),
         profile_selection=env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
     )
 

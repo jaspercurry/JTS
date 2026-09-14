@@ -437,9 +437,6 @@ class OpenAILiveConnection(BaseLiveConnection):
             }},
         }}
         configured_at = time.monotonic()
-        # Size only. The payload carries the system instruction and the tool
-        # schemas, so its CONTENT must never reach the journal.
-        config_bytes = len(json.dumps(start_event))
         await self._send(start_event)
         sent_at = time.monotonic()
         await self._started.wait()
@@ -450,7 +447,6 @@ class OpenAILiveConnection(BaseLiveConnection):
             client_init_ms=int((client_ready_at - opened_at) * 1000),
             socket_open_ms=int((socket_open_at - client_ready_at) * 1000),
             config_build_ms=int((configured_at - socket_open_at) * 1000),
-            config_bytes=config_bytes,
             start_send_ms=int((sent_at - configured_at) * 1000),
             started_ack_ms=int((started_at - sent_at) * 1000),
             total_ms=int((started_at - opened_at) * 1000),

@@ -115,6 +115,8 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         )
         out["alignment_status"] = alignment.status
         out["delay_us"] = round(float(alignment.delay_us), 3)
+        for field in ("alignment_pair_count", "alignment_pair_spread_us", "alignment_drift_residual_us"):
+            out[field] = getattr(alignment, field, None)
         seed_delay_us = getattr(alignment, "seed_delay_us", None)
         if seed_delay_us is not None:
             out["alignment_seed_delay_us"] = round(float(seed_delay_us), 3)
@@ -134,6 +136,9 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     if candidate is not None:
         out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
         out["alignment_objective"] = getattr(candidate, "alignment_objective", "")
+        for field in ("summed_fit_rms_db", "summed_fit_margin", "delay_interval_us"):
+            out[field] = getattr(candidate, field, None)
+        out["summed_fit_verdict"] = getattr(candidate, "summed_fit_verdict", "unavailable")
         seed_polarity_sign = getattr(candidate, "seed_polarity_sign", None)
         out["seed_polarity"] = (
             None if seed_polarity_sign is None

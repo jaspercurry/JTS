@@ -7,7 +7,7 @@
 JTS treats 0% as a true mute owned by ``VolumeCoordinator``. The audible
 slider travel is therefore 1..100%, mapped over a calibrated dB range:
 
-    1%  -> volume_floor_db
+    1%   -> the quietest audible step, strictly above volume_floor_db
     100% -> 0 dB
 
 The default floor preserves the original shipped curve. Installations with
@@ -84,24 +84,31 @@ def _floor(floor_db: float | None) -> float:
 def percent_to_db(percent: float, *, floor_db: float | None = None) -> float:
     """Map user-facing volume percent to a Camilla main-volume dB value.
 
-    0% and 1% both return the floor dB; 0% is distinguished by Camilla
-    ``main_mute=true`` in ``VolumeCoordinator``. This keeps 1% as the audible
-    calibration floor while preserving a real mute at 0%.
+    0% returns the floor dB and is distinguished from anything audible by
+    Camilla ``main_mute=true`` in ``VolumeCoordinator``. 1% is the quietest
+    audible step, not mute, so it must sit strictly above the floor: a
+    quarter of the normal per-percent step keeps it audibly distinct from
+    0% while landing well below 2%, and round-trips back through
+    ``db_to_percent`` as 1 (audit R-006 — the old floor-sharing value made
+    ``_main_mute_for_db`` treat level 1 as muted, re-muting it forever).
+    2..100% is the original, unchanged linear span.
     """
     p = max(0.0, min(100.0, float(percent)))
     floor = _floor(floor_db)
-    if p <= 1.0:
-        return floor
     span = VOLUME_CEILING_DB - floor
+    if p <= 0.0:
+        return floor
+    if p <= 1.0:
+        return floor + (span / 99.0) / 4.0
     return floor + span * ((p - 1.0) / 99.0)
 
 
 def db_to_percent(db: float, *, floor_db: float | None = None) -> int:
     """Map Camilla dB back to the nearest user-facing percent.
 
-    The floor dB is ambiguous: it can mean muted 0% or audible 1%.
-    Legacy dB-only callers expect the floor to mean 0%, so exact/below-floor
-    values return 0; persisted ``listening_level`` disambiguates modern state.
+    The floor dB unambiguously means mute now that 1% sits strictly above
+    it (audit R-006); exact/below-floor values return 0, matching legacy
+    dB-only callers that already expected the floor to mean 0%.
     """
     floor = _floor(floor_db)
     try:

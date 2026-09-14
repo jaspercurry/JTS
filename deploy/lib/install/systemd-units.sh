@@ -237,6 +237,7 @@ _with_unit_install_transaction() {
     "$1"
 
     systemctl daemon-reload
+    validate_installed_systemd_units
     # The gated units' own executables land in the staging above, so the
     # install window ends here — after PID 1 has loaded their Condition lines,
     # and before the caller's first installer-issued start.
@@ -375,68 +376,34 @@ validate_streambox_web_socket() {
     done
 }
 
-validate_streambox_systemd_units() {
-    validate_streambox_web_socket || return 1
+validate_installed_systemd_units() {
     if command -v systemd-analyze >/dev/null 2>&1; then
-        local -a verify_units=(
-            "${SYSTEMD_DIR}/jasper-control.service"
-            "${SYSTEMD_DIR}/jasper-camilla.service"
-            "${SYSTEMD_DIR}/jasper-camilla-recover.service"
-            "${SYSTEMD_DIR}/jasper-camilla-crossover.service"
-            "${SYSTEMD_DIR}/jasper-fanin.service"
-            "${SYSTEMD_DIR}/jasper-outputd.service"
-            "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-snapclient.service"
-            "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
-            "${SYSTEMD_DIR}/jasper-source-intent-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service"
-            "${SYSTEMD_DIR}/jasper-web.service"
-            "${SYSTEMD_DIR}/jasper-web.socket"
-            "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
-            "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
-            "${SYSTEMD_DIR}/jasper-correction-web.service"
-            "${SYSTEMD_DIR}/jasper-correction-web.socket"
-            "${SYSTEMD_DIR}/jasper-system-web.service"
-            "${SYSTEMD_DIR}/jasper-system-web.socket"
-            "${SYSTEMD_DIR}/jasper-chat-web.service"
-            "${SYSTEMD_DIR}/jasper-chat-web.socket"
-            "${SYSTEMD_DIR}/librespot.service"
-            "${SYSTEMD_DIR}/shairport-sync.service"
-            "${SYSTEMD_DIR}/nqptp.service"
-            "${SYSTEMD_DIR}/bt-agent.service"
-            "${SYSTEMD_DIR}/jasper-mux.service"
-            "${SYSTEMD_DIR}/jasper-usbgadget.service"
-            "${SYSTEMD_DIR}/jasper-usbmic.service"
-            "${SYSTEMD_DIR}/jasper-usbsink.service"
-            "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
-            "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
-            "${SYSTEMD_DIR}/jts-audio.slice"
-            "${SYSTEMD_DIR}/jasper-dongle-recover.service"
-            "${SYSTEMD_DIR}/jasper-dac-init.service"
-            "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
-            "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
-            "${SYSTEMD_DIR}/jasper-wifi-recover.service"
-            "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
-            "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
-            "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
-            "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
-            "${SYSTEMD_DIR}/jasper-journal-review.service"
-            "${SYSTEMD_DIR}/jasper-journal-review.timer"
-            "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
-            "${SYSTEMD_DIR}/jasper-voice.service"
-            "${SYSTEMD_DIR}/jasper-input.service"
-            "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
-        )
-        if [[ -x /usr/bin/snapserver ]]; then
-            verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
-        fi
-        systemd-analyze verify "${verify_units[@]}" || {
-            echo "  ERROR: streambox systemd units failed systemd-analyze verify" >&2
-            return 1
-        }
+        local row _mode _source destination unit seen
+        local -a installed_paths=("${install_transaction_paths[@]}") verify_units=()
+        for row in "${JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS[@]}"; do
+            read -r _mode _source destination <<<"${row}"
+            installed_paths+=("${destination}")
+        done
+        for destination in "${installed_paths[@]}"; do
+            [[ "${destination}" == "${SYSTEMD_DIR}/"* ]] || continue
+            unit="${destination#"${SYSTEMD_DIR}/"}"
+            unit="${unit%%/*}"
+            unit="${unit%.d}"
+            case "${unit}" in
+                *.service|*.socket|*.timer|*.path|*.slice|*.target) ;;
+                *) continue ;;
+            esac
+            # Snapcast is provisioned on the first grouping opt-in.
+            if [[ "${unit}" == jasper-snapserver.service && ! -x /usr/bin/snapserver ]]; then
+                continue
+            fi
+            for seen in "${verify_units[@]}"; do
+                [[ "${seen}" == "${unit}" ]] && continue 2
+            done
+            verify_units+=("${unit}")
+        done
+        SYSTEMD_UNIT_PATH="${SYSTEMD_DIR}:" \
+            timeout --kill-after=5s 60s systemd-analyze verify "${verify_units[@]}"
     fi
 }
 
@@ -1513,7 +1480,7 @@ _stage_streambox_unit_files() {
     install_voice_unit_files
     install_audio_output_recovery_unit_files
     reload_audio_recovery_udev_rules_for_install
-    validate_streambox_systemd_units
+    validate_streambox_web_socket
 }
 
 install_streambox_systemd_units() {

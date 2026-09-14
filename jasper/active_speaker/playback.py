@@ -225,14 +225,13 @@ def tone_backend_status(
     Daemon-owned CamillaDSP / outputd lanes are intentionally forbidden: they
     are sinks/readers in the runtime graph, not test-tone injection points.
 
-    **``audio_enabled`` is structurally ``False``.** Selecting the aplay
-    audio-lab backend used to be reported as audio-enabled, but no production
-    path has ever consulted that selection: all four ``start_tone_playback``
-    call sites pass ``backend=None``, which always resolves to
-    :class:`WavArtifactTonePlaybackBackend`. No backend that emits audio is
-    wired up. So an operator who set the knob was told "audio_enabled" while
-    the tone still rendered silently to a WAV --- this reports a
-    ``tone_backend_not_wired`` blocker instead of that quiet lie. The
+    **``audio_enabled`` is structurally ``False``.** No production path has
+    ever consulted the aplay audio-lab backend selection: all four
+    ``start_tone_playback`` call sites pass ``backend=None``, which always
+    resolves to :class:`WavArtifactTonePlaybackBackend`. No backend that
+    emits audio is wired up. So an operator who set the knob was told
+    "audio_enabled" while the tone still rendered silently to a WAV --- this
+    reports a ``tone_backend_not_wired`` blocker instead of that quiet lie. The
     operator-typed value is still validated (unknown backend, missing test PCM,
     forbidden daemon lane) so a stale or wrong setting is named, not swallowed.
     """

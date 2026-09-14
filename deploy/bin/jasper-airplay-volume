@@ -37,6 +37,10 @@ session_start="${runtime_dir}/airplay-session-start"
 # jasper-control is always localhost on jasper/platform/control_client.py's
 # CONTROL_PORT — the one module that owns this contract.
 url="${2:-http://127.0.0.1:8780}/volume/set"
+# Settle-loop poll period; test-only override, like the base-URL argument
+# above. The pass ceiling below counts 4 ticks per pass (200 ms at this
+# default), so a scaled poll scales that ceiling with it.
+settle_poll_s="${AIRPLAY_VOLUME_SETTLE_POLL_S:-0.05}"
 
 # shairport fires this before the connect-time volume push, so the volume
 # invocation that follows can tell a session snapshot from a user's nudge.
@@ -159,7 +163,7 @@ while [ "$attempt" -lt 3 ]; do
             settled=0
             ticks=0
             while [ "$settled" -lt 20 ] && [ "$passes" -lt 25 ]; do
-                sleep 0.05
+                sleep "$settle_poll_s"
                 ticks=$((ticks + 1))
                 [ "$((ticks % 4))" -eq 0 ] && passes=$((passes + 1))
                 read -r probe 2>/dev/null < "$state" || break
