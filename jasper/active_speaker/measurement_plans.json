@@ -51,11 +51,11 @@
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.3]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, -0.3]}
     ],
-    "seat_express": [
+    "seat_express": {"mover": "human", "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]}
-    ],
+    ]},
     "bass_axis": {"mover": "arm", "poses": [{"azimuth_deg": 0, "elevation_deg": 0}]},
     "room_quick": {"mover": "arm", "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0},
@@ -75,7 +75,8 @@
     {"id": "seat", "size": "cube", "layout": "seat_cube", "purpose": "room", "regime": "summed"},
     {"id": "seat", "size": "express", "layout": "seat_express", "purpose": "room", "regime": "summed"},
     {"id": "room", "size": "cloud", "layout": "seat_cloud", "purpose": "room", "regime": "summed"},
-    {"id": "room", "size": "quick", "layout": "room_quick", "purpose": "room", "regime": "summed"},
+    {"id": "room", "size": "arm", "layout": "room_quick", "purpose": "room", "regime": "summed"},
+    {"id": "room", "size": "seat", "layout": "seat_express", "purpose": "room", "regime": "summed"},
     {"id": "bass", "size": "axis", "layout": "bass_axis", "purpose": "bass", "regime": "summed"},
     {"id": "bass", "size": "cloud", "layout": "seat_cloud", "purpose": "bass", "regime": "summed"},
     {"id": "bass", "size": "quick", "layout": "room_quick", "purpose": "bass", "regime": "summed"},
@@ -87,7 +88,7 @@
     "tournament": "express",
     "branches": "express",
     "seat": "cloud",
-    "room": "cloud",
+    "room": "seat",
     "bass": "cloud",
     "close": "spot"
   }

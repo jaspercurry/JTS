@@ -3,10 +3,13 @@
 
 import json
 from dataclasses import asdict, replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db, decide_trim
@@ -27,8 +30,9 @@ from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import (
     AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis, RealizedLevelMatch,
 )
-from jasper.cli import round_views
+from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
+from jasper.active_speaker.round_packet import INDEX_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_manifest
 
 
@@ -293,3 +297,52 @@ def test_speaker_fit_reads_declared_budgets_and_only_overrides_stdout(speaker_ro
     assert fit["correction_giveback_db"] <= expected["max_giveback_db"]
     assert result["linearization"]["tweeter"]["fit"]["budget"]["max_filters"] == (1 if overrides else 8)
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def test_banked_speaker_packet_fits_every_selected_pose_and_role(speaker_round, tmp_path, monkeypatch, capsys):
+
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    candidate = json.loads((directory / "candidate.json").read_text())
+    curves = {curve["role"]: curve for curve in record.pop("curves")}
+    groups = []
+    for base in (True, False):
+        rows = []
+        for degrees in (0, 30, 60):
+            take = {**record, "take_id": f"take-{base}-{degrees}", "position_deg": degrees}
+            path = directory / "positions" / f"{take['take_id']}.json"
+            path.write_text(json.dumps(take))
+            rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
+        for role, curve in curves.items():
+            group = manifest_set(rows, set_id=f"{base}-{role}", selected={r["take_id"] for _, r in rows[:2]})
+            group.update(base=base)
+            group["capture_basis"].update(role=role, candidate_id="base" if base else "candidate")
+            for take in group["takes"]:
+                take.update(role=role, curve=curve, analysis=candidate["analysis"])
+            groups.append(group)
+    manifest = write_manifest(root, groups=groups)
+    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.analyze_measurement_bundle",
+                        lambda *a, **kw: pytest.fail("speaker packet reopened WAVs"))
+    mark_state(inputs.session_dir, "applied")
+    banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+                        design_draft_path=root / "design-draft.json", view_runner=round_views.run_bookkeeping)
+    packet = json.loads((banked.path / "packet.json").read_text())
+    expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], t["role"])
+                for g in manifest["sets"] for t in g["takes"] if t["selected"]}
+    assert len(packet["fits"]) == len(expected) == 8
+    assert {(f["set_id"], f["take_id"], f["pose"]["deg"], f["role"]) for f in packet["fits"]} == expected
+    assert all(f["mic_tier"] == "reference" and isinstance(f["filters"], list)
+               and f["residual_rms_db"] is not None and f["budget"] for f in packet["fits"])
+    assert len(packet["series"]) == 8
+    assert all(s["stats"]["rms_100_10k_db"] is not None for s in packet["series"])
+    assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
+    assert Path(packet["artifacts"]["frequency_png"]).read_bytes().startswith(b"\x89PNG")
+    index = (banked.path / INDEX_FILENAME).read_text().splitlines()
+    assert f"Fingerprint: {packet['packet_fingerprint']}" in index
+    heads = ("Measured:", "Applied:", "Result:", "## Decisions", "driver:", "blend:", "alignment:", "topology:",
+             "Limits:", "Stats:", "Low-end means:", "Fits:", "## Artifacts", "## Tools", "Fingerprint:")
+    positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
+    assert positions == sorted(positions)
+    assert crossover_prescriber.main(["status", str(banked.path)]) == 0
+    assert packet["packet_fingerprint"] == json.loads(capsys.readouterr().out)["packet_fingerprint"]

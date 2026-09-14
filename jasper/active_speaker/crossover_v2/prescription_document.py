@@ -134,6 +134,37 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
     raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "unknown section kind")
 
 
+def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
+                     contracts: Mapping[str, Any]) -> Mapping[str, Any]:
+    kind = SECTION_KINDS[name]
+    if kind is None:
+        return section
+    contract = contracts[name] if name == "room" else contracts["speaker"][name]
+    section = {"kind": kind, "artifact_schema_version": contract["schema"]["properties"]["artifact_schema_version"]["const"],
+               **({"rationale": rationale} if name in {"driver", "blend", "room"} else {}), **section}
+    if section["kind"] != kind:
+        raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "section kind does not match its name")
+    return section
+
+
+def preview_room_document(document: Mapping[str, Any], *, base: BankedCandidate,
+                          evidence: PrescriptionEvidence) -> dict[str, Any]:
+    section = document["sections"].get("room")
+    if not section:
+        raise PrescriptionDocumentRefused("prescription_malformed", "room", "preview requires a room section")
+    contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
+    try:
+        preview = room.preview_room_prescription(
+            _section_payload("room", section, document["rationale"], contracts),
+            room_median=room.read_room_median(evidence.sources.get("room_median", {})),
+            room_median_sha256=evidence.room_median_sha256, round_id=evidence.round_id,
+            sides=SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
+        )
+    except room.RoomPrescriptionRefused as exc:
+        raise PrescriptionDocumentRefused(exc.reason, "room", exc.detail, evidence=exc.evidence) from exc
+    return {"ok": True, "section": "room", "preview": preview, "adopted": False, "banked": False}
+
+
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                                evidence: PrescriptionEvidence | None = None) -> MeasuredCrossoverCandidate:
     document = read_prescription_document(raw)
@@ -151,14 +182,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         if not section:
             selected[name] = None
             continue
-        kind = SECTION_KINDS[name]
-        if kind is not None:
-            contract = contracts[name] if name == "room" else contracts["speaker"][name]
-            section = {"kind": kind, "artifact_schema_version": contract["schema"]["properties"]["artifact_schema_version"]["const"],
-                       **({"rationale": document["rationale"]} if name in {"driver", "blend", "room"} else {}),
-                       **section}
-            if section["kind"] != kind:
-                raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "section kind does not match its name")
+        section = _section_payload(name, section, document["rationale"], contracts)
         try:
             selected[name], judged[name] = _judge_section(
                 name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz,

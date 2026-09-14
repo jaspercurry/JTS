@@ -516,7 +516,7 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 
 
 @pytest.mark.parametrize(("purpose", "size"), [
-    ("speaker", "mark"), ("room", "quick"), ("room", "cloud"), ("bass", "quick"), ("bass", "cloud"),
+    ("speaker", "mark"), ("room", "arm"), ("room", "cloud"), ("bass", "quick"), ("bass", "cloud"),
 ])
 def test_prepared_summed_captures_keep_the_program_band(purpose, size):
     layout = measurement_program(purpose, size)
