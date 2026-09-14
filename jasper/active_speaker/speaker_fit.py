@@ -14,12 +14,11 @@ import numpy as np
 
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
-from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, round_artifact_dir
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, prescription_sources, round_artifact_dir, take_order
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
@@ -81,15 +80,13 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
     groups: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for group in manifest.get("sets", ()):
         basis = group["capture_basis"]
-        identity = (basis.get("candidate_id"), basis.get("graph_fingerprint"))
-        key = (*identity, basis.get("side"), basis.get("role"),
-               group["set_id"] if not any(identity) else None)
+        key = (*capture_identity(basis, set_id=group["set_id"]), basis.get("role"))
         groups.setdefault(key, []).append(group)
     clouds: dict[str, CloudFitTerms] = {}
-    for (_, _, _, role, _), members in groups.items():
+    for (_, _, _, _, role), members in groups.items():
         bearings: dict[float, Mapping[str, Any]] = {}
         for take in sorted((take for group in members for take in group["takes"]),
-                           key=lambda t: ((t.get("timing") or {}).get("ended_s", 0), t.get("attempt", 0))):
+                           key=take_order):
             pose = take["pose"]
             if role and role != REGIME_SUMMED and (take.get("role") or role) == role and (
                 take["selected"] and take.get("phase") == "measure" and
@@ -168,7 +165,7 @@ def _production_vocabulary(
 def speaker_fit(
     inputs: RoundInputs, manifest: Mapping[str, Any], set_id: str, take_id: str | None = None,
     *, vocabulary: str | None = None, budget: Mapping[str, Any] | None = None,
-    clouds_by_set: Mapping[str, CloudFitTerms] | None = None,
+    clouds_by_set: Mapping[str, CloudFitTerms] | None = None, sources: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected = resolve_set(inputs, set_id, manifest=manifest)
     take_id = selected.take_id(take_id)
@@ -197,7 +194,8 @@ def speaker_fit(
         raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
-    draft = json.loads(inputs.design_draft_path.read_text())
+    sources = prescription_sources(inputs) if sources is None else sources
+    draft = sources.get("draft") or {}
     classes = _resolve_driver_class_by_role(draft)
     budgets = fit_budgets_by_role(draft.get("driver_safety_profile") or {})
     overrides = normalise_fit_budget(budget or {})
@@ -214,8 +212,9 @@ def speaker_fit(
     if vocabulary is None:
         if clouds_by_set is None:
             clouds_by_set = design_clouds(inputs, manifest)
-        if cloud := clouds_by_set.get(selected.set_id):
-            clouds[selected.capture_basis.get("role") or ""] = cloud
+        clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
+                  for group in manifest["sets"] if group["set_id"] in clouds_by_set
+                  and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
     try:
         vocabularies = _production_vocabulary(inputs, candidate, clouds,
                                              {role: {**budgets.get(role, {}), **overrides} for role in bands}, vocabulary)
@@ -248,7 +247,6 @@ def speaker_fit(
     return dict(
         set_id=selected.set_id, take_id=take_id,
         vocabulary=selected_fit["vocabulary"], cloud=selected_fit["cloud"], linearization=linearization,
-        alignment=alignment_evidence(analysis, take.get("quality") or {}, draft,
-                                     load_applied_baseline_profile_state(inputs.applied_profile_path) if inputs.applied_profile_path else None),
+        alignment=alignment_evidence({**take, "analysis": analysis}, sources),
         trim=analysis.get("trim_decision"),
     )

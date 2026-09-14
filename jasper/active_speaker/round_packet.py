@@ -89,8 +89,9 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     return destination
 
 
-def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
-    computed: dict[tuple[str, str], Any] = {}
+def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    computed: dict[str, Any] = {}
+    sources = prescription_sources(inputs) if sources is None else sources
     clouds = design_clouds(inputs, manifest)
     fits = []
     for group in manifest.get("sets", ()):
@@ -98,16 +99,15 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, An
             if not take["selected"] or take.get("role") in (None, "summed"):
                 continue
             take_id = take["take_id"]
-            key = (group["set_id"], take_id)
-            if key not in computed:
+            if take_id not in computed or take["role"] not in computed[take_id]:
                 try:
-                    computed[key] = speaker_fit(inputs, manifest, group["set_id"], take_id,
-                                                clouds_by_set=clouds)["linearization"]
+                    computed[take_id] = speaker_fit(inputs, manifest, group["set_id"], take_id,
+                                                clouds_by_set=clouds, sources=sources)["linearization"]
                 except ROUND_INPUT_ERRORS as exc:
-                    computed[key] = {take["role"]: {"fit": {"reason_summary": {
+                    computed[take_id] = {take["role"]: {"fit": {"reason_summary": {
                         "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or "speaker_fit_unavailable",
                     }}}}
-            for role, proposal in computed[key].items():
+            for role, proposal in computed[take_id].items():
                 if role != take["role"]:
                     continue
                 fit = proposal["fit"]
@@ -194,14 +194,14 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                      "bass": snapshot.get("bass_extension")}},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
                         "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected")},
-                                   **gate_fields(t)} for t in g["takes"]]}
+                                   "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
-              "fits": _fits(inputs, manifest) if purpose == PURPOSE_SPEAKER else [],
-              "alignment": round_alignment(manifest, sources.get("draft") or {}, profile) if purpose == PURPOSE_SPEAKER else [],
+              "fits": _fits(inputs, manifest, sources) if purpose == PURPOSE_SPEAKER else [],
+              "alignment": round_alignment(manifest, sources) if purpose == PURPOSE_SPEAKER else [],
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if purpose == PURPOSE_SPEAKER:
         try:
-            packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources)
+            packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources, packet["alignment"])
         except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
             packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
     atomic_write_json(target / PACKET_FILENAME, packet)
