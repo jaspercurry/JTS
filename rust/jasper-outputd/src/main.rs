@@ -126,7 +126,7 @@ fn main() -> Result<()> {
         BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
     };
 
-    jasper_daemon::notify(NotifyState::Stopping)?;
+    notify_best_effort(NotifyState::Stopping, "outputd.sd_notify_stopping_failed");
     // A config-class fault surfacing after startup exits EX_CONFIG so the unit
     // parks (RestartPreventExitStatus=78) rather than reboot-looping. This
     // includes both late SHM geometry validation and initial final-sink
@@ -185,6 +185,18 @@ fn classify_ring_attach_error(lane: &str, path: &str, e: io::Error) -> anyhow::E
     }
 }
 
+/// Send a systemd notification without letting a failed ping mask the
+/// daemon's real error (`result` in `main`) or abort its run loop.
+/// jasper-fanin's `watchdog.rs::notify_stopping`/heartbeat `run()` use the
+/// same non-fatal match-and-log pattern for the same reason: a `NOTIFY_SOCKET`
+/// hiccup is not a reason to stop mixing or to lose a runtime error's exit
+/// classification.
+fn notify_best_effort(state: NotifyState<'_>, event: &str) {
+    if let Err(e) = jasper_daemon::notify(state) {
+        eprintln!("event={event} detail={e}");
+    }
+}
+
 fn runtime_error_exit_code(error: &anyhow::Error) -> Option<i32> {
     if error.downcast_ref::<ConfigClassError>().is_some()
         || error
@@ -221,7 +233,7 @@ fn run_fake(
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
-            jasper_daemon::notify(NotifyState::Watchdog)?;
+            notify_best_effort(NotifyState::Watchdog, "outputd.sd_notify_watchdog_failed");
             state.mark_watchdog_ping();
             last_watchdog = Instant::now();
         }
@@ -691,7 +703,7 @@ fn run_alsa(
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
-            jasper_daemon::notify(NotifyState::Watchdog)?;
+            notify_best_effort(NotifyState::Watchdog, "outputd.sd_notify_watchdog_failed");
             state.mark_watchdog_ping();
             last_watchdog = Instant::now();
         }
