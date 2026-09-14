@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,7 @@ from .fanin.status import (
     fanin_usbsink_input,
     read_fanin_status,
 )
+from .json_fields import finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -227,14 +227,6 @@ def usbsink_direct_streaming(
     return value if isinstance(value, bool) else None
 
 
-def _finite_float(value: Any) -> float | None:
-    """Coerce ``value`` to a finite float, else ``None`` (rejects bools)."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    result = float(value)
-    return result if math.isfinite(result) else None
-
-
 def usbsink_direct_rms_dbfs(
     fanin_status: dict[str, Any] | None,
 ) -> float | None:
@@ -252,7 +244,7 @@ def usbsink_direct_rms_dbfs(
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
     ):
         return None
-    return _finite_float(lane.get("rms_dbfs"))
+    return finite_float(lane.get("rms_dbfs"))
 
 
 def usbsink_direct_audible(

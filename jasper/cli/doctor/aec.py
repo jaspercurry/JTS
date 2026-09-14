@@ -41,7 +41,7 @@ from ...chip_aec.policy import (
     resolve_chip_aec_dac_gate,
 )
 from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
-from ...json_fields import sha256_file
+from ...json_fields import finite_float, sha256_file
 from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
@@ -657,14 +657,9 @@ def check_aec_bridge_running() -> CheckResult:
 
 def _finite_number(value: object, field: str) -> float:
     """A finite float from untrusted snapshot JSON, else ValueError."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    number = finite_float(value)
+    if number is None:
         raise ValueError(f"{field} is not a number")
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{field} is not representable") from exc
-    if not math.isfinite(number):
-        raise ValueError(f"{field} must be finite")
     return number
 
 
