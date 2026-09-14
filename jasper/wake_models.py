@@ -41,10 +41,12 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from jasper.atomic_io import atomic_write_text
-from jasper.model_downloads import StageAsset
+
+if TYPE_CHECKING:
+    from jasper.model_downloads import StageAsset
 
 
 # Persisted at /var/lib/jasper/wake_model.env. The systemd unit for
@@ -368,6 +370,8 @@ def openwakeword_stage_assets(
     *,
     active_model: str | None = None,
 ) -> list[StageAsset]:
+    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+
     required_by_key = {asset.key for asset in required_openwakeword_assets()}
     required_by_key.update(asset.key for asset in fallback_openwakeword_assets())
     if active_model:
@@ -390,6 +394,8 @@ def openwakeword_stage_assets(
 
 
 def wake_model_stage_assets(*, required: bool) -> list[StageAsset]:
+    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+
     return [
         StageAsset(
             key=entry.key,

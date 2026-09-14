@@ -401,7 +401,7 @@ PY
     flock -u "${enhanced_aec_lock_fd}"
     exec {enhanced_aec_lock_fd}>&-
 
-    # Stage runtime model assets through jasper.model_downloads so the
+    # Stage runtime model assets through jasper.cli.model_downloads so the
     # exists/hash/download/failure-count logic stays unit-testable.
     stage_openwakeword_assets
     stage_wake_models
