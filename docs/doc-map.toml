@@ -15,6 +15,7 @@
 # routing map; this list retains the few top-level snapshots that still
 # have active links or near-term reference value.
 session_artifacts = [
+  "report.md",
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
   # historical decision archaeology, no longer a scan target; current truth
   # is tuning-operator-runbook.md.)

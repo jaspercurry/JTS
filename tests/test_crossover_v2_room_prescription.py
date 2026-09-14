@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.candidate_bank import banked_candidates, find_banked_candidate, publish_authored_candidate
+from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
@@ -49,6 +50,7 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     FILTER_Q_OUT_OF_RANGE,
     ROOM_MEDIAN_MISMATCH,
     ROOM_MEDIAN_UNAVAILABLE,
+    ROOM_COMPOSED_TOLERANCE_DB,
     ROOM_PRESCRIPTION_KIND,
     SIDE_MALFORMED,
     TAPER_VIOLATED,
@@ -62,7 +64,7 @@ from jasper.cli import crossover_prescriber as cli
 from jasper.cli.round_views._common import default_out
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
-from tests.run_manifest_fixture import write_manifest
+from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 
@@ -276,6 +278,83 @@ def test_the_room_door_refuses_by_slug(reason, document, median_knobs):
     with pytest.raises(RoomPrescriptionRefused) as excinfo:
         _read(_document(**document), _room_median(**median_knobs))
     assert excinfo.value.reason == reason
+
+
+@pytest.mark.parametrize("sides", [("mono",), ("left", "right")])
+def test_taper_refusal_carries_every_bin_and_filter_contribution(sides):
+    filters = [{"freq": 277.0, "q": 1.0, "gain": -3.0}, {"freq": 282.0, "q": 8.0, "gain": -2.0}]
+    raw = _document(sides={side: filters for side in sides})
+    with pytest.raises(RoomPrescriptionRefused) as refused:
+        read_room_prescription(raw, room_median=read_room_median(_room_median()),
+                               room_median_sha256=MEDIAN_SHA256, round_id="round-7", sides=sides)
+    assert refused.value.reason == TAPER_VIOLATED
+    evidence = refused.value.evidence
+    assert evidence["tolerance_db"] == ROOM_COMPOSED_TOLERANCE_DB
+    assert evidence["filters"]
+    assert {row["side"] for row in evidence["bins"]} == set(sides)
+    assert any(row["freq_hz"] == CEILING_HZ for row in evidence["bins"])
+    for row in evidence["bins"]:
+        assert max(row["cut_floor_db"] - row["composed_db"], row["composed_db"] - row["boost_cap_db"]) > evidence["tolerance_db"]
+        assert row["composed_db"] == pytest.approx(sum(f["response_db"] for f in row["filters"]))
+        assert [{k: f[k] for k in ("freq", "q", "gain")} for f in row["filters"]] == filters
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview):
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    round_dir = bank_seat_round(tmp_path)
+    groups = [manifest_set([], set_id=f"set-{i}") for i in range(2)]
+    for index, group in enumerate(groups):
+        group["capture_basis"]["candidate_id"] = f"candidate-{index}"
+    write_manifest(round_dir, program="room", groups=groups)
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                "rationale": "room", "sections": {"room": _document()}}))
+    assert cli.main(["judge", str(path), "--round", str(round_dir), "--root", str(root),
+                     *(["--preview"] if preview else [])]) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["code"], answer["section"]) == ("set_required", "room")
+    assert answer["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}"} for i in range(2)]
+
+
+@pytest.mark.parametrize("filters,code", [
+    ([], None), (ACCEPTED_FILTERS, None), ([{"freq": 277.0, "q": 1.0, "gain": -6.0}], None),
+    ([{"freq": NULL_HZ, "q": 1.0, "gain": 3.0}], None),
+    ([{"freq": WIDE_SPREAD_HZ, "q": 3.0, "gain": -10.0}], None),
+    ([{"freq": MODE_HZ, "q": 0.0, "gain": -1.0}], FILTER_Q_OUT_OF_RANGE),
+    ([{"freq": MODE_HZ, "q": 1.0, "gain": 20000.0}], "filter_malformed"),
+])
+def test_room_preview_reports_margins_and_residual_without_banking(tmp_path, capsys, filters, code):
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    round_dir = bank_seat_round(tmp_path)
+    median = _room_median()
+    median["median_db"] = [db - 30.0 for db in median["median_db"]]
+    (round_dir / "room.json").write_text(json.dumps({"median": median}))
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                "rationale": "room", "sections": {"room": _document(
+                                    filters=filters, sha256=room_median_sha256(median))}}))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert cli.main(["judge", str(path), "--round", str(round_dir), "--root", str(root), "--preview"]) == (1 if code else 0)
+    answer = json.loads(capsys.readouterr().out)
+    assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    if code:
+        assert answer["code"] == code
+        return
+    assert answer["ok"] is True and answer["banked"] is answer["adopted"] is False
+    preview = answer["preview"]
+    response = 20 * np.log10(np.abs(chain_response(filters, np.array(preview["freqs_hz"]))))
+    side = preview["sides"]["mono"]
+    np.testing.assert_allclose(side["composed_db"], response, atol=1e-10)
+    np.testing.assert_allclose(side["cut_margin_db"], response - preview["cut_floor_db"], atol=1e-10)
+    np.testing.assert_allclose(side["boost_margin_db"], preview["boost_cap_db"] - response, atol=1e-10)
+    value = read_room_median(median)
+    assert preview["residual"]["freqs_hz"] == median["freqs_hz"]
+    assert preview["residual"]["level_reference_db"] == value.level_reference_db
+    np.testing.assert_allclose(preview["residual"]["sides"]["mono"],
+                               value.median_db + 20 * np.log10(np.abs(chain_response(filters, value.freqs_hz))), atol=1e-10)
 
 
 def test_an_accepted_set_becomes_the_candidates_room_peqs():

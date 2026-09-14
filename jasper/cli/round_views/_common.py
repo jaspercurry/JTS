@@ -255,6 +255,11 @@ def resolve_set(
 ) -> SetTakes:
     """Resolve the executor's set without rebuilding its identity (ADR-0299)."""
     sets = read_run_manifest(inputs, manifest=manifest)["sets"]
+    if set_id is None and len(sets) > 1:
+        raise RoundSetRefused("set_required", sets=[
+            {"set_id": row["set_id"], "candidate_id": row["capture_basis"].get("candidate_id")}
+            for row in sets
+        ])
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
     if len(matches) != 1:
         raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])
