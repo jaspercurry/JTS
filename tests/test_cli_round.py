@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import errno
 import json
 import asyncio
 from copy import deepcopy
@@ -364,6 +365,29 @@ def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys)
     assert not opener.requests
 
 
+@pytest.mark.parametrize("path_owner", ["topology_path", "baseline_profile_state_path", "household_mic_path", "seat_level_reference_state_path"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypatch, capsys):
+    path = getattr(_run_request, path_owner)()
+    original_open = Path.open
+
+    def open_state(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_state)
+    facts = Mock(side_effect=AssertionError("preflight must not read missing facts"))
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    opener = _opener()
+    code, body = _run(["run", "--program", "speaker", *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
+    assert code == cli.EXIT_REFUSED and body["code"] == "local_state_unreadable"
+    assert body["detail"]["evidence"] == {"path": str(path)}
+    assert body["next_action"]["id"] == "run_as_root"
+    facts.assert_not_called()
+    assert not opener.requests
+
+
 @pytest.mark.parametrize("repeats", [None, 1, 2])
 def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsys, repeats):
     from collections import Counter
@@ -386,6 +410,23 @@ def _run_opener(capture):
     opener = _opener()
     opener.pages[wc.STATUS_PATH] = json.dumps({"crossover_v2": {}, "capture": {"kind": "crossover_v2:session", "session_id": "run-1", **capture}})
     return opener
+
+
+@pytest.mark.parametrize("status", ["awaiting_join", "running", *sorted(wc.SESSION_ENDED_STATUSES)])
+def test_stop_cancels_only_live_runs(status, monkeypatch, capsys):
+    opener = _run_opener({"status": status})
+    answer = {"capture": {"session_id": "run-1", "status": "stopping"}}
+    opener.pages[wc.CAPTURE_CANCEL_PATH] = json.dumps(answer)
+    code, body = _run(["stop", "--run", "run-1"], opener, monkeypatch, capsys)
+    assert opener.requests[0].full_url.endswith(wc.STATUS_PATH)
+    if status in wc.SESSION_ENDED_STATUSES:
+        assert code == cli.EXIT_REFUSED and body["code"] == "run_not_live"
+        assert body["detail"]["http"] == 409
+        assert not opener.posts()
+    else:
+        assert code == cli.EXIT_OK and body == answer
+        assert len(opener.posts()) == 1
+        assert json.loads(opener.posted_to(wc.CAPTURE_CANCEL_PATH)[0].data) == {"reason": "user_stopped"}
 
 
 @pytest.mark.parametrize("joining", [True, False])
@@ -416,7 +457,7 @@ def test_status_reads_progress_once(monkeypatch, capsys):
     assert len(opener.requests) == 1
 
 
-@pytest.mark.parametrize("verb", ["status", "placed", "wait"])
+@pytest.mark.parametrize("verb", ["status", "placed", "stop", "wait"])
 def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, capsys):
     opener = _run_opener({"status": "running"})
     code, body = _run([verb, "--run", "old"], opener, monkeypatch, capsys)

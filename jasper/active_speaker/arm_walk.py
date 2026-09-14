@@ -60,7 +60,7 @@ from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READ
 from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_USER_STOPPED
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .poll_backoff import next_poll_s
-from .wizard_client import STATUS_PATH, WizardClient
+from .wizard_client import CAPTURE_CANCEL_PATH as CAPTURE_CANCEL_PATH, STATUS_PATH, WizardClient
 
 logger = logging.getLogger(__name__)
 
@@ -422,11 +422,6 @@ class TurntableMover:
 # --------------------------------------------------------------------------- #
 # the correction wizard, as a Session
 # --------------------------------------------------------------------------- #
-
-#: Stops the box's own v2 capture session (``correction_handlers._handle_crossover_capture_cancel``).
-#: Not under ``v2/``: it is the generic capture-slot verb, the same route
-#: ``crossover/main.js``'s Stop button posts.
-CAPTURE_CANCEL_PATH = "/sound/speaker/crossover/capture-cancel"
 
 #: The refusal ``correction_handlers._handle_crossover_capture_cancel`` maps a
 #: stale cancel to (HTTP 400, ``{"ok": false, "error": "...already stopped..."}``)
