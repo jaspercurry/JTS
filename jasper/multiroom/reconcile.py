@@ -45,10 +45,10 @@ from ..service_units import (
     OUTPUTD_SERVICE,
     run_systemctl,
 )
-from ..source_intent import (
+from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
-from ..source_intent import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
+from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
