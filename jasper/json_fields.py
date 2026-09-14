@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Small shared field helpers for versioned JSON artifacts.
-
-Artifact modules keep ownership of their schemas and error classes. This leaf
-centralizes the rules they all repeat: the scalar/container checks used while
-turning an untyped JSON mapping into a domain model, and the three stamps
-those artifacts carry — a UTC timestamp, a file digest, a canonical-JSON
-fingerprint. Loading and publishing an artifact stays ``atomic_io``'s job.
-"""
+"""Shared field helpers for versioned JSON artifacts."""
 
 from __future__ import annotations
 
@@ -30,6 +23,10 @@ _HASH_CHUNK_BYTES = 1 << 16
 
 #: The one Zulu-stamp literal in the tree, shared by utc_now_iso/parse_utc_iso.
 _ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def issue(severity: str, code: str, message: str) -> dict[str, str]:
+    return {"severity": severity, "code": code, "message": message}
 
 
 def finite_float(value: Any) -> float | None:

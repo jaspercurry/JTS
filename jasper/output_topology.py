@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
+from .json_fields import issue as _issue
 from .log_event import log_event
 from .transition_log import TransitionLog
 from .audio_hardware.dac import (
@@ -126,10 +127,6 @@ CROSS_CHILD_GROUP_CODE = "speaker_group_spans_child_devices"
 
 class OutputTopologyError(ValueError):
     """Raised when output topology JSON has an unsupported shape."""
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 _JSON_FIELDS = JsonFields(OutputTopologyError)
