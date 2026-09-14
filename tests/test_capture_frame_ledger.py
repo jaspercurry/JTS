@@ -177,12 +177,10 @@ def test_the_analyzer_alone_cannot_see_one_lost_render_quantum():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_capture_gap_is_reported_even_though_every_count_agrees():
-    """The 2026-08-03 shape. The skipped quantum was never handed to anyone, so
-    worklet, encoder and host all agree — a counts-only ledger would call this
-    balanced, which is exactly why the gap is a separate question."""
+@pytest.mark.parametrize("gap_keys", [("capture_gaps", "capture_gap_frames"), ("block_gaps", "block_gap_frames")])
+def test_a_capture_gap_is_reported_even_though_every_count_agrees(gap_keys):
     ledger = reconcile_capture_frames(
-        _page_report(480_000, capture_gaps=1, capture_gap_frames=RENDER_QUANTUM),
+        {"frames": 480_000, "encoded_frames": 480_000, **dict(zip(gap_keys, (1, RENDER_QUANTUM)))},
         received_frames=480_000,
     )
     assert ledger.balanced is True

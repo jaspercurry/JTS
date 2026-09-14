@@ -47,7 +47,6 @@ class CaptureProvenance:
     session_volume_db: float | None = None
     graph_config_path: str | None = None
     graph_fingerprint: str | None = None
-    speaker_candidate_id: str | None = None
     stimulus_program_id: str | None = None
     stimulus_phase: str | None = None
     stimulus_wav_sha256: str | None = None
@@ -63,11 +62,6 @@ class CaptureProvenance:
                 "kind": self.graph_kind,
                 "config_path": self.graph_config_path,
                 "fingerprint": self.graph_fingerprint,
-                **(
-                    {"speaker_candidate_id": self.speaker_candidate_id}
-                    if self.speaker_candidate_id
-                    else {}
-                ),
                 **({"config": dict(self.graph_config)} if self.graph_config is not None else {}),
             },
             "stimulus": {
@@ -132,7 +126,6 @@ async def record_capture_provenance(
     phase: str,
     artifact: Any = None,
     read_volume_plan: Callable[[], Any] | None = None,
-    speaker_candidate_id: str | None = None,
 ) -> None:
     """Observe, and hand the result to ``recorder``. Never-break-a-capture belt: deliberately
     BLIND to ``Exception``; ``BaseException`` still propagates (a cancelled measurement
@@ -152,7 +145,6 @@ async def record_capture_provenance(
                 phase=phase,
                 artifact=artifact,
                 volume_plan=volume_plan,
-                speaker_candidate_id=speaker_candidate_id,
             )
         )
     except Exception:  # noqa: BLE001 - see the docstring: blind is the contract
@@ -174,7 +166,6 @@ async def observe_capture_provenance(
     phase: str,
     artifact: Any = None,
     volume_plan: Any = None,
-    speaker_candidate_id: str | None = None,
 ) -> CaptureProvenance:
     """Read the live context for the stimulus about to play. Call as late as possible -- for
     the program branch, AFTER the routing graph loads, inside the same writer lock:
@@ -247,7 +238,6 @@ async def observe_capture_provenance(
         session_volume_db=session_volume_db,
         graph_config_path=config_path,
         graph_fingerprint=json_fingerprint(graph) if graph is not None else None,
-        speaker_candidate_id=speaker_candidate_id,
         graph_config=graph,
         stimulus_program_id=program_id,
         stimulus_phase=phase,

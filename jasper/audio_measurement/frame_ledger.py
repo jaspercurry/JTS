@@ -122,6 +122,7 @@ def reconcile_capture_frames(
         received_frames=max(0, int(received_frames)),
         declared_frames=_count(report.get(REPORT_KEY_FRAMES)),
         encoded_frames=_count(report.get(REPORT_KEY_ENCODED_FRAMES)),
-        capture_gaps=_count(report.get(REPORT_KEY_CAPTURE_GAPS)),
-        capture_gap_frames=_count(report.get(REPORT_KEY_CAPTURE_GAP_FRAMES)),
+        # Immutable older takes retain the original recorder key names.
+        capture_gaps=_count(report.get(REPORT_KEY_CAPTURE_GAPS, report.get("block_gaps"))),
+        capture_gap_frames=_count(report.get(REPORT_KEY_CAPTURE_GAP_FRAMES, report.get("block_gap_frames"))),
     )

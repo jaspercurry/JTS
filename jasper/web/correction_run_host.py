@@ -38,10 +38,10 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         record = manifest.capture_record(record)
         program = getattr(capture, "program", None) or record.get("program")
         fields: dict[str, Any] = {}
-        result = None
+        result: Any = KeyError("program")
         if program is not None:
-            phase = conductor._phase_of_index(record.get("capture_index", record["index"]))
             try:
+                phase = conductor._phase_of_index(record.get("capture_index", record["index"]))
                 result = analyze_capture({**record, "program": program}, capture)
                 fields = evidence.get("capture_provenance", {}).get(phase, {})
             except (ValueError, KeyError, OSError) as exc:
