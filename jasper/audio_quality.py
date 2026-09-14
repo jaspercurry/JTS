@@ -19,9 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_text
+from jasper.paths import resolve_state_path
 
 DEFAULT_CONVERTER = "samplerate_medium"
 STATE_ENV_KEY = "JASPER_ALSA_RATE_CONVERTER"
+STATE_FILE_ENV_KEY = "JASPER_AUDIO_QUALITY_FILE"
+DEFAULT_STATE_FILE = "/var/lib/jasper/audio_quality.env"
 VALID_CONVERTERS = ("samplerate_medium", "samplerate_best")
 
 _OPTION_META: dict[str, dict[str, str]] = {
@@ -34,16 +37,6 @@ _OPTION_META: dict[str, dict[str, str]] = {
         "summary": "Maximum ultrasonic-band fidelity, higher CPU.",
     },
 }
-
-
-def _state_path(path: str | os.PathLike[str] | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get(
-            "JASPER_AUDIO_QUALITY_FILE",
-            "/var/lib/jasper/audio_quality.env",
-        ),
-    )
 
 
 def _asound_path(path: str | os.PathLike[str] | None = None) -> Path:
@@ -105,7 +98,9 @@ def read_requested_converter(
     path: str | os.PathLike[str] | None = None,
 ) -> str:
     """Read the persisted requested converter, defaulting to Medium."""
-    raw = _read_env_value(_state_path(path))
+    raw = _read_env_value(
+        resolve_state_path(path, STATE_FILE_ENV_KEY, DEFAULT_STATE_FILE)
+    )
     if raw is None:
         return DEFAULT_CONVERTER
     return normalize_converter(raw)
@@ -172,7 +167,11 @@ def write_requested_converter(
     path: str | os.PathLike[str] | None = None,
 ) -> str:
     canonical = normalize_converter(converter)
-    atomic_write_text(_state_path(path), _converter_env_text(canonical), mode=0o644)
+    atomic_write_text(
+        resolve_state_path(path, STATE_FILE_ENV_KEY, DEFAULT_STATE_FILE),
+        _converter_env_text(canonical),
+        mode=0o644,
+    )
     return canonical
 
 
@@ -191,7 +190,7 @@ def apply_requested_converter(
     deploy pointed at an unapplied setting.
     """
     canonical = normalize_converter(converter)
-    dst = _state_path(state_path)
+    dst = resolve_state_path(state_path, STATE_FILE_ENV_KEY, DEFAULT_STATE_FILE)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_name = ""
     try:
