@@ -901,8 +901,6 @@ code = [
   "deploy/bin/jasper-camilla-topology-gate",
   "deploy/bin/jasper-camilla-crossover-guard",
   "deploy/lib/jasper-camilla-guard-common.sh",
-  "scripts/multiroom-spike.sh",
-  "scripts/multiroom-spike-measure.py",
 ]
 docs = [
   "docs/dumb-endpoint-bringup.md",

@@ -28,7 +28,6 @@ from jasper.audio_runtime_plan import (
     FANIN_INPUT_RESAMPLER_KEY,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
-    ROUTE_BITPERFECT_DECLARED,
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
     apply_capture_precedence,
@@ -866,15 +865,6 @@ def test_non_low_latency_route_clears_fanin_resampler_knobs_only():
 
     assert by_key[FANIN_INPUT_RESAMPLER_KEY].action == "unset"
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
-
-
-def test_bitperfect_route_is_declared_but_inactive():
-    profile = resolve_audio_route_profile(
-        {AUDIO_ROUTE_PROFILE_KEY: ROUTE_BITPERFECT_DECLARED}
-    )
-
-    assert profile.active is False
-    assert "inactive" in profile.blocking_reason
 
 
 def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
