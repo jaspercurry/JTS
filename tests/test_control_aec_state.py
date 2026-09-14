@@ -963,11 +963,10 @@ def _aec_endpoints_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
 
 
 def _doctor_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
-    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     monkeypatch.setattr(
         aec,
-        "_wake_leg_setting",
-        lambda key, default: {"JASPER_WAKE_LEG_CHIP_AEC": True}.get(key, default),
+        "_aec_mode_env",
+        lambda: {"JASPER_AEC_MODE": "auto", "JASPER_WAKE_LEG_CHIP_AEC": "1"},
     )
     return aec._audio_profile_status_for_doctor(
         bridge_active=True,
