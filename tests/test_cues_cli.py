@@ -4,12 +4,19 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 import pytest
 
 from jasper.cues import cli, factory
-from jasper.cues.generator import TTSResult
+from jasper.cues.generator import (
+    CHIME_MODEL,
+    CHIME_VOICE_LABEL,
+    TTSResult,
+    cue_filename,
+)
+from jasper.cues.registry import find as find_cue
 
 
 class _FakeBackend:
@@ -107,7 +114,7 @@ def test_regenerate_unknown_cue_returns_error(cli_env, capsys):
     assert "definitely_not_a_real_cue" in captured.err
 
 
-def test_regenerate_without_api_key_bakes_chime_cues(tmp_path, monkeypatch, capsys):
+def test_regenerate_without_api_key_bakes_chime_cues(tmp_path, monkeypatch):
     """With no provider configured anywhere (a genuinely fresh box), regen
     must still produce audible cue WAVs via the provider-free chime
     backend rather than fail (AGENTS.md non-negotiable 6, issue #4814)."""
@@ -128,9 +135,13 @@ def test_regenerate_without_api_key_bakes_chime_cues(tmp_path, monkeypatch, caps
     )
     code = cli.main(["regenerate"])
     assert code == 0
-    captured = capsys.readouterr()
-    assert "wrote spend_cap_reached" in captured.out
-    assert "no TTS provider configured" in captured.err
+
+    cue = find_cue("spend_cap_reached")
+    expected_path = os.path.join(
+        str(tmp_path),
+        cue_filename(cue, "test.local", CHIME_VOICE_LABEL, CHIME_MODEL),
+    )
+    assert os.path.isfile(expected_path)
 
 
 # --- play ---

@@ -25,7 +25,7 @@ import urllib.parse
 from collections.abc import Callable
 from typing import Any
 
-from ..config import Config
+from ..config import Config, VoiceProviderNotConfigured
 from ..env_load import load_env_files
 from ..log_event import log_event
 from .generator import (
@@ -148,35 +148,46 @@ def build_cue_tts_backend(
     return None, ""
 
 
-def _warn_structured(message: str) -> None:
+def _warn_structured(message: str, *, err: str = "") -> None:
     """Default `warn` sink: one structured event on the caller's logger.
 
     The daemon's boot-park path has no console to write prose to — its output
     is the journal — so the degraded-backend warning has to be greppable
-    there. `jasper-cues` overrides this with its own stderr printer.
+    there. `jasper-cues` overrides this with its own stderr printer. `err`
+    is the caught exception's type name, carried as its own field rather
+    than folded into `detail` prose, so a dashboard can filter on it.
     """
     log_event(
-        logger, "cue.factory.degraded", detail=message, level=logging.WARNING,
+        logger, "cue.factory.degraded", detail=message, err=err,
+        level=logging.WARNING,
     )
 
 
 def build_env_cue_manager(
     *,
     tts_playout: Any | None = None,
-    warn: Callable[[str], None] = _warn_structured,
+    warn: Callable[..., None] = _warn_structured,
 ) -> AudioCueManager:
     """Build a cue manager from the environment, with no usable Config needed.
 
     Shared by `jasper-cues` and the voice daemon's boot-park cue
     (`daemon_main._announce_park_at_boot`). Both run where
-    `Config.from_env()` can raise — a missing provider key, or no provider at
-    all (`VoiceProviderNotConfigured` is a RuntimeError) — and both still
-    need cue audio, so that raise degrades to a `ChimeTTSGenerator`-backed
-    manager rather than a key-less one: a genuinely fresh box gets a chime
-    instead of the silence non-negotiable 6 forbids (issue #4814).
-    `regenerate()` bakes every registered cue with the chime; configuring a
-    provider later computes a different cache hash and re-bakes real speech
-    over it.
+    `Config.from_env()` can raise `VoiceProviderNotConfigured` — no provider
+    chosen yet, or its key is transiently unreadable (a secrets file read
+    without sudo comes back empty the same way `_env(required=True)` sees a
+    truly-unset var) — and both still need cue audio, so ONLY that specific
+    exception degrades to a `ChimeTTSGenerator`-backed manager. A chime only
+    ever fills a hole (`AudioCueManager.regenerate`): a box with real spoken
+    WAVs already cached keeps them even if this fires from a transient
+    misread, and configuring a provider later re-bakes real speech into any
+    hole the chime filled (issue #4814; adversarial follow-up on the same
+    issue closed the "wipes real cues" and "any other config error" gaps).
+
+    Any OTHER `RuntimeError` (a provider IS chosen but some other config
+    value is invalid, e.g. `JASPER_WAKE_THRESHOLD` out of range) keeps the
+    pre-chime behavior: no backend, so `regenerate()` raises and callers see
+    a clean non-zero exit with no file touched — substituting a chime there
+    would silently mask a real misconfiguration instead of surfacing it.
 
     Auto-loads /etc/jasper/jasper.env and /var/lib/jasper/voice_provider.env
     so install.sh's `jasper-cues regenerate` invocation sees the same
@@ -194,10 +205,21 @@ def build_env_cue_manager(
         backend, voice = build_cue_tts_backend(cfg)
         sounds_dir = cfg.sounds_dir
         management_url = cfg.management_url
+    except VoiceProviderNotConfigured as e:
+        warn(
+            "no TTS provider configured; cue audio is a local chime, not "
+            "spoken text, until one is set up",
+            err=type(e).__name__,
+        )
+        backend = ChimeTTSGenerator()
+        voice = CHIME_VOICE_LABEL
+        sounds_dir = os.environ.get(
+            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+        )
+        management_url = os.environ.get(
+            "JASPER_MANAGEMENT_URL", "https://jts.local",
+        )
     except RuntimeError as e:
-        # No provider chosen yet, or the active one's key is missing —
-        # list/regen/park playback still need to work off the chime
-        # fallback below.
         warn(f"TTS backend disabled ({e})")
         backend = None
         voice = ""
@@ -207,13 +229,6 @@ def build_env_cue_manager(
         management_url = os.environ.get(
             "JASPER_MANAGEMENT_URL", "https://jts.local",
         )
-    if backend is None:
-        warn(
-            "no TTS provider configured; cue audio is a local chime, not "
-            "spoken text, until one is set up"
-        )
-        backend = ChimeTTSGenerator()
-        voice = CHIME_VOICE_LABEL
     hostname = urllib.parse.urlparse(management_url).hostname or "this speaker"
     return AudioCueManager(
         sounds_dir=sounds_dir,

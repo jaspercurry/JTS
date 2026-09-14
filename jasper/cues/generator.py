@@ -41,6 +41,7 @@ import wave
 from dataclasses import dataclass
 from typing import Callable, Collection, Protocol
 
+from ..voice.earcons import LISTENING_CHIRP_RECIPE, render_recipe
 from .registry import CueDef
 
 logger = logging.getLogger(__name__)
@@ -460,13 +461,6 @@ class _RetryableTTSError(Exception):
 CHIME_MODEL = "chime-v1"
 CHIME_VOICE_LABEL = "chime"
 
-# A bright triad, chosen only to sound unmistakably like a tone and not
-# like a voice or a phone/OS notification. synthesise() ignores its text
-# argument — every cue gets the identical chord.
-_CHIME_TONES_HZ = (784.0, 987.77, 1174.66)  # G5, B5, D6
-_CHIME_DURATION_SEC = 0.8
-_CHIME_PEAK_AMPLITUDE = 0.5  # leaves headroom under the WAV's int16 ceiling
-
 
 class ChimeTTSGenerator:
     """Provider-free fallback: a short deterministic chime, not speech.
@@ -479,6 +473,11 @@ class ChimeTTSGenerator:
     provider is configured, its own model name wins the cache key
     (`backend_model`) and `write_cue` re-bakes real speech over the
     chime on the next regenerate.
+
+    The chime itself is `jasper.voice.earcons`'s already-designed
+    "listening chirp" (an ascending-fifth chime with a shimmer tail),
+    not a reimplementation: one sine+envelope synthesizer for this
+    concern, not a third one.
     """
 
     @property
@@ -487,27 +486,7 @@ class ChimeTTSGenerator:
 
     def synthesise(self, text: str) -> TTSResult:
         del text  # a chime carries no words
-        return TTSResult(pcm_24k=_render_chime())
-
-
-def _render_chime() -> bytes:
-    """~0.8 s three-tone chord at 24 kHz mono 16-bit PCM.
-
-    Raised-cosine windowed so the waveform starts and ends at zero (no
-    click). Cheap enough to render fresh per call — the manager caches
-    the resulting WAV on disk the same as any other cue.
-    """
-    import numpy as np  # lazy: import cost; only reached with no TTS provider configured
-
-    n = int(round(_CHIME_DURATION_SEC * WAV_RATE))
-    t = np.arange(n, dtype=np.float64) / WAV_RATE
-    envelope = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / (n - 1))
-    tone = np.zeros(n, dtype=np.float64)
-    for freq_hz in _CHIME_TONES_HZ:
-        tone += np.sin(2.0 * np.pi * freq_hz * t)
-    tone /= len(_CHIME_TONES_HZ)
-    pcm = np.clip(tone * envelope * _CHIME_PEAK_AMPLITUDE, -1.0, 1.0)
-    return (pcm * 32767.0).astype(np.int16).tobytes()
+        return TTSResult(pcm_24k=render_recipe(LISTENING_CHIRP_RECIPE))
 
 
 # --- Public write entry point ---
