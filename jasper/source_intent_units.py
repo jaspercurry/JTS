@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Source-intent reconcile unit name and timeout budget — a stdlib-only leaf.
+"""Source-intent reconcile unit name and timeout budget — a near-stdlib leaf (stdlib plus jasper.service_units).
 
 ``jasper.source_intent`` imports asyncio (for its Bluetooth D-Bus calls),
 ``jasper.install_profile``, and ``jasper.local_sources`` for its full
@@ -182,7 +182,7 @@ _MAX_ENSURE_ACTIVE_TRANSITIONS = len(_WORST_CASE_ORDINARY_START_ACTIONS)
 # dependencies. Equals sum(1 if lifecycle.source == Source.USBSINK else
 # len(lifecycle.runtime_units) for lifecycle in local_source_lifecycles())
 # over the fixed 4-source registry (airplay 2, spotify 1, bluetooth 3, usbsink
-# 1) — frozen rather than computed so this leaf stays stdlib-only (no
+# 1) — frozen rather than computed so this leaf stays near-stdlib (no
 # jasper.local_sources/jasper.music_sources import). A registry change that
 # moves this number is caught by
 # test_source_intent_systemd.py::test_max_failed_reset_transitions_matches_local_source_registry.
