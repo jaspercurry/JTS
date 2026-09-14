@@ -68,6 +68,9 @@ from pathlib import Path
 import numpy as np
 
 from jasper.atomic_io import atomic_write_bytes
+from jasper.control.restart_broker import (
+    _DEFAULT_EXEC_TIMEOUT_SEC as _SYSTEMCTL_TIMEOUT_SEC,
+)
 from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
@@ -242,10 +245,11 @@ def require_root() -> None:
 
 
 def systemctl(action: str, unit: str = VOICE_UNIT) -> None:
-    """Run `systemctl <action> <unit>`. Raises on non-zero exit."""
+    """Run `systemctl <action> <unit>`. Raises on non-zero exit or if
+    the call doesn't complete within _SYSTEMCTL_TIMEOUT_SEC."""
     cmd = ["systemctl", action, unit]
     logger.info("running: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=_SYSTEMCTL_TIMEOUT_SEC)
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +651,10 @@ def main(argv: list[str] | None = None) -> int:
                 # responding to wake until the operator notices.
                 try:
                     systemctl("start")
-                except subprocess.CalledProcessError as e:
+                except (
+                    subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired,
+                ) as e:
                     # Don't mask the original error; log + continue. The
                     # operator can `sudo systemctl start jasper-voice`
                     # manually if this fails.

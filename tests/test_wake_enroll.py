@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import subprocess
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,6 +196,21 @@ async def test_run_session_refuses_while_muted_before_audio_imports(
 
     with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
         await wake_enroll.run_session(argparse.Namespace(mic_mute_path=mute_path))
+
+
+# ---------------------------------------------------------------------------
+# systemctl() — bounded so a wedged manager can't hang the CLI forever.
+# ---------------------------------------------------------------------------
+
+
+def test_systemctl_raises_on_hung_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _hung_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(wake_enroll.subprocess, "run", _hung_run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        wake_enroll.systemctl("start")
 
 
 # ---------------------------------------------------------------------------
