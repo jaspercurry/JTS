@@ -12,6 +12,7 @@ into the answer that UI, control, and multiroom gates consume.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,6 +21,7 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
+from .candidate_bank import bank_directory_stamps
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
@@ -332,6 +334,22 @@ def _layer_a_differences(
     ][:_LAYER_A_DIFFERENCE_LIMIT]
 
 
+_applied_candidate_cache: tuple[tuple[Any, ...], Any] | None = None
+
+
+def _status_applied_candidate(topology: Any, applied_profile: Mapping[str, Any]) -> Any:
+    from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
+
+    global _applied_candidate_cache
+    key = (topology, json.dumps(applied_profile, sort_keys=True), bank_directory_stamps())
+    cached = _applied_candidate_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    candidate = candidate_from_applied_profile(topology, applied_profile)
+    _applied_candidate_cache = (key, candidate)
+    return candidate
+
+
 def _applied_layer_a_binding(
     topology: Any,
     *,
@@ -344,7 +362,6 @@ def _applied_layer_a_binding(
     from .baseline_profile import active_layer_a_fingerprint  # lazy: baseline readers import setup status
     from jasper.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
     from .candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
-    from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: graph compilation imports NumPy
     from jasper.sound.settings import saved_sound_layers  # lazy: household EQ imports NumPy
 
@@ -383,7 +400,7 @@ def _applied_layer_a_binding(
             }
         playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
         declaration = load_tuning_declaration(topology, playback_device=playback_device)
-        candidate = candidate_from_applied_profile(topology, applied_profile)
+        candidate = _status_applied_candidate(topology, applied_profile)
         preference_filters, trim_db = saved_sound_layers()
         expected_yaml = compile_tuning_graph(declaration, candidate=candidate,
             preference_filters=preference_filters, output_trim_db=trim_db)

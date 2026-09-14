@@ -6,35 +6,47 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
 from .bundles import sessions_dir
-from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .candidate_bank import CandidateBankRefusal, bank_directory_stamps, find_banked_candidate
 from .crossover_v2.round_inputs import iter_round_sessions, round_artifact_dir
 from .run_manifest import RUN_MANIFEST_FILENAME
 
 
 def _manifest_path(state: Mapping[str, Any]) -> Path | None:
+    candidate = state.get("candidate")
+    evidence = state.get("evidence")
+    return _cached_manifest_path(
+        str(candidate.get("fingerprint") or "") if isinstance(candidate, Mapping) else "",
+        str(evidence.get("bundle_session_id") or "") if isinstance(evidence, Mapping) else "",
+        str(state.get("session_id") or ""), bank_directory_stamps(sessions_dir()),
+    )
+
+
+@lru_cache(maxsize=1)
+def _cached_manifest_path(
+    fingerprint: str, bundle_id: str, session_id: str,
+    stamps: tuple[tuple[Path, int | None], ...],
+) -> Path | None:
     # A recovery VERIFY has its own one-pose manifest. The candidate's original
     # run still owns the promise after that re-arm (#2098).
-    candidate = state.get("candidate")
-    if isinstance(candidate, Mapping) and candidate.get("fingerprint"):
+    if fingerprint:
         try:
-            banked = find_banked_candidate(str(candidate["fingerprint"]))
+            banked = find_banked_candidate(fingerprint, root=stamps[0][0])
             return banked.path.with_name(RUN_MANIFEST_FILENAME)
         except CandidateBankRefusal:
             pass
-    evidence = state.get("evidence")
-    bundle_id = evidence.get("bundle_session_id") if isinstance(evidence, Mapping) else None
-    if not isinstance(bundle_id, str) or not bundle_id or Path(bundle_id).name != bundle_id:
+    if not bundle_id or Path(bundle_id).name != bundle_id:
         return None
-    live = sessions_dir() / bundle_id
+    live = stamps[0][0] / bundle_id
     bundles = (live,) if live.is_dir() else iter_round_sessions(live)
     for bundle in bundles:
         if bundle.name == bundle_id:
             directory, _ = round_artifact_dir(bundle)
-            if directory is not None and directory.name == state.get("session_id"):
+            if directory is not None and directory.name == session_id:
                 return directory / RUN_MANIFEST_FILENAME
     return None
 

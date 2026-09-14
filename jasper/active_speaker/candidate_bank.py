@@ -113,6 +113,17 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
     return (root, root.parent / paired) if paired else (root,)
 
 
+def bank_directory_stamps(root: Path | None = None) -> tuple[tuple[Path, int | None], ...]:
+    stamps = []
+    for directory in _candidate_roots(_bank_root(root)):
+        try:
+            stamp: int | None = directory.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        stamps.append((directory, stamp))
+    return tuple(stamps)
+
+
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
     """The bounded discovery listing, with each candidate verified."""
     return _verified_candidates(candidate_artifact_paths(_bank_root(root)))

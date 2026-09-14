@@ -3175,12 +3175,29 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
         state["session_id"] = "recovery"
         write_asked_poses(tmp_path, state, [{"deg": 0}])
         monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
-                            lambda fingerprint: SimpleNamespace(path=original / "candidate.json"))
+                            lambda fingerprint, **kw: SimpleNamespace(path=original / "candidate.json"))
     v2state.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2grade.GRADE_SCOPE_MARK
     assert grade["complete"] is complete
     assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
+
+
+def test_coverage_cache_tracks_bank_moves_and_reads_fresh_manifests(tmp_path, monkeypatch):
+    import shutil
+    from jasper.active_speaker.grade_coverage import asked_beyond_mark
+    from tests.run_manifest_fixture import write_asked_poses
+
+    state = _applied_state()
+    root = write_asked_poses(tmp_path, state, [{"deg": 0}])
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
+    assert asked_beyond_mark(state) is False
+    write_asked_poses(tmp_path, state, [{"deg": 20}])
+    assert asked_beyond_mark(state) is True
+    target = tmp_path / "campaigns" / "banked-run" / "bundle"
+    target.mkdir(parents=True)
+    shutil.move(root / "asked-run", target)
+    assert asked_beyond_mark(state) is True
 
 
 _PASSING_GROUP = {"passed": True, "flatness": {
@@ -6026,11 +6043,18 @@ def test_status_reports_previous_applied_record_without_a_bank_walk(
     from jasper.web.correction_crossover_flow import handle_status
 
     prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: tmp_path / "bank-sessions")
+    applied = json.loads((tmp_path / "baseline_profile.json").read_text())
+    statefile = tmp_path / "camilla-state.yml"
+    statefile.write_text(json.dumps({"config_path": applied["config"]["path"]}))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    handle_status()
 
     def bank_walk(*args, **kwargs):
         raise AssertionError
 
     monkeypatch.setattr("jasper.active_speaker.candidate_bank.find_banked_candidate", bank_walk)
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank._iter_candidate_paths", bank_walk)
     payload, code = handle_status()
     assert code == 200
     assert payload["crossover_v2"]["previous_candidate_fingerprint"] == prior_fingerprint
