@@ -12,7 +12,7 @@ import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
-from threading import Event
+from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
@@ -43,7 +43,7 @@ from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import (
-    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, TakeVerdict,
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED, TakeVerdict,
 )
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
@@ -68,6 +68,14 @@ class RunSignals:
     retake: Event = field(default_factory=Event)
     complete: Event = field(default_factory=Event)
     stop: Event = field(default_factory=Event)
+    stop_reason: str = field(init=False, default=REASON_USER_STOPPED)
+    _stop_lock: Any = field(init=False, default_factory=Lock, repr=False)
+
+    def request_stop(self, reason: str = REASON_USER_STOPPED) -> None:
+        with self._stop_lock:
+            if not self.stop.is_set():
+                self.stop_reason = reason
+                self.stop.set()
 
 
 def spl_monitor_note(ceiling_db_spl: float) -> str:
@@ -371,7 +379,7 @@ async def _run(
 
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
-    aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, asyncio.CancelledError)
+    aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, CaptureStopped, asyncio.CancelledError)
     started = clock()
     ledgers = {item.pose_index: SlotAttempts(retries_per_pose=retries) for item in work}
     attempts = [0] * len(work)
@@ -524,7 +532,9 @@ async def _run(
             except _Control:
                 continue
             except aborting as exc:
-                manifest.reason = (str(exc.code) if isinstance(exc, _OWN_CODE) else
+                manifest.reason = (signals.stop_reason if isinstance(exc, CaptureStopped) or
+                                   (isinstance(exc, asyncio.CancelledError) and signals.stop.is_set()) else
+                                   str(exc.code) if isinstance(exc, _OWN_CODE) else
                                    next((code for cls, code in aborts.items() if isinstance(exc, cls)), "cancelled"))
                 manifest.detail = str(exc) or type(exc).__name__
                 manifest.cancelled = isinstance(exc, asyncio.CancelledError)

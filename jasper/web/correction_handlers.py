@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_ARM_HOST_STUCK, REASON_USER_STOPPED
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime
@@ -29,7 +29,7 @@ from .correction_capture import (
 from .correction_runtime import BadRequest
 
 
-def _handle_crossover_capture_cancel() -> dict[str, Any]:
+def _handle_crossover_capture_cancel(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     """Stop Crossover capture work and keep its slot until cleanup completes.
 
     The Stop button is already hidden once the rendered status turns terminal
@@ -40,8 +40,11 @@ def _handle_crossover_capture_cancel() -> dict[str, Any]:
     sentence here rather than leaking it to the page.
     """
 
+    reason = (raw or {}).get("reason", REASON_USER_STOPPED)
+    if reason not in (REASON_USER_STOPPED, REASON_ARM_HOST_STUCK):
+        raise BadRequest("unknown capture stop reason")
     try:
-        capture = correction_capture._request_capture_stop("crossover_v2:")
+        capture = correction_capture._request_capture_stop("crossover_v2:", reason)
     except ValueError:
         raise ValueError(
             "This measurement already stopped — nothing more to do here."

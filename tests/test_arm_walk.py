@@ -133,7 +133,7 @@ class FakeSession:
             self._queue.pop(0)
         return self._release
 
-    def cancel(self) -> tuple[int, str]:
+    def cancel(self, reason="user_stopped") -> tuple[int, str]:
         self.cancels += 1
         return self._cancel
 
@@ -196,7 +196,7 @@ class LiveThen:
     def release(self, index: int, attempt: int) -> tuple[int, str]:  # pragma: no cover
         raise AssertionError("nothing is ever pending in this double")
 
-    def cancel(self) -> tuple[int, str]:
+    def cancel(self, reason="user_stopped") -> tuple[int, str]:
         # A terminal session must never reach this (#2912 gap 4 follow-up):
         # counted, not asserted-never-called, so a test can pin the zero.
         self.cancels += 1
@@ -375,7 +375,7 @@ def test_the_park_cancels_the_boxs_capture_session():
 def test_a_failed_cancel_still_lets_the_park_complete():
     """Best-effort: a cancel failure is reported, never blocks the park."""
     class ExplodingCancel(FakeSession):
-        def cancel(self) -> tuple[int, str]:
+        def cancel(self, reason="user_stopped") -> tuple[int, str]:
             raise OSError("wizard unreachable")
 
     mover = FakeMover(offset=0.0)
@@ -1049,7 +1049,7 @@ def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
             self.released.append(index)
             return 200, '{"ok": true}'
 
-        def cancel(self) -> tuple[int, str]:
+        def cancel(self, reason="user_stopped") -> tuple[int, str]:
             return 200, '{"ok": true}'
 
     session = ResidueThenLive()

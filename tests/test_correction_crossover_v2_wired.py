@@ -660,8 +660,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
         for stop in request.stops) if phase else None
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
-        stop_event=control.stop, stop_lock=threading.Lock(), ceiling_s=30,
-        complete_event=control.complete, retake_event=control.retake,
+        signals=control, ceiling_s=30,
         manifest=manifest, request=request, captures=captures,
         analyze=_analysis, assessor=None,
         position_gate=gate,
@@ -920,8 +919,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
-        stop_event=signals.stop, stop_lock=threading.Lock(), ceiling_s=30,
-        complete_event=signals.complete, retake_event=signals.retake,
+        signals=signals, ceiling_s=30,
         manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
         analyze=analyze, assessor=assessor,
     )

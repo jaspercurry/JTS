@@ -6212,7 +6212,7 @@ def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
     monkeypatch.setattr(capture, "_capture_slot", None)
     monkeypatch.setattr(capture, "_pending_capture", None)
     stopped = []
-    assert capture._begin_capture_slot("crossover_v2:session", request_stop=lambda: stopped.append(True))
+    assert capture._begin_capture_slot("crossover_v2:session", request_stop=lambda reason: stopped.append(True))
     kind = capture.CaptureKind("crossover_v2:session", lambda: None, lambda _: None,
         position_gate=PositionGate(), session_id="pending", join_entry=SimpleNamespace(screen={"position_deg": "0"}))
     capture._stage_capture(kind, idle_hold=no_hold)

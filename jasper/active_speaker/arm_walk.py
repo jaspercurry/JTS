@@ -57,6 +57,7 @@ from jasper.log_event import log_event
 from .angle_capture import ARM_ENVELOPE_DEG
 from .movers import MOVER_ARM
 from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READY_PATH
+from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_USER_STOPPED
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .wizard_client import STATUS_PATH, WizardClient
 
@@ -88,9 +89,6 @@ DEFAULT_POLL_S = 3.0
 #: does not need the arm.
 DEFAULT_IDLE_CEILING_S = 1200.0
 
-#: In flight, nothing pending or released for this long: the signature of a
-#: REJECTED capture, which renders a "Try again" no unattended run can press
-#: (#2506). Named rather than waited out.
 DEFAULT_STUCK_ALARM_S = 300.0
 
 #: Status endpoint unreadable for this long with no good read. A blip is
@@ -258,6 +256,8 @@ class Poll:
     readable: bool = True
     ended: str = ""
     mover: str | None = None
+    progress: tuple[object, object, str] | None = None
+    session_id: str = ""
 
 
 class Mover(Protocol):
@@ -282,7 +282,7 @@ class Session(Protocol):
     def release(self, index: int, attempt: int) -> tuple[int, str]:
         """POST position-ready. Returns ``(http_status, body)``."""
 
-    def cancel(self) -> tuple[int, str]:
+    def cancel(self, reason: str = REASON_USER_STOPPED) -> tuple[int, str]:
         """POST capture-cancel. Returns ``(http_status, body)``; never raises."""
 
 
@@ -466,8 +466,8 @@ class LoopbackSession(WizardClient):
     def release(self, index: int, attempt: int) -> tuple[int, str]:
         return self.post(POSITION_READY_PATH, {"index": int(index), "attempt": int(attempt)})
 
-    def cancel(self) -> tuple[int, str]:
-        return self.post(CAPTURE_CANCEL_PATH, {})
+    def cancel(self, reason: str = REASON_USER_STOPPED) -> tuple[int, str]:
+        return self.post(CAPTURE_CANCEL_PATH, {"reason": reason})
 
 
 # --------------------------------------------------------------------------- #
@@ -486,8 +486,15 @@ class Trail:
     def __init__(self, path: Path | None = None, *, clock: Callable[[], float] = time.time):
         self._handle = open(path, "a", buffering=1, encoding="utf-8") if path else None
         self._clock = clock
+        self.session_id = ""
+
+    def join(self, session_id: str) -> None:
+        if session_id and not self.session_id:
+            self.session_id = session_id
+            self.emit("joined")
 
     def emit(self, action: str, *, level: int = logging.INFO, **fields: Any) -> None:
+        fields = {**fields, "session_id": self.session_id}
         log_event(logger, f"arm_walk.{action}", level=level, **fields)
         if self._handle is not None:
             row = {"t": round(self._clock(), 3), "event": action, **fields}
@@ -573,7 +580,7 @@ class ArmWalk:
                     level=logging.ERROR,
                     error=f"{type(exc).__name__}: {exc}" if exc else "no verdict",
                 )
-            self._park()
+            self._park(REASON_ARM_HOST_STUCK if code == EXIT_STUCK else REASON_USER_STOPPED)
         return code
 
     # -- the loop ----------------------------------------------------------- #
@@ -586,10 +593,12 @@ class ArmWalk:
         poll = self._session.poll()
         if poll.in_flight and poll.readable:
             self._saw_session = True
+            self._trail.join(poll.session_id)
         return poll
 
     def _walk(self) -> int:
         cfg = self._config
+        first = self._poll()
         self._trail.emit(
             "up",
             settle_s=cfg.settle_s,
@@ -606,10 +615,9 @@ class ArmWalk:
             return EXIT_POWER_VOID
         self._trail.emit("start_offset", offset_deg=self._mover.offset_deg())
 
-        first = self._poll()
-
         now = self._clock()
         idle_since = last_progress = now
+        progress = first.progress
         unreadable_since: float | None = None if first.readable else now
         while True:
             poll = self._poll()
@@ -618,6 +626,9 @@ class ArmWalk:
 
             if poll.readable:
                 unreadable_since = None
+                if poll.in_flight and poll.progress != progress:
+                    progress = poll.progress
+                    idle_since = last_progress = self._clock()
             else:
                 if unreadable_since is None:
                     unreadable_since = self._clock()
@@ -641,33 +652,22 @@ class ArmWalk:
                 return EXIT_REFUSED
 
             if poll.pending is not None:
-                # An already-served hold falls through deliberately: not
-                # progress, resets no clock, ends on the idle ceiling if it
-                # somehow persists.
                 if poll.pending.key not in self._served:
                     code = self._serve(poll.pending)
                     if code is not None:
                         return code
                     idle_since = last_progress = self._clock()
-            elif (
+            if (
                 poll.readable
                 and poll.in_flight
                 and self._clock() - last_progress > self._config.stuck_alarm_s
             ):
-                # ``readable`` is load-bearing: without it a 403 reaches the
-                # operator as "a capture is awaiting a human", blaming #2506
-                # for a typo.
                 self._trail.emit(
                     "stuck",
                     level=logging.ERROR,
                     quiet_s=round(self._clock() - last_progress, 1),
                     released=len(self._served),
-                    detail=(
-                        "the session is in flight, nothing is pending, and "
-                        "nothing has been released since -- either a rejected "
-                        "capture is waiting on a human (#2506), or a session "
-                        "went quiet without publishing a terminal status"
-                    ),
+                    detail="the executor status and take counters stopped changing",
                 )
                 return EXIT_STUCK
 
@@ -769,7 +769,7 @@ class ArmWalk:
 
     # -- the exits ---------------------------------------------------------- #
 
-    def _cancel_capture(self) -> None:
+    def _cancel_capture(self, reason: str) -> None:
         """Best-effort: stop the box's own capture session. Never raises.
 
         Skipped once this walk read a terminal session status --
@@ -782,20 +782,20 @@ class ArmWalk:
         if self._capture_ended:
             return
         try:
-            status, body = self._session.cancel()
+            status, body = self._session.cancel(reason)
         except Exception as exc:  # noqa: BLE001 -- the park must still run
             self._trail.emit(
                 "capture_cancel", level=logging.WARNING, ok=False,
-                error=f"{type(exc).__name__}: {exc}",
+                reason=reason, error=f"{type(exc).__name__}: {exc}",
             )
             return
         ok = status == 200 or _capture_already_gone(status, body)
         self._trail.emit(
             "capture_cancel", level=logging.INFO if ok else logging.WARNING,
-            ok=ok, status=status,
+            ok=ok, status=status, reason=reason,
         )
 
-    def _park(self) -> None:
+    def _park(self, reason: str = REASON_USER_STOPPED) -> None:
         """Home the arm and verify the MAGNITUDE. Idempotent; never raises.
 
         Cancels the box's own v2 capture session first, best-effort: a park
@@ -807,7 +807,7 @@ class ArmWalk:
         if self._parked:
             return
         self._parked = True
-        self._cancel_capture()
+        self._cancel_capture(reason)
         try:
             moved = self._mover.move_to(0)
             self._sleep(PARK_SETTLE_S)
@@ -895,9 +895,13 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
         failed = str(capture.get("error") or "(the session supplied no error)")
     ended = state if state in SESSION_ENDED_STATUSES else ""
     held = capture.get("join") or capture.get("position_pending")
+    run = capture.get("run")
+    run = run if isinstance(run, Mapping) else {}
     return Poll(
         pending_from_capture(capture), not ended, failed, ended=ended,
         mover=str(held.get("mover") or "") if isinstance(held, Mapping) else None,
+        progress=(run.get("attempt"), run.get("pose"), state),
+        session_id=str(capture.get("session_id") or ""),
     )
 
 

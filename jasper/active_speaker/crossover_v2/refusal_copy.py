@@ -194,6 +194,7 @@ REASON_APPLY_FAILED = "apply_failed"
 # transport death — see the catch-all's exception classification in
 # jasper.web.correction_crossover_v2.
 REASON_USER_STOPPED = "user_stopped"
+REASON_ARM_HOST_STUCK = "arm_host_stuck"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -1048,6 +1049,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
         "You stopped the measurement. Start over from this page when you're "
         "ready.",
+    ),
+    REASON_ARM_HOST_STUCK: ReasonSpec(
+        REASON_ARM_HOST_STUCK, TEMPLATE_HARD_STOP, 0, "",
+        "The arm host stopped the measurement because the executor made no progress. "
+        "Check the run status and arm trail before starting another measurement.",
     ),
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
         REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
