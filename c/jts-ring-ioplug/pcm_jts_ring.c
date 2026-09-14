@@ -88,9 +88,14 @@
 //    slots. n_slots MUST be >= ceil(target_level / period_frames) with
 //    headroom, or camilla's rate controller chases a target the reported delay
 //    can never reach (see the n_slots ceiling note in jts_ring_shm.h). The
-//    SHIPPED default sits at the shallow end of that same rule:
-//    JTS_RING_DEFAULT_SLOTS (2) * 128 frames against target_level 128.
-//    Effective latency == the writer's target_level, not the ring depth.
+//    SHIPPED Ring A (capture) block sits at the shallow end of that same rule:
+//    n_slots 4 (deploy/alsa/conf.d/60-jts-ring.conf) * 128 frames against
+//    target_level 128 — widened from 2 by #4124 for cushion, still far below
+//    the ceiling. JTS_RING_DEFAULT_SLOTS (2) is this ioplug's own fallback for
+//    a conf.d block that OMITS n_slots; every shipped block declares it
+//    explicitly, so the fallback is never exercised in production and no
+//    longer matches Ring A's shipped depth. Effective latency == the writer's
+//    target_level, not the ring depth.
 // 4. Observability: writer counters (published/dropped/full_waits) are logged
 //    at close; the reader publishes occupancy/empty_reads/writer_alive to
 //    /state.shm_ring.

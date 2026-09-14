@@ -34,9 +34,10 @@ COUPLING_SHM_RING = "shm_ring"
 
 # Ring A SHM ring file + slot-count env vars. fan-in creates the ring at
 # ``JASPER_FANIN_RING_PATH`` with ``JASPER_FANIN_RING_SLOTS`` slots; the Rust
-# daemon resolves both with the SAME defaults (``config.rs``). The n_slots <->
-# JASPER_FANIN_RING_SLOTS pairing is the drift axis with the ioplug conf.d
-# geometry, validated by the ring header at attach.
+# daemon resolves both with the SAME defaults (``config.rs`` — a second,
+# independent literal, not derived from this one; #4805 tracks converging the
+# two). The n_slots <-> JASPER_FANIN_RING_SLOTS pairing is the drift axis with
+# the ioplug conf.d geometry, validated by the ring header at attach.
 RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
 DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
 RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
@@ -47,7 +48,12 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 # refuses any other period — the ioplug would attach against a geometry fan-in
 # never builds and crash at arm instead of refusing.
 RING_SLOT_FRAMES = 128
-DEFAULT_FANIN_RING_SLOTS = 2
+# 4 slots (512 frames ~= 10.7 ms) since #4124: jts4 measured full_waits on
+# nearly every period at the prior 2-slot floor, producing ~120 CamillaDSP
+# short-read WARNs/hour with the producer and consumer in lockstep. Widening
+# gives CamillaDSP's capture a cushion instead of removing the back-pressure
+# path (MAX_FULL_WAIT_TICKS, rust/jasper-ring/src/writer.rs, is unchanged).
+DEFAULT_FANIN_RING_SLOTS = 4
 
 
 def ring_capacity_frames() -> int:
@@ -158,9 +164,10 @@ RING_A_CHANNELS = 2
 #
 # The env keys below are read by the Rust ``jasper-outputd`` daemon
 # (``rust/jasper-outputd/src/config.rs``) and pinned here so the Python control
-# plane names the same bridge the daemon reads. Ring A and Ring B both hold the
-# 2-slot latency floor but stay SEPARATE ring files, so one can be tuned without
-# the other.
+# plane names the same bridge the daemon reads. Ring A and Ring B are SEPARATE
+# ring files that can be tuned independently: Ring B stays at the 2-slot
+# ping-pong floor, while Ring A widened to 4 slots (#4124) for cushion against
+# CamillaDSP short-reads.
 OUTPUTD_CONTENT_BRIDGE_ENV_VAR = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_CONTENT_BRIDGE_SHM_RING = "shm_ring"
 OUTPUTD_RING_PATH_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_PATH"

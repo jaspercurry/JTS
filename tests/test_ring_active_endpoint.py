@@ -1311,12 +1311,20 @@ def test_the_stale_active_ring_file_is_deleted_like_the_other_two(
     """
     import jasper.fanin.coupling_reconcile as cr
     import jasper.ring_assets as ra
+    from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS
     paths = _point_all_ring_files_at(monkeypatch, tmp_path)
     # S32_LE — every block in the shipped conf.d now DECLARES `format S32_LE`
     # explicitly (the ring-wire default flip), so a "coherent" fixture file must
     # carry it too; S16_LE here would itself be a format-axis mismatch and get
     # deleted, defeating "the other two files are coherent" below.
-    _ring_file(paths["a"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    # Ring A's shipped conf.d n_slots (4, #4124) differs from Ring B/Active's
+    # (2, `_ring_file`'s default) since the widening — pass it explicitly so
+    # this "coherent" fixture actually matches what the conf.d declares.
+    _ring_file(
+        paths["a"],
+        sample_format=ra.RING_SAMPLE_FORMAT_S32LE,
+        n_slots=DEFAULT_FANIN_RING_SLOTS,
+    )
     _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
     # The conf.d's active block declares the ioplug default (2); this file says 6.
     _ring_file(

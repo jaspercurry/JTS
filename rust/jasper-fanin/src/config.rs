@@ -30,7 +30,7 @@ pub use jasper_ring::RING_SLOT_FRAMES;
 /// the ring geometry so the header's own validation at attach cannot disagree.
 /// A present out-of-range value FAILS LOUD here (`Config::from_env` bails) —
 /// Python's `fanin_coupling.resolve_ring_slots` raises on the same range, so
-/// the two normalizers agree on the drift axis (unset => default 2;
+/// the two normalizers agree on the drift axis (unset => default 4;
 /// out-of-range => error on BOTH sides, never a silent clamp).
 pub use jasper_ring::{MAX_N_SLOTS as RING_SLOTS_MAX, MIN_N_SLOTS as RING_SLOTS_MIN};
 
@@ -179,8 +179,10 @@ pub struct Config {
 
     /// The ring's slot count (Ring A). Buffer depth is
     /// `ring_slots * RING_SLOT_FRAMES` — the only latency axis, since the slot
-    /// itself is pinned at 128 by the outputd DAC-period contract. Default 2
-    /// (256 frames ≈ 5.3 ms). A present value outside
+    /// itself is pinned at 128 by the outputd DAC-period contract. Default 4
+    /// (512 frames ≈ 10.7 ms; widened from 2 by #4124 — jts4 measured
+    /// full_waits on nearly every period at the 2-slot floor). A present value
+    /// outside
     /// [`RING_SLOTS_MIN`]..=[`RING_SLOTS_MAX`] FAILS LOUD in `Config::from_env`
     /// — never clamped; Python `fanin_coupling.resolve_ring_slots` defaults and
     /// raises identically, so the two normalizers agree. The `n_slots` <->
@@ -441,7 +443,7 @@ impl Config {
         // unit escalates to StartLimitAction=reboot — a typo here would
         // otherwise reboot the speaker every few minutes.
         let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 2)
+        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 4)
             .map_err(|e| e.context(crate::ConfigClassError))?;
         if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
             return Err(anyhow::anyhow!(
@@ -2068,7 +2070,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("ring defaults must parse");
                 assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
-                assert_eq!(cfg.ring_slots, 2);
+                assert_eq!(cfg.ring_slots, 4);
                 assert_eq!(cfg.period_frames, 256);
             },
         );

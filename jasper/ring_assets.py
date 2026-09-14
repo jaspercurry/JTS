@@ -520,7 +520,7 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
 #
 # The ring's ``n_slots`` is a SECOND geometry axis independent of period_frames.
 # fan-in creates Ring A with ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots
-# (default 2); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (2 in
+# (default 4); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (4 in
 # the shipped file); the on-disk ring header records the ``n_slots`` the writer
 # actually created. A mismatch on ANY of the three axes is a hard failure:
 #   - fan-in env vs conf.d: fan-in creates a ring at one slot count while

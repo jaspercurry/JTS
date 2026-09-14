@@ -387,7 +387,7 @@ const CUSHION_DECAY_STABILITY_MS: u64 = 2000;
 /// after a drain (cold start, a CamillaDSP reattach): the fill rate is
 /// `h/(1-h)` of nominal, so 25% refills the deepest supported ring
 /// ([`crate::config::RING_SLOTS_MAX`] slots, 42.7 ms) in ~128 ms and the
-/// 2-slot default in ~16 ms, against ~3 s and ~0.4 s at 1%. The cost of running
+/// 4-slot default in ~32 ms, against ~3 s and ~1 s at 1%. The cost of running
 /// ahead is bounded the same way: a free-run tops out at 1.33x real time.
 const PACE_HEADROOM_PERCENT: u64 = 25;
 

@@ -86,7 +86,7 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
     assert resolve_ring_slots("   ") == DEFAULT_FANIN_RING_SLOTS
     assert resolve_ring_slots("  16 ") == 16
     assert resolve_ring_slots("2") == 2
-    assert DEFAULT_FANIN_RING_SLOTS == 2
+    assert DEFAULT_FANIN_RING_SLOTS == 4
     # A present-but-out-of-range or unparseable value FAILS LOUD (never a
     # silent clamp) — repo doctrine, and it must agree with the Rust daemon,
     # which returns a config-class Err on the same range (jasper-fanin then

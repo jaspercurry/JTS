@@ -233,7 +233,7 @@ enum DirectOpenOutcome {
 /// handle comes back.
 ///
 /// The render loop's budget is one period (5.33 ms at the shipped 256 frames)
-/// and the downstream pipeline holds two 128-frame slots of cushion, so a
+/// and the downstream pipeline holds four 128-frame slots of cushion, so a
 /// device open that takes longer than ~2.7 ms costs a whole slot: CamillaDSP
 /// reads an empty Ring A (a 128-frame silence INSERTION) or fan-in
 /// free-run-drops a slot it could not publish in time (a 128-frame

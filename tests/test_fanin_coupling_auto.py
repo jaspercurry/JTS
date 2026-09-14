@@ -793,12 +793,12 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     # The heal reads the conf.d's declared wire before it writes the slot count;
     # point it at the SHIPPED file rather than the dev host's /etc.
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    # conf.d Ring-A n_slots = 2 (the pinned default); the on-disk `=8` disagrees.
-    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
+    # conf.d Ring-A n_slots = 4 (the pinned default); the on-disk `=8` disagrees.
+    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
 
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
-    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
     assert read_value(fanin.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
@@ -824,12 +824,12 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
+    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
 
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
 
-    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
     assert read_value(fanin.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
@@ -894,9 +894,10 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
 def test_fresh_install_ring_geometry_defaults_match_the_doc_table():
     """§2 ring-geometry table: the Camilla ring-emit geometry the doc names —
     chunksize 128 / target_level 128 / queuelimit 1 / rate_adjust off — and the
-    2-slot Ring A default. These are shipped CODE defaults (no auto-pass needed);
-    a fresh install reproduces them because they are the constant values. Pinning
-    the literals here catches a silent drift the doc could not.
+    4-slot Ring A default (widened from 2 by #4124). These are shipped CODE
+    defaults (no auto-pass needed); a fresh install reproduces them because
+    they are the constant values. Pinning the literals here catches a silent
+    drift the doc could not.
     """
     # The doc's table values are these constants; assert the literals so a drift
     # in the constant itself (not just its usage) reddens.
@@ -904,9 +905,9 @@ def test_fresh_install_ring_geometry_defaults_match_the_doc_table():
     assert RING_CAMILLA_TARGET_LEVEL == 128
     assert RING_CAMILLA_QUEUELIMIT == 1
     assert RING_CAMILLA_ENABLE_RATE_ADJUST is False
-    # ring_slots default == 2 (config.rs env_u32(…, 2) is pinned to this constant
+    # ring_slots default == 4 (config.rs env_u32(…, 4) is pinned to this constant
     # in test_fanin_coupling_rust_contract.py; referenced, not re-read here).
-    assert DEFAULT_FANIN_RING_SLOTS == 2
+    assert DEFAULT_FANIN_RING_SLOTS == 4
 
 
 def test_fresh_install_ring_geometry_emits_the_doc_table_values():
