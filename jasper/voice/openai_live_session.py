@@ -164,25 +164,26 @@ class OpenAILiveTurn(BaseLiveTurn):
         await self._conn._send({"type": "session.input_audio.append", "audio": base64.b64encode(wire).decode("ascii")})
 
     async def _send_audio_stream(self) -> None:
-        """Burst captured backlog; pace silence and never lead the room."""
+        """Capture paces real PCM; only synthesized silence needs a clock."""
+        loop = asyncio.get_running_loop()
+        jitter_grace = 0.02
+        silence_at = loop.time() + jitter_grace
         while not self._released and not self._turn_lost:
-            started = time.monotonic()
-            for _ in range(max(0, self._input_q.qsize() - 1)):
-                try:
-                    stale = self._input_q.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                self._input_caught_up += len(stale) / 32000
-                await self._send_input(stale)
+            captured = True
             try:
                 pcm = self._input_q.get_nowait()
             except asyncio.QueueEmpty:
                 try:
-                    pcm = await asyncio.wait_for(self._input_q.get(), 0.02)
+                    async with asyncio.timeout_at(silence_at):
+                        pcm = await self._input_q.get()
                 except TimeoutError:
                     pcm = bytes(2560)  # 80 ms at 16 kHz, including button-release silence
+                    captured = False
+            if captured and not self._input_q.empty():
+                self._input_caught_up += len(pcm) / 32000
+            # Allow capture jitter before substituting silence, without holding real PCM.
+            silence_at = loop.time() + len(pcm) / 32000 + (jitter_grace if captured else 0.0)
             await self._send_input(pcm)
-            await asyncio.sleep(max(0, len(pcm) / 32000 - (time.monotonic() - started)))
 
     async def send_text_context(self, text: str) -> None:
         await self._conn._send({"type": "session.instructions.append", "content": text, "delegation_id": None})

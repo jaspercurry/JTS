@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from openai.types.live.client_event_param import ClientEventParam
@@ -366,12 +367,48 @@ async def test_speech_buffered_during_the_dial_catches_up_and_live_input_stays_p
         await turn.release()
         await conn.stop()
 
-    # A quantum each would cost the 15 stale frames 1.2 s; only the
-    # newest is the live edge and owes one.
+    # A quantum each would cost the 15 stale frames 1.2 s.
     assert caught_up < 0.4
     # 0.25 s of synthesized quiet at 1x is ~3 appends, never a free run.
     assert 1 <= after_catch_up <= 6
     assert int(event_fields(caplog, "provider.turn_ended")["input_catchup_ms"]) == 1200
+
+
+async def test_new_capture_reaches_the_wire_in_order_without_waiting_for_a_pacing_sleep(monkeypatch):
+    pacing = asyncio.Event()
+    first_sent, all_sent = asyncio.Event(), asyncio.Event()
+    samples = []
+
+    async def hold_pacing(_):
+        await pacing.wait()
+
+    monkeypatch.setattr(openai_live_session, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": hold_pacing})))
+
+    class ObservedSocket(LiveSocket):
+        async def send(self, event):
+            await super().send(event)
+            if event["type"] == "session.input_audio.append":
+                sample = int.from_bytes(base64.b64decode(event["audio"])[-2:], "little", signed=True)
+                if sample:
+                    samples.append(sample)
+                    first_sent.set()
+                    if len(samples) == 3:
+                        all_sent.set()
+
+    conn = OpenAILiveConnection(api_key="test", connect=ObservedSocket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    try:
+        await turn.send_audio((1000).to_bytes(2, "little") * 1280)
+        await wait_signalled(first_sent, "first captured frame", producer=turn._sender)
+        for sample in (2000, 3000):
+            await turn.send_audio(sample.to_bytes(2, "little") * 1280)
+        await wait_signalled(all_sent, "new captured frames", producer=turn._sender)
+        assert samples == [1000, 2000, 3000]
+    finally:
+        pacing.set()
+        await turn.release()
+        await conn.stop()
 
 
 async def test_a_mid_burst_discard_does_not_crash_the_sender():
