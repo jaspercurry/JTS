@@ -632,6 +632,17 @@ def _apply_save(
 # bigger is malformed or abusive and rejected before we proxy upstream.
 _LAYER_BODY_LIMIT = 4096
 
+# /aec/usb-mic, /aec/usb-mic-leg and /aec/commission each kick a unit through
+# jasper.control.restart_broker.reset_then_manage: up to two broker round
+# trips (a reset-failed leg, then the verb leg), each waiting its own exec
+# bound plus the broker's client socket margin
+# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s) rather than the bare exec
+# bound. jasper-control bounds both legs at
+# aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC (2 s), so the worst case is
+# 2 * (2 + 5) = 14 s; this proxy timeout must clear that or a merely-slow
+# broker leg becomes a 502 after the kick is already enqueued.
+_AEC_BROKER_KICK_PROXY_TIMEOUT_SEC = 15.0
+
 
 def _apply_layer(
     layer: str, enabled: bool, *, control_base: str,
@@ -681,7 +692,7 @@ def _apply_usb_mic(
     return proxy_post(
         "/aec/usb-mic",
         control_base=control_base,
-        timeout=5.0,
+        timeout=_AEC_BROKER_KICK_PROXY_TIMEOUT_SEC,
         body=json.dumps({"enabled": enabled}).encode(),
         headers=headers,
     )
@@ -698,7 +709,7 @@ def _apply_usb_mic_leg(
     return proxy_post(
         "/aec/usb-mic-leg",
         control_base=control_base,
-        timeout=5.0,
+        timeout=_AEC_BROKER_KICK_PROXY_TIMEOUT_SEC,
         body=json.dumps({"leg": leg}).encode(),
         headers=headers,
     )
@@ -728,7 +739,7 @@ def _start_commission(
     return proxy_post(
         "/aec/commission",
         control_base=control_base,
-        timeout=5.0,
+        timeout=_AEC_BROKER_KICK_PROXY_TIMEOUT_SEC,
         body=b"{}",
         headers=headers,
     )

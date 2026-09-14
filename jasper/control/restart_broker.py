@@ -47,8 +47,15 @@ tree's only ``systemctl``. Direct calls elsewhere are the design, not drift:
   lets any user run them, so callers query directly. Only state-changing verbs
   need a broker.
 - **jasper-control's own supervisors and endpoints**: they already run as the
-  uid the broker would act as, so they call ``systemctl`` directly and polkit
-  mediates the same grant — see ``deploy/systemd/jasper-control.service``.
+  uid the broker would act as, so a direct ``systemctl`` call is not a
+  privilege escape for them — see ``deploy/systemd/jasper-control.service``.
+  A plain direct call stays fine for simple cases (e.g. the diagnostics
+  oneshot in ``jasper.control.handlers.system``), but several route through
+  :func:`manage_units` / :func:`reset_then_manage` anyway —
+  ``jasper.control.aec_endpoints``'s USB-mic/AEC-commission kicks,
+  ``jasper.control.handlers.aec``'s AEC-bridge restart,
+  ``jasper.control.shairport_supervisor`` — to share the crash-budget reset
+  and the allowlist/audit trail rather than reimplement them.
 - **Root oneshots and CLIs** (``deploy/bin/*``, the ``jasper-*-reconcile``
   units, ``jasper.cli.*`` under sudo): they hold the privilege themselves and
   are outside the client set. This is also where the un-brokerable verbs live —
@@ -906,6 +913,7 @@ def reset_then_manage(
     reason: str = "",
     no_block: bool = True,
     timeout: float = 5.0,
+    reset_timeout: float = _RESET_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     """Clear the units' systemd failure/start-rate state, then run ``verb``.
 
@@ -916,13 +924,18 @@ def reset_then_manage(
     nonzero against an already-GC'd oneshot (#3237), so it is logged and
     discarded. Only the ACTION's result is returned — a failed reset must
     never be reported as, or turn into, a failed action.
+
+    ``reset_timeout`` bounds only the reset leg's own exec (default: the
+    broker's own ``_RESET_TIMEOUT_SEC``); pass a smaller value when the
+    caller sits behind a short-timeout proxy (each leg still separately pays
+    the client socket margin on top of whichever bound applies).
     """
     reset = manage_units(
         *units,
         verb="reset-failed",
         reason=reason,
         no_block=False,
-        timeout=_RESET_TIMEOUT_SEC,
+        timeout=reset_timeout,
     )
     if not reset.get("ok"):
         log_event(
