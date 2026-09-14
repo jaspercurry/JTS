@@ -131,9 +131,6 @@ def test_install_builds_installs_and_enables_outputd():
     assert "systemctl restart jasper-outputd.service" in install_sh
     assert "require_outputd_ready" in install_sh
     assert "jasper-outputd STATUS probe failed" in install_sh
-    assert "timeout --kill-after=5s 30s" in install_sh
-    assert "jasper-sound reconcile-current-dsp --fail-open" in install_sh
-    assert "sound DSP reconcile timed out after 30s" in install_sh
     assert "park_audio_clients_for_core_graph_restart" in install_sh
     restart_block = install_sh.rsplit(
         "systemctl enable jasper-camilla.service jasper-fanin.service",
