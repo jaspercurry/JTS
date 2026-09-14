@@ -178,7 +178,8 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     pytest.param({"override": "cut_only"}, "cut_only", id="operator-cuts"),
     pytest.param({"depth": 18.0}, "bounded_boost", id="composed-cap"),
     pytest.param({"disagree": True}, "bounded_boost", id="off-axis-contradiction"),
-    pytest.param({"regime": "summed"}, "cut_only", id="summed-takes"),
+    pytest.param({"stimulus": "reference_axis"}, "bounded_boost", id="reference-axis-takes"),
+    pytest.param({"basis_role": "summed"}, "cut_only", id="summed-set"),
     pytest.param({"missing_curve": True}, "cut_only", id="missing-cloud-curve"),
 ])
 def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expected):
@@ -219,9 +220,9 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
         path.write_text(json.dumps(take))
         rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
     group = manifest_set(rows, set_id=role, selected={r["take_id"] for _, r in rows[:poses] + rows[3:6]})
-    group["capture_basis"].update(role=role, stimulus=changes.get("regime"))
+    group["capture_basis"].update(role=changes.get("basis_role", role), stimulus=changes.get("stimulus"))
     for take in group["takes"]:
-        take.update(role=role, analysis=candidate["analysis"])
+        take.update(role=changes.get("basis_role", role), analysis=candidate["analysis"])
     write_manifest(root, groups=[group])
     flags = [arg for key in ("floor", "override") if key in changes
              for arg in ("--boost-floor-hz" if key == "floor" else "--vocabulary", str(changes[key]))]
@@ -230,7 +231,7 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
     proposal, fit = result["linearization"][role], result["linearization"][role]["fit"]
     assert result["vocabulary"] == proposal["vocabulary"] == expected
     assert result["cloud"] == proposal["cloud"]
-    assert proposal["cloud"]["design_poses"] == (0 if changes.get("override") or changes.get("regime") else poses)
+    assert proposal["cloud"]["design_poses"] == (0 if changes.get("override") or changes.get("basis_role") else poses)
     design_boost = expected == "bounded_boost" and not changes.get("override") and not changes.get("exclusion")
     floor = changes.get("floor")
     if design_boost:
