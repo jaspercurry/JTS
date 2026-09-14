@@ -477,64 +477,6 @@ def test_armed_active_ring_reports_only_broken_capture_routes(
     assert (health["signal_path"]["code"] == "transport_parked") is parked
 
 
-def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
-    monkeypatch, tmp_path
-) -> None:
-    """The armed-active fix routes to the right arm; it does not mute the detector.
-
-    Positive control for the test above. The ring-path comparison can ONLY run
-    inside the ``shm_ring_active`` arm, so seeing its verdict proves the coherence
-    report reached that arm — where the pre-fix code silently took the loopback
-    arm instead.
-
-    The verdict is a NOTE, and the headline is deliberately not PARKED. A ring
-    path lagging its marker is the first-arm waypoint: the path is the marker's
-    projection and the next pass of its single writer converges it, so telling
-    a household its speaker cannot make sound would name a permanent fault
-    where there is a transient one. The window is not unobserved — the note rides this
-    same surface verbatim, and outputd refusing to attach is separately loud.
-    """
-    from jasper.fanin_coupling import (
-        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
-        DEFAULT_OUTPUTD_RING_PATH,
-        OUTPUTD_RING_PATH_ENV_VAR,
-    )
-
-    state = _armed_active_transport_read(
-        monkeypatch,
-        tmp_path,
-        **{OUTPUTD_RING_PATH_ENV_VAR: DEFAULT_OUTPUTD_RING_PATH},
-    )
-
-    assert state["coherence_errors"] == []
-    assert len(state["coherence_notes"]) == 1
-    note = state["coherence_notes"][0]
-    assert "FIRST-ARM waypoint" in note
-    assert DEFAULT_OUTPUTD_RING_PATH in note
-    assert DEFAULT_OUTPUTD_ACTIVE_RING_PATH in note
-
-    # The note itself moves NOTHING on the card. Pinned as the exact shape
-    # rather than as "not parked": an inequality passes for every wrong shape
-    # too, including a regression that swapped one alarm for another.
-    assert _compose(transport=state)["signal_path"]["code"] == "clean"
-
-    # ...and THE REAL WAYPOINT STATE, which the read above does not model.
-    # outputd refuses the crossed pair at startup and parks
-    # (RestartPreventExitStatus=78), so on a box actually sitting here it is not
-    # reporting health at all. That is what the household sees, and it is loud —
-    # the card is not quietly green while the speaker is silent. The note is the
-    # explanation printed beside it, not the alarm.
-    waypoint = compose_audio_health(
-        airplay=_airplay(),
-        outputd=None,
-        route=_route(transport=state),
-        issues=[],
-        sampled_at=1000.0,
-    )
-    assert waypoint["signal_path"]["code"] == "output_absent"
-    assert waypoint["overall"]["headline"] == waypoint["signal_path"]["headline"]
-
-
 def _no_lane_active_two_way():
     """Roleful active 2-way saved against a DAC with no active outputd lane.
 
@@ -1206,9 +1148,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     }
 
     # The third transport-state constructor keeps the same shape as the other
-    # two, so no reader needs a `.get(... ) or []` fallback — and a parked graph
-    # is an ERROR, never a note: it has no ladder rung that clears it.
-    assert state["coherence_notes"] == []
+    # two, so no reader needs a `.get(...) or []` fallback.
     assert set(state) == set(audio_health._empty_transport())
 
     health = _compose(transport=state)
@@ -1326,44 +1266,19 @@ def test_transport_state_is_clean_when_the_ring_pair_is_undeclared(monkeypatch) 
     )
 
     assert state["coherence_errors"] == []
-    assert state["coherence_notes"] == []
     # The capability gap is reported independently of the route error so a
     # surface can explain a fault it is also detecting through the transport.
     assert state["capability_gap"] is not None
 
 
-def test_the_arm_waypoint_is_published_as_a_note_and_never_as_parked(
+def test_every_transport_state_constructor_builds_coherence_errors_fresh(
     monkeypatch,
 ) -> None:
-    """`/state` carries the ACTIVE-ring waypoint, but not through the parked card.
-
-    The waypoint is coherent-but-transient: a rung of an operator-only ladder,
-    not a fault the household can act on. So it rides `coherence_notes` for
-    whoever reads `/state`, `coherence_errors` stays EMPTY, and `_parked_signal`
-    — which reads errors only — must stay silent. Reporting "parked" here would
-    put a maintenance banner on a box whose owner did nothing wrong;
-    `jasper-doctor` is the loud surface for it.
-    """
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-
-    register_passive_only_dac(monkeypatch)
-    state = audio_health._transport_state(
-        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
-        camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
-        topology=_no_lane_active_two_way(),
-    )
-
-    assert state["coherence_errors"] == []
-    assert len(state["coherence_notes"]) == 1
-    assert "arm waypoint" in state["coherence_notes"][0]
-    assert audio_health._parked_signal({"transport": state}) is None
-
-
-def test_every_transport_state_constructor_carries_the_notes_key(monkeypatch) -> None:
-    """`_empty_transport` and `_transport_state` agree on the shape.
+    """`_empty_transport` and `_transport_state` agree on the shape, and
+    neither shares its `coherence_errors` list across calls.
 
     They are independent dict literals, so a reader that has to guard
-    `.get("coherence_notes") or []` is one where the shape drifted; pin the
+    `.get("coherence_errors") or []` is one where the shape drifted; pin the
     shape instead. The third constructor, `_parked_graph_transport`, is pinned
     the same way inside
     :func:`test_parked_graph_keeps_the_speaker_reported_as_parked`, which
@@ -1378,12 +1293,10 @@ def test_every_transport_state_constructor_carries_the_notes_key(monkeypatch) ->
     )
 
     assert set(empty) == set(live)
-    assert "coherence_notes" in empty
     # Built per call, never shared: an append through one reader must not be
-    # visible to the next, exactly as `_empty_transport`'s docstring requires of
-    # `coherence_errors`.
-    empty["coherence_notes"].append("leak")
-    assert audio_health._empty_transport()["coherence_notes"] == []
+    # visible to the next, exactly as `_empty_transport`'s docstring requires.
+    empty["coherence_errors"].append("leak")
+    assert audio_health._empty_transport()["coherence_errors"] == []
 
 
 def test_cached_service_state_distinguishes_ready_from_not_running() -> None:

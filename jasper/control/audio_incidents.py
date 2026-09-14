@@ -246,6 +246,29 @@ class IncidentStore:
             return False
 
 
+def issue_row(
+    key: str,
+    *,
+    scope: str,
+    impact: str,
+    severity: str,
+    title: str,
+    detail: str,
+    source_id: str | None = None,
+) -> dict[str, Any]:
+    """One issue in the shape :class:`IssueTracker` and :class:`IncidentStore`
+    both expect — the composer's sole way to build one."""
+    return {
+        "key": key,
+        "scope": scope,
+        "source_id": source_id,
+        "impact": impact,
+        "severity": severity,
+        "title": title,
+        "detail": detail,
+    }
+
+
 class IssueTracker:
     """Bounded durable incident lifecycle keyed by stable issue names."""
 
