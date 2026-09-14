@@ -33,8 +33,9 @@ from jasper.local_sources import (
     local_source_lifecycles,
     local_source_park_units,
 )
+from jasper.multiroom import reconcile as reconcile_mod
 
-from tests._log_events import parse_event
+from tests._log_events import event_fields, parse_event
 
 # The broker's peer-cred auth uses SO_PEERCRED (Linux-only — the broker runs on
 # the Pi). On a macOS dev box the constant is absent, so the server round-trip
@@ -1931,3 +1932,82 @@ def test_broker_bounds_systemctl_to_client_exec_timeout(tmp_path, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------- _restart_unit: routes through the restart broker ----------
+# Regression for the 2026-06-24 jts.local follower reboot: six /grouping/set
+# POSTs from the leader in 44 s each restarted jasper-outputd; with no
+# reset-failed the 6th tripped outputd's StartLimitBurst and systemd escalated
+# to StartLimitAction=reboot, rebooting the Pi from deliberate config churn.
+# restart_broker.reset_then_manage now owns that reset-before-restart
+# sequencing and the unit/verb allowlist (#4816); these pins cover only that
+# reconcile.py wires each call site into it with the right unit/verb/no_block.
+
+
+@pytest.mark.parametrize(
+    ("unit", "no_block", "active_only", "expected_verb"),
+    [
+        pytest.param(
+            "jasper-outputd.service", False, False, "restart",
+            id="blocking_restart",
+        ),
+        pytest.param(
+            reconcile_mod.AEC_RECONCILE_UNIT, True, False, "restart",
+            id="cross_owner_kick_no_block",
+        ),
+        pytest.param(
+            reconcile_mod.SHAIRPORT_UNIT, False, True, "try-restart",
+            id="active_only_try_restart",
+        ),
+    ],
+)
+def test_restart_unit_routes_through_broker(
+    monkeypatch, unit, no_block, active_only, expected_verb,
+):
+    """Each call site asks the broker to reset-failed the target FIRST, then
+    run the verb/no_block/timeout combination it selected — reconcile.py no
+    longer builds a systemctl argv of its own. Pinning ``timeout`` too means
+    swapping the blocking/control constants fails this test."""
+    from jasper.control import restart_broker as rb
+
+    calls: list[tuple[str, str, bool, float]] = []
+
+    def fake_manage_units(*units, verb="restart", no_block=True, timeout=5.0, **_kw):
+        calls.append((units[0], verb, no_block, timeout))
+        return {"ok": True}
+
+    monkeypatch.setattr(rb, "manage_units", fake_manage_units)
+    assert (
+        reconcile_mod._restart_unit(
+            unit, no_block=no_block, active_only=active_only,
+        )
+        is True
+    )
+    expected_timeout = (
+        reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+        if no_block
+        else reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+    )
+    assert calls == [
+        (unit, "reset-failed", False, rb._RESET_TIMEOUT_SEC),
+        (unit, expected_verb, no_block, expected_timeout),
+    ]
+
+
+def test_restart_unit_surfaces_broker_refusal(monkeypatch, caplog):
+    """A broker-side refusal (crash budget, allowlist, unreachable broker)
+    reaches the caller as the same False a direct-systemctl failure used to,
+    still observable in the journal."""
+    from jasper.control import restart_broker as rb
+
+    def fake_manage_units(*units, verb="restart", **_kw):
+        if verb == "reset-failed":
+            return {"ok": True}
+        return {"ok": False, "rc": 1, "error": "unit(s) not in allowlist: x"}
+
+    monkeypatch.setattr(rb, "manage_units", fake_manage_units)
+    with caplog.at_level("ERROR", logger=reconcile_mod.logger.name):
+        assert reconcile_mod._restart_unit("jasper-outputd.service") is False
+
+    fields = event_fields(caplog, "multiroom.reconcile.unit_restart_failed")
+    assert fields["unit"] == "jasper-outputd.service"
