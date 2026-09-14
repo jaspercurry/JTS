@@ -30,6 +30,9 @@ SECRET_ENV_NAME_RE = (
 _QUOTED = r"'[^'\n]*'?|\"[^\"\n]*\"?"
 # Where a bare (unquoted) secret value ends: whitespace, a quote, or the
 # delimiter that closes a mapping, list, call or query string around it.
+# `.` stays inside the run: tokens carry dots (a JWT is three dot-joined
+# parts), so a period after `<redacted>` is re-eaten on a second pass
+# rather than a token tail surviving the first.
 _BARE = r"[^'\"\s,;}\])&]"
 
 # An env-file or `NAME: value` line: the value runs to end of line, which
