@@ -34,36 +34,6 @@ from tests.active_speaker_fixtures import (
 )
 
 
-@pytest.mark.parametrize("refusal_code", [None, "not_found", "ambiguous"])
-def test_status_bank_cache_retains_only_success_until_bank_changes(tmp_path, refusal_code):
-    from jasper.active_speaker.candidate_bank import CandidateBankRefusal, status_bank_lookup
-
-    root = tmp_path / "sessions"
-    root.mkdir()
-    first = CandidateBankRefusal(refusal_code, "") if refusal_code else None
-    results = iter((first, root / "found", root / "changed"))
-
-    def resolve():
-        result = next(results)
-        if isinstance(result, CandidateBankRefusal):
-            raise result
-        return result
-
-    def lookup():
-        return status_bank_lookup(("test",), resolve, root=root)
-
-    if refusal_code:
-        with pytest.raises(CandidateBankRefusal) as exc:
-            lookup()
-        assert exc.value.code == refusal_code
-    else:
-        assert lookup() is None
-    assert lookup() == root / "found"
-    assert lookup() == root / "found"
-    (root / "new-bundle").mkdir()
-    assert lookup() == root / "changed"
-
-
 def _active_topology() -> OutputTopology:
     return mono_output_topology(topology_name="Bench mono")
 

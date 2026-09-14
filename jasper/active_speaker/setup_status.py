@@ -383,7 +383,8 @@ def _applied_layer_a_binding(
             }
         playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
         declaration = load_tuning_declaration(topology, playback_device=playback_device)
-        candidate = candidate_from_applied_profile(topology, applied_profile, find_candidate=status_banked_candidate)
+        candidate = candidate_from_applied_profile(topology, applied_profile,
+            find_candidate=lambda fingerprint: status_banked_candidate(fingerprint, applied_profile=applied_profile))
         preference_filters, trim_db = saved_sound_layers()
         expected_yaml = compile_tuning_graph(declaration, candidate=candidate,
             preference_filters=preference_filters, output_trim_db=trim_db)

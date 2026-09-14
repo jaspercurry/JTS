@@ -1630,11 +1630,11 @@ def prepare_applied_baseline_profile(
     """Resolve the complete applied record before changing the DSP graph."""
     from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
     try:
-        (find_candidate or find_banked_candidate)(candidate.fingerprint)
+        banked = (find_candidate or find_banked_candidate)(candidate.fingerprint)
     except CandidateBankRefusal as exc:
         if exc.code != "not_found":
             raise
-        publish_authored_candidate(candidate)
+        banked = publish_authored_candidate(candidate)
     protection = _protection_projection(design_draft.get("driver_safety_profile"))
     source = _source_payload(
         declaration.topology, design_draft, load_crossover_preview(current_design_draft=design_draft), measurements,
@@ -1660,6 +1660,7 @@ def prepare_applied_baseline_profile(
     applied = {
         **(provenance or {}),
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
+        "candidate_artifact_path": str(banked.path),
         "source": source,
         "config": {**((provenance or {}).get("config") or {}), "path": str(config_path or ""),
                    "basename": Path(config_path).name if config_path else "", "sha256": config_sha256, "exists": bool(config_path),

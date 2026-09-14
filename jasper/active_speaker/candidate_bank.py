@@ -22,7 +22,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, TypeVar, cast
+from typing import Any, Iterator, Mapping
 
 from jasper.log_event import log_event
 
@@ -113,38 +113,20 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
     return (root, root.parent / paired) if paired else (root,)
 
 
-def _bank_directory_stamps(root: Path | None = None) -> tuple[tuple[Path, int | None], ...]:
-    stamps = []
-    for directory in _candidate_roots(_bank_root(root)):
-        try:
-            stamp: int | None = directory.stat().st_mtime_ns
-        except OSError:
-            stamp = None
-        stamps.append((directory, stamp))
-    return tuple(stamps)
+def status_banked_candidate(
+    fingerprint: str, *, applied_profile: Mapping[str, Any] | None = None,
+) -> BankedCandidate:
+    """Open the applied record's exact artifact; status never discovers or migrates."""
+    from .baseline_profile import load_applied_baseline_profile_state  # lazy: baseline recording imports the bank
 
-
-_StatusResult = TypeVar("_StatusResult")
-_status_bank_cache: list[tuple[tuple[Any, ...], Any]] = []
-
-
-def status_bank_lookup(
-    key: tuple[Any, ...], resolve: Callable[[], _StatusResult], *, root: Path | None = None,
-) -> _StatusResult:
-    """Cache successful status resolutions; action callers must resolve fresh."""
-    key = (*key, _bank_directory_stamps(root))
-    for cached_key, cached_result in _status_bank_cache:
-        if cached_key == key:
-            return cast(_StatusResult, cached_result)
-    result = resolve()
-    if result is not None:
-        # Setup and grade each need one retained bank resolution.
-        _status_bank_cache[:] = [*_status_bank_cache[-1:], (key, result)]
-    return result
-
-
-def status_banked_candidate(fingerprint: str) -> BankedCandidate:
-    return status_bank_lookup(("candidate", fingerprint), lambda: find_banked_candidate(fingerprint))
+    applied = applied_profile if applied_profile is not None else load_applied_baseline_profile_state() or {}
+    path = applied.get("candidate_artifact_path")
+    if path and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint:
+        candidate = load_candidate_artifact(Path(path))
+        if candidate is not None and candidate.fingerprint == fingerprint:
+            bundle_id, capture_id = _identity_from_path(Path(path))
+            return BankedCandidate(candidate, bundle_id, capture_id, Path(path))
+    raise CandidateBankRefusal("composition_saved_tune_unavailable", "the applied candidate artifact is unavailable")
 
 
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:

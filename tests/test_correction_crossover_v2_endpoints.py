@@ -3166,7 +3166,7 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
     root = write_asked_poses(tmp_path, state, poses)
     monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
     if storage == "banked":
-        target = tmp_path / "campaigns" / "banked-run" / "bundle"
+        target = tmp_path / "campaigns" / state["session_id"] / "bundle"
         target.mkdir(parents=True)
         shutil.move(root / "asked-run", target)
     elif storage == "recovery":
@@ -3174,7 +3174,7 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
         state["candidate"] = {"fingerprint": "applied-candidate"}
         state["session_id"] = "recovery"
         write_asked_poses(tmp_path, state, [{"deg": 0}])
-        monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.status_banked_candidate",
                             lambda fingerprint, **kw: SimpleNamespace(path=original / "candidate.json"))
     v2state.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
@@ -3197,7 +3197,7 @@ def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypa
     assert asked_beyond_mark(state) is False
     write_asked_poses(tmp_path, state, [{"deg": 20}])
     assert asked_beyond_mark(state) is True
-    target = tmp_path / "campaigns" / "banked-run" / "bundle"
+    target = tmp_path / "campaigns" / state["session_id"] / "bundle"
     target.mkdir(parents=True)
     shutil.move(root / "asked-run", target)
     assert asked_beyond_mark(state) is True
@@ -6042,6 +6042,38 @@ def test_status_reports_previous_applied_record_without_a_bank_walk(
     assert code == 200
     assert payload["crossover_v2"]["previous_candidate_fingerprint"] == prior_fingerprint
     assert v2host._previous_candidate_known() is True
+
+
+@pytest.mark.parametrize("record", ["absent", "applied", "legacy", "pruned"])
+@pytest.mark.parametrize("campaigns_exist", [False, True])
+def test_status_never_discovers_candidates_on_a_cold_or_empty_box(monkeypatch, tmp_path, record, campaigns_exist):
+    from jasper.web.correction_crossover_flow import handle_status
+
+    if record != "absent":
+        previous = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+        path = tmp_path / "baseline_profile.json"
+        applied = json.loads(path.read_text())
+        if record == "legacy":
+            applied.pop("candidate_artifact_path")
+            path.write_text(json.dumps(applied))
+        elif record == "pruned":
+            Path(applied["candidate_artifact_path"]).unlink()
+    else:
+        _seed_baseline_apply_environment(monkeypatch, tmp_path)
+        previous = None
+    campaigns = tmp_path / "campaigns"
+    if campaigns_exist:
+        campaigns.mkdir(exist_ok=True)
+
+    def bank_walk(*args, **kwargs):
+        raise AssertionError
+
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank.find_banked_candidate", bank_walk)
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank._iter_candidate_paths", bank_walk)
+    payload, code = handle_status()
+    assert code == 200
+    assert payload["crossover_v2"]["previous_candidate_fingerprint"] == previous
+    assert payload["setup"]["protected_profile"]["available"] is (record != "absent")
 
 
 def test_apply_refuses_an_offered_previous_candidate_after_pruning(monkeypatch, tmp_path):
