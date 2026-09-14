@@ -13,7 +13,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
-from jasper.audio_measurement.frame_ledger import FrameLedger
+from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
 
@@ -97,7 +97,7 @@ INTEGRITY_NOT_EVALUATED = "not_evaluated"
 
 # Frame accounting, asked before anything about the signal (both read
 # FrameLedger; independently caused losses need both checks).
-INTEGRITY_CHECK_CAPTURE_OVERRUN = "capture_overrun"
+INTEGRITY_CHECK_CAPTURE_OVERRUN = LOST_AT_CAPTURE_OVERRUN
 INTEGRITY_CHECK_FRAME_LEDGER = "frame_ledger"
 # The checks a single summed sweep CAN answer.
 INTEGRITY_CHECK_SWEEP_HEARD = "summed_sweep_heard"

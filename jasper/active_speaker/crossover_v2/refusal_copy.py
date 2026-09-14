@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
+from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 from jasper.log_event import log_event
 
 from ..boost_protection import BOOST_OVER_DECLARED_BOUND
@@ -62,7 +63,7 @@ REASON_CLIPPED = "clipped"
 REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
-REASON_CAPTURE_OVERRUN = "capture_overrun"
+REASON_CAPTURE_OVERRUN = LOST_AT_CAPTURE_OVERRUN
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_CAPTURE_TIMEOUT = "capture_timeout"
