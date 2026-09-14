@@ -32,6 +32,8 @@ from typing import Any
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
+from ..camilla import CamillaUnavailable
+from ..dsp_apply import DspApplyError
 from ..env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
 from ..fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -2383,9 +2385,6 @@ def main(argv: list[str] | None = None) -> int:
                             level=logging.ERROR,
                         )
                         try:
-                            from jasper.camilla import CamillaUnavailable
-                            from jasper.dsp_apply import DspApplyError
-
                             from .active_leader_config import (
                                 restore_active_leader_solo_sync,
                             )
