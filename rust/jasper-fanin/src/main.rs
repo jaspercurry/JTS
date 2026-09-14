@@ -412,9 +412,14 @@ fn run() -> Result<()> {
     // wait out the systemd watchdog instead of restarting promptly.
     shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // Drop the mixer (and its tap sender) so the writer thread's recv loop
-    // terminates. Then join the helper threads with a best-effort timeout — if
-    // either hangs, systemd's TimeoutStopSec=5s will SIGKILL us anyway.
+    // Take the ring-stall-log writer's handle before dropping the mixer: it
+    // lives on the `Mixer` (like the tap channel), and once taken the mixer
+    // is free to drop.
+    let ring_stall_log_writer = mixer.take_ring_stall_log_writer();
+    // Drop the mixer (and its tap and ring-stall-log senders) so both writer
+    // threads' recv loops terminate. Then join the helper threads with a
+    // best-effort timeout — if either hangs, systemd's TimeoutStopSec=5s will
+    // SIGKILL us anyway.
     drop(mixer);
     if let Some(handle) = assistant_reference_writer {
         let _ = handle.join();
@@ -422,6 +427,9 @@ fn run() -> Result<()> {
     let _ = state_thread.join();
     let _ = output_clock_thread.join();
     let _ = tap_writer.join();
+    if let Some(handle) = ring_stall_log_writer {
+        let _ = handle.join();
+    }
     if let Some(handle) = source_notify_thread {
         let _ = handle.join();
     }
