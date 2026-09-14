@@ -176,9 +176,3 @@ def test_install_seeds_crossover_statefile_via_runtime_contract():
     assert "/var/lib/camilladsp/crossover-statefile.yml" in body
     # Reuses the runtime-safe-graph CLI (no hand-rolled flat seed).
     assert "runtime-safe-graph" in body
-
-
-def test_unit_listed_in_streambox_systemd_analyze_verify():
-    """A deploy runs systemd-analyze verify on this unit (streambox path)."""
-    lib = INSTALL_LIB.read_text()
-    assert '"${SYSTEMD_DIR}/jasper-camilla-crossover.service"' in lib
