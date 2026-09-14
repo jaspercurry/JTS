@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import random
+import threading
 import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -118,7 +119,7 @@ async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation
         steps.append(stage)
         if stage == failure_stage and not failed:
             failed = True
-            raise RuntimeError(f"SDK preparation failed for {key}")
+            raise ValueError(f"SDK preparation failed for {key}")
 
     class Client:
         def __init__(self, *, api_key):
@@ -139,14 +140,23 @@ async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation
 
     monkeypatch.setattr("openai.AsyncOpenAI", Client)
     conn = OpenAILiveConnection(api_key=key)
+    cues = []
+
+    async def cue_cb(slug):
+        cues.append(slug)
+
+    conn.set_failure_escalation_cb(cue_cb)
     try:
         await conn.start(ToolRegistry(), "Be brief.")
         assert steps == (["construct"] if failure_stage == "construct" else ["construct", "bind"])
         assert not conn.is_paused()
         if failure_stage:
+            assert conn._state is ConnectionState.FAILED
             assert conn.last_failure_detail() and key not in conn.last_failure_detail()
             assert key not in caplog.text
             assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+        await asyncio.sleep(0)
+        assert cues == []
         turn = await conn.acquire_turn()
         assert steps == {
             None: ["construct", "bind", "dial"],
@@ -159,6 +169,96 @@ async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation
     finally:
         await conn.stop()
         await conn.stop()
+    assert steps.count("close") == 1
+
+
+@pytest.mark.parametrize("interruption", [None, "start", "wake", "stop", "stop_cancel"])
+async def test_sdk_preparation_keeps_loop_responsive_and_one_owner(monkeypatch, interruption):
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    constructing = asyncio.Event()
+    finish_construct = threading.Event()
+    steps = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            assert threading.get_ident() != loop_thread
+            steps.append("construct")
+            loop.call_soon_threadsafe(constructing.set)
+            assert finish_construct.wait(timeout=2.0)
+
+        @property
+        def live(self):
+            assert threading.get_ident() != loop_thread
+            steps.append("bind")
+            return self
+
+        def connect(self):
+            steps.append("dial")
+            return LiveSocket()
+
+        async def close(self):
+            steps.append("close")
+
+    monkeypatch.setattr("openai.AsyncOpenAI", Client)
+    conn = OpenAILiveConnection(api_key="test")
+    starting = asyncio.create_task(conn.start(ToolRegistry(), "Be brief."))
+    tasks = [starting]
+    try:
+        await wait_signalled(constructing, "SDK worker", producer=starting)
+        assert conn._state is ConnectionState.CONNECTING
+        assert steps == ["construct"]
+        acquiring = asyncio.create_task(conn.acquire_turn())
+        tasks.append(acquiring)
+        await wait_until(lambda: conn._active_turn is not None)
+        assert not starting.done()
+        assert not acquiring.done()
+        if interruption == "start":
+            starting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await starting
+        elif interruption == "wake":
+            acquiring.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await acquiring
+            acquiring = asyncio.create_task(conn.acquire_turn())
+            tasks.append(acquiring)
+            await wait_until(lambda: conn._active_turn is not None)
+        elif interruption in {"stop", "stop_cancel"}:
+            stopping = asyncio.create_task(conn.stop())
+            tasks.append(stopping)
+            await wait_until(conn._stopping.is_set)
+            if interruption == "stop_cancel":
+                for _ in range(2):
+                    stopping.cancel()
+                    await asyncio.sleep(0)
+            assert not stopping.done()
+        assert steps == ["construct"]
+        finish_construct.set()
+        if interruption in {"stop", "stop_cancel"}:
+            with pytest.raises(RuntimeError):
+                await acquiring
+            if interruption == "stop_cancel":
+                with pytest.raises(asyncio.CancelledError):
+                    await stopping
+            else:
+                await stopping
+            assert conn._state is ConnectionState.CLOSED
+            assert steps == ["construct", "bind", "close"]
+        else:
+            turn = await acquiring
+            assert not turn.turn_lost()
+            assert conn._state is ConnectionState.IN_TURN
+            await turn.release()
+        if not starting.cancelled():
+            await starting
+    finally:
+        finish_construct.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await conn.stop()
+        await conn.stop()
+    assert steps.count("construct") == 1
+    assert steps.count("bind") == 1
     assert steps.count("close") == 1
 
 

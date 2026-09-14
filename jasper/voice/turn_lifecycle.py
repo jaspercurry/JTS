@@ -30,11 +30,10 @@ from typing import NoReturn
 from jasper.log_event import log_event
 
 from ..usage import SpendCap, UsageStore
-from ._tasks import cancel_tracked_tasks
+from ._tasks import await_cleanup_owned, cancel_tracked_tasks
 from .assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
     AssistantOutput,
-    await_output_cleanup_owned,
     capture_cleanup_error,
 )
 from .content_activity import ContentActivityTracker
@@ -256,7 +255,7 @@ class TurnLifecycle:
             pending_release_ms, connect_ms = await asyncio.shield(acquiring)
         finally:
             if not acquiring.done():
-                await await_output_cleanup_owned(
+                await await_cleanup_owned(
                     cancel_tracked_tasks({acquiring}), task_name="turn-acquire-cancel",
                 )
             elif not acquiring.cancelled():
@@ -463,7 +462,7 @@ class TurnLifecycle:
             return
         self.ending = True
         try:
-            await await_output_cleanup_owned(
+            await await_cleanup_owned(
                 self._release_failed_turn(), task_name="turn-begin-cleanup",
             )
         finally:
@@ -663,7 +662,7 @@ class TurnLifecycle:
         self.ending = True
         self.turn.discard_input()
         try:
-            await await_output_cleanup_owned(
+            await await_cleanup_owned(
                 self._end_turn_inner(reason), task_name="turn-end-cleanup",
             )
         finally:
