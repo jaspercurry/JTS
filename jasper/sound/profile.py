@@ -30,6 +30,7 @@ from typing import Any, Iterable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_json
 from jasper.camilla_config_contract import (
+    DEFAULT_SAMPLE_RATE as RESPONSE_SAMPLE_RATE_HZ,
     GAINLESS_BIQUAD_TYPES,
     SHELF_Q,
     FilterSpec,
@@ -60,19 +61,6 @@ MAX_Q = 10.0
 # clipping source. 1.4 caps the resonant bump near +3 dB. Notch is exempt —
 # it is meant to be surgical and narrow.
 CUT_MAX_Q = 1.4
-
-# FilterSpec and GAINLESS_BIQUAD_TYPES now live in the neutral
-# jasper.camilla_config_contract (the stereo-prefix builder shares them);
-# they are imported at the top of this module and re-exported here, so
-# `from jasper.sound.profile import FilterSpec` and the jasper.sound package
-# re-exports keep working unchanged. FILTER_EPSILON_DB moved there too (it
-# backs FilterSpec.active()); profile.py no longer references it directly.
-
-# Sample rate the drawn magnitude response is evaluated at. Must match
-# CamillaDSP's runtime rate (camilla_config_contract.DEFAULT_SAMPLE_RATE =
-# 48000) so the preview curve matches the speaker's actual output. Hardcoded
-# (not imported) to keep this module import-cheap and dependency-free.
-RESPONSE_SAMPLE_RATE_HZ = 48000
 
 # Every shelf is drawn AND emitted at the one Butterworth (non-resonant,
 # no-overshoot) shelf Q, so the preview curve is the curve CamillaDSP realises.
