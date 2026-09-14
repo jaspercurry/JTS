@@ -196,8 +196,8 @@ def test_expired_placement_banks_registry_refusal(monkeypatch):
     assert (result.status, result.reason) == ("partial", POSITION_HOLD_EXPIRED_CODE)
     assert fakes.play.calls == []
     take, = result.takes
-    assert take["quality"]["fault"] in REASON_REGISTRY
-    assert take["next_action"] == "stop"
+    assert take["fault"] in REASON_REGISTRY
+    assert take["next"] == "stop"
     assert result.to_dict()["honoured"]["takes_refused"] == 1
 
 
@@ -225,17 +225,20 @@ def test_unplayable_plan_records_each_missing_stop(plan):
     assert fakes.play.calls == []
 
 
-@pytest.mark.parametrize(("next_action", "gain"), [("retake_louder", -15), ("retake_quieter", -24)])
+@pytest.mark.parametrize(("next_action", "gain"), [("accept", None), ("retake_louder", -15), ("retake_quieter", -24)])
 def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, next_action, gain):
-    verdicts = iter([TakeVerdict(False, REASON_CLIPPED, next=next_action, next_gain_db=gain, charge="speaker"), TakeVerdict(True)])
+    refusal = {"fault": REASON_CLIPPED, "next": next_action, "charge": "speaker"} if gain is not None else {}
+    verdicts = iter([*([TakeVerdict(False, **refusal, next_gain_db=gain)] if refusal else []), TakeVerdict(True)])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     gate = AnsweredGate()
     result, fakes = asyncio.run(_run_gated(_walk([0]), gate=gate))
-    assert fakes.play.rungs == [None, gain]
-    assert len(fakes.banked) == 2
+    assert fakes.play.rungs == ([None, gain] if refusal else [None])
+    assert len(fakes.banked) == (2 if refusal else 1)
     assert gate.grants == [(1, 1)]
-    assert [t["attempt"] for t in result.takes] == [1, 2]
-    assert [t["selected"] for t in _takes(result.to_dict())] == [False, True]
+    rows = _takes(result.records.snapshots[-1])
+    assert [t["attempt"] for t in rows] == ([1, 2] if refusal else [1])
+    assert [t["selected"] for t in rows] == ([False, True] if refusal else [True])
+    assert [{key: t[key] for key in ("fault", "next", "charge") if key in t} for t in rows] == ([refusal, {}] if refusal else [{}])
     assert result.status == "complete"
 
 
@@ -357,8 +360,8 @@ def test_incomplete_take_obeys_verdict_and_accounts_for_remaining_stops(monkeypa
     assert result.status == ("complete" if retried else "partial")
     assert seams.play.bearings == ([0, 0, 20] if retried else [0])
     assert result.takes[0]["quality"]["status"] == TAKE_INCOMPLETE
-    assert result.takes[0]["quality"]["fault"] == REASON_CLIPPED
-    assert result.takes[0]["next_action"] == ("stop" if action == "accept" else action)
+    assert result.takes[0]["fault"] == REASON_CLIPPED
+    assert result.takes[0]["next"] == ("stop" if action == "accept" else action)
     assert [stop["index"] for stop in result.not_measured] == ([] if retried else [1, 2])
     assert all(stop["reason"] == REASON_CLIPPED for stop in result.not_measured)
 
@@ -520,7 +523,7 @@ def test_failed_analysis_keeps_the_raw_record(monkeypatch):
     assert result.status == "partial"
     assert result.takes_measured == len(fakes.banked) == 1
     assert result.takes[0]["artifacts"]["record_id"]
-    assert result.takes[0]["quality"]["fault"] in REASON_REGISTRY
+    assert result.takes[0]["fault"] in REASON_REGISTRY
 
 
 def test_real_assessor_sees_glitch_and_retries_once():
@@ -531,7 +534,7 @@ def test_real_assessor_sees_glitch_and_retries_once():
         return replace(_analysis(record, record_id), discontinuity_samples=1024 if calls == 1 else 0)
     result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
     assert len(fakes.banked) == 2
-    assert result.takes[0]["quality"]["fault"] == REASON_DRIFT_BASELINES_DISAGREE
+    assert result.takes[0]["fault"] == REASON_DRIFT_BASELINES_DISAGREE
     assert result.status == "complete"
 
 

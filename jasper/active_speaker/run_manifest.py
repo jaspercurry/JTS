@@ -194,10 +194,12 @@ class RunManifest:
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"), "curve": curve or None,
-                   "quality": {"status": status, "fault": verdict.fault,
+                   "quality": {"status": status,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},
-                   "next_action": verdict.next, "next_gain_db": verdict.next_gain_db, "charge": verdict.charge,
+                   **({"fault": verdict.fault, "next": verdict.next, "charge": verdict.charge}
+                      if status != TAKE_MEASURED else {}),
+                   "next_gain_db": verdict.next_gain_db,
                    "artifacts": {"record_id": record_id, "wav_sha256": record.get("wav_sha256"),
                                  "wav_path": record.get("wav_path")},
                    "timing": {"started_s": started_s, "ended_s": ended_s}}
