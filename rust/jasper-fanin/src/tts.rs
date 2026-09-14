@@ -872,9 +872,7 @@ impl TtsMixer {
         if self.starved_run_samples > 0 && (popped_samples > 0 || !still_open) {
             let frames = self.starved_run_samples / (CHANNELS as u64);
             self.starved_run_samples = 0;
-            if popped_samples > 0
-                && resumed_segment == Some(self.starved_run_segment)
-                && frames > 0
+            if popped_samples > 0 && resumed_segment == Some(self.starved_run_segment) && frames > 0
             {
                 let ms = frames_to_ms(frames, TTS_SAMPLE_RATE);
                 if ms > STARVED_DROPOUT_MAX_MS {
