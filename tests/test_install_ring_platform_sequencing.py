@@ -94,9 +94,9 @@ def _assert_camilla_restart_stays_after_dsp_reconcile(function_name: str):
 def test_camilla_restart_stays_after_dsp_reconcile_in_systemd_units():
     """Camilla must not restart in the fan-in-restart to DSP-reconcile window.
 
-    With stale ring files deleted early, fan-in creates fresh 2-slot rings. If
+    With stale ring files deleted early, fan-in creates fresh 4-slot rings. If
     Camilla restarts before reconcile_sound_dsp_state re-emits the ring config,
-    it can still load an old chunk-256 statefile against that fresh 2-slot ring.
+    it can still load an old chunk-256 statefile against that fresh 4-slot ring.
     Keep the restart after the reconcile so the deploy window is bounded by the
     existing core-audio bounce contract instead of a second geometry race.
     """

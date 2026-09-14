@@ -354,7 +354,7 @@ def test_check_is_registered_in_the_ring_runtime_module():
 # 2026-07-05 crash-loop class (hw_params EINVAL + ioplug attach_fatal).
 # ===========================================================================
 
-def _write_conf(tmp_path, *, capture_n_slots=2):
+def _write_conf(tmp_path, *, capture_n_slots=4):
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
         f"pcm.jts_ring_capture {{\n    period_frames 128\n    n_slots {capture_n_slots}\n}}\n"
@@ -367,7 +367,7 @@ def _write_conf(tmp_path, *, capture_n_slots=2):
 def _write_ring(
     path,
     *,
-    n_slots=2,
+    n_slots=4,
     period_frames=128,
     magic=0x4A52_494E,
     rate=48000,
@@ -391,7 +391,7 @@ def _stage_ring_geometry(
     *,
     fanin_env_text="",
     jasper_env_text="",
-    capture_n_slots=2,
+    capture_n_slots=4,
 ):
     conf = _write_conf(tmp_path, capture_n_slots=capture_n_slots)
     fanin_env = tmp_path / "fanin.env"
@@ -438,7 +438,7 @@ def _stage_ring_geometry(
         # the conf.d declares none, so the comparator skips that axis.
         ({}, {"sample_format": 2}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
         ({}, {"channels": 6}, "fail", audio_runtime_ring.REASON_RING_HEADER_CONF_MISMATCH),
-        # Default migration class: stale JASPER_FANIN_RING_SLOTS=8 vs conf.d's 2.
+        # Default migration class: stale JASPER_FANIN_RING_SLOTS=8 vs conf.d's 4.
         (
             {"fanin_env_text": "JASPER_FANIN_RING_SLOTS=8\n"},
             {"n_slots": 8},
@@ -457,10 +457,10 @@ def _stage_ring_geometry(
         # fanin.env override to neutralize stale base-env residue.
         (
             {
-                "fanin_env_text": "JASPER_FANIN_RING_SLOTS=2\n",
+                "fanin_env_text": "JASPER_FANIN_RING_SLOTS=4\n",
                 "jasper_env_text": "JASPER_FANIN_RING_SLOTS=8\n",
             },
-            {"n_slots": 2},
+            {"n_slots": 4},
             "ok",
             "",
         ),

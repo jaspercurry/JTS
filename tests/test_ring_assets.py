@@ -18,6 +18,7 @@ import pytest
 from jasper import ring_assets
 from jasper.active_speaker.runtime_contract import MAX_RING_CHANNELS
 from jasper.fanin_coupling import (
+    DEFAULT_FANIN_RING_SLOTS,
     RING_SLOT_FRAMES,
     RING_WIRE_FORMAT_WIDE,
     RING_WIRE_FORMATS,
@@ -158,9 +159,9 @@ def test_ring_conf_period_frames_none_when_absent_or_torn(tmp_path):
 
 
 def test_ring_conf_n_slots_parses_per_block(tmp_path):
-    # The parser must scope to the named block, not scan the whole file; Ring A and
-    # Ring B happen to both use 2 slots today, but either block may diverge under a
-    # coherent future override.
+    # The parser must scope to the named block, not scan the whole file — this
+    # fixture happens to use 2 slots for both, but the shipped conf.d itself
+    # has Ring A and Ring B at different depths since #4124.
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
     assert ring_assets.ring_conf_n_slots("jts_ring_capture", str(conf)) == 2
@@ -439,12 +440,14 @@ def test_render_ring_conf_wire_converges_a_drifted_slot_count(tmp_path):
     # blocks declares a geometry outputd never builds — a hard ioplug attach
     # error at arm. Both outputd-read blocks converge.
     conf = _shipped_conf_copy(tmp_path)
-    conf.write_text(
-        conf.read_text(encoding="utf-8").replace(
-            f"n_slots {ring_assets.RING_CONF_N_SLOTS}", "n_slots 8"
-        ),
-        encoding="utf-8",
-    )
+    text = conf.read_text(encoding="utf-8")
+    # Drift every block (Ring A's shipped depth differs from Ring B/Active's
+    # since #4124, so one shared literal no longer hits all three) to the same
+    # off-geometry value, so the assertions below isolate "which blocks does
+    # the renderer converge" rather than "which blocks happened to match".
+    text = text.replace(f"n_slots {ring_assets.RING_CONF_N_SLOTS}", "n_slots 8")
+    text = text.replace(f"n_slots {DEFAULT_FANIN_RING_SLOTS}", "n_slots 8")
+    conf.write_text(text, encoding="utf-8")
 
     outcome = ring_assets.render_ring_conf_wire(_shipped_wire(), conf_d=str(conf))
 
@@ -786,13 +789,15 @@ def test_render_round_trips_through_the_parsers(tmp_path):
     ring_assets.render_ring_conf_wire(wire, conf_d=str(conf))
 
     assert ring_assets.ring_conf_period_frames(str(conf)) == wire.period_frames
-    for pcm, expected_channels in (
-        (ring_assets.RING_A_CONF_PCM, wire.ring_a_channels),
-        (ring_assets.RING_B_CONF_PCM, wire.ring_b_channels),
+    for pcm, expected_channels, expected_slots in (
+        # Ring A's n_slots is jasper-fanin's, untouched by this renderer — the
+        # shipped copy's own depth (DEFAULT_FANIN_RING_SLOTS) survives.
+        (ring_assets.RING_A_CONF_PCM, wire.ring_a_channels, DEFAULT_FANIN_RING_SLOTS),
+        (ring_assets.RING_B_CONF_PCM, wire.ring_b_channels, ring_assets.RING_CONF_N_SLOTS),
     ):
         assert ring_assets.ring_conf_format(pcm, str(conf)) == wire.sample_format
         assert ring_assets.ring_conf_channels(pcm, str(conf)) == expected_channels
-        assert ring_assets.ring_conf_n_slots(pcm, str(conf)) == 2
+        assert ring_assets.ring_conf_n_slots(pcm, str(conf)) == expected_slots
 
 
 def test_render_is_idempotent_on_a_wide_wire(tmp_path):

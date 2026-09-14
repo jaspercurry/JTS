@@ -112,8 +112,8 @@ def test_ring_a_default_slots_match_conf_d_and_ioplug_period():
     assert _rust_declares_line(
         RUST_FANIN_CONFIG, "pub use jasper_ring::RING_SLOT_FRAMES;"
     ), "rust/jasper-fanin/src/config.rs must re-export jasper_ring::RING_SLOT_FRAMES"
-    assert n_slots == DEFAULT_FANIN_RING_SLOTS == 2
-    assert n_slots * period_frames == 256
+    assert n_slots == DEFAULT_FANIN_RING_SLOTS == 4
+    assert n_slots * period_frames == 512
 
 
 def test_ioplug_constraint_space_derives_from_product_constants():
@@ -197,24 +197,31 @@ def test_ioplug_space_refuses_a_wire_it_cannot_size():
 
 
 def test_camilla_request_is_documented_but_negotiated_outcome_is_fixed():
-    """CamillaDSP's request formula is not the asserted outcome.
+    """CamillaDSP's request formula is not what drives the asserted outcome.
 
     Formula source: CamillaDSP v4.1.3 (05e9cfc)
     src/alsa_backend/threaded_buffermanager.rs::
     DeviceBufferManager::calculate_buffer_size. The same request is what the
     8-slot/chunk-256 hardware anchor below negotiates against: 8 slots * 128
     frames is the 1024-frame buffer that request resolves to.
+
+    At the product's shipped chunk (128) the request (512, from this formula's
+    own 4-period floor) and the widened 4-slot ring's fixed buffer (512) now
+    coincide exactly (#4124 widened the ring from 2 slots, where the ring's
+    256-frame buffer was smaller than the request) — `>=` rather than `>`
+    because the ring's fixed size, not the request, is still what the ioplug
+    actually offers; the request is never allowed to grow it.
     """
 
     outcome = negotiate(chunksize=RING_CAMILLA_CHUNKSIZE)
 
-    assert outcome.requested_buffer_frames > outcome.negotiated_buffer_frames
+    assert outcome.requested_buffer_frames >= outcome.negotiated_buffer_frames
     assert outcome.negotiated_buffer_frames == RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
     assert outcome.requested_period_frames == outcome.negotiated_buffer_frames // 8
     assert outcome.negotiated_period_frames == RING_SLOT_FRAMES
 
 
-def test_ring_coupled_camilla_emitter_matches_two_slot_ring_geometry():
+def test_ring_coupled_camilla_emitter_matches_shipped_ring_geometry():
     devices = _flat_ring_devices()
     chunksize = devices["chunksize"]
     target_level = devices["target_level"]
@@ -252,10 +259,14 @@ def test_ring_coupled_camilla_emitter_matches_two_slot_ring_geometry():
             RING_CAMILLA_TARGET_LEVEL,
             True,
             "accepted",
-            id="2-slot chunk-128 product-path-anchor",
+            id="4-slot chunk-128 product-path-anchor",
         ),
         pytest.param(
-            DEFAULT_FANIN_RING_SLOTS,
+            # Fixed historical anchor, not the product default (#4124 widened
+            # the shipped ring to 4 slots): the pairing this case exists to
+            # reject — one chunk consuming the entire buffer — only recurs at
+            # the OLD 2-slot depth.
+            2,
             256,
             RING_CAMILLA_TARGET_LEVEL,
             False,

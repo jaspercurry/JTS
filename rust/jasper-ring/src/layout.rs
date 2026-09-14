@@ -67,18 +67,20 @@ pub const RING_SLOT_FRAMES: u32 = 128;
 /// full-ring tick paces from it, and outputd's `ShmRingSource` declares it.
 pub const RATE_HZ: u32 = 48_000;
 
-/// Depth of the CENTRAL content rings — Ring A (fan-in -> CamillaDSP) and
-/// Ring B (CamillaDSP -> outputd) — at the 2-slot ping-pong floor.
+/// Depth of the CENTRAL content ring Ring B (CamillaDSP -> outputd), at the
+/// 2-slot ping-pong floor.
 ///
 /// A compile-time constant with no env override, the same shape as
 /// [`RING_SLOT_FRAMES`]: outputd reads it for its Ring B reader and
 /// `jasper.ring_assets` renders it into the outputd-read `conf.d` blocks
 /// (`jts_ring_playback`, `jts_ring_active_playback`), so the ioplug and
 /// outputd cannot declare different depths there today. Ring A
-/// (`jts_ring_capture`) still takes its depth from jasper-fanin's own
-/// `JASPER_FANIN_RING_SLOTS` env (`rust/jasper-fanin/src/config.rs`) — the
-/// same guarantee extends to it once fan-in reads this constant instead. The
-/// dac-content RETURN ring is deliberately deeper and keeps its own
+/// (`jts_ring_capture`) takes its depth from jasper-fanin's own
+/// `JASPER_FANIN_RING_SLOTS` env instead (`rust/jasper-fanin/src/config.rs`,
+/// default 4 since #4124 widened it for cushion against CamillaDSP
+/// short-reads) — the two central rings deliberately no longer share one
+/// depth (cross-repo default duplication tracked in #4805). The dac-content
+/// RETURN ring is deliberately deeper still and keeps its own
 /// `DAC_CONTENT_RING_SLOTS`.
 pub const RING_SLOTS: u32 = 2;
 

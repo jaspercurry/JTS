@@ -910,7 +910,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     and the on-disk header is then compared on EVERY axis the attach compares:
 
       1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (jasper.env -> fanin.env
-         systemd env chain, default 2)
+         systemd env chain, default 4)
       2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
       3. the on-disk ``program.ring`` header vs that conf.d block, on ``n_slots``,
          ``period_frames`` (the ring slot IS one outputd period, so a stale period

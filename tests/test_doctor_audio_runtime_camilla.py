@@ -309,9 +309,19 @@ def test_check_camilla_volume_limit_fails_on_a_missing_config(monkeypatch, tmp_p
 # --------------------------------------------------------- camilla ring chunk
 
 
-def _stage_ring_config(tmp_path, monkeypatch, chunksize: int, extra: str = "") -> None:
+def _stage_ring_config(
+    tmp_path,
+    monkeypatch,
+    chunksize: int,
+    extra: str = "",
+    *,
+    capture_device: str | None = None,
+    playback_device: str | None = None,
+) -> None:
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
+    capture_device = RING_CAPTURE_DEVICE if capture_device is None else capture_device
+    playback_device = RING_PLAYBACK_DEVICE if playback_device is None else playback_device
     _point_at_config(
         monkeypatch,
         tmp_path,
@@ -321,19 +331,19 @@ def _stage_ring_config(tmp_path, monkeypatch, chunksize: int, extra: str = "") -
         f"{extra}"
         "  capture:\n"
         "    type: Alsa\n"
-        f'    device: "{RING_CAPTURE_DEVICE}"\n'
+        f'    device: "{capture_device}"\n'
         "  playback:\n"
         "    type: Alsa\n"
-        f'    device: "{RING_PLAYBACK_DEVICE}"\n',
+        f'    device: "{playback_device}"\n',
         name="ring.yml",
     )
 
 
 def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
     """jts4's shape: a chunk the ring cannot open, so the box is silent."""
-    from jasper.fanin_coupling import ring_capacity_frames
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, ring_capacity_frames
 
-    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames() * 4)
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames(RING_CAPTURE_DEVICE) * 4)
 
     r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
 
@@ -341,11 +351,46 @@ def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
     assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_ABOVE_CAPACITY
 
 
-def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
-    """jts.local's shape: a floor that exactly fills the ring is fine."""
+def test_check_camilla_ring_chunk_fails_when_it_fits_ring_a_but_not_ring_b(
+    monkeypatch, tmp_path
+):
+    """The blocker case (#4124): Ring A widened past Ring B, so a chunk that
+    fits Ring A's own capacity can still be above Ring B's — CamillaDSP still
+    cannot open Ring B at that chunk and will restart-loop."""
+    from jasper.fanin_coupling import (
+        RING_CAPTURE_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        ring_capacity_frames,
+    )
+
+    capture_capacity = ring_capacity_frames(RING_CAPTURE_DEVICE)
+    playback_capacity = ring_capacity_frames(RING_PLAYBACK_DEVICE)
+    assert capture_capacity > playback_capacity
+    _stage_ring_config(tmp_path, monkeypatch, capture_capacity)
+
+    r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_ABOVE_CAPACITY
+
+
+@pytest.mark.parametrize(
+    "device_attr, other_role",
+    [("RING_CAPTURE_DEVICE", "playback_device"), ("RING_PLAYBACK_DEVICE", "capture_device")],
+    ids=["ring-a", "ring-b"],
+)
+def test_check_camilla_ring_chunk_ok_at_capacity(
+    monkeypatch, tmp_path, device_attr, other_role
+):
+    """Each named PCM is judged against ITS OWN capacity: a chunk that exactly
+    fills Ring A or Ring B (sized independently since #4124) is fine."""
+    from jasper import fanin_coupling
     from jasper.fanin_coupling import ring_capacity_frames
 
-    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+    device = getattr(fanin_coupling, device_attr)
+    capacity = ring_capacity_frames(device)
+    other_kwargs = {other_role: "not_a_ring_device"}
+    _stage_ring_config(tmp_path, monkeypatch, capacity, **other_kwargs)
 
     r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
 
@@ -377,12 +422,12 @@ def test_check_camilla_ring_chunk_warns_on_a_target_over_the_ring_capacity(
     """A target the whole ring cannot hold is a fill the graph never reaches.
 
     The shape a pre-ring-geometry config on disk carries: a DAC floor's 1536
-    against a 256-frame ring. It clears CamillaDSP's own chunk x (queuelimit+4)
-    ceiling, so only the transport bound catches it.
+    against a 256-frame Ring B. It clears CamillaDSP's own chunk x
+    (queuelimit+4) ceiling, so only the transport bound catches it.
     """
-    from jasper.fanin_coupling import ring_capacity_frames
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, ring_capacity_frames
 
-    capacity = ring_capacity_frames()
+    capacity = ring_capacity_frames(RING_PLAYBACK_DEVICE)
     _stage_ring_config(
         tmp_path, monkeypatch, capacity,
         extra=f"  queuelimit: 4\n  target_level: {capacity * 2}\n",

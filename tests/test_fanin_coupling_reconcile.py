@@ -31,6 +31,7 @@ from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import ring_edge_width_ready
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
+    DEFAULT_FANIN_RING_SLOTS,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
@@ -975,7 +976,7 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
 def _ring_conf(
     tmp_path,
     *,
-    capture_n_slots: int = 2,
+    capture_n_slots: int = DEFAULT_FANIN_RING_SLOTS,
     period_frames: int = 128,
     sample_format: str = "S32_LE",
 ):
@@ -1085,7 +1086,7 @@ def test_converge_refuses_the_spine_when_the_content_format_converge_fails(
 
 def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypatch):
     # Default migration: a stale JASPER_FANIN_RING_SLOTS=8 old-default line that
-    # disagrees with the conf.d's pinned 2 is overridden in fanin.env at arm time
+    # disagrees with the conf.d's pinned 4 is overridden in fanin.env at arm time
     # (self-heals to the coherent default) so the arm proceeds instead of being
     # blocked forever.
     import jasper.ring_assets as ra
@@ -1093,7 +1094,7 @@ def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypa
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
     # No on-disk stale ring in this test (macOS has no /dev/shm; the guard no-ops on
     # an absent file). The migration is the axis under test.
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
@@ -1116,20 +1117,20 @@ def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypa
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
     assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
     # The stale =8 line was overridden in fanin.env (the later systemd env file).
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
 
 
 def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, monkeypatch):
     # Regression for the real systemd env chain: jasper-fanin.service loads
     # /etc/jasper/jasper.env first and fanin.env last. A stale base-env =8 is
     # still live when fanin.env has no slot override, so migration must write an
-    # explicit coherent =2 into fanin.env rather than merely relying on defaults.
+    # explicit coherent =4 into fanin.env rather than merely relying on defaults.
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
     monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
     monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
     _stub_ring_ioplug_wire_supported(monkeypatch)
@@ -1154,7 +1155,7 @@ def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, mo
     assert result.ok is True, result.detail
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
     assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
 
 
 def test_convergence_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
@@ -1191,7 +1192,7 @@ def test_convergence_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
 
 def test_convergence_deletes_a_stale_on_disk_ring_before_the_spine(tmp_path, monkeypatch):
     # Defect A stale-file guard: an on-disk program.ring with a MISMATCHED
-    # geometry (an 8-slot file from before the 2-slot default) is deleted before
+    # geometry (an 8-slot file from before the 4-slot default) is deleted before
     # the daemons bounce, so the writer re-creates it fresh. A geometry-matched
     # file is left untouched.
     import struct
@@ -1201,7 +1202,7 @@ def test_convergence_deletes_a_stale_on_disk_ring_before_the_spine(tmp_path, mon
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
     _stub_ring_ioplug_wire_supported(monkeypatch)
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
@@ -1225,7 +1226,7 @@ def test_convergence_deletes_a_stale_on_disk_ring_before_the_spine(tmp_path, mon
         struct.pack_into("<I", hdr, 24, n_slots)  # n_slots
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
 
-    # Stale Ring A (8 slots vs conf.d's 2) → must be deleted.
+    # Stale Ring A (8 slots vs conf.d's 4) → must be deleted.
     _write_ring(program, 8)
     # Coherent Ring B (2 slots == conf.d's jts_ring_playback 2) → must be KEPT.
     _write_ring(content, 2)
@@ -1291,7 +1292,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=2)))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
     _stub_ring_ioplug_wire_supported(monkeypatch)
     program = tmp_path / "program.ring"
     content = tmp_path / "content.ring"
@@ -1317,12 +1318,12 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
 
-    _write_ring(program, 2)
+    _write_ring(program, 4)
     _write_ring(content, 2)
 
     # Env slots MATCH the conf.d (coherent operator override kept).
     fanin_env = _write(
-        tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=2\n"
+        tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=4\n"
     )
     outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
     calls, ro, rf, rc = _recorder()
@@ -1340,7 +1341,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # Lightweight: camilla-only re-load, NO fan-in / outputd bounce.
     assert calls == ["camilla:shm_ring"]
     # The coherent operator override is preserved.
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
+    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
     assert program.exists()
     assert content.exists()
 

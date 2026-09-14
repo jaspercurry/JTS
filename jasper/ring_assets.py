@@ -140,8 +140,11 @@ RING_CONF_N_SLOTS = 2
 # (``rust/jasper-fanin/src/config.rs``, ``.env.example`` documents 2..16 "must
 # match the conf.d n_slots"), and rendering this constant into that block
 # would shear a coherent operator override (env + conf.d) on the next
-# hardware reconcile. Render Ring A's n_slots too once jasper-fanin reads
-# ``jasper_ring::RING_SLOTS`` and ``JASPER_FANIN_RING_SLOTS`` is gone.
+# hardware reconcile. Ring A's n_slots is owned by
+# ``jasper.fanin_coupling.DEFAULT_FANIN_RING_SLOTS`` /
+# ``JASPER_FANIN_RING_SLOTS``, never this constant — the two rings are sized
+# independently on purpose (``rust/jasper-ring/src/layout.rs``'s
+# ``RING_SLOTS`` doc comment).
 RING_CONF_N_SLOTS_PCMS = (RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 
 
@@ -520,7 +523,7 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
 #
 # The ring's ``n_slots`` is a SECOND geometry axis independent of period_frames.
 # fan-in creates Ring A with ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots
-# (default 2); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (2 in
+# (default 4); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (4 in
 # the shipped file); the on-disk ring header records the ``n_slots`` the writer
 # actually created. A mismatch on ANY of the three axes is a hard failure:
 #   - fan-in env vs conf.d: fan-in creates a ring at one slot count while

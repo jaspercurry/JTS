@@ -101,7 +101,7 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # Ring A/B slot-geometry LAST-TIER fallback, reached only when both live
 # STATUS and the jasper.ring_assets parse (see ring_conf_parsed_frames) are
 # unavailable. Matches the shipped 60-jts-ring.conf: period_frames 128,
-# n_slots 2. Ring A counts the full 2-slot capacity — it runs pinned full
+# n_slots 4. Ring A counts the full 4-slot capacity — it runs pinned full
 # in steady state (STATUS full_waits/published ratio ~1.0,
 # rust/jasper-ring/src/layout.rs's RING_SLOT_FRAMES, and fan-in's
 # ring_slots) — while
@@ -110,7 +110,7 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets pins
 # these equal to a fresh jasper.ring_assets parse of the real shipped file,
 # so a retune that moves the conf and forgets these constants fails loud.
-DEFAULT_RING_A_LATENCY_FRAMES=256
+DEFAULT_RING_A_LATENCY_FRAMES=512
 DEFAULT_RING_B_LATENCY_FRAMES=128
 # Ring A's SLOT SIZE in frames. fan-in's STATUS reports output.ring.occupancy
 # as a slot count and publishes no slot-size field of its own, so the

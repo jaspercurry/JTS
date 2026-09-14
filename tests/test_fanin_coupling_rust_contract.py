@@ -548,9 +548,9 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     """#2533: no filesystem write and no device open/close may run inside `step()`.
 
     Measured consequence when they did: fan-in's period budget is 5.33 ms at the
-    shipped 256-frame period and both Ring A (fan-in→CamillaDSP) and Ring B
-    (CamillaDSP→outputd) are two 128-frame slots deep, so a render-thread block
-    over ~2.7 ms costs exactly one slot — a 128-frame silence INSERTION when
+    shipped 256-frame period and Ring A (fan-in→CamillaDSP) is four 128-frame
+    slots deep (Ring B, CamillaDSP→outputd, stays two), so a render-thread block
+    over ~2.7 ms still costs exactly one slot — a 128-frame silence INSERTION when
     CamillaDSP reads an empty Ring A, or a 128-frame DELETION when fan-in
     free-run-drops a slot it could not publish. Both signs were measured in the
     field. Fan-in's own ring-stall detector has a 1 s floor and is structurally

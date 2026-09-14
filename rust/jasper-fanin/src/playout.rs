@@ -32,16 +32,16 @@
 //! It OVER-reads true acoustic playout by the depth of everything downstream of
 //! the commit, which at the packaged geometry is:
 //!
-//! - Ring A, `JASPER_FANIN_RING_SLOTS` (2) × [`crate::config::RING_SLOT_FRAMES`]
-//!   (128) = 256 frames ≈ 5.3 ms;
+//! - Ring A, `JASPER_FANIN_RING_SLOTS` (4, widened from 2 by #4124) ×
+//!   [`crate::config::RING_SLOT_FRAMES`] (128) = 512 frames ≈ 10.7 ms;
 //! - CamillaDSP's own chunk queue — chunk 128, `queuelimit` 1
 //!   (`jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`) — one 2.7 ms chunk;
-//! - Ring B, CamillaDSP → outputd, the same 2 × 128 = 256 frames ≈ 5.3 ms
+//! - Ring B, CamillaDSP → outputd, still 2 × 128 = 256 frames ≈ 5.3 ms
 //!   (`deploy/alsa/conf.d/60-jts-ring.conf`);
 //! - outputd's DAC buffer, `DEFAULT_DAC_BUFFER_FRAMES` 3072 frames = 64 ms
 //!   (`rust/jasper-outputd/src/config.rs`) — the dominant term.
 //!
-//! ≈ 77 ms, plus whatever the DAC's own hardware delay adds. That is the
+//! ≈ 83 ms, plus whatever the DAC's own hardware delay adds. That is the
 //! conservative direction for truncation (slightly more "heard" than reality,
 //! so the assistant will not wrongly repeat). This ledger does not claim exact
 //! DAC-clock precision because it does not subtract outputd's reported DAC
