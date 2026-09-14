@@ -64,7 +64,7 @@ def reference_from_graph(
 
 
 def _unreadable(reason: str) -> SummedAlignmentReference | None:
-    log_event(logging.getLogger(__name__), "program_analysis.summed_reference_unreadable",
+    log_event(logging.getLogger(__name__), "active_speaker.summed_reference_unreadable",
               code="summed_reference_unreadable", reason=reason)
     return None
 
