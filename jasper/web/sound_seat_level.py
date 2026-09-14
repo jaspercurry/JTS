@@ -25,6 +25,8 @@ import json
 import logging
 import math
 import shutil
+import sys
+from pathlib import Path
 import signal
 import subprocess
 import threading
@@ -37,6 +39,11 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 SEAT_LEVEL_CLI = "jasper-seat-level"
+
+
+def _cli_path(name: str) -> str:
+    """The console script beside this interpreter; the web unit's PATH has no venv."""
+    return shutil.which(name) or str(Path(sys.executable).with_name(name))
 
 #: Bound on graceful SIGINT shutdown before escalating to SIGTERM/SIGKILL —
 #: the CLI's own teardown (stop the stimulus, restore the fader, write
@@ -140,7 +147,7 @@ class _SeatLevelSession:
                     "reason": "already_running",
                     "detail": "A seat-level pass is already running. Stop it first.",
                 }
-            cli = shutil.which(SEAT_LEVEL_CLI) or SEAT_LEVEL_CLI
+            cli = _cli_path(SEAT_LEVEL_CLI)
             proc = subprocess.Popen(
                 [
                     cli,
