@@ -37,7 +37,6 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
@@ -47,7 +46,6 @@ from .assistant_volume import (
     volume_context_stamp_boot_ns,
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
-from . import busctl
 from .log_event import log_event
 from .music_sources import (
     MUSIC_SOURCE_VALUES,
@@ -56,16 +54,11 @@ from .music_sources import (
     VolumeMode,
     volume_mode,
 )
-from .spotify_router import DEVICES_TIMEOUT_SEC
 from . import volume_diagnostics
-from .bluealsa_probe import active_transport_path
+from . import volume_push_sources
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_owner import VolumeClaimRefused, VolumeOwner
-from .volume_scales import (
-    listening_level_to_bt_volume,
-    listening_level_to_spotify_percent,
-    native_to_listening_level,
-)
+from .volume_scales import native_to_listening_level
 from .volume_state import SourceHandoff, VolumeState, _OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
@@ -78,7 +71,6 @@ if TYPE_CHECKING:
     from .renderer import RendererClient
 
 logger = logging.getLogger(__name__)
-_bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 # Test seam for the measurement-flag expiry below. Local, so a test never has
 # to patch time.monotonic process-wide (which would corrupt asyncio clocks) —
@@ -2491,133 +2483,19 @@ class VolumeCoordinator:
     async def _set_spotify(self, level: int) -> bool:
         """Set Spotify volume via Spotify Web API.
 
-        librespot 0.8.0 has no local control HTTP — to change Spotify's
-        volume we go through Spotify's cloud, which propagates back to
-        librespot via spirc AND updates every Spotify client UI (your
-        phone slider visibly moves). Latency ~200-800ms typical.
-
-        We try every authorized account until one successfully claims
-        the JTS device. On failure (no router configured, no account
-        has the JTS device active, or all accounts return errors),
-        log and no-op."""
-        pct = listening_level_to_spotify_percent(level)
-        if self._spotify_router is None or not getattr(
-            self._spotify_router, "clients", {},
-        ):
-            volume_diagnostics.record_source_push(
-                Source.SPOTIFY,
-                level=level,
-                ok=False,
-                reason=volume_diagnostics.PUSH_MISSING_ROUTER,
-            )
-            logger.warning(
-                "spotify volume set: no Web API router configured; "
-                "voice/remote volume can't propagate to Spotify (set "
-                "SPOTIFY_CLIENT_ID/SECRET and authorize at least one "
-                "account via /spotify)",
-            )
-            return False
-        matches = await self._spotify_router.devices_named(
-            self._spotify_device_name,
-        )
-        saw_device = bool(matches)
-        write_failed = False
-        for ac, d in matches:
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(
-                        ac.sp.volume, pct, device_id=d.get("id"),
-                    ),
-                    timeout=DEVICES_TIMEOUT_SEC,
-                )
-                self._stamp_outbound(Source.SPOTIFY)
-                volume_diagnostics.record_source_push(
-                    Source.SPOTIFY,
-                    level=level,
-                    ok=True,
-                    reason=volume_diagnostics.PUSH_OK,
-                    detail="device_visible",
-                )
-                logger.info(
-                    "spotify volume set: %d%% (account=%s)",
-                    pct, ac.account.name,
-                )
-                return True
-            except Exception as e:  # noqa: BLE001
-                write_failed = True
-                logger.debug(
-                    "spotify volume() failed for %s: %s",
-                    ac.account.name, e,
-                )
-                continue
-        reason = (
-            volume_diagnostics.PUSH_WRITE_FAILED
-            if write_failed
-            else volume_diagnostics.PUSH_NO_ACTIVE_DEVICE
-        )
-        volume_diagnostics.record_source_push(
-            Source.SPOTIFY,
-            level=level,
-            ok=False,
-            reason=reason,
-            detail="device_visible" if saw_device else "device_not_visible",
-        )
-        logger.warning(
-            "spotify volume set FAILED: %d%% — no account could write "
-            "to device '%s' (is JTS still selected in Spotify?)",
-            pct, self._spotify_device_name,
-        )
-        return False
+        Body lives in `volume_push_sources.push_spotify_volume` — this stays
+        a method because `tests/test_volume_coordinator.py`'s
+        `_RecordingCoordinator` doubles override it by name.
+        """
+        return await volume_push_sources.push_spotify_volume(self, level)
 
     async def _set_bluetooth(self, level: int) -> bool:
-        vol = listening_level_to_bt_volume(level)
-        # bluez-alsa exposes one MediaTransport1 path per active
-        # transport; we have to find it before we can set the
-        # property. Empty list = no active BT transport (caller
-        # invoked us during a brief BT-active window that closed).
-        path = await _bluez_alsa_active_transport_path()
-        if path is None:
-            volume_diagnostics.record_source_push(
-                Source.BLUETOOTH,
-                level=level,
-                ok=False,
-                reason=volume_diagnostics.PUSH_NO_ACTIVE_TRANSPORT,
-            )
-            logger.debug(
-                "bluetooth volume set: no active transport, skipping",
-            )
-            return False
-        ok = await busctl.set_property(
-            "org.bluealsa", path,
-            "org.bluez.MediaTransport1",
-            "Volume",
-            "q",
-            str(vol),
-            bus="--system",
-        )
-        if ok:
-            self._stamp_outbound(Source.BLUETOOTH)
-            volume_diagnostics.record_source_push(
-                Source.BLUETOOTH,
-                level=level,
-                ok=True,
-                reason=volume_diagnostics.PUSH_OK,
-                detail="transport_present",
-            )
-            logger.info("bluetooth volume set: %d%% (uint16=%d)", level, vol)
-            return True
-        else:
-            volume_diagnostics.record_source_push(
-                Source.BLUETOOTH,
-                level=level,
-                ok=False,
-                reason=volume_diagnostics.PUSH_WRITE_FAILED,
-                detail="transport_present",
-            )
-            logger.warning(
-                "bluetooth volume set FAILED: %d%% (uint16=%d)", level, vol,
-            )
-            return False
+        """Set Bluetooth AVRCP volume via bluez-alsa.
+
+        Body lives in `volume_push_sources.push_bluetooth_volume` — this
+        stays a method for the same reason as `_set_spotify` above.
+        """
+        return await volume_push_sources.push_bluetooth_volume(self, level)
 
     async def _set_camilla(self, level: int) -> bool:
         db = percent_to_db(level)
