@@ -60,91 +60,27 @@ export function sensitivityTrimsFromGap(sensitivities) {
   return trims;
 }
 
-const ACTIVE_SPEAKER_STEP_IDS = ['layout', 'research', 'map', 'safety', 'profile'];
-
-// Each rung's own verdict, from the facts it owns. Whether it holds the baton
-// is NOT its call — see activeSpeakerStepState below.
-function stepStateInIsolation(step, ctx) {
-  var hasLayout = !!ctx.hasLayout;
-  var dirty = !!ctx.dirty;
-  var hardwareMatchesSaved = ctx.hardwareMatchesSaved !== false;
-  var driverChecksComplete = !!(
-    ctx.driverChecksComplete || ctx.driverMeasurementsComplete
-  );
-  var driverTargetProofComplete = !!(
-    ctx.driverTargetProofComplete || (ctx.outputIdentityComplete && driverChecksComplete)
-  );
-  var summedValidationComplete = !!ctx.summedValidationComplete;
-  if (step === 'layout') return hasLayout && !dirty && hardwareMatchesSaved ? 'done' : 'active';
-  if (!hardwareMatchesSaved) return 'todo';
-  if (step === 'research') return hasLayout && !dirty ?
-    (ctx.driverResearchSatisfied ? 'done' : 'active') : 'todo';
-  if (step === 'map') return driverTargetProofComplete ? 'done' :
-    (hasLayout && !dirty ? 'active' : 'todo');
-  if (step === 'safety') return summedValidationComplete ? 'done' :
-    (driverTargetProofComplete ? 'active' : 'todo');
-  if (step === 'profile') return ctx.baselineProfileApplied &&
-    !ctx.baselineProfileNeedsRevalidation ? 'done' :
-    (summedValidationComplete ? 'active' : 'todo');
-  return 'todo';
-}
-
-// One rung at a time. This is the client-side mirror of the backend ladder
-// (jasper/active_speaker/commissioning_coordinator._derive_step_statuses) and
-// main.js falls back to it whenever a draft is mid-edit, so it carried the same
-// bug: each rung answered "am I active?" from its own predicate, and a speaker
-// whose outputs were already confirmed lit up BOTH the values rung and the
-// combined-driver test three rungs below it. Only the first live rung keeps the
-// baton; a finished rung still reports 'done'.
-function activeSpeakerLadder(ctx) {
-  var states = {};
-  var batonTaken = false;
-  ACTIVE_SPEAKER_STEP_IDS.forEach(function(step) {
-    var state = stepStateInIsolation(step, ctx);
-    if (state === 'active') {
-      if (batonTaken) state = 'todo';
-      else batonTaken = true;
-    }
-    states[step] = state;
-  });
-  return states;
-}
-
 export function activeSpeakerStepState(step, ctx) {
   ctx = ctx || {};
-  var states = activeSpeakerLadder(ctx);
-  return Object.prototype.hasOwnProperty.call(states, step) ?
-    states[step] : 'todo';
+  if (!ctx.hasLayout || ctx.dirty || ctx.hardwareMatchesSaved === false) {
+    return step === 'layout' ? 'active' : 'todo';
+  }
+  if (!ctx.driverResearchSatisfied) {
+    return step === 'layout' ? 'done' : step === 'research' ? 'active' : 'todo';
+  }
+  var item = (ctx.steps || []).find(function(item) { return item.id === step; });
+  return item ? item.status : step === 'research' ? 'active' : 'todo';
 }
 
 export function defaultActiveSpeakerStep(ctx) {
   ctx = ctx || {};
-  var driverChecksComplete = !!(
-    ctx.driverChecksComplete || ctx.driverMeasurementsComplete
-  );
-  var driverTargetProofComplete = !!(
-    ctx.driverTargetProofComplete || (ctx.outputIdentityComplete && driverChecksComplete)
-  );
   if (!ctx.hasLayout || ctx.dirty || ctx.hardwareMatchesSaved === false) return 'layout';
   if (!ctx.driverResearchSatisfied) return 'research';
-  if (!driverTargetProofComplete) return 'map';
-  if (!ctx.summedValidationComplete) return 'safety';
-  return 'profile';
+  return ctx.currentStep || 'research';
 }
 
-// Name a card the way /sound/ titles it on screen. These MUST match the
-// renderOutputStepCard titles in main.js — "Finish the current card before
-// opening X" is useless if X is not a heading the household can find. Pinned
-// (together with the backend's remedy copy) by
-// tests/test_active_speaker_commissioning_coordinator.py.
-export function outputStepTitle(step) {
-  return {
-    layout: 'Choose speaker layout',
-    research: 'Add your components',
-    map: 'Confirm outputs',
-    safety: 'Test combined drivers',
-    profile: 'Validate and apply'
-  }[step] || 'this card';
+export function outputStepTitle(step, view) {
+  return view && view.label || 'this card';
 }
 
 export function activeCommissionGroup(topology) {
@@ -169,30 +105,7 @@ function nextActionAct(action) {
   return '';
 }
 
-// Footer button descriptor for the active-speaker "research" and "map" setup
-// steps. The backend coordinator (build_commissioning_view) already decides the
-// single next obvious action from the SAVED state — `view.next_action` for the
-// research label and `view.output_identity.complete` for the map readiness — so
-// on a CLEAN draft the footer renders straight from that view-model instead of
-// re-deriving readiness in the browser (the old driverResearchStepSatisfied /
-// crossoverPreviewReadyForProtectedStaging / outputIdentityComplete duplication).
-//
-// The client still owns the cases the backend structurally cannot see, because
-// it only reads saved state:
-//   * `layoutDirty` / `draftDirty` / `saving` — unsaved edits in the browser.
-//   * the crossover-preview ENABLED refinement (`previewInputsReady`): the
-//     backend marks Preview crossover enabled whenever the saved design is
-//     ready, but the live topology may still be missing crossover points, so the
-//     page keeps the button disabled until those inputs exist (clicking an
-//     enabled-but-incomplete preview would only error). The LABEL still comes
-//     from the backend; only `disabled` is refined here.
-//
-// `view` is activeSpeaker.commissioningView (may be null before first load).
-// `client` carries the browser-only signals above plus a `clientFallback`
-// descriptor used when the view is unavailable or the draft is dirty/saving.
-// Returns {label, primary, disabled, act, step?, source} where source is
-// 'backend' on the clean view-model path and 'client' otherwise (so the parity
-// test can pin which path produced the footer).
+// The saved next action owns the footer; the browser owns unsaved edits.
 export function commissioningStepFooter(step, view, client) {
   client = client || {};
   var fallback = client.clientFallback || {};
@@ -231,24 +144,8 @@ export function commissioningStepFooter(step, view, client) {
         source: 'backend'
       };
     }
-    // next_action points past the research step (confirm outputs, driver test,
-    // …) -> the saved design + preview are complete, so the footer advances.
     return {label: 'Continue', primary: true, disabled: false,
       act: 'output-step-next', step: 'research', source: 'backend'};
-  }
-
-  if (step === 'map') {
-    if (dirty || !view || typeof view !== 'object') return fallback;
-    var proof = view.driver_target_proof && typeof view.driver_target_proof === 'object' ?
-      view.driver_target_proof : {};
-    if (proof.complete === true) {
-      return {label: 'Continue', primary: true, disabled: false,
-        act: 'output-step-next', step: 'map', source: 'backend'};
-    }
-    // Output/driver proof is completed inside the step; the footer is a disabled
-    // waiting affordance, not a second CTA.
-    return {label: 'Confirm drivers', primary: true, disabled: true,
-      act: '', source: 'backend'};
   }
 
   return fallback;
@@ -369,10 +266,6 @@ export function commissionPayloadFailure(payload) {
     if (gates[i] && gates[i].passed === false) return commissionGateReason(gates[i].id);
   }
   return 'This driver can’t be tested yet — finish the earlier setup steps first.';
-}
-
-export function commissionPayloadHasIssue(payload, code) {
-  return commissionIssueCodes(payload).indexOf(code) >= 0;
 }
 
 function commissionIssueCodes(payload) {
@@ -524,33 +417,9 @@ export function commissionGateReason(gateId) {
 // rendered by the measurement page for the capture kind in play. Do NOT
 // restate a distance or an aim instruction here.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
-  'Automatic tuning option: confirming each driver by ear here is enough to ' +
-  'finish. The automatic crossover measures the drivers for you — open ' +
-  'jts.local/sound/speaker/crossover, the Active speaker page. A safe applied ' +
-  'manual crossover can proceed to room correction without that step. ' +
-  'Measured values replace manual pins only when you explicitly apply the ' +
-  'automatic crossover.';
-
-// Single generic fallback for the combined-test failure line when the backend
-// commissioning view is unavailable (e.g. its fetch failed). The per-failure-code
-// copy is OWNED by the backend coordinator (commissioning_coordinator.summed_test_
-// failure_message, surfaced as combined_groups[].failure_message); the browser must
-// not re-derive a parallel per-code ladder — that drifted ("to retry" vs "to try
-// again"). When the view is present, render its failure_message; otherwise this.
-export const SUMMED_TEST_GENERIC_RETRY_HINT =
-  'The last combined test did not play. Press Play combined test to try again.';
-
-// Resolve the failure hint shown under a combined-test group. The backend
-// groupView.failure_message is authoritative when present (and may be ''); the
-// generic string is only the degraded-view fallback. `suppress` is true once an
-// audible test exists (no failure to report).
-export function summedGroupFailureHint(groupView, { suppress = false } = {}) {
-  if (suppress) return '';
-  if (groupView && typeof groupView === 'object') {
-    return String(groupView.failure_message || '');
-  }
-  return SUMMED_TEST_GENERIC_RETRY_HINT;
-}
+  'Run the speaker experiment from jts.local/sound/speaker/crossover, the ' +
+  'Active speaker page. Apply the candidate named in its packet to save the ' +
+  'measured driver levels, delay and polarity.';
 
 function levelMatchSourceLabel(source) {
   return {

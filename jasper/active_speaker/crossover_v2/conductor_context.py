@@ -340,15 +340,7 @@ def resolve_conductor_context(
             raise CrossoverV2Refused(
                 "this speaker has no active crossover to measure"
             )
-        setup = status.get("setup")
-        if not isinstance(setup, Mapping) or setup.get("status") != "ready":
-            raise CrossoverV2Refused(
-                "protected speaker setup is not ready; finish it before measuring"
-            )
-        # The one loud line 7j buys. A rotated topology fingerprint used to make
-        # `setup.status` `blocked` and refuse this session outright; it is now a
-        # notice, and this is the moment it is worth saying — once per session
-        # open, not on every `/state` poll.
+        setup = status.get("setup") or {}
         if any(
             isinstance(issue, Mapping)
             and issue.get("code") == BASELINE_TOPOLOGY_CHANGED

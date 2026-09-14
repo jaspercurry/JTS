@@ -453,7 +453,8 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
 
 def _setup_ready(status: Mapping[str, Any]) -> bool:
     setup = _mapping(status.get("setup"))
-    return setup.get("active") is True and setup.get("status") == "ready"
+    safety = _mapping(status.get("driver_safety_profile_evaluation"))
+    return safety.get("confirmed_and_current") is True or (setup.get("active") is True and setup.get("status") == "ready")
 
 
 def _envelope(
@@ -620,14 +621,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
 
-    # Speaker setup must be proven before any measurement plays.
     if not _setup_ready(status):
         return _envelope(
             screen="speaker_setup", active_step="speaker_setup",
-            verdict=(
-                "Finish the protected speaker setup first. This proves the output "
-                "map and tweeter protection before the microphone check can play."
-            ),
+            verdict="Declare the speaker layout and confirm the driver safety profile before measuring.",
             next_action={"id": "speaker_setup", "label": "Finish speaker setup", "href": "/sound/speaker/"},
             status=status,
         )

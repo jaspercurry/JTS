@@ -1307,16 +1307,11 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./output-topology/repin" in js
     assert "Reset speaker setup" in js
     assert "Keep setup, pin the new DAC" in js
-    assert "Test combined drivers" in js
-    assert "Validate and apply" in js
     assert "Save and apply" in js
-    assert "Choose layout, set crossover values, confirm outputs" in js
     assert "Start tone" in js
     assert "Stop tone" in js
     assert "Save floor" in js
     assert "save-volume-floor" in js
-    assert "Confirm outputs" in js
-    assert "Back to adjust crossover" in js
     assert "Reset floor" in js
     assert "reset-volume-floor" in js
     assert "function saveVolumeFloor" in js
@@ -1334,10 +1329,6 @@ def test_sound_module_preserves_editor_behaviour():
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in helper_js
-    assert "if (!driverTargetProofComplete) return 'map';" in helper_js
-    assert "ctx.driverChecksComplete || ctx.driverMeasurementsComplete" in helper_js
-    assert "if (!ctx.summedValidationComplete) return 'safety';" in helper_js
-    assert "return 'profile';" in helper_js
     assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
@@ -1497,13 +1488,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
         "action: 'auto_step'",
     ):
         assert retired not in js
-    assert "'./active-speaker/commission-load'" in js
-    assert "'./active-speaker/commission-ramp-step'" in js
-    assert "'./active-speaker/commission-ramp-ack'" in js
     assert "'./active-speaker/commission-ramp-abort'" in js
     assert "'./active-speaker/commissioning-view'" in js
-    assert "action && action.endpoint || './active-speaker/summed-test'" in js
-    assert "action && action.endpoint || './active-speaker/summed-validation'" in js
     assert "'./active-speaker/design-draft'" in js
     assert "'./active-speaker/crossover-preview'" in js
     assert "'./active-speaker/measurements'" in js
@@ -1554,18 +1540,10 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Normal listening volume is untouched" not in js
     assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" not in js
     assert "level_dbfs: requestedLevel == null ? cfg.value : requestedLevel" not in js
-    assert "function combinedTestLevelConfig()" in js
-    assert "Combined test level" in js
-    assert "body.level_dbfs = requestedLevel" in js
-    assert "operator_listening_check: true" in js
-    assert "Test combined drivers" in js
     assert "function baselineProfileRevalidation()" in js
-    assert "Revalidate crossover blend" in js
     assert "Revalidation is saved. Save and apply a fresh active profile." in js
-    assert "Your active speaker setup changed after the current profile was applied." in js
     assert "By-ear" not in js
     assert "Status" in js
-    assert "auto_retry_pending" in js
     assert "silentAutoRetry" not in js
     assert "active-speaker/prepare-driver-test" not in js
     assert "syncPreparedOutputTopology(payload)" not in js
@@ -1577,11 +1555,9 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Exit test setup" not in js
     assert "No sound played. ' + e.message" not in js
     assert "active-speaker-actions--driver-test" not in js
-    assert "data-act=\"record-summed-validation\"" in js
     assert "data-act=\"compile-baseline-profile\"" not in js
     assert "data-act=\"apply-baseline-profile\"" not in js
     assert "data-act=\"save-apply-baseline-profile\"" in js
-    assert "I hear " in js
     assert "I did not hear anything" not in js
     assert "Wrong driver" not in js
     assert "Too loud / stop" not in js
@@ -1628,11 +1604,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     # The map-step footer's dirty-layout fallback wires the save-layout action
     # through the shared descriptor renderer (renderStepFooterButton emits the
     # data-act attribute at runtime) rather than an inline data-act string.
-    assert "act: 'save-output-topology'" in js
     assert "else if (act === 'save-output-topology')" in js
     assert "data-output-channel" in js
-    assert "Assign each driver to one DAC channel. Play starts quiet and ramps." in js
-    assert "Play each quiet ramp, then confirm the driver you hear." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
     assert "observedHardware" in js
@@ -1657,7 +1630,6 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Confirm output" in js
     assert "'✓ ' + humanRole(channel.role) + ' confirmed'" not in js
     assert "'Test ' + humanRole(channel.role)" not in js
-    assert "JTS will add the tweeter guard before any sound starts" in js
     assert "Getting ' + label + ' ready. No sound will play yet." not in js
     assert "Hardware protected" not in js
     assert "Use software guard" not in js
@@ -1691,7 +1663,6 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "no separate direct-DAC driver test in the product UI" not in js
     assert "Playback: ' + (issue.code" not in js
     assert "JTS could not get the test ready. No sound was played." not in js
-    assert "Save this speaker layout draft before confirming outputs." in js
     assert "Main speakers" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
@@ -1706,7 +1677,6 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Choose passive, active 2-way, or active 3-way to continue." in js
     assert "Refresh hardware to start a speaker layout." in js
     assert "renderOutputHardwareRefresh() +" in js
-    assert "Test combined drivers" in js
     assert "data-act=\"output-template-axis\"" in js
     assert "output-template-grid" not in js
     assert "Save output map" not in js
@@ -1929,61 +1899,6 @@ def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
     return pairs
 
 
-def test_every_commissioning_blocker_carrying_a_command_is_mapped():
-    """A blocker whose MESSAGE tells an operator what to run must have household copy.
-
-    The summed-test surface is the one that can print a backend message verbatim:
-    `summed_test_failure_message` falls through to `_household_safe_reason`, which
-    strips absolute paths and exception classes but has no reason to know about
-    shell commands — #2344's blocker ("Release it first with
-    `jasper-active-speaker baseline-reemit --endpoint aloop`") passed it cleanly.
-    So the rule is: if a blocker message carries an operator remedy, the household
-    gets WRITTEN copy for that code instead of the raw sentence.
-    """
-    from jasper.active_speaker.commissioning_coordinator import (
-        _SUMMED_TEST_FAILURE_COPY,
-    )
-
-    pairs = _commission_blocker_pairs()
-    assert len(pairs) > 50, "the AST walk found almost nothing — this guard is vacuous"
-    mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
-
-    unmapped = sorted(
-        f"{code} ({where})"
-        for code, message, where in pairs
-        if _OPERATOR_COMMAND_RE.search(message) and code not in mapped
-    )
-    assert not unmapped, (
-        "these blockers tell an operator what to run, but have no household copy, "
-        "so the raw sentence — shell command and all — is what a household would "
-        f"read on the combined-test card: {unmapped}"
-    )
-
-
-def test_no_commissioning_blocker_leaks_an_operator_command_to_a_household():
-    """The property itself, not the proxy: what the household would actually see.
-
-    Runs the REAL `_household_safe_reason` over every unmapped blocker message
-    and asserts nothing survives it carrying a command. This is the assertion the
-    map-coverage test above is a cheaper stand-in for, and it stays honest if the
-    sanitiser is ever taught (or untaught) something.
-    """
-    from jasper.active_speaker.commissioning_coordinator import (
-        _SUMMED_TEST_FAILURE_COPY,
-        _household_safe_reason,
-    )
-
-    mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
-    leaks = []
-    for code, message, where in _commission_blocker_pairs():
-        if code in mapped:
-            continue
-        shown = _household_safe_reason(message)
-        if shown and _OPERATOR_COMMAND_RE.search(shown):
-            leaks.append(f"{code} ({where}): {shown!r}")
-    assert not leaks, f"a household would be shown an operator command: {leaks}"
-
-
 def test_every_preflight_gate_id_has_household_copy():
     """Every gate the preflight PUBLISHES has copy — the map is the closed set.
 
@@ -2048,13 +1963,9 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
     rung absent from both: asserting only the first half would pass over a
     partial re-point that left the dead rung reachable.
     """
-    from jasper.active_speaker.commissioning_coordinator import (
-        _SUMMED_TEST_FAILURE_COPY,
-    )
     from jasper.active_speaker.staging import COMMISSIONING_TRANSPORT_GATE_ID
 
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
     # The codes the BUILDERS actually raise, so a map entry cannot outlive a
     # renamed emitter: the ends-disagree code carries no operator command, so
     # the command guard above would not catch a misspelling in its emitter.
@@ -2076,7 +1987,6 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
         assert f"'{code}'" in helper_js, (
             f"the /sound/ issue ladder does not name {code}"
         )
-        assert code in mapped, f"the combined-test card has no copy for {code}"
     # The three the ladder reaches through a PREFIX rung, never by name: its
     # `indexOf('commission_startup_anchor_')` branch collapses all three into
     # one sentence, while Python routes them to three families with three
@@ -2092,7 +2002,6 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
         "commission_startup_anchor_load_failed",
     ):
         assert code in emitted, f"no commissioning builder raises {code}"
-        assert code in mapped, f"the combined-test card has no copy for {code}"
         assert f"'{code}'" not in helper_js, (
             f"the /sound/ ladder now names {code} directly — move it into the "
             "loop above so its own sentence is pinned"
@@ -2109,18 +2018,12 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
     assert "commissioning_ring_transport_unsupported" not in helper_js, (
         "the /sound/ ladder still carries the retired ring-transport blocker"
     )
-    assert "commissioning_ring_transport_unsupported" not in mapped, (
-        "the combined-test card still maps the retired ring-transport blocker"
-    )
     # And none of the copy may carry an operator command — the retired one's
     # `baseline-reemit`, or either new reconciler invocation.
     for command in ("baseline-reemit", "jasper-fanin-coupling-reconcile", "systemctl"):
         assert command not in helper_js, (
             f"a household surface carries the operator remedy verbatim: {command}"
         )
-        assert not [
-            message for _, message in _SUMMED_TEST_FAILURE_COPY if command in message
-        ], f"the combined-test copy carries the operator remedy verbatim: {command}"
 
 
 def test_active_speaker_setup_copy_has_no_backend_jargon():
@@ -2166,7 +2069,6 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
         "Your active speaker profile is saved. "
         "Finish applying it to start using it."
     ) in js
-    assert "Sounds right" in js
     assert "Sounds hollow or thin" not in js
     assert "Needs adjustment" not in js
     assert "Too loud" not in js

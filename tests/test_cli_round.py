@@ -24,6 +24,7 @@ from jasper.active_speaker import round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_design_draft
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs
 from jasper.active_speaker.measurement_programs import run_program
@@ -31,6 +32,7 @@ from jasper.active_speaker.movers import MOVERS
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
@@ -290,6 +292,22 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
         (pose.place, candidate, "summed") for pose in expected.poses for candidate in ("", fingerprint)
     ]
     assert plan.level.level_db is None and plan.level.resolved.reference_volume_db == -18
+
+
+@pytest.mark.parametrize("mover", ["human", "arm"])
+def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candidate_bank, monkeypatch, capsys, mover):
+    topology = mono_output_topology()
+    candidate = candidate_from_design_draft(topology, standard_design_draft(topology))
+    banked = publish_authored_candidate(candidate)
+    monkeypatch.setattr(_run_request, "read_preflight_facts",
+                        lambda plan: ready_facts(plan, candidates={candidate.fingerprint: candidate}))
+    opener = _opener(session='{"session_id": "first-experiment"}')
+    code, body = _run(["trial", banked.fingerprint, "--mover", mover], opener, monkeypatch, capsys)
+    assert code == 0, body
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    assert plan.program == "speaker/mark" and plan.mover == mover
+    assert {(stop.angle_deg, stop.elevation_deg, stop.regime) for stop in plan.stops} == {(0, 0, "per_driver")}
+    assert plan.candidates == () and body["shape"] == "measure"
 
 
 @pytest.mark.parametrize("sections", [(), ("driver", "blend"), ("driver", "room", "bass")])

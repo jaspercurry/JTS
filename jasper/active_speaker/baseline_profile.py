@@ -295,7 +295,8 @@ def compile_commissioning_profile(
     find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Review the applied candidate, or bootstrap from the declared crossover."""
-    from .candidate_parts import candidate_from_applied_profile, candidate_from_design_draft  # lazy: candidate parts consumes baseline readers
+    from .candidate_parts import candidate_from_applied_profile  # lazy: candidate parts consumes baseline readers
+    from .commissioning_experiment import commissioning_candidate  # lazy: candidate parts consumes baseline readers
     from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
     from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration, MeasurementGraphRefused  # lazy: graph compilation imports baseline readers
@@ -311,7 +312,7 @@ def compile_commissioning_profile(
         declaration = load_tuning_declaration(topology, design_draft=draft)
         applied = load_applied_baseline_profile_state()
         candidate = (candidate_from_applied_profile(topology, applied, find_candidate=find_candidate) if applied is not None
-                     else candidate_from_design_draft(topology, draft))
+                     else commissioning_candidate(topology, draft))
         preference_filters, trim_db = saved_sound_layers()
         text = compile_tuning_graph(declaration, candidate=candidate,
                                     preference_filters=preference_filters, output_trim_db=trim_db)

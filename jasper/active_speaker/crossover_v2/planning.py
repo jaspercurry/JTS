@@ -100,7 +100,7 @@ class FailureRecord:
 
 
 def alignment_to_candidate_fields(
-    analysis: ProgramAnalysis, *, roles: Sequence[str],
+    analysis: ProgramAnalysis | Mapping[str, Any], *, roles: Sequence[str],
 ) -> tuple[float | None, str | None, str | None]:
     """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
 
@@ -111,16 +111,20 @@ def alignment_to_candidate_fields(
     role choice. ``(None, None, None)`` when no alignment is trustworthy or
     there is a lone branch — the candidate falls back to a trims-only apply.
     """
-    est = analysis.alignment
-    if est is None or est.status != ALIGNMENT_OK or len(roles) < 2:
+    if isinstance(analysis, Mapping):
+        status, delay, measured_polarity = (analysis.get(key) for key in ("alignment_status", "delay_us", "polarity"))
+    else:
+        est = analysis.alignment
+        status, delay, measured_polarity = (est.status, est.delay_us, est.polarity) if est else (None, None, None)
+    if status != ALIGNMENT_OK or delay is None or len(roles) < 2:
         return None, None, None
     woofer_role, tweeter_role = roles[0], roles[1]
-    delay_us = float(est.delay_us)
+    delay_us = float(delay)
     if delay_us >= 0.0:
         role, magnitude = tweeter_role, delay_us
     else:
         role, magnitude = woofer_role, -delay_us
-    polarity = POLARITY_INVERT if est.polarity == "inverted" else POLARITY_KEEP
+    polarity = POLARITY_INVERT if measured_polarity == "inverted" else POLARITY_KEEP
     return magnitude, role, polarity
 
 
@@ -170,6 +174,7 @@ def analysis_json(
         "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
         "glitch_detected": bool(analysis.glitch_detected),
         "delay_us": round(float(align.delay_us), 3) if align else None,
+        "alignment_status": align.status if align else None,
         "alignment_seed_delay_us": (
             round(float(align.seed_delay_us), 3)
             if align and align.seed_delay_us is not None else None

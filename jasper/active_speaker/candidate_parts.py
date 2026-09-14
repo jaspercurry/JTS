@@ -37,6 +37,7 @@ from .measurement_emit import MeasurementGraphRefused
 from .profile import ActiveSpeakerPreset, required_driver_roles
 
 COMPOSITION_KIND = "jts_candidate_composition"
+DECLARED_CROSSOVER_PROGRAM_ID = "jts_declared_crossover"
 
 
 def _source(parent: BankedCandidate) -> dict[str, str]:
@@ -84,7 +85,7 @@ def candidate_from_design_draft(
     preset = resolve_commission_preset(topology, crossover_preview=preview)
     gains, _, _, issues = declared_driver_gains(required_driver_roles(preset.way_count), preview["drivers"])
     return MeasuredCrossoverCandidate(
-        program_id="jts_declared_crossover", analysis={"measurement_status": "unmeasured", "issues": issues},
+        program_id=DECLARED_CROSSOVER_PROGRAM_ID, analysis={"measurement_status": "unmeasured", "issues": issues},
         source_preset=preset, role_attenuations_db=gains,
     )
 
@@ -140,8 +141,12 @@ def _migrate_applied_candidate(
 
 
 def baseline_candidate_id() -> str:
+    from .design_draft import load_design_draft  # lazy: design draft imports candidate parts
+
     try:
-        topology, applied = load_output_topology_strict(), load_applied_baseline_profile_state() or {}
+        topology, applied = load_output_topology_strict(), load_applied_baseline_profile_state()
+        if applied is None:
+            return publish_authored_candidate(candidate_from_design_draft(topology, load_design_draft(topology=topology))).fingerprint
         return candidate_from_applied_profile(topology, applied).fingerprint
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
@@ -181,7 +186,7 @@ def compose_candidate(
     if "alignment" in selected:
         pin = selected["alignment"]
         role_order = required_driver_roles(preset.way_count)
-        resolved_alignment = (MeasuredCrossoverAlignment(
+        resolved_alignment = pin if isinstance(pin, MeasuredCrossoverAlignment) else (MeasuredCrossoverAlignment(
             abs(pin.delay_us), role_order[1] if pin.delay_us >= 0 else role_order[0],
             pin.polarity or resolved_alignment.polarity or "keep",
         ) if pin else MeasuredCrossoverAlignment())

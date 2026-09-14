@@ -10,7 +10,6 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
-  NEARFIELD_LEVEL_MATCH_GUIDANCE,
   SUB_CROSSOVER_HZ_HI,
   SUB_CROSSOVER_HZ_LO,
   activeSpeakerStepState,
@@ -22,85 +21,22 @@ import {
   localSubwooferGroup,
   subwooferCrossoverBand,
   subwooferCrossoverFcHz,
-  SUMMED_TEST_GENERIC_RETRY_HINT,
-  summedGroupFailureHint,
 } from "../../deploy/assets/sound-profile/js/active-speaker-ui.js";
 
-// A saved topology whose current observed hardware no longer matches must stay
-// on the layout step; later active-speaker actions remain unavailable.
-{
+for (const dirty of [false, true]) {
   const ctx = {
-    hasLayout: true,
-    dirty: false,
-    hardwareMatchesSaved: false,
-    driverResearchSatisfied: true,
-    outputIdentityComplete: true,
-    driverChecksComplete: true,
-    baselineProfileApplied: false,
+    hasLayout: true, dirty, driverResearchSatisfied: true,
+    currentStep: "experiment",
+    steps: [
+      {id: "layout", status: "done"}, {id: "research", status: "done"},
+      {id: "experiment", status: "active"}, {id: "profile", status: "todo"},
+    ],
   };
-  assert.equal(defaultActiveSpeakerStep(ctx), "layout");
-  assert.equal(activeSpeakerStepState("layout", ctx), "active");
-  assert.equal(activeSpeakerStepState("research", ctx), "todo");
-  assert.equal(activeSpeakerStepState("map", ctx), "todo");
-  assert.equal(activeSpeakerStepState("safety", ctx), "todo");
-  assert.equal(activeSpeakerStepState("profile", ctx), "todo");
-}
-
-// One rung at a time. This client-side ladder is the fallback main.js uses
-// while a draft is being edited (driverResearch.dirty short-circuits the
-// backend view even when the saved topology is clean), so it is what a
-// household sees on exactly the screen where the jts5 stuck state was found:
-// outputs and drivers already confirmed, crossover values not yet re-saved.
-// Each rung used to answer "am I active?" from its own predicate alone, so
-// `research` and `safety` both came back active and the combined-test card
-// three rungs down invited a click the graph could not honour.
-{
-  const ctx = {
-    hasLayout: true,
-    dirty: false,
-    hardwareMatchesSaved: true,
-    driverResearchSatisfied: false,
-    outputIdentityComplete: true,
-    driverChecksComplete: true,
-    driverTargetProofComplete: true,
-    summedValidationComplete: false,
-    baselineProfileApplied: false,
-  };
-  const states = ["layout", "research", "map", "safety", "profile"]
-    .map((step) => [step, activeSpeakerStepState(step, ctx)]);
-  assert.deepEqual(
-    states.filter(([, state]) => state === "active").map(([step]) => step),
-    ["research"],
-    `exactly one rung may be active: ${JSON.stringify(states)}`
-  );
-  assert.equal(activeSpeakerStepState("safety", ctx), "todo");
-  assert.equal(defaultActiveSpeakerStep(ctx), "research");
-}
-
-// The same ladder, once the values ARE saved: the baton moves on rather than
-// being held by two rungs. Mutation guard for the collapse above — restore any
-// rung's independent `active` branch and the previous block fails.
-{
-  const ctx = {
-    hasLayout: true,
-    dirty: false,
-    hardwareMatchesSaved: true,
-    driverResearchSatisfied: true,
-    outputIdentityComplete: true,
-    driverChecksComplete: true,
-    driverTargetProofComplete: true,
-    summedValidationComplete: false,
-    baselineProfileApplied: false,
-  };
-  const states = ["layout", "research", "map", "safety", "profile"]
-    .map((step) => [step, activeSpeakerStepState(step, ctx)]);
-  assert.deepEqual(
-    states.filter(([, state]) => state === "active").map(([step]) => step),
-    ["safety"],
-    `the combined test is the one live rung: ${JSON.stringify(states)}`
-  );
-  assert.equal(activeSpeakerStepState("research", ctx), "done");
-  assert.equal(activeSpeakerStepState("map", ctx), "done");
+  assert.equal(defaultActiveSpeakerStep(ctx), dirty ? "layout" : "experiment");
+  for (const step of ctx.steps) {
+    assert.equal(activeSpeakerStepState(step.id, ctx),
+      dirty ? (step.id === "layout" ? "active" : "todo") : step.status);
+  }
 }
 
 // Measured override: each driver's trim is "Measured", config is not provisional.
@@ -215,32 +151,6 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(/output confirmation/i.test(identitySaveFailure));
 }
 
-// Level-match copy — manual and automatic are both valid ownership paths. An
-// automatic result cannot silently overwrite manual pins.
-assert.ok(/safe applied manual crossover/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
-assert.ok(/explicitly apply/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
-
-// ...and it must POINT at the experience that can actually measure. /sound/ is
-// plain HTTP, so it has no getUserMedia and no recorder in this bundle; the
-// capture lives on the HTTPS /sound/speaker/crossover/ page. BOTH halves are
-// pinned: the typeable path (the host alone lands nowhere useful) and the
-// destination's label, which jasper.web.nav's NAV owns.
-assert.ok(
-  NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("jts.local/sound/speaker/crossover"),
-);
-assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("Active speaker"));
-
-// It must NOT carry a microphone-placement instruction. The canonical capture
-// geometry is owned by jasper/active_speaker/capture_geometry.py and rendered
-// by the capture page; a copy here is a second owner that silently goes stale
-// — which is exactly what happened to the "2–5 cm" sentence this guard
-// replaced: the canonical geometry had already narrowed that range to one
-// fixed value (DRIVER_PLACEMENT_TARGET_CM). These two negatives fail if that
-// sentence comes back, or any distance figure in any casing or spelled-out
-// unit ("3 cm", "3 CM", "three centimetres", inches).
-assert.ok(!/hold the microphone/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
-assert.ok(!/\d\s*cm|centimet|\binch/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
-
 // --- Local-subwoofer crossover helpers --------------------------------------
 const STEREO_NO_SUB = {
   speaker_groups: [
@@ -309,33 +219,6 @@ const STEREO_WITH_SUB_UNSET_FC = {
     ],
   });
   assert.equal(hot.freq_hz, SUB_CROSSOVER_HZ_HI);
-}
-
-// --- C3a-1: backend owns the combined-test failure copy ---------------------
-//
-// summedGroupFailureHint renders the backend groupView.failure_message verbatim
-// (the per-failure-code ladder lives in the Python coordinator, not the browser).
-// The single generic string is ONLY the degraded fallback when the view is
-// unavailable. This pins that the browser never re-derives a parallel per-code
-// ladder again (the "to retry"/"to try again" drift this replaced).
-{
-  // Backend view present -> its failure_message is authoritative (verbatim).
-  assert.equal(
-    summedGroupFailureHint({ failure_message: "Re-check Confirm outputs before retrying." }),
-    "Re-check Confirm outputs before retrying.",
-  );
-  // Backend view present with no failure -> empty (nothing to report).
-  assert.equal(summedGroupFailureHint({ failure_message: "" }), "");
-  assert.equal(summedGroupFailureHint({}), "");
-  // Audible test exists -> suppressed regardless of any stale message.
-  assert.equal(
-    summedGroupFailureHint({ failure_message: "stale" }, { suppress: true }),
-    "",
-  );
-  // Degraded: no backend view -> the ONE generic fallback line, not a ladder.
-  assert.equal(summedGroupFailureHint(null), SUMMED_TEST_GENERIC_RETRY_HINT);
-  assert.equal(summedGroupFailureHint(undefined), SUMMED_TEST_GENERIC_RETRY_HINT);
-  assert.equal(summedGroupFailureHint(null, { suppress: true }), "");
 }
 
 // --- commissioningStepFooter: backend view-model on the clean path ----------
@@ -446,40 +329,6 @@ const STEREO_WITH_SUB_UNSET_FC = {
   });
   assert.equal(f.source, "client");
   assert.equal(f.act, "save-driver-design");
-}
-
-// Map step: readiness comes from the backend driver_target_proof.complete signal.
-{
-  const incomplete = commissioningStepFooter(
-    "map",
-    { driver_target_proof: { complete: false }, next_action: {} },
-    {},
-  );
-  assert.equal(incomplete.source, "backend");
-  assert.equal(incomplete.label, "Confirm drivers");
-  assert.equal(incomplete.disabled, true);
-  assert.equal(incomplete.act, ""); // waiting affordance: confirm in the card
-
-  const complete = commissioningStepFooter(
-    "map",
-    { driver_target_proof: { complete: true }, next_action: {} },
-    {},
-  );
-  assert.equal(complete.source, "backend");
-  assert.equal(complete.act, "output-step-next");
-  assert.equal(complete.step, "map");
-  assert.equal(complete.label, "Continue");
-
-  // Dirty layout -> client "Save" fallback (the map card owns the save).
-  const dirty = commissioningStepFooter(
-    "map",
-    { driver_target_proof: { complete: true } },
-    { layoutDirty: true,
-      clientFallback: { label: "Save", act: "save-output-topology" } },
-  );
-  assert.equal(dirty.source, "client");
-  assert.equal(dirty.act, "save-output-topology");
-  assert.equal(dirty.label, "Save");
 }
 
 // #2344, re-pointed by #2412 Wave 3 — the ring refusal is retired, and what has

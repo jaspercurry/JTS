@@ -16,6 +16,8 @@ from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.atomic_io import atomic_write_json
 
 from .baseline_profile import profile_linearization
+from .candidate_bank import CandidateBankRefusal
+from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
 from .crossover_v2.prescription_contract import prescription_contracts
 from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
@@ -180,6 +182,11 @@ def _index(packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]])
              f"Applied: {json.dumps(packet['applied'], separators=(',', ':'))}",
              f"Result: {packet['result']}; reason: {packet['reason']}",
              "## Decisions"]
+    commissioning = packet.get("commissioning") or {}
+    if commissioning.get("candidate_fingerprint"):
+        lines.insert(4, f"commissioning: apply {commissioning['candidate_fingerprint']} to finish")
+    if commissioning.get("status") == "alignment_unmeasured":
+        lines.insert(4, f"alignment_unmeasured: {commissioning['reason']}")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
     lines += ["Limits: packet.json limits is keyed by set; it includes per-bin bounds and admitted features.",
@@ -270,6 +277,11 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest) if purpose == PURPOSE_SPEAKER else [],
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
+    if purpose == PURPOSE_SPEAKER:
+        try:
+            packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources)
+        except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
+            packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
     atomic_write_json(target / PACKET_FILENAME, packet)
     (target / INDEX_FILENAME).write_text(_index(packet, target, views))
     return packet

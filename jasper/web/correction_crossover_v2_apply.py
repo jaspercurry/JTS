@@ -13,7 +13,8 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker import baseline_profile, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+from jasper.active_speaker.commissioning_experiment import commissioning_candidate
 from jasper.active_speaker.candidate_trials import candidate_boost_issue
 from jasper.active_speaker.crossover_declaration import (
     CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
@@ -59,7 +60,7 @@ async def apply_candidate(
             declaration = load_tuning_declaration(topology, design_draft=draft)
             if selected is None:
                 selected = (candidate_from_applied_profile(topology, incumbent) if incumbent is not None
-                             else candidate_from_design_draft(topology, draft))
+                             else commissioning_candidate(topology, draft))
             expected = selected.fingerprint
             assert_crossover_honours_declared_floor(candidate_on_declaration(selected, declaration.preset).source_preset)
             text = compile_tuning_graph(declaration, candidate=selected)

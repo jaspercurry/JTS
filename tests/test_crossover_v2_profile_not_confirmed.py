@@ -581,7 +581,8 @@ def test_a_missing_profile_refuses_with_the_finish_setup_reason(
     assert env.calls["open_capture"] == []
 
 
-def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
+@pytest.mark.parametrize("setup_status", ["ready", "blocked"])
+def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open, setup_status):
     """The nanny loop, pinned shut at the session-open seam.
 
     A safety-relevant edit rotates the fingerprint, which USED to clear the
@@ -597,6 +598,7 @@ def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
     from tests.test_active_speaker_driver_safety import _manual_settings
 
     env = session_open
+    env.status["setup"]["status"] = setup_status
     before = _profile(env.topology)
 
     edited = _manual_settings()
