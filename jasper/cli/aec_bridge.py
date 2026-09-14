@@ -1096,16 +1096,12 @@ def main() -> int:
         reference_endpoint=reference_endpoint,
     )
     _bridge_stats.write_snapshot(config.bridge_stats_path)
-    corpus_ref_enabled = env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
-    corpus_usb_enabled = env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
-    corpus_usb_dtln_enabled = env_bool(
-        CORPUS_USB_DTLN_ENABLED_ENV, "0",
-    )
-    corpus_aec3_sweep_enabled = env_bool(AEC3_SWEEP_ENV_FLAG, "0")
-    corpus_chip_aec_enabled = env_bool(
-        _mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV, "0",
-    )
-    production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV, "0")
+    corpus_ref_enabled = env_bool("JASPER_AEC_CORPUS_REF_ENABLED")
+    corpus_usb_enabled = env_bool("JASPER_AEC_CORPUS_USB_ENABLED")
+    corpus_usb_dtln_enabled = env_bool(CORPUS_USB_DTLN_ENABLED_ENV)
+    corpus_aec3_sweep_enabled = env_bool(AEC3_SWEEP_ENV_FLAG)
+    corpus_chip_aec_enabled = env_bool(_mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV)
+    production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV)
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
     chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
     if chip_aec_enabled and chip_beam_plan is None:
@@ -1118,10 +1114,10 @@ def main() -> int:
         )
     chip_aec_primary_leg = _chip_aec_primary_leg(chip_beam_plan)
     corpus_xvf_raw0_webrtc_enabled = env_bool(
-        "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED", "0",
+        "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
     )
     corpus_xvf_raw0_dtln_enabled = env_bool(
-        "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED", "0",
+        "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED",
     )
     raw_out_detail = (
         "disabled-chip-aec-mode"

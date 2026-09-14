@@ -28,6 +28,7 @@ from jasper.aec_sweep import (
     load_aec3_sweep_config,
 )
 from jasper import wake_legs
+from jasper.config import env_bool
 from jasper.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
 from jasper.log_event import log_event
 from jasper.aec.bridge_telemetry import (
@@ -161,9 +162,7 @@ class BridgeConfig:
         def _env_leg_port(env_var: str, token: str) -> int:
             return int(os.environ.get(env_var, str(leg_default_port(token))))
 
-        corpus_chip_aec_enabled = env_bool(
-            _mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV, "0",
-        )
+        corpus_chip_aec_enabled = env_bool(_mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV)
         capture_latency = os.environ.get("JASPER_AEC_CAPTURE_LATENCY", "").strip()
         if capture_latency and capture_latency.lower() != "low":
             try:
@@ -305,12 +304,6 @@ class UsbMicUnavailable(RuntimeError):
 
 class UnsupportedReferenceSource(RuntimeError):
     """JASPER_AEC_REF_SOURCE names a source this bridge cannot read."""
-
-
-def env_bool(name: str, default: str) -> bool:
-    return os.environ.get(name, default).strip().lower() in (
-        "1", "true", "yes", "on",
-    )
 
 
 def _chip_beam_plan() -> _mic_profile.ChipBeamPlan | None:
