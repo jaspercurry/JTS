@@ -26,12 +26,13 @@ mod pcm_open;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use alsa::pcm::{Access, Format, Frames, HwParams, State, IO, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
+use jasper_daemon::HELPER_STACK_BYTES;
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
@@ -198,6 +199,12 @@ const fn direct_narrow_scratch_samples() -> usize {
 /// refractory window, ~4/s at the 250 ms default); the bound is a drop-and-count
 /// safety net that keeps the mixer thread's `try_send` non-blocking.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Bounded capacity of [`RingOutput::stall_log`]. `RingStallEvent` is
+/// edge-triggered — `Detected`/`Unrecovered`/`Cleared` fire at most once per
+/// stall episode, re-armed no faster than `RING_STALL_REARM_MIN_GAP_NS` — so
+/// this is a drop-and-count safety net, not a working set.
+const RING_STALL_LOG_CHANNEL_CAPACITY: usize = 16;
 
 /// Forward one event to an off-thread writer with `try_send`, calling
 /// `note_dropped` instead of blocking the SCHED_FIFO work loop on the writer's
@@ -478,6 +485,10 @@ struct RingOutput {
     pace: PeriodPacer,
     /// Edge-detection state machine for the ring stall event (issue #1524).
     stall: RingStallTracker,
+    /// Off-thread sink for an edge-triggered [`RingStallEvent`]: `write_ring_period`
+    /// runs on the SCHED_FIFO mixer thread and must never format or log one
+    /// itself (issue #4787). `run_ring_stall_log_writer` drains it.
+    stall_log: SyncSender<RingStallEvent>,
 }
 
 /// Whether a `RingWriter::create_or_attach` failure is CONFIG-class — the
@@ -944,6 +955,23 @@ fn format_ring_stall_event(event: &RingStallEvent) -> String {
     }
 }
 
+/// Drain [`RingOutput::stall_log`] off the SCHED_FIFO mixer thread: format and
+/// log every `RingStallEvent` the mixer thread hands off, so the allocation in
+/// [`format_ring_stall_event`] and the synchronous write to journald's socket
+/// both happen here instead of on the audio thread (issue #4787).
+fn run_ring_stall_log_writer(receiver: Receiver<RingStallEvent>) {
+    for event in receiver {
+        match event {
+            RingStallEvent::Detected { .. } | RingStallEvent::Unrecovered { .. } => {
+                warn!("{}", format_ring_stall_event(&event));
+            }
+            RingStallEvent::Cleared { .. } => {
+                info!("{}", format_ring_stall_event(&event));
+            }
+        }
+    }
+}
+
 /// Which transport a fan-in lane's audio arrives over — the vocabulary STATUS
 /// publishes as each input's `source`, and the ONE place those tokens are spelled.
 ///
@@ -1194,11 +1222,25 @@ impl Mixer {
             last_stall_ms: Arc::clone(&counters.last_stall_ms),
             clockless_paces: Arc::clone(&counters.clockless_paces),
         };
+        // Ring-stall events are edge-triggered and rare, but when they DO fire
+        // it is because CamillaDSP is wedged — precisely when the mixer thread
+        // can least afford to allocate a String and write synchronously to
+        // journald's socket under CPUSchedulingPolicy=fifo. Hand the raw
+        // (`Copy`) event to a dedicated thread instead, mirroring the impulse
+        // tap's mixer-thread/writer-thread split above.
+        let (stall_log_tx, stall_log_rx) =
+            std::sync::mpsc::sync_channel::<RingStallEvent>(RING_STALL_LOG_CHANNEL_CAPACITY);
+        std::thread::Builder::new()
+            .name("fanin-ring-log".into())
+            .stack_size(HELPER_STACK_BYTES)
+            .spawn(move || run_ring_stall_log_writer(stall_log_rx))
+            .context("spawning fanin-ring-log thread")?;
         let output = RingOutput {
             writer,
             counters,
             pace: PeriodPacer::new(period_ns),
             stall: RingStallTracker::new(),
+            stall_log: stall_log_tx,
         };
 
         if config.usb_direct_enabled {
@@ -1625,14 +1667,11 @@ fn write_ring_period(ring: &mut RingOutput, payload: &[u8], period_frames: u32) 
         reader_pid: liveness.pid,
         reader_heartbeat_age_ms: liveness.heartbeat_age_ms,
     }) {
-        match event {
-            RingStallEvent::Detected { .. } | RingStallEvent::Unrecovered { .. } => {
-                warn!("{}", format_ring_stall_event(&event));
-            }
-            RingStallEvent::Cleared { .. } => {
-                info!("{}", format_ring_stall_event(&event));
-            }
-        }
+        // No format!/log here: `event` is `Copy` (no allocation), and
+        // `run_ring_stall_log_writer` does the formatting and the journald
+        // write off this SCHED_FIFO thread. `try_send` never blocks; a full
+        // channel (the writer thread wedged) drops the log line, not a period.
+        send_drop_counted(&ring.stall_log, event, || {});
     }
     ring.counters
         .stall_active
@@ -2890,12 +2929,18 @@ mod tests {
         let path = dir.join("program.ring").to_string_lossy().into_owned();
         let writer = RingWriter::create_or_attach(&path, ring_geometry(n_slots)).unwrap();
         let counters = RingCounters::new();
+        // No test spawns `run_ring_stall_log_writer`; a stall-event test that
+        // needs to observe delivery swaps this sender for its own (see
+        // `ring_stall_cleared_event_ships_over_the_off_thread_channel`).
+        let (stall_log, _stall_log_rx) =
+            std::sync::mpsc::sync_channel::<RingStallEvent>(RING_STALL_LOG_CHANNEL_CAPACITY);
         let ring = RingOutput {
             writer,
             counters,
             // One 256-frame period at 48k, in ns.
             pace: PeriodPacer::new(256 * 1_000_000_000 / 48_000),
             stall: RingStallTracker::new(),
+            stall_log,
         };
         (ring, path)
     }
@@ -3295,6 +3340,41 @@ mod tests {
         assert!(ring.counters.drop_no_reader.load(Ordering::Relaxed) > 0);
         assert_eq!(ring.counters.stuck_reader_drops.load(Ordering::Relaxed), 0);
         assert!(ring.counters.occupancy.load(Ordering::Relaxed) <= 2);
+        cleanup_ring(&path);
+    }
+
+    /// `write_ring_period` must hand a stall edge to `stall_log`'s channel,
+    /// never format or log it inline (issue #4787) — the RT-thread half of
+    /// the split `run_ring_stall_log_writer` implements. Seeds an
+    /// already-`logged` episode directly (private-field access from this
+    /// child module) so the `Cleared` edge fires on one successful publish,
+    /// with no real stall-duration wait.
+    #[test]
+    fn ring_stall_cleared_event_ships_over_the_off_thread_channel() {
+        let period_frames = RING_SLOT_FRAMES;
+        let (mut ring, path) = tmp_ring_output(2, "stall_log_seam");
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        ring.stall_log = tx;
+        ring.stall.logged = true;
+        ring.stall.run_reason = StallReason::NoReader;
+        ring.stall.run_dropped_periods = 5;
+        ring.stall.last_stall_ms = 777;
+
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let payload = vec![0u8; total * BYTES_PER_SAMPLE];
+        write_ring_period(&mut ring, &payload, period_frames);
+
+        let event = rx.try_recv().expect(
+            "write_ring_period must ship the Cleared event over stall_log, not log it inline",
+        );
+        assert_eq!(
+            event,
+            RingStallEvent::Cleared {
+                reason: StallReason::NoReader,
+                duration_ms: 777,
+                dropped_periods: 5,
+            }
+        );
         cleanup_ring(&path);
     }
 
