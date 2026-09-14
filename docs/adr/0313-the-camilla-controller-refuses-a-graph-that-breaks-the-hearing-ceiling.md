@@ -38,4 +38,4 @@
   raising the fader ceiling. An ambiguous config (duplicate `devices` or
   `volume_limit` keys) fails closed as missing. The doctor's own
   `devices.volume_limit` readers stay independent and detective; converging
-  them on this function is follow-up work, not part of this decision.
+  them on this function is follow-up work (#5063), not part of this decision.

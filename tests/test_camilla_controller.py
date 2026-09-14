@@ -419,20 +419,27 @@ async def test_every_graph_door_admits_a_declared_ceiling(tmp_path: Path) -> Non
     assert fake.queries == [("PatchConfig", patch)]
 
 
+@pytest.mark.parametrize(
+    ("raw", "err"),
+    [(None, "FileNotFoundError"), (b"devices:\n  device: \xff\xfe\n", "UnicodeDecodeError")],
+)
 async def test_an_unreadable_config_path_is_disclosed_not_refused(
-    tmp_path: Path, caplog,
+    tmp_path: Path, caplog, raw: bytes | None, err: str,
 ) -> None:
     """A read race must not invent a safety verdict: CamillaDSP's own load
     fails loudly on a file it cannot read."""
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
     caplog.set_level(logging.WARNING, logger=camilla_module.__name__)
+    path = tmp_path / "graph.yml"
+    if raw is not None:
+        path.write_bytes(raw)
 
-    assert await cam.set_config_file_path(str(tmp_path / "gone.yml"))
+    assert await cam.set_config_file_path(str(path))
 
-    assert fake.file_paths == [str(tmp_path / "gone.yml")]
+    assert fake.file_paths == [str(path)]
     fields = event_fields(caplog, "camilla.graph_admission_unreadable")
-    assert fields["err"] == "FileNotFoundError"
+    assert fields["err"] == err
     assert fields["source"] == "camilla.set_config_file_path"
 
 

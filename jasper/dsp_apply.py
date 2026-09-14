@@ -190,7 +190,7 @@ def _volume_limit_safety_error(cfg_path: Path) -> str | None:
     """
     try:
         text = cfg_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     try:
         check_volume_limit(text)

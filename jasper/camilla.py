@@ -907,7 +907,7 @@ class CamillaController:
         source = "camilla.set_config_file_path"
         try:
             text = Path(path).read_text(encoding="utf-8")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             # Camilla's own load fails loudly on an unreadable file, and a read
             # race must not invent a verdict — same policy as the validator.
             log_event(
