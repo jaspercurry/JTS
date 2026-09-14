@@ -47,11 +47,21 @@ const TTS_SAMPLE_RATE: u32 = 48_000;
 // a shorter TTL could un-duck program audio during a legitimate quiet turn.
 // If operations raise `JASPER_IDLE_TIMEOUT_SEC` above 30 s, retune this too.
 const PROGRAM_DUCK_IDLE_RELEASE_TTL: Duration = Duration::from_secs(30);
-/// Shortest starved run that earns a log line. Every run is counted in STATUS
-/// regardless; this only keeps a chronically underfed lane from writing a line
-/// per 5 ms period on a memory-constrained box. Runs this short are below the
-/// threshold of audibility for a dropout in speech.
+/// Shortest starved run that earns a log line. Every dropout is counted in
+/// STATUS regardless; this only keeps a chronically underfed lane from writing
+/// a line per 5 ms period on a memory-constrained box.
 const STARVED_LOG_MIN_MS: u64 = 10;
+/// Longest starved run still treated as an audible dropout.
+///
+/// A segment stays open for a whole assistant response — `tts_playout` only
+/// closes one when the provider item changes or the turn ends — so the lane
+/// also runs dry while the model is thinking or a tool call is in flight.
+/// Those gaps are seconds long; a dropout inside continuous speech is tens of
+/// milliseconds. The first measurement on jts.local split cleanly either side
+/// of this value: dropouts ran 16-138 ms, the next run up was 502 ms, and
+/// nothing landed in between. Runs above this are counted as `starved_long_runs`
+/// and are model latency, which `turn.timeline` already measures.
+const STARVED_DROPOUT_MAX_MS: u64 = 250;
 const LIVE_VOLUME_RAMP_FRAMES: u32 = TTS_SAMPLE_RATE / 10;
 const PACKED_DB_NONE: i64 = i64::MIN;
 
@@ -85,6 +95,7 @@ pub struct TtsMetrics {
     starved_runs: Arc<AtomicU64>,
     starved_frames: Arc<AtomicU64>,
     starved_max_run_frames: Arc<AtomicU64>,
+    starved_long_runs: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
     content_anchor_lufs_x10: Arc<AtomicI64>,
     assistant_decision_seen: Arc<AtomicBool>,
@@ -129,6 +140,7 @@ impl Default for TtsMetrics {
             starved_runs: Arc::new(AtomicU64::new(0)),
             starved_frames: Arc::new(AtomicU64::new(0)),
             starved_max_run_frames: Arc::new(AtomicU64::new(0)),
+            starved_long_runs: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             content_anchor_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             assistant_decision_seen: Arc::new(AtomicBool::new(false)),
@@ -207,15 +219,22 @@ impl TtsMetrics {
         self.flushed_frames.load(Ordering::Relaxed)
     }
 
-    /// One run of periods where an OPEN segment had nothing left to mix and
-    /// playout emitted silence instead — the audible mid-utterance dropout.
-    /// A run ended by the segment closing is the tail, not a dropout, and is
-    /// not recorded here.
+    /// One run of periods short enough to be an audible break in speech: an
+    /// OPEN segment had nothing left to mix and playout emitted silence
+    /// instead. A run ended by the segment closing is the tail, and a run
+    /// longer than [`STARVED_DROPOUT_MAX_MS`] is the model between phrases;
+    /// neither is recorded here.
     pub(crate) fn mark_starved_run(&self, frames: u64) {
         self.starved_runs.fetch_add(1, Ordering::Relaxed);
         self.starved_frames.fetch_add(frames, Ordering::Relaxed);
         self.starved_max_run_frames
             .fetch_max(frames, Ordering::Relaxed);
+    }
+
+    /// One dry run too long to be a dropout — counted so the split is visible
+    /// and long gaps are not silently discarded.
+    pub(crate) fn mark_starved_long_run(&self) {
+        self.starved_long_runs.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn starved_runs(&self) -> u64 {
@@ -228,6 +247,10 @@ impl TtsMetrics {
 
     pub fn starved_max_run_frames(&self) -> u64 {
         self.starved_max_run_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_long_runs(&self) -> u64 {
+        self.starved_long_runs.load(Ordering::Relaxed)
     }
 
     pub fn loudness_snapshot(&self) -> TtsLoudnessSnapshot {
@@ -809,15 +832,19 @@ impl TtsMixer {
             let frames = self.starved_run_samples / (CHANNELS as u64);
             self.starved_run_samples = 0;
             if segment_open && frames > 0 {
-                self.metrics.mark_starved_run(frames);
                 let ms = frames_to_ms(frames, TTS_SAMPLE_RATE);
-                if ms >= STARVED_LOG_MIN_MS {
-                    warn!(
-                        "event=fanin.tts_starved frames={} ms={} pending_frames={}",
-                        frames,
-                        ms,
-                        self.pending_frames(),
-                    );
+                if ms > STARVED_DROPOUT_MAX_MS {
+                    self.metrics.mark_starved_long_run();
+                } else {
+                    self.metrics.mark_starved_run(frames);
+                    if ms >= STARVED_LOG_MIN_MS {
+                        warn!(
+                            "event=fanin.tts_starved frames={} ms={} pending_frames={}",
+                            frames,
+                            ms,
+                            self.pending_frames(),
+                        );
+                    }
                 }
             }
         }
@@ -3252,6 +3279,32 @@ mod tests {
 
         assert_eq!(probe.starved_runs(), 0);
         assert_eq!(probe.starved_frames(), 0);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn dry_run_longer_than_a_dropout_is_model_latency_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        // A segment stays open while the model thinks, so the lane runs dry
+        // for far longer than any audible break in speech.
+        let dropout_max_frames =
+            (STARVED_DROPOUT_MAX_MS * TTS_SAMPLE_RATE as u64) / 1_000;
+        let mut starved_frames = 0;
+        while starved_frames <= dropout_max_frames {
+            mix_one_period(&mut mixer, 480);
+            starved_frames += 480;
+        }
+
+        // Speech resumes: the gap is real, but it is latency, not a dropout.
+        send_audio_frames(&tx, 480);
+        mix_one_period(&mut mixer, 480);
+        assert_eq!(probe.starved_runs(), 0, "not an audible dropout");
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.starved_long_runs(), 1, "but still counted");
         drop(flush_tx);
     }
 }
