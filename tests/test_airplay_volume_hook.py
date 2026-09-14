@@ -446,16 +446,10 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
 # the ramp finished twice and chased it (#4334). One gap per message.
 #
 # The hook's settle window is 20 consecutive unchanged reads
-# (deploy/bin/jasper-airplay-volume); this burst runs it over
-# AIRPLAY_VOLUME_SETTLE_POLL_S, a seam unset in production (real poll stays
-# 50 ms), so the window's absolute size is this test's to pick. A fixed 1 s
-# window left the widest stall only 250 ms of headroom against real
-# subprocess-spawn jitter on the sender side — comfortable when nothing
-# else on the box is busy, gone on a loaded runner, which delivered this
-# same shape (`[63, 31, 44, 57, 63]`, `[63, 57, 63]`) twice (#5061). Scaling
-# the poll up quadruples that headroom in wall-clock terms while leaving
-# the ratios this test actually pins — window = 5x spacing, stall = 3.75x
-# spacing, both exactly production's — untouched.
+# (deploy/bin/jasper-airplay-volume). AIRPLAY_VOLUME_SETTLE_POLL_S, unset in
+# production, scales the poll to 200 ms so the widest stall keeps ~1 s of
+# headroom against subprocess-spawn jitter under runner load; the pinned
+# ratios (window = 5x spacing, stall = 3.75x spacing) are production's.
 STALLED_SETTLE_POLL_S = 0.2
 STALLED_SETTLE_ENV = {"AIRPLAY_VOLUME_SETTLE_POLL_S": str(STALLED_SETTLE_POLL_S)}
 STALLED_SETTLE_WINDOW_S = 20 * STALLED_SETTLE_POLL_S
@@ -471,11 +465,9 @@ def test_a_reconnect_holds_the_animation_across_a_stalled_burst(
     control_stub, tmp_path,
 ):
     """The settle window has to outlast the widest gap the sender's own
-    messages arrive at, not just the nominal spacing. Against the old
-    200 ms/two-unchanged-reads loop these gaps post `[63, 31, 44, 57, 63]`
-    every run — the same chase a loaded runner hit as `[63, 31, 57, 63]`
-    against the *current* loop's fixed-window default (#5061). The session
-    still delivers the restore and nothing else."""
+    messages arrive at, not just the nominal spacing; a window that does
+    not posts the chase `[63, 31, 44, 57, 63]`. The session still delivers
+    the restore and nothing else."""
     level = CONNECT_FADE_UP[-1]
     port = control_stub.server_port
     _run_hook(_db_for(level), runtime_dir=tmp_path, port=port)
