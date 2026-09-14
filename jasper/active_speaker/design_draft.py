@@ -401,11 +401,9 @@ def _normalise_driver_common(
                 include_research_evidence=include_research_safety_evidence,
             )
         )
-        # Pad is deliberately outside normalise_driver_safety_fields (a
-        # research/safety-profile surface pad is never part of): it is an
-        # operator-only, never-researched fact, folded into effective
-        # sensitivity by declared_effective_driver_sensitivities() below and
-        # by baseline_profile._derive_corrections, not a safety limit.
+        # Pad is operator-owned input, excluded from research and safety limits.
+        # declared_effective_driver_sensitivities() folds it into sensitivity;
+        # level_trim.declared_driver_gains() owns the resulting trims.
         driver["pad"] = normalise_pad(
             raw.get("pad"),
             nominal_impedance_ohm=nominal_impedance_ohm,

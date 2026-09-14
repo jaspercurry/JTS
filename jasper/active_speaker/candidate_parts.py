@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -57,19 +57,21 @@ def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any]
 
 def candidate_from_applied_profile(
     topology: OutputTopology, applied_profile: Mapping[str, Any],
+    *, find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Look up the applied candidate, migrating pre-bank records once."""
     if applied_profile.get("status") != "applied":
         raise CandidateBankRefusal("composition_saved_tune_unavailable", "there is no applied candidate")
+    find_candidate = find_candidate or find_banked_candidate
     fingerprint = (applied_profile.get("source") or {}).get("measured_candidate_fingerprint")
     if fingerprint:
         try:
-            return find_banked_candidate(fingerprint).candidate
+            return find_candidate(fingerprint).candidate
         except CandidateBankRefusal as exc:
             if exc.code != "not_found":
                 raise
     try:
-        return _migrate_applied_candidate(applied_profile)
+        return _migrate_applied_candidate(applied_profile, find_candidate)
     except (KeyError, TypeError, ValueError) as exc:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", str(exc)) from exc
 
@@ -77,18 +79,19 @@ def candidate_from_applied_profile(
 def candidate_from_design_draft(
     topology: OutputTopology, design_draft: Mapping[str, Any],
 ) -> MeasuredCrossoverCandidate:
-    """Bank the declared crossover and trims without measured layers."""
+    """Build the declared crossover and trims in memory, without measured layers."""
     preview = build_crossover_preview(design_draft)
     preset = resolve_commission_preset(topology, crossover_preview=preview)
     gains, _, _, issues = declared_driver_gains(required_driver_roles(preset.way_count), preview["drivers"])
-    candidate = MeasuredCrossoverCandidate(
+    return MeasuredCrossoverCandidate(
         program_id="jts_declared_crossover", analysis={"measurement_status": "unmeasured", "issues": issues},
         source_preset=preset, role_attenuations_db=gains,
     )
-    return publish_authored_candidate(candidate).candidate
 
 
-def _migrate_applied_candidate(applied_profile: Mapping[str, Any]) -> MeasuredCrossoverCandidate:
+def _migrate_applied_candidate(
+    applied_profile: Mapping[str, Any], find_candidate: Callable[[str], BankedCandidate],
+) -> MeasuredCrossoverCandidate:
     snapshot = applied_profile.get("recomposition_snapshot")
     if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != 1:
         raise CandidateBankRefusal("composition_saved_tune_unavailable", "saved candidate inputs are missing")
@@ -129,7 +132,7 @@ def _migrate_applied_candidate(applied_profile: Mapping[str, Any]) -> MeasuredCr
         else:
             raise CandidateBankRefusal("composition_saved_tune_unrepresentable", "saved driver corrections cannot be represented")
     try:
-        return find_banked_candidate(candidate.fingerprint).candidate
+        return find_candidate(candidate.fingerprint).candidate
     except CandidateBankRefusal as exc:
         if exc.code != "not_found":
             raise

@@ -8094,44 +8094,22 @@ def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
     assert park_kwargs == {}
 
 
-@pytest.mark.parametrize(
-    "baseline_profile, expected_status, expected_reason, has_prompt",
-    [
-        ({"applied_profile_stands": True}, "ready", None, True),
-        ({"applied_profile_stands": False}, "not_ready", "no_applied_baseline", False),
-        (
-            {
-                "applied_profile_stands": False,
-                "revalidation": {"required": True, "status": "required"},
-            },
-            "not_ready",
-            "revalidation_pending",
-            False,
-        ),
-    ],
-)
-def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
-    monkeypatch, baseline_profile, expected_status, expected_reason, has_prompt
-):
-    """One verdict, read where the page reads it (ADR-0195).
-
-    No tuning flow may be a prerequisite for USING the speaker (#2883), so a
-    speaker with nothing to hand over is a named not-ready, never a failure —
-    and a profile awaiting revalidation says so rather than borrowing the
-    "never applied" slug.
-    """
+@pytest.mark.parametrize("review_ready", [False, True])
+@pytest.mark.parametrize(("exists", "stands"), [(False, False), (True, True), (True, False)])
+def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_ready, exists, stands):
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(
-        baseline_profile=baseline_profile, design_draft={"revision": 5}
+        commissioning_view={"review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
+            "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
+            "applied_at": "2026-09-13T12:00:00Z", "config_path": "/var/lib/camilladsp/applied.yml",
+        }},
+        design_draft={"revision": 5},
     )
-
-    assert payload["status"] == expected_status
-    assert payload["reason"] == expected_reason
-    assert all(bool(entry["prompt"]) is has_prompt for entry in payload["programs"])
-    # The binding is minted either way: the card names the speaker while it is
-    # still holding the prompt back.
+    assert payload["status"] == ("ready" if stands else "not_ready")
+    assert payload["reason"] == (None if stands else "no_applied_baseline")
+    assert all(bool(entry["prompt"]) is stands for entry in payload["programs"])
     assert payload["binding"]["hostname"] == "jts7.local"
     assert payload["binding"]["design_draft_revision"] == 5
     assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/speaker/"
@@ -8154,7 +8132,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(
-        baseline_profile={"applied_profile_stands": True},
+        commissioning_view={"applied_profile": {"exists": True, "stands": True}},
         design_draft={"revision": 5},
     )
     entry = next(entry for entry in payload["programs"] if entry["id"] == program_id)
@@ -8182,9 +8160,8 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_baseline_profile_payload",
-        lambda *a, **k: {"applied_profile_stands": True},
+        "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
+        lambda *a, **k: {"applied_profile": {"exists": True, "stands": True}},
     )
     monkeypatch.setattr(
         "jasper.active_speaker.design_draft.load_design_draft",

@@ -9,8 +9,9 @@ from typing import Any, Callable
 
 import yaml
 
-from jasper.active_speaker import baseline_profile, crossover_preview, design_draft, measurement
+from jasper.active_speaker import baseline_profile, design_draft
 from jasper.active_speaker.runtime_contract import ACTIVE_DRIVER_DOMAIN_SOURCE
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_channel_select_mixer
@@ -26,41 +27,27 @@ def build_grouped_profile(
     validate: Callable[[str | Path], CamillaConfigValidationResult] | None = None,
 ) -> dict[str, Any]:
     applied = baseline_profile.load_applied_baseline_profile_state()
-    if applied is None:
-        draft = design_draft.load_design_draft()
-        return baseline_profile.build_baseline_profile_candidate(
-            topology,
-            design_draft=draft,
-            crossover_preview=crossover_preview.load_crossover_preview(current_design_draft=draft),
-            measurements=measurement.load_measurement_state(topology),
-            write=True,
-            state_path=state_path,
-            config_path=config_path,
-            capture_device=GROUPING_RING_PCM,
-            capture_format=GROUPING_RING_FORMAT,
-            driver_domain=True,
-            program_channel=program_channel,
-            driver_domain_pair_trim_db=max(0.0, -float(trim_db)),
-            validate=validate or validate_camilla_config,
-        )
-
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
-    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: applied candidate bank
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft  # lazy: applied candidate bank
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: active graph compilation
 
     issues: list[dict[str, str]] = []
     result: dict[str, Any] = {
         "status": "blocked", "permissions": {"may_apply": False}, "issues": issues,
-        "recomposition_snapshot": applied.get("recomposition_snapshot"),
+        "recomposition_snapshot": (applied or {}).get("recomposition_snapshot"),
     }
     try:
         declaration = load_tuning_declaration(topology)
-        text = compile_tuning_graph(declaration, candidate=candidate_from_applied_profile(topology, applied))
+        candidate = (candidate_from_applied_profile(topology, applied) if applied is not None
+                     else candidate_from_design_draft(topology, design_draft.load_design_draft(topology=topology)))
+        text = compile_tuning_graph(declaration, candidate=candidate)
+    except ActiveSpeakerConfigError:
+        raise
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         issues.append({"severity": "blocker", "code": getattr(exc, "code", "grouping_applied_compile_failed"), "message": str(exc)})
         return result
     # Remove when the bond delivers canonical volume to each output endpoint.
-    if baseline_profile.applied_bass_extension(applied):
+    if candidate.bass_extension:
         issues.append({
             "severity": "blocker",
             "code": "grouping_dynamic_bass_volume_unsupported",
@@ -101,7 +88,8 @@ def build_grouped_profile(
     ]
     atomic_write_text(
         Path(config_path),
-        f"# Source: {ACTIVE_DRIVER_DOMAIN_SOURCE}\n" + yaml.safe_dump(graph, sort_keys=False),
+        f"# Source: {ACTIVE_DRIVER_DOMAIN_SOURCE}\n# program_channel={program_channel}\n"
+        f"# pair_trim_db={max(0.0, -float(trim_db)):.3f}\n" + yaml.safe_dump(graph, sort_keys=False),
         mode=0o640,
     )
     validation = (validate or validate_camilla_config)(config_path)

@@ -6,10 +6,16 @@
 
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import declared_profile_fixture
+
 import json
 import logging
 
 import pytest
+
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 from pathlib import Path
 
 
@@ -18,9 +24,7 @@ from jasper.active_speaker.state_paths import (
 )
 from jasper.active_speaker.baseline_profile import (
     applied_profile_displacement,
-    build_baseline_profile_candidate,
 )
-from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from jasper.sound.runtime import (
     _config_without_id_header,
@@ -30,7 +34,6 @@ from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
     _measurements,
-    _valid_config,
 )
 from tests._log_events import event_fields, event_records
 from tests.sound_camilla_fixtures import FakeCamilla
@@ -52,17 +55,12 @@ def _reigning_candidate_box(tmp_path: Path, monkeypatch):
     config_dir = tmp_path / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    applied = build_baseline_profile_candidate(
+    applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        crossover_preview=build_crossover_preview(
-            draft, created_at="2026-06-14T12:10:00Z"
-        ),
         measurements=_measurements(topology, tmp_path),
         write=True,
-        state_path=tmp_path / "baseline_profile.json",
         config_path=config_dir / "active_speaker_baseline.yml",
-        validate=_valid_config,
     )
     applied["status"] = "applied"
     candidate = Path(applied["config"]["path"])

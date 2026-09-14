@@ -2,25 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measured per-driver level-match trim (L1 phone level matching).
-
-These pin the heart of the measured refinement of the datasheet sensitivity
-trim: the overlap-band level delta -> per-driver attenuation chain, and the
-fail-closed fallback to the datasheet trim when the measurement is not usable.
-
-The trim math is tested directly against ``_measured_level_trims`` with
-synthetic overlap evidence (a duck-typed preset carries only the way count +
-crossover regions the function reads). The end-to-end override / provisional
-behaviour through ``build_baseline_profile_candidate`` with real synthesized
-phone captures lives in ``test_active_speaker_baseline_profile.py``.
-
-The second half of this file pins which of the TWO evidence sources wins: a
-banked measured base trim (written by the apply seam) is preferred over guided
-captures that are not newer than it (newer captures supersede — ruling S20,
-pinned in ``test_active_speaker_baseline_profile.py``), and a trim measured
-against a different declaration is refused loudly rather than applied to a
-speaker it does not describe.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -498,44 +479,3 @@ def test_every_refused_status_is_reported_on_the_ledger(
     assert meta["base_trim"]["status"] == status
     assert meta["base_trim"]["status"] in dbt.REFUSED_STATUSES
     assert meta["base_trim"]["remediation"] == dbt.REMEASURE_REMEDIATION
-
-
-def test_a_banked_trim_reports_the_groups_it_levelled_to_readiness(
-    tmp_path, monkeypatch
-):
-    """The field is a gate, not a decoration.
-
-    ``automatic_candidate_readiness`` compares the ledger's measured-group SET
-    against the topology's required one, so a banked trim reporting no groups
-    would leave a fully-levelled speaker reading
-    ``automatic_crossover_measurements_incomplete``.
-    """
-    from jasper.active_speaker.crossover_contract import (
-        automatic_candidate_readiness,
-    )
-
-    state = _bank_base_trim(
-        tmp_path, monkeypatch,
-        trims={"woofer": 0.0, "tweeter": -6.0},
-        declaration=crossover_preview_fingerprint(PREVIEW),
-    )
-    record = json.loads(state.read_text())
-    record["speaker_group_ids"] = ["left", "right"]
-    state.write_text(json.dumps(record))
-
-    _trims, meta = _measured_level_trims(_preset(2, TWO_WAY), {}, PREVIEW)
-
-    assert meta["measured_group_ids"] == ["left", "right"]
-    assert meta["groups_measured"] == 2
-    readiness = automatic_candidate_readiness(
-        required_group_ids=["left", "right"],
-        level_match=meta,
-        measurement_summary={},
-    )
-    assert readiness["measured_group_ids"] == ["left", "right"]
-    # A pair whose trim levelled only ONE cabinet is still incomplete.
-    assert automatic_candidate_readiness(
-        required_group_ids=["left", "right", "centre"],
-        level_match=meta,
-        measurement_summary={},
-    )["measured_group_ids"] == ["left", "right"]

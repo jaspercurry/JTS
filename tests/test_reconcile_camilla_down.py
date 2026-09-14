@@ -41,19 +41,21 @@ transaction, and a mock of the transaction would pass straight through it.
 
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import declared_profile_fixture
+
 import json
 import logging
 from pathlib import Path
 
 import pytest
 
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
+
 from jasper.active_speaker.state_paths import (
     BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
 )
-from jasper.active_speaker.baseline_profile import (
-    build_baseline_profile_candidate,
-)
-from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.environment import read_camilla_statefile_config_path
 from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
@@ -63,7 +65,6 @@ from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
     _measurements,
-    _valid_config,
 )
 from tests.active_speaker_fixtures import declare_applied_fixture
 from tests.sound_camilla_fixtures import FakeCamilla
@@ -185,22 +186,17 @@ def _roleful_box(tmp_path: Path, monkeypatch):
     draft = _draft(topology)
     config_dir = tmp_path / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
 
-    applied = build_baseline_profile_candidate(
+    applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        crossover_preview=build_crossover_preview(
-            draft, created_at="2026-06-14T12:10:00Z"
-        ),
         measurements=_measurements(topology, tmp_path),
         write=True,
-        state_path=tmp_path / "baseline_profile.json",
         config_path=config_dir / "active_speaker_baseline.yml",
-        validate=_valid_config,
     )
     applied["status"] = "applied"
     candidate = Path(applied["config"]["path"])
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(config_dir / "active_speaker_baseline.yml"))
     declare_applied_fixture(monkeypatch, topology, applied)
 

@@ -13,7 +13,7 @@ one another's I/O responsibilities.
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from ._common import REGION_FC_MATCH_TOLERANCE_HZ, finite_float as _finite_float
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
@@ -107,13 +107,6 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _nonnegative_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
 
 
 def preset_matches_applied_profile(
@@ -580,91 +573,4 @@ def legacy_manual_preservation_state(
         "detail": detail,
         "applied_source_fingerprint": applied_fingerprint or None,
         "current_source_fingerprint": current_fingerprint or None,
-    }
-
-
-def automatic_candidate_readiness(
-    *,
-    required_group_ids: Iterable[str],
-    level_match: Mapping[str, Any] | None,
-    measurement_summary: Mapping[str, Any] | None,
-    active_comparison_set: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return whether current acoustic evidence can produce an automatic profile."""
-    required = {str(group_id) for group_id in required_group_ids if str(group_id)}
-    level_match = _mapping(level_match)
-    summary = _mapping(measurement_summary)
-    incomparable = level_match.get("incomparable_groups")
-    incomparable = incomparable if isinstance(incomparable, list) else []
-    measured_group_ids = level_match.get("measured_group_ids")
-    measured_ids = {
-        str(group_id)
-        for group_id in (
-            measured_group_ids
-            if isinstance(measured_group_ids, (list, tuple, set))
-            else []
-        )
-        if str(group_id)
-    }
-    measured_count = _nonnegative_int(level_match.get("groups_measured"))
-    driver_groups_ready = (
-        required.issubset(measured_ids)
-        if measured_ids
-        else measured_count >= len(required)
-    )
-    latest_summed = _mapping(summary.get("latest_summed_validations"))
-    from .capture_geometry import (
-        SUMMED_PLACEMENT_POLICY_ID,
-        capture_proof_valid,
-    )
-
-    summed_ready: set[str] = set()
-    for group_id, record in latest_summed.items():
-        record = _mapping(record)
-        acoustic = _mapping(record.get("acoustic"))
-        if (
-            record.get("validated") is True
-            and acoustic.get("verdict") == "blend_ok"
-            and record.get("mic_clipping") is not True
-            and acoustic.get("mic_clipping") is not True
-            and capture_proof_valid(
-                record,
-                active_comparison_set,
-                policy_id=SUMMED_PLACEMENT_POLICY_ID,
-                role="summed",
-                speaker_group_id=str(group_id),
-                target_fingerprint=str(record.get("group_fingerprint") or ""),
-            )
-        ):
-            summed_ready.add(str(group_id))
-
-    if not required:
-        reason = "automatic_crossover_not_applicable"
-        detail = "This topology has no active crossover groups to tune."
-    elif incomparable:
-        reason = "automatic_crossover_measurements_incomparable"
-        detail = (
-            "Repeat the driver sweeps in one guided run so microphone placement, "
-            "level, and excitation can be compared."
-        )
-    elif level_match.get("applied") is not True or not driver_groups_ready:
-        reason = "automatic_crossover_measurements_incomplete"
-        detail = "Finish usable driver sweeps before applying automatic tuning."
-    else:
-        reason = None
-        detail = (
-            "The automatic driver-level candidate has complete usable acoustic "
-            "evidence. Crossover frequency and slope remain operator-owned."
-        )
-
-    return {
-        "ready": reason is None,
-        "reason": reason,
-        "detail": detail,
-        "required_group_ids": sorted(required),
-        "measured_group_ids": sorted(measured_ids),
-        "summed_group_ids": sorted(summed_ready),
-        "measurement_comparable": not incomparable,
-        # Compatibility alias for existing status consumers.
-        "excitation_comparable": not incomparable,
     }

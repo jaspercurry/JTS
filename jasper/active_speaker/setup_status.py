@@ -20,10 +20,9 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
+from .candidate_bank import status_banked_candidate
 from .capture_geometry import comparison_set_valid
-from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
-    automatic_candidate_readiness,
     crossover_snapshot_state,
     legacy_manual_preservation_state,
 )
@@ -210,6 +209,7 @@ def _derive_commissioning_summary(
                 break
     elif profile is not None and bool(
         _mapping(profile.get("permissions")).get("may_apply")
+        or _mapping(profile.get("permissions")).get("may_compile")
     ):
         phase = "proposal_ready"
     elif comparison_set_valid(measurements.get("active_comparison_set")) or bool(
@@ -383,7 +383,8 @@ def _applied_layer_a_binding(
             }
         playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
         declaration = load_tuning_declaration(topology, playback_device=playback_device)
-        candidate = candidate_from_applied_profile(topology, applied_profile)
+        candidate = candidate_from_applied_profile(topology, applied_profile,
+            find_candidate=lambda fingerprint: status_banked_candidate(fingerprint, applied_profile=applied_profile))
         preference_filters, trim_db = saved_sound_layers()
         expected_yaml = compile_tuning_graph(declaration, candidate=candidate,
             preference_filters=preference_filters, output_trim_db=trim_db)
@@ -555,7 +556,7 @@ def read_active_speaker_setup_status(
     # baseline/design stack's resident RSS (issue #3697).
     from .baseline_profile import (
         baseline_profile_state_path,
-        build_baseline_profile_candidate,
+        compile_commissioning_profile,
         load_applied_baseline_profile_state,
     )
     from .design_draft import load_design_draft
@@ -565,30 +566,11 @@ def read_active_speaker_setup_status(
     measurements: Mapping[str, Any] = {}
     applied_profile: Mapping[str, Any] | None = None
     profile: Mapping[str, Any] | None = None
-    automatic_profile: Mapping[str, Any] | None = None
     try:
         design_draft = load_design_draft()
-        crossover_preview = load_crossover_preview(
-            current_design_draft=design_draft,
-        )
         measurements = load_measurement_state(topology)
-        profile = build_baseline_profile_candidate(
-            topology,
-            design_draft=design_draft,
-            crossover_preview=crossover_preview,
-            measurements=measurements,
-            write=False,
-            state_path=baseline_state_path,
-        )
-        automatic_profile = build_baseline_profile_candidate(
-            topology,
-            design_draft=design_draft,
-            crossover_preview=crossover_preview,
-            measurements=measurements,
-            write=False,
-            state_path=baseline_state_path,
-            tuning_owner="automatic",
-        )
+        _, profile = compile_commissioning_profile(topology=topology, design_draft=design_draft,
+                                                 find_candidate=status_banked_candidate)
         applied_profile = load_applied_baseline_profile_state(baseline_state_path)
     except _READINESS_DERIVATION_ERRORS as exc:
         profile = None
@@ -611,12 +593,6 @@ def read_active_speaker_setup_status(
             if isinstance(raw_source, Mapping)
             else {}
         )
-        raw_revalidation = profile.get("revalidation")
-        revalidation: Mapping[str, Any] = (
-            raw_revalidation
-            if isinstance(raw_revalidation, Mapping)
-            else {"required": False, "status": "not_required"}
-        )
         profile_issues = [
             {
                 "severity": str(issue.get("severity") or "blocker"),
@@ -633,27 +609,13 @@ def read_active_speaker_setup_status(
             "source_fingerprint": source.get("fingerprint"),
             "candidate_fingerprint": profile.get("candidate_fingerprint"),
             "provisional": bool(profile.get("provisional")),
-            "revalidation": dict(revalidation),
+            "revalidation": {"required": False, "status": "not_required"},
             "issues": profile_issues,
-            # WHICH question this block answers. `/system/snapshot`'s
-            # `active_speaker_output_safety` carries two baseline answers:
-            # this one is a freshly RE-DERIVED staging candidate — what the
-            # household could compile next — and routinely reads `blocked`
-            # with a different `candidate_fingerprint` while a good profile
-            # is applied and audible. The live answer is `protected_profile`;
-            # this is a proposal, and the discriminator says which is which.
             "role": "staging_candidate",
             "live_answer_key": "protected_profile",
         }
 
-        # The mutable candidate and the graph that currently protects playback
-        # are intentionally different owners: a fresh capture invalidates the
-        # candidate fingerprint without weakening the applied Layer-A graph.
-        protected_profile = (
-            applied_profile
-            if isinstance(applied_profile, Mapping)
-            else (profile if profile.get("status") == "applied" else None)
-        )
+        protected_profile = applied_profile
         protected_source = _mapping(
             protected_profile.get("source")
             if isinstance(protected_profile, Mapping)
@@ -690,12 +652,6 @@ def read_active_speaker_setup_status(
             and protected_profile.get("status") == "applied"
             and protected_config_exists
         )
-        protected_snapshot = (
-            protected_profile.get("recomposition_snapshot")
-            if isinstance(protected_profile, Mapping)
-            and isinstance(protected_profile.get("recomposition_snapshot"), Mapping)
-            else None
-        )
         protected_profile_summary = {
             "available": isinstance(protected_profile, Mapping),
             "status": "ready" if protected_ready else "unavailable",
@@ -712,19 +668,6 @@ def read_active_speaker_setup_status(
                 if isinstance(protected_profile, Mapping)
                 else False
             ),
-            "recomposition_snapshot_available": protected_snapshot is not None,
-            # WHY Layer-1a driver linearization did or didn't run for the
-            # CURRENTLY APPLIED candidate; "" when never evaluated. Read off the
-            # applied artifact rather than the freshly-recomputed `profile`,
-            # which is built with no `measured_candidate` here and so can never
-            # carry an honest outcome.
-            "linearization_outcome": (
-                str(protected_profile.get("linearization_outcome") or "")
-                if isinstance(protected_profile, Mapping)
-                else ""
-            ),
-            # The other half of the discriminator: this block reports what the
-            # speaker is ACTUALLY running.
             "role": "applied_profile",
         }
         # ...and whether the two agree, computed once rather than left to every
@@ -812,35 +755,6 @@ def read_active_speaker_setup_status(
         applied_profile,
         current_source_fingerprint=str(current_source.get("fingerprint") or "") or None,
     )
-    summary = _mapping(measurements.get("summary"))
-    candidate_level_match = _mapping(
-        automatic_profile.get("level_match")
-        if isinstance(automatic_profile, Mapping)
-        else None
-    )
-    automatic_candidate = (
-        dict(automatic_profile["automatic_candidate"])
-        if isinstance(automatic_profile, Mapping)
-        and isinstance(automatic_profile.get("automatic_candidate"), Mapping)
-        else automatic_candidate_readiness(
-            required_group_ids=(
-                group.id
-                for group in topology.speaker_groups
-                if group.mode in {"active_2_way", "active_3_way"}
-            ),
-            level_match=candidate_level_match,
-            measurement_summary=summary,
-            active_comparison_set=measurements.get("active_comparison_set"),
-        )
-    )
-    automatic_candidate["candidate_fingerprint"] = (
-        automatic_profile.get("candidate_fingerprint")
-        if isinstance(automatic_profile, Mapping)
-        else None
-    )
-    if profile_summary is not None:
-        profile_summary["automatic_candidate"] = automatic_candidate
-
     # A blocker outranks a notice for the headline whichever was appended
     # first: the list carries both severities, and a household told "re-mint
     # when convenient" while the box is blocked is told the wrong thing.
@@ -877,6 +791,5 @@ def read_active_speaker_setup_status(
         "protected_profile": protected_profile_summary,
         "applied_crossover": applied_crossover,
         "manual_preservation": manual_preservation,
-        "automatic_candidate": automatic_candidate,
         "issues": issues,
     }

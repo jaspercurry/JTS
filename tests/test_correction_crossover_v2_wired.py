@@ -53,6 +53,7 @@ from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
 from tests.test_plan_run import AnsweredGate
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
+from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
 
 RATE = 48_000
@@ -823,7 +824,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
         monkeypatch.setattr(conductor, "_consume_verify", grade)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records,
-        manifest=SimpleNamespace(calibration={}, level_observation=lambda record: {}), evidence={}, verify_only=phase == "verify")
+        manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={}, verify_only=phase == "verify")
     spec = MeasureSpec(kind="baseline", graph_scope="candidate" if phase == "verify" else "drivers",
                        candidate_id="baseline-room" if phase == "verify" else "", program_phase=phase)
     gain = None
@@ -872,7 +873,7 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     with caplog.at_level(logging.INFO):
         door, analyze, _assessor = correction_run_host.bind_run_door(
             host=SimpleNamespace(session_volume_plan=lambda: None),
-            device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}),
+            device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
             ceiling_s=30, ceiling_db_spl=85, camilla_factory=None, verify_only=verify_only,
             level=LevelPolicy(level_db=-15 + offset, resolved=ResolvedLevel(anchor, -15, "1234") if anchor is not None else None),
@@ -966,46 +967,31 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]
 
 
-async def test_room_take_sidecar_keeps_the_played_stimulus(tmp_path):
-    import json
-    from jasper.active_speaker.bundles import open_bundle
-    from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder, record_capture_provenance
-    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
-    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-    from jasper.active_speaker.plan_run import prepare_plan_captures
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
-    from jasper.audio_measurement.program import build_verify_program, write_program_wav
-    from jasper.json_fields import sha256_file
-    from jasper.web.correction_run_host import bind_plan_analysis
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.crossover_v2_fixtures import FakeCam
-
-    info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
-    bundle = Path(info["bundle_dir"])
-    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
-    request = AngleCaptureRequest(stops=(AngleStop(0, REGIME_SUMMED, purpose="room", candidate_id="room"),), candidates=("room",))
-    capture, = prepare_plan_captures(request)
-    phase = capture.spec.program_phase
-    program = build_verify_program(2500, sweep_s=1.5)
-    wav = bundle / "lateral_01_program.wav"
-    write_program_wav(str(wav), program)
-    provenance = CaptureProvenanceRecorder()
-    cam = FakeCam("entry.yml")
-    await cam.set_active_config_raw('{"devices": {"samplerate": 48000, "volume_limit": 0.0}}')
-    played = []
-    async def play():
-        await record_capture_provenance(provenance, open_cam=lambda: cam, graph_kind="tuning_measurement",
-            program=program, phase=phase, artifact=store.identify_artifact(wav.name))
-        played.append(sha256_file(wav))
-    records = core_capture.CapturedRecordStore(BankedRecordStore(store, "run"), SimpleNamespace(take_answer=lambda: None))
-    bind_plan_analysis(None, records, manifest=None, evidence={}, provenance=provenance)
-    await play()
-    record_id = await records.bank({"take_id": "room-take", "kind": "candidate", "purpose": "room",
-                                    "program_phase": phase, "candidate_id": "room"})
-    sidecar = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
-    assert sidecar["phase"] == "lateral"
-    assert sidecar["provenance"]["stimulus"]["wav_sha256"] == played[0]
-    assert provenance.take() is None
+@pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
+def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error):
+    record = bank_executor_take(tmp_path, monkeypatch, analysis_error=analysis_error)
+    assert record["side"] == "mono"
+    assert record["mark_distance_m"] == 1.25
+    assert record["provenance"]["graph"]["speaker_candidate_id"] == "speaker-candidate"
+    assert record["provenance"]["stimulus"]["wav_sha256"] == "a" * 64
+    wav_path, = (tmp_path / "sessions").glob(f"*/{record['wav_path']}")
+    raw = wav_path.read_bytes()
+    assert len(raw) == record["wav_bytes"]
+    assert decode_wav_to_mono(raw)[0].size == 32
+    if analysis_error is not None:
+        assert "capture_calibration" not in record
+        assert record["analysis_error"] == {
+            "code": refusal_copy.REASON_INTERNAL_ERROR, "error_type": type(analysis_error).__name__,
+        }
+        return
+    assert "analysis_error" not in record
+    calibration = record["capture_calibration"]
+    assert calibration["applied"] is True
+    assert isinstance(calibration["calibration_id"], str)
+    assert isinstance(calibration["curve_fingerprint"], str) and len(calibration["curve_fingerprint"]) == 64
+    assert type(record["gating_applied"]) is bool
+    assert type(record["stimulus_dbfs"]) is float
+    assert record["stimulus_dbfs"] == -30.0
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):

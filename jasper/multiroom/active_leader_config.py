@@ -24,8 +24,7 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
     gain / soft-clip limiter (+ tweeter high-pass) — captured from the grouping
     ring (snapclient -> ``jts_ring_grouping`` -> camilla#2 -> DAC). This is
     **literally the follower endpoint config**
-    (:func:`jasper.active_speaker.emit_active_speaker_driver_domain_config`, via
-    ``build_baseline_profile_candidate(driver_domain=True, ...)``), so the
+    (via ``active_profile.build_grouped_profile``), so the
     leader's own drivers are protected by the SAME re-proven Layer-A graph a
     wireless follower uses.
 
@@ -113,14 +112,10 @@ RESTORE_LOG_KIND = "active_leader"
 
 
 class ActiveLeaderError(RuntimeError):
-    """An active leader could not be wired safely — fail closed (do not bond into
-    a state that could send full-range to a tweeter). ``reason`` is a short
-    stable token for the log + /state surface. Sibling of
-    :class:`jasper.multiroom.follower_config.ActiveFollowerError`."""
-
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(self, reason: str, message: str, *, issues: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.reason = reason
+        self.issues = issues
 
 
 def crossover_statefile_path() -> str:
@@ -239,15 +234,16 @@ async def precheck_active_leader(
             f"gate (no full-range emit to a tweeter): {exc}",
         ) from exc
     if not candidate.get("permissions", {}).get("may_apply"):
-        codes = [
-            i.get("code") for i in candidate.get("issues", [])
-            if isinstance(i, dict)
+        refusal_codes = [
+            code for issue in candidate.get("issues", [])
+            if isinstance(issue, dict) and isinstance(code := issue.get("code"), str)
         ]
         raise ActiveLeaderError(
             "baseline_not_ready",
             "active leader has no ready driver-domain baseline for camilla#2 "
-            f"(status={candidate.get('status')}, issues={codes}); commission "
+            f"(status={candidate.get('status')}, issues={refusal_codes}); commission "
             "this speaker as an active speaker before leading a bond",
+            issues=tuple(refusal_codes),
         )
     crossover_graph = classify_bass_extension_graph(
         topology,

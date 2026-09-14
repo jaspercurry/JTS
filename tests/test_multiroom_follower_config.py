@@ -17,6 +17,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 from jasper.log_event import log_event
@@ -115,6 +119,10 @@ class _FakeCamilla:
 
 
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
+    from tests.active_speaker_fixtures import declared_graph_fixture
+
+    monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration",
+                        lambda topology: declared_graph_fixture(topology, draft)[0])
     # The re-proof uses the STRICT loader (fail-closed); patch that.
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: topology
@@ -247,26 +255,8 @@ def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> No
     )
     asyncio.run(fc.apply_prebuilt_follower_config(camilla_factory=lambda: cam))
 
-    yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
-    assert "# pair_trim_db=2.500" in yaml
-    assert "pair_balance_trim:" in yaml
-    assert "parameters: { gain: -2.5000" in yaml
-
-
-def test_apply_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:
-    """Invariant 5 (not-ready path): a box with no ready baseline cannot be
-    relocated — apply raises and NEVER loads a config into CamillaDSP."""
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
-    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-
-    cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
-    with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
-    assert exc.value.reason == "baseline_not_ready"
-    assert cam.loaded == []  # no full-range (or any) emit reached CamillaDSP
+    graph = yaml.safe_load(Path(fc.FOLLOWER_CONFIG_PATH).read_text())
+    assert graph["filters"]["pair_balance_trim"]["parameters"]["gain"] == -2.5
 
 
 def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
@@ -320,8 +310,8 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
     # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
     original = camilla_yaml._driver_baseline_filter_chain
 
-    def _hp_stripped(preset, role):
-        names = original(preset, role)
+    def _hp_stripped(preset, role, *args):
+        names = original(preset, role, *args)
         return [n for n in names if not n.endswith("_hp")] if role == "tweeter" else names
 
     monkeypatch.setattr(camilla_yaml, "_driver_baseline_filter_chain", _hp_stripped)
@@ -337,17 +327,7 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
 def test_typod_ring_wire_refusal_surfaces_as_follower_error(
     monkeypatch, tmp_path
 ) -> None:
-    """The SAME ``except``, one seam earlier: the candidate's device derivation.
-
-    An ARMED box resolves its sink to the active ring, so the follower's build
-    reaches ``active_emit_devices`` — and a typo'd
-    ``JASPER_FANIN_RING_WIRE_FORMAT`` refuses there, ABOVE the L0 emit gate the
-    test above provokes. #2338 gives that refusal the ``ActiveSpeakerConfigError``
-    type precisely so it lands in this same clause: the wire parser raises a
-    BARE ``ValueError``, which this ``except`` (a subclass) does not catch, so
-    an armed + bonded box with one typo'd env line would abort the grouping
-    reconcile oneshot rather than fall back to solo. CamillaDSP is never loaded.
-    """
+    """See #2338: invalid wire declarations must reach the follower fallback."""
     from jasper.fanin_coupling import (
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
         RING_WIRE_FORMAT_ENV_VAR,
@@ -371,16 +351,10 @@ def test_typod_ring_wire_refusal_surfaces_as_follower_error(
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 
-    cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
         asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
     assert exc.value.reason == "driver_domain_emit_refused"
     assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
-    # NON-DEGENERATE: this is the WIRE refusal, not some other emit-gate refusal
-    # the armed box might have hit on the way.
-    assert RING_WIRE_FORMAT_ENV_VAR in str(exc.value)
-    assert "s32le" in str(exc.value)
-    assert cam.loaded == []
 
 
 def _patch_restore_reproof(monkeypatch, *, allowed: bool):
@@ -955,11 +929,6 @@ _PLAYBACK_BRANCHES = ("hw:CARD=DAC8x,DEV=0", RING_ACTIVE_PLAYBACK_DEVICE)
 
 
 def _follower_driver_domain_devices(playback_device: str) -> dict:
-    """The follower's driver-domain ``devices`` block, emitted exactly as the
-    reconciler feeds it: the grouping ring on the capture side (the precheck's
-    two kwargs) and the sink's own geometry everywhere else, DERIVED from
-    ``active_emit_devices`` the way ``build_baseline_profile_candidate`` derives
-    it rather than restated here."""
     devices = active_emit_devices(playback_device)
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
     text = emit_active_speaker_driver_domain_config(

@@ -232,7 +232,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0192](0192-the-campaign-is-the-validation.md) | The campaign is the validation | accepted |
 | [0193](0193-the-audition-door-is-a-runtime-only-swap.md) | The audition door is a runtime-only swap | accepted |
 | [0194](0194-the-flat-spec-frame-and-its-ceiling.md) | The flat-spec reference is the low-mid band, and the graded ceiling follows the microphone | accepted |
-| [0195](0195-a-rebuild-that-knows-less-is-not-a-supersede.md) | A rebuild that knows less is not a supersede | accepted |
+| [0195](0195-a-rebuild-that-knows-less-is-not-a-supersede.md) | A rebuild that knows less is not a supersede | superseded by 0312 |
 | [0196](0196-the-commissioning-record-read-path-takes-no-lock.md) | The commissioning record's read path takes no lock, and says what it found | superseded by 0288 |
 | [0197](0197-the-commissioning-capture-stack-is-deleted.md) | The commissioning capture stack is deleted | superseded by 0288 |
 | [0198](0198-the-unwired-engine-verb-half-is-deleted.md) | The unwired engine verb half is deleted | accepted |
@@ -286,3 +286,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0309](0309-the-level-statistic-is-the-loudest-half-second.md) | The level statistic is the loudest half-second | accepted |
 | [0310](0310-leveling-converges-on-two-in-band-readings.md) | Leveling converges on two consecutive in-band readings | accepted |
 | [0311](0311-a-run-plays-at-one-session-level.md) | One run, one level | accepted |
+| [0312](0312-the-ladder-has-no-rebuild-to-compare.md) | The ladder has no rebuild to compare | accepted |

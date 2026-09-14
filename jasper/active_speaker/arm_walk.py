@@ -59,6 +59,7 @@ from .movers import MOVER_ARM
 from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READY_PATH
 from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_USER_STOPPED
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
+from .poll_backoff import next_poll_s
 from .wizard_client import STATUS_PATH, WizardClient
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,6 @@ PARK_SETTLE_S = 10.0
 
 #: How close to zero a parked arm must read. The adapter reports hundredths.
 PARK_TOLERANCE_DEG = 0.05
-
-DEFAULT_POLL_S = 3.0
 
 DEFAULT_IDLE_CEILING_S = 1200.0
 
@@ -253,8 +252,9 @@ class Poll:
     readable: bool = True
     ended: str = ""
     mover: str | None = None
-    progress: tuple[object, object, str] | None = None
+    progress: tuple[Mapping[str, Any], str] | None = None
     session_id: str = ""
+    capture: Mapping[str, Any] | None = None
 
 
 class Mover(Protocol):
@@ -513,7 +513,7 @@ class WalkConfig:
     """The arm's movement and polling clocks."""
 
     settle_s: float = DEFAULT_SETTLE_S
-    poll_s: float = DEFAULT_POLL_S
+    poll_s: float = 3.0
     idle_ceiling_s: float = DEFAULT_IDLE_CEILING_S
     stuck_alarm_s: float = DEFAULT_STUCK_ALARM_S
     unreadable_ceiling_s: float = DEFAULT_UNREADABLE_CEILING_S
@@ -616,16 +616,20 @@ class ArmWalk:
         idle_since = last_progress = now
         progress = first.progress
         unreadable_since: float | None = None if first.readable else now
+        first_poll = True
+        interval_s = cfg.poll_s
         while True:
             poll = self._poll()
             if poll.ended and self._saw_session:
                 return self._session_ended(poll)
+            changed = first_poll or (poll.readable and poll.progress != progress)
 
             if poll.readable:
-                unreadable_since = None
-                if poll.in_flight and poll.progress != progress:
-                    progress = poll.progress
+                if poll.in_flight and changed:
                     idle_since = last_progress = self._clock()
+                progress = poll.progress
+                changed = changed or unreadable_since is not None
+                unreadable_since = None
             else:
                 if unreadable_since is None:
                     unreadable_since = self._clock()
@@ -654,6 +658,7 @@ class ArmWalk:
                     if code is not None:
                         return code
                     idle_since = last_progress = self._clock()
+                    changed = True
             if (
                 poll.readable
                 and poll.in_flight
@@ -676,7 +681,9 @@ class ArmWalk:
                     released=len(self._served),
                 )
                 return EXIT_OK if self._served else EXIT_IDLE_CEILING
-            self._sleep(self._config.poll_s)
+            interval_s = next_poll_s(interval_s, changed=changed, initial_s=cfg.poll_s)
+            first_poll = False
+            self._sleep(interval_s)
 
     def _serve(self, pending: Pending) -> int | None:
         """Move, settle, release. ``None`` means the walk continues."""
@@ -897,8 +904,9 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     return Poll(
         pending_from_capture(capture), not ended, failed, ended=ended,
         mover=str(held.get("mover") or "") if isinstance(held, Mapping) else None,
-        progress=(run.get("attempt"), run.get("pose"), state),
+        progress=(run, state),
         session_id=str(capture.get("session_id") or ""),
+        capture=capture,
     )
 
 
@@ -912,7 +920,6 @@ __all__: Sequence[str] = (
     "ArmWalkRefused",
     "LoopbackSession",
     "DEFAULT_IDLE_CEILING_S",
-    "DEFAULT_POLL_S",
     "DEFAULT_SETTLE_S",
     "DEFAULT_STUCK_ALARM_S",
     "DEFAULT_TOOL_PATH",

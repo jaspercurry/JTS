@@ -131,8 +131,8 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--poll-s", type=float, default=arm_walk.DEFAULT_POLL_S,
-        help="how often to read the envelope (default: %(default)s)",
+        "--poll-s", type=float, default=arm_walk.WalkConfig.poll_s,
+        help="initial poll interval; backs off while unchanged (default: %(default)s)",
     )
     parser.add_argument(
         "--idle-ceiling-s", type=float, default=arm_walk.DEFAULT_IDLE_CEILING_S,

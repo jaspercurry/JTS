@@ -824,7 +824,7 @@ def _lossy_page_report():
     """A page report the host's own count disagrees with — a real defect."""
     return {
         "frames": DECLARED_FRAMES, "encoded_frames": DECLARED_FRAMES,
-        "block_gaps": 0, "block_gap_frames": 0, "zero_run_count": 0,
+        "capture_gaps": 0, "capture_gap_frames": 0, "zero_run_count": 0,
     }
 
 
@@ -3166,7 +3166,7 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
     root = write_asked_poses(tmp_path, state, poses)
     monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
     if storage == "banked":
-        target = tmp_path / "campaigns" / "banked-run" / "bundle"
+        target = tmp_path / "campaigns" / state["session_id"] / "bundle"
         target.mkdir(parents=True)
         shutil.move(root / "asked-run", target)
     elif storage == "recovery":
@@ -3174,13 +3174,33 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
         state["candidate"] = {"fingerprint": "applied-candidate"}
         state["session_id"] = "recovery"
         write_asked_poses(tmp_path, state, [{"deg": 0}])
-        monkeypatch.setattr("jasper.active_speaker.grade_coverage.find_banked_candidate",
-                            lambda fingerprint: SimpleNamespace(path=original / "candidate.json"))
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.status_banked_candidate",
+                            lambda fingerprint, **kw: SimpleNamespace(path=original / "candidate.json"))
     v2state.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
     assert grade["scope"] == v2grade.GRADE_SCOPE_MARK
     assert grade["complete"] is complete
     assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
+
+
+@pytest.mark.parametrize("initial_manifest", [False, True])
+def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypatch, initial_manifest):
+    import shutil
+    from jasper.active_speaker.grade_coverage import asked_beyond_mark
+    from tests.run_manifest_fixture import write_asked_poses
+
+    state = _applied_state()
+    root = write_asked_poses(tmp_path, state, [{"deg": 0}])
+    if not initial_manifest:
+        shutil.rmtree(root / "asked-run" / "evidence")
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
+    assert asked_beyond_mark(state) is False
+    write_asked_poses(tmp_path, state, [{"deg": 20}])
+    assert asked_beyond_mark(state) is True
+    target = tmp_path / "campaigns" / state["session_id"] / "bundle"
+    target.mkdir(parents=True)
+    shutil.move(root / "asked-run", target)
+    assert asked_beyond_mark(state) is True
 
 
 _PASSING_GROUP = {"passed": True, "flatness": {
@@ -3415,7 +3435,6 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert seen["geometry"] is geometry
     assert seen["geometry"].driver_spacing_m == pytest.approx(0.15)
     assert seen["rate"] == 48000
-    # The evidence annotation records the applied calibration.
     assert meta["calibration"]["verify"] == {
         "applied": True, "calibration_id": "cal-123",
         "curve_fingerprint": json_fingerprint(curve_sentinel.to_dict()),
@@ -3423,7 +3442,9 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert evidence.take()["capture_calibration"] == meta["calibration"]["verify"]
     uncalibrated = v2evidence.bind_production_analyze(evidence=evidence)
     uncalibrated(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry, phase="verify")
-    assert evidence.take()["capture_calibration"] == {"applied": False, "calibration_id": None}
+    assert evidence.take()["capture_calibration"] == {
+        "applied": False, "calibration_id": None, "curve_fingerprint": None,
+    }
 
 
 def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
@@ -3450,8 +3471,8 @@ def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
-    report = {"frames": 4, "encoded_frames": 4, "block_gaps": 0,
-              "block_gap_frames": 0}
+    report = {"frames": 4, "encoded_frames": 4, "capture_gaps": 0,
+              "capture_gap_frames": 0}
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )
@@ -3508,7 +3529,7 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
         )
     # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
     assert seen["calibration"] is None
-    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None, "curve_fingerprint": None}
     # W6.13 round-5 diagnostic: the WARN names what the phone-reported setup
     # actually held at resolve time — here nothing at all.
     fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
@@ -3905,7 +3926,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 
     assert out == "analysis"
     assert seen["calibration"] is None  # never mis-applied
-    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None, "curve_fingerprint": None}
     assert event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
     assert event_records(caplog, "correction.calibration_device_identity_mismatch")
 
@@ -5423,20 +5444,6 @@ def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
 
 
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
-    """Era tolerance at the LIVE surface, not just in ``from_mapping``.
-
-    The blocker this pins: ``to_dict()`` always writes ``exclusion_evidence``,
-    so a ``candidate.json`` published by a build that predates the field fails
-    ``from_mapping``'s reopen comparison unless it is setdefaulted — and that
-    comparison is on the apply path (``handle_v2_apply`` →
-    ``find_banked_candidate`` → ``from_mapping``). The household-visible
-    symptom was a ``candidate_tampered`` refusal telling them their persisted
-    correction had been altered when the file was merely older than the field.
-
-    Drives the SAME real ``apply_baseline_profile`` path as the sibling test
-    above, with the key deleted from the payload — it must load, keep its
-    fingerprint, and apply.
-    """
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
 
@@ -5766,13 +5773,6 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
 def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     monkeypatch, tmp_path,
 ):
-    """The full real journey: no preview on disk -> session start ensures one
-    (asserted on disk, ready) -> measure-shaped candidate baked against the
-    resolved preset -> handle_v2_apply SUCCEEDS through the real
-    apply_baseline_profile guard -> Start-over (the REAL handle_reset)
-    deletes the preview by design -> a fresh session start re-ensures it from
-    the (unchanged) design draft -> apply succeeds again. The test never
-    once hand-writes active_speaker_crossover_preview.json."""
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.web import correction_crossover_flow as reset_flow
 
@@ -6020,36 +6020,72 @@ def _rearm_verify():
 
 
 
-def test_the_status_block_withholds_a_way_back_its_door_would_refuse(
+def test_status_reports_previous_applied_record_without_a_bank_walk(
     monkeypatch, tmp_path,
 ):
-    """Review row 6, at the seam that feeds every screen.
+    from jasper.web.correction_crossover_flow import handle_status
 
-    ``previous_candidate_fingerprint`` on the status block is what the
-    envelope mints the way-back button AND selects the rollback-failed copy
-    arm from. When the republish door would refuse the pointer — here a bank
-    with no verifiable artifact for it — the block publishes ``None``, so no
-    surface advertises a "Go back to the previous tuning" that refuses on the
-    same fact. The positive control drives the REAL preflight over a REAL
-    bank: the same state publishes the fingerprint once the artifact is
-    admissible.
-    """
     prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: tmp_path / "bank-sessions")
+    applied = json.loads((tmp_path / "baseline_profile.json").read_text())
+    statefile = tmp_path / "camilla-state.yml"
+    statefile.write_text(json.dumps({"config_path": applied["config"]["path"]}))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    handle_status()
 
-    assert (
-        v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
-        == prior_fingerprint
-    )
+    def bank_walk(*args, **kwargs):
+        raise AssertionError
 
-    # Prune the bank out from under the pointer: the answer must flip with it.
-    monkeypatch.setattr(
-        "jasper.active_speaker.bundles.sessions_dir",
-        lambda: tmp_path / "empty-bank",
-    )
-    assert (
-        v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
-        is None
-    )
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank.find_banked_candidate", bank_walk)
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank._iter_candidate_paths", bank_walk)
+    payload, code = handle_status()
+    assert code == 200
+    assert payload["crossover_v2"]["previous_candidate_fingerprint"] == prior_fingerprint
+    assert v2host._previous_candidate_known() is True
+
+
+@pytest.mark.parametrize("record", ["absent", "applied", "legacy", "pruned"])
+@pytest.mark.parametrize("campaigns_exist", [False, True])
+def test_status_never_discovers_candidates_on_a_cold_or_empty_box(monkeypatch, tmp_path, record, campaigns_exist):
+    from jasper.web.correction_crossover_flow import handle_status
+
+    if record != "absent":
+        previous = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+        path = tmp_path / "baseline_profile.json"
+        applied = json.loads(path.read_text())
+        if record == "legacy":
+            applied.pop("candidate_artifact_path")
+            path.write_text(json.dumps(applied))
+        elif record == "pruned":
+            Path(applied["candidate_artifact_path"]).unlink()
+    else:
+        _seed_baseline_apply_environment(monkeypatch, tmp_path)
+        previous = None
+    campaigns = tmp_path / "campaigns"
+    if campaigns_exist:
+        campaigns.mkdir(exist_ok=True)
+
+    def bank_walk(*args, **kwargs):
+        raise AssertionError
+
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank.find_banked_candidate", bank_walk)
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank._iter_candidate_paths", bank_walk)
+    payload, code = handle_status()
+    assert code == 200
+    assert payload["crossover_v2"]["previous_candidate_fingerprint"] == previous
+    assert payload["setup"]["protected_profile"]["available"] is (record != "absent")
+
+
+def test_apply_refuses_an_offered_previous_candidate_after_pruning(monkeypatch, tmp_path):
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+
+    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    offered = v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
+    assert offered == prior_fingerprint
+    find_banked_candidate(offered).path.unlink()
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
+        _apply({"expected_candidate_fingerprint": offered}, _bg_run_async, _FakeApplyCam)
+    assert exc.value.code == "not_found"
 
 
 def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatch):

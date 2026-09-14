@@ -22,7 +22,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from jasper.log_event import log_event
 
@@ -111,6 +111,22 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
     if root == _bank_root(None):
         paired = DEFAULT_CAMPAIGN_ROOT.name
     return (root, root.parent / paired) if paired else (root,)
+
+
+def status_banked_candidate(
+    fingerprint: str, *, applied_profile: Mapping[str, Any] | None = None,
+) -> BankedCandidate:
+    """Open the applied record's exact artifact; status never discovers or migrates."""
+    from .baseline_profile import load_applied_baseline_profile_state  # lazy: baseline recording imports the bank
+
+    applied = applied_profile if applied_profile is not None else load_applied_baseline_profile_state() or {}
+    path = applied.get("candidate_artifact_path")
+    if path and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint:
+        candidate = load_candidate_artifact(Path(path))
+        if candidate is not None and candidate.fingerprint == fingerprint:
+            bundle_id, capture_id = _identity_from_path(Path(path))
+            return BankedCandidate(candidate, bundle_id, capture_id, Path(path))
+    raise CandidateBankRefusal("composition_saved_tune_unavailable", "the applied candidate artifact is unavailable")
 
 
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
