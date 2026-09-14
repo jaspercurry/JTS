@@ -76,6 +76,7 @@ from jasper.audio_measurement.comparison_bands import (
     crossover_region_band_hz,
     overlap_band_hz,
 )
+from jasper.audio_measurement.program_analysis import alignment_pairs
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -2070,46 +2071,57 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
     assert res.alignment.delay_us == pytest.approx((d_w - d_t) / SR * 1e6, abs=5.0)
 
 
-def test_snap_recovers_physical_delay_through_drift_and_noise():
-    """Delay-selection physics gate (methodology §10, 2026-07-22): with the
-    plausibility bound supplied, the anchor-primary + gated-local-peak-snap
-    selector recovers the physical inter-driver delay from a capture carrying a
-    known clock drift. The successor to the retired ``_flatness_delay_us``
-    170/170 drift-removal gate: the inter-sweep clock term is removed from the
-    raw argmax gap, the physical remainder is kept, and the SELECTED applied
-    delay tracks truth.
-    """
+@pytest.mark.parametrize("sweep_count,eps", [(2, 80e-6), (3, 80e-6), (4, 80e-6), (5, -80e-6), (6, 80e-6)])
+def test_adjacent_alignment_cancels_clock_drift(monkeypatch, sweep_count, eps):
+    """Remove schedule correction alone; sweep-stretch correction still keeps IRs sharp."""
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
         sweep_durations={"woofer": 0.8, "tweeter": 0.6},
     )
-    tau_true = 25  # tweeter arrives 25 samples LATER than the woofer
-    eps = 80e-6
+    sweeps = [seg for seg in prog.segments if seg.kind == KIND_SWEEP]
+    omitted = {seg.segment_id for seg in sweeps[sweep_count:]}
+    prog = _finalize(prog.phase, prog.channels, [
+        seg for seg in prog.segments if seg.segment_id not in omitted
+    ], prog.total_samples)
+    tau_true = 25
     cap = _synthesize(
         prog,
         woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
         tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
-        epsilon=eps,
+        epsilon=eps, noise=0.0,
     )
+    monkeypatch.setattr(program_analysis.dispatch, "_estimate_drift", lambda *args:
+                        program_analysis.DriftEstimate(eps * 1e6, 0.0, False))
+    pair_estimate = alignment_pairs._estimate_alignment
+
+    def without_schedule_correction(capture, program, rate, offset, epsilon, *args, **kwargs):
+        return pair_estimate(capture, program, rate, offset, 0.0, *args, **kwargs)
+
+    monkeypatch.setattr(alignment_pairs, "_estimate_alignment", without_schedule_correction)
     res = analyze_program_capture(
-        prog, cap, SR,
-        priors=MeasurementPriors(
+        prog, cap, SR, priors=MeasurementPriors(
             crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0.0, 1000.0),
         ),
-        geometry=MeasurementGeometry(),  # d=0 ⇒ no parallax
     )
     expected_delay_us = -tau_true / SR * 1e6
-    # The SELECTED (snapped) applied delay recovers truth within the sub-sample
-    # snap precision — the drift term ε·(tweeter_start − woofer_start) was
-    # removed from the raw gap, and the physical remainder retained.
+    first_drift_us = eps * (sweeps[1].start_sample - sweeps[0].start_sample) / SR * 1e6
     assert res.alignment.status == ALIGNMENT_OK
     assert res.candidate.snap_found is True
     assert res.candidate.delay_us == res.alignment.delay_us
-    assert res.alignment.delay_us == pytest.approx(expected_delay_us, abs=5.0)
-    # The integer anchor is close; the GCC seed is retained separately. On a
-    # single clean correlation peak, anchor, seed, and snap all coincide.
-    assert res.candidate.anchor_delay_us == pytest.approx(expected_delay_us, abs=11.0)
-    assert res.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    if sweep_count == 2:
+        assert res.alignment.delay_us - expected_delay_us == pytest.approx(-first_drift_us, abs=2.0)
+        assert abs(res.alignment.delay_us - expected_delay_us) > 100.0
+    else:
+        assert res.alignment.delay_us == pytest.approx(expected_delay_us, abs=2.0)
+    for fields in (analysis_diagnostic_summary(res), analysis_json(res)):
+        assert fields["alignment_pair_count"] == sweep_count - 1
+        assert fields["alignment_pair_spread_us"] == res.alignment.alignment_pair_spread_us
+        assert fields["inter_sweep_drift_us"] == res.alignment.inter_sweep_drift_us
+    assert res.alignment.inter_sweep_drift_us > 100.0
+    assert res.alignment.alignment_pair_spread_us == pytest.approx(
+        0.0 if sweep_count == 2 else abs(eps * (sweeps[2].start_sample - sweeps[0].start_sample) / SR * 1e6),
+        abs=3.0,
+    )
 
 
 def _fractional_band_impulse(
@@ -3875,42 +3887,10 @@ def test_snap_production_path_preserves_parallax_contract(
     expected_delay_us = expected_raw_us - geometry.parallax_us()
     assert result.drift.epsilon_ppm == pytest.approx(30.0, abs=2.0)
     assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
-    measured_global_offset, _first, _stimuli, _amb = _global_offset(prog, cap, SR)
-    seg_w = prog.segment("sweep_w")
-    seg_t = prog.segment("sweep_t")
-    epsilon = result.drift.epsilon_ppm / 1e6
-    woofer_full_ir, _pre_w = _deconvolve_window(
-        cap,
-        seg_w,
-        measured_global_offset + seg_w.start_sample,
-        SR,
-        epsilon=epsilon,
-    )
-    tweeter_full_ir, _pre_t = _deconvolve_window(
-        cap,
-        seg_t,
-        measured_global_offset + seg_t.start_sample,
-        SR,
-        epsilon=epsilon,
-    )
-    measured_peak_gap_us = (
-        program_analysis.response._rectified_peak_sample(tweeter_full_ir)
-        - program_analysis.response._rectified_peak_sample(woofer_full_ir)
-    ) / SR * 1e6
-    inter_sweep_drift_us = (
-        epsilon * (seg_t.start_sample - seg_w.start_sample) / SR * 1e6
-    )
-    physical_peak_gap_us = measured_peak_gap_us - inter_sweep_drift_us
-    physical_seed_us = -(physical_peak_gap_us + geometry.parallax_us())
-    # Anchor-primary + gated snap (methodology §10, 2026-07-22): the selected
-    # delay is the physical peak-gap anchor snapped within ±(period/6) at Fc —
-    # same sign side as the anchor, never a periodic-comb-lobe jump.
+    physical_seed_us = result.alignment.anchor_delay_us
     snap_radius_us = 1e6 / FC_HZ * GCC_SNAP_RADIUS_PERIODS
-    # S1 single-source pin: the candidate's anchor is EXACTLY the aligner-owned
-    # anchor (derived, never a parallel argmax), and both equal the manual
-    # physical peak-gap computation.
-    assert result.candidate.anchor_delay_us == result.alignment.anchor_delay_us
-    assert result.candidate.anchor_delay_us == pytest.approx(physical_seed_us, abs=1e-9)
+    assert result.candidate.anchor_delay_us == physical_seed_us
+    assert physical_seed_us == pytest.approx(expected_delay_us, abs=5.0)
     assert abs(result.alignment.delay_us - physical_seed_us) <= snap_radius_us + 1e-6
     assert math.copysign(1.0, result.alignment.delay_us) == math.copysign(
         1.0,

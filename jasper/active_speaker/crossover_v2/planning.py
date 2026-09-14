@@ -175,6 +175,9 @@ def analysis_json(
         "glitch_detected": bool(analysis.glitch_detected),
         "delay_us": round(float(align.delay_us), 3) if align else None,
         "alignment_status": align.status if align else None,
+        "alignment_pair_count": align.alignment_pair_count if align else 0,
+        "alignment_pair_spread_us": align.alignment_pair_spread_us if align else None,
+        "inter_sweep_drift_us": align.inter_sweep_drift_us if align else None,
         "alignment_seed_delay_us": (
             round(float(align.seed_delay_us), 3)
             if align and align.seed_delay_us is not None else None

@@ -691,10 +691,10 @@ class AlignmentEstimate:
     to the seed, not the commitment. ``raw_delay_us`` is the pre-parallax
     coordinate, so ``delay_us == raw_delay_us - parallax_us``.
 
-    ``anchor_delay_us`` is the drift-corrected physical peak-gap anchor;
-    ``snapped_delay_us`` is that anchor snapped to the nearest local GCC-PHAT
-    maximum within +/-(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`),
-    ``None`` when no local maximum exists in range or the seed was refused.
+    ``anchor_delay_us`` averages physical peak gaps across adjacent pairs;
+    ``snapped_delay_us`` averages their local GCC-PHAT snaps within
+    +/-(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`), or is ``None``
+    when any pair lacks a snap. Forward/reverse weights cancel linear drift.
 
     ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate; when the
     correlation peak lands at the +/-search-window edge (a likely clamped
@@ -720,6 +720,11 @@ class AlignmentEstimate:
     anchor_delay_us: float | None = None
     snapped_delay_us: float | None = None
     polarity_agrees_with_sum: bool | None = None
+    alignment_pair_count: int = 0
+    # Peak-to-peak span: snaps if all exist, otherwise anchors, otherwise GCC.
+    alignment_pair_spread_us: float | None = None
+    # Weighted mean magnitude of the per-pair clock correction, in microseconds.
+    inter_sweep_drift_us: float | None = None
 
 
 @dataclass(frozen=True)

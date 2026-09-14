@@ -395,9 +395,11 @@ def _estimate_alignment(
     woofer_full_ir: np.ndarray,
     tweeter_full_ir: np.ndarray,
     pre_samples: int,
+    seg_w: ProgramSegment | None = None,
+    seg_t: ProgramSegment | None = None,
 ) -> AlignmentEstimate:
-    seg_w = program.segment("sweep_w")
-    seg_t = program.segment("sweep_t")
+    seg_w = seg_w or program.segment("sweep_w")
+    seg_t = seg_t or program.segment("sweep_t")
     lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
     )
@@ -422,6 +424,7 @@ def _estimate_alignment(
     )
     # epsilon-correct: the tweeter's schedule offset is stretched by epsilon.
     delta_start = seg_t.start_sample - seg_w.start_sample
+    inter_sweep_drift_us = epsilon * delta_start / sample_rate * 1e6
     tau_samples = lag_samples - epsilon * delta_start
     # delay_us = (D_woofer - D_tweeter) = -tau (tau = D_tweeter - D_woofer).
     raw_delay_us = -tau_samples / sample_rate * 1e6
@@ -461,7 +464,6 @@ def _estimate_alignment(
             - _rectified_peak_sample(woofer_full_ir)
         )
         # Peak gap - inter-sweep drift, plus parallax, negated into the signed frame.
-        inter_sweep_drift_us = epsilon * delta_start / sample_rate * 1e6
         drift_corrected_peak_gap_us = (
             anchor_lag_samples / sample_rate * 1e6 - inter_sweep_drift_us
         )
@@ -492,6 +494,9 @@ def _estimate_alignment(
         status=status,
         anchor_delay_us=anchor_delay_us,
         snapped_delay_us=snapped_delay_us,
+        alignment_pair_count=1,
+        alignment_pair_spread_us=0.0,
+        inter_sweep_drift_us=abs(inter_sweep_drift_us),
     )
 
 

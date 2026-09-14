@@ -16,6 +16,7 @@ import numpy as np
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
 from .branches import analyze_branches
+from .alignment_pairs import estimate_adjacent_alignment
 
 from jasper.audio_measurement import analysis as analysis_mod, deconv
 from jasper.audio_measurement.comparison_bands import (
@@ -78,7 +79,6 @@ from .response import (
     branch_level_bands_hz,
     _deconvolve_window,
     _driver_response,
-    _estimate_alignment,
     _finite_or_none,
     _gate_floor_hz,
     _n_fft_for,
@@ -304,7 +304,7 @@ def _repeat_driver_responses(
     capture: np.ndarray,
     sample_rate: int,
     global_offset: int,
-    epsilon: float,
+    sweep_irs: Mapping[str, tuple[np.ndarray, int]],
     occurrences: Sequence[SegmentLocation],
     *,
     role: str,
@@ -312,27 +312,13 @@ def _repeat_driver_responses(
     ambient_report: Mapping[str, Any] | None,
     fc_hz: float | None,
     n_fft: int,
-    priors: MeasurementPriors,
     alignment_band_hz: tuple[float, float] | None = None,
 ) -> tuple[DriverResponse, ...]:
-    """Deconvolve + gate + TF every occurrence AFTER the first (design item 7).
-
-    Per-repeat evidence, individually bounded exactly like the primary
-    response. The PRIMARY response is built by the caller and untouched
-    here; repeats never feed the candidate/trim/alignment math. Consumed
-    by ``linearization_envelope.compute_sigma_curve`` as the Layer-1a
-    repeatability term.
-    """
+    """Per-repeat responses for ``linearization_envelope.compute_sigma_curve``."""
     out: list[DriverResponse] = []
     for repeat_index, loc in enumerate(occurrences[1:], start=1):
         seg = program.segment(loc.segment_id)
-        full_ir, _pre = _deconvolve_window(
-            capture, seg, global_offset + seg.start_sample, sample_rate,
-            epsilon=epsilon,
-        )
-        full_ir = _compose_configured_path_ir(
-            role, full_ir, sample_rate, _radiated_band_hz(seg), priors
-        )
+        full_ir, _pre = sweep_irs[seg.segment_id]
         resp = _driver_response(
             role, full_ir, sample_rate,
             calibration=calibration, ambient_report=ambient_report,
@@ -371,32 +357,21 @@ def _analyze_measure(
         fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
     ) if seg_t is not None and fc_hz is not None else None
     epsilon = drift.epsilon_ppm / 1e6
-    # Deconvolve both sweeps anchored at their SCHEDULE window (with a shared
-    # pre-guard) so relative timing survives (the aligner relies on this); the
-    # measured ε is divided out of the reference so drift can't smear the IR.
-    woofer_full_ir, pre_w = _deconvolve_window(
-        capture, seg_w, global_offset + seg_w.start_sample, sample_rate,
-        epsilon=epsilon,
-    )
-    woofer_full_ir = _compose_configured_path_ir(
-        seg_w.role, woofer_full_ir, sample_rate, _radiated_band_hz(seg_w), priors
-    )
-    tweeter_full_ir = None
-    pre_samples = pre_w
-    if seg_t is not None:
-        tweeter_full_ir, pre_t = _deconvolve_window(
-            capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
-            epsilon=epsilon,
-        )
-        tweeter_full_ir = _compose_configured_path_ir(
-            seg_t.role, tweeter_full_ir, sample_rate, _radiated_band_hz(seg_t), priors
-        )
-        pre_samples = min(pre_w, pre_t)
+    occurrences_by_role = _sweep_occurrences_by_role(locations)
+    sweep_irs = {}
+    for occurrences in occurrences_by_role.values():
+        for loc in occurrences:
+            seg = program.segment(loc.segment_id)
+            full_ir, pre = _deconvolve_window(
+                capture, seg, global_offset + seg.start_sample, sample_rate, epsilon=epsilon,
+            )
+            sweep_irs[seg.segment_id] = (_compose_configured_path_ir(
+                seg.role, full_ir, sample_rate, _radiated_band_hz(seg), priors,
+            ), pre)
+    woofer_full_ir = sweep_irs[seg_w.segment_id][0]
+    tweeter_full_ir = sweep_irs[seg_t.segment_id][0] if seg_t is not None else None
     n_fft = _n_fft_for(*[ir for ir in (woofer_full_ir, tweeter_full_ir) if ir is not None])
 
-    # Primary responses are first-occurrence-derived. Repeats are attached
-    # as diagnostic-only `repeat_responses` on the matching primary.
-    occurrences_by_role = _sweep_occurrences_by_role(locations)
     branches = [(seg_w, woofer_full_ir)]
     if seg_t is not None and tweeter_full_ir is not None:
         branches.append((seg_t, tweeter_full_ir))
@@ -404,12 +379,12 @@ def _analyze_measure(
         replace(
             resp,
             repeat_responses=_repeat_driver_responses(
-                program, capture, sample_rate, global_offset, epsilon,
+                program, capture, sample_rate, global_offset, sweep_irs,
                 occurrences_by_role.get(resp.role, ()),
                 role=resp.role,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
-                priors=priors, alignment_band_hz=alignment_band_hz,
+                alignment_band_hz=alignment_band_hz,
             ),
         )
         for resp in (
@@ -434,11 +409,9 @@ def _analyze_measure(
     pair_not_evaluated: str | None = MEASURE_PAIR_SINGLE_DRIVER
     if seg_t is not None and tweeter_full_ir is not None and fc_hz is not None:
         pair_not_evaluated = None
-        alignment = _estimate_alignment(
+        alignment = estimate_adjacent_alignment(
             capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
-            fc_hz, geometry, priors,
-            woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
-            pre_samples=pre_samples,
+            fc_hz, geometry, priors, sweep_irs,
         )
 
         # Reads BOTH branches' ALIGNMENT-class verdict (the 35 dB law), not
