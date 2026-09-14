@@ -14,9 +14,15 @@ import jasper.volume_curve as volume_curve
 from jasper.sound import settings as sound_settings
 from jasper.volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_CEILING_DB,
     configured_volume_floor_db,
     db_to_percent,
     percent_to_db,
+)
+from jasper.volume_floor import (
+    VOLUME_FLOOR_MAX_DB,
+    VOLUME_FLOOR_MIN_DB,
+    normalize_volume_floor_db,
 )
 
 
@@ -39,6 +45,25 @@ def test_custom_floor_changes_curve_span():
     assert percent_to_db(1, floor_db=-20.0) > -20.0
     assert percent_to_db(50, floor_db=-20.0) == pytest.approx(-10.101, abs=0.001)
     assert db_to_percent(-10.101, floor_db=-20.0) == 50
+
+
+def test_curve_never_exceeds_ceiling_and_stays_nondecreasing_over_every_floor():
+    """Regression pin: `span*((p-1)/99)` and `(span/99)*(p-1)` are not
+    bit-identical in floating point, and the latter can push
+    `percent_to_db(100, floor)` fractionally above the ceiling for some
+    floors. Every configured floor must cap at 0 dB and keep the curve
+    non-decreasing across the slider."""
+    tenths = round(VOLUME_FLOOR_MIN_DB * 10)
+    limit = round(VOLUME_FLOOR_MAX_DB * 10)
+    while tenths <= limit:
+        floor = normalize_volume_floor_db(tenths / 10.0)
+        assert percent_to_db(100, floor_db=floor) <= VOLUME_CEILING_DB
+        previous = percent_to_db(0, floor_db=floor)
+        for p in range(1, 101):
+            current = percent_to_db(p, floor_db=floor)
+            assert current >= previous
+            previous = current
+        tenths += 1
 
 
 def test_configured_floor_cache_reloads_when_settings_file_changes(

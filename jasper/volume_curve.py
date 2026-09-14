@@ -96,20 +96,19 @@ def percent_to_db(percent: float, *, floor_db: float | None = None) -> float:
     p = max(0.0, min(100.0, float(percent)))
     floor = _floor(floor_db)
     span = VOLUME_CEILING_DB - floor
-    step = span / 99.0
     if p <= 0.0:
         return floor
     if p <= 1.0:
-        return floor + step / 4.0
-    return floor + step * (p - 1.0)
+        return floor + (span / 99.0) / 4.0
+    return floor + span * ((p - 1.0) / 99.0)
 
 
 def db_to_percent(db: float, *, floor_db: float | None = None) -> int:
     """Map Camilla dB back to the nearest user-facing percent.
 
-    The floor dB is ambiguous: it can mean muted 0% or audible 1%.
-    Legacy dB-only callers expect the floor to mean 0%, so exact/below-floor
-    values return 0; persisted ``listening_level`` disambiguates modern state.
+    The floor dB unambiguously means mute now that 1% sits strictly above
+    it (audit R-006); exact/below-floor values return 0, matching legacy
+    dB-only callers that already expected the floor to mean 0%.
     """
     floor = _floor(floor_db)
     try:
