@@ -13,6 +13,7 @@ tests live in ``test_control_single_flight.py``.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import subprocess
@@ -33,7 +34,9 @@ from tests._cue_spy import SpyCues
 from tests._librespot_state import write_librespot_state
 from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests
+from tests.audio_health_fixtures import _compose, _outputd
 from tests.control_server_fixtures import (
+    FakeHaStatus,
     _explicit_passive_output_topology,
     _get,
     _isolate_household_secret,
@@ -722,6 +725,50 @@ def test_system_snapshot_reports_streambox_capabilities(
     assert "unavailable_reason" not in caps
 
 
+def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> None:
+    """One reader per fact on the dashboard route (ADR-0233 rule 1): outputd
+    is read ONCE per request and published through the shaper /state shares.
+    Retire when /system/snapshot stops publishing outputd.
+    """
+    normalized = _compose(selected="usbsink", ladder="l0_locked")
+    legacy = {"status": "ok", "reason": "clean"}
+    outputd = _outputd()
+    reads = []
+
+    class FakeAudioHealth:
+        def snapshot(self) -> dict:
+            return normalized
+
+        def airplay_snapshot(self) -> dict:
+            return legacy
+
+        def outputd_snapshot(self) -> dict:
+            reads.append(1)
+            return copy.deepcopy(outputd)
+
+    handler = _make_handler(
+        "127.0.0.1",
+        1234,
+        "/nonexistent.sock",
+        sampler=None,
+        audio_health_sampler=FakeAudioHealth(),
+        ha_status_cache=FakeHaStatus(),
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _get(f"http://127.0.0.1:{server.server_port}/system/snapshot")
+        assert status == 200
+        assert body["audio_health"] == normalized
+        assert len(reads) == 1
+        assert body["outputd"]["watchdog"] == outputd["watchdog"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 # --- routes ---
 
 
@@ -1352,6 +1399,25 @@ def test_state_502_when_aggregator_raises(
     status, body = _get(f"{base}/state")
     assert status == 502
     assert "error" in body
+
+
+async def test_state_keeps_working_when_audio_health_snapshot_raises(
+    monkeypatch, tmp_path,
+) -> None:
+    """A raising sampler costs the audio_health section only — null there,
+    the rest of the payload intact. Retire with /state's fail-soft rule."""
+    from tests.test_wire_contracts import _state_payload
+
+    def raising() -> dict:
+        raise RuntimeError("audio monitor failed")
+
+    payload = await _state_payload(
+        monkeypatch, tmp_path, audio_health_snapshot=raising,
+    )
+
+    assert payload["audio_health"] is None
+    assert payload["active_source"] == "idle"
+    assert "ts" in payload
 
 
 def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
