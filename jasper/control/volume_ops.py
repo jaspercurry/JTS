@@ -181,16 +181,10 @@ async def _with_coordinator(
         volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
     coord.load_persisted_level()
-    try:
-        return await op(coord)
-    finally:
-        try:
-            await coord.aclose()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("coordinator aclose warning: %s", e)
-        # RendererClient has no aclose — it's a stateless probe wrapper.
-        # CamillaController has no aclose — sync websocket reconnects
-        # on next use. GC handles cleanup of the cached client.
+    # Nothing here owns a closable resource: RendererClient is a stateless
+    # probe wrapper, and CamillaController's websocket reconnects on next
+    # use — GC reclaims both once `coord` drops out of scope.
+    return await op(coord)
 
 
 def _make_duck_active_probe(
