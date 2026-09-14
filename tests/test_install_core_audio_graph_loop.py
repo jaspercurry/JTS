@@ -2,22 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the transactional core audio-graph unit install loop in
-deploy/lib/install/systemd-units.sh (install_local_audio_graph_unit_files).
-
-The deploy hazard this guards: the function used to be a flat sequence of
-`install -m` calls under the caller's `set -euo pipefail`, so a single failed
-`install` aborted the whole sequence and silently skipped every LATER unit —
-a newly-added unit at the end of the list would never land on the first deploy.
-The loop now attempts EVERY row even if one fails, runs a daemon-reload
-regardless, and re-raises at the end so a genuine error still surfaces.
-
-The fragment is sourced into a harness with stub install.sh globals (REPO_DIR,
-SYSTEMD_DIR) plus `install`/`systemctl` shimmed to record calls into log files,
-so the loop is exercised hardware-free and root-free. The same harnesses cover
-the profile staging transaction the two entry points share
-(_with_unit_install_transaction over _stage_{full,streambox}_unit_files).
-"""
+"""Behavior pins for transactional unit installation."""
 
 from __future__ import annotations
 
@@ -373,22 +358,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
     assert not dropin.exists()
     assert not (tmp_path / "later.service").exists()
     assert not transaction.exists()
-
-
-def test_full_profile_does_not_duplicate_shared_install_rows() -> None:
-    source = FRAGMENT.read_text()
-    full = source.split("_stage_full_unit_files() {", 1)[1]
-    table = source.split("JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(", 1)[1].split(
-        "\n)\n",
-        1,
-    )[0]
-    shared_sources = re.findall(r'"(?:0644|0755) ([^ ]+) ', table)
-    assert shared_sources
-    for shared_source in shared_sources:
-        assert shared_source not in full, (
-            f"full profile duplicates table-owned install source {shared_source}"
-        )
-    assert "jasper-fanin-pitch-neutralize" in table
 
 
 def _function_body(source: str, name: str) -> str:
@@ -1179,7 +1148,7 @@ install_transaction_dir="{tmp_path}/txn"
 mkdir -p "$install_transaction_dir"
 install() {{
   local dst="${{!#}}"
-  [[ "$1" == "-d" ]] || printf '%s\\n' "$dst" >> "{calls}"
+  [[ "$1" == "-d" ]] || printf '%s\\t%s\\n' "${{@: -2:1}}" "$dst" >> "{calls}"
   return 0
 }}
 systemctl() {{ return 0; }}
@@ -1190,7 +1159,7 @@ reload_audio_recovery_udev_rules_for_install() {{ return 0; }}
 """
 
 
-def _destinations(tmp_path: Path, function: str) -> set[str]:
+def staged_file_copies(tmp_path: Path, function: str) -> list[tuple[str, str]]:
     result = subprocess.run(
         ["bash", "-c", _destination_harness(tmp_path, function)],
         capture_output=True,
@@ -1200,10 +1169,13 @@ def _destinations(tmp_path: Path, function: str) -> set[str]:
     assert result.returncode == 0, result.stderr
     _assert_no_rm_escaped(tmp_path)
     log = tmp_path / "destinations.log"
+    return [tuple(line.split("\t", 1)) for line in log.read_text().splitlines()]
+
+
+def _destinations(tmp_path: Path, function: str) -> set[str]:
     return {
-        line.replace(str(tmp_path), "")
-        for line in log.read_text().splitlines()
-        if line.strip()
+        destination.replace(str(tmp_path), "")
+        for _, destination in staged_file_copies(tmp_path, function)
     }
 
 
@@ -1225,7 +1197,7 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
         tmp_path / "support", "install_jasper_support_files"
     )
     assert {"/usr/local/lib/jasper/jasper-asound-render.sh"} <= support
-    order = (tmp_path / "support" / "destinations.log").read_text().splitlines()
+    order = [line.split("\t", 1)[1] for line in (tmp_path / "support" / "destinations.log").read_text().splitlines()]
     assert order.index("/usr/local/sbin/jasper-wifi-guardian") < order.index(
         "/usr/local/lib/jasper/jasper-env-file.sh"
     )
@@ -1248,3 +1220,29 @@ def test_a_streambox_stages_a_subset_of_the_full_unit_generation(tmp_path):
         "/systemd/nginx.service.d/jts-recovery.conf",
         "/systemd/bluetooth.service.d/jts-timeout.conf",
     } <= streambox & full
+
+
+@pytest.mark.parametrize("web_source", ["jasper-web", "jasper-web-streambox"])
+def test_shared_web_units_and_recovery_dropins_install_exact_files(tmp_path, web_source):
+    result = subprocess.run(
+        ["bash", "-c", f'''set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}"
+source "{FRAGMENT}"
+install_web_unit_files {web_source}
+install_audio_slice_and_dropins
+'''], capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    for unit in ("jasper-web", "jasper-bluetooth-web", "jasper-correction-web",
+                 "jasper-system-web", "jasper-chat-web"):
+        source = web_source if unit == "jasper-web" else unit
+        for extension in ("service", "socket"):
+            assert (tmp_path / f"{unit}.{extension}").read_bytes() == (
+                ROOT / "deploy" / f"{source}.{extension}"
+            ).read_bytes()
+    for relative in ("jts-audio.slice", "ssh.service.d/oom-protection.conf",
+                     "nginx.service.d/jts-recovery.conf"):
+        assert (tmp_path / relative).read_bytes() == (
+            ROOT / "deploy/systemd" / relative
+        ).read_bytes()

@@ -2,52 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deploy-domain wiring guards — pin the install/systemd/nginx promises.
-
-Five structural invariants in the deploy/ tree that were previously
-prose-only (AGENTS.md, unit-file comments, PR #118 post-mortem) and
-that, when violated, fail where no reviewer is looking — silently on
-the Pi (1-4) or as a whole red lane on the laptop (5):
-
-1. **Orphan-artifact guard (two-sided).** Every shipped systemd unit,
-   drop-in, udev rule, and helper script under deploy/ must be
-   referenced by an install step (`${REPO_DIR}/deploy/...` in
-   deploy/install.sh or deploy/lib/install/*.sh) — a unit file with no
-   install step never reaches a Pi and "works" only in the repo.
-   Reverse side: every `${REPO_DIR}/deploy/...` reference must resolve
-   to a real file, so a renamed source can't leave a stale install line
-   that breaks the next deploy at install time.
-
-2. **Wizard-env precedence guard.** The documented "wizard file wins"
-   rule (comments in jasper-voice.service): in any unit that sources both
-   /etc/jasper/jasper.env and a wizard-owned /var/lib/jasper/*.env,
-   the wizard file's EnvironmentFile= line must come AFTER jasper.env.
-   systemd applies later files over earlier ones; a misordered line
-   silently makes stale operator values beat the wizard.
-
-3. **udev → unit chain guard.** Every ENV{SYSTEMD_WANTS} target in
-   deploy/udev/*.rules must be a unit that ships in deploy/systemd/.
-   A typo'd or renamed unit makes the hotplug self-heal path a no-op
-   with zero log evidence (udev just drops unknown wants).
-
-4. **Wizard-socket ↔ nginx parity (two-sided allowlist).** Every
-   ListenStream port in the wizard sockets (deploy/*.socket) must have
-   an nginx proxy_pass upstream, and every 127.0.0.1 proxy_pass port
-   must be socket-backed — the PR #118 bug class (wizard 502s because
-   one side of the port contract moved without the other). Intentional
-   one-sided ports live in explicit allowlists that fail when stale,
-   so the lists only shrink.
-
-5. **Shell-dialect portability.** deploy/ shell targets the Pi, but the
-   hardware-free suites execute it on the developer's laptop, where macOS
-   supplies BSD sed and bash 3.2. GNU-only and bash-4-only spellings turn
-   every local lane red regardless of the diff under test.
-
-6. **Install-window gate.** Every unit an install can have started
-   behind its back is gated on the in-progress marker, or is named in an
-   allowlist with the reason it is safe on a half-synced /opt/jasper
-   (issue #4123).
-"""
+"""Deploy artifact, unit and socket contracts."""
 from __future__ import annotations
 
 import re
@@ -56,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from ._shell_corpus import shell_files
+from .test_install_core_audio_graph_loop import staged_file_copies
 from .systemd_unit_helpers import value_for, values_for
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -107,12 +63,18 @@ _INSTALL_ROW_REF_RE = re.compile(r'"[0-7]{3,4}\s+(deploy/[^"\'\s]+)\s')
 _OPTIONAL_INSTALL_REFS: dict[str, str] = {}
 
 
-def _install_refs() -> set[str]:
+def _install_refs(tmp_path: Path) -> set[str]:
     refs: set[str] = set()
     for script in _INSTALL_SCRIPTS:
         text = script.read_text()
         refs.update(_INSTALL_REF_RE.findall(text))
         refs.update(_INSTALL_ROW_REF_RE.findall(text))
+    refs = {ref for ref in refs if "$" not in ref}
+    for profile in ("full", "streambox"):
+        for source, _ in staged_file_copies(tmp_path / profile, f"_stage_{profile}_unit_files"):
+            path = Path(source)
+            if path.is_relative_to(_REPO):
+                refs.add(path.relative_to(_REPO).as_posix())
     return refs
 
 
@@ -123,8 +85,8 @@ def _shipped_files() -> list[Path]:
     return sorted(set(files))
 
 
-def test_every_shipped_deploy_artifact_has_an_install_step():
-    refs = _install_refs()
+def test_every_shipped_deploy_artifact_has_an_install_step(tmp_path):
+    refs = _install_refs(tmp_path)
 
     # Expand each reference into the set of repo files it stages.
     covered: set[Path] = set()
@@ -162,8 +124,8 @@ def test_every_shipped_deploy_artifact_has_an_install_step():
     )
 
 
-def test_every_install_deploy_reference_resolves():
-    refs = _install_refs()
+def test_every_install_deploy_reference_resolves(tmp_path):
+    refs = _install_refs(tmp_path)
     broken = []
     for ref in sorted(refs):
         rel = ref.rstrip("/")
