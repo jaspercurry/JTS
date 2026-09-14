@@ -53,6 +53,13 @@ SILENCE_BRIDGE_SEC = 0.8
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
 
+# Quiet between output deltas that is worth reporting. Live streams answer
+# audio continuously, so a gap this long means the provider or the receive
+# loop, not the lane downstream of it — the split #5091 needs in order to tell
+# a network gap from a local delivery stall. Comfortably above the normal
+# delta cadence so ordinary streaming stays silent.
+OUTPUT_DELTA_GAP_SEC = 0.25
+
 # Ceiling on waiting for the server's `session.close` ack. Live bills per
 # connected minute, so the close is still sent and the transport still
 # torn down; only the ack is given up on. Measured ~2.9 s per turn end on
@@ -109,6 +116,9 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
+        # Arrival of the PREVIOUS output delta, audible or quiet. Used only to
+        # report gaps in what the provider sent.
+        self._last_delta_at = 0.0
         self._finalized = False
         self._delegation_id = None
         # Delegation the in-flight tool round answers; a correction moves
@@ -244,6 +254,13 @@ class OpenAILiveTurn(BaseLiveTurn):
         if not pcm:
             return
         now = time.monotonic()
+        if self._last_delta_at and now - self._last_delta_at >= OUTPUT_DELTA_GAP_SEC:
+            log_event(
+                logger, "provider.output_gap", provider=self._conn.PROVIDER_NAME,
+                gap_ms=int((now - self._last_delta_at) * 1000),
+                chunks_received=self._chunks_received,
+            )
+        self._last_delta_at = now
         if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
             self._last_chunk_at = now
             self._chunks_received += 1
