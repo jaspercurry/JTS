@@ -11,6 +11,7 @@ field parsers, and the reconciler kick and trailing-apply scheduling.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -39,6 +40,26 @@ _IMPORTED_FIXTURES = (
 _GROUPING_KICK = [
     "/usr/local/sbin/jasper-grouping-reconcile-kick",
 ]
+
+
+@pytest.mark.parametrize("launch_fails", [False, True])
+def test_grouping_kick_event_reports_only_successful_spawn(monkeypatch, caplog, launch_fails):
+    from jasper.control.handlers import grouping
+
+    def spawn(*_args, **_kwargs):
+        if launch_fails:
+            raise OSError("unavailable")
+
+    monkeypatch.setattr(grouping.subprocess, "Popen", spawn)
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
+    with caplog.at_level(logging.INFO):
+        if launch_fails:
+            with pytest.raises(OSError):
+                grouping._launch_grouping_reconciler_kick("test")
+        else:
+            grouping._launch_grouping_reconciler_kick("test")
+    events = [json.loads(record.message) for record in caplog.records]
+    assert events == ([] if launch_fails else [{"event": "grouping.reconciler_kick", "reason": "test"}])
 
 
 def test_grouping_set_leader_writes_env_and_kicks_reconciler(

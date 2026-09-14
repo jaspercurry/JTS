@@ -146,7 +146,7 @@ build_install_rust_daemon() {
     # build, never a live daemon. cargo_env stays inside the command so
     # the user-drop + profile env are unaffected by the scope.
     run_contained_build "${name}" -- \
-        sudo -u "${BUILD_USER}" -H env "${cargo_env[@]}" bash -c "cd '${cache_dir}' && cargo build --package '${name}' --release --locked --quiet" \
+        sudo -u "${BUILD_USER}" -H env ${cargo_env[@]+"${cargo_env[@]}"} bash -c "cd '${cache_dir}' && cargo build --package '${name}' --release --locked --quiet" \
         || { echo "  ${name} build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/${name}"

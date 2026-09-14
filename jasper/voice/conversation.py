@@ -20,7 +20,7 @@ NO_SPEECH_ABORT_SEC = 5.0
 END_CONVERSATION_TOOL = "end_conversation"
 
 
-# Live may wait longer only after audio has reached playout.
+# The longer backend wait requires audio accepted by playout.
 UNANSWERED_SPEECH_SEC = 8.0
 ACKNOWLEDGED_BACKEND_SEC = 30.0
 
@@ -50,48 +50,47 @@ async def continuous_watchdog(
     pending_state, progressed_at = (0, 0.0), started_at
     while True:
         await asyncio.sleep(WATCHDOG_POLL_SEC)
-        if turn.turn_lost():
-            return "connection_lost"
+        lost = turn.turn_lost()
         now = time.monotonic()
-        if now >= next_spend_check:
+        if not lost and now >= next_spend_check:
             next_spend_check = now + 1.0
             if not spend_allowed():
                 return "spend_cap_reached"
         speech_started, last_speech = user_activity()
-        if not speech_started:
-            if now - started_at >= NO_SPEECH_ABORT_SEC:
-                return "no_speech"
-            continue
-        if now - last_speech < END_OF_UTTERANCE_SILENCE_SEC:
-            continue
+        if not lost:
+            if not speech_started:
+                if now - started_at >= NO_SPEECH_ABORT_SEC:
+                    return "no_speech"
+                continue
+            if now - last_speech < END_OF_UTTERANCE_SILENCE_SEC:
+                continue
         accepted_at = last_accepted_at()
-        if accepted_at < speech_started:
-            if now - last_speech >= UNANSWERED_SPEECH_SEC:
-                return "response_stalled"
-            continue
-        if turn.backend_pending:
-            if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
-                return "response_stalled"
-            continue
         writing_since = write_started_at()
         if writing_since:
             if now - writing_since >= stall_seconds:
                 return "playout_stalled"
             continue
+        if not lost and accepted_at < speech_started:
+            if now - last_speech >= UNANSWERED_SPEECH_SEC:
+                return "response_stalled"
+            continue
+        if not lost and turn.backend_pending:
+            if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
+                return "response_stalled"
+            continue
         pending = turn.audio_chunks_pending()
+        drain_at = tts.expected_drain_at()
         if (pending, accepted_at) != pending_state:
             pending_state, progressed_at = (pending, accepted_at), now
-        if pending:
+        if pending or (lost and now < drain_at):
             if now - progressed_at >= stall_seconds:
                 return "playout_stalled"
             continue
-        deadline = followup_seconds + max(
-            last_speech, accepted_at, tts.expected_drain_at(),
-        )
-        if turn.backend_completed_at >= speech_started:
-            # Live can speak before or after backend completion, with no
-            # final-audio identity. Give the handoff time without treating
-            # completion as proof of speech, or renewing on generic activity.
+        if lost:
+            return "connection_lost"
+        deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
+        if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
+            # Backend completion alone is not proof that its answer reached playout.
             deadline = max(deadline, min(
                 turn.backend_completed_at + UNANSWERED_SPEECH_SEC,
                 last_speech + ACKNOWLEDGED_BACKEND_SEC,

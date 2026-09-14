@@ -21,7 +21,7 @@ from jasper.voice.turn_lifecycle import State
 from jasper.voice.turn_playback import PlaybackReport, play_responses
 from jasper.voice.session import AudioOutChunk
 from jasper.voice import conversation, openai_live_session, turn_playback
-from tests._async_wait import wait_until
+from tests._async_wait import wait_signalled, wait_until
 from tests._live_turn_fake import FakeLiveTurn
 from tests._playout import FakeTts
 from tests._wake_loop import wake_loop_for_tests
@@ -194,8 +194,9 @@ async def test_playout_acceptance_updates_after_the_first_answer():
 
 
 @pytest.mark.parametrize("completion, answer, followup, correction, acknowledged, expected", [
-    (10.0, 11.0, 5, False, True, 18.0),
-    (10.0, 11.0, 0, False, True, 18.0),
+    (10.0, 11.0, 5, False, True, 17.0),
+    (10.0, 11.0, 0, False, True, 12.0),
+    (10.0, 10.0, 0, False, True, 11.0),
     (10.0, 9.0, 5, False, True, 18.0),
     (10.0, None, 5, False, True, 18.0),
     (28.0, None, 5, False, True, 31.0),
@@ -237,8 +238,10 @@ async def test_live_backend_handoff_has_a_bounded_grace(
         assert now <= 36
 
     monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    tts = FakeTts()
+    tts.expected_drain_at = lambda: accepted + 1 if answer and now >= answer else 0
     reason = await continuous_watchdog(
-        turn, FakeTts(), followup_seconds=followup, stall_seconds=120,
+        turn, tts, followup_seconds=followup, stall_seconds=120,
         user_activity=lambda: (speech_started, last_speech), last_accepted_at=lambda: accepted,
     )
     assert now == expected
@@ -246,14 +249,17 @@ async def test_live_backend_handoff_has_a_bounded_grace(
 
 
 @pytest.mark.parametrize("finish_write", [True, False])
-async def test_live_dequeued_write_survives_idle_but_is_bounded(monkeypatch, finish_write):
+@pytest.mark.parametrize("acknowledged", [True, False])
+async def test_live_first_and_later_writes_survive_response_deadlines_but_are_bounded(
+    monkeypatch, finish_write, acknowledged,
+):
     now = 100.0
     clock = SimpleNamespace(monotonic=lambda: now)
     monkeypatch.setattr(conversation, "time", clock)
     monkeypatch.setattr(turn_playback, "time", clock)
     turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
     turn._enqueue_audio(AudioOutChunk(b"\x00\x40" * 120))
-    report = PlaybackReport(accepted_audio=True, last_accepted_at=90)
+    report = PlaybackReport(accepted_audio=acknowledged, last_accepted_at=96 if acknowledged else 0)
     entered, unblock = asyncio.Event(), asyncio.Event()
     tts = FakeTts()
     original_write = tts.write_segment
@@ -265,31 +271,95 @@ async def test_live_dequeued_write_survives_idle_but_is_bounded(monkeypatch, fin
 
     tts.write_segment = write
     playback = asyncio.create_task(play_responses(turn, tts, report=report))
-    await entered.wait()
+    await wait_signalled(entered, "playout write", producer=playback)
     assert turn.audio_chunks_pending() == 0
     assert report.write_started_at == 100
 
     async def tick(seconds):
         nonlocal now
         now += seconds
-        if now == 101 and finish_write:
+        if now == 101.5 and finish_write:
             unblock.set()
             await wait_until(lambda: report.write_started_at == 0)
-        assert now <= 106
+        assert now <= 106.5
 
     monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
     try:
         reason = await continuous_watchdog(
             turn, tts, followup_seconds=5, stall_seconds=2,
-            user_activity=lambda: (80, 85), last_accepted_at=lambda: report.last_accepted_at,
+            user_activity=lambda: (92, 93), last_accepted_at=lambda: report.last_accepted_at,
             write_started_at=lambda: report.write_started_at,
         )
         assert reason == ("followup_timeout" if finish_write else "playout_stalled")
-        assert now == (106 if finish_write else 102)
+        assert now == (106.5 if finish_write else 102)
     finally:
         playback.cancel()
         await asyncio.gather(playback, return_exceptions=True)
     assert report.write_started_at == 0
+
+
+@pytest.mark.parametrize("lost_before_playback", [True, False])
+@pytest.mark.parametrize("stuck", [None, "write", "drain"])
+async def test_connection_loss_drains_received_audio_but_bounds_stuck_playout(
+    monkeypatch, lost_before_playback, stuck,
+):
+    now = 100.0
+    clock = SimpleNamespace(monotonic=lambda: now)
+    monkeypatch.setattr(conversation, "time", clock)
+    monkeypatch.setattr(turn_playback, "time", clock)
+    turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
+    chunks = [b"\x00\x40" * 120, b"\x00\x20" * 120]
+    for pcm in chunks:
+        turn._enqueue_audio(AudioOutChunk(pcm))
+    if lost_before_playback:
+        turn._on_connection_lost()
+    report = PlaybackReport()
+    writing, unblock, written, drained = (asyncio.Event() for _ in range(4))
+    tts = FakeTts(on_drain=drained.wait)
+    tts.expected_drain_at = lambda: (1000 if stuck == "drain" else 102) if report.accepted_audio else 0
+    original_write = tts.write_segment
+
+    async def write(*args, **kwargs):
+        writing.set()
+        await unblock.wait()
+        accepted = await original_write(*args, **kwargs)
+        if len(tts.writes) == len(chunks):
+            written.set()
+        return accepted
+
+    tts.write_segment = write
+    playback = asyncio.create_task(play_responses(turn, tts, continuous=True, report=report))
+    try:
+        await wait_signalled(writing, "first tail write", producer=playback)
+        if not lost_before_playback:
+            turn._on_connection_lost()
+
+        async def tick(seconds):
+            nonlocal now
+            now += seconds
+            if now == 101 and stuck != "write":
+                unblock.set()
+                await wait_signalled(written, "tail accepted", producer=playback)
+            if now == 102 and stuck is None:
+                drained.set()
+            await asyncio.sleep(0)
+            assert now <= 103
+
+        monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+        reason = await continuous_watchdog(
+            turn, tts, followup_seconds=5, stall_seconds=2,
+            user_activity=lambda: (92, 93), last_accepted_at=lambda: report.last_accepted_at,
+            write_started_at=lambda: report.write_started_at,
+        )
+        assert reason == ("connection_lost" if stuck is None else "playout_stalled")
+        assert now == (103 if stuck == "drain" else 102)
+        assert tts.writes == ([] if stuck == "write" else chunks)
+        if stuck is None:
+            await playback
+            assert turn.audio_chunks_pending() == 0
+    finally:
+        playback.cancel()
+        await asyncio.gather(playback, return_exceptions=True)
 
 
 @pytest.mark.parametrize("reason", ["response_stalled", "playout_stalled"])

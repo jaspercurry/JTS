@@ -661,8 +661,8 @@ class DriverResponse:
 
     ``repeat_responses`` holds this same driver's additional located sweep
     occurrences (``repeat_index`` 1, 2, ...), populated only on the PRIMARY
-    response (``sweep_w``/``sweep_t``). Diagnostic only — nothing here feeds
-    the candidate/trim/alignment math, which stays anchored to the primary.
+    response (``sweep_w``/``sweep_t``). Diagnostic only; the aligner consumes
+    repeat IRs directly, while candidate/trim responses stay on the primary.
     """
 
     role: str
@@ -691,10 +691,13 @@ class AlignmentEstimate:
     to the seed, not the commitment. ``raw_delay_us`` is the pre-parallax
     coordinate, so ``delay_us == raw_delay_us - parallax_us``.
 
-    ``anchor_delay_us`` is the drift-corrected physical peak-gap anchor;
-    ``snapped_delay_us`` is that anchor snapped to the nearest local GCC-PHAT
-    maximum within +/-(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`),
-    ``None`` when no local maximum exists in range or the seed was refused.
+    ``anchor_delay_us`` and ``snapped_delay_us`` combine per-order medians
+    of physical peak gaps and local GCC-PHAT snaps within +/-(period/6) at Fc
+    (:data:`GCC_SNAP_RADIUS_PERIODS`). Missing values do not participate.
+    ``alignment_pair_count`` counts contributing snaps, or anchors when no
+    snap exists; ``alignment_pair_spread_us`` is their peak-to-peak span.
+    ``alignment_drift_residual_us`` is forward minus reverse snap median,
+    absent when only one order contributes. Gap weights cancel linear drift.
 
     ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate; when the
     correlation peak lands at the +/-search-window edge (a likely clamped
@@ -720,6 +723,9 @@ class AlignmentEstimate:
     anchor_delay_us: float | None = None
     snapped_delay_us: float | None = None
     polarity_agrees_with_sum: bool | None = None
+    alignment_pair_count: int = 0
+    alignment_pair_spread_us: float | None = None
+    alignment_drift_residual_us: float | None = None
 
 
 @dataclass(frozen=True)

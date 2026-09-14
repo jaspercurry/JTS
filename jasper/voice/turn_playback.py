@@ -144,7 +144,7 @@ async def play_responses(
             await tts.wait_drained()
 
     if continuous:
-        while not turn.turn_lost():
+        while True:
             await play_responses(
                 turn, tts, barge_in_enabled=barge_in_enabled, report=report,
                 admission_refusal=admission_refusal, on_response_started=on_response_started,
@@ -153,7 +153,8 @@ async def play_responses(
             if report.stop_reason != "barge_in":
                 return
             report.stop_reason = None
-        return
+            if turn.turn_lost():
+                return
 
     interrupt = asyncio.create_task(turn.wait_for_interrupt())
     playback = asyncio.create_task(play())

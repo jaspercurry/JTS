@@ -14,7 +14,7 @@ import pytest
 
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_SCHEMA_VERSION
 from jasper.chip_aec import health as chip_aec_health
-from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
+from jasper.audio_profile_state import MicProbe, RuntimeAecEnv, intent_from_env
 from jasper.cli.doctor import _evidence, _shared, aec
 from jasper.control import aec_endpoints
 
@@ -1549,7 +1549,7 @@ def test_aec_mode_file_readers_share_one_parser(
     assert (
         aec._aec_mode_setting(),
         aec._aec_profile_setting(),
-        aec._wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+        intent_from_env(aec._aec_mode_env()).raw_enabled,
     ) == expected
     state = aec_endpoints._read_aec_state()
     assert (state["mode"], state["leg_raw"]) == (expected[0], expected[2])
@@ -1561,16 +1561,15 @@ def test_aec_mode_file_readers_share_one_parser(
 
 
 def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
-    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
-    settings = {
-        "JASPER_WAKE_LEG_RAW": True,
-        "JASPER_WAKE_LEG_DTLN": False,
-        "JASPER_WAKE_LEG_CHIP_AEC": True,
-    }
     monkeypatch.setattr(
         aec,
-        "_wake_leg_setting",
-        lambda key, default: settings.get(key, default),
+        "_aec_mode_env",
+        lambda: {
+            "JASPER_AEC_MODE": "auto",
+            "JASPER_WAKE_LEG_RAW": "1",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "1",
+        },
     )
 
     status = aec._audio_profile_status_for_doctor(
@@ -1669,16 +1668,15 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
 
 
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
-    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
-    settings = {
-        "JASPER_WAKE_LEG_RAW": True,
-        "JASPER_WAKE_LEG_DTLN": False,
-        "JASPER_WAKE_LEG_CHIP_AEC": True,
-    }
     monkeypatch.setattr(
         aec,
-        "_wake_leg_setting",
-        lambda key, default: settings.get(key, default),
+        "_aec_mode_env",
+        lambda: {
+            "JASPER_AEC_MODE": "auto",
+            "JASPER_WAKE_LEG_RAW": "1",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "1",
+        },
     )
 
     status = aec._audio_profile_status_for_doctor(
@@ -1714,16 +1712,15 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
 
 
 def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
-    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
-    settings = {
-        "JASPER_WAKE_LEG_RAW": False,
-        "JASPER_WAKE_LEG_DTLN": False,
-        "JASPER_WAKE_LEG_CHIP_AEC": True,
-    }
     monkeypatch.setattr(
         aec,
-        "_wake_leg_setting",
-        lambda key, default: settings.get(key, default),
+        "_aec_mode_env",
+        lambda: {
+            "JASPER_AEC_MODE": "auto",
+            "JASPER_WAKE_LEG_RAW": "0",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "1",
+        },
     )
 
     status = aec._audio_profile_status_for_doctor(

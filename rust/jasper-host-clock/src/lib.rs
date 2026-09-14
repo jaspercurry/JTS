@@ -168,45 +168,6 @@ pub const CORRECTION_PROBE_FLIP_DEADBAND_PPM: f64 = 150.0;
 // default); the ladder does not read that knob.
 const NOMINAL_RATE_HZ: f64 = 48000.0;
 
-/// Which observable the probe and the L0 servo run on — a TYPED, per-daemon
-/// choice, never inferred from the data. Carried on [`HostClockConfig`] so each
-/// daemon states its observable explicitly at construction, rather than the
-/// ladder inferring it from the data.
-///
-/// [`ObsMode::Correction`] is the sole live mode — **fan-in combo (USB DIRECT)
-/// mode.** The lane resampler (±500 ppm authority) sits between the gadget ring
-/// and the mix and ABSORBS host-clock drift to hold its fill at the held
-/// target. The gadget FILL slope is therefore structurally dead as an
-/// observable: the resampler flattens the slope a probe would want to measure
-/// and pins the fill by its own action, not by the pitch commands
-/// (hardware-diagnosed on jts.local — a fill-based probe reliably failed
-/// `response_ratio=-0.88` and the ladder parked in `l2_fallback`). The honest
-/// observable is instead the resampler's own live correction ppm
-/// ([`Obs::correction_ppm`]): the probe reads how far the resampler's
-/// correction MOVES in response to the pitch step, and the L0 servo drives
-/// `correction_ppm → 0` (correction ≈ 0 sustained ⇒ the host is truly slaved
-/// and the resampler carries no CLOCK term; while fan-in's cushion decay is
-/// descending, correction ≈ 0 means the ratio equals the decay's commanded
-/// drain demand — the adapter subtracts that published demand before this
-/// observable, #3466 — so the raw `resampler.ratio_ppm` STATUS gauge and this
-/// observable legitimately differ by the demand during a descent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ObsMode {
-    /// Resampler-correction-ppm observable (fan-in combo). A lane resampler
-    /// absorbs drift, so the fill is dead weight; the resampler's live correction
-    /// ppm is the honest rate-error readout.
-    Correction,
-}
-
-impl ObsMode {
-    /// The lowercase token surfaced in telemetry / logs (pinned by a test).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ObsMode::Correction => "correction",
-        }
-    }
-}
-
 /// Ladder state — the lock authority: THIS enum decides whether the speaker
 /// trusts the host to follow the feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,7 +306,6 @@ impl ProbePhase {
     }
 }
 
-/// Result of the most recent probe (`probe.last_result` on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeResult {
     None,
@@ -405,10 +365,6 @@ pub struct HostClockConfig {
     pub enabled: bool,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
-    /// Which observable the probe + L0 servo run on (see [`ObsMode`]). Fan-in
-    /// combo — the sole current consumer — passes [`ObsMode::Correction`].
-    /// TYPED per daemon, never inferred.
-    pub obs_mode: ObsMode,
     /// The `event=` namespace prefix for this daemon's ladder log lines.
     /// `fanin` is the only value a live caller passes. Static because
     /// it is a compile-time choice per daemon, not runtime config.
@@ -426,9 +382,6 @@ impl HostClockConfig {
         Self {
             enabled: false,
             probe_ppm: 300.0,
-            // A disabled ladder never probes or servos, so the observable mode
-            // is moot; nothing pins this value.
-            obs_mode: ObsMode::Correction,
             log_prefix,
         }
     }
@@ -1160,10 +1113,9 @@ impl HostClock {
         self.probe_started_ms = now_ms;
         self.reset_probe_measurement(actions);
         log::info!(
-            "event={}.host_clock_probe_wait reason=await_lock settle_s={} obs_mode={} attempt={}",
+            "event={}.host_clock_probe_wait reason=await_lock settle_s={} attempt={}",
             self.cfg.log_prefix,
             PROBE_SETTLE_SECS,
-            self.cfg.obs_mode.as_str(),
             self.probe_attempt,
         );
     }
@@ -1465,10 +1417,9 @@ impl HostClock {
             self.transition_to(Ladder::L0Locked, "probe_pass");
             self.command(self.feed_forward_ppm, true, actions);
             log::info!(
-                "event={}.host_clock_probe_result result=pass attempt={} obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
+                "event={}.host_clock_probe_result result=pass attempt={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
                 self.cfg.log_prefix,
                 self.probe_attempt,
-                self.cfg.obs_mode.as_str(),
                 ratio,
                 self.probe_baseline_obs_ppm,
                 self.probe_step_obs_ppm,
@@ -1489,13 +1440,12 @@ impl HostClock {
             self.correction_trim_ppm = 0.0;
             self.command(0.0, true, actions);
             log::warn!(
-                "event={}.host_clock_probe_retryable_failure attempt={} next_attempt={} max_attempts={} recovery_s={} obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
+                "event={}.host_clock_probe_retryable_failure attempt={} next_attempt={} max_attempts={} recovery_s={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
                 self.cfg.log_prefix,
                 failed_attempt,
                 self.probe_attempt,
                 MAX_PROBE_ATTEMPTS,
                 PROBE_RETRY_SETTLE_SECS,
-                self.cfg.obs_mode.as_str(),
                 ratio,
                 self.probe_baseline_obs_ppm,
                 self.probe_step_obs_ppm,
@@ -1509,11 +1459,10 @@ impl HostClock {
             self.transition_to(Ladder::L2Fallback, "probe_fail");
             self.command(0.0, true, actions); // pitch → neutral
             log::warn!(
-                "event={}.host_clock_probe_terminal_failure reason=probe_noncompliant attempt={} max_attempts={} obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
+                "event={}.host_clock_probe_terminal_failure reason=probe_noncompliant attempt={} max_attempts={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
                 self.cfg.log_prefix,
                 self.probe_attempt,
                 MAX_PROBE_ATTEMPTS,
-                self.cfg.obs_mode.as_str(),
                 ratio,
                 self.probe_baseline_obs_ppm,
                 self.probe_step_obs_ppm,
@@ -1829,7 +1778,6 @@ impl HostClock {
                 "\"enabled\":{},",
                 "\"ladder\":\"{}\",",
                 "\"fallback_reason\":{},",
-                "\"obs_mode\":\"{}\",",
                 "\"pitch_ppm_commanded\":{:.1},",
                 "\"fill_frames\":{:.0},",
                 "\"fill_slope_ppm\":{:.2},",
@@ -1837,7 +1785,7 @@ impl HostClock {
                 "\"correction_ppm\":{:.2},",
                 "\"hold\":{{\"active\":{},\"ticks\":{},\"reason\":{}}},",
                 "\"actuator\":{{\"ready\":{},\"capture_generation\":{},\"control_generation\":{},\"refreshes\":{},\"open_failures\":{},\"write_failures\":{},\"readback_ctl_value\":{}}},",
-                "\"probe\":{{\"phase\":{},\"attempt\":{},\"max_attempts\":{},\"last_attempt_result\":\"{}\",\"last_attempt_response_ratio\":{},\"final_result\":\"{}\",\"final_response_ratio\":{},\"last_result\":\"{}\",\"response_ratio\":{},\"retries\":{},\"waiting_for_lock\":{}}},",
+                "\"probe\":{{\"phase\":{},\"attempt\":{},\"max_attempts\":{},\"last_attempt_result\":\"{}\",\"last_attempt_response_ratio\":{},\"final_result\":\"{}\",\"final_response_ratio\":{},\"retries\":{},\"waiting_for_lock\":{}}},",
                 "\"demotions\":{},",
                 "\"transitions\":{},",
                 "\"last_transition_reason\":\"{}\"",
@@ -1846,7 +1794,6 @@ impl HostClock {
             json_bool(self.cfg.enabled),
             self.ladder.as_str(),
             fallback_reason,
-            self.cfg.obs_mode.as_str(),
             self.commanded_ppm,
             self.published_fill_frames(),
             self.published_slope_ppm(),
@@ -1871,8 +1818,6 @@ impl HostClock {
             MAX_PROBE_ATTEMPTS,
             self.last_attempt_result.as_str(),
             last_attempt_ratio,
-            self.probe_result.as_str(),
-            ratio,
             self.probe_result.as_str(),
             ratio,
             self.probe_retries,
@@ -2076,7 +2021,6 @@ mod tests {
         HostClockConfig {
             enabled: true,
             probe_ppm: 300.0,
-            obs_mode: ObsMode::Correction,
             log_prefix: "fanin",
         }
     }
@@ -3048,24 +2992,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn correction_mode_fragment_carries_obs_mode_and_correction() {
-        // The status fragment for a CORRECTION-mode config carries obs_mode
-        // "correction" and a correction_ppm field, and parses as JSON.
-        let hc = HostClock::new(enabled_cfg());
-        let frag = hc.status_fragment();
-        assert!(frag.contains("\"obs_mode\":\"correction\""));
-        assert!(frag.contains("\"correction_ppm\":"));
-        let parsed: serde_json::Value = serde_json::from_str(&frag).unwrap();
-        assert_eq!(parsed["obs_mode"].as_str(), Some("correction"));
-        assert!(parsed["correction_ppm"].as_f64().is_some());
-    }
-
-    #[test]
-    fn obs_mode_tokens_are_stable() {
-        assert_eq!(ObsMode::Correction.as_str(), "correction");
-    }
-
     // ---- Pinned constants --------------------------------------------------
 
     #[test]
@@ -3208,7 +3134,7 @@ mod tests {
     }
 
     /// Preempt while ACTIVELY MEASURING (past AwaitLock, into the baseline)
-    /// aborts the probe: last_result="aborted", pitch neutral, back to armed.
+    /// aborts the probe: final_result="aborted", pitch neutral, back to armed.
     #[test]
     fn preempt_mid_measurement_aborts() {
         let mut hc = HostClock::new(enabled_cfg());
@@ -3776,15 +3702,14 @@ mod tests {
         let fragment = hc.status_fragment();
         assert_eq!(
             fragment,
-            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"hold":{"active":false,"ticks":0,"reason":null},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
+            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"hold":{"active":false,"ticks":0,"reason":null},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
         );
         // And it parses as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();
         assert_eq!(parsed["enabled"].as_bool(), Some(false));
         assert_eq!(parsed["ladder"].as_str(), Some("disabled"));
-        assert_eq!(parsed["obs_mode"].as_str(), Some("correction"));
         assert_eq!(parsed["correction_ppm"].as_f64(), Some(0.0));
-        assert!(parsed["probe"]["response_ratio"].is_null());
+        assert!(parsed["probe"]["final_response_ratio"].is_null());
     }
 
     /// The `log_prefix` parameterization: the status_fragment shape does NOT

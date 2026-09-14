@@ -100,6 +100,9 @@ from jasper.service_units import (
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
 )
+from jasper.source_intent_units import (
+    RECONCILE_BROKER_TIMEOUT_SECONDS as _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
+)
 
 logger = logging.getLogger(__name__)
 _SELF_UNIT = "jasper-control.service"
@@ -258,14 +261,13 @@ POWER_VERBS = frozenset({"reboot", "poweroff"})
 # legitimate blocking restart). --no-block calls return in ms regardless.
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Ordinary broker actions retain the original hard ceiling.  The sole extended
-# shape is a blocking start of exactly the source-intent coordinator: its finite
-# 2727-second systemd bound covers all four sources, bounded owner barriers,
-# failed-unit resets, and fail-closed cleanup; its caller allows 2737 seconds for
-# PID 1 to return. That pair is jasper.source_intent's
-# RECONCILE_SYSTEMD_TIMEOUT_SECONDS / RECONCILE_BROKER_TIMEOUT_SECONDS, mirrored
-# here rather than imported so this root boundary keeps its lean import surface;
-# tests/test_source_intent_systemd.py fails if this ceiling drops below the
-# coordinator's broker bound, which is the direction that truncates a pass.
+# shape is a blocking start of exactly the source-intent coordinator: its
+# finite systemd bound covers all four sources, bounded owner barriers,
+# failed-unit resets, and fail-closed cleanup, and this root boundary must
+# never truncate it. See jasper.source_intent_units.RECONCILE_BROKER_TIMEOUT_SECONDS
+# (imported above); tests/test_source_intent_systemd.py fails if this ceiling
+# drops below the coordinator's broker bound, which is the direction that
+# truncates a pass.
 # Derive that exception from the already-normalized, validated request on the
 # server; a client-supplied number alone never grants a longer broker thread.
 _EXEC_TIMEOUT_CEILING_SEC = 120.0
@@ -274,7 +276,6 @@ _EXEC_TIMEOUT_CEILING_SEC = 120.0
 # action it precedes is allowed to take.
 _RESET_TIMEOUT_SEC = 5.0
 _SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
-_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2737.0
 _CAMILLA_UNIT = "jasper-camilla.service"
 # jasper-camilla.service Wants= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues

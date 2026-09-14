@@ -298,6 +298,15 @@ class RoundSetRefused(ValueError):
         super().__init__(reason)
 
 
+def capture_identity(capture_basis: Mapping[str, Any], *, set_id: str) -> tuple[Any, ...]:
+    identity = (capture_basis.get("candidate_id"), capture_basis.get("graph_fingerprint"))
+    return (*identity, capture_basis.get("side"), set_id if not any(identity) else None)
+
+
+def take_order(take: Mapping[str, Any]) -> tuple[float, int]:
+    return (take.get("timing") or {}).get("ended_s", 0), take.get("attempt", 0)
+
+
 class SetTakes(NamedTuple):
     set_id: str
     capture_basis: Mapping[str, Any]
