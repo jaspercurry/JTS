@@ -208,6 +208,7 @@ def _derive_commissioning_summary(
                 break
     elif profile is not None and bool(
         _mapping(profile.get("permissions")).get("may_apply")
+        or _mapping(profile.get("permissions")).get("may_compile")
     ):
         phase = "proposal_ready"
     elif comparison_set_valid(measurements.get("active_comparison_set")) or bool(

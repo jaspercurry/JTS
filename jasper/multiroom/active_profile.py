@@ -11,6 +11,7 @@ import yaml
 
 from jasper.active_speaker import baseline_profile, design_draft
 from jasper.active_speaker.runtime_contract import ACTIVE_DRIVER_DOMAIN_SOURCE
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_channel_select_mixer
@@ -40,6 +41,8 @@ def build_grouped_profile(
         candidate = (candidate_from_applied_profile(topology, applied) if applied is not None
                      else candidate_from_design_draft(topology, design_draft.load_design_draft(topology=topology)))
         text = compile_tuning_graph(declaration, candidate=candidate)
+    except ActiveSpeakerConfigError:
+        raise
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         issues.append({"severity": "blocker", "code": getattr(exc, "code", "grouping_applied_compile_failed"), "message": str(exc)})
         return result
@@ -85,7 +88,8 @@ def build_grouped_profile(
     ]
     atomic_write_text(
         Path(config_path),
-        f"# Source: {ACTIVE_DRIVER_DOMAIN_SOURCE}\n" + yaml.safe_dump(graph, sort_keys=False),
+        f"# Source: {ACTIVE_DRIVER_DOMAIN_SOURCE}\n# program_channel={program_channel}\n"
+        f"# pair_trim_db={max(0.0, -float(trim_db)):.3f}\n" + yaml.safe_dump(graph, sort_keys=False),
         mode=0o640,
     )
     validation = (validate or validate_camilla_config)(config_path)

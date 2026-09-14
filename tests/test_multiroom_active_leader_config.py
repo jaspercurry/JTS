@@ -10,6 +10,8 @@ armed camilla#2), and the unbond restore (always an ACTIVE graph, never passive,
 re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
+from tests.active_speaker_fixtures import declared_profile_fixture
+
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
 
 
@@ -106,6 +108,10 @@ class _FakeCamilla:
 
 
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
+    from tests.active_speaker_fixtures import declared_graph_fixture
+
+    monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration",
+                        lambda topology: declared_graph_fixture(topology, draft)[0])
     # The re-proof uses the STRICT loader (fail-closed); patch that.
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: topology
@@ -284,24 +290,7 @@ def test_precheck_threads_pair_trim_into_leader_crossover(
     asyncio.run(alc.precheck_active_leader(_cfg("left", trim_db=-4.0), validate=_valid_config))
 
     crossover_yaml = Path(alc.CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8")
-    assert "# pair_trim_db=4.000" in crossover_yaml
-    assert "pair_balance_trim:" in crossover_yaml
-    assert "parameters: { gain: -4.0000" in crossover_yaml
-
-
-def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:
-    """A box with no ready driver-domain baseline cannot lead — precheck raises
-    ActiveLeaderError(baseline_not_ready) and never reaches the bake."""
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
-
-    with pytest.raises(alc.ActiveLeaderError) as exc:
-        asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
-    assert exc.value.reason == "baseline_not_ready"
-    # The bake config was never written (the crossover gate failed first).
-    assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
+    assert yaml.safe_load(crossover_yaml)["filters"]["pair_balance_trim"]["parameters"]["gain"] == -4.0
 
 
 @pytest.mark.parametrize("role", ["leader", "follower"])
@@ -313,14 +302,14 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
-    applied = baseline_profile_mod.build_baseline_profile_candidate(
-        topology, design_draft=draft, crossover_preview=preview,
+    applied = declared_profile_fixture(
+        topology, design_draft=draft,
         measurements=measurements, write=True,
-        state_path=tmp_path / "solo.json", config_path=tmp_path / "solo.yml",
-        validate=_valid_config,
+         config_path=tmp_path / "solo.yml",
     )
     assert applied["permissions"]["may_apply"]
     applied["status"] = "applied"
+    applied["source"].pop("measured_candidate_fingerprint")
     snapshot = applied["recomposition_snapshot"]
     if unsupported_stage == "dynamic_bass":
         snapshot["bass_extension"] = asdict(_descriptor())
@@ -428,8 +417,8 @@ def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
     # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
     original = camilla_yaml._driver_baseline_filter_chain
 
-    def _hp_stripped(preset, role):
-        names = original(preset, role)
+    def _hp_stripped(preset, role, *args):
+        names = original(preset, role, *args)
         return [n for n in names if not n.endswith("_hp")] if role == "tweeter" else names
 
     monkeypatch.setattr(camilla_yaml, "_driver_baseline_filter_chain", _hp_stripped)

@@ -481,3 +481,35 @@ def declare_applied_fixture(monkeypatch, topology, applied, *, live_endpoint=Fal
 @pytest.fixture
 def isolated_candidate_bank(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+
+
+def declared_profile_fixture(topology, *, design_draft, measurements, config_path, write=False):
+    import hashlib
+    from jasper.active_speaker.baseline_profile import (
+        baseline_candidate_config_path, baseline_candidate_fingerprint, prepare_applied_baseline_profile,
+    )
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph
+
+    declaration, candidate = declared_graph_fixture(topology, design_draft)
+    text = compile_tuning_graph(declaration, candidate=candidate)
+    target = baseline_candidate_config_path(text, config_path)
+    profile = prepare_applied_baseline_profile(
+        candidate, declaration=declaration, design_draft=design_draft, measurements=measurements,
+        config_path=target, config_sha256=hashlib.sha256(text.encode()).hexdigest(),
+    )
+    profile.update(status="ready_to_apply" if write else "ready_to_compile",
+                   permissions={"may_apply": write, "may_compile": True}, issues=[])
+    profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
+    if write:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    return profile
+
+
+def declared_graph_fixture(topology, draft):
+    from jasper.active_speaker.candidate_parts import candidate_from_design_draft
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+    from jasper.active_speaker.playback_route import resolve_active_playback_device
+
+    candidate = candidate_from_design_draft(topology, draft)
+    return MeasurementGraphProfile(candidate.source_preset, topology, {}, resolve_active_playback_device(topology)[0]), candidate

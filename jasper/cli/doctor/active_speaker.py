@@ -340,7 +340,7 @@ def check_dsp_apply_state() -> CheckResult:
 def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
     """True if ``live_path`` is a source-fingerprinted sibling of ``canonical``.
 
-    ``build_baseline_profile_candidate`` names every candidate
+    ``baseline_candidate_config_path`` names each candidate
     ``<canonical stem>_candidate_<fingerprint12><canonical suffix>`` beside
     the canonical file (issue #1666). Used to gate the comparison below to
     speakers that actually have an active-speaker baseline applied live —
@@ -358,8 +358,7 @@ def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
 def check_active_speaker_baseline_canonical() -> CheckResult:
     """Canonical ``active_speaker_baseline.yml`` durability (issue #1666).
 
-    ``build_baseline_profile_candidate`` never writes the canonical
-    ``baseline_config_path()`` name directly; every apply/restore promotes the
+    Each apply/restore promotes the candidate onto ``baseline_config_path()``. The
     applied candidate's bytes onto it fail-soft, after CamillaDSP confirmed the
     candidate live. A failed promote leaves that copy stale without affecting
     the audible graph, which the other readers of the canonical name (the

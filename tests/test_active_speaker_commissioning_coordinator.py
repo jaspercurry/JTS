@@ -10,10 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker.baseline_profile import (
-    APPLIED_PROFILE_CONFIG_MISSING,
     APPLIED_PROFILE_DISPLACED,
-    APPLIED_PROFILE_PATH_UNKNOWN,
-    APPLIED_PROFILE_RUNNING_UNKNOWN,
 )
 from jasper.active_speaker.commissioning_coordinator import (
     _SUMMED_TEST_FAILURE_COPY,
@@ -123,15 +120,8 @@ def _applied_anchor(basename: str = "candidate_f7e9.yml") -> dict:
 
 
 def _applied_baseline_profile(**overrides) -> dict:
-    """A write-free rebuild payload over a standing measured applied profile."""
-
-    return {
-        "status": "ready_to_compile",
-        "revalidation": {"required": False, "status": "not_required"},
-        "applied_profile_stands": True,
-        "applied_recomposition_profile": _applied_anchor(),
-        **overrides,
-    }
+    return {"status": "ready_to_compile", "candidate_fingerprint": "review-fp",
+            "permissions": {"may_compile": True, "may_apply": False}, "issues": [], **overrides}
 
 
 def test_summed_test_failure_message_prioritizes_artifact_permission_failure():
@@ -258,58 +248,6 @@ def test_commissioning_view_does_not_reoffer_record_for_validated_combined_test(
     )
 
 
-def test_commissioning_view_over_a_live_measured_profile_does_not_recommend_basic():
-    """The basic door is named, never the recommendation, over a live tune.
-
-    It emits the saved crossover with driver trims only, so recommending it
-    here recommends replacing the measured profile. See ADR-0195.
-    """
-
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements=_validated_measurements(),
-        baseline_profile=_applied_baseline_profile(),
-    )
-
-    assert view["status"] == "applied"
-    assert view["next_action"] == {}
-    assert view["secondary_action"]["id"] == "save_basic_profile"
-    assert view["applied_profile"] == {
-        "stands": True, "verdict": "", "carries_correction": True,
-    }
-    assert _step(view, "profile")["status"] == "done"
-
-
-def test_commissioning_view_routes_a_genuine_supersede_to_re_measuring():
-    """Something really did move under a measured profile.
-
-    Saving a fresh basic profile is a real option and stays offered, named;
-    what carries the tune forward is a re-measure, so that is the primary.
-    """
-
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements=_validated_measurements(),
-        baseline_profile=_applied_baseline_profile(
-            applied_profile_stands=False,
-            revalidation={
-                "required": True,
-                "status": "required",
-                "reason": "applied_profile_superseded",
-                "next_step": "save_profile",
-                "changed": ["measurements_updated_at"],
-            },
-        ),
-    )
-
-    assert view["next_action"]["id"] == "remeasure_crossover"
-    assert view["secondary_action"]["id"] == "save_basic_profile"
-
-
 def test_commissioning_view_does_not_claim_applied_over_a_displaced_record():
     """The statefile says the speaker is playing something else."""
 
@@ -319,76 +257,13 @@ def test_commissioning_view_does_not_claim_applied_over_a_displaced_record():
         crossover_preview=_ready_preview(),
         measurements=_validated_measurements(),
         baseline_profile=_applied_baseline_profile(),
+        applied_profile=_applied_anchor(),
         applied_profile_verdict=APPLIED_PROFILE_DISPLACED,
     )
 
     assert view["status"] != "applied"
     assert view["applied_profile"]["stands"] is False
     assert _step(view, "profile")["status"] != "done"
-
-
-@pytest.mark.parametrize(
-    "verdict",
-    [APPLIED_PROFILE_PATH_UNKNOWN, APPLIED_PROFILE_RUNNING_UNKNOWN,
-     APPLIED_PROFILE_CONFIG_MISSING],
-)
-def test_commissioning_view_discloses_a_check_it_could_not_make(verdict: str) -> None:
-    """"Could not check" is not "checked and it moved".
-
-    The profile stays applied and the caveat is disclosed, with the recovery
-    door offered rather than the claim withdrawn.
-    """
-
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements=_validated_measurements(),
-        baseline_profile=_applied_baseline_profile(),
-        applied_profile_verdict=verdict,
-    )
-
-    assert view["applied_profile"] == {
-        "stands": True, "verdict": verdict, "carries_correction": True,
-    }
-    assert _step(view, "profile")["status"] == "done"
-    assert view["secondary_action"]["id"] == "save_basic_profile"
-
-
-def test_commissioning_view_never_dead_ends_over_a_blocked_rebuild():
-    """A blocker does not un-apply the profile, and does not strand the page."""
-
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements=_validated_measurements(),
-        baseline_profile=_applied_baseline_profile(status="blocked"),
-    )
-
-    assert _step(view, "profile")["status"] == "done"
-    assert view["next_action"] or view["secondary_action"]
-
-
-def test_a_retained_applied_record_never_stands_in_for_driver_evidence():
-    """The audible combined test is gated on `driver_target_proof.complete`.
-
-    Only the revalidation state may let an applied profile carry that proof
-    (`applied_profile_revalidation_satisfies_driver_target_proof`); a retained
-    record answering "is a profile applied" must not reach it.
-    """
-
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements={"summary": {}},
-        baseline_profile=_applied_baseline_profile(),
-    )
-
-    assert view["driver_target_proof"]["complete"] is False
-    assert view["driver_checks"]["complete"] is False
-    assert view["next_action"]["id"] != "start_combined_test"
 
 
 def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():
@@ -433,97 +308,6 @@ def test_commissioning_view_ignores_stale_combined_validation_for_newer_test():
     )
 
 
-def test_commissioning_view_surfaces_superseded_profile_revalidation():
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements={
-            "summary": {
-                "driver_checks_complete": True,
-                "captured_driver_check_count": 2,
-                "required_driver_check_count": 2,
-                "summed_validation_complete": False,
-                "validated_summed_group_count": 0,
-                "required_summed_group_count": 1,
-                "latest_summed_tests": {
-                    "mono": {
-                        "captured": True,
-                        "audio_emitted": True,
-                        "summed_test_id": "summed-playback-newer",
-                        "issues": [],
-                    },
-                },
-                "latest_summed_validations": {
-                    "mono": {
-                        "validated": True,
-                        "summed_test_id": "summed-playback-audible",
-                    },
-                },
-            },
-        },
-        baseline_profile={
-            "status": "blocked",
-            "revalidation": {
-                "required": True,
-                "reason": "applied_profile_superseded",
-                "next_step": "combined_check",
-            },
-        },
-    )
-
-    assert view["status"] == "needs_revalidation"
-    assert view["revalidation"]["required"] is True
-    assert view["next_action"]["id"] == "record_combined_result"
-    profile_step = next(step for step in view["steps"] if step["id"] == "profile")
-    assert "Save and apply a fresh profile" in profile_step["message"]
-
-
-def test_commissioning_view_allows_applied_profile_edit_to_revalidate():
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements={
-            "summary": {
-                "driver_checks_complete": False,
-                "driver_measurements_complete": False,
-                "captured_driver_check_count": 0,
-                "required_driver_check_count": 2,
-                "summed_validation_complete": False,
-                "validated_summed_group_count": 0,
-                "required_summed_group_count": 1,
-                "latest_summed_tests": {},
-                "latest_summed_validations": {},
-            },
-        },
-        baseline_profile={
-            "status": "blocked",
-            "revalidation": {
-                "required": True,
-                "reason": "applied_profile_superseded",
-                "next_step": "combined_check",
-                "superseded_profile": {"status": "applied"},
-            },
-        },
-    )
-
-    assert view["status"] == "needs_revalidation"
-    assert view["current_step"] == "safety"
-    assert view["driver_target_proof"]["complete"] is True
-    assert view["driver_target_proof"]["source"] == "applied_profile_revalidation"
-    assert view["driver_checks"]["complete"] is True
-    assert view["driver_checks"]["source"] == "applied_profile_revalidation"
-    safety_step = next(step for step in view["steps"] if step["id"] == "safety")
-    assert safety_step["status"] == "active"
-    profile_step = next(step for step in view["steps"] if step["id"] == "profile")
-    assert profile_step["status"] == "todo"
-    group = view["combined_groups"][0]
-    assert group["status"] == "ready_to_test"
-    assert group["actions"]["start_combined_test"]["enabled"] is True
-    assert view["next_action"]["id"] == "start_combined_test"
-
-
 def test_commissioning_view_new_setup_stays_on_confirm_outputs_until_driver_proof():
     view = build_commissioning_view(
         _topology(),
@@ -555,69 +339,6 @@ def test_commissioning_view_new_setup_stays_on_confirm_outputs_until_driver_proo
     group = view["combined_groups"][0]
     assert group["status"] == "blocked"
     assert group["actions"]["start_combined_test"]["enabled"] is False
-    assert view["next_action"]["id"] == "confirm_outputs"
-
-
-def test_commissioning_view_setup_check_revalidation_stays_on_confirm_outputs():
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements={
-            "summary": {
-                "driver_checks_complete": False,
-                "driver_measurements_complete": False,
-                "summed_validation_complete": False,
-                "latest_summed_tests": {},
-                "latest_summed_validations": {},
-            },
-        },
-        baseline_profile={
-            "status": "blocked",
-            "revalidation": {
-                "required": True,
-                "reason": "applied_profile_superseded",
-                "next_step": "setup_checks",
-                "superseded_profile": {"status": "applied"},
-            },
-        },
-    )
-
-    assert view["current_step"] == "map"
-    assert view["driver_target_proof"]["complete"] is False
-    assert view["driver_checks"]["complete"] is False
-    assert view["next_action"]["id"] == "confirm_outputs"
-
-
-def test_commissioning_view_topology_change_invalidates_applied_profile_driver_proof():
-    view = build_commissioning_view(
-        _topology(),
-        design_draft=_ready_design(),
-        crossover_preview=_ready_preview(),
-        measurements={
-            "summary": {
-                "driver_checks_complete": False,
-                "driver_measurements_complete": False,
-                "summed_validation_complete": False,
-                "latest_summed_tests": {},
-                "latest_summed_validations": {},
-            },
-        },
-        baseline_profile={
-            "status": "blocked",
-            "revalidation": {
-                "required": True,
-                "reason": "applied_profile_superseded",
-                "next_step": "combined_check",
-                "changed": ["topology_fingerprint", "measurement_summary_fingerprint"],
-                "superseded_profile": {"status": "applied"},
-            },
-        },
-    )
-
-    assert view["current_step"] == "map"
-    assert view["driver_target_proof"]["complete"] is False
-    assert view["driver_target_proof"]["source"] == "missing"
     assert view["next_action"]["id"] == "confirm_outputs"
 
 
@@ -1526,3 +1247,33 @@ def test_failure_remedies_name_the_card_titles_the_page_actually_renders():
     assert guard_titles == COMMISSIONING_STEP_PAGE_TITLES, (
         "outputStepTitle drifted from the /sound/ page titles"
     )
+
+
+@pytest.mark.parametrize("ready", [False, True])
+@pytest.mark.parametrize("has_applied", [False, True])
+def test_applied_identity_change_is_disclosed_without_parking_review(ready, has_applied):
+    review = _applied_baseline_profile(
+        status="ready_to_compile" if ready else "blocked",
+        permissions={"may_compile": ready, "may_apply": False},
+        issues=[] if ready else [{"severity": "blocker", "code": "compose_refused"}],
+    )
+    applied = {**_applied_anchor(), "candidate_fingerprint": "saved-fp"}
+    view = build_commissioning_view(
+        _topology(), design_draft=_ready_design(), crossover_preview=_ready_preview(),
+        measurements=_validated_measurements(), baseline_profile=review,
+        applied_profile=applied if has_applied else None,
+    )
+    if has_applied:
+        assert view["status"] == "applied"
+        assert view["applied_profile"]["candidate_fingerprint"] == "saved-fp"
+        assert view["applied_profile"]["applied_at"] == applied["applied_at"]
+        assert view["applied_profile"]["config_path"] == applied["config"]["path"]
+        assert [(item["code"], item["severity"], item["status"]) for item in view["applied_profile"]["disclosures"]] == [
+            ("baseline_candidate_fingerprint_mismatch", "warning", "disclosed_stale"),
+        ]
+    else:
+        assert view["status"] == ("ready_to_save_profile" if ready else "blocked")
+        assert view["next_action"]["enabled"] is ready
+    assert view["review"]["ready"] is ready
+    assert view["review"]["may_apply"] is ready
+    assert view["review"]["issues"] == review["issues"]

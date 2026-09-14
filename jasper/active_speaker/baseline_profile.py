@@ -1126,8 +1126,7 @@ def applied_program_level_delta_db(
 
     **One known incompleteness, deliberate, caught downstream.**
     Room-PEQ and preference-EQ headroom are excluded. The candidate's own room
-    set IS emitted (``build_baseline_profile_candidate`` passes ``room_peqs``,
-    whose boost the graph absorbs) and the household's preference layer is not
+    set is emitted, including its boost headroom, and the preference layer is not
     emitted at all; neither term is read here, so a round that changes either
     can see a real level move this reader cannot see. That remainder is
     exactly what the probe's ``residual_offset_db`` measures and what
@@ -1463,14 +1462,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
         # graph by numbers nothing applies.
         refused(BANK_CLEAR_FAILED, "a banked trim survived an apply it does not match")
 
-    # A follower's Layer-A-only graph, excluded for the reason
-    # `build_baseline_profile_candidate` already documents at its own
-    # `if not driver_domain:` guard: that flow compiles and immediately
-    # consumes its own config, never reaching `status="applied"`, and it must
-    # never clobber the SOLO artifacts. This artifact is one of those. The
-    # gate is unreachable today (no driver-domain candidate reaches this
-    # function); remove it if that exclusion is ever retired deliberately
-    # rather than by a multiroom consolidation nobody re-read this seam for.
+    # Grouping artifacts must not replace the solo trim record.
     snapshot = candidate.get("recomposition_snapshot")
     if isinstance(snapshot, Mapping) and snapshot.get("domain") == "driver":
         return
@@ -1759,8 +1751,8 @@ def promote_applied_baseline_candidate(
 ) -> None:
     """Publish a just-applied candidate's bytes as the canonical config file.
 
-    ``build_baseline_profile_candidate`` never writes ``baseline_config_path()``
-    directly (issue #1666) -- every ``write=True`` candidate lands on its own
+    Reviewed candidates use content-addressed siblings of ``baseline_config_path()``.
+    Each candidate lands on its own
     content-addressed sibling, so a candidate that fails validation or
     activation can never appear at the canonical name. This is the ONLY
     place that publishes to that name, and every caller runs it AFTER its own
@@ -1856,5 +1848,3 @@ def _prune_baseline_candidate_siblings(
             reason=str(exc),
             canonical_path=canonical,
         )
-
-

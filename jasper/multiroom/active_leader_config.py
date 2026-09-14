@@ -24,8 +24,7 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
     gain / soft-clip limiter (+ tweeter high-pass) — captured from the grouping
     ring (snapclient -> ``jts_ring_grouping`` -> camilla#2 -> DAC). This is
     **literally the follower endpoint config**
-    (:func:`jasper.active_speaker.emit_active_speaker_driver_domain_config`, via
-    ``build_baseline_profile_candidate(driver_domain=True, ...)``), so the
+    (via ``active_profile.build_grouped_profile``), so the
     leader's own drivers are protected by the SAME re-proven Layer-A graph a
     wireless follower uses.
 

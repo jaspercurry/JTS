@@ -903,7 +903,6 @@ def record_apply(
 ) -> dict[str, Any] | None:
     """Record one apply attempt (success, failure, or refusal) into the bundle.
 
-    ``candidate`` is any of ``apply_baseline_profile``'s three return shapes.
     Success is ``apply_state`` truthy AND ``candidate["status"] == "applied"``;
     anything else records ``state = "failed"`` — a refused apply never reached
     the DSP transaction, but the attempt is still evidence.

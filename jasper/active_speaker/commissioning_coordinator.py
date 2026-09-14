@@ -815,7 +815,7 @@ def build_commissioning_view(
         # `not next_action`: "applied" is terminal, so it may not stand beside
         # a rung this speaker still owes.
         "applied" if profile_applied and not next_action else
-        "ready_to_save_profile" if summed_complete and not profile_applied else
+        ("ready_to_save_profile" if review_ready else "blocked") if summed_complete and not profile_applied else
         "needs_driver_values" if has_layout and not driver_values_complete else
         "needs_driver_target_proof" if driver_values_complete and not driver_target_proof_complete else
         # The terminal state for a subless passive speaker. Sits AFTER the

@@ -1005,7 +1005,7 @@ class CrossoverV2Session:
         is worth stating rather than assuming away.
         ``baseline_profile.persist_applied_baseline_profile`` REFUSES to write
         a profile without a ``recomposition_snapshot`` mapping, and
-        ``build_baseline_profile_candidate`` always puts ``corrections`` in it,
+        its preparation records ``corrections``,
         so no machine-written profile lands here unreadable. What can is a
         hand-edited or truncated state file, or a record from an era before
         those keys — and since #2617 routes through

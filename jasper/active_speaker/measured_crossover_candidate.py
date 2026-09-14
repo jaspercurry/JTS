@@ -865,10 +865,8 @@ def compile_candidate_config(
 ) -> str:
     """Compile the candidate's baseline YAML — the one Layer-A emission path.
 
-    Shared with ``baseline_profile.build_baseline_profile_candidate``: the
-    emitter derives delay and inversion from ``corrections`` only, never a
-    region's delay or polarity fields (``apply_region_polarity=False``).
-    An emitter that starts reading those fields must revisit both call sites.
+    Delay and inversion come from ``corrections`` only; region polarity is
+    excluded by ``apply_region_polarity=False``.
     """
 
     from .linearization_fit import linearization_filters_by_role

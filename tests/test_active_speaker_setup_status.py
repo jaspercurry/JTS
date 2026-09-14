@@ -7,7 +7,6 @@ from __future__ import annotations
 from jasper.web import correction_crossover_v2_state as v2state
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
 
-from collections.abc import Callable
 from importlib.resources import files
 import json
 from pathlib import Path
@@ -17,17 +16,10 @@ from typing import Any
 import pytest
 
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
-import yaml
 
-import jasper.active_speaker._common as _common
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.output_topology import topology_config_fingerprint
-from jasper.active_speaker.baseline_profile import (
-    baseline_candidate_fingerprint,
-    build_baseline_profile_candidate,
-)
-from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     start_active_comparison_set,
@@ -35,15 +27,10 @@ from jasper.active_speaker.measurement import (
 from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
-    new_topology_draft,
     save_output_topology,
 )
 from tests.active_speaker_fixtures import (
-    dual_apple_output_topology as _dual_apple_topology,
     mono_output_topology,
-    standard_design_draft as _draft,
-    standard_measurements as _measurements,
-    valid_camilla_config as _valid_config,
 )
 
 
@@ -326,270 +313,6 @@ def test_active_config_path_from_statefile_none_becomes_empty_string(
     assert setup_mod.active_config_path_from_statefile() == ""
 
 
-def test_passive_speaker_is_ready_without_active_baseline(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, _passive_topology())
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: pytest.fail("passive topology must not need baseline"),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
-    )
-
-    assert status["active"] is False
-    assert status["configured"] is True
-    assert status["volume_allowed"] is True
-    assert status["grouping_allowed"] is True
-    assert status["commissioning"]["phase"] == "idle"
-
-
-def test_unconfigured_speaker_is_not_passive_or_room_eligible(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    topology = new_topology_draft(hardware=_passive_topology().hardware)
-    _save_topology(monkeypatch, tmp_path, topology)
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: pytest.fail("unconfigured topology must not build baseline"),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
-    )
-
-    assert status["active"] is False
-    assert status["active_group_count"] == 0
-    assert status["status"] == "blocked"
-    assert status["configured"] is False
-    assert status["volume_allowed"] is False
-    assert status["grouping_allowed"] is False
-    assert status["safety_muted"] is True
-    assert status["reason"] == "output_topology_unconfigured"
-
-
-@pytest.mark.parametrize(
-    ("topology_factory", "contract_issue"),
-    [
-        pytest.param(_subwoofer_topology, None, id="subwoofer-only"),
-        pytest.param(
-            _invalid_passive_topology,
-            "duplicate_physical_output",
-            id="invalid-passive",
-        ),
-    ],
-)
-def test_zero_active_layout_requires_flat_dac_authority(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    topology_factory: Callable[[], OutputTopology],
-    contract_issue: str | None,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, topology_factory())
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: pytest.fail("zero-active blocked topology must not build baseline"),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path="/var/lib/camilladsp/configs/sound_current.yml",
-    )
-
-    assert status["active"] is False
-    assert status["active_group_count"] == 0
-    assert status["status"] == "blocked"
-    assert status["configured"] is False
-    assert status["volume_allowed"] is False
-    assert status["grouping_allowed"] is False
-    assert status["safety_muted"] is True
-    assert status["reason"] == "output_topology_not_ready"
-    issue_codes = {item["code"] for item in status["issues"]}
-    assert "output_topology_not_ready" in issue_codes
-    if contract_issue is not None:
-        assert contract_issue in issue_codes
-
-
-def test_active_speaker_blocks_volume_and_grouping_until_baseline_is_applied(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, _active_topology())
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    config_path.write_text("pipeline: []\n", encoding="utf-8")
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(
-            status="blocked",
-            config_path=config_path,
-            issues=[
-                {
-                    "severity": "blocker",
-                    "code": "candidate_trial_required",
-                    "message": (
-                        "validate the combined crossover before saving the active "
-                        "profile"
-                    ),
-                }
-            ],
-        ),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["active"] is True
-    assert status["configured"] is False
-    assert status["volume_allowed"] is False
-    assert status["grouping_allowed"] is False
-    assert status["safety_muted"] is True
-    assert status["reason"] == "candidate_trial_required"
-    assert "validate the combined crossover" in status["detail"]
-
-
-def test_active_speaker_allows_volume_and_grouping_after_applied_baseline(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, _active_topology())
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    config_path.write_text("pipeline: []\n", encoding="utf-8")
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=config_path),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["active"] is True
-    assert status["configured"] is True
-    assert status["volume_allowed"] is True
-    assert status["grouping_allowed"] is True
-    assert status["safety_muted"] is False
-    assert status["reason"] is None
-    # Phase-derivation table (design doc "Structured events"): a profile whose
-    # status is "applied" (not apply_failed, may_apply already false) with no
-    # open comparison set falls through every specific branch to idle.
-    assert status["commissioning"]["phase"] == "idle"
-    # No applied_profile was resolvable in this fixture (no state on disk),
-    # so there is no fingerprint to surface.
-    assert status["commissioning"]["applied_profile_fingerprint"] is None
-
-
-def test_durable_anchor_mismatch_names_the_field_and_both_values(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Blind-run finding F-6: a rejected delay left on the durable anchor.
-
-    The apply repointed CamillaDSP's persisted config at a delayed candidate
-    and the round ended on a rejection, so the applied profile still described
-    the previous graph. Two fingerprints say only THAT they disagree; the
-    operator acts on the delay itself, so the binding names it with both
-    values. Read with no live readback, which is the durable-anchor level a
-    runtime-only `set_active_config_raw` swap never moves.
-    """
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    protected_path = tmp_path / "active_speaker_baseline.yml"
-    anchor_path = tmp_path / "active_speaker_baseline_candidate_60205a8de2bf.yml"
-    manual = _applied_acoustic_profile(measured=False, config_path=protected_path)
-    _write_applied_graph(topology, manual, protected_path, monkeypatch=monkeypatch)
-    anchor = yaml.safe_load(protected_path.read_text(encoding="utf-8"))
-    anchor["filters"]["as_woofer_delay"]["parameters"]["delay"] = 0.1286
-    anchor_path.write_text(yaml.safe_dump(anchor, sort_keys=False), encoding="utf-8")
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=protected_path),
-    )
-    monkeypatch.setattr(
-        setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
-        baseline_mod, "load_applied_baseline_profile_state", lambda _path=None: manual,
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(anchor_path),
-    )
-
-    binding = status["protected_profile"]["layer_a_binding"]
-    assert binding["status"] == "mismatch"
-    assert binding["differences"] == [
-        {"field": "as_woofer_delay.delay", "expected": "0.0", "loaded": "0.1286"},
-    ]
-
-
-@pytest.mark.parametrize(
-    "candidate_config_written",
-    [
-        pytest.param(True, id="candidate_config_on_disk"),
-        pytest.param(False, id="candidate_config_never_written"),
-    ],
-)
-def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    candidate_config_written: bool,
-) -> None:
-    """A rotated topology fingerprint is a notice, not a stop (wave 7j).
-
-    `topology_config_fingerprint` hashes every hardware, speaker-group and
-    routing field, so a display-only string that reaches no clamp and no
-    emitted filter — `human_output_label`, a speaker group's `label` — used
-    to take the box to `blocked`/`safety_muted`, refuse volume and grouping,
-    and refuse a v2 measure session. Ruling S10: playback stays on the applied
-    graph, measuring stays open, and the fact surfaces as a disclosure.
-
-    The `candidate_config_never_written` case pins the third arm this reaches:
-    the candidate-side `active_baseline_config_missing` blocker is suppressed
-    too, because a candidate pointing at a file nobody wrote is a pending
-    edit, not a reason to mute a speaker whose own applied config is present.
-    """
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    applied = _applied_acoustic_profile(config_path=config_path)
-    applied["source"]["topology_fingerprint"] = "a" * 64
-    _write_applied_graph(topology, applied, config_path, monkeypatch=monkeypatch)
-    # The freshly-built candidate no longer equals the applied one — which is
-    # the whole shape of a topology edit, and the second gate the block held:
-    # a stale `protected_ready` made the un-applied candidate a blocker too.
-    candidate_config_path = (
-        config_path if candidate_config_written else tmp_path / "never_written.yml"
-    )
-    candidate = _candidate(status="draft", config_path=candidate_config_path)
-    candidate["source"]["topology_fingerprint"] = "b" * 64
-    monkeypatch.setattr(
-        baseline_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
-    )
-    monkeypatch.setattr(
-        baseline_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["status"] == "ready"
-    assert status["safety_muted"] is False
-    assert status["volume_allowed"] is True
-    assert status["grouping_allowed"] is True
-    assert [issue["code"] for issue in status["issues"]] == [
-        _common.BASELINE_TOPOLOGY_CHANGED
-    ]
-    assert [issue["severity"] for issue in status["issues"]] == ["warning"]
-    assert status["protected_profile"]["topology_current"] is False
-
-
 @pytest.mark.parametrize("swap", [False, True])
 def test_two_anchors_written_either_side_of_the_narrowing_are_one_topology(
     swap: bool,
@@ -636,46 +359,6 @@ def test_two_anchors_written_either_side_of_the_narrowing_are_one_topology(
         expected_topology_fingerprint=narrowed,
         topology=topology,
     )["reason"] == "active_applied_profile_snapshot_topology_stale"
-
-
-def test_a_blocker_outranks_a_notice_for_the_setup_headline(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """`reason`/`detail` must name what is stopping the box, not what is not.
-
-    The issue list carries two severities now, and the topology notice is
-    appended before every later blocker.
-    """
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    applied = _applied_acoustic_profile(config_path=config_path)
-    applied["source"]["topology_fingerprint"] = "a" * 64
-    _write_applied_graph(topology, applied, config_path, monkeypatch=monkeypatch)
-    # Config file still on disk, so the notice's arm is reached; the baseline
-    # itself is not applied, so a real blocker lands after it.
-    applied["status"] = "draft"
-    candidate = _candidate(status="draft", config_path=config_path)
-    candidate["source"]["topology_fingerprint"] = "b" * 64
-    monkeypatch.setattr(
-        baseline_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
-    )
-    monkeypatch.setattr(
-        baseline_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["status"] == "blocked"
-    severities = {issue["severity"] for issue in status["issues"]}
-    assert severities == {"warning", "blocker"}
-    assert status["reason"] != _common.BASELINE_TOPOLOGY_CHANGED
-    blockers = [i for i in status["issues"] if i["severity"] == "blocker"]
-    assert status["reason"] == blockers[0]["code"]
-    assert status["detail"] == blockers[0]["message"]
 
 
 #: The measured candidate the applied automatic crossover was composed from.
@@ -760,8 +443,8 @@ def _applied_automatic_room_status(
     _write_applied_graph(topology, automatic, config_path, monkeypatch=monkeypatch)
     monkeypatch.setattr(
         baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=config_path),
+        "compile_commissioning_profile",
+        lambda **k: ("", _candidate(status="ready_to_compile", config_path=config_path)),
     )
     monkeypatch.setattr(
         setup_mod,
@@ -775,163 +458,6 @@ def _applied_automatic_room_status(
     )
     return setup_mod.read_active_speaker_setup_status(
         active_config_path=str(config_path),
-    )
-
-
-def test_active_speaker_loaded_commissioning_graph_still_blocks_controls(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, _active_topology())
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    config_path.write_text("pipeline: []\n", encoding="utf-8")
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="applied", config_path=config_path),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path="/var/lib/camilladsp/configs/active_speaker_staged_startup.yml",
-    )
-
-    assert status["configured"] is False
-    assert status["volume_allowed"] is False
-    assert status["grouping_allowed"] is False
-    assert status["reason"] == "active_speaker_commissioning_config_loaded"
-
-
-def test_active_speaker_ready_to_apply_is_not_configured(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, _active_topology())
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    config_path.write_text("pipeline: []\n", encoding="utf-8")
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *a, **k: _candidate(status="ready_to_apply", config_path=config_path),
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["configured"] is False
-    assert status["volume_allowed"] is False
-    assert status["grouping_allowed"] is False
-    assert status["reason"] == "active_baseline_profile_not_applied"
-
-
-def test_active_speaker_setup_rederives_baseline_freshness(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    topology = _dual_apple_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-
-    draft = _draft(topology)
-    draft_path = tmp_path / "design_draft.json"
-    draft_path.write_text(json.dumps(draft), encoding="utf-8")
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
-
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    preview_path = tmp_path / "crossover_preview.json"
-    preview_path.write_text(json.dumps(preview), encoding="utf-8")
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(preview_path),
-    )
-
-    _measurements(topology, tmp_path)
-    measurements_path = tmp_path / "measurements.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
-        str(measurements_path),
-    )
-
-    baseline_state_path = tmp_path / "baseline_profile.json"
-    baseline_config_path = tmp_path / "active_speaker_baseline.yml"
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=setup_mod.load_measurement_state(topology),
-        write=True,
-        state_path=baseline_state_path,
-        config_path=baseline_config_path,
-        validate=_valid_config,
-        created_at="2026-06-14T12:20:00Z",
-    )
-    assert payload["status"] == "ready_to_apply"
-    # #1666: the candidate lands on its own source-fingerprinted sibling, never
-    # baseline_config_path directly -- that literal file is never written by
-    # a bare build_baseline_profile_candidate() call (only the real apply
-    # transaction's post-success promote publishes it). What CamillaDSP would
-    # actually be running is the candidate's own reported path (mirrors
-    # active_config_path_from_statefile() reading CamillaDSP's own statefile
-    # in production, which always names the loaded sibling, never the
-    # promoted canonical copy).
-    applied_config_path = str(payload["config"]["path"])
-    assert applied_config_path != str(baseline_config_path)
-
-    saved = json.loads(baseline_state_path.read_text(encoding="utf-8"))
-    saved["status"] = "applied"
-    saved["candidate_fingerprint"] = "declared-wrong"
-    expected_applied_fingerprint = baseline_candidate_fingerprint(saved)
-    baseline_state_path.write_text(json.dumps(saved), encoding="utf-8")
-
-    ready = setup_mod.read_active_speaker_setup_status(
-        active_config_path=applied_config_path,
-        baseline_state_path=baseline_state_path,
-    )
-    assert ready["configured"] is True
-    assert ready["volume_allowed"] is True
-    assert ready["grouping_allowed"] is True
-    assert (
-        ready["protected_profile"]["candidate_fingerprint"]
-        == expected_applied_fingerprint
-    )
-    assert (
-        ready["commissioning"]["applied_profile_fingerprint"]
-        == expected_applied_fingerprint
-    )
-    assert ready["baseline_profile"]["candidate_fingerprint"]
-    assert ready["automatic_candidate"]["candidate_fingerprint"]
-    assert (
-        ready["baseline_profile"]["candidate_fingerprint"]
-        != ready["automatic_candidate"]["candidate_fingerprint"]
-    )
-
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
-        str(tmp_path / "missing_measurements.json"),
-    )
-
-    stale = setup_mod.read_active_speaker_setup_status(
-        active_config_path=applied_config_path,
-        baseline_state_path=baseline_state_path,
-    )
-
-    # The missing/current measurement set is a mutable candidate. It can require
-    # revalidation without invalidating the immutable profile that still owns
-    # ordinary playback.
-    assert stale["configured"] is True
-    assert stale["volume_allowed"] is True
-    assert stale["grouping_allowed"] is True
-    assert stale["reason"] is None
-    assert stale["protected_profile"]["status"] == "ready"
-    assert stale["baseline_profile"]["revalidation"]["required"] is True
-    # PR-L4 item 8: exactly the pair that cost the 2026-07-27 forensics real
-    # time — a re-derived staging candidate reporting one thing beside an
-    # applied profile reporting another, with nothing saying they answer
-    # different questions. Both blocks now name their role, point at the one
-    # that reports what is audible, and state outright whether they agree.
-    assert stale["baseline_profile"]["role"] == "staging_candidate"
-    assert stale["baseline_profile"]["live_answer_key"] == "protected_profile"
-    assert stale["protected_profile"]["role"] == "applied_profile"
-    assert stale["baseline_profile"]["matches_applied"] is False
-    assert (
-        stale["baseline_profile"]["candidate_fingerprint"]
-        != stale["protected_profile"]["candidate_fingerprint"]
     )
 
 
@@ -987,94 +513,6 @@ def test_unreadable_topology_fails_closed(
     # No topology was ever readable, so commissioning degrades to its fail-soft
     # idle default.
     assert status["commissioning"]["phase"] == "idle"
-
-
-def test_unreadable_baseline_profile_fails_closed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    _save_topology(monkeypatch, tmp_path, _active_topology())
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    config_path.write_text("pipeline: []\n", encoding="utf-8")
-
-    def _raise(*_args, **_kwargs):
-        raise ValueError("baseline candidate could not be derived")
-
-    monkeypatch.setattr(baseline_mod, "build_baseline_profile_candidate", _raise)
-    # Deterministic measurement state so the commissioning-phase assertion
-    # below isn't at the mercy of whatever (if anything) is on disk at the
-    # real default measurements path.
-    monkeypatch.setattr(
-        setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["volume_allowed"] is False
-    assert status["grouping_allowed"] is False
-    assert status["safety_muted"] is True
-    assert "active_baseline_profile_unreadable" in {
-        issue["code"] for issue in status["issues"]
-    }
-    # profile is None after the caught exception (never apply_failed, never
-    # may_apply); with no active comparison set either, phase falls to idle.
-    assert status["commissioning"]["phase"] == "idle"
-    assert status["commissioning"]["applied_profile_fingerprint"] is None
-
-
-def test_commissioning_failed_phase_wired_through_full_status_read(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """The "failed" phase is reachable through the real read path.
-
-    The standalone table below (test_commissioning_summary_failed_surfaces_
-    first_blocker_code) pins commissioning_summary's own phase-derivation
-    priority order in isolation. This test pins that
-    read_active_speaker_setup_status actually wires an apply_failed candidate
-    through to that same result, not only a hand-built input.
-    """
-    _save_topology(monkeypatch, tmp_path, _active_topology())
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    config_path.write_text("pipeline: []\n", encoding="utf-8")
-
-    monkeypatch.setattr(
-        baseline_mod,
-        "build_baseline_profile_candidate",
-        lambda *_a, **_k: {
-            "status": "apply_failed",
-            "source": {"fingerprint": "source-fp"},
-            "permissions": {"may_apply": False},
-            "issues": [
-                {
-                    "severity": "warning",
-                    "code": "some_warning",
-                    "message": "not the one",
-                },
-                {
-                    "severity": "blocker",
-                    "code": "baseline_profile_apply_failed",
-                    "message": "camilladsp rejected the candidate",
-                },
-            ],
-        },
-    )
-    # Deterministic measurement state so the commissioning-phase assertion
-    # below isn't at the mercy of whatever (if anything) is on disk at the
-    # real default measurements path.
-    monkeypatch.setattr(
-        setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
-    )
-
-    status = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
-
-    assert status["commissioning"]["phase"] == "failed"
-    assert (
-        status["commissioning"]["last_failure_code"]
-        == "baseline_profile_apply_failed"
-    )
 
 
 # --- commissioning_summary (lane E, docs/active-crossover-information-design.md
@@ -1267,10 +705,11 @@ def test_commissioning_summary_measuring_with_open_comparison_set(
     assert result["session_fingerprint"] == comparison_set["fingerprint"]
 
 
-def test_commissioning_summary_proposal_ready_when_may_apply() -> None:
+@pytest.mark.parametrize("permission", ["may_apply", "may_compile"])
+def test_commissioning_summary_proposal_ready_when_may_apply(permission) -> None:
     result = setup_mod.commissioning_summary(
         SimpleNamespace(topology_id="bench_mono"),
-        profile={"status": "ready_to_apply", "permissions": {"may_apply": True}},
+        profile={"status": "ready_to_apply", "permissions": {permission: True}},
         applied_profile=None,
         measurements=None,
     )
@@ -1404,3 +843,26 @@ def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, 
         active_config_path=str(target), active_config_text=None)
     assert binding["status"] == "current"
     assert binding["expected_fingerprint"] == binding["loaded_fingerprint"] == active_layer_a_fingerprint(expected)
+
+
+@pytest.mark.parametrize("applied,review_ready", [(False, False), (False, True), (True, False), (True, True)])
+def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path, applied, review_ready):
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    path = tmp_path / "applied.yml"
+    path.write_text("pipeline: []\n")
+    review = _candidate(status="ready_to_compile" if review_ready else "blocked", config_path=tmp_path / "candidate.yml",
+                        issues=[] if review_ready else [{"severity": "blocker", "code": "compose_refused"}])
+    review["candidate_fingerprint"] = "review-fp"
+    review["permissions"] = {"may_compile": review_ready, "may_apply": False}
+    saved = {"status": "applied", "config": {"path": str(path)}, "candidate_fingerprint": "saved-fp"} if applied else None
+    monkeypatch.setattr(baseline_mod, "compile_commissioning_profile", lambda **kw: ("", review))
+    monkeypatch.setattr(baseline_mod, "load_applied_baseline_profile_state", lambda path=None: saved)
+    status = setup_mod.read_active_speaker_setup_status(active_config_path=str(path))
+    assert status["volume_allowed"] is applied
+    assert status["grouping_allowed"] is applied
+    assert status["baseline_profile"]["status"] == review["status"]
+    assert status["baseline_profile"]["candidate_fingerprint"] == "review-fp"
+    assert [issue["code"] for issue in status["baseline_profile"]["issues"]] == ([] if review_ready else ["compose_refused"])
+    assert "automatic_candidate" not in status
+    assert "linearization_outcome" not in status["protected_profile"]
