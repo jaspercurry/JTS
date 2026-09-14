@@ -462,7 +462,8 @@ class AngleCaptureRequest:
         return {
             **asdict(self), "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
-                {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else getattr(stop, f.name)
+                {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else
+                 list(stop.seat_offset_m) if f.name == "seat_offset_m" and stop.seat_offset_m is not None else getattr(stop, f.name)
                  for f in fields(stop)
                  if f.name in ("angle_deg", "regime", "elevation_deg", "candidate_id", "purpose")
                  or getattr(stop, f.name) != f.default}

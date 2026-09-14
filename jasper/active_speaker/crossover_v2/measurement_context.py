@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..measurement_programs import POSE_KIND_BEARING
+from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from .record_index import played_graph_fingerprint
 
 def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -78,6 +78,9 @@ def compare_capture_basis(
     unknown: list[str] = []
     for field in required:
         left, right = now.get(field), was.get(field)
+        if (field == "mark_distance_m" and left is None and right is None
+                and now.get("pose_kind") == was.get("pose_kind") == POSE_KIND_SEAT):
+            continue
         if left is None or right is None:
             unknown.append(field)
         elif left != right:

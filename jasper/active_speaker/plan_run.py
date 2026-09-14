@@ -35,7 +35,7 @@ from .crossover_v2.admission import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
 )
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
-from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
+from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
@@ -278,6 +278,8 @@ async def run_plan(
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
         for offset, spec in batch:
             stop = {**manifest.planned[offset], "index": len(planned) + 1,
+                    "pose": {**manifest.planned[offset]["pose"],
+                             "distance_m": position_geometry(stops[offset].prompt).mark_distance_m},
                     "capture_index": manifest.planned[offset]["index"]}
             planned.append(stop)
             if spec is not None:

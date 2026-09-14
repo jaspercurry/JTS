@@ -1244,18 +1244,28 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(
     }
 
 
-def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, monkeypatch):
+@pytest.mark.parametrize("pose,distance,basis", [
+    ({}, 1.0, "compatible"),
+    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1)}, None, "compatible"),
+    ({}, None, "unknown"),
+])
+def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, monkeypatch, pose, distance, basis):
     for index, take in enumerate(bass_run.takes):
         original = take["record"]
         take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
-            raw_record={key: value for key, value in original.items() if key not in {"stimulus_dbfs", "program_id"}})
+            pose=pose, raw_record={key: value for key, value in original.items()
+                if key not in {"stimulus_dbfs", "program_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
+        if basis == "unknown":
+            take["record"]["mark_distance_m"] = None
+        assert take["record"]["mark_distance_m"] == distance
         take["record"].update(run_id=original["run_id"], loudness_volume_db=original["loudness_volume_db"])
     bass_run.write()
     assert round_views_main(bass_run.argv) == 0
     capsys.readouterr()
     table, = json.loads(bass_run.out.read_text())["tables"]
-    assert {context["basis_status"] for context in table["capture_context"]} == {"compatible"}
-    assert all(context["unknown_fields"] == [] for context in table["capture_context"])
+    assert {context["basis_status"] for context in table["capture_context"]} == {basis}
+    assert all(context["unknown_fields"] == (["mark_distance_m"] if basis == "unknown" else [])
+               for context in table["capture_context"])
 
 
 @pytest.mark.parametrize('fault,reason', [

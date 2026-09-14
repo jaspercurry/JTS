@@ -74,9 +74,14 @@ from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
 from jasper.active_speaker.capture_provenance import CaptureProvenance, CaptureProvenanceRecorder
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, place_wired_answer
 from jasper.active_speaker.run_manifest import RunManifest
+from jasper.active_speaker.plan_run import PlanCapture, run_plan
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
+from jasper.active_speaker.crossover_v2.session import MeasureOutcome, StimulusOutcome
 from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
 from jasper.web.correction_run_host import bind_plan_analysis
 from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _verify_analysis
+from tests.engine_twin import open_session
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import encode_wav_s32
 from jasper.active_speaker.bundles import open_bundle
@@ -606,7 +611,7 @@ def bank_cloud_echo_band(
     })
 
 
-def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None):
+def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None):
     program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
@@ -623,8 +628,11 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
-        manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "distance_m": 1.25}},
-                       attempt=1, pose_index=0)
+        stop = angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
+                                      candidate_id="speaker-candidate", **(pose or {}))
+        request = angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
+        spec = MeasureSpec(kind="candidate", graph_scope="candidate", candidate_id=stop.candidate_id,
+                           program_phase=program.phase)
         wav, _ = encode_wav_s32(np.zeros(32, dtype=np.int32), sample_rate_hz=48000)
         answer = WiredCaptureAnswer(wav=wav, program=program.to_dict(),
             device={"card": "UMIK2", "usb_id": "2752:002b", "model_key": "minidsp_umik2",
@@ -640,13 +648,18 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
             session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
         analyze, _ = bind_plan_analysis(conductor, records, manifest=manifest, evidence=refs, provenance=provenance)
-        async def bank():
+        async def measure(session, spec):
             record_id = await records.bank({"take_id": "executor-take", "kind": "candidate",
                 "graph_scope": "candidate", "candidate_id": "speaker-candidate", "graph_fingerprint": "submitted",
                 "program_phase": program.phase, "position_axis": "horizontal", "position_deg": 0,
                 "level_db": -20.0, "stimulus_dbfs": None, **raw_record})
-            record = json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
-            if analysis_error is None:
-                analyze(record, record_id)
-            return record
+            return MeasureOutcome(spec, (StimulusOutcome(0, None, -20.0, record_id),))
+        async def bank():
+            async with open_session() as (session, _):
+                await run_plan(request, session=session, manifest=manifest, analyze=analyze,
+                    captures=(PlanCapture(stop, spec),), measure=measure,
+                    assessor=lambda *_a, **_k: TakeVerdict(True), aborts={Exception: "internal_error"})
+            assert manifest.status == ("partial" if analysis_error is not None else "complete")
+            _, record_id = manifest.pending_records[0]
+            return json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
         return asyncio.run(bank())
