@@ -706,9 +706,10 @@ def reconcile_coupling(
         kick_hardware_reconcile=kick_hardware_reconcile,
     )
     if result.changed and result.ok:
-        # FIRE-AND-FORGET: the re-bake outruns any wait this side could justify
-        # (TimeoutStartSec=6414) and killing the client would not cancel the
-        # queued job. `ok` is "systemd ACCEPTED the job" — logged because a
+        # FIRE-AND-FORGET: the re-bake's start budget (the grouping unit's
+        # TimeoutStartSec, derived in jasper.multiroom.reconcile) outruns any
+        # wait this side could justify, and killing the client would not
+        # cancel the queued job. `ok` is "systemd ACCEPTED the job" — logged because a
         # drifted unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
             GROUPING_RECONCILE_UNIT, verb="start", reason=reason,
