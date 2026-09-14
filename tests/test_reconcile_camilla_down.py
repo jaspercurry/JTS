@@ -186,6 +186,7 @@ def _roleful_box(tmp_path: Path, monkeypatch):
     draft = _draft(topology)
     config_dir = tmp_path / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
 
     applied = declared_profile_fixture(
         topology,
@@ -196,7 +197,6 @@ def _roleful_box(tmp_path: Path, monkeypatch):
     )
     applied["status"] = "applied"
     candidate = Path(applied["config"]["path"])
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(config_dir / "active_speaker_baseline.yml"))
     declare_applied_fixture(monkeypatch, topology, applied)
 

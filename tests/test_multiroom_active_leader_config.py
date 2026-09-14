@@ -279,18 +279,21 @@ def test_precheck_fails_closed_on_a_corrupt_topology(monkeypatch, tmp_path) -> N
 def test_precheck_threads_pair_trim_into_leader_crossover(
     monkeypatch, tmp_path,
 ) -> None:
-    """The active leader's own speaker path is camilla#2, not outputd's
-    dac_content lane, so grouping trim must be in the driver-domain graph."""
+    """The leader plays through camilla#2, so pair trim belongs in that graph."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline.json"))
+    assert baseline_profile_mod.load_applied_baseline_profile_state() is None
 
     asyncio.run(alc.precheck_active_leader(_cfg("left", trim_db=-4.0), validate=_valid_config))
 
     crossover_yaml = Path(alc.CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8")
     assert yaml.safe_load(crossover_yaml)["filters"]["pair_balance_trim"]["parameters"]["gain"] == -4.0
+    assert not (tmp_path / "campaigns").exists()
+    assert not (tmp_path / "sessions").exists()
 
 
 def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:
