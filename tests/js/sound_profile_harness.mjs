@@ -3983,37 +3983,57 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
 async function testAppliedProfileCardUsesCommissioningRecord() {
   const confirmedTopology = confirmedActiveTwoWayTopology();
   const applied = {
-    exists: true, candidate_fingerprint: "applied-fp", applied_at: "2026-09-13T12:00:00Z",
+    exists: true, stands: true, candidate_fingerprint: "0123456789abcdef".repeat(4), applied_at: "2026-09-13T12:00:00Z",
     config_path: "/var/lib/camilladsp/applied.yml", disclosures: [],
   };
   const reviewPath = "/var/lib/camilladsp/review.yml";
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(
-      profileCommissioningView({
-        status: "applied", current_step: "profile",
-        applied_profile: applied,
-        stepStatuses: {layout: "done", research: "done", map: "done", safety: "done", profile: "done"},
-      })
-    )),
-    "./active-speaker/baseline-profile": () => Promise.resolve(response({
-      status: "ready_to_compile", candidate_fingerprint: "review-fp",
-      permissions: { may_compile: true, may_apply: false },
-      config: { path: reviewPath }, issues: [],
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
+  for (const [stands, corrected] of [[true, true], [true, false], [false, true]]) {
+    applied.stands = stands;
+    const fetchHandler = baseFetch({
+      "./output-topology": () => Promise.resolve(response({
+        output_topology: confirmedTopology,
+        channel_identity: confirmedTopology.channel_identity,
+      })),
+      "./active-speaker/commissioning-view": () => Promise.resolve(response(
+        profileCommissioningView({
+          status: "applied", current_step: "profile",
+          applied_profile: applied,
+          stepStatuses: {layout: "done", research: "done", map: "done", safety: "done", profile: "done"},
+        })
+      )),
+      "./active-speaker/baseline-profile": () => Promise.resolve(response({
+        status: "ready_to_compile", candidate_fingerprint: "review-fp",
+        permissions: { may_compile: true, may_apply: false },
+        config: { path: reviewPath }, issues: [],
+        corrections: { woofer: { gain_db: 0 }, tweeter: { gain_db: -7.5 } },
+        corrections_source: { woofer: "measured", tweeter: "measured" },
+        linearization: corrected ? { tweeter: [{ type: "Peaking" }] } : {},
+        blend_correction: corrected ? [{ type: "Peaking" }] : [],
+      })),
+    });
+    const harness = setupHarness(fetchHandler);
+    await loadAndSetActiveState(harness);
 
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes(applied.config_path) || html.includes(reviewPath)) {
-    fail("Applied profile card used the wrong config path", {applied, reviewPath});
-  }
-  if (html.includes('data-act="save-apply-baseline-profile"')) {
-    fail("An applied profile was rendered as an unapplied candidate", {applied});
+    const html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes(applied.config_path) || html.includes(reviewPath)) {
+      fail("Applied profile card used the wrong config path", {applied, reviewPath});
+    }
+    for (const expected of ["Driver levels", "0 dB (reference)", "-7.5 dB", "Measured",
+      applied.candidate_fingerprint.slice(0, 12), applied.applied_at]) {
+      if (!html.includes(expected)) fail("Applied profile details are missing", {expected, stands, corrected});
+    }
+    if (html.includes(applied.candidate_fingerprint)) fail("The card should abbreviate the fingerprint");
+    if (html.includes('>active</span>') !== stands) fail("Active badge disagrees with displacement", {stands});
+    if (stands && corrected) {
+      for (const expected of ["Replace with basic profile", "per-driver linearization", "blend correction"]) {
+        if (!html.includes(expected)) fail("The basic door must say what it replaces", {expected});
+      }
+    } else if (html.includes("Replace with basic profile")) {
+      fail("The basic replacement door requires an active corrected profile", {stands, corrected});
+    }
+    if (html.includes('>Save and apply</button>') === stands) {
+      fail("The primary apply door disagrees with displacement", {stands});
+    }
   }
   return { appliedProfileCardUsesCommissioningRecord: true };
 }
@@ -6721,7 +6741,7 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
     },
     "./active-speaker/commissioning-view": () => Promise.resolve(response({
       status: finishPosts.length ? "applied" : "ready_to_save_profile",
-      applied_profile: {exists: finishPosts.length > 0,
+      applied_profile: {exists: finishPosts.length > 0, stands: finishPosts.length > 0,
         candidate_fingerprint: baselineApplied.candidate_fingerprint,
         applied_at: baselineApplied.applied_at, config_path: baselineApplied.config.path},
       test_level: levelPayload(-72).test_signal,
@@ -8488,7 +8508,7 @@ async function testTuningHandoffCardMintsAndGoesStale() {
         issues: [],
       })),
       "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
-        status: "applied", applied_profile: {exists: true, candidate_fingerprint: "applied-fp",
+        status: "applied", applied_profile: {exists: true, stands: true, candidate_fingerprint: "applied-fp",
           applied_at: "2026-09-13T12:00:00Z", config_path: "/var/lib/camilladsp/applied.yml"},
       }))),
       "./active-speaker/tuning-handoff": (path) => {

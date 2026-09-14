@@ -8095,21 +8095,21 @@ def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
 
 
 @pytest.mark.parametrize("review_ready", [False, True])
-@pytest.mark.parametrize("exists", [False, True])
-def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_ready, exists):
+@pytest.mark.parametrize(("exists", "stands"), [(False, False), (True, True), (True, False)])
+def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_ready, exists, stands):
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(
         commissioning_view={"review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
-            "exists": exists, "candidate_fingerprint": "applied-fp",
+            "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
             "applied_at": "2026-09-13T12:00:00Z", "config_path": "/var/lib/camilladsp/applied.yml",
         }},
         design_draft={"revision": 5},
     )
-    assert payload["status"] == ("ready" if exists else "not_ready")
-    assert payload["reason"] == (None if exists else "no_applied_baseline")
-    assert all(bool(entry["prompt"]) is exists for entry in payload["programs"])
+    assert payload["status"] == ("ready" if stands else "not_ready")
+    assert payload["reason"] == (None if stands else "no_applied_baseline")
+    assert all(bool(entry["prompt"]) is stands for entry in payload["programs"])
     assert payload["binding"]["hostname"] == "jts7.local"
     assert payload["binding"]["design_draft_revision"] == 5
     assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/speaker/"
@@ -8132,7 +8132,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"applied_profile": {"exists": True}},
+        commissioning_view={"applied_profile": {"exists": True, "stands": True}},
         design_draft={"revision": 5},
     )
     entry = next(entry for entry in payload["programs"] if entry["id"] == program_id)
@@ -8161,7 +8161,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
-        lambda *a, **k: {"applied_profile": {"exists": True}},
+        lambda *a, **k: {"applied_profile": {"exists": True, "stands": True}},
     )
     monkeypatch.setattr(
         "jasper.active_speaker.design_draft.load_design_draft",

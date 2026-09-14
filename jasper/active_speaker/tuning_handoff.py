@@ -81,7 +81,7 @@ def build_tuning_handoff(
     """See ADR-0312: declaration changes do not revoke an applied proof."""
     binding = build_tuning_handoff_binding(design_draft)
     applied = commissioning_view.get("applied_profile")
-    ready = isinstance(applied, Mapping) and applied.get("exists") is True
+    ready = isinstance(applied, Mapping) and applied.get("stands") is True
     reason = None if ready else NO_APPLIED_BASELINE
     return {
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,
