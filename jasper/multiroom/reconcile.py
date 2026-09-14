@@ -43,7 +43,6 @@ from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..service_units import (
     OUTPUTD_SERVICE,
-    JASPER_VOICE_SERVICE,
     run_systemctl,
 )
 from ..source_intent import (
@@ -71,7 +70,6 @@ from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
-OUTPUTD_TTS_SOCKET = _tts_routing.OUTPUTD_TTS_SOCKET
 OUTPUTD_TTS_SOCKET_ENV = _tts_routing.OUTPUTD_TTS_SOCKET_ENV
 VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
 TTS_MIX_STAGE_ENV = _tts_routing.TTS_MIX_STAGE_ENV
@@ -197,8 +195,6 @@ OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = "jasper-camilla.service"
-
-VOICE_UNIT = JASPER_VOICE_SERVICE
 
 # Reconciler-owned PERSISTENT env file the shairport-sync unit's ExecStartPre
 # (jasper-apply-airplay-mode) layers when deriving the AirPlay backend latency
@@ -828,15 +824,15 @@ def output_topology_state() -> tuple[bool | None, bool]:
     try:
         from jasper.active_speaker.playback_route import (
             active_playback_route_capability,
-        )
+        )  # lazy: import cost — jasper.active_speaker is a named-heavy import under ADR-0226
         from jasper.active_speaker.runtime_contract import (
             classify_output_contract,
             topology_allows_flat_dac_graph,
-        )
+        )  # lazy: import cost — same active_speaker tree; its own SNAPFIFO import back into this module is lazy for the same reason
         from jasper.output_topology import (
             OutputTopologyError,
             load_output_topology_strict,
-        )
+        )  # lazy: import cost — control.grouping_supervisor (a resident daemon) reaches this probe via its own lazy import precisely to avoid this tree
 
         topology = load_output_topology_strict()
         active = active_playback_route_capability(topology).active_group_count > 0
@@ -890,7 +886,7 @@ def box_outputd_period_frames() -> int | None:
     module level by :mod:`jasper.multiroom.active_leader_config`.
     """
     try:
-        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded
+        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
 
         return outputd_period_frames_as_loaded()
     except Exception as e:  # noqa: BLE001 - an unresolved period must not raise
@@ -1774,7 +1770,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     # Step 5 below swaps the live CamillaDSP graph, so its swap duck needs a
     # canonical target to release to.
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_coordinator import install_env_canonical_target_provider  # lazy: import cost — only main()'s CLI oneshot needs this; callers that import this module for its pure plan()/probe functions never reach main()
 
     install_env_canonical_target_provider()
 
@@ -1881,7 +1877,7 @@ def main(argv: list[str] | None = None) -> int:
     # never raises — the snap units simply fail to start, the box stays
     # solo-safe, and the next reconcile retries.
     if role.active:
-        from .provision import ensure_snapcast_installed
+        from .provision import ensure_snapcast_installed  # lazy: import cost — only the active role branch of main() needs this
 
         prov = ensure_snapcast_installed()
         if prov["state"] == "failed":
@@ -1910,11 +1906,11 @@ def main(argv: list[str] | None = None) -> int:
     if role.active_endpoint:
         try:
             if role.active_speaker_leader:
-                from .active_leader_config import precheck_active_leader_sync
+                from .active_leader_config import precheck_active_leader_sync  # lazy: import cost — only this role branch of main() needs it
 
                 precheck_active_leader_sync(role.cfg)
             else:
-                from .follower_config import precheck_active_follower_sync
+                from .follower_config import precheck_active_follower_sync  # lazy: import cost — only this role branch of main() needs it
 
                 precheck_active_follower_sync(role.cfg)
         except RuntimeError as e:
@@ -2070,7 +2066,7 @@ def main(argv: list[str] | None = None) -> int:
         # above has already disabled it and positively proved it inactive, so
         # camilla#1 can now reclaim the DAC via the leader stash.
         try:
-            from .active_leader_config import restore_active_leader_solo_sync
+            from .active_leader_config import restore_active_leader_solo_sync  # lazy: import cost — only this role branch of main() needs it
 
             restored = restore_active_leader_solo_sync()
             if restored:
@@ -2092,7 +2088,7 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
     elif role.box_is_active:
         try:
-            from .follower_config import restore_active_follower_solo_sync
+            from .follower_config import restore_active_follower_solo_sync  # lazy: import cost — only this role branch of main() needs it
 
             restored = restore_active_follower_solo_sync()
             if restored:
@@ -2114,7 +2110,7 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
     else:
         try:
-            from .leader_config import restore_solo_config_sync
+            from .leader_config import restore_solo_config_sync  # lazy: import cost — only this role branch of main() needs it
 
             restored = restore_solo_config_sync()
             if restored:
@@ -2236,7 +2232,7 @@ def main(argv: list[str] | None = None) -> int:
     #    is up → the grouping ring has its writer).
     if role.passive_leader:
         try:
-            from .leader_config import apply_bonded_leader_config_sync
+            from .leader_config import apply_bonded_leader_config_sync  # lazy: import cost — only the passive-leader branch of main() needs it
 
             applied = apply_bonded_leader_config_sync(role.cfg)
             log_event(
@@ -2297,7 +2293,7 @@ def main(argv: list[str] | None = None) -> int:
                     from .active_leader_config import (
                         apply_active_leader_bake_sync,
                         seed_crossover_statefile,
-                    )
+                    )  # lazy: import cost — only the active-leader-bake branch of main() needs it
 
                     applied = apply_active_leader_bake_sync()
                     log_event(
@@ -2387,7 +2383,7 @@ def main(argv: list[str] | None = None) -> int:
                         try:
                             from .active_leader_config import (
                                 restore_active_leader_solo_sync,
-                            )
+                            )  # lazy: import cost — only this bake-failure rollback path needs it
 
                             restored = restore_active_leader_solo_sync()
                             if restored:
@@ -2441,7 +2437,7 @@ def main(argv: list[str] | None = None) -> int:
         # binding silently mutes the whole bond behind green health. The ensure
         # retries internally; an unreachable snapserver flips the exit code (a
         # bond whose bindings cannot be verified is a degraded bond).
-        from .snapcast_rpc import ensure_groups_on_stream
+        from .snapcast_rpc import ensure_groups_on_stream  # lazy: import cost — only main()'s bonded-leader stream-binding step needs it
 
         report = ensure_groups_on_stream(SNAP_STREAM_ID)
         log_event(
@@ -2464,7 +2460,7 @@ def main(argv: list[str] | None = None) -> int:
     #     the next reconcile retries.
     if role.active_follower:
         try:
-            from .follower_config import apply_prebuilt_follower_config_sync
+            from .follower_config import apply_prebuilt_follower_config_sync  # lazy: import cost — only the active-follower branch of main() needs it
 
             applied = apply_prebuilt_follower_config_sync()
             log_event(
