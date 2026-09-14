@@ -48,9 +48,10 @@ from .transport_eligibility import (
 )
 
 # `_signal_path`'s generic "outputd never started" and "fan-in is not
-# reporting" sentences. Written once because `_state_issues` raises the
-# matching `path.outputd_unavailable` / `path.fanin_unavailable` incidents from
-# the same two facts and neither pair may drift.
+# reporting" sentences. Written once because
+# `jasper.control.audio_state_issues._state_issues` raises the matching
+# `path.outputd_unavailable` / `path.fanin_unavailable` incidents from the
+# same two facts and neither pair may drift.
 _OUTPUT_ABSENT_TITLE = "The speaker's sound output is not running"
 _OUTPUT_ABSENT_DETAIL = (
     f"Nothing will play until it comes back. {RESTART_REMEDY} "
@@ -533,8 +534,8 @@ def _transport_park_signal(
     transport serves this box and it emits nothing.
 
     Presentation only, like :func:`_parked_signal`: the incident rows
-    :func:`~jasper.control.audio_health._state_issues` writes from the same
-    snapshot keep one row per park class, named by its key.
+    :func:`~jasper.control.audio_state_issues._state_issues` writes from the
+    same snapshot keep one row per park class, named by its key.
     """
     state = _mapping(transport_park)
     if state.get("status") != "parked":
@@ -563,8 +564,8 @@ def _stopped_dsp_signal(
 
     Presentation only, like :func:`_parked_signal`:
     :class:`~jasper.control.audio_health.AudioHealthSampler` feeds
-    :func:`~jasper.control.audio_health._state_issues` the raw signal path, so
-    `path.camilla_stopped` keeps its own incident row.
+    :func:`~jasper.control.audio_state_issues._state_issues` the raw signal
+    path, so `path.camilla_stopped` keeps its own incident row.
 
     Shares the boot-warmup gate with that issue, so a deploy's coordinated
     restart does not flicker the card.

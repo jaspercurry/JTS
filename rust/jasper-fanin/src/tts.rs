@@ -93,6 +93,8 @@ pub struct TtsMetrics {
     starved_max_run_frames: Arc<AtomicU64>,
     starved_long_runs: Arc<AtomicU64>,
     starved_long_frames: Arc<AtomicU64>,
+    boundary_gap_runs: Arc<AtomicU64>,
+    boundary_gap_frames: Arc<AtomicU64>,
     log_dropped: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
     content_anchor_lufs_x10: Arc<AtomicI64>,
@@ -140,6 +142,8 @@ impl Default for TtsMetrics {
             starved_max_run_frames: Arc::new(AtomicU64::new(0)),
             starved_long_runs: Arc::new(AtomicU64::new(0)),
             starved_long_frames: Arc::new(AtomicU64::new(0)),
+            boundary_gap_runs: Arc::new(AtomicU64::new(0)),
+            boundary_gap_frames: Arc::new(AtomicU64::new(0)),
             log_dropped: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             content_anchor_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
@@ -219,8 +223,8 @@ impl TtsMetrics {
         self.flushed_frames.load(Ordering::Relaxed)
     }
 
-    /// Silence bracketed by PCM from one segment, at most
-    /// [`STARVED_DROPOUT_MAX_MS`]. Segment tails do not count.
+    /// Distinct missing-PCM runs within one segment, including sub-period
+    /// tails, at most [`STARVED_DROPOUT_MAX_MS`]. Interpret with frames/max.
     pub(crate) fn mark_starved_run(&self, frames: u64) {
         self.starved_runs.fetch_add(1, Ordering::Relaxed);
         self.starved_frames.fetch_add(frames, Ordering::Relaxed);
@@ -228,9 +232,7 @@ impl TtsMetrics {
             .fetch_max(frames, Ordering::Relaxed);
     }
 
-    /// One dry run too long to be a break in speech. What it IS — model
-    /// latency, a tool round, a pause between phrases — this cannot say; it
-    /// records duration so the split can be judged rather than assumed.
+    /// A longer within-segment gap; duration alone does not identify its cause.
     pub(crate) fn mark_starved_long_run(&self, frames: u64) {
         self.starved_long_runs.fetch_add(1, Ordering::Relaxed);
         self.starved_long_frames
@@ -255,6 +257,21 @@ impl TtsMetrics {
 
     pub fn starved_long_frames(&self) -> u64 {
         self.starved_long_frames.load(Ordering::Relaxed)
+    }
+
+    /// Missing PCM between different segments, including ordinary utterance
+    /// waits. Kept separate because the mixer cannot infer their cause.
+    pub(crate) fn mark_boundary_gap(&self, frames: u64) {
+        self.boundary_gap_runs.fetch_add(1, Ordering::Relaxed);
+        self.boundary_gap_frames.fetch_add(frames, Ordering::Relaxed);
+    }
+
+    pub fn boundary_gap_runs(&self) -> u64 {
+        self.boundary_gap_runs.load(Ordering::Relaxed)
+    }
+
+    pub fn boundary_gap_frames(&self) -> u64 {
+        self.boundary_gap_frames.load(Ordering::Relaxed)
     }
 
     /// A [`FaninLogEvent`] this daemon could not hand to `fanin-ring-log`
@@ -585,15 +602,12 @@ pub struct TtsMixer {
     /// speaks one width for a daemon's whole lifetime, so this is one line per
     /// lifetime, not per connection — the client reconnecting does not re-arm it.
     last_payload_width: Option<TtsWireWidth>,
-    /// Missing samples since this segment last played, including partial
-    /// period tails. Committed only when that segment's PCM resumes.
+    /// Missing samples since PCM last played, including partial-period tails.
+    /// Resumption determines same-segment starvation versus a boundary gap.
     starved_run_samples: u64,
     /// Playback ownership: accepted segment commands can run ahead of PCM.
     starved_run_segment: u64,
-    /// Serial of the segment audio was most recently mixed from. Silence
-    /// before a segment's FIRST audio is waiting for the utterance to start,
-    /// not a break in one: `SEGMENT_START` opens the segment gain, so without
-    /// this the wait for the opening chunk would be charged as a dropout.
+    /// Silence before any PCM first plays is not a gap between PCM chunks.
     played_segment: Option<u64>,
 }
 
@@ -866,14 +880,12 @@ impl TtsMixer {
         resumed_segment: Option<u64>,
     ) {
         let short_samples = requested_samples.saturating_sub(popped_samples);
-        let segment_open = self.active_segment_gain_db.is_some();
-        let serial = self.active_segment_serial;
-        let still_open = segment_open && self.starved_run_segment == serial;
-        if self.starved_run_samples > 0 && (popped_samples > 0 || !still_open) {
+        if self.starved_run_samples > 0 && popped_samples > 0 {
             let frames = self.starved_run_samples / (CHANNELS as u64);
             self.starved_run_samples = 0;
-            if popped_samples > 0 && resumed_segment == Some(self.starved_run_segment) && frames > 0
-            {
+            if resumed_segment != Some(self.starved_run_segment) {
+                self.metrics.mark_boundary_gap(frames);
+            } else {
                 let ms = frames_to_ms(frames, TTS_SAMPLE_RATE);
                 if ms > STARVED_DROPOUT_MAX_MS {
                     self.metrics.mark_starved_long_run(frames);
@@ -890,11 +902,8 @@ impl TtsMixer {
                 }
             }
         }
-        // Waiting for a segment's own opening chunk is not a break in speech.
-        if segment_open && short_samples > 0 && self.played_segment == Some(serial) {
-            if self.starved_run_samples == 0 {
-                self.starved_run_segment = serial;
-            }
+        if let Some(serial) = self.played_segment.filter(|_| short_samples > 0) {
+            self.starved_run_segment = serial;
             self.starved_run_samples = self.starved_run_samples.saturating_add(short_samples);
         }
     }
@@ -3481,16 +3490,32 @@ mod tests {
     }
 
     #[test]
+    fn micro_gaps_and_a_long_dropout_keep_distinct_counts_and_durations() {
+        for (gap_frames, runs) in [(1, 200), (4_800, 1)] {
+            let (tx, _flush_tx, mut mixer, probe) = starvation_mixer();
+            send_assistant_segment_start(&tx);
+            for _ in 0..runs {
+                send_audio_frames(&tx, 239);
+                mix_one_period(&mut mixer, 239 + gap_frames);
+            }
+            send_audio_frames(&tx, 240);
+            mix_one_period(&mut mixer, 240);
+            assert_eq!(probe.starved_runs(), runs);
+            assert_eq!(probe.starved_frames(), gap_frames as u64 * runs);
+            assert_eq!(probe.starved_max_run_frames(), gap_frames as u64);
+            assert_eq!(probe.starved_long_runs(), 0);
+            assert_eq!(probe.boundary_gap_runs(), 0);
+        }
+    }
+
+    #[test]
     fn run_ended_by_segment_end_is_the_tail_not_a_dropout() {
         let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
         send_assistant_segment_start(&tx);
         send_audio_frames(&tx, 2);
         mix_one_period(&mut mixer, 2);
 
-        // Dry period while the segment is still open...
         mix_one_period(&mut mixer, 2);
-        // ...then the segment closes. That silence is the ordinary gap
-        // between utterances, not a dropout.
         tx.send(QueuedTtsCommand {
             epoch: 0,
             command: TtsCommand::SegmentEnd,
@@ -3500,6 +3525,7 @@ mod tests {
 
         assert_eq!(probe.starved_runs(), 0);
         assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.boundary_gap_runs(), 0);
         drop(flush_tx);
     }
 
@@ -3544,27 +3570,33 @@ mod tests {
     }
 
     #[test]
-    fn a_run_spanning_a_segment_boundary_is_not_a_dropout() {
-        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
-        send_assistant_segment_start(&tx);
-        send_audio_frames(&tx, 2);
-        mix_one_period(&mut mixer, 2);
-
-        // Dry, then END and START land together in one period — the silence
-        // straddles two utterances and belongs to neither.
-        mix_one_period(&mut mixer, 2);
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::SegmentEnd,
-        })
-        .unwrap();
-        send_assistant_segment_start(&tx);
-        send_audio_frames(&tx, 2);
-        mix_one_period(&mut mixer, 2);
-
-        assert_eq!(probe.starved_runs(), 0);
-        assert_eq!(probe.starved_frames(), 0);
-        drop(flush_tx);
+    fn boundary_gaps_preserve_duration_without_becoming_same_segment_dropouts() {
+        for boundary_period in [0, 4, 8] {
+            let (tx, _flush_tx, mut mixer, probe) = starvation_mixer();
+            send_assistant_segment_start(&tx);
+            send_audio_frames(&tx, 480);
+            mix_one_period(&mut mixer, 480);
+            for period in 0..=8 {
+                if period == boundary_period {
+                    tx.send(QueuedTtsCommand {
+                        epoch: 0,
+                        command: TtsCommand::SegmentEnd,
+                    })
+                    .unwrap();
+                    send_assistant_segment_start(&tx);
+                }
+                assert_eq!(probe.boundary_gap_runs(), 0);
+                if period == 8 {
+                    send_audio_frames(&tx, 480);
+                }
+                mix_one_period(&mut mixer, 480);
+            }
+            assert_eq!(probe.starved_runs(), 0);
+            assert_eq!(probe.starved_frames(), 0);
+            assert_eq!(probe.starved_long_runs(), 0);
+            assert_eq!(probe.boundary_gap_runs(), 1);
+            assert_eq!(probe.boundary_gap_frames(), 3_840);
+        }
     }
 
     #[test]
@@ -3589,6 +3621,7 @@ mod tests {
         mix_one_period(&mut mixer, 2);
         assert_eq!(probe.starved_runs(), 0);
         assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.boundary_gap_runs(), 0);
         drop(flush_tx);
     }
 }

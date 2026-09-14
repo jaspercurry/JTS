@@ -100,10 +100,8 @@ async def continuous_watchdog(
         if lost:
             return "connection_lost"
         deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
-        if turn.backend_completed_at >= speech_started:
-            # Live can speak before or after backend completion, with no
-            # final-audio identity. Give the handoff time without treating
-            # completion as proof of speech, or renewing on generic activity.
+        if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
+            # Backend completion alone is not proof that its answer reached playout.
             deadline = max(deadline, min(
                 turn.backend_completed_at + UNANSWERED_SPEECH_SEC,
                 last_speech + ACKNOWLEDGED_BACKEND_SEC,
@@ -119,20 +117,15 @@ def _resolved(
     reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline,
     writing_since=0.0,
 ):
-    """Report which branch ended the turn, and the anchors that chose it.
+    """Disambiguate normal close from an unheard answer in the turn timeline.
 
-    A turn that ends before the user's answer is spoken looks identical in
-    `turn.timeline` to one that ended normally — both are `outcome=complete`,
-    because a plain `followup_timeout` IS the normal close. Only the anchors
-    distinguish them, so they are recorded where the decision is made. Ages are
-    relative to the deciding instant; a negative age means the anchor is in the
-    future (audio still scheduled to play). See #5091.
+    Zero anchors mean absent; negative ages mean scheduled future playout.
     """
     log_event(
         logger, "voice.turn_deadline", reason=reason,
         last_speech_age_ms=int((now - last_speech) * 1000),
-        accepted_age_ms=int((now - accepted_at) * 1000),
-        drain_age_ms=int((now - drain_at) * 1000),
+        accepted_age_ms=int((now - accepted_at) * 1000) if accepted_at else None,
+        drain_age_ms=int((now - drain_at) * 1000) if drain_at else None,
         overdue_ms=None if deadline is None else int((now - deadline) * 1000),
         chunks_pending=pending,
         backend_pending=turn.backend_pending,

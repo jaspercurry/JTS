@@ -51,27 +51,19 @@ FRONTEND_INSTRUCTIONS = (
 # follow-up window never opens (`continuous_watchdog` in .conversation).
 SILENCE_BRIDGE_SEC = 0.8
 
-# Trial reserve for the measured 40–110 ms delivery deficits. Short replies
-# cannot wait for more PCM indefinitely: the fill has the same wall-time cap.
+# Initial reserve for 40–110 ms delivery deficits, also capped in wall time.
+# A silence gap cannot identify a new answer, so it must not re-arm the wait.
 PLAYOUT_RESERVE_SEC = 0.15
 
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
 
-# How far the provider may fall BEHIND REAL TIME between output deltas before
-# it is worth reporting.
-#
-# Raw spacing cannot answer this. Live streams answer audio in chunks, so a
-# delta carrying 100 ms of audio arriving 100 ms after the last one is the
-# provider keeping up exactly; measuring spacing alone would fire on healthy
-# streaming and stay silent on a real shortfall of the same size. What starves
-# the lane is arrival time EXCEEDING the audio delivered, so that deficit is
-# what is measured. Set below the smallest dropout worth attributing (#5091
-# measured 10-128 ms) because the deficit, unlike spacing, is ~0 when healthy.
+# Arrival spacing minus the preceding PCM duration; healthy pacing is zero.
 OUTPUT_DELTA_DEFICIT_SEC = 0.04
 
 # Live output PCM: mono int16 at the rate `session.start` asks for.
 OUTPUT_PCM_RATE = 24000
+OUTPUT_PCM_BYTES_PER_SEC = OUTPUT_PCM_RATE * 2
 
 # Ceiling on waiting for the server's `session.close` ack. Live bills per
 # connected minute, so the close is still sent and the transport still
@@ -129,8 +121,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
-        # Arrival of the PREVIOUS output delta, audible or quiet, and how much
-        # audio it carried. Used only to report the provider falling behind.
+        # Previous admitted PCM delta, for coverage within the silence bridge.
         self._last_delta_at = 0.0
         self._last_delta_audio_sec = 0.0
         self._playout_available = asyncio.Event()
@@ -226,7 +217,7 @@ class OpenAILiveTurn(BaseLiveTurn):
                     result = "filled"
                     try:
                         async with asyncio.timeout(PLAYOUT_RESERVE_SEC):
-                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * 48_000) and not self._turn_lost:
+                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * OUTPUT_PCM_BYTES_PER_SEC) and not self._turn_lost:
                                 self._playout_available.clear()
                                 await self._playout_available.wait()
                                 if self._released:
@@ -237,7 +228,7 @@ class OpenAILiveTurn(BaseLiveTurn):
                         logger, "provider.playout_reserve", result=result,
                         provider=self._conn.PROVIDER_NAME,
                         waited_ms=round((loop.time() - started) * 1000),
-                        queued_ms=round(self._queued_bytes / 48),
+                        queued_ms=round(self._queued_bytes * 1000 / OUTPUT_PCM_BYTES_PER_SEC),
                     )
                 if self._released:
                     return
@@ -250,8 +241,9 @@ class OpenAILiveTurn(BaseLiveTurn):
                 self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
                 yield chunk
         finally:
-            # Teardown must report unplayed PCM as well as receive-queue overflow.
-            self.drop_pending_audio(record_discard=True)
+            # Interrupt flushing owns the backlog and its barge-in count.
+            if not self._interrupt_event.is_set():
+                self.drop_pending_audio(record_discard=True)
 
     def usage(self) -> TurnUsage:
         # Live bills the frontend session per minute, not per token, so
@@ -323,43 +315,36 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._note_activity()
 
     def _on_output_audio(self, pcm: bytes) -> None:
-        """Admit one output delta to playout.
-
-        An audible delta is the turn's answer audio and its activity
-        anchor. The quiet between audible deltas is played too — the lane
-        starves without it — but only while the answer is still running,
-        never as an unbounded tail.
-        """
+        """Bridge quiet within an answer; exclude idle PCM from playout metrics."""
         if not pcm:
             return
         now = time.monotonic()
-        if self._last_delta_at:
-            # Elapsed since the previous delta, minus the audio that delta
-            # carried: what the provider failed to cover in real time.
-            deficit = (now - self._last_delta_at) - self._last_delta_audio_sec
+        if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
+            self._last_chunk_at = now
+            self._chunks_received += 1
+            self._note_activity()
+        elif self._last_chunk_at and now - self._last_chunk_at <= SILENCE_BRIDGE_SEC:
+            self._quiet_played += 1
+        else:
+            self._quiet_discarded += 1
+            self._last_delta_at = 0.0
+            self._last_delta_audio_sec = 0.0
+            return
+        elapsed = now - self._last_delta_at
+        if self._last_delta_at and elapsed <= SILENCE_BRIDGE_SEC:
+            deficit = elapsed - self._last_delta_audio_sec
             if deficit >= OUTPUT_DELTA_DEFICIT_SEC:
                 log_event(
                     logger, "provider.output_deficit",
                     provider=self._conn.PROVIDER_NAME,
                     deficit_ms=int(deficit * 1000),
-                    elapsed_ms=int((now - self._last_delta_at) * 1000),
+                    elapsed_ms=int(elapsed * 1000),
                     audio_ms=int(self._last_delta_audio_sec * 1000),
                     chunks_received=self._chunks_received,
                 )
         self._last_delta_at = now
-        self._last_delta_audio_sec = len(pcm) / 2 / OUTPUT_PCM_RATE
-        if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
-            if not self._last_chunk_at or now - self._last_chunk_at > SILENCE_BRIDGE_SEC:
-                self._reserve_playout = True
-            self._last_chunk_at = now
-            self._chunks_received += 1
-            self._note_activity()
-            self._enqueue_audio(AudioOutChunk(pcm))
-        elif self._last_chunk_at and now - self._last_chunk_at <= SILENCE_BRIDGE_SEC:
-            self._quiet_played += 1
-            self._enqueue_audio(AudioOutChunk(pcm))
-        else:
-            self._quiet_discarded += 1
+        self._last_delta_audio_sec = len(pcm) / OUTPUT_PCM_BYTES_PER_SEC
+        self._enqueue_audio(AudioOutChunk(pcm))
 
     async def _on_backend_event(self, envelope: dict) -> None:
         event = envelope["event"]
@@ -601,7 +586,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._receive_task = asyncio.create_task(self._receive(turn))
         start_event = {"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
-            "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
+            "audio": {"format": {"type": "audio/pcm", "rate": OUTPUT_PCM_RATE}, "output": {"voice": self._voice}},
             "delegation": {"type": "responses", "responses": {
                 "model": self._backend_model, "instructions": self._system_instruction_provider(),
                 "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],
@@ -609,9 +594,6 @@ class OpenAILiveConnection(BaseLiveConnection):
             }},
         }}
         configured_at = time.monotonic()
-        # Size only. The payload carries the system instruction and the tool
-        # schemas, so its CONTENT must never reach the journal.
-        config_bytes = len(json.dumps(start_event))
         await self._send(start_event)
         sent_at = time.monotonic()
         await self._started.wait()
@@ -622,7 +604,6 @@ class OpenAILiveConnection(BaseLiveConnection):
             client_init_ms=int((client_ready_at - opened_at) * 1000),
             socket_open_ms=int((socket_open_at - client_ready_at) * 1000),
             config_build_ms=int((configured_at - socket_open_at) * 1000),
-            config_bytes=config_bytes,
             start_send_ms=int((sent_at - configured_at) * 1000),
             started_ack_ms=int((started_at - sent_at) * 1000),
             total_ms=int((started_at - opened_at) * 1000),

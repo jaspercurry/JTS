@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -194,8 +194,9 @@ async def test_playout_acceptance_updates_after_the_first_answer():
 
 
 @pytest.mark.parametrize("completion, answer, followup, correction, acknowledged, expected", [
-    (10.0, 11.0, 5, False, True, 18.0),
-    (10.0, 11.0, 0, False, True, 18.0),
+    (10.0, 11.0, 5, False, True, 17.0),
+    (10.0, 11.0, 0, False, True, 12.0),
+    (10.0, 10.0, 0, False, True, 11.0),
     (10.0, 9.0, 5, False, True, 18.0),
     (10.0, None, 5, False, True, 18.0),
     (28.0, None, 5, False, True, 31.0),
@@ -237,12 +238,33 @@ async def test_live_backend_handoff_has_a_bounded_grace(
         assert now <= 36
 
     monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    tts = FakeTts()
+    tts.expected_drain_at = lambda: accepted + 1 if answer and now >= answer else 0
     reason = await continuous_watchdog(
-        turn, FakeTts(), followup_seconds=followup, stall_seconds=120,
+        turn, tts, followup_seconds=followup, stall_seconds=120,
         user_activity=lambda: (speech_started, last_speech), last_accepted_at=lambda: accepted,
     )
     assert now == expected
     assert reason == ("response_stalled" if correction or not accepted else "followup_timeout")
+
+
+@pytest.mark.parametrize("accepted, drain, accepted_age, drain_age", [
+    (0, 0, None, None),
+    (99, 0, 1000, None),
+    (99, 99, 1000, 1000),
+    (0, 101, None, -1000),
+])
+def test_deadline_ages_distinguish_absent_anchors_and_future_playout(
+    monkeypatch, accepted, drain, accepted_age, drain_age,
+):
+    emitted = Mock()
+    monkeypatch.setattr(conversation, "log_event", emitted)
+    assert conversation._resolved(
+        "playout_stalled", 100, 98, accepted, drain, 0, FakeLiveTurn(), None,
+    ) == "playout_stalled"
+    fields = emitted.call_args.kwargs
+    assert fields["accepted_age_ms"] == accepted_age
+    assert fields["drain_age_ms"] == drain_age
 
 
 @pytest.mark.parametrize("finish_write", [True, False])

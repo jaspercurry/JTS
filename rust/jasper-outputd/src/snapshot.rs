@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{rate_per_hour, OutputdState};
+use super::{rate_per_hour, unpack_optional_u64, OutputdState};
 use jasper_daemon::json::{
     event_age_ms, push_kv_bool, push_kv_f64, push_kv_str, push_kv_u64, push_kv_u64_opt,
 };
@@ -113,5 +113,251 @@ impl OutputdState {
         push_kv_str(buf, "mode", &self.content_bridge_mode);
         buf.push('}');
         buf.push(',');
+    }
+
+    pub(super) fn shm_ring_json(&self, buf: &mut String) {
+        // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
+        // enabled:false with no further fields when unconfigured (default-off,
+        // zero noise), full metrics when the flag armed it. `occupancy` is the
+        // live W-R depth; empty_reads split startup vs steady like the local
+        // pipe; writer_alive/pid/heartbeat_age surface the cross-process writer.
+        buf.push_str(r#""shm_ring":{"#);
+        match self.shm_ring_path.as_deref() {
+            Some(path) => {
+                push_kv_bool(buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(buf, "path", path);
+                buf.push(',');
+                push_kv_bool(
+                    buf,
+                    "attached",
+                    self.shm_ring_attached.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "slots", self.shm_ring_slots.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "slot_frames",
+                    self.shm_ring_slot_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // The wire: the two axes ring v2 made per-box, read out of the
+                // one cell together so the pair is always the SAME source. See
+                // the `shm_ring_wire` field for their provenance.
+                let (wire_format, wire_channels) = self.shm_ring_wire.get().copied().unwrap_or((
+                    self.declared_content_format.as_str(),
+                    self.declared_content_channels,
+                ));
+                push_kv_str(buf, "format", wire_format);
+                buf.push(',');
+                push_kv_u64(buf, "channels", wire_channels);
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "occupancy",
+                    self.shm_ring_occupancy.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "frames_read",
+                    self.shm_ring_frames_read.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "startup_empty_reads",
+                    self.shm_ring_startup_empty_reads.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "empty_reads",
+                    self.shm_ring_empty_reads.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "epoch_resets",
+                    self.shm_ring_epoch_resets.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "reader_resyncs",
+                    self.shm_ring_reader_resyncs.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_bool(
+                    buf,
+                    "writer_alive",
+                    self.shm_ring_writer_alive.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "writer_pid",
+                    self.shm_ring_writer_pid.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // u64::MAX = "writer never heartbeated" (see jasper_ring's
+                // RingMetrics). Serialize the sentinel as JSON null rather than
+                // 18446744073709551615, which exceeds JS Number.MAX_SAFE_INTEGER
+                // and would deserialize lossily in the /state dashboard. Uses the
+                // same OPTIONAL_U64_NONE convention as the pcm_delay fields.
+                push_kv_u64_opt(
+                    buf,
+                    "writer_heartbeat_age_ms",
+                    unpack_optional_u64(
+                        self.shm_ring_writer_heartbeat_age_ms
+                            .load(Ordering::Relaxed),
+                    ),
+                );
+            }
+            None => {
+                push_kv_bool(buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+    }
+
+    pub(super) fn dac_content_json(&self, buf: &mut String) {
+        // Multi-room round-trip lane — DAEMON-TRUTH health
+        // for /state + jasper-doctor (never a Python mirror of env
+        // intent). enabled:false with no further fields when the lane is
+        // not configured (solo — zero cost, zero noise).
+        buf.push_str(r#""dac_content":{"#);
+        match self.dac_content_lane.as_ref() {
+            Some(path) => {
+                push_kv_bool(buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(buf, "transport", "ring");
+                buf.push(',');
+                push_kv_str(buf, "ring", path);
+                buf.push(',');
+                push_kv_str(buf, "channel", &self.dac_content_channel);
+                buf.push(',');
+                buf.push_str(&format!("\"trim_db\":{:.1}", self.dac_content_trim_db()));
+                buf.push(',');
+                push_kv_bool(
+                    buf,
+                    "serving_fifo",
+                    self.dac_content_serving_fifo.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "fifo_periods",
+                    self.dac_content_fifo_periods.load(Ordering::Relaxed),
+                );
+            }
+            None => {
+                push_kv_bool(buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+    }
+
+    pub(super) fn tts_json(&self, buf: &mut String) {
+        // Bonded-member TTS lane — daemon truth for /state +
+        // doctor. enabled:false when the lane is off (solo: fanin owns
+        // TTS) — zero noise, mirroring dac_content.
+        buf.push_str(r#""tts":{"#);
+        match self.tts.get() {
+            Some((socket, m)) => {
+                push_kv_bool(buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(buf, "socket", socket);
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "pending_frames",
+                    m.pending_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "budget_frames", m.max_pending_frames);
+                buf.push(',');
+                push_kv_u64(buf, "requests", m.requests.load(Ordering::Relaxed));
+                buf.push(',');
+                let counters = &m.counters;
+                push_kv_u64(buf, "dropped_audio_frames", counters.dropped_audio_frames());
+                buf.push(',');
+                push_kv_u64(buf, "dropped_commands", counters.dropped_commands());
+                buf.push(',');
+                push_kv_u64(buf, "connections_rejected", counters.connections_rejected());
+                buf.push(',');
+                push_kv_u64(buf, "tts_clients", counters.tts_clients());
+                buf.push(',');
+                push_kv_u64(buf, "frame_timeouts", counters.frame_timeouts());
+                buf.push(',');
+                push_kv_u64(buf, "protocol_errors", counters.protocol_errors());
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "flush_requests",
+                    m.flush_requests.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "flushed_frames",
+                    m.flushed_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // The same assistant_loudness object fan-in exposes, rendered
+                // through the shared writer so the two /state shapes cannot
+                // drift (pinned by ASSISTANT_LOUDNESS_STATUS_KEYS on both).
+                buf.push_str(r#""assistant_loudness":"#);
+                jasper_tts_protocol::loudness::render_assistant_loudness(
+                    buf,
+                    &m.loudness_snapshot(),
+                );
+            }
+            None => {
+                push_kv_bool(buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+    }
+
+    pub(super) fn mix_json(&self, buf: &mut String) {
+        buf.push_str(r#""mix":{"#);
+        push_kv_u64(
+            buf,
+            "reference_sequence",
+            self.reference_sequence.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "last_period_clipped_samples",
+            self.last_period_clipped_samples.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "clipped_samples",
+            self.total_clipped_samples.load(Ordering::Relaxed),
+        );
+        buf.push('}');
+        buf.push(',');
+    }
+
+    pub(super) fn watchdog_json(&self, buf: &mut String, uptime_ms: u64) {
+        buf.push_str(r#""watchdog":{"#);
+        let last_progress_ms = self.last_progress_ms.load(Ordering::Relaxed);
+        let age_ms = uptime_ms.saturating_sub(last_progress_ms);
+        push_kv_u64(
+            buf,
+            "pings_sent",
+            self.watchdog_pings_sent.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(buf, "last_progress_age_ms", age_ms);
+        buf.push('}');
     }
 }

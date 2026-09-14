@@ -1285,7 +1285,7 @@ class TtsPlayout:
         if write_ms > chunk_ms + 100:
             # This timer is LOCAL — setup, scheduling, locks, socket writes and
             # callbacks all land in it. It says nothing about when the provider
-            # sent the audio; pair it with `provider.output_gap` to tell a
+            # sent the audio; pair it with `provider.output_deficit` to tell a
             # network gap from a local delivery stall (#5091).
             log_event(
                 logger,

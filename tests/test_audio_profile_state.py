@@ -6,14 +6,15 @@ import pytest
 
 from jasper.chip_aec.health import ACTION_RECOMMISSION, AlignmentHealth
 from jasper.audio_profile_state import (
-    PROFILE_CUSTOM,
-    PROFILE_XVF_SOFTWARE_AEC3,
     AecIntent,
     MicProbe,
+    PROFILE_CUSTOM,
+    PROFILE_XVF_SOFTWARE_AEC3,
     RuntimeAecEnv,
     build_audio_profile_status,
     infer_audio_input_profile,
     intent_from_env,
+    parse_env_bool,
     profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
@@ -727,3 +728,16 @@ def test_intent_from_env_matches_field_by_field_and_reaches_every_consumer(
     assert doctor_intent.chip_aec_150_enabled == expected.chip_aec_150_enabled
     assert doctor_intent.chip_aec_210_enabled == expected.chip_aec_210_enabled
     assert doctor_aec._doctor_audio_input_selection() == expected_profile
+
+
+@pytest.mark.parametrize(
+    ("raw", "default", "expected"),
+    [
+        *((raw, False, True) for raw in ("1", "on", "true", "yes", "y", "enabled", "ON", "'1'", '"yes"')),
+        *((raw, True, False) for raw in ("0", "off", "false", "no", "n", "disabled", "", "  ", " 0 ")),
+        ("garbage", True, True),
+        ("garbage", False, False),
+    ],
+)
+def test_parse_env_bool_normalizes_the_env_file_vocabulary(raw, default, expected):
+    assert parse_env_bool(raw, default) is expected

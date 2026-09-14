@@ -24,8 +24,10 @@ from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, OUT_OF_CREDIT_CUE_SL
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
+from jasper.voice.turn_playback import PlaybackReport, play_responses
 from tests._async_wait import wait_signalled, wait_until
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
+from tests._playout import FakeTts
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
@@ -824,8 +826,8 @@ async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeyp
         assert turn.chunks_received() == 2
 
 
-@pytest.mark.parametrize("finish", ["filled", "short", "continuation", "new_answer", "cancel", "release", "lost"])
-async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkeypatch, finish):
+@pytest.mark.parametrize("finish", ["filled", "short", "continuation", "late_clause", "interrupt", "cancel", "release", "lost"])
+async def test_playout_reserve_is_bounded_and_rearms_only_after_interrupt(monkeypatch, finish):
     clock = FrozenClock()
     monkeypatch.setattr(openai_live_session, "time", clock)
     if finish in {"cancel", "release", "lost"}:
@@ -876,12 +878,17 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
             assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
             assert (await anext(audio)).pcm == pcm
             assert turn.audio_chunks_pending() == 0
-            if finish in {"continuation", "new_answer"}:
+            if finish in {"continuation", "late_clause", "interrupt"}:
                 clock.now += 0.1 if finish == "continuation" else SILENCE_BRIDGE_SEC + 0.1
+                if finish == "interrupt":
+                    turn.drop_pending_audio()
+                else:
+                    # A short trailing clause must arrive without a second fill wait.
+                    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
                 pending = asyncio.create_task(anext(audio))
                 await asyncio.sleep(0)
                 await turn.on_event(output_audio(pcm))
-                if finish == "new_answer":
+                if finish == "interrupt":
                     await asyncio.sleep(0.01)
                     assert not pending.done()
                     await turn.on_event(output_audio(pcm))
@@ -893,6 +900,45 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
             closing.set()
             if release is not None:
                 await release
+
+
+@pytest.mark.parametrize("gap_sec, quiet, expected", [
+    (0.1, False, 0), (0.2, False, 1), (0.2, True, 1),
+    (SILENCE_BRIDGE_SEC, False, 1), (6.0, False, 0), (6.0, True, 0),
+])
+async def test_output_deficit_excludes_idle_between_answers(monkeypatch, caplog, gap_sec, quiet, expected):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        await turn.on_event(output_audio(AUDIBLE_PCM * 20))
+        clock.now += gap_sec
+        await turn.on_event(output_audio(QUIET_PCM if quiet else AUDIBLE_PCM))
+        assert len(event_records(caplog, "provider.output_deficit")) == expected
+        if expected:
+            fields = event_fields(caplog, "provider.output_deficit")
+            assert fields["provider"] == "openai_live"
+            assert int(fields["deficit_ms"]) == pytest.approx((gap_sec - 0.1) * 1000, abs=1.1)
+
+
+async def test_live_barge_in_reports_and_discards_queued_audio(monkeypatch, caplog):
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 0.0)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        for _ in range(5):
+            await turn.on_event(output_audio(AUDIBLE_PCM))
+
+        async def accepted():
+            turn.request_local_interrupt()
+            await asyncio.Event().wait()
+
+        tts = FakeTts()
+        report = PlaybackReport()
+        await asyncio.wait_for(play_responses(turn, tts, report=report, on_first_write=accepted), 1.0)
+        assert report.stop_reason == "barge_in"
+        assert len(tts.writes) == tts.flush_calls == 1
+        assert int(event_fields(caplog, "barge.dropped_pending_audio")["chunks"]) == 4
+        assert turn.audio_chunks_pending() == turn.audio_dropped_bytes() == 0
 
 
 @pytest.mark.parametrize("count", [0, 5])

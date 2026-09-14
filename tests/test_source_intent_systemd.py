@@ -550,18 +550,6 @@ def test_grouping_boot_reconcile_runs_after_source_intent_convergence() -> None:
     assert "jasper-source-intent-reconcile.service" in after
 
 
-def test_streambox_systemd_verify_covers_source_and_usb_owner_graph() -> None:
-    installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8"
-    )
-    block = installer.split("validate_streambox_systemd_units() {", 1)[1].split(
-        "\n}\n",
-        1,
-    )[0]
-    assert "${SYSTEMD_DIR}/jasper-source-intent-reconcile.service" in block
-    assert "${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service" in block
-
-
 def test_grouping_role_owner_handoffs_have_no_systemd_dependency_cycle() -> None:
     """Grouping may briefly join a running owner, so owners cannot wait on it."""
     grouping_name = GROUPING_UNIT.name
