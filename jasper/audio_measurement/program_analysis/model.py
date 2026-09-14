@@ -661,8 +661,8 @@ class DriverResponse:
 
     ``repeat_responses`` holds this same driver's additional located sweep
     occurrences (``repeat_index`` 1, 2, ...), populated only on the PRIMARY
-    response (``sweep_w``/``sweep_t``). Diagnostic only — nothing here feeds
-    the candidate/trim/alignment math, which stays anchored to the primary.
+    response (``sweep_w``/``sweep_t``). Diagnostic only; the aligner consumes
+    repeat IRs directly, while candidate/trim responses stay on the primary.
     """
 
     role: str
@@ -691,10 +691,13 @@ class AlignmentEstimate:
     to the seed, not the commitment. ``raw_delay_us`` is the pre-parallax
     coordinate, so ``delay_us == raw_delay_us - parallax_us``.
 
-    ``anchor_delay_us`` averages physical peak gaps across adjacent pairs;
-    ``snapped_delay_us`` averages their local GCC-PHAT snaps within
-    +/-(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`), or is ``None``
-    when any pair lacks a snap. Forward/reverse weights cancel linear drift.
+    ``anchor_delay_us`` and ``snapped_delay_us`` combine per-order medians
+    of physical peak gaps and local GCC-PHAT snaps within +/-(period/6) at Fc
+    (:data:`GCC_SNAP_RADIUS_PERIODS`). Missing values do not participate.
+    ``alignment_pair_count`` counts contributing snaps, or anchors when no
+    snap exists; ``alignment_pair_spread_us`` is their peak-to-peak span.
+    ``alignment_drift_residual_us`` is forward minus reverse snap median,
+    absent when only one order contributes. Gap weights cancel linear drift.
 
     ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate; when the
     correlation peak lands at the +/-search-window edge (a likely clamped
@@ -721,10 +724,8 @@ class AlignmentEstimate:
     snapped_delay_us: float | None = None
     polarity_agrees_with_sum: bool | None = None
     alignment_pair_count: int = 0
-    # Peak-to-peak span: snaps if all exist, otherwise anchors, otherwise GCC.
     alignment_pair_spread_us: float | None = None
-    # Weighted mean magnitude of the per-pair clock correction, in microseconds.
-    inter_sweep_drift_us: float | None = None
+    alignment_drift_residual_us: float | None = None
 
 
 @dataclass(frozen=True)

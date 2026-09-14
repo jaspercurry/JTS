@@ -2071,9 +2071,7 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
     assert res.alignment.delay_us == pytest.approx((d_w - d_t) / SR * 1e6, abs=5.0)
 
 
-@pytest.mark.parametrize("sweep_count,eps", [(2, 80e-6), (3, 80e-6), (4, 80e-6), (5, -80e-6), (6, 80e-6)])
-def test_adjacent_alignment_cancels_clock_drift(monkeypatch, sweep_count, eps):
-    """Remove schedule correction alone; sweep-stretch correction still keeps IRs sharp."""
+def _alignment_capture(sweep_count, eps, *, noise=0.0):
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
         sweep_durations={"woofer": 0.8, "tweeter": 0.6},
@@ -2088,40 +2086,158 @@ def test_adjacent_alignment_cancels_clock_drift(monkeypatch, sweep_count, eps):
         prog,
         woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
         tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
-        epsilon=eps, noise=0.0,
+        epsilon=eps, noise=noise,
     )
-    monkeypatch.setattr(program_analysis.dispatch, "_estimate_drift", lambda *args:
-                        program_analysis.DriftEstimate(eps * 1e6, 0.0, False))
-    pair_estimate = alignment_pairs._estimate_alignment
+    offset, *_ = _global_offset(prog, cap, SR)
+    irs = {seg.segment_id: _deconvolve_window(
+        cap, seg, offset + seg.start_sample, SR, epsilon=eps,
+    ) for seg in sweeps[:sweep_count]}
+    return prog, cap, offset, irs, -tau_true / SR * 1e6
 
-    def without_schedule_correction(capture, program, rate, offset, epsilon, *args, **kwargs):
-        return pair_estimate(capture, program, rate, offset, 0.0, *args, **kwargs)
 
-    monkeypatch.setattr(alignment_pairs, "_estimate_alignment", without_schedule_correction)
-    res = analyze_program_capture(
-        prog, cap, SR, priors=MeasurementPriors(
-            crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0.0, 1000.0),
-        ),
+def test_single_pair_anchor_corrects_clock_drift_with_noise():
+    eps = 80e-6
+    prog, cap, offset, irs, expected_delay_us = _alignment_capture(2, eps, noise=1e-4)
+    geometry = MeasurementGeometry(driver_spacing_m=0.15)
+    result = alignment_pairs.estimate_adjacent_alignment(
+        cap, prog, SR, offset, eps, FC_HZ, geometry, MeasurementPriors(), irs,
+        woofer_role="woofer",
     )
-    expected_delay_us = -tau_true / SR * 1e6
+    seg_w, seg_t = prog.segment("sweep_w"), prog.segment("sweep_t")
+    measured_gap = (alignment_pairs._rectified_peak_sample(irs[seg_t.segment_id][0])
+                    - alignment_pairs._rectified_peak_sample(irs[seg_w.segment_id][0]))
+    drift = eps * (seg_t.start_sample - seg_w.start_sample)
+    expected_anchor_us = -(measured_gap - drift) / SR * 1e6 - geometry.parallax_us()
+    assert result.anchor_delay_us == pytest.approx(expected_anchor_us, abs=1e-9)
+    assert result.snapped_delay_us == pytest.approx(expected_delay_us - geometry.parallax_us(), abs=2.0)
+    assert result.alignment_pair_count == 1
+    assert result.alignment_drift_residual_us is None
+
+
+@pytest.mark.parametrize("sweep_count,eps", [(2, 80e-6), (3, 80e-6), (4, -80e-6)])
+def test_adjacent_alignment_cancels_clock_drift(sweep_count, eps):
+    """Wrong schedule epsilon; the known sweep stretch still keeps deconvolution sharp."""
+    prog, cap, offset, irs, expected_delay_us = _alignment_capture(sweep_count, eps)
+    result = alignment_pairs.estimate_adjacent_alignment(
+        cap, prog, SR, offset, 0.0, FC_HZ, MeasurementGeometry(), MeasurementPriors(), irs,
+        woofer_role="woofer",
+    )
+    sweeps = [seg for seg in prog.segments if seg.kind == KIND_SWEEP]
     first_drift_us = eps * (sweeps[1].start_sample - sweeps[0].start_sample) / SR * 1e6
-    assert res.alignment.status == ALIGNMENT_OK
-    assert res.candidate.snap_found is True
-    assert res.candidate.delay_us == res.alignment.delay_us
+    assert result.status == ALIGNMENT_OK
     if sweep_count == 2:
-        assert res.alignment.delay_us - expected_delay_us == pytest.approx(-first_drift_us, abs=2.0)
-        assert abs(res.alignment.delay_us - expected_delay_us) > 100.0
+        assert result.snapped_delay_us - expected_delay_us == pytest.approx(-first_drift_us, abs=2.0)
+        assert abs(result.snapped_delay_us - expected_delay_us) > 100.0
     else:
-        assert res.alignment.delay_us == pytest.approx(expected_delay_us, abs=2.0)
-    for fields in (analysis_diagnostic_summary(res), analysis_json(res)):
+        assert result.snapped_delay_us == pytest.approx(expected_delay_us, abs=2.0)
+        assert result.delay_us == pytest.approx(expected_delay_us, abs=2.0)
+        expected_residual = -eps * (sweeps[2].start_sample - sweeps[0].start_sample) / SR * 1e6
+        assert result.alignment_drift_residual_us == pytest.approx(expected_residual, abs=3.0)
+    analysis = program_analysis.ProgramAnalysis(prog.phase, prog.program_id, (), alignment=result)
+    for fields in (analysis_diagnostic_summary(analysis), analysis_json(analysis)):
         assert fields["alignment_pair_count"] == sweep_count - 1
-        assert fields["alignment_pair_spread_us"] == res.alignment.alignment_pair_spread_us
-        assert fields["inter_sweep_drift_us"] == res.alignment.inter_sweep_drift_us
-    assert res.alignment.inter_sweep_drift_us > 100.0
-    assert res.alignment.alignment_pair_spread_us == pytest.approx(
-        0.0 if sweep_count == 2 else abs(eps * (sweeps[2].start_sample - sweeps[0].start_sample) / SR * 1e6),
-        abs=3.0,
+        assert fields["alignment_pair_spread_us"] == pytest.approx(result.alignment_pair_spread_us, abs=.0005)
+        if sweep_count == 2:
+            assert fields["alignment_drift_residual_us"] is None
+        else:
+            assert fields["alignment_drift_residual_us"] == pytest.approx(result.alignment_drift_residual_us, abs=.0005)
+        assert "inter_sweep_drift_us" not in fields
+    assert result.alignment_pair_spread_us == pytest.approx(
+        0.0 if sweep_count == 2 else abs(expected_residual), abs=3.0,
     )
+
+
+def _combine_test_pairs(monkeypatch, pairs):
+    prog = build_measure_program({"woofer": -11.0, "tweeter": -13.0}, _roles())
+    irs = {seg.segment_id: (np.zeros(32), 0) for seg in prog.segments if seg.kind == KIND_SWEEP}
+    estimates = iter(pairs)
+    monkeypatch.setattr(alignment_pairs, "_estimate_alignment", lambda *a, **kw: next(estimates))
+    return alignment_pairs.estimate_adjacent_alignment(
+        np.zeros(32), prog, SR, 0, 0.0, FC_HZ, MeasurementGeometry(), MeasurementPriors(), irs,
+        woofer_role="woofer",
+    )
+
+
+def _test_pair_estimates():
+    return [AlignmentEstimate(
+        delay_us=-130.0, raw_delay_us=-100.0, parallax_us=30.0,
+        polarity="inverted", polarity_sign=-1, confidence=.9 - .05 * i,
+        anchor_delay_us=140.0, snapped_delay_us=194.0,
+    ) for i in range(5)]
+
+
+@pytest.mark.parametrize("refused", [(0,), (1,), (2,), (3,), (4,), (1, 3), (0, 1, 2, 3, 4)])
+def test_adjacent_alignment_excludes_refused_pairs(monkeypatch, refused):
+    pairs = _test_pair_estimates()
+    for i in refused:
+        pairs[i] = dataclasses.replace(
+            pairs[i], status=ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW, confidence=0.0,
+            delay_us=9999.0, raw_delay_us=10029.0, anchor_delay_us=None, snapped_delay_us=None,
+        )
+    result = _combine_test_pairs(monkeypatch, pairs)
+    if refused in ((1, 3), (0, 1, 2, 3, 4)):
+        first = pairs[0]
+        assert result == dataclasses.replace(
+            first, alignment_pair_count=int(first.status == ALIGNMENT_OK),
+            alignment_pair_spread_us=0.0 if first.status == ALIGNMENT_OK else None,
+        )
+    else:
+        assert result == dataclasses.replace(
+            next(pair for pair in pairs if pair.status == ALIGNMENT_OK),
+            confidence=min(pair.confidence for pair in pairs if pair.status == ALIGNMENT_OK),
+            alignment_pair_count=4, alignment_pair_spread_us=0.0, alignment_drift_residual_us=0.0,
+        )
+
+
+@pytest.mark.parametrize("outlier", [0, 2, 4])
+def test_adjacent_alignment_median_resists_a_comb_hop(monkeypatch, outlier):
+    pairs = _test_pair_estimates()
+    shifted = pairs[outlier]
+    pairs[outlier] = dataclasses.replace(shifted, **{
+        field: getattr(shifted, field) + 400.0
+        for field in ("delay_us", "raw_delay_us", "anchor_delay_us", "snapped_delay_us")
+    })
+    result = _combine_test_pairs(monkeypatch, pairs)
+    for field in ("delay_us", "raw_delay_us", "anchor_delay_us", "snapped_delay_us"):
+        assert getattr(result, field) == pytest.approx(getattr(shifted, field), abs=2.0)
+    assert result.alignment_pair_count == 5
+    assert result.alignment_pair_spread_us == pytest.approx(400.0)
+    assert result.alignment_drift_residual_us == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("missing", [(0,), (1,), (0, 2, 4), (1, 3), (0, 1, 2, 3, 4)])
+def test_adjacent_alignment_uses_available_snaps(monkeypatch, missing):
+    pairs = _test_pair_estimates()
+    for i in missing:
+        pairs[i] = dataclasses.replace(pairs[i], snapped_delay_us=None)
+    result = _combine_test_pairs(monkeypatch, pairs)
+    assert result.snapped_delay_us == (None if len(missing) == 5 else 194.0)
+    assert result.anchor_delay_us == 140.0
+    assert result.alignment_pair_count == (5 if len(missing) == 5 else 5 - len(missing))
+    assert result.alignment_pair_spread_us == 0.0
+    assert result.alignment_drift_residual_us == (0.0 if len(missing) == 1 else None)
+
+
+@pytest.mark.parametrize("missing", [("sweep_w",), ("sweep_t",), ("sweep_w", "sweep_t")])
+def test_measure_deconvolves_primaries_even_when_not_located(monkeypatch, missing):
+    prog, cap, _, irs, _ = _alignment_capture(6, 0.0)
+    locate = program_analysis.dispatch._locate_segments
+    deconvolve = program_analysis.dispatch._deconvolve_window
+    calls = []
+
+    def located(*args):
+        return [loc for loc in locate(*args) if loc.segment_id not in missing]
+
+    def recorded(capture, segment, *args, **kwargs):
+        calls.append(segment.segment_id)
+        return deconvolve(capture, segment, *args, **kwargs)
+
+    monkeypatch.setattr(program_analysis.dispatch, "_locate_segments", located)
+    monkeypatch.setattr(program_analysis.dispatch, "_deconvolve_window", recorded)
+    result = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert sorted(calls) == sorted(irs)
+    assert result.alignment.status == ALIGNMENT_OK
+    assert result.alignment.alignment_pair_count == 5
 
 
 def _fractional_band_impulse(
@@ -2154,8 +2270,8 @@ def test_alignment_anchor_resolves_below_one_sample(frac):
     assert argmax_gap.is_integer(), "premise: the bare argmax gap IS quantised"
 
     refined = (
-        program_analysis.response._rectified_peak_sample(tweeter_ir)
-        - program_analysis.response._rectified_peak_sample(woofer_ir)
+        alignment_pairs._rectified_peak_sample(tweeter_ir)
+        - alignment_pairs._rectified_peak_sample(woofer_ir)
     )
     # 0.05 samples is 1.04 us at 48 kHz — a twentieth of the argmax quantum.
     assert refined == pytest.approx(true_gap, abs=0.05)
@@ -3869,7 +3985,7 @@ def test_snap_production_path_preserves_parallax_contract(
         woofer_ir=woofer_ir,
         tweeter_ir=tweeter_ir,
         epsilon=30e-6,
-        noise=0.0,
+        noise=1e-4,
     )
     geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
     result = analyze_program_capture(

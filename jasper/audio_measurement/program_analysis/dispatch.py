@@ -358,16 +358,18 @@ def _analyze_measure(
     ) if seg_t is not None and fc_hz is not None else None
     epsilon = drift.epsilon_ppm / 1e6
     occurrences_by_role = _sweep_occurrences_by_role(locations)
+    sweeps = {seg.segment_id: seg for seg in (seg_w, seg_t) if seg is not None}
+    sweeps.update((loc.segment_id, program.segment(loc.segment_id))
+                  for occurrences in occurrences_by_role.values() for loc in occurrences)
     sweep_irs = {}
-    for occurrences in occurrences_by_role.values():
-        for loc in occurrences:
-            seg = program.segment(loc.segment_id)
-            full_ir, pre = _deconvolve_window(
-                capture, seg, global_offset + seg.start_sample, sample_rate, epsilon=epsilon,
-            )
-            sweep_irs[seg.segment_id] = (_compose_configured_path_ir(
-                seg.role, full_ir, sample_rate, _radiated_band_hz(seg), priors,
-            ), pre)
+    # Divide measured epsilon out of the reference so clock drift cannot smear the IR.
+    for seg in sweeps.values():
+        full_ir, pre = _deconvolve_window(
+            capture, seg, global_offset + seg.start_sample, sample_rate, epsilon=epsilon,
+        )
+        sweep_irs[seg.segment_id] = (_compose_configured_path_ir(
+            seg.role, full_ir, sample_rate, _radiated_band_hz(seg), priors,
+        ), pre)
     woofer_full_ir = sweep_irs[seg_w.segment_id][0]
     tweeter_full_ir = sweep_irs[seg_t.segment_id][0] if seg_t is not None else None
     n_fft = _n_fft_for(*[ir for ir in (woofer_full_ir, tweeter_full_ir) if ir is not None])
@@ -412,6 +414,7 @@ def _analyze_measure(
         alignment = estimate_adjacent_alignment(
             capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
             fc_hz, geometry, priors, sweep_irs,
+            woofer_role=seg_w.role,
         )
 
         # Reads BOTH branches' ALIGNMENT-class verdict (the 35 dB law), not
