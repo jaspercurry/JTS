@@ -1215,7 +1215,7 @@ def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
     assert len({doc_pose_key(take) for take in takes}) == 7
 
 
-@pytest.mark.parametrize("size", ["cloud", "quick"])
+@pytest.mark.parametrize("size", ["cloud", "arm"])
 def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     program = mp.program("room", size)
     request = ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=("base", "room-fp"))
@@ -1245,13 +1245,13 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     [
         ("tournament", "express", (), None, (), None),
         ("tournament", "express", ("fp-a", "fp-b"), 2.0, (), 4.0),
-        ("room", "quick", ("base", "room-fp"), 1.5, (-20.0, -14.0, -8.0), 27.0),
+        ("room", "arm", ("base", "room-fp"), 1.5, (-20.0, -14.0, -8.0), 27.0),
         ("room", "cloud", (), None, (), None),
     ],
     ids=[
         "tournament-express-no-cand-no-sweep",
         "tournament-express-two-cand-sweep",
-        "room-quick-two-cand-ladder",
+        "room-arm-two-cand-ladder",
         "room-cloud-no-cand-no-sweep",
     ],
 )
@@ -1442,7 +1442,7 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
 def test_request_round_trip_and_capture_schedule(repeats, candidates):
     request = ac.request_for_program(
-        mp.program("room", "quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
+        mp.program("room", "arm"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
         retries_per_pose=2,
         level=ac.LevelPolicy(level_db=-25, resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
@@ -1494,8 +1494,8 @@ def test_invalid_walk_fields_refuse_by_name(fields, reason):
 
 
 @pytest.mark.parametrize("program,size,mover,reason", [
-    ("room", "quick", ac.MOVER_ARM, None),
-    ("room", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
+    ("room", "arm", ac.MOVER_ARM, None),
+    ("room", "arm", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
     ("bass", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
     ("seat", "cloud", ac.MOVER_HUMAN, None),
     ("seat", "cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),

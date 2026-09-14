@@ -10,14 +10,20 @@ import json
 import subprocess
 import sys
 import urllib.error
+from dataclasses import replace
 
 import pytest
 
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.angle_capture import AngleCaptureRequest
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.movers import MOVERS
-from jasper.cli import round as cli
+from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
+from tests.test_preflight import ready_facts
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
@@ -228,9 +234,70 @@ def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
 
 @pytest.fixture
 def preflight_ready(monkeypatch):
-    from jasper.cli import _run_request
-    from tests.test_preflight import ready_facts
     monkeypatch.setattr(_run_request, "read_preflight_facts", ready_facts)
+
+
+@pytest.fixture
+def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
+    def bank(resolution):
+        candidate = replace(_room_candidate(tuning_profile), analysis={
+            "measurement_status": "unmeasured", "resolution": resolution,
+        })
+        publish_authored_candidate(candidate)
+        monkeypatch.setattr(_run_request, "read_preflight_facts",
+                            lambda plan: ready_facts(plan, candidates={candidate.fingerprint: candidate}))
+        return candidate.fingerprint
+    return bank
+
+
+@pytest.mark.parametrize("mover", [None, "arm", "human"])
+@pytest.mark.parametrize("section,program,layout,default_mover", [
+    ("driver", "room", "room_quick", "arm"),
+    ("blend", "room", "room_quick", "arm"),
+    ("alignment", "room", "room_quick", "arm"),
+    ("topology", "room", "room_quick", "arm"),
+    ("room", "room", "seat_express", "human"),
+    ("bass", "bass", "bass_axis", "arm"),
+])
+def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
+    bank_trial, monkeypatch, capsys, section, program, layout, default_mover, mover,
+):
+    resolution = dict.fromkeys(("driver", "blend", "alignment", "topology", "room", "bass"), "base")
+    fingerprint = bank_trial({**resolution, section: "document"})
+    opener = _opener(session='{"session_id": "trial-1"}')
+    argv = ["trial", fingerprint, *(["--mover", mover] if mover else [])]
+    code, body = _run(argv, opener, monkeypatch, capsys)
+    assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    expected = run_program(program, "room_quick" if section == "room" and mover == "arm" else layout)
+    assert plan.program == f"{program}/{expected.size}"
+    assert plan.mover == (mover or default_mover)
+    assert plan.candidates == ("base", fingerprint)
+    assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
+        (pose.place, candidate, "summed") for pose in expected.poses for candidate in ("", fingerprint)
+    ]
+    assert plan.level.level_db is None and plan.level.resolved.reference_volume_db == -18
+
+
+@pytest.mark.parametrize("sections", [(), ("driver", "blend"), ("driver", "room", "bass")])
+def test_trial_refuses_ambiguous_sections_without_opening_a_run(bank_trial, monkeypatch, capsys, sections):
+    fingerprint = bank_trial(dict.fromkeys(sections, "document"))
+    opener = _opener()
+    code, body = _run(["trial", fingerprint], opener, monkeypatch, capsys)
+    assert code == 1 and body["code"] == "trial_sections_ambiguous"
+    assert body["detail"]["sections"] == sorted(sections)
+    assert not opener.requests
+
+
+def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, capsys):
+    opener = _opener(session='{"session_id": "room-1"}')
+    code, _ = _run(["run", "--program", "room"], opener, monkeypatch, capsys)
+    assert code == 0
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    assert (plan.program, plan.mover) == ("room/seat", "human")
+    assert [(stop.kind, stop.seat_offset_m) for stop in plan.stops] == [
+        ("seat", (0, 0, 0)), ("seat", (0.3, 0, 0)), ("seat", (0, 0.3, 0)),
+    ]
 
 
 @pytest.mark.parametrize("candidates,shape", [(None, "measure"), ("base", "trial")])
@@ -269,8 +336,6 @@ def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys)
 @pytest.mark.parametrize("repeats", [None, 1, 2])
 def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsys, repeats):
     from collections import Counter
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest
-    from jasper.active_speaker.measurement_programs import run_program
 
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
     argv = ["run", "--program", "speaker", "--poses", "baseline_express"]
@@ -329,9 +394,9 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
     assert not opener.posts()
 
 
-@pytest.mark.parametrize("verb", ["wait", "run"])
+@pytest.mark.parametrize("verb", ["wait", "run", "trial"])
 @pytest.mark.parametrize("timeout", ["--timeout", "--timeout-s"])
-def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch, capsys, tmp_path, verb, timeout):
+def test_wait_banks_and_returns_manifest_and_views(preflight_ready, bank_trial, monkeypatch, capsys, tmp_path, verb, timeout):
     from jasper.active_speaker import round_bank
     from jasper.cli.round_views import run_bookkeeping
 
@@ -343,6 +408,8 @@ def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch,
     opener = _run_opener({"status": "complete", "run": {"status": "complete", "manifest": "run_manifest.json"}})
     opener.pages[wc.SESSION_PATH] = json.dumps({"capture": {"session_id": "run-1"}})
     argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--poses", "seat_express", "--wait"]
+    if verb == "trial":
+        argv = ["trial", bank_trial({"room": "document"}), "--wait"]
     code, body = _run([*argv, timeout, "0"], opener, monkeypatch, capsys)
     assert code == 0 and calls == [(tmp_path, {
         "view_runner": run_bookkeeping,
@@ -399,8 +466,6 @@ def test_capture_slot_keeps_the_run_id_through_completion(monkeypatch):
 
 
 def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, capsys):
-    from jasper.cli import _run_request
-    from tests.test_preflight import ready_facts
     candidate = _room_candidate(tuning_profile)
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(plan, candidates={candidate.fingerprint: candidate}))
     opener = _opener(session='{"session_id": "trial-1"}')
@@ -427,7 +492,6 @@ def test_status_fault_history_keeps_each_code_once():
 
 @pytest.mark.parametrize("address", ["http://jts3.local", "http://192.168.1.8", "http://[2001:db8::1]"])
 def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, address):
-    from jasper.cli import _run_request
     def no_facts(*args, **kwargs):
         pytest.fail("remote dry-run read local facts")
     monkeypatch.setattr(_run_request, "read_preflight_facts", no_facts)

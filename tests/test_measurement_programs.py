@@ -26,7 +26,8 @@ from jasper.active_speaker import measurement_programs as mp
         ("seat", "cube", 7, 7, 7),
         ("seat", "express", 3, 3, 3),
         ("room", "cloud", 11, 11, 11),
-        ("room", "quick", 3, 3, 3),
+        ("room", "arm", 3, 3, 3),
+        ("room", "seat", 3, 3, 3),
         ("bass", "axis", 1, 1, 1),
         ("close", "spot", 1, 1, 1),
     ],
@@ -86,8 +87,9 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("bass", "quick"),
         ("branches", "express"),
         ("close", "spot"),
+        ("room", "arm"),
         ("room", "cloud"),
-        ("room", "quick"),
+        ("room", "seat"),
         ("seat", "cloud"),
         ("seat", "cube"),
         ("seat", "express"),
@@ -202,15 +204,15 @@ def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> Non
         "tournament": "express",
         "branches": "express",
         "seat": "cloud",
-        "room": "cloud",
+        "room": "seat",
         "close": "spot",
     }
 
 
-@pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM), ("bass", mp.PURPOSE_BASS)])
-def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> None:
+@pytest.mark.parametrize("program,size,purpose", [("room", "arm", mp.PURPOSE_ROOM), ("bass", "quick", mp.PURPOSE_BASS)])
+def test_room_and_bass_plans_share_poses_and_summed_regime(program, size, purpose) -> None:
     cloud = mp.program(program, "cloud")
-    quick = mp.program(program, "quick")
+    quick = mp.program(program, size)
 
     assert cloud.poses is mp.program("seat", "cloud").poses
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in quick.poses] == [
@@ -264,7 +266,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
 
     programs = mp.load_programs(_write_config(tmp_path, config))
 
-    loaded = programs[("room", "quick")].poses[0]
+    loaded = programs[("room", "arm")].poses[0]
     assert (loaded.headline, loaded.detail) == (
         "Measure the main seat", "Hold the mic at ear height.",
     )

@@ -6,7 +6,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## The loop
 
-1. Run `jasper-round run --program <speaker|room|bass>`. No `--candidates` makes a measurement run; supplied fingerprints make a trial. Use `--dry-run` first when you need the resolved schedule and refusals without sound.
+1. Run `jasper-round run --program <speaker|room|bass>` for a measurement, or `jasper-round trial <fp>` to compare a candidate with base at the poses for its authored section. Each pose measures both before the mic moves. A document with several authored sections must be split. Use `run --dry-run` to inspect a custom plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With `--mover arm`, run `jasper-angle-capture serve`. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement.
 3. Run `jasper-round wait --run <id>`. The executor assesses each take, performs only its bounded recovery, finishes the manifest, and banks the run automatically. Use `status` to inspect progress without granting placement.
 4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json> --target <target.json> --tolerance-db <db>`. `inventory` lists exact available commands.
@@ -19,7 +19,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## Room
 
-`room/cloud` uses the default 11-pose `seat/cloud`, summed and ungated through the accepted Speaker layer with Room and bass off. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
+Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the accepted Speaker layer with Room and bass off. Follow the page prompts; use Retake or Done there. `room/arm` keeps the three `room_quick` bearings for smoke tests. A room candidate trial uses the seat set; `trial <fp> --mover arm` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
 
 ## Bass
 
@@ -154,7 +154,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round run\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
+| `jasper-round run\|trial\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read measured round evidence, including repeat --set spread across takes. Answers use stdout; detailed reports use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
