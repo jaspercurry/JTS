@@ -266,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     # own event= lines are the record of which graph the speaker was on.
     logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     from jasper.env_load import load_env_files
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     load_env_files()
     # Every swap here rides `set_active_config_raw`'s fader duck, and releasing

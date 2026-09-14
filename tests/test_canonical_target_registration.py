@@ -207,7 +207,7 @@ def test_the_env_registration_installs_the_process_fader_owner() -> None:
     what keeps every existing call site correct with no edit of its own.
     """
     from jasper import camilla, volume_owner
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     assert volume_owner.volume_owner() is None
 

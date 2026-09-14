@@ -1420,7 +1420,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     # Commissioning applies the candidate graph inline (commission_load_config
     # -> set_active_config_raw), so its swap duck needs a canonical target.
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     install_env_canonical_target_provider()
 

@@ -2586,16 +2586,16 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
 async def test_env_target_and_registered_provider_read_current_persisted_intent(
     tmp_path, monkeypatch,
 ):
-    from jasper import camilla, renderer
+    from jasper import camilla, renderer, volume_process
 
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
-    monkeypatch.setattr(vc_mod, "volume_state_path", lambda: persistence.path)
+    monkeypatch.setattr(volume_process, "volume_state_path", lambda: persistence.path)
     monkeypatch.setattr(camilla, "primary_controller", lambda: _FakeCamilla())
     monkeypatch.setattr(renderer, "RendererClient", lambda **_: _FakeBackend(active={"aplactive": True}))
-    vc_mod.install_env_canonical_target_provider()
+    volume_process.install_env_canonical_target_provider()
     for level in (35, 71):
         persistence.save_listening_level(level)
-        assert await vc_mod.env_canonical_target_db() == pytest.approx(percent_to_db(level))
+        assert await volume_process.env_canonical_target_db() == pytest.approx(percent_to_db(level))
         assert await camilla._canonical_target_db_provider() == pytest.approx(percent_to_db(level))
 
 

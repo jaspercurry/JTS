@@ -26,7 +26,7 @@ import asyncio
 import pytest
 
 from jasper import bluealsa_probe
-from jasper import volume_coordinator
+from jasper import busctl
 from jasper import volume_observers as observer_mod
 from jasper.music_sources import Source
 from jasper.renderer import RendererClient
@@ -488,7 +488,7 @@ async def test_tick_failure_speaks_on_its_edges_not_every_second(
 #   2. on transition   apply_active_source_transition
 #                              -> _set_push_source_for_handoff -> _set_bluetooth
 #                              -> bluealsa_probe.list_pcms  (bluealsa_probe.py)
-#                              -> _busctl_set_property (volume_coordinator.py)
+#                              -> busctl.set_property (jasper/busctl.py)
 #   3. on observation  the active source's reader -> _maybe_observe
 #                              -> observe_source_volume (its own
 #                                 _active_source) -> as chain 1
@@ -626,7 +626,7 @@ async def test_run_answers_cancellation_racing_the_mux_status_reply(
 async def test_busctl_set_property_answers_cancellation_racing_the_subprocess(
     monkeypatch,
 ):
-    """The transition chain's last hop (jasper/volume_coordinator.py).
+    """The transition chain's last hop (jasper/busctl.py).
 
     Reached from _tick only when the active source changes, so narrower than
     the mux-status path above -- but the same swallow, and the same immortal
@@ -639,10 +639,10 @@ async def test_busctl_set_property_answers_cancellation_racing_the_subprocess(
         return _FakeProc(reply)
 
     monkeypatch.setattr(
-        "jasper.volume_coordinator.asyncio.create_subprocess_exec", fake_exec,
+        "jasper.busctl.asyncio.create_subprocess_exec", fake_exec,
     )
     task = asyncio.create_task(
-        volume_coordinator._busctl_set_property(
+        busctl.set_property(
             "org.bluealsa", "/path", "org.bluez.MediaTransport1",
             "Volume", "q", "64",
         )
@@ -651,7 +651,7 @@ async def test_busctl_set_property_answers_cancellation_racing_the_subprocess(
 
     _done, pending = await asyncio.wait({task}, timeout=10.0)
     assert not pending, (
-        "_busctl_set_property ignored cancellation -- a swallowed "
+        "busctl.set_property ignored cancellation -- a swallowed "
         "CancelledError on the active-source transition path makes "
         "VolumeObserver._run immortal (#2003)"
     )
@@ -664,7 +664,7 @@ async def test_bluealsa_list_pcms_answers_cancellation_racing_the_subprocess(
     """The transition chain one hop earlier (jasper/bluealsa_probe.py).
 
     _set_bluetooth resolves the transport path through this probe BEFORE it
-    calls _busctl_set_property, both directly awaited. Fixing only the later
+    calls busctl.set_property, both directly awaited. Fixing only the later
     call would leave the loop just as immortal when the cancel lands here.
     """
     import logging

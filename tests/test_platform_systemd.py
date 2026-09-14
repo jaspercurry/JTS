@@ -740,7 +740,7 @@ def test_main_drains_exactly_the_ports_no_granted_wizard_claimed(
     """
     import dataclasses
 
-    from jasper import volume_coordinator
+    from jasper import volume_process
     from jasper.web import __main__ as web_main
 
     served, unserved = _listener(), _listener()
@@ -759,7 +759,7 @@ def test_main_drains_exactly_the_ports_no_granted_wizard_claimed(
     monkeypatch.setattr(web_main, "_specs_for_role", lambda role: (granted,))
     monkeypatch.setattr(web_main, "_active_install_role", lambda: "streambox")
     monkeypatch.setattr(
-        volume_coordinator, "install_env_canonical_target_provider", lambda: None,
+        volume_process, "install_env_canonical_target_provider", lambda: None,
     )
     monkeypatch.setattr(
         web_main._systemd, "install_request_idle_bump", lambda cls, tracker: None,

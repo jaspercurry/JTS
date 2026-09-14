@@ -971,7 +971,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from jasper.audio_measurement.wired_capture import WiredCaptureError
 
     from jasper.env_load import load_env_files
-    from jasper.volume_coordinator import install_env_canonical_target_provider
+    from jasper.volume_process import install_env_canonical_target_provider
 
     args = build_parser().parse_args(argv)
     configure_verbose_logging(verbose=args.verbose)
