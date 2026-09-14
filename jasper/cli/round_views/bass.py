@@ -75,6 +75,7 @@ def _cmd(args: argparse.Namespace) -> int:
                 from jasper.active_speaker.measurement_bass import bass_view  # lazy: laptop FFT analysis
                 selected = resolve_set(inputs, args.set)
                 payload = bass_view(inputs.session_dir, take_ids=selected.selected_ids, calibration_root=args.calibration_root)
+                payload.update(set_id=selected.set_id, candidate_id=selected.capture_basis.get("candidate_id"))
                 summary = {"takes": len(payload["takes"])}
             else:
                 from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ  # lazy: laptop array analysis
@@ -90,6 +91,8 @@ def _cmd(args: argparse.Namespace) -> int:
                       code=refusal.code, next_action=action)
     except RoundSetRefused:
         raise
+    except OSError as exc:
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, {"path": exc.filename, "errno": exc.errno})
     except _ROUND_TOOL_ERRORS as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     written = _write(payload, args.out, destination)
