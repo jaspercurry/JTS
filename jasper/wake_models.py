@@ -37,8 +37,16 @@ Adding a model:
 """
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Iterable
+from pathlib import Path
+from typing import TYPE_CHECKING, Iterable
+
+from jasper.atomic_io import atomic_write_text
+
+if TYPE_CHECKING:
+    from jasper.model_downloads import StageAsset
 
 
 # Persisted at /var/lib/jasper/wake_model.env. The systemd unit for
@@ -352,3 +360,66 @@ def default() -> WakeModelEntry:
             "update jasper/wake_models.py"
         )
     return entry
+
+
+# ---- install.sh staging (jasper.model_downloads is a leaf; this registry
+# builds its own StageAsset lists rather than being reached into) --------
+
+def openwakeword_stage_assets(
+    models_dir: str | os.PathLike[str],
+    *,
+    active_model: str | None = None,
+) -> list[StageAsset]:
+    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+
+    required_by_key = {asset.key for asset in required_openwakeword_assets()}
+    required_by_key.update(asset.key for asset in fallback_openwakeword_assets())
+    if active_model:
+        active_asset = openwakeword_asset_for_model(active_model)
+        if active_asset is not None:
+            required_by_key.add(active_asset.key)
+
+    base = Path(models_dir)
+    return [
+        StageAsset(
+            key=asset.key,
+            label="openWakeWord asset",
+            dest=base / asset.filename,
+            url=asset.download_url,
+            expected_sha256=asset.download_sha256,
+            required=asset.key in required_by_key,
+        )
+        for asset in openwakeword_assets()
+    ]
+
+
+def wake_model_stage_assets(*, required: bool) -> list[StageAsset]:
+    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+
+    return [
+        StageAsset(
+            key=entry.key,
+            label="wake model",
+            dest=Path(entry.model),
+            url=entry.download_url or "",
+            expected_sha256=entry.download_sha256,
+            required=required,
+        )
+        for entry in downloadable()
+    ]
+
+
+def seed_default_wake_model_env(
+    *,
+    log: Callable[[str], None] | None = print,
+) -> None:
+    if os.path.exists(WAKE_MODEL_FILE):
+        return
+    entry = default()
+    if not os.path.exists(entry.model):
+        if log is not None:
+            log(f"  skipping wake_model.env seed: default file missing ({entry.model})")
+        return
+    atomic_write_text(WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n")
+    if log is not None:
+        log(f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")

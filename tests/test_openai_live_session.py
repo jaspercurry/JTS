@@ -22,8 +22,10 @@ from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, OUT_OF_CREDIT_CUE_SL
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
+from jasper.voice.turn_playback import PlaybackReport, play_responses
 from tests._async_wait import wait_signalled, wait_until
 from tests._log_events import event_fields
+from tests._playout import FakeTts
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
@@ -630,8 +632,8 @@ async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeyp
         assert turn.chunks_received() == 2
 
 
-@pytest.mark.parametrize("finish", ["filled", "short", "continuation", "new_answer", "cancel", "release", "lost"])
-async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkeypatch, finish):
+@pytest.mark.parametrize("finish", ["filled", "short", "continuation", "late_clause", "interrupt", "cancel", "release", "lost"])
+async def test_playout_reserve_is_bounded_and_rearms_only_after_interrupt(monkeypatch, finish):
     clock = FrozenClock()
     monkeypatch.setattr(openai_live_session, "time", clock)
     if finish in {"cancel", "release", "lost"}:
@@ -661,8 +663,14 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
                         release = asyncio.create_task(turn.release())
                     else:
                         turn._on_connection_lost()
-                    with pytest.raises(StopAsyncIteration):
-                        await asyncio.wait_for(pending, 0.2)
+                    if finish == "lost":
+                        assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+                        with pytest.raises(StopAsyncIteration):
+                            await anext(audio)
+                        assert turn.audio_dropped_bytes() == 0
+                    else:
+                        with pytest.raises(StopAsyncIteration):
+                            await asyncio.wait_for(pending, 0.2)
                     if finish == "release":
                         assert not release.done()
                         closing.set()
@@ -676,12 +684,17 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
             assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
             assert (await anext(audio)).pcm == pcm
             assert turn.audio_chunks_pending() == 0
-            if finish in {"continuation", "new_answer"}:
+            if finish in {"continuation", "late_clause", "interrupt"}:
                 clock.now += 0.1 if finish == "continuation" else SILENCE_BRIDGE_SEC + 0.1
+                if finish == "interrupt":
+                    turn.drop_pending_audio()
+                else:
+                    # A short trailing clause must arrive without a second fill wait.
+                    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
                 pending = asyncio.create_task(anext(audio))
                 await asyncio.sleep(0)
                 await turn.on_event(output_audio(pcm))
-                if finish == "new_answer":
+                if finish == "interrupt":
                     await asyncio.sleep(0.01)
                     assert not pending.done()
                     await turn.on_event(output_audio(pcm))
@@ -698,10 +711,11 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
 @pytest.mark.parametrize("finish", ["close", "lost", "interrupt"])
 async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypatch, finish):
     pcm = b"\x00\x40" * 2
-    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", len(pcm))
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 2 * len(pcm))
     async with live_turn() as turn:
         audio = turn.audio_out_chunks()
         try:
+            await turn.on_event(output_audio(pcm))
             await turn.on_event(output_audio(pcm))
             await turn.on_event(output_audio(pcm))
             assert turn.audio_dropped_bytes() == len(pcm)
@@ -709,10 +723,10 @@ async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypa
             if finish == "lost":
                 turn._on_connection_lost()
             await audio.aclose()
-            assert turn.audio_dropped_bytes() == len(pcm)
+            assert turn.audio_dropped_bytes() == 2 * len(pcm)
             if finish == "interrupt":
                 turn.drop_pending_audio()
-            expected = 0 if finish == "interrupt" else len(pcm)
+            expected = 0 if finish == "interrupt" else 2 * len(pcm)
             await turn.release()
             assert turn.audio_dropped_bytes() == expected
         finally:
@@ -774,3 +788,39 @@ async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monk
     assert [e["type"] for e in socket.sent].count("session.close") == 1
     assert socket.closed
     assert elapsed < 1.0
+
+
+async def test_live_barge_in_reports_and_discards_queued_audio(monkeypatch, caplog):
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 0.0)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        for _ in range(5):
+            await turn.on_event(output_audio(AUDIBLE_PCM))
+
+        async def accepted():
+            turn.request_local_interrupt()
+            await asyncio.Event().wait()
+
+        tts = FakeTts()
+        report = PlaybackReport()
+        await asyncio.wait_for(play_responses(turn, tts, report=report, on_first_write=accepted), 1.0)
+        assert report.stop_reason == "barge_in"
+        assert len(tts.writes) == tts.flush_calls == 1
+        assert int(event_fields(caplog, "barge.dropped_pending_audio")["chunks"]) == 4
+        assert turn.audio_chunks_pending() == turn.audio_dropped_bytes() == 0
+
+
+
+@pytest.mark.parametrize("count", [0, 5])
+async def test_connection_loss_drains_received_audio_without_waiting_for_a_reserve(monkeypatch, count):
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
+    async with live_turn() as turn:
+        for _ in range(count):
+            await turn.on_event(output_audio(AUDIBLE_PCM))
+        turn._on_connection_lost()
+
+        async def drain():
+            return [chunk.pcm async for chunk in turn.audio_out_chunks()]
+
+        assert await asyncio.wait_for(drain(), 0.2) == [AUDIBLE_PCM] * count
+        assert turn.audio_dropped_bytes() == turn.audio_chunks_pending() == 0

@@ -50,9 +50,11 @@ FRONTEND_INSTRUCTIONS = (
 # follow-up window never opens (`continuous_watchdog` in .conversation).
 SILENCE_BRIDGE_SEC = 0.8
 
-# Trial reserve for the measured 40–110 ms delivery deficits. Short replies
-# cannot wait for more PCM indefinitely: the fill has the same wall-time cap.
+# Initial reserve for 40–110 ms delivery deficits, also capped in wall time.
+# A silence gap cannot identify a new answer, so it must not re-arm the wait.
 PLAYOUT_RESERVE_SEC = 0.15
+OUTPUT_PCM_RATE = 24000
+OUTPUT_PCM_BYTES_PER_SEC = OUTPUT_PCM_RATE * 2
 
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
@@ -180,42 +182,45 @@ class OpenAILiveTurn(BaseLiveTurn):
         super()._on_connection_lost()
         self._playout_available.set()
 
-    def drop_pending_audio(self, *, preserve_overflow: bool = False) -> int:
-        overflow = self._audio_dropped_bytes
+    def drop_pending_audio(self, *, record_discard: bool = False) -> int:
+        discarded_bytes = self._audio_dropped_bytes + self._queued_bytes
         dropped = super().drop_pending_audio()
-        if preserve_overflow:
-            self._audio_dropped_bytes = overflow
+        if record_discard:
+            self._audio_dropped_bytes = discarded_bytes
         self._reserve_playout = True
         self._playout_available.set()
         return dropped
 
     async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         try:
-            while not self._released and not self._turn_lost:
+            while not self._released:
                 if self._audio_q.empty():
+                    if self._turn_lost:
+                        return
                     self._playout_available.clear()
                     await self._playout_available.wait()
                     continue
-                if self._reserve_playout:
+                if self._reserve_playout and self._queued_bytes and not self._turn_lost:
                     self._reserve_playout = False
                     loop = asyncio.get_running_loop()
                     started = loop.time()
                     result = "filled"
                     try:
                         async with asyncio.timeout(PLAYOUT_RESERVE_SEC):
-                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * 48_000):
+                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * OUTPUT_PCM_BYTES_PER_SEC) and not self._turn_lost:
                                 self._playout_available.clear()
                                 await self._playout_available.wait()
-                                if self._released or self._turn_lost:
+                                if self._released:
                                     return
                     except TimeoutError:
                         result = "timeout"
                     log_event(
                         logger, "provider.playout_reserve", result=result,
+                        provider=self._conn.PROVIDER_NAME,
                         waited_ms=round((loop.time() - started) * 1000),
-                        queued_ms=round(self._queued_bytes / 48),
+                        queued_ms=round(self._queued_bytes * 1000 / OUTPUT_PCM_BYTES_PER_SEC),
                     )
-                if self._released or self._turn_lost:
+                if self._released:
                     return
                 try:
                     chunk = self._audio_q.get_nowait()
@@ -226,8 +231,9 @@ class OpenAILiveTurn(BaseLiveTurn):
                 self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
                 yield chunk
         finally:
-            # Final accounting reads overflow after playback is cancelled.
-            self.drop_pending_audio(preserve_overflow=True)
+            # Interrupt flushing owns the backlog and its barge-in count.
+            if not self._interrupt_event.is_set():
+                self.drop_pending_audio(record_discard=True)
 
     def usage(self) -> TurnUsage:
         # Live bills the frontend session per minute, not per token, so
@@ -248,7 +254,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             return
         self._released = True
         self.discard_input()
-        self.drop_pending_audio(preserve_overflow=True)
+        self.drop_pending_audio(record_discard=True)
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
         try:
@@ -298,19 +304,11 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._note_activity()
 
     def _on_output_audio(self, pcm: bytes) -> None:
-        """Admit one output delta to playout.
-
-        An audible delta is the turn's answer audio and its activity
-        anchor. The quiet between audible deltas is played too — the lane
-        starves without it — but only while the answer is still running,
-        never as an unbounded tail.
-        """
+        """Bridge quiet within an answer; discard the idle tail."""
         if not pcm:
             return
         now = time.monotonic()
         if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
-            if not self._last_chunk_at or now - self._last_chunk_at > SILENCE_BRIDGE_SEC:
-                self._reserve_playout = True
             self._last_chunk_at = now
             self._chunks_received += 1
             self._note_activity()
@@ -487,7 +485,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._receive_task = asyncio.create_task(self._receive(turn))
         await self._send({"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
-            "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
+            "audio": {"format": {"type": "audio/pcm", "rate": OUTPUT_PCM_RATE}, "output": {"voice": self._voice}},
             "delegation": {"type": "responses", "responses": {
                 "model": self._backend_model, "instructions": self._system_instruction_provider(),
                 "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],

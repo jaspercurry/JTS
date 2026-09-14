@@ -196,6 +196,10 @@ fn run() -> Result<()> {
                     assistant_loudness: config.assistant_loudness,
                     assistant_reference,
                     assistant_reference_tx,
+                    // `Mixer::new` overrides this with the real
+                    // `fanin-ring-log` sender (issue #4787) — main.rs never
+                    // sees that channel, which does not exist until then.
+                    log_tx: None,
                 }),
                 Some(metrics),
                 assistant_reference_writer,

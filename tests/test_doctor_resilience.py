@@ -927,7 +927,7 @@ def test_the_signal_path_vocabulary_is_partitioned():
     """`SIGNAL_PATH_CODES` is a closed vocabulary and the doctor's silence lead
     projects it, so every member sits in exactly one of the doctor's three
     sets — a code added there fails here until it is classified."""
-    from jasper.control.audio_health import SIGNAL_PATH_CODES
+    from jasper.control.audio_signal_path import SIGNAL_PATH_CODES
 
     playing = _shared._SIGNAL_PATH_PLAYING_CODES
     unknown = _shared._SIGNAL_PATH_UNKNOWN_CODES

@@ -19,6 +19,7 @@ import pytest
 
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
+from jasper.multiroom import reconcile as reconcile_mod
 from jasper.music_sources import Source
 from tests._log_events import event_field_maps, event_fields
 
@@ -2014,3 +2015,197 @@ def test_mux_is_started_only_when_the_shared_verdict_allows(
     source_intent._publish_markers()
 
     assert actions == ([("start", source_intent._MUX_UNIT)] if shared_allowed else [])
+
+
+def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role(grouping_active=True, units_changed=False) is True
+    assert calls == [
+        [
+            "systemctl",
+            "reset-failed",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+        [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+            "--property=ActiveState",
+            "--value",
+        ],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+    ]
+
+
+def test_converge_sources_drains_old_activation_before_fresh_pass(monkeypatch):
+    """An activating oneshot may have read the old role before grouping applied.
+
+    A blocking start joins that job without interrupting it; only after it
+    returns may the second blocking start run the required fresh pass.
+    """
+    import subprocess as sp
+
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(argv, **kw):
+        calls.append((list(argv), dict(kw)))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role(grouping_active=True, units_changed=False) is True
+
+    argv = [call[0] for call in calls]
+    assert argv[-2:] == [
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+    ]
+    barrier_kwargs = calls[-2][1]
+    assert barrier_kwargs["timeout"] == (
+        reconcile_mod.SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
+    )
+    assert barrier_kwargs["check"] is True
+    assert calls[-1][1]["timeout"] == (
+        reconcile_mod._SOURCE_RECONCILE_START_TIMEOUT_SEC
+    )
+
+
+def test_converge_sources_unknown_state_uses_safe_barrier(monkeypatch):
+    """A failed state probe cannot be permission to risk coalescing old work."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1:2] == ["show"]:
+            assert kw["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_sources_after_role(grouping_active=True, units_changed=False) is True
+    assert calls[-2:] == [
+        ["systemctl", "start", reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ],
+    ]
+
+
+def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
+    monkeypatch,
+):
+    """A wedged old source pass is not interrupted or falsely acknowledged."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1:2] == ["show"]:
+            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        if argv[1:2] == ["start"]:
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert (
+        reconcile_mod._converge_sources_after_role(
+            grouping_active=True,
+            units_changed=False,
+        )
+        is False
+    )
+    assert (
+        calls.count(
+            [
+                "systemctl",
+                "start",
+                reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+            ]
+        )
+        == 1
+    )
+    assert not any("restart" in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("grouping_active", "units_changed", "expect_start"),
+    [
+        pytest.param(False, False, False, id="solo_no_role_change_skips"),
+        pytest.param(False, True, True, id="solo_unit_changed_runs_barrier"),
+        pytest.param(True, False, True, id="grouping_active_always_runs_barrier"),
+    ],
+)
+def test_converge_sources_barrier_gated_by_role_change(
+    monkeypatch,
+    grouping_active,
+    units_changed,
+    expect_start,
+):
+    """The post-role source barrier forces a ~30s audio-hardware-reconcile pass
+    (Wants=/After=), so it must run only when something for source-intent to
+    react to actually happened: grouping is active, or the unit plan moved a
+    unit. A quiescent solo pass must not pay that cost every boot."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    result = reconcile_mod._converge_sources_after_role(
+        grouping_active=grouping_active,
+        units_changed=units_changed,
+    )
+    assert result is True
+    start_calls = [
+        c
+        for c in calls
+        if c == ["systemctl", "start", reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT]
+    ]
+    assert bool(start_calls) is expect_start
+    if not expect_start:
+        assert calls == []

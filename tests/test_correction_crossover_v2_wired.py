@@ -1087,5 +1087,5 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     await manifest.append(record, "take", verdict, complete=True, started_s=0, ended_s=1, level_observation=level.evidence)
     consume.assert_not_called()
     row = manifest.takes[0]
-    assert (row["quality"]["fault"], row["next_action"], row["charge"]) == ("level_drift_at_session_gain", "retake_same", "none")
+    assert (row["fault"], row["next"], row["charge"]) == ("level_drift_at_session_gain", "retake_same", "none")
     assert row["level"]["level_delta_db"] == 3

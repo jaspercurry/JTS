@@ -175,6 +175,15 @@ def analysis_json(
         "glitch_detected": bool(analysis.glitch_detected),
         "delay_us": round(float(align.delay_us), 3) if align else None,
         "alignment_status": align.status if align else None,
+        "alignment_pair_count": align.alignment_pair_count if align else None,
+        "alignment_pair_spread_us": (
+            round(align.alignment_pair_spread_us, 3)
+            if align and align.alignment_pair_spread_us is not None else None
+        ),
+        "alignment_drift_residual_us": (
+            round(align.alignment_drift_residual_us, 3)
+            if align and align.alignment_drift_residual_us is not None else None
+        ),
         "alignment_seed_delay_us": (
             round(float(align.seed_delay_us), 3)
             if align and align.seed_delay_us is not None else None
@@ -203,6 +212,7 @@ def analysis_json(
         "polarity_pinned": bool(cand.polarity_pinned) if cand else False,
         "left_anchor_lobe": bool(cand.left_anchor_lobe) if cand else None,
         "alignment_confidence": round(float(align.confidence), 4) if align else None,
+        "parallax_us": align.parallax_us if align else None,
         "alignment_confidence_source": align.confidence_source if align else None,
         "trim_db": (
             {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None

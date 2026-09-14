@@ -8,10 +8,15 @@ Installer code downloads a small number of ONNX assets that the runtime
 loads directly. Keep those fetches explicit and bounded: no indefinite
 socket waits, no unbounded response bodies, and no staging without a
 hash check when a SHA-256 is available.
+
+A leaf module: it does not know which registries (wake models,
+openWakeWord assets, DTLN bundles, ...) exist. Each registry builds its
+own `list[StageAsset]` and calls `stage_model_assets`; the CLI wiring a
+`--registry` name to its provider lives in `jasper.cli.model_downloads`,
+which is free to import those registries. See #4726.
 """
 from __future__ import annotations
 
-import argparse
 import http.client
 import os
 import ssl
@@ -23,7 +28,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text
 from jasper.env_load import BASE_ENV_PATH, parse_env_file
 from jasper.json_fields import sha256_file
 
@@ -191,90 +195,6 @@ def stage_model_assets(
     )
 
 
-def openwakeword_stage_assets(
-    models_dir: str | os.PathLike[str],
-    *,
-    active_model: str | None = None,
-) -> list[StageAsset]:
-    from jasper.wake_models import (
-        fallback_openwakeword_assets,
-        openwakeword_asset_for_model,
-        openwakeword_assets,
-        required_openwakeword_assets,
-    )
-
-    required_by_key = {asset.key for asset in required_openwakeword_assets()}
-    required_by_key.update(asset.key for asset in fallback_openwakeword_assets())
-    if active_model:
-        active_asset = openwakeword_asset_for_model(active_model)
-        if active_asset is not None:
-            required_by_key.add(active_asset.key)
-
-    base = Path(models_dir)
-    return [
-        StageAsset(
-            key=asset.key,
-            label="openWakeWord asset",
-            dest=base / asset.filename,
-            url=asset.download_url,
-            expected_sha256=asset.download_sha256,
-            required=asset.key in required_by_key,
-        )
-        for asset in openwakeword_assets()
-    ]
-
-
-def wake_model_stage_assets(*, required: bool) -> list[StageAsset]:
-    from jasper.wake_models import downloadable
-
-    return [
-        StageAsset(
-            key=entry.key,
-            label="wake model",
-            dest=Path(entry.model),
-            url=entry.download_url or "",
-            expected_sha256=entry.download_sha256,
-            required=required,
-        )
-        for entry in downloadable()
-    ]
-
-
-def dtln_stage_assets(*, required: bool) -> list[StageAsset]:
-    from jasper.aec_engines.dtln_models import DTLN_MODELS_DIR, REGISTRY
-
-    assets: list[StageAsset] = []
-    for entry in REGISTRY:
-        for path, url, expected_sha in entry.files(DTLN_MODELS_DIR):
-            assets.append(
-                StageAsset(
-                    key=f"dtln-{entry.size}-{path.name}",
-                    label="DTLN model",
-                    dest=path,
-                    url=url,
-                    expected_sha256=expected_sha,
-                    required=required,
-                )
-            )
-    return assets
-
-
-def seed_default_wake_model_env(
-    *,
-    log: Callable[[str], None] | None = print,
-) -> None:
-    from jasper.wake_models import WAKE_MODEL_FILE, default
-
-    if os.path.exists(WAKE_MODEL_FILE):
-        return
-    entry = default()
-    if not os.path.exists(entry.model):
-        _log(log, f"  skipping wake_model.env seed: default file missing ({entry.model})")
-        return
-    atomic_write_text(WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n")
-    _log(log, f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")
-
-
 def active_wake_model(
     *,
     env: Mapping[str, str] = os.environ,
@@ -324,63 +244,3 @@ def _download_once(
 def _log(log: Callable[[str], None] | None, msg: str) -> None:
     if log is not None:
         log(msg)
-
-
-def _stage_cli(args: argparse.Namespace) -> int:
-    required = args.required
-    if args.registry == "openwakeword":
-        models_dir = os.environ.get("OPENWAKEWORD_MODELS_DIR", "").strip()
-        if not models_dir:
-            raise SystemExit("OPENWAKEWORD_MODELS_DIR is required for openwakeword staging")
-        assets = openwakeword_stage_assets(models_dir, active_model=active_wake_model())
-    elif args.registry == "wake":
-        assets = wake_model_stage_assets(required=required)
-    elif args.registry == "dtln":
-        assets = dtln_stage_assets(required=required)
-    else:  # pragma: no cover - argparse choices prevent this.
-        raise SystemExit(f"unknown registry: {args.registry}")
-
-    result = stage_model_assets(
-        assets,
-        required_timeout_seconds=args.required_timeout,
-        required_retries=args.required_retries,
-        optional_timeout_seconds=args.optional_timeout,
-        optional_retries=args.optional_retries,
-        max_bytes=args.max_bytes,
-    )
-    if args.registry == "openwakeword" and result.optional_failures:
-        print(
-            f"  warning: {result.optional_failures} inactive openWakeWord stock "
-            "asset(s) failed to download; unavailable rows will be disabled in /assistant/wake/.",
-            file=sys.stderr,
-        )
-    if required:
-        return 1 if result.required_failures else 0
-    return 1 if result.failures else 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Stage JTS model assets")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    stage = subparsers.add_parser("stage")
-    stage.add_argument("--registry", choices=("openwakeword", "wake", "dtln"), required=True)
-    mode = stage.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--required", action="store_true")
-    mode.add_argument("--optional", action="store_true")
-    stage.add_argument("--required-timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
-    stage.add_argument("--required-retries", type=int, default=DEFAULT_RETRIES)
-    stage.add_argument("--optional-timeout", type=float, default=20.0)
-    stage.add_argument("--optional-retries", type=int, default=1)
-    stage.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
-    subparsers.add_parser("seed-wake-default")
-    args = parser.parse_args(argv)
-    if args.command == "stage":
-        return _stage_cli(args)
-    if args.command == "seed-wake-default":
-        seed_default_wake_model_env()
-        return 0
-    raise SystemExit(f"unknown command: {args.command}")
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

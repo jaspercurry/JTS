@@ -45,13 +45,16 @@ from .audio_hardware.usb_port_role import (
     resolve_system_usb_port_role,
 )
 from .json_fields import json_fingerprint, utc_now_iso
+from .paths import (
+    OUTPUT_HARDWARE_STATE_PATH as DEFAULT_STATE_PATH,
+    OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH,
+    resolve_state_path,
+)
 
 
 SCHEMA_VERSION = 1
 OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
 DEFAULT_PROC_ASOUND_PATH = "/proc/asound"
-DEFAULT_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
-DEFAULT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
 APPLE_USB_C_DONGLE_DEVICE_ID = APPLE_USB_C_DONGLE_ID
 DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_ID
@@ -89,11 +92,7 @@ def normalize_output_device_id(raw: str | None) -> str:
 
 
 def state_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get("JASPER_OUTPUT_HARDWARE_STATE_PATH")
-        or DEFAULT_STATE_PATH
-    )
+    return resolve_state_path(path, "JASPER_OUTPUT_HARDWARE_STATE_PATH", DEFAULT_STATE_PATH)
 
 
 def degraded_marker_path(path: str | Path | None = None) -> Path:
@@ -1080,11 +1079,7 @@ def _runtime_identity_candidates(raw: Any) -> tuple[tuple[str, str], ...]:
 
 
 def _topology_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get("JASPER_OUTPUT_TOPOLOGY_PATH")
-        or DEFAULT_TOPOLOGY_PATH
-    )
+    return resolve_state_path(path, "JASPER_OUTPUT_TOPOLOGY_PATH", DEFAULT_TOPOLOGY_PATH)
 
 
 def _read_topology_hardware(

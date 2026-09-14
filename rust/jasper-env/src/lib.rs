@@ -46,6 +46,13 @@ pub fn env_f32(name: &str, default: f32) -> Result<f32> {
     }
 }
 
+pub fn env_f32_fallback(name: &str, fallback_name: &str, default: f32) -> Result<f32> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => parse_f32(name, &s),
+        _ => env_f32(fallback_name, default),
+    }
+}
+
 /// Parse and validate one finite `f32` value already obtained from an env var.
 pub fn parse_f32(name: &str, raw: &str) -> Result<f32> {
     let parsed = raw

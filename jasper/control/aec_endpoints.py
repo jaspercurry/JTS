@@ -13,6 +13,7 @@ import os
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Iterator
 
 from jasper.log_event import log_event
@@ -33,8 +34,8 @@ from ..audio_profile_state import (
     WAKE_LEG_DEFAULTS,
     audio_profile_status,
     infer_audio_input_profile,
+    intent_from_env,
     normalize_audio_input_profile,
-    parse_env_bool as _parse_audio_profile_bool,
     probe_xvf_mic,
     profile_env_updates,
     resolve_audio_input_intent,
@@ -222,16 +223,10 @@ _TOGGLE_TO_TOKEN = {
     "chip_aec_210": ("chip_aec_210",),
 }
 _TOGGLE_TO_ENV_KEY = {
-    "raw": "JASPER_WAKE_LEG_RAW",
-    "dtln": "JASPER_WAKE_LEG_DTLN",
-    "chip_aec_150": "JASPER_WAKE_LEG_CHIP_AEC_150",
-    "chip_aec_210": "JASPER_WAKE_LEG_CHIP_AEC_210",
+    name.removeprefix("leg_"): key
+    for name, key, _ in WAKE_LEG_DEFAULTS
+    if name != "leg_chip_aec"
 }
-
-
-def _parse_env_bool(raw: str, default: bool) -> bool:
-    """Same normalization the bash reconciler does — accept yes/no/etc."""
-    return _parse_audio_profile_bool(raw, default)
 
 
 def _read_aec_state() -> dict:
@@ -240,26 +235,22 @@ def _read_aec_state() -> dict:
     (the reconciler's ensure_mode_file appends them on its next run)."""
     env_file = read_env_file_state(_AEC_MODE_FILE)
     values = env_file.values
-    state: dict[str, Any] = {"mode": values.get(AEC_MODE_ENV) or "auto"}
-    for name, key, default in WAKE_LEG_DEFAULTS:
-        raw = values.get(key)
-        state[name] = default if raw is None else _parse_env_bool(raw, default)
+    intent = replace(intent_from_env(values), mode=values.get(AEC_MODE_ENV) or "auto")
+    state: dict[str, Any] = {
+        "mode": intent.mode,
+        "leg_raw": intent.raw_enabled,
+        "leg_dtln": intent.dtln_enabled,
+        "leg_chip_aec": intent.chip_aec_enabled,
+        "leg_chip_aec_150": intent.chip_aec_150_enabled,
+        "leg_chip_aec_210": intent.chip_aec_210_enabled,
+    }
     profile = values.get("JASPER_AUDIO_INPUT_PROFILE")
     if profile is not None:
         state["profile"] = normalize_audio_input_profile(
             profile, default=_PROFILE_DEFAULT,
         )
     elif env_file.status == "loaded":
-        state["profile"] = infer_audio_input_profile(
-            AecIntent(
-                mode=state["mode"],
-                raw_enabled=state["leg_raw"],
-                dtln_enabled=state["leg_dtln"],
-                chip_aec_enabled=state["leg_chip_aec"],
-                chip_aec_150_enabled=state["leg_chip_aec_150"],
-                chip_aec_210_enabled=state["leg_chip_aec_210"],
-            ),
-        )
+        state["profile"] = infer_audio_input_profile(intent)
     else:
         state["profile"] = "auto"
     return state

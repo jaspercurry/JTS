@@ -120,7 +120,8 @@ fn main() -> Result<()> {
 
     let result = match config.backend {
         BackendMode::Fake => {
-            let mut core = OutputCore::new_for_daemon(config.period_frames);
+            let mut core =
+                OutputCore::new_for_daemon(config.period_frames, config.assistant_loudness);
             run_fake(&config, &mut core, &state, once, &shutdown)
         }
         BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
@@ -170,10 +171,7 @@ fn main() -> Result<()> {
 /// refusing a ring a live foreign reader still owns — lands in the restart arm
 /// by this same kind split, which is right: the incumbent may exit.
 fn classify_ring_attach_error(lane: &str, path: &str, e: io::Error) -> anyhow::Error {
-    if matches!(
-        e.kind(),
-        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
-    ) {
+    if jasper_ring::ring_open_error_is_config_class(&e) {
         eprintln!("event=outputd.{lane}.config_error path={path} detail={e}");
         anyhow::Error::new(e).context(ConfigClassError)
     } else {
@@ -519,7 +517,7 @@ fn run_alsa(
             "event=outputd.tts.enabled socket={} budget_frames={} program_duck_db={}",
             path, config.tts_max_pending_frames, config.tts_program_duck_db,
         );
-        let mut core = OutputCore::new_for_daemon(config.period_frames);
+        let mut core = OutputCore::new_for_daemon(config.period_frames, config.assistant_loudness);
         // Publish the assistant-loudness snapshot into the shared STATUS cell
         // each period (the same shape fan-in exposes under tts.assistant_loudness).
         core.set_loudness_sink(metrics.loudness_cell());
@@ -2028,6 +2026,7 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: jasper_outputd::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            assistant_loudness: Default::default(),
             active_lane: false,
             // ACTIVE_LANE's pair — false is the passive default, which is what
             // this chip-ref fixture wants (it is not an active-ring endpoint).

@@ -22,7 +22,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from jasper.control.server import _make_handler
-from jasper.volume_coordinator import VolumeState
+from jasper.volume_state import VolumeState
 
 def _recording_popen(calls: list[list[str]]):
     """Build the minimal Popen double used by command-dispatch route tests."""
