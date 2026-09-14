@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.volume_coordinator import AIRPLAY_DB_MAX, AIRPLAY_DB_MIN
+from jasper.volume_scales import AIRPLAY_DB_MAX, AIRPLAY_DB_MIN
 from tests.shairport_template_helpers import (
     SHAIRPORT_TEMPLATE,
     template_string_value,
@@ -59,8 +59,8 @@ def test_flock_is_available_on_linux():
         assert _FLOCK is not None
 
 
-def _hook_env(runtime_dir: Path) -> dict[str, str]:
-    return {"PATH": _HOOK_PATH, "RUNTIME_DIRECTORY": str(runtime_dir)}
+def _hook_env(runtime_dir: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    return {"PATH": _HOOK_PATH, "RUNTIME_DIRECTORY": str(runtime_dir), **(extra or {})}
 
 
 def _hook_argv(*args: str, port: int | None = None) -> list[str]:
@@ -73,11 +73,15 @@ def _hook_argv(*args: str, port: int | None = None) -> list[str]:
 
 
 def _run_hook(
-    *args: str, runtime_dir: Path, port: int | None = None, wait_for_delivery: bool = True,
+    *args: str,
+    runtime_dir: Path,
+    port: int | None = None,
+    wait_for_delivery: bool = True,
+    env: dict[str, str] | None = None,
 ) -> None:
     subprocess.run(
         _hook_argv(*args, port=port),
-        env=_hook_env(runtime_dir),
+        env=_hook_env(runtime_dir, env),
         check=True,
         timeout=60,
     )
@@ -298,7 +302,12 @@ def _db_for(percent: float) -> str:
 
 
 def _fire_burst(
-    percents, *, runtime_dir: Path, port: int, spacing: float | list[float],
+    percents,
+    *,
+    runtime_dir: Path,
+    port: int,
+    spacing: float | list[float],
+    env: dict[str, str] | None = None,
 ) -> None:
     """Model shairport's parent wait; only publication delays the next message.
 
@@ -312,7 +321,11 @@ def _fire_burst(
         if delay > 0:
             time.sleep(delay)
         _run_hook(
-            _db_for(percent), runtime_dir=runtime_dir, port=port, wait_for_delivery=False,
+            _db_for(percent),
+            runtime_dir=runtime_dir,
+            port=port,
+            wait_for_delivery=False,
+            env=env,
         )
         next_at = time.monotonic() + gap
     _wait_for_delivery(runtime_dir)
@@ -428,11 +441,23 @@ def test_a_reconnect_restores_the_remembered_level_before_the_animation(
 
 
 # The same animation with two stalls written into it, which makes the jitter
-# CI hit deterministic: a gap wide enough for three of a 200 ms poll's reads
-# leaves two of them unchanged whatever their phase, so the old settle loop
-# called the ramp finished twice and chased it (#4334). One gap per message.
+# CI hit deterministic: a gap wide enough for three of a poll's reads leaves
+# two of them unchanged whatever their phase, so the old settle loop called
+# the ramp finished twice and chased it (#4334). One gap per message.
+#
+# The hook's settle window is 20 consecutive unchanged reads
+# (deploy/bin/jasper-airplay-volume). AIRPLAY_VOLUME_SETTLE_POLL_S, unset in
+# production, scales the poll to 200 ms so the widest stall keeps ~1 s of
+# headroom against subprocess-spawn jitter under runner load; the pinned
+# ratios (window = 5x spacing, stall = 3.75x spacing) are production's.
+STALLED_SETTLE_POLL_S = 0.2
+STALLED_SETTLE_ENV = {"AIRPLAY_VOLUME_SETTLE_POLL_S": str(STALLED_SETTLE_POLL_S)}
+STALLED_SETTLE_WINDOW_S = 20 * STALLED_SETTLE_POLL_S
+STALLED_FADE_SPACING_S = STALLED_SETTLE_WINDOW_S / 5
 STALLED_FADE_UP = [6, 19, 31, 44, 57, 63]
-STALLED_FADE_GAPS_S = [0.25, 0.24, 0.75, 0.26, 0.75, 0.25]
+STALLED_FADE_GAPS_S = [
+    STALLED_FADE_SPACING_S * ratio for ratio in (1.25, 1.2, 3.75, 1.3, 3.75, 1.25)
+]
 
 
 @requires_flock
@@ -440,11 +465,9 @@ def test_a_reconnect_holds_the_animation_across_a_stalled_burst(
     control_stub, tmp_path,
 ):
     """The settle window has to outlast the widest gap the sender's own
-    messages arrive at, not just the nominal spacing. Against the old
-    200 ms/two-unchanged-reads loop these gaps post `[63, 31, 44, 57, 63]`
-    every run — the same chase CI hit as `[63, 31, 57, 63]` when the runner
-    supplied the stalls. The session still delivers the restore and nothing
-    else."""
+    messages arrive at, not just the nominal spacing; a window that does
+    not posts the chase `[63, 31, 44, 57, 63]`. The session still delivers
+    the restore and nothing else."""
     level = CONNECT_FADE_UP[-1]
     port = control_stub.server_port
     _run_hook(_db_for(level), runtime_dir=tmp_path, port=port)
@@ -457,6 +480,7 @@ def test_a_reconnect_holds_the_animation_across_a_stalled_burst(
         runtime_dir=tmp_path,
         port=port,
         spacing=STALLED_FADE_GAPS_S,
+        env=STALLED_SETTLE_ENV,
     )
 
     assert [body["percent"] for _, body in _Recorder.posts[opened:]] == [level]

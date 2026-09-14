@@ -821,10 +821,10 @@ def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
         "if (hasMetrics) {"
     ), "the audio alert must render before/outside the metrics warm-up gate"
 
-    # One writer for the parked sentence (jasper/control/audio_health.py's
+    # One writer for the parked sentence (jasper/control/audio_signal_path.py's
     # _parked_signal). The browser decides whether to show it, never what it
     # says — a copy here is a drift site, not a convenience.
-    from jasper.control.audio_health import PARKED_HEADLINE
+    from jasper.control.audio_signal_path import PARKED_HEADLINE
 
     js = _system_js()
     assert PARKED_HEADLINE not in js

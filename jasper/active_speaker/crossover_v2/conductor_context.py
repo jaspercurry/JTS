@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overl
 
 from jasper.log_event import log_event
 from jasper.active_speaker.profile import required_driver_roles
+from jasper.active_speaker.design_draft import declared_driver_spacing_m
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
@@ -47,6 +48,10 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 _Level = TypeVar("_Level", bound=float | None)
+
+
+def driver_spacing_source(draft: Mapping[str, Any]) -> str:
+    return "unknown" if declared_driver_spacing_m(draft) is None else "declared"
 
 
 def conductor_status() -> dict[str, Any]:
@@ -310,7 +315,6 @@ def resolve_conductor_context(
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.design_draft import (
-        declared_driver_spacing_m,
         declared_effective_driver_sensitivities,
         load_design_draft,
     )
@@ -510,7 +514,7 @@ def resolve_conductor_context(
         # the idle reconciler, not VolumeCoordinator writes. Validation
         # runs hands-off; a session-long volume guard is a follow-up.
         driver_spacing_m=driver_spacing_m,
-        driver_spacing_source="unknown" if driver_spacing_m is None else "declared",
+        driver_spacing_source=driver_spacing_source(draft),
         topology=topology,
         playback_device=playback_device,
         role_channels=measurement_role_channels(preset),

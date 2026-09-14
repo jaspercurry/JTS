@@ -211,14 +211,18 @@ impl PlayoutLedger {
     pub fn flush(&mut self) -> Vec<PlayoutEvent> {
         let played_total = self.played_total;
         let sample_rate = self.sample_rate;
+        // `drain` MOVES each segment's `provider_item_id` instead of cloning
+        // it — this runs on the SCHED_FIFO mixer thread during barge-in
+        // (issue #4809 R-023), and draining also empties `self.segments`, so
+        // the `.clear()` below is gone with it.
         let events = self
             .segments
-            .iter()
+            .drain(..)
             .map(|seg| {
                 let played = seg.played(played_total);
                 PlayoutEvent {
                     local_segment_id: seg.local_segment_id,
-                    provider_item_id: seg.provider_item_id.clone(),
+                    provider_item_id: seg.provider_item_id,
                     kind: seg.kind,
                     queued_frames: seg.queued_frames,
                     played_frames: played,
@@ -227,7 +231,6 @@ impl PlayoutLedger {
                 }
             })
             .collect();
-        self.segments.clear();
         self.queued_total = 0;
         self.played_total = 0;
         events

@@ -2,17 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared state-file path resolution.
-
-Several platform modules persist one state file each and resolve its
-location the same way: an explicit override, else a ``JASPER_*`` env
-var, else a default. :func:`resolve_state_path` is that rule in one
-place so it converges instead of drifting across callers (#4810).
-"""
+"""Shared state-file paths and resolution."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+
+OUTPUT_HARDWARE_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
+OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
 
 def resolve_state_path(

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
 from ..camilla_yaml import role_polarity
+from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     AppliedAlignment,
@@ -166,6 +167,7 @@ def measure_priors(
     applied_alignment: AppliedAlignment | None,
     explicit_alignment_delay_us: float | None,
     explicit_alignment_polarity_sign: int | None,
+    summed_alignment: SummedAlignmentReference | None = None,
 ) -> MeasurementPriors:
     """MEASURE's priors — the widest set, and the only §4.2 de-embedding.
 
@@ -194,7 +196,7 @@ def measure_priors(
         applied_alignment=applied_alignment,
         explicit_alignment_delay_us=explicit_alignment_delay_us,
         explicit_alignment_polarity_sign=explicit_alignment_polarity_sign,
-        ambient_report=ambient_report,
+        ambient_report=ambient_report, summed_alignment=summed_alignment,
         measurement_protection_response_by_role=role_transfers(
             protection_sections_by_role
         ),

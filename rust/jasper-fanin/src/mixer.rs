@@ -26,17 +26,19 @@ mod pcm_open;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use alsa::pcm::{Access, Format, Frames, HwParams, State, IO, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
+use jasper_daemon::HELPER_STACK_BYTES;
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 
 use jasper_resampler::RMS_DBFS_FLOOR;
+use jasper_tts_protocol::loudness::{AssistantGainDecision, SegmentKind};
 
 use crate::config::{
     periods_for_ms, Config, DEFAULT_PERIOD_FRAMES, DEFAULT_SAMPLE_RATE, MEASUREMENT_LANE,
@@ -44,7 +46,7 @@ use crate::config::{
 };
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
-use crate::tts::{TtsInput, TtsMixer};
+use crate::tts::{log_assistant_loudness_decision, TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
 
 pub use direct_capture::DirectObservability;
@@ -199,13 +201,22 @@ const fn direct_narrow_scratch_samples() -> usize {
 /// safety net that keeps the mixer thread's `try_send` non-blocking.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Bounded capacity of the `fanin-ring-log` channel ([`RingOutput::stall_log`]
+/// and `TtsMixer`'s clone of the same sender). Sized for segment, flush and
+/// starvation events alongside ring-stall edges during response bursts.
+/// Overflow past this is drop-and-count, never a block (ADR-0254).
+const FANIN_LOG_CHANNEL_CAPACITY: usize = 64;
+
 /// Forward one event to an off-thread writer with `try_send`, calling
 /// `note_dropped` instead of blocking the SCHED_FIFO work loop on the writer's
 /// I/O. EVERY failure counts, `Disconnected` included: a writer thread that
 /// returned early (its artifact would not open) leaves the gauge as the only
 /// evidence, and a gauge reading 0 while 100% of events are lost is the wrong
 /// answer. See ADR-0254.
-fn send_drop_counted<T>(tx: &SyncSender<T>, event: T, note_dropped: impl FnOnce()) {
+///
+/// `pub(crate)`: `tts.rs` sends [`FaninLogEvent`]s over the same shape from
+/// the TTS mixer thread side (issue #4787).
+pub(crate) fn send_drop_counted<T>(tx: &SyncSender<T>, event: T, note_dropped: impl FnOnce()) {
     if tx.try_send(event).is_err() {
         note_dropped();
     }
@@ -478,37 +489,13 @@ struct RingOutput {
     pace: PeriodPacer,
     /// Edge-detection state machine for the ring stall event (issue #1524).
     stall: RingStallTracker,
-}
-
-/// Whether a `RingWriter::create_or_attach` failure is CONFIG-class — the
-/// question that decides between an exit-78 PARK and the ordinary
-/// `Restart=on-failure` ladder.
-///
-/// Only two `io::ErrorKind`s qualify, and `jasper_ring` sets both DELIBERATELY
-/// for exactly this purpose:
-///   - [`io::ErrorKind::InvalidInput`] — `Geometry::validate_self` rejecting the
-///     geometry fan-in built from its own env (an unsupported sample format, an
-///     out-of-range `n_slots`, an over-large slot), plus a ring path containing
-///     a NUL.
-///   - [`io::ErrorKind::InvalidData`] — the attach-time field-by-field header
-///     mismatch, the header/file-size cross-check, and an unreclaimable
-///     magic-less file. A stale ring from a prior geometry lands here.
-///
-/// Everything else is TRANSIENT and must keep the restart ladder: `WouldBlock`
-/// (another process still holds the `.open.lock`), `PermissionDenied` (tmpfs
-/// mode/group not yet applied by systemd-tmpfiles), `StorageFull` /
-/// `OutOfMemory`, `AlreadyExists`, `IsADirectory`, and any raw OS error. Parking
-/// on those would take the speaker's audio down over faults that clear
-/// themselves.
-///
-/// Deliberately matched on the CLOSED accept-set rather than an open
-/// "everything but X" list: a kind this daemon has not reasoned about defaults
-/// to the recoverable path.
-fn ring_open_error_is_config_class(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
-    )
+    /// Off-thread sink for a [`FaninLogEvent`]: `write_ring_period` runs on the
+    /// SCHED_FIFO mixer thread and must never format or log one itself (issue
+    /// #4787). `run_ring_stall_log_writer` drains it — the TTS mixer holds a
+    /// clone of the same sender for its own `AssistantLoudness`/`TtsFlush`
+    /// events, so every off-thread log line in this daemon goes through the
+    /// one writer thread.
+    stall_log: SyncSender<FaninLogEvent>,
 }
 
 /// Turn a `RingWriter::create_or_attach` failure into the error `Mixer::new`
@@ -525,7 +512,7 @@ fn ring_open_error_is_config_class(error: &std::io::Error) -> bool {
 /// right now". Logging an EACCES as `config_error` sends an operator to audit a
 /// geometry that was never wrong.
 pub(crate) fn ring_open_error(path: &str, error: std::io::Error) -> anyhow::Error {
-    if ring_open_error_is_config_class(&error) {
+    if jasper_ring::ring_open_error_is_config_class(&error) {
         warn!(
             "event=fanin.ring.config_error path={} detail={}",
             path, error,
@@ -597,6 +584,13 @@ pub struct Mixer {
     /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
     /// `take_direct_tap_receiver`.
     direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
+    /// The `fanin-ring-log` thread's handle, taken by `main` and joined at
+    /// shutdown — after `drop(mixer)` drops `RingOutput::stall_log` and ends
+    /// the writer's `for event in receiver` loop — so a stall line fired late
+    /// in the mixer's life is flushed before the process exits, the same
+    /// reason `main` joins `fanin-tap-writer`. `None` after
+    /// `take_ring_stall_log_writer`.
+    ring_stall_log_writer: Option<std::thread::JoinHandle<()>>,
     host_clock_ladder_l0: Arc<AtomicBool>,
     usb_connection_epoch: Arc<AtomicU64>,
     host_clock_timing_failed: Arc<AtomicBool>,
@@ -635,6 +629,11 @@ struct RingCounters {
     /// not the DAC, is the metronome — the free-running-reader shape
     /// [`PeriodPacer`] exists for.
     clockless_paces: Arc<AtomicU64>,
+    /// Ring-stall log events (see [`RingOutput::stall_log`]) dropped because
+    /// `fanin-ring-log` was not keeping up or had exited. Every `try_send`
+    /// failure counts (ADR-0254): a stall going undetected because its log
+    /// line was silently lost is worse than a gauge that occasionally ticks.
+    stall_log_dropped: Arc<AtomicU64>,
 }
 
 impl RingCounters {
@@ -649,6 +648,7 @@ impl RingCounters {
             stall_active: Arc::new(AtomicBool::new(false)),
             last_stall_ms: Arc::new(AtomicU64::new(0)),
             clockless_paces: Arc::new(AtomicU64::new(0)),
+            stall_log_dropped: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -675,6 +675,8 @@ pub struct RingObservability {
     pub last_stall_ms: Arc<AtomicU64>,
     /// See [`RingCounters::clockless_paces`].
     pub clockless_paces: Arc<AtomicU64>,
+    /// See [`RingCounters::stall_log_dropped`].
+    pub stall_log_dropped: Arc<AtomicU64>,
 }
 
 /// The fan-in ring-stall EVENT threshold (issue #1524): how long the
@@ -701,8 +703,11 @@ const RING_STALL_REARM_MIN_GAP_NS: u64 = 10_000_000_000; // 10 s
 const RING_STALL_UNRECOVERED_NS: u64 = 10_000_000_000; // 10 s
 
 /// Why the ring is not draining, for the stall event's `reason=` field.
+///
+/// `pub(crate)`: reachable through [`RingStallEvent`], itself wrapped in the
+/// `pub(crate)` [`FaninLogEvent::RingStall`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StallReason {
+pub(crate) enum StallReason {
     /// Reader heartbeat is live but `read_seq` is frozen (the #1524 wedge —
     /// CamillaDSP polling in Prepared without calling `readi`).
     StuckReader,
@@ -747,8 +752,11 @@ struct RingStallInput {
 
 /// An edge-triggered ring-stall event the mixer logs. Emitted at most once per
 /// transition — never per period.
+///
+/// `pub(crate)`: wrapped in [`FaninLogEvent::RingStall`], which is
+/// `pub(crate)` itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RingStallEvent {
+pub(crate) enum RingStallEvent {
     Detected {
         reason: StallReason,
         duration_ms: u64,
@@ -941,6 +949,81 @@ fn format_ring_stall_event(event: &RingStallEvent) -> String {
             duration_ms,
             dropped_periods,
         ),
+    }
+}
+
+/// Everything this daemon's SCHED_FIFO mixer thread hands to `fanin-ring-log`
+/// instead of formatting or writing itself (issue #4787). `RingOutput` and
+/// `TtsMixer` share one sender and one writer thread.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FaninLogEvent {
+    RingStall(RingStallEvent),
+    /// From `begin_segment_gain`, once per TTS segment start. `decision` is
+    /// the SAME `Arc` `TtsMixer` keeps as `active_segment_decision` — sending
+    /// it is an atomic refcount bump, not a clone of its `String` fields.
+    AssistantLoudness {
+        kind: SegmentKind,
+        decision: Arc<AssistantGainDecision>,
+    },
+    /// From `drain_flushes`, once per batch of FLUSH_SYNC requests.
+    TtsFlush {
+        requests: usize,
+        pending_frames: u64,
+        flushed_frames: u64,
+        segments: usize,
+        max_audio_played_ms: u64,
+    },
+    TtsStarved {
+        frames: u64,
+        ms: u64,
+        segment: u64,
+        queued_frames_at_resume: u64,
+    },
+}
+
+/// Drain [`RingOutput::stall_log`] off the SCHED_FIFO mixer thread: format and
+/// log every [`FaninLogEvent`] the mixer or TTS thread hands off, so the
+/// allocation in [`format_ring_stall_event`]/`log_assistant_loudness_decision`
+/// and the synchronous write to journald's socket both happen here instead of
+/// on the audio thread (issue #4787).
+fn run_ring_stall_log_writer(receiver: Receiver<FaninLogEvent>) {
+    for event in receiver {
+        match event {
+            FaninLogEvent::RingStall(
+                stall @ (RingStallEvent::Detected { .. } | RingStallEvent::Unrecovered { .. }),
+            ) => {
+                warn!("{}", format_ring_stall_event(&stall));
+            }
+            FaninLogEvent::RingStall(stall @ RingStallEvent::Cleared { .. }) => {
+                info!("{}", format_ring_stall_event(&stall));
+            }
+            FaninLogEvent::AssistantLoudness { kind, decision } => {
+                log_assistant_loudness_decision(kind, &decision);
+            }
+            FaninLogEvent::TtsFlush {
+                requests,
+                pending_frames,
+                flushed_frames,
+                segments,
+                max_audio_played_ms,
+            } => {
+                info!(
+                    "event=fanin.tts_flush requests={} pending_frames={} flushed_frames={} segments={} max_audio_played_ms={}",
+                    requests, pending_frames, flushed_frames, segments, max_audio_played_ms,
+                );
+            }
+            FaninLogEvent::TtsStarved {
+                frames,
+                ms,
+                segment,
+                queued_frames_at_resume,
+            } => {
+                warn!(
+                    "event=fanin.tts_starved frames={} ms={} segment={} queued_frames_at_resume={}",
+                    frames, ms, segment, queued_frames_at_resume,
+                );
+            }
+        }
     }
 }
 
@@ -1152,7 +1235,7 @@ impl Mixer {
         // already-created ring is a config-class fault (main() exits 78,
         // `RestartPreventExitStatus=78` parks the unit); everything else this
         // open can fail with is TRANSIENT and keeps the restart ladder — see
-        // `ring_open_error_is_config_class`.
+        // `jasper_ring::ring_open_error_is_config_class`.
         let geometry = Geometry {
             rate: config.sample_rate,
             channels: CHANNELS,
@@ -1193,12 +1276,30 @@ impl Mixer {
             stall_active: Arc::clone(&counters.stall_active),
             last_stall_ms: Arc::clone(&counters.last_stall_ms),
             clockless_paces: Arc::clone(&counters.clockless_paces),
+            stall_log_dropped: Arc::clone(&counters.stall_log_dropped),
         };
+        // Ring-stall events are edge-triggered and rare, but when they DO fire
+        // it is because CamillaDSP is wedged — precisely when the mixer thread
+        // can least afford to allocate a String and write synchronously to
+        // journald's socket under CPUSchedulingPolicy=fifo. Hand the raw
+        // (`Copy`) event to a dedicated thread instead, mirroring the impulse
+        // tap's mixer-thread/writer-thread split above. The TTS mixer thread
+        // shares this SAME channel/thread for its own log events (issue
+        // #4787) — one clone of the sender, not a second writer thread.
+        let (stall_log_tx, stall_log_rx) =
+            std::sync::mpsc::sync_channel::<FaninLogEvent>(FANIN_LOG_CHANNEL_CAPACITY);
+        let ring_stall_log_writer = std::thread::Builder::new()
+            .name("fanin-ring-log".into())
+            .stack_size(HELPER_STACK_BYTES)
+            .spawn(move || run_ring_stall_log_writer(stall_log_rx))
+            .context("spawning fanin-ring-log thread")?;
+        let tts_log_tx = stall_log_tx.clone();
         let output = RingOutput {
             writer,
             counters,
             pace: PeriodPacer::new(period_ns),
             stall: RingStallTracker::new(),
+            stall_log: stall_log_tx,
         };
 
         if config.usb_direct_enabled {
@@ -1228,7 +1329,15 @@ impl Mixer {
             frames_written: Arc::new(AtomicU64::new(0)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
             period_frames: config.period_frames,
-            tts: tts.map(TtsMixer::new),
+            // Production always wires a real `log_tx` here, overriding whatever
+            // the caller's `TtsInput` set — `main.rs` cannot see this channel
+            // before `Mixer::new` creates it.
+            tts: tts.map(|input| {
+                TtsMixer::new(TtsInput {
+                    log_tx: Some(tts_log_tx),
+                    ..input
+                })
+            }),
             program_duck_current: 1.0,
             program_duck_attack_step: duck_step_per_frame(
                 config.tts_duck_attack_ms,
@@ -1241,6 +1350,7 @@ impl Mixer {
             ring_observability,
             direct_tap,
             direct_tap_receiver: Some(tap_receiver),
+            ring_stall_log_writer: Some(ring_stall_log_writer),
             // Init to the inert state (not-l0, 0 ppm) so decay never leaves the
             // ceiling until the servo thread actually reports `l0_locked`.
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
@@ -1340,6 +1450,13 @@ impl Mixer {
     /// already taken.
     pub fn take_direct_tap_receiver(&mut self) -> Option<std::sync::mpsc::Receiver<TapEvent>> {
         self.direct_tap_receiver.take()
+    }
+
+    /// Take the `fanin-ring-log` thread's handle so `main` can join it at
+    /// shutdown, after dropping the `Mixer` (which drops `stall_log` and ends
+    /// the writer's loop). Returns `None` if already taken.
+    pub fn take_ring_stall_log_writer(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.ring_stall_log_writer.take()
     }
 
     /// Shared selected-input index for the STATUS/control endpoint.
@@ -1625,14 +1742,15 @@ fn write_ring_period(ring: &mut RingOutput, payload: &[u8], period_frames: u32) 
         reader_pid: liveness.pid,
         reader_heartbeat_age_ms: liveness.heartbeat_age_ms,
     }) {
-        match event {
-            RingStallEvent::Detected { .. } | RingStallEvent::Unrecovered { .. } => {
-                warn!("{}", format_ring_stall_event(&event));
-            }
-            RingStallEvent::Cleared { .. } => {
-                info!("{}", format_ring_stall_event(&event));
-            }
-        }
+        // No format!/log here: `event` is `Copy` (no allocation), and
+        // `run_ring_stall_log_writer` does the formatting and the journald
+        // write off this SCHED_FIFO thread. `try_send` never blocks; a full
+        // or disconnected channel (the writer thread wedged or exited) drops
+        // the log line, not a period — `stall_log_dropped` counts it (ADR-0254).
+        let stall_log_dropped = &ring.counters.stall_log_dropped;
+        send_drop_counted(&ring.stall_log, FaninLogEvent::RingStall(event), || {
+            stall_log_dropped.fetch_add(1, Ordering::Relaxed);
+        });
     }
     ring.counters
         .stall_active
@@ -2890,12 +3008,18 @@ mod tests {
         let path = dir.join("program.ring").to_string_lossy().into_owned();
         let writer = RingWriter::create_or_attach(&path, ring_geometry(n_slots)).unwrap();
         let counters = RingCounters::new();
+        // No test spawns `run_ring_stall_log_writer`; a stall-event test that
+        // needs to observe delivery swaps this sender for its own (see
+        // `ring_stall_cleared_event_ships_over_the_off_thread_channel`).
+        let (stall_log, _stall_log_rx) =
+            std::sync::mpsc::sync_channel::<FaninLogEvent>(FANIN_LOG_CHANNEL_CAPACITY);
         let ring = RingOutput {
             writer,
             counters,
             // One 256-frame period at 48k, in ns.
             pace: PeriodPacer::new(256 * 1_000_000_000 / 48_000),
             stall: RingStallTracker::new(),
+            stall_log,
         };
         (ring, path)
     }
@@ -3004,6 +3128,7 @@ mod tests {
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
+            log_tx: None,
         });
         for command in [
             TtsCommand::ProgramDuckOn,
@@ -3062,6 +3187,7 @@ mod tests {
             stall_active: Arc::clone(&counters.stall_active),
             last_stall_ms: Arc::clone(&counters.last_stall_ms),
             clockless_paces: Arc::clone(&counters.clockless_paces),
+            stall_log_dropped: Arc::clone(&counters.stall_log_dropped),
         };
         let mut mixer = Mixer {
             inputs: Vec::new(),
@@ -3085,6 +3211,9 @@ mod tests {
                 tap_sender,
             ),
             direct_tap_receiver: Some(tap_receiver),
+            // No `run_ring_stall_log_writer` thread in this hand-built test
+            // fixture: `tmp_ring_output`'s `stall_log` sender has no reader.
+            ring_stall_log_writer: None,
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             usb_connection_epoch: Arc::new(AtomicU64::new(0)),
             host_clock_timing_failed: Arc::new(AtomicBool::new(false)),
@@ -3295,6 +3424,63 @@ mod tests {
         assert!(ring.counters.drop_no_reader.load(Ordering::Relaxed) > 0);
         assert_eq!(ring.counters.stuck_reader_drops.load(Ordering::Relaxed), 0);
         assert!(ring.counters.occupancy.load(Ordering::Relaxed) <= 2);
+        cleanup_ring(&path);
+    }
+
+    /// `write_ring_period` must hand a stall edge to `stall_log`'s channel,
+    /// never format or log it inline (issue #4787) — the RT-thread half of
+    /// the split `run_ring_stall_log_writer` implements. Seeds an
+    /// already-`logged` episode directly (private-field access from this
+    /// child module) so the `Cleared` edge fires on one successful publish,
+    /// with no real stall-duration wait.
+    #[test]
+    fn ring_stall_cleared_event_ships_over_the_off_thread_channel() {
+        let period_frames = RING_SLOT_FRAMES;
+        let (mut ring, path) = tmp_ring_output(2, "stall_log_seam");
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        ring.stall_log = tx;
+        ring.stall.logged = true;
+        ring.stall.run_reason = StallReason::NoReader;
+        ring.stall.run_dropped_periods = 5;
+        ring.stall.last_stall_ms = 777;
+
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let payload = vec![0u8; total * BYTES_PER_SAMPLE];
+        write_ring_period(&mut ring, &payload, period_frames);
+
+        let event = rx.try_recv().expect(
+            "write_ring_period must ship the Cleared event over stall_log, not log it inline",
+        );
+        assert_eq!(
+            event,
+            FaninLogEvent::RingStall(RingStallEvent::Cleared {
+                reason: StallReason::NoReader,
+                duration_ms: 777,
+                dropped_periods: 5,
+            })
+        );
+        cleanup_ring(&path);
+    }
+
+    /// A stall event that cannot reach `fanin-ring-log` (writer thread gone)
+    /// must still be counted (ADR-0254) — never silently lost with no trace.
+    #[test]
+    fn ring_stall_log_drop_is_counted_when_the_writer_thread_is_gone() {
+        let period_frames = RING_SLOT_FRAMES;
+        let (mut ring, path) = tmp_ring_output(2, "stall_log_drop");
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        ring.stall_log = tx;
+        drop(rx); // No writer thread draining it: every send is `Disconnected`.
+        ring.stall.logged = true;
+        ring.stall.run_reason = StallReason::NoReader;
+        ring.stall.run_dropped_periods = 1;
+        ring.stall.last_stall_ms = 42;
+
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let payload = vec![0u8; total * BYTES_PER_SAMPLE];
+        write_ring_period(&mut ring, &payload, period_frames);
+
+        assert_eq!(ring.counters.stall_log_dropped.load(Ordering::Relaxed), 1);
         cleanup_ring(&path);
     }
 

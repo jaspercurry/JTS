@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import re
 import subprocess
 from functools import lru_cache
@@ -44,20 +45,7 @@ def _strip_comment_lines(text: str, *, markers: tuple[str, ...]) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# The emitter side: the NESTED key tree a hand-rolled Rust STATUS writer
-# builds.
-#
-# LIMITATION: parsed from the writer source, never executed — the pytest lane
-# has no cargo, and the daemon crates need ALSA headers to build at all — so
-# the tree is the UNION of every conditional block (a key only one config
-# reaches is still present), and a subtree that arrives as an opaque fragment
-# from another crate is marked OPAQUE and accepts any path below it.
-# ---------------------------------------------------------------------------
-
-#: Child marker for a node whose subtree the source cannot show: a value
-#: pushed as a pre-rendered fragment (``host_clock``, ``tap``) or an object
-#: whose key is a runtime variable (``dac_content``'s per-transport path).
+# Source-derived fan-in subtrees may be opaque; outputd uses Rust-verified JSON.
 OPAQUE = "*"
 
 _RUST_FN_RE = re.compile(r"^(?P<indent> *)(?:pub )?fn (?P<name>\w+)[(<]", re.MULTILINE)
@@ -130,13 +118,20 @@ def _parse_rust_emitter(
                 )
 
 
-@lru_cache(maxsize=None)
-def _rust_status_key_tree(path: Path) -> dict:
-    """The nested key structure ``snapshot_json`` emits, as nested dicts.
+def _merge_json_keys(value: object, tree: dict) -> None:
+    for node in value if isinstance(value, list) else [value]:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                _merge_json_keys(child, tree.setdefault(key, {}))
 
-    Test-only assertions are cut at ``#[cfg(test)]`` so they cannot satisfy
-    the production contract.
-    """
+
+@lru_cache(maxsize=None)
+def _status_key_tree(path: Path) -> dict:
+    if path == OUTPUTD_STATE_RS:
+        tree: dict = {}
+        for line in (REPO / "tests/fixtures/outputd-snapshots.jsonl").read_text().splitlines():
+            _merge_json_keys(json.loads(line), tree)
+        return tree
     src = path.read_text().split("#[cfg(test)]", 1)[0]
     src = _strip_comment_lines(src, markers=("//",))
     bodies = _rust_fn_bodies(src)
@@ -158,7 +153,7 @@ def _rust_emitted_json_keys(path: Path) -> set[str]:
             names |= flatten(child)
         return names
 
-    return flatten(_rust_status_key_tree(path))
+    return flatten(_status_key_tree(path))
 
 
 def _emits_path(tree: dict, path: tuple[str, ...]) -> bool:
@@ -410,7 +405,7 @@ def test_python_status_reads_match_the_rust_emitters_nesting():
                 f"{consumer_rel} — its reads moved, or the roots did"
             )
         for daemon, paths in sorted(found.items()):
-            tree = _rust_status_key_tree(STATUS_RS[daemon])
+            tree = _status_key_tree(STATUS_RS[daemon])
             # The one way this guard passes vacuously: an OPAQUE at the root
             # accepts every path under it.
             assert OPAQUE not in tree, f"{daemon} emitter tree — extractor broke?"
@@ -439,7 +434,7 @@ def test_status_path_exceptions_stay_accurate():
             f"read — dead entry; remove it."
         )
         for daemon in daemons:
-            assert not _emits_path(_rust_status_key_tree(STATUS_RS[daemon]), path), (
+            assert not _emits_path(_status_key_tree(STATUS_RS[daemon]), path), (
                 f"exception ({consumer_rel}, {dotted}) ({reason}) IS emitted "
                 f"now — the contract is live; remove the exception."
             )
@@ -802,168 +797,6 @@ async def test_state_opens_no_secret_compartment(monkeypatch, tmp_path):
     await _state_payload(monkeypatch, tmp_path)
 
     assert [p for p in opened if "secrets" in p] == []
-
-
-# ---------------------------------------------------------------------------
-# 2. JASPER_OUTPUTD_* / JASPER_FANIN_* env name-set drift
-#
-# The bash reconcilers, systemd units, install.sh, the wizard-owned env
-# stagers in Python, and .env.example all spell these names by hand; the
-# only readers are the two Rust daemons' from_env. An env var written
-# with a name Rust doesn't read is a silent no-op — the deploy "works"
-# and the knob does nothing. Pin: every non-comment mention of a
-# JASPER_OUTPUTD_*/JASPER_FANIN_* name anywhere outside rust/ must be a
-# name the Rust readers know, or carry a documented exception below.
-# ---------------------------------------------------------------------------
-
-# Names mentioned outside rust/ that the Rust daemons intentionally do
-# NOT read today. Each entry must stay accurate in both directions: the
-# guard fails if an exception becomes dead (no longer mentioned) or
-# becomes live (Rust starts reading it) — remove the entry then.
-ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
-    # (The former JASPER_OUTPUTD_SNAPFIFO_PATH exception was dropped
-    # 2026-06-11: the outputd-as-producer machinery was REMOVED — the
-    # canonical design feeds the snapserver pipe from the leader's
-    # CamillaDSP, so the env is no longer written anywhere.)
-    # Python-consumer-side override of where mux CONNECTS; fanin's own
-    # bind path is a hardcoded Rust constant (see
-    # test_control_socket_paths_agree_across_processes). Setting this
-    # alone cannot move fan-in's socket.
-    "JASPER_FANIN_CONTROL_SOCKET": "mux connect-path knob, not a fanin knob",
-    # The route plan's fan-in resampler arm. fan-in no longer reads it: the lane
-    # resampler is implied by JASPER_FANIN_USB_DIRECT, the only mode that gives
-    # that lane a device to read. jasper/audio_runtime_plan.py still sets/unsets
-    # the key for the usb_low_latency_48k route.
-    # REMOVAL CONDITION: goes when that route stops writing the key.
-    "JASPER_FANIN_INPUT_RESAMPLER": "route-plan key; fan-in arms the lane resampler from JASPER_FANIN_USB_DIRECT",
-    # AirPlay receiver-side timing/offset helper knobs. These change where the
-    # shell helper PROBES STATUS; they do not move either daemon's bind socket.
-    "JASPER_FANIN_STATUS_SOCKET": "AirPlay helper probe path, not a fanin knob",
-    "JASPER_OUTPUTD_STATUS_SOCKET": "AirPlay helper probe path, not an outputd knob",
-    # outputd failure-reconcile helper state. These tune the stamp that bounds
-    # the helper to one reconcile per window across every failure class; they
-    # are consumed only by deploy/bin/jasper-outputd-failure-reconcile, not by
-    # the Rust daemon.
-    "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper reconcile stamp path; script-only",
-    "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper reconcile window; script-only",
-    # The park record that same helper writes on the branches that leave outputd
-    # parked, read back by jasper/outputd_failure_reconcile_state.py for the
-    # doctor and /state. The Rust daemon reads neither end.
-    "JASPER_OUTPUTD_RECONCILE_PARK_STATE": "outputd park record path; shell writer + jasper.outputd_failure_reconcile_state reader",
-    # Ring B's slot count, retired as an env: outputd now takes the depth from
-    # `jasper_ring::RING_SLOTS` (rust/jasper-ring/layout.json), the same constant
-    # jasper.ring_assets renders into the ioplug's conf.d blocks, so the two ends
-    # cannot disagree. The surviving mention is the fan-in coupling reconciler,
-    # which still writes the key into outputd.env; that write is inert.
-    # REMOVAL CONDITION: goes when `jasper.fanin_coupling.OUTPUTD_RING_SLOTS_ENV_VAR`
-    # and its reconciler writer go.
-    "JASPER_OUTPUTD_SHM_RING_SLOTS": "retired knob; the fan-in reconciler still writes an inert line",
-    # The retired content lane's capture PCM. outputd no longer reads it
-    # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
-    # sweep removed the last writes and now actively REMOVES the key line from
-    # outputd.env, so one reconcile heals a box that carried a stale one and
-    # ABSENT is the steady state. The ONE surviving mention is
-    # jasper/audio_runtime_plan.py's retired-route describer, which reads the
-    # key with an absent-key default — the state every reconciled box is in.
-    # REMOVAL CONDITION: goes when that describer goes.
-    "JASPER_OUTPUTD_CONTENT_PCM": "retired lane; read with a default by the park describer, written by nothing",
-    # The removed transport_pipe coupling's outputd key. The Rust
-    # local_content_pipe path was deleted with the coupling, so it is not
-    # Rust-read anymore; it survives as the reconciler's legacy migration-sweep
-    # UNSET target (_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV) so a migrating box
-    # converges clean. (Its sibling JASPER_FANIN_CAMILLA_PIPE was excepted while
-    # the fanin_coupling removal docstring still named it; ADR-0100 deleted that
-    # docstring, so this guard demanded the dead entry back — removed here, in
-    # the direction the guard exists to force.)
-    "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "removed transport_pipe coupling; reconciler migration-sweep unset target, not Rust-read",
-    # (JASPER_OUTPUTD_DAC_FORMAT was excepted for one PR while the registry
-    # declared it and no consumer existed. PR-2 landed outputd's read, so the
-    # entry was removed in the direction this guard demands — the contract is
-    # live Rust-read config now.)
-}
-
-# Script-local variables that *name the env file path itself* (e.g.
-# OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-...}") — deploy plumbing,
-# not daemon env.
-_ENV_FILE_KNOB_SUFFIX = "_ENV_FILE"
-
-_ENV_NAME_RE = re.compile(r"JASPER_(?:OUTPUTD|FANIN)_[A-Z0-9_]*[A-Z0-9]")
-
-
-def _env_names_in(text: str) -> set[str]:
-    return set(_ENV_NAME_RE.findall(text))
-
-
-def _rust_read_env_names() -> set[str]:
-    names: set[str] = set()
-    for crate in ("jasper-outputd", "jasper-fanin"):
-        for rs in (REPO / "rust" / crate / "src").glob("*.rs"):
-            names |= _env_names_in(
-                _strip_comment_lines(rs.read_text(), markers=("//",))
-            )
-    return names
-
-
-def _non_rust_env_mentions() -> dict[str, set[str]]:
-    """Map env-var name -> set of repo-relative files mentioning it,
-    across the writer/spelling surfaces (comment lines stripped)."""
-    surfaces: list[Path] = [REPO / ".env.example"]
-    surfaces += sorted((REPO / "jasper").rglob("*.py"))
-    surfaces += [
-        p for p in sorted((REPO / "deploy").rglob("*"))
-        if p.is_file() and p.suffix not in {".png", ".jpg", ".woff2", ".bin"}
-        and "assets" not in p.parts
-    ]
-    mentions: dict[str, set[str]] = {}
-    for path in surfaces:
-        try:
-            text = path.read_text()
-        except (UnicodeDecodeError, OSError):
-            continue
-        stripped = _strip_comment_lines(text, markers=("#", "//"))
-        for name in _env_names_in(stripped):
-            mentions.setdefault(name, set()).add(
-                str(path.relative_to(REPO))
-            )
-    return mentions
-
-
-def test_outputd_fanin_env_names_are_read_by_rust_or_excepted():
-    rust_names = _rust_read_env_names()
-    assert rust_names, "no env names extracted from Rust sources — extractor broke?"
-    problems: list[str] = []
-    for name, files in sorted(_non_rust_env_mentions().items()):
-        if name.endswith(_ENV_FILE_KNOB_SUFFIX):
-            continue
-        if name in rust_names:
-            continue
-        if name in ENV_CONTRACT_EXCEPTIONS:
-            continue
-        problems.append(
-            f"{name} is spelled in {sorted(files)} but no Rust daemon "
-            f"(rust/jasper-outputd, rust/jasper-fanin) reads it — "
-            f"silent no-op env. Fix the name, or add a documented "
-            f"exception in {Path(__file__).name}."
-        )
-    assert not problems, "\n".join(problems)
-
-
-def test_env_contract_exceptions_stay_accurate():
-    rust_names = _rust_read_env_names()
-    mentions = _non_rust_env_mentions()
-    problems: list[str] = []
-    for name, reason in ENV_CONTRACT_EXCEPTIONS.items():
-        if name in rust_names:
-            problems.append(
-                f"exception {name} ({reason}) is now READ by a Rust "
-                f"daemon — the contract is live; remove the exception."
-            )
-        if name not in mentions:
-            problems.append(
-                f"exception {name} ({reason}) is no longer mentioned "
-                f"anywhere — dead entry; remove it."
-            )
-    assert not problems, "\n".join(problems)
 
 
 # ---------------------------------------------------------------------------

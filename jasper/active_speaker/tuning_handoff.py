@@ -87,6 +87,7 @@ def build_tuning_handoff(
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,
         "reason": reason,
         "binding": binding,
+        "driver_spacing_mm": commissioning_view.get("driver_spacing_mm"),
         "programs": [{**entry, "prompt": build_tuning_handoff_prompt(binding, entry["id"]) if ready else ""}
                      for entry in PROGRAM_ENTRIES],
     }

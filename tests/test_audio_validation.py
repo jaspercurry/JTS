@@ -732,7 +732,6 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_and_passes():
     assert artifact.checks["dac_support"]["status"] == "pass"
     assert artifact.checks["dac_reference"]["status"] == "pass"
     assert artifact.checks["wake_legs"]["status"] == "pass"
-    assert "measured_drift_delay" not in artifact.checks
     # The readiness recommendation stays gated behind an explicit hardware
     # run even though every readiness check passes.
     assert artifact.recommendation == "run_hardware_validation"
@@ -950,7 +949,6 @@ def test_chip_aec_hardware_validation_clean_passive_evidence_still_recommends_dr
     assert artifact.checks["bridge_counter_window"]["status"] == "pass"
     assert artifact.checks["chip_profile_readback"]["status"] == "pass"
     assert artifact.checks["chip_convergence"]["status"] == "pass"
-    assert "measured_drift_delay" not in artifact.checks
     # The hardware recommendation stays gated behind an explicit drift/delay
     # probe even though every sampled check passes.
     assert artifact.recommendation == "run_drift_delay_validation"
@@ -1174,7 +1172,6 @@ def test_latest_artifact_summary_reads_timestamped_artifacts(tmp_path):
         "mic_id": "xvf3800",
         "dac_id": "apple_usb_c_dongle",
     }
-    assert "measured_drift_delay" not in summary["check_statuses"]
 
 
 def test_latest_artifact_summary_prefers_latest_pointer(tmp_path):

@@ -870,7 +870,7 @@ def test_incomplete_measurements_refuse_and_preserve_partial_results(
     manifest = json.loads((bundle / ARTIFACTS / report["run_manifest"]).read_text())
     assert manifest["status"] == "partial"
     assert len(manifest["not_measured"]) == spec_count
-    assert manifest["sets"][0]["takes"][0]["next_action"] == "stop"
+    assert manifest["sets"][0]["takes"][0]["next"] == "stop"
     cam = speaker["cam"]
     assert cam.loaded[-1] == cam.entry_path.read_text()
     assert cam.volume_db == pytest.approx(HOUSEHOLD_DB)

@@ -385,12 +385,9 @@ async def _reconcile_volume_curve_after_settings(
             librespot_state_path=librespot_state.configured_path(),
         ),
     )
-    try:
-        coord.load_persisted_level()
-        await coord.maybe_reconcile_camilla()
-        return True
-    finally:
-        await coord.aclose()
+    coord.load_persisted_level()
+    await coord.maybe_reconcile_camilla()
+    return True
 
 
 async def _audition_profile(
