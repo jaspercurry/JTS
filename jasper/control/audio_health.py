@@ -50,8 +50,15 @@ from .airplay_health import (
     AirPlayHealthSampler,
     SAMPLE_INTERVAL_SEC,
 )
-from ._health_fields import _duration_label, _finite_number, _mapping
-from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
+from ._health_fields import (
+    _as_int,
+    _detail,
+    _duration_label,
+    _finite_number,
+    _mapping,
+    _nonnegative_counter,
+)
+from .audio_incidents import IncidentStore, IssueTracker, SessionRollup, issue_row
 from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
@@ -236,21 +243,6 @@ _SOURCE_PRIMARY_UNITS = {
 }
 
 
-def _as_int(value: Any, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _nonnegative_counter(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
 def _read_local_status(
     socket_path: str = OUTPUTD_STATUS_SOCKET,
     timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
@@ -331,7 +323,7 @@ def _empty_transport() -> dict[str, Any]:
     single append anywhere would report the box as parked for the lifetime of
     the process.
     """
-    return {"coherence_errors": [], "coherence_notes": [], "capability_gap": None}
+    return {"coherence_errors": [], "capability_gap": None}
 
 
 def _transport_state(
@@ -346,11 +338,6 @@ def _transport_state(
     same function — so this offers no second opinion about what "disconnected"
     means.  The capability gap says *why* it cannot self-heal when the saved
     layout needs hardware the DAC does not have.
-
-    ``coherence_notes`` carries the report's non-error half (coherent but not
-    steady) verbatim for whoever curls ``/state``, and is deliberately NOT fed
-    to :func:`_parked_signal`: that is a rung of an operator-only ladder the
-    household cannot act on, and ``jasper-doctor`` is its loud surface.
 
     ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
     loosely because this module imports the topology layer lazily.
@@ -369,7 +356,6 @@ def _transport_state(
     gap = active_lane_capability_gap(topology)
     return {
         "coherence_errors": list(report.errors),
-        "coherence_notes": list(report.notes),
         # An unrecognized DAC profile carries no capability_gap: it is not
         # proof of a gap, only the absence of a profile to check.
         "capability_gap": gap.to_dict() if isinstance(gap, ActiveLaneCapabilityGap) else None,
@@ -410,7 +396,6 @@ def _parked_graph_transport() -> dict[str, Any] | None:
             "coherence_errors": [
                 "Saved speaker layout is unavailable or invalid; run jasper-doctor"
             ],
-            "coherence_notes": [],
             "capability_gap": None,
         }
     gap = active_lane_capability_gap(topology)
@@ -419,7 +404,6 @@ def _parked_graph_transport() -> dict[str, Any] | None:
             "CamillaDSP is holding the parked graph, so every output is muted "
             f"({parked_muted_exits(topology)})"
         ],
-        "coherence_notes": [],
         "capability_gap": gap.to_dict() if isinstance(gap, ActiveLaneCapabilityGap) else None,
     }
 
@@ -507,26 +491,6 @@ def read_route_claim() -> dict[str, Any]:
             "transport": _empty_transport(),
         }
 
-
-def _issue(
-    key: str,
-    *,
-    scope: str,
-    impact: str,
-    severity: str,
-    title: str,
-    detail: str,
-    source_id: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "scope": scope,
-        "source_id": source_id,
-        "impact": impact,
-        "severity": severity,
-        "title": title,
-        "detail": detail,
-    }
 
 def _selected_source(airplay: Mapping[str, Any]) -> str | None:
     current = _mapping(airplay.get("current"))
@@ -1242,7 +1206,7 @@ def _state_issues(
     issues: list[dict[str, Any]] = []
     park_state = _mapping(transport_park)
     if coherence_park is not None and park_state.get("status") != "parked":
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.transport_parked",
             scope="path",
             impact="continuity",
@@ -1262,7 +1226,7 @@ def _state_issues(
             # household sentence. The operator's raw detail and the remedy
             # command stay in doctor and `/system/snapshot`'s `transport_park`.
             park_class = str(park.get("park_class"))
-            issues.append(_issue(
+            issues.append(issue_row(
                 f"path.transport_park.{park_class}",
                 scope="path",
                 impact="continuity",
@@ -1274,7 +1238,7 @@ def _state_issues(
     current = _mapping(airplay.get("current"))
     fanin = current.get("fanin")
     if activity_unknown:
-        issues.append(_issue(
+        issues.append(issue_row(
             "monitor.mux_status_unavailable",
             scope="monitor",
             impact="observability",
@@ -1283,7 +1247,7 @@ def _state_issues(
             detail=ACTIVITY_UNKNOWN_DETAIL,
         ))
     if not warmup and not isinstance(fanin, Mapping):
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.fanin_unavailable",
             scope="path",
             impact="continuity",
@@ -1296,7 +1260,7 @@ def _state_issues(
             _mapping(service_states).get(CAMILLA_UNIT_FULL)
         )
         if camilla_stopped is not None:
-            issues.append(_issue(
+            issues.append(issue_row(
                 "path.camilla_stopped",
                 scope="path",
                 impact="continuity",
@@ -1316,7 +1280,7 @@ def _state_issues(
         else:
             title = _OUTPUT_ABSENT_TITLE
             detail = _OUTPUT_ABSENT_DETAIL
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.outputd_unavailable",
             scope="path",
             impact="continuity",
@@ -1328,7 +1292,7 @@ def _state_issues(
     # rather than a second copy of it: one writer per household sentence.
     path_code = signal_path.get("code")
     if path_code == "path_stalled":
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.fanin_watchdog_stale",
             scope="path",
             impact="continuity",
@@ -1337,7 +1301,7 @@ def _state_issues(
             detail=str(signal_path.get("detail")),
         ))
     if path_code == "output_deaf":
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.outputd_content_deaf",
             scope="path",
             impact="continuity",
@@ -1346,7 +1310,7 @@ def _state_issues(
             detail=str(signal_path.get("detail")),
         ))
     if path_code == "output_stalled":
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.outputd_watchdog_stale",
             scope="path",
             impact="continuity",
@@ -1362,7 +1326,7 @@ def _state_issues(
         else:
             title = str(signal_path.get("headline"))
             detail = str(signal_path.get("detail"))
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.outputd_backend_inactive",
             scope="path",
             impact="continuity",
@@ -1371,7 +1335,7 @@ def _state_issues(
             detail=detail,
         ))
     if path_code == "tts_queue_full":
-        issues.append(_issue(
+        issues.append(issue_row(
             "path.tts_queue_full",
             scope="path",
             impact="continuity",
@@ -1381,7 +1345,7 @@ def _state_issues(
         ))
     if path_code in {"input_absent", "input_broken", "input_stalled"}:
         source_id = active_source
-        issues.append(_issue(
+        issues.append(issue_row(
             f"{source_id or 'source'}.input_unavailable",
             scope="source",
             source_id=source_id,
@@ -1394,7 +1358,7 @@ def _state_issues(
         latency_runtime = _mapping(latency.get("runtime"))
         raw_mode = latency_runtime.get("raw_mode")
         if raw_mode == "l2_fallback" and latency_runtime.get("preset") != "high":
-            issues.append(_issue(
+            issues.append(issue_row(
                 "usbsink.latency_fallback",
                 scope="latency",
                 source_id=Source.USBSINK.value,
@@ -1404,7 +1368,7 @@ def _state_issues(
                 detail="Playback continues safely with more buffering.",
             ))
         elif raw_mode == "l1_warn":
-            issues.append(_issue(
+            issues.append(issue_row(
                 "usbsink.clock_tracking_warn",
                 scope="latency",
                 source_id=Source.USBSINK.value,
@@ -1414,7 +1378,7 @@ def _state_issues(
                 detail="Playback is still in its low-delay mode.",
             ))
         if latency.get("status") == "unknown":
-            issues.append(_issue(
+            issues.append(issue_row(
                 "usbsink.latency_state_unavailable",
                 scope="latency",
                 source_id=Source.USBSINK.value,
@@ -1427,7 +1391,7 @@ def _state_issues(
             _mapping(latency.get("runtime")).get("raw_mode")
             not in {"l0_locked", "l1_warn", "l2_fallback", "probing"}
         ):
-            issues.append(_issue(
+            issues.append(issue_row(
                 "usbsink.host_clock_unavailable",
                 scope="latency",
                 source_id=Source.USBSINK.value,
@@ -1447,7 +1411,7 @@ def _state_issues(
             unit_state = _mapping(service_states).get(unit)
             if desired is False:
                 if _mapping(unit_state).get("active_state") == "active":
-                    issues.append(_issue(
+                    issues.append(issue_row(
                         f"{source_id}.service.{unit}.off_drift",
                         scope="source",
                         source_id=source_id,
@@ -1462,7 +1426,7 @@ def _state_issues(
                 continue
             if not unit_failed(_mapping(unit_state)):
                 continue
-            issues.append(_issue(
+            issues.append(issue_row(
                 f"{source_id}.service.{unit}",
                 scope="source",
                 source_id=source_id,
@@ -1619,10 +1583,6 @@ def _source_cards(
             "timing": timing,
         })
     return cards
-
-
-def _detail(label: str, value: Any) -> dict[str, str]:
-    return {"label": label, "value": str(value)}
 
 
 def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
@@ -2848,7 +2808,7 @@ class AudioHealthSampler:
             ):
                 continue
             if event_type == "camilla_playback_underrun":
-                candidate = _issue(
+                candidate = issue_row(
                     f"path.{event_type}",
                     scope="path",
                     impact="continuity",
@@ -2864,7 +2824,7 @@ class AudioHealthSampler:
                     "shairport_sync_negative",
                     "shairport_offset_too_short",
                 } else "continuity"
-                candidate = _issue(
+                candidate = issue_row(
                     f"airplay.{event_type}",
                     scope="source",
                     source_id=Source.AIRPLAY.value,
@@ -2903,7 +2863,7 @@ class AudioHealthSampler:
             skipped_delta = pings_skipped - self._previous_fanin_pings_skipped
             if skipped_delta > 0:
                 self._record_point(
-                    _issue(
+                    issue_row(
                         "path.fanin_watchdog_recovered",
                         scope="path",
                         impact="continuity",
@@ -2941,7 +2901,7 @@ class AudioHealthSampler:
                 delta = count - previous
                 if delta > 0:
                     self._record_point(
-                        _issue(
+                        issue_row(
                             f"{source_id}.input_xrun",
                             scope="source",
                             source_id=source_id,
@@ -2978,7 +2938,7 @@ class AudioHealthSampler:
                     unexpected = max(0, unlock_delta - stop_delta)
                     if unexpected:
                         self._record_point(
-                            _issue(
+                            issue_row(
                                 "usbsink.latency_buffer_underfill",
                                 scope="source",
                                 source_id=Source.USBSINK.value,
@@ -3013,7 +2973,7 @@ class AudioHealthSampler:
                 delta = current_restarts - previous_restarts
                 if delta > 0:
                     self._record_point(
-                        _issue(
+                        issue_row(
                             f"{stem}.restarted",
                             scope="path",
                             impact="continuity",
@@ -3049,7 +3009,7 @@ class AudioHealthSampler:
         else:
             clipped_delta = clipped_samples - self._previous_outputd_clipped
             if clipped_delta > 0:
-                clipping_issue = _issue(
+                clipping_issue = issue_row(
                     "path.outputd_clipping",
                     scope="path",
                     impact="quality",
@@ -3079,7 +3039,7 @@ class AudioHealthSampler:
                         if stage == "dac" else "Music path recovered"
                     )
                     self._record_point(
-                        _issue(
+                        issue_row(
                             f"path.outputd_{stage}_xrun",
                             scope="path",
                             impact="continuity",

@@ -1094,12 +1094,12 @@ def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
     card blanks, and the incident lifecycle (recovered records, coalesced
     counts) is what puts `recurrence` and the duration fields on it at all.
     """
-    from jasper.control.audio_health import _issue, compose_audio_health
-    from jasper.control.audio_incidents import IssueTracker, SessionRollup
+    from jasper.control.audio_health import compose_audio_health
+    from jasper.control.audio_incidents import IssueTracker, SessionRollup, issue_row
 
     # An active USB source with one recurring, recovered incident — the one box
     # shape that reaches every optional block of the composed contract.
-    candidate = _issue(
+    candidate = issue_row(
         "audio.dropout", scope="source", source_id="usbsink",
         impact="continuity", severity="warn", title="Playback interrupted",
         detail="The stream stopped briefly.",
