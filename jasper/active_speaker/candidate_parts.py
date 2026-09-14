@@ -18,6 +18,7 @@ from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_c
 from .baseline_profile import (
     load_applied_baseline_profile_state,
 )
+from .crossover_v2.planning import alignment_to_candidate_fields
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .crossover_v2.topology_prescription import apply_topology_pin
 from .crossover_preview import build_crossover_preview
@@ -185,11 +186,10 @@ def compose_candidate(
     resolved_alignment = base.candidate.alignment
     if "alignment" in selected:
         pin = selected["alignment"]
-        role_order = required_driver_roles(preset.way_count)
-        resolved_alignment = pin if isinstance(pin, MeasuredCrossoverAlignment) else (MeasuredCrossoverAlignment(
-            abs(pin.delay_us), role_order[1] if pin.delay_us >= 0 else role_order[0],
-            pin.polarity or resolved_alignment.polarity or "keep",
-        ) if pin else MeasuredCrossoverAlignment())
+        if pin and not isinstance(pin, MeasuredCrossoverAlignment):
+            fields = alignment_to_candidate_fields(pin, roles=required_driver_roles(preset.way_count))
+            pin = MeasuredCrossoverAlignment(*fields[:2], fields[2] or resolved_alignment.polarity or "keep")
+        resolved_alignment = pin or MeasuredCrossoverAlignment()
     room = dict(selected.get("room", base.candidate.room_correction) or {})
     bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
     resolution = {
