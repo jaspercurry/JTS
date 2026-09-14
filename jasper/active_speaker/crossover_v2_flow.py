@@ -3089,15 +3089,6 @@ class CrossoverV2Session:
             artifact_ref=artifact_ref,
         )
 
-    def note_take_banked(self, metadata: Mapping[str, Any]) -> None:
-        """Attach the saved take's identity after its write succeeds."""
-        baseline = self._measure_entry_baseline
-        if metadata.get("phase") == PHASE_ENTRY_BASELINE and baseline is not None:
-            self._measure_entry_baseline = replace(
-                baseline, artifact_ref=str(metadata["take_id"]),
-                graph_fingerprint=str(metadata["graph_fingerprint"]),
-            )
-
     def _entry_graph_fingerprint(self) -> str:
         """Which graph this capture was measured through, or the unknown word."""
         from jasper.active_speaker.crossover_v2 import coordinator

@@ -26,6 +26,18 @@ from jasper.log_event import log_event
 from .contracts import REFERENCE_MARK_DESIGN_AXIS
 from .priors import configured_crossover_transfers
 from .record_index import measurement_documents, record_path, reopen_measurement_capture
+from .round_evidence import EntryBaseline, measured_response_from_analysis
+
+
+def banked_entry_baseline(record: Mapping[str, Any], analysis: Any) -> EntryBaseline | None:
+    if (record.get("position_deg") != 0 or record.get("vertical_deg", 0) != 0
+            or record.get("graph_scope") not in {"applied", "candidate"}):
+        return None
+    measured = measured_response_from_analysis(analysis, reference_mark=REFERENCE_MARK_DESIGN_AXIS)
+    return EntryBaseline.from_measurement(
+        measured, graph_fingerprint=record["graph_fingerprint"],
+        captured_at=str(record.get("captured_at") or "unknown"), artifact_ref=record["take_id"],
+    ) if measured is not None else None
 
 
 def reference_from_graph(
@@ -75,7 +87,9 @@ def cached_session_reference(session: Any) -> SummedAlignmentReference | None:
     cached = getattr(session, "_summed_alignment_reference_cache", None)
     if cached is None or cached[0] != key:
         seam = session._seams.summed_alignment_reference
-        cached = session._summed_alignment_reference_cache = (key, seam(baseline, session._preset) if seam else None)
+        reference = (_unreadable("no_entry_baseline") if baseline is None else
+                     seam(baseline, session._preset) if seam else None)
+        cached = session._summed_alignment_reference_cache = (key, reference)
     return cached[1]
 
 
