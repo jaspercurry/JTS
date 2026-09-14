@@ -563,7 +563,7 @@ def _stopped_dsp_signal(
     `_signal_path` healthy while the speaker emits nothing.
 
     Presentation only, like :func:`_parked_signal`:
-    :class:`~jasper.control.audio_health.AudioHealthSampler` feeds
+    :class:`~jasper.control.audio_health_sampler.AudioHealthSampler` feeds
     :func:`~jasper.control.audio_state_issues._state_issues` the raw signal
     path, so `path.camilla_stopped` keeps its own incident row.
 

@@ -14,7 +14,8 @@ from __future__ import annotations
 import pytest
 
 from jasper.control import audio_signal_path
-from jasper.control.audio_health import AudioHealthSampler, compose_audio_health
+from jasper.control.audio_health import compose_audio_health
+from jasper.control.audio_health_sampler import AudioHealthSampler
 from jasper.output_hardware import OutputHardwareState
 from jasper.output_hardware import write_state as write_output_hardware_state
 

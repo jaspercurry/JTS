@@ -728,7 +728,7 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
 
     import jasper.control.server as srv_mod
     from jasper import flight_recorder
-    from jasper.control import audio_health, system_metrics
+    from jasper.control import audio_health_sampler, system_metrics
     from tests._log_events import event_fields
 
     class _NoopSampler:
@@ -746,7 +746,7 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
 
     monkeypatch.setattr(flight_recorder, "install", lambda *a, **k: False)
     monkeypatch.setattr(system_metrics, "SystemSampler", _NoopSampler)
-    monkeypatch.setattr(audio_health, "AudioHealthSampler", _NoopSampler)
+    monkeypatch.setattr(audio_health_sampler, "AudioHealthSampler", _NoopSampler)
 
     def _refuse(*args, **kwargs):
         raise OSError(errno.EADDRINUSE, "Address already in use")

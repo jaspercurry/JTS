@@ -6,8 +6,8 @@
 one ``/state``/``/system`` audio incident row per condition.
 
 :func:`_state_issues` is what
-:class:`~jasper.control.audio_health.AudioHealthSampler` calls every fast
-tick, and what ADR-0178's parked-transport tests
+:class:`~jasper.control.audio_health_sampler.AudioHealthSampler` calls every
+fast tick, and what ADR-0178's parked-transport tests
 (:mod:`tests.test_transport_eligibility`) call directly, one row per park
 class. It only NAMES conditions already computed elsewhere — the signal-path
 verdict, the transport-park snapshot, the setup hint — so two surfaces

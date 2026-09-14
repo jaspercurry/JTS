@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.control import audio_health, audio_route_claim
+from jasper.control import audio_health_sampler, audio_route_claim
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 from .active_speaker_fixtures import (
@@ -99,7 +99,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **e
     )
     # outputd's live STATUS is unreachable in-test; a ring-coupled outputd opens
     # no ALSA content PCM anyway, so there is no live value to prefer here.
-    monkeypatch.setattr(audio_health, "_read_local_status", lambda *a, **k: None)
+    monkeypatch.setattr(audio_health_sampler, "_read_local_status", lambda *a, **k: None)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "absent.json"))
     return audio_route_claim._read_transport_state(_plan_for(outputd_env))
 
