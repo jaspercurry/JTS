@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS, ControlResponse
 from jasper.control.grouping_supervisor import (
     GroupingSupervisor,
@@ -84,16 +86,13 @@ class _FakeSupervisor(GroupingSupervisor):
         self.kick_calls = 0
         self.kick_error: BaseException | None = None
         self.now: float = 0.0
-        # Default False = dumb member (the dac_content round-trip path), so
-        # every pre-existing test keeps its meaning; active-endpoint tests
-        # flip it on.
-        self.active_endpoint_value = False
+        self.topology_state = (False, True)
 
     def load_grouping(self) -> GroupingConfig:
         return self.cfg
 
-    def active_endpoint(self) -> bool:
-        return self.active_endpoint_value
+    def output_topology_state(self) -> tuple[bool | None, bool]:
+        return self.topology_state
 
     async def outputd_status(self) -> dict | None:
         result = self.status_results.pop(0)
@@ -245,54 +244,20 @@ async def test_status_exception_counts_as_starved():
     assert sup.kick_calls == 1
 
 
-# ---------- active-endpoint skip (the 2026-06-23 jts3 self-kick) ----------
-# An ACTIVE follower / ACTIVE-speaker leader feeds the DAC through the
-# camilla#2 active-content lane; the reconciler disables `dac_content` for it,
-# so reading the lane's CORRECT absence as starvation would self-kick the
-# reconciler every window. The skip is keyed on active_endpoint (the same
-# is_active_speaker_box predicate the reconciler uses), NOT on role — a passive
-# (dumb) leader still uses the round-trip and must still kick when starved.
-
-
-async def test_active_follower_does_not_self_kick_on_disabled_dac_content():
+@pytest.mark.parametrize("role", ["leader", "follower"])
+@pytest.mark.parametrize("topology_state", [(True, False), (False, False), (None, False)])
+async def test_unarmed_topology_does_not_watch_dac_content(role, topology_state):
     sup = _FakeSupervisor(starved_threshold=3)
-    sup.cfg = _cfg(role="follower")
-    sup.active_endpoint_value = True
-    # dac_content is disabled for an active endpoint → outputd reports NOT_ARMED.
-    sup.status_results = [NOT_ARMED] * 5
+    sup.cfg = _cfg(role=role)
+    sup.topology_state = topology_state
     for _ in range(5):
         await sup._tick()
     assert sup.kick_calls == 0
-    assert sup.consecutive_starved == 0
-    # N/A — the dac_content watch does not apply — NOT a "healthy" False.
-    assert sup.last_poll_starved is None
-    assert sup.watching is True
-
-
-async def test_active_leader_does_not_self_kick_on_disabled_dac_content():
-    # jts3's shape: a commissioned active-speaker leader.
-    sup = _FakeSupervisor(starved_threshold=3)
-    sup.cfg = _cfg(role="leader", channel="left")
-    sup.active_endpoint_value = True
-    sup.status_results = [NOT_ARMED] * 5
-    for _ in range(5):
-        await sup._tick()
-    assert sup.kick_calls == 0
-    assert sup.consecutive_starved == 0
-    assert sup.last_poll_starved is None
-    # The skip silences ONLY the dac_content watch — an active leader still
-    # runs its binding read-repair every tick.
-    assert sup.binding_calls >= 1
-
-
-async def test_active_endpoint_skip_does_not_probe_outputd():
-    # The skip short-circuits BEFORE the outputd probe: an empty status_results
-    # would raise on pop if it probed, so completing cleanly proves no probe.
-    sup = _FakeSupervisor(starved_threshold=3)
-    sup.active_endpoint_value = True
-    sup.status_results = []
-    await sup._tick()
-    assert sup.kick_calls == 0
+    assert sup.snapshot()["consecutive_starved"] == 0
+    assert sup.snapshot()["last_poll_starved"] is None
+    assert sup.snapshot()["watching"] is True
+    if role == "leader":
+        assert sup.binding_calls >= 1
 
 
 async def test_passive_leader_still_kicks_on_starved_dac_content():
@@ -301,7 +266,7 @@ async def test_passive_leader_still_kicks_on_starved_dac_content():
     # active-endpoint-only, not role-blind ("don't self-kick on leaders").
     sup = _FakeSupervisor(starved_threshold=3)
     sup.cfg = _cfg(role="leader", channel="left")
-    sup.active_endpoint_value = False
+    sup.topology_state = (False, True)
     sup.status_results = [NOT_ARMED] * 3
     for _ in range(3):
         await sup._tick()

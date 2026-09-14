@@ -29,14 +29,8 @@ bring-up, both of which left every systemd unit green:
      continuous. The pin IS the repair — no kick needed, and a healthy
      poll costs one loopback RPC (~1 ms).
 
-Starvation watch runs on every bonded member whose content rides the
-dumb-member `dac_content` round-trip — leader and follower alike, the
-local dataplane is identical there. It is SKIPPED on an ACTIVE endpoint
-(active follower or active-speaker leader): those feed the DAC through the
-camilla#2 active-content lane, so the reconciler disables `dac_content` for
-them and its (correct) absence must not be read as starvation — see
-`active_endpoint()` and the skip in `_starvation_tick`. Binding repair runs
-on every leader, active or passive (snapserver's RPC is loopback-only).
+Starvation watch applies when the saved topology permits the dac-content
+round-trip. Binding repair runs on every leader. See #4860.
 
 No active-session gate, deliberately: a starved lane means no music is
 reaching the DAC, so there is nothing to disrupt, and the kick is a
@@ -315,19 +309,8 @@ class GroupingSupervisor:
         )
 
     async def _starvation_tick(self) -> None:
-        if self.active_endpoint():
-            # This box feeds the DAC through the camilla#2 active-content
-            # lane, not the dumb-member `dac_content` round-trip — the
-            # reconciler intentionally disables `dac_content` here
-            # (outputd_grouping_env active_endpoint=True). Reading its
-            # CORRECT absence as starvation kicked the reconciler every
-            # window on a healthy active leader/follower (the 2026-06-23
-            # jts3 self-kick churn). The `dac_content` watch does not apply;
-            # starvation of camilla#2's own ingress is a separate signal, and
-            # the grouping ring is where its instrument would come from (a free
-            # GROUPING_RING_WRITER_LOCK = no snapclient mapped). Unbuilt until
-            # starvation is observed. Reset like the not-watching gate so a
-            # later passive re-bond starts clean.
+        active_endpoint, flat_output_allowed = self.output_topology_state()
+        if active_endpoint is not False or not flat_output_allowed:
             self.last_poll_starved = None
             self.consecutive_starved = 0
             self._streak_warned = False
@@ -424,26 +407,10 @@ class GroupingSupervisor:
         """Fresh read of the wizard-owned grouping.env (one file read)."""
         return load_config()
 
-    def active_endpoint(self) -> bool:
-        """True when this bonded box runs its content through the camilla#2
-        active-content lane rather than the dumb-member ``dac_content``
-        round-trip — an ACTIVE follower or an ACTIVE-speaker leader, for which
-        the reconciler disables ``dac_content``.
+    def output_topology_state(self) -> tuple[bool | None, bool]:
+        from ..multiroom.reconcile import output_topology_state  # lazy: keep the oneshot reconciler off control's startup import path (#3697)
 
-        Re-derived from the saved output topology via the SAME predicate the
-        reconciler keys on (:func:`jasper.multiroom.reconcile.is_active_speaker_box`),
-        so the supervisor and reconciler can never disagree about whether the
-        lane *should* be armed. Inside ``_starvation_tick`` the box is already
-        known bonded-valid (the ``_tick`` gate), so ``is_active_speaker_box()``
-        alone distinguishes an active endpoint from a dumb member. Fail-soft to
-        ``False`` (the dumb-member path, which keeps the real starvation watch
-        running). One small topology read per poll; overridable for tests.
-
-        The reconciler import is deferred here as at its other call sites:
-        jasper-control would otherwise carry that oneshot resident (#3697)."""
-        from ..multiroom.reconcile import is_active_speaker_box
-
-        return is_active_speaker_box()
+        return output_topology_state()
 
     async def outputd_status(self) -> dict | None:
         return await local_status_json(
