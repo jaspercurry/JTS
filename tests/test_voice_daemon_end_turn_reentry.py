@@ -224,8 +224,10 @@ async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_pat
         wl._play_cue.assert_awaited_once_with("internal_error")
     assert wl._tts.flush.await_count == (1 if failed or mode == "interrupt" else 0)
     assert wl.session_status()["silent_responses_session"] == int(
-        (failed and not accepted) or lost_reply or mode == "empty",
+        (failed and not accepted) or mode == "empty",
     )
+    if lost_reply:
+        assert event_fields(caplog, "turn.truncated_response")["turn_lost"] == "true"
     timeline = event_fields(caplog, "turn.timeline")
     assert timeline["outcome"] == ("failed" if failed or lost_reply else "complete")
     if failed or lost_reply:

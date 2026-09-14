@@ -201,42 +201,45 @@ class OpenAILiveTurn(BaseLiveTurn):
         super()._on_connection_lost()
         self._playout_available.set()
 
-    def drop_pending_audio(self, *, preserve_overflow: bool = False) -> int:
-        overflow = self._audio_dropped_bytes
+    def drop_pending_audio(self, *, record_discard: bool = False) -> int:
+        discarded_bytes = self._audio_dropped_bytes + self._queued_bytes
         dropped = super().drop_pending_audio()
-        if preserve_overflow:
-            self._audio_dropped_bytes = overflow
+        if record_discard:
+            self._audio_dropped_bytes = discarded_bytes
         self._reserve_playout = True
         self._playout_available.set()
         return dropped
 
     async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         try:
-            while not self._released and not self._turn_lost:
+            while not self._released:
                 if self._audio_q.empty():
+                    if self._turn_lost:
+                        return
                     self._playout_available.clear()
                     await self._playout_available.wait()
                     continue
-                if self._reserve_playout:
+                if self._reserve_playout and self._queued_bytes and not self._turn_lost:
                     self._reserve_playout = False
                     loop = asyncio.get_running_loop()
                     started = loop.time()
                     result = "filled"
                     try:
                         async with asyncio.timeout(PLAYOUT_RESERVE_SEC):
-                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * 48_000):
+                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * 48_000) and not self._turn_lost:
                                 self._playout_available.clear()
                                 await self._playout_available.wait()
-                                if self._released or self._turn_lost:
+                                if self._released:
                                     return
                     except TimeoutError:
                         result = "timeout"
                     log_event(
                         logger, "provider.playout_reserve", result=result,
+                        provider=self._conn.PROVIDER_NAME,
                         waited_ms=round((loop.time() - started) * 1000),
                         queued_ms=round(self._queued_bytes / 48),
                     )
-                if self._released or self._turn_lost:
+                if self._released:
                     return
                 try:
                     chunk = self._audio_q.get_nowait()
@@ -247,8 +250,8 @@ class OpenAILiveTurn(BaseLiveTurn):
                 self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
                 yield chunk
         finally:
-            # Final accounting reads overflow after playback is cancelled.
-            self.drop_pending_audio(preserve_overflow=True)
+            # Teardown must report unplayed PCM as well as receive-queue overflow.
+            self.drop_pending_audio(record_discard=True)
 
     def usage(self) -> TurnUsage:
         # Live bills the frontend session per minute, not per token, so
@@ -269,7 +272,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             return
         self._released = True
         self.discard_input()
-        self.drop_pending_audio(preserve_overflow=True)
+        self.drop_pending_audio(record_discard=True)
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
         try:

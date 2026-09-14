@@ -881,6 +881,15 @@ class TurnLifecycle:
                 turn_lost=lost_mid_reply,
                 endpointer=self.endpointer_label(),
             )
+        elif self.playback_report.accepted_audio and (lost_mid_reply or turn.audio_dropped_bytes() > 0):
+            play_no_answer_cue = self._log_no_answer(
+                "turn.truncated_response",
+                end_reason=reason,
+                dropped_bytes=turn.audio_dropped_bytes(),
+                chunks_received=chunks_received,
+                endpointer=self.endpointer_label(),
+                turn_lost=lost_mid_reply,
+            )
         elif bytes_sent > 0 and (silent or lost_mid_reply):
             model = self._output.cfg.active_voice_model
             if self.input_ended:
@@ -939,14 +948,6 @@ class TurnLifecycle:
                     turn_lost=lost_mid_reply,
                     endpointer=self.endpointer_label(),
                 )
-        elif bytes_sent > 0 and turn.audio_dropped_bytes() > 0:
-            play_no_answer_cue = self._log_no_answer(
-                "turn.truncated_response",
-                end_reason=reason,
-                dropped_bytes=turn.audio_dropped_bytes(),
-                chunks_received=chunks_received,
-                endpointer=self.endpointer_label(),
-            )
         drain_part = (
             f", drain wait {drain_wait_sec:.2f}s"
             if drain_wait_sec is not None else ""

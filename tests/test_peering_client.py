@@ -32,6 +32,7 @@ import pytest_asyncio
 
 from jasper.peering.config import ARBITRATE_RPC_TIMEOUT_SEC
 from jasper.voice.peering_client import DEFAULT_RPC_TIMEOUT_SEC, PeeringClient
+from tests._async_wait import wait_signalled
 from tests._peering_uds import peering_uds_server
 
 _SOCKET = "/tmp/jasper-peering-test.sock"
@@ -128,7 +129,7 @@ async def test_session_notices_do_not_delay_speech_and_keep_epoch_order(outcome)
 
     with patch("jasper.peering.uds.send_request", new=send_request):
         await asyncio.wait_for(client.session_started(True), timeout=0.2)
-        await asyncio.wait_for(start_entered.wait(), timeout=0.2)
+        await wait_signalled(start_entered, "peer START RPC")
         end_notice = asyncio.create_task(client.session_ended("user_silence"))
         await asyncio.sleep(0)
         assert notices == ["SESSION_STARTED ep-first"]

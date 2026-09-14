@@ -855,8 +855,14 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
                         release = asyncio.create_task(turn.release())
                     else:
                         turn._on_connection_lost()
-                    with pytest.raises(StopAsyncIteration):
-                        await asyncio.wait_for(pending, 0.2)
+                    if finish == "lost":
+                        assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+                        with pytest.raises(StopAsyncIteration):
+                            await anext(audio)
+                        assert turn.audio_dropped_bytes() == 0
+                    else:
+                        with pytest.raises(StopAsyncIteration):
+                            await asyncio.wait_for(pending, 0.2)
                     if finish == "release":
                         assert not release.done()
                         closing.set()
@@ -889,13 +895,29 @@ async def test_playout_reserve_is_bounded_and_rearms_only_between_answers(monkey
                 await release
 
 
+@pytest.mark.parametrize("count", [0, 5])
+async def test_connection_loss_drains_received_audio_without_waiting_for_a_reserve(monkeypatch, count):
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
+    async with live_turn() as turn:
+        for _ in range(count):
+            await turn.on_event(output_audio(AUDIBLE_PCM))
+        turn._on_connection_lost()
+
+        async def drain():
+            return [chunk.pcm async for chunk in turn.audio_out_chunks()]
+
+        assert await asyncio.wait_for(drain(), 0.2) == [AUDIBLE_PCM] * count
+        assert turn.audio_dropped_bytes() == turn.audio_chunks_pending() == 0
+
+
 @pytest.mark.parametrize("finish", ["close", "lost", "interrupt"])
 async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypatch, finish):
     pcm = b"\x00\x40" * 2
-    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", len(pcm))
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 2 * len(pcm))
     async with live_turn() as turn:
         audio = turn.audio_out_chunks()
         try:
+            await turn.on_event(output_audio(pcm))
             await turn.on_event(output_audio(pcm))
             await turn.on_event(output_audio(pcm))
             assert turn.audio_dropped_bytes() == len(pcm)
@@ -903,10 +925,10 @@ async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypa
             if finish == "lost":
                 turn._on_connection_lost()
             await audio.aclose()
-            assert turn.audio_dropped_bytes() == len(pcm)
+            assert turn.audio_dropped_bytes() == 2 * len(pcm)
             if finish == "interrupt":
                 turn.drop_pending_audio()
-            expected = 0 if finish == "interrupt" else len(pcm)
+            expected = 0 if finish == "interrupt" else 2 * len(pcm)
             await turn.release()
             assert turn.audio_dropped_bytes() == expected
         finally:

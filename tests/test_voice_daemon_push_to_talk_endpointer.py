@@ -509,7 +509,7 @@ async def _torn_down_mid_hold(
         pytest.param(
             {"chunks": 2, "input_ended": True, "user_speech": True,
              "turn_lost": True},
-            "internal_error", 1, None, id="lost_mid_reply",
+            "internal_error", 0, None, id="lost_mid_reply",
         ),
         # The link went mid-utterance, before anything ended input — a
         # `send_audio` failure reaches `_end_turn` this way. `silent` is
@@ -517,7 +517,7 @@ async def _torn_down_mid_hold(
         pytest.param(
             {"chunks": 2, "input_ended": False, "user_speech": True,
              "turn_lost": True, "event_reason": "connection_lost"},
-            "internal_error", 1, None, id="lost_before_input_ended",
+            "internal_error", 0, None, id="lost_before_input_ended",
         ),
         # A button press proves intent, and nothing scores a button turn's
         # frames — a deaf press is exactly the symptom the cue exists for.
