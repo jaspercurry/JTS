@@ -18,11 +18,18 @@ taking the "falling back" path.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import wave
 from types import SimpleNamespace
 
-from jasper.cues.factory import build_cue_tts_backend
+from jasper.cues import manager as manager_mod
+from jasper.cues.factory import build_cue_tts_backend, build_env_cue_manager
+from jasper.cues.generator import CHIME_MODEL, TTS_MODEL, WAV_RATE
+from jasper.cues.registry import VOICE_NOT_SET_UP_CUE_SLUG, find as find_cue
 from jasper.voice.catalog import PROVIDERS
+
+from tests._playout import FakeTts
 
 
 def _cfg_for(active_id: str) -> SimpleNamespace:
@@ -62,3 +69,48 @@ def test_every_catalog_provider_has_a_cue_tts_dispatch_branch(caplog) -> None:
             f"provider {provider.id!r}: factory returned voice label "
             f"{voice_label!r}, not the active provider's configured voice"
         )
+
+
+def test_env_cue_manager_bakes_and_plays_a_chime_with_no_provider_configured(
+    tmp_path, monkeypatch,
+):
+    """NN-6 (issue #4814): a genuinely fresh box — no JASPER_VOICE_PROVIDER
+    at all — must still produce an audible park cue, not silence.
+    `build_env_cue_manager` is the shared choke point behind both
+    `jasper-cues regenerate` and the daemon's boot-park player."""
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    for key in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("JASPER_SOUNDS_DIR", str(tmp_path))
+    monkeypatch.setenv("JASPER_MANAGEMENT_URL", "https://jts.local")
+    monkeypatch.setattr("jasper.cues.factory.load_env_files", lambda *_: None)
+
+    mgr = build_env_cue_manager(warn=lambda _msg: None)
+
+    # The chime's cache-key model is its own token, distinct from any real
+    # provider's — so configuring a provider later misses this cache entry
+    # and re-bakes real speech over it instead of reusing the chime's hash.
+    assert CHIME_MODEL != TTS_MODEL
+
+    written = mgr.regenerate(slug=VOICE_NOT_SET_UP_CUE_SLUG)
+    assert written == [VOICE_NOT_SET_UP_CUE_SLUG]
+
+    cue = find_cue(VOICE_NOT_SET_UP_CUE_SLUG)
+    wav_path = mgr.expected_path(cue)
+    with wave.open(wav_path, "rb") as f:
+        assert f.getnframes() > 0
+        assert f.getframerate() == WAV_RATE
+
+    tts = FakeTts()
+    mgr.attach_tts(tts)
+    ok = asyncio.run(mgr.play(VOICE_NOT_SET_UP_CUE_SLUG))
+    assert ok is True
+    assert len(tts.writes) == 1
+
+    snap = mgr.snapshot()
+    assert snap["last"] == {
+        "outcome": manager_mod.OUTCOME_DELIVERED,
+        "reason": manager_mod.REASON_OK,
+        "slug": VOICE_NOT_SET_UP_CUE_SLUG,
+        "age_seconds": snap["last"]["age_seconds"],
+    }

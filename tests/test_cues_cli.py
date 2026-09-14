@@ -107,15 +107,15 @@ def test_regenerate_unknown_cue_returns_error(cli_env, capsys):
     assert "definitely_not_a_real_cue" in captured.err
 
 
-def test_regenerate_without_api_key_reports_runtime_error(tmp_path, monkeypatch, capsys):
-    """With no provider key configured anywhere, the CLI degrades
-    gracefully (no backend, regen exits non-zero with explanation)
-    rather than crashing on a NoneType attribute access."""
+def test_regenerate_without_api_key_bakes_chime_cues(tmp_path, monkeypatch, capsys):
+    """With no provider configured anywhere (a genuinely fresh box), regen
+    must still produce audible cue WAVs via the provider-free chime
+    backend rather than fail (AGENTS.md non-negotiable 6, issue #4814)."""
     monkeypatch.setenv("JASPER_SOUNDS_DIR", str(tmp_path))
     monkeypatch.setenv("JASPER_MANAGEMENT_URL", "https://test.local")
-    monkeypatch.setenv("JASPER_GEMINI_VOICE", "Aoede")
-    # All three provider keys must be absent for the factory to
-    # return None — otherwise the fallback path picks one of them.
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    # All three provider keys must be absent for the factory to fall all
+    # the way through to the chime — otherwise a fallback path picks one.
     for key in (
         "GEMINI_API_KEY", "JASPER_GEMINI_API_KEY",
         "OPENAI_API_KEY", "XAI_API_KEY",
@@ -127,9 +127,10 @@ def test_regenerate_without_api_key_reports_runtime_error(tmp_path, monkeypatch,
         "jasper.cues.factory.load_env_files", lambda *_: None,
     )
     code = cli.main(["regenerate"])
-    assert code == 3  # RuntimeError mapped to exit 3
+    assert code == 0
     captured = capsys.readouterr()
-    assert "TTS backend" in captured.err or "no TTS backend" in captured.err
+    assert "wrote spend_cap_reached" in captured.out
+    assert "no TTS provider configured" in captured.err
 
 
 # --- play ---

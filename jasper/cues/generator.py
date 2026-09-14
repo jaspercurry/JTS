@@ -23,6 +23,12 @@ provider that drives the live conversation — no Gemini round-trips
 when the user is on OpenAI Realtime, and vice versa. It's called from
 `jasper.voice.daemon_main._build_cues_manager`, which builds the whole
 `AudioCueManager` and is called from `run()` at daemon startup.
+
+`ChimeTTSGenerator` is the fourth backend: provider-free, used by
+`jasper.cues.factory.build_env_cue_manager` when no provider backend
+can be built at all (no `JASPER_VOICE_PROVIDER` chosen yet) so a
+genuinely fresh box still has audible park cues (AGENTS.md
+non-negotiable 6, issue #4814).
 """
 from __future__ import annotations
 
@@ -131,8 +137,9 @@ def cue_path(
 
 def backend_model(backend: object | None) -> str:
     """The cache-key model identifier for a TTS backend — its actual
-    synthesis model where exposed (all three shipped generators have a
-    `.model` property), else the legacy `TTS_MODEL` constant.
+    synthesis model where exposed (every shipped generator, including
+    `ChimeTTSGenerator`, has a `.model` property), else the legacy
+    `TTS_MODEL` constant.
 
     The fallback keeps two cases stable: a playback-only manager
     (backend=None — regen disabled, plays whatever WAVs exist) and
@@ -441,6 +448,66 @@ class _RetryableTTSError(Exception):
     """Marker class for "the call returned but with no audio" — the
     retry loop catches this and tries again. Other exception types
     (HTTP 4xx, network unreachable) propagate up immediately."""
+
+
+# --- Provider-free fallback backend ---
+
+# Cache-key model token for chime-baked cues, distinct from every real
+# provider's TTS_MODEL constant above. cue_hash() folds this in, so a
+# chime-baked WAV and a provider-baked WAV for the same cue never share
+# a filename: configuring a provider later computes a different hash,
+# misses the cache, and write_cue re-bakes real speech over the chime.
+CHIME_MODEL = "chime-v1"
+CHIME_VOICE_LABEL = "chime"
+
+# A bright triad, chosen only to sound unmistakably like a tone and not
+# like a voice or a phone/OS notification. synthesise() ignores its text
+# argument — every cue gets the identical chord.
+_CHIME_TONES_HZ = (784.0, 987.77, 1174.66)  # G5, B5, D6
+_CHIME_DURATION_SEC = 0.8
+_CHIME_PEAK_AMPLITUDE = 0.5  # leaves headroom under the WAV's int16 ceiling
+
+
+class ChimeTTSGenerator:
+    """Provider-free fallback: a short deterministic chime, not speech.
+
+    Used only when no provider backend can be built at all —
+    `jasper.cues.factory.build_env_cue_manager` reaches for this when
+    `JASPER_VOICE_PROVIDER` is unset (or its key is missing), which is
+    otherwise the one way a genuinely fresh box has no audio at all for
+    its park cues (AGENTS.md non-negotiable 6, issue #4814). Once a
+    provider is configured, its own model name wins the cache key
+    (`backend_model`) and `write_cue` re-bakes real speech over the
+    chime on the next regenerate.
+    """
+
+    @property
+    def model(self) -> str:
+        return CHIME_MODEL
+
+    def synthesise(self, text: str) -> TTSResult:
+        del text  # a chime carries no words
+        return TTSResult(pcm_24k=_render_chime())
+
+
+def _render_chime() -> bytes:
+    """~0.8 s three-tone chord at 24 kHz mono 16-bit PCM.
+
+    Raised-cosine windowed so the waveform starts and ends at zero (no
+    click). Cheap enough to render fresh per call — the manager caches
+    the resulting WAV on disk the same as any other cue.
+    """
+    import numpy as np  # lazy: import cost; only reached with no TTS provider configured
+
+    n = int(round(_CHIME_DURATION_SEC * WAV_RATE))
+    t = np.arange(n, dtype=np.float64) / WAV_RATE
+    envelope = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / (n - 1))
+    tone = np.zeros(n, dtype=np.float64)
+    for freq_hz in _CHIME_TONES_HZ:
+        tone += np.sin(2.0 * np.pi * freq_hz * t)
+    tone /= len(_CHIME_TONES_HZ)
+    pcm = np.clip(tone * envelope * _CHIME_PEAK_AMPLITUDE, -1.0, 1.0)
+    return (pcm * 32767.0).astype(np.int16).tobytes()
 
 
 # --- Public write entry point ---

@@ -1550,9 +1550,12 @@ install_peering_template() {
 
 regenerate_audio_cues() {
     # Bake the speaker's audible-failure cues so they're ready before
-    # the daemon ever needs them. The daemon retries on every startup
-    # if this fails, so a no-internet-at-install scenario is tolerated
-    # — we just warn and continue.
+    # the daemon ever needs them. With no voice provider configured yet,
+    # jasper-cues falls back to a provider-free chime instead of failing
+    # (AGENTS.md non-negotiable 6, issue #4814), so this succeeds even on
+    # a genuinely fresh box. The daemon retries on every startup
+    # regardless, so a real failure here is still non-fatal — we just
+    # warn and continue.
     if [[ ! -x /opt/jasper/.venv/bin/jasper-cues ]]; then
         echo "  (jasper-cues not on PATH yet — will run on first daemon boot)"
         return 0
@@ -1565,7 +1568,7 @@ regenerate_audio_cues() {
     # those vars into the shell's environment first, where load_env_files's
     # setdefault preserves them and the wizard file can't override.
     if ! /opt/jasper/.venv/bin/jasper-cues regenerate; then
-        echo "  WARNING: cue regenerate failed (network down or API key not set?). " \
+        echo "  WARNING: cue regenerate failed unexpectedly. " \
              "Daemon will retry at startup. To force a refresh later: " \
              "sudo systemctl restart jasper-voice"
     fi

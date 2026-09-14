@@ -29,9 +29,11 @@ from ..config import Config
 from ..env_load import load_env_files
 from ..log_event import log_event
 from .generator import (
+    CHIME_VOICE_LABEL,
     GEMINI_TTS_MODEL,
     TTS_MAX_ATTEMPTS,
     TTS_RETRY_BACKOFF_SEC,
+    ChimeTTSGenerator,
     GeminiTTSGenerator,
     GrokTTSGenerator,
     OpenAITTSGenerator,
@@ -169,8 +171,12 @@ def build_env_cue_manager(
     (`daemon_main._announce_park_at_boot`). Both run where
     `Config.from_env()` can raise — a missing provider key, or no provider at
     all (`VoiceProviderNotConfigured` is a RuntimeError) — and both still
-    need playback off whatever WAVs are already cached, so that raise
-    degrades to a key-less manager instead of propagating.
+    need cue audio, so that raise degrades to a `ChimeTTSGenerator`-backed
+    manager rather than a key-less one: a genuinely fresh box gets a chime
+    instead of the silence non-negotiable 6 forbids (issue #4814).
+    `regenerate()` bakes every registered cue with the chime; configuring a
+    provider later computes a different cache hash and re-bakes real speech
+    over it.
 
     Auto-loads /etc/jasper/jasper.env and /var/lib/jasper/voice_provider.env
     so install.sh's `jasper-cues regenerate` invocation sees the same
@@ -189,8 +195,9 @@ def build_env_cue_manager(
         sounds_dir = cfg.sounds_dir
         management_url = cfg.management_url
     except RuntimeError as e:
-        # Missing active-provider key — list still needs to work,
-        # regen will exit cleanly with "no TTS backend" later.
+        # No provider chosen yet, or the active one's key is missing —
+        # list/regen/park playback still need to work off the chime
+        # fallback below.
         warn(f"TTS backend disabled ({e})")
         backend = None
         voice = ""
@@ -202,9 +209,11 @@ def build_env_cue_manager(
         )
     if backend is None:
         warn(
-            "no TTS backend; regen will fail (playback "
-            "still works off cached files)"
+            "no TTS provider configured; cue audio is a local chime, not "
+            "spoken text, until one is set up"
         )
+        backend = ChimeTTSGenerator()
+        voice = CHIME_VOICE_LABEL
     hostname = urllib.parse.urlparse(management_url).hostname or "this speaker"
     return AudioCueManager(
         sounds_dir=sounds_dir,
