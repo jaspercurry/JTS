@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
+from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from tests.test_active_speaker_measurement_door import box as box
 from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
@@ -44,9 +45,11 @@ from jasper.audio_measurement.wired_capture import (
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
 from jasper.web import correction_run_host
+from jasper.web import correction_capture, correction_setup
 from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
+from tests.test_plan_run import AnsweredGate
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
@@ -712,6 +715,44 @@ def test_plan_host_controls_drain_the_session(monkeypatch, tmp_path, box, signal
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
     assert manifest.finalized
+
+
+@pytest.mark.parametrize("caller,code,template", [
+    ("arm", "arm_host_stuck", "hard_stop"), ("human", "user_stopped", "session_restart"),
+])
+def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_path, box, caller, code, template):
+    def dispatch(path, *, data=None, headers=None):
+        if data is not None:
+            handler = SimpleNamespace(path=path.removeprefix("/sound/speaker"), rfile=io.BytesIO(data),
+                                      headers={"Content-Length": str(len(data))}, _send_json=Mock())
+            correction_setup._dispatch_crossover(handler)
+            assert handler._send_json.call_args.args[0]["capture"]["status"] == "stopping"
+        return 200, "{}"
+
+    client = LoopbackSession(host_header="jts3.local")
+    monkeypatch.setattr(client, "open", dispatch)
+
+    class CancellingGate(AnsweredGate):
+        def gate(self, index, attempt, entry):
+            if caller == "arm":
+                client.cancel("arm_host_stuck")
+            else:
+                dispatch(CAPTURE_CANCEL_PATH, data=b"{}")
+            super().gate(index, attempt, entry)
+
+    runner, session, _, manifest, signals, _ = _plan_host(monkeypatch, tmp_path, box, gate=CancellingGate())
+    monkeypatch.setattr(correction_capture, "_capture_slot", {
+        "status": "awaiting_capture", "kind": "crossover_v2:session", "session_id": session.session_id,
+    })
+    monkeypatch.setattr(correction_capture, "_capture_stop_request", signals.request_stop)
+    failures = []
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code: failures.append(code))
+    with pytest.raises(CaptureStopped):
+        asyncio.run(runner(session))
+    assert manifest.records.snapshots[-1]["reason"] == code
+    assert failures == [code]
+    assert refusal_copy.REASON_REGISTRY[code].template == template
+    assert all(stop["reason"] == code for stop in manifest.not_measured)
 
 
 async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeypatch, tmp_path, box):

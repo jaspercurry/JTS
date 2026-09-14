@@ -914,6 +914,31 @@ def test_a_stuck_capture_is_named_rather_than_waited_out():
     assert trail.error("stuck")["released"] == 0
 
 
+@pytest.mark.parametrize("field", ["attempt", "pose", "status"])
+def test_executor_progress_resets_the_stuck_clock_without_mic_moves(field):
+    clock, trail, mover = FakeWalkClock(), _RecordingTrail(), FakeMover()
+    started = clock.now()
+
+    class Retakes(FakeSession):
+        def poll(self):
+            step = min(int((clock.now() - started) // 49), 35)
+            capture = {"status": "awaiting_capture", "run": {"attempt": 1, "pose": 1}}
+            if field == "status":
+                capture[field] = "awaiting_capture" if step % 2 else "committing"
+            else:
+                capture["run"][field] = step + 1
+            return aw.poll_from_status({"capture": capture})
+
+    session = Retakes([])
+    walk = _walk(mover, session, clock=clock, trail=trail, poll_s=7,
+                 idle_ceiling_s=aw.DEFAULT_IDLE_CEILING_S)
+    assert walk.run() == aw.EXIT_STUCK
+    assert clock.now() - started == 35 * 49 + 301 + aw.PARK_SETTLE_S
+    assert trail.error("stuck")["quiet_s"] == 301
+    assert trail.one("capture_cancel")["reason"] == "arm_host_stuck"
+    assert session.released == [] and mover.moves == [0]
+
+
 def test_an_unreadable_status_is_never_diagnosed_as_a_stuck_capture():
     """The mis-attribution S4 names: a wrong --hostname blamed on #2506.
 
@@ -1293,17 +1318,23 @@ def test_a_status_read_that_is_not_json_is_unreadable_not_finished():
 
 def test_the_trail_file_reconstructs_the_walk(tmp_path):
     path = tmp_path / "walk.jsonl"
-    trail = aw.Trail(path)
-    session = FakeSession([_pending(1, 7), _QUIET])
-    assert _walk(FakeMover(), session, trail=trail,
-                 idle_ceiling_s=10.0).run() == aw.EXIT_OK
-    trail.close()
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    events = [row["event"] for row in rows]
-    assert events[0] == "up" and events[-1] == "parked"
-    released = next(row for row in rows if row["event"] == "released")
-    assert released["index"] == 1 and released["degrees"] == 7
-    assert all("t" in row for row in rows)
+    previous = ""
+    for session_id in ("run-a", "run-b"):
+        trail = aw.Trail(path)
+        live = aw.poll_from_status({"capture": {
+            "status": "awaiting_capture", "session_id": session_id,
+            "position_pending": {"index": 1, "degrees": 7, "mover": ac.MOVER_ARM},
+        }})
+        assert _walk(FakeMover(), FakeSession([live, _COMPLETE]), trail=trail).run() == aw.EXIT_OK
+        trail.close()
+        text = path.read_text()
+        assert text.startswith(previous)
+        rows = [json.loads(line) for line in text[len(previous):].splitlines()]
+        assert rows[0]["event"] == "joined" and rows[-1]["event"] == "parked"
+        released = next(row for row in rows if row["event"] == "released")
+        assert released["index"] == 1 and released["degrees"] == 7
+        assert all(row["session_id"] == session_id and "t" in row for row in rows)
+        previous = text
 
 
 def test_the_trail_levels_separate_progress_from_trouble():

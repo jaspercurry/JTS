@@ -37,6 +37,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `anchor_ambiguous` | JTS couldn't line that recording up with the test tones it played. Try that measurement again. | Try that measurement again. | `fix_and_retry` |
 | `anchor_too_quiet` | JTS heard the speaker, but the test tones were too quiet to line up. Check the volume and the microphone, then try again. | Check the volume and the microphone, then try again. | `fix_and_retry` |
 | `apply_failed` | JTS could not apply the measured crossover automatically. Try again. | Try again. | `fix_and_retry` |
+| `arm_host_stuck` | The arm host stopped the measurement because the executor made no progress. Check the run status and arm trail before starting another measurement. |  | `hard_stop` |
 | `baseline_graph_safety_proof_failed` | Review the protected speaker graph. | Review the protected speaker graph. | `hard_stop` |
 | `bass_fit_candidate_unreadable` | The measured bass candidate descriptor is unavailable. | Supply the candidate artifact named by the run | `hard_stop` |
 | `bass_fit_capture_context_changed` | The paired bass captures used different conditions. | Measure both graphs at the same pose and settings | `hard_stop` |

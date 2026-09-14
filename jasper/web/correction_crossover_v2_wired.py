@@ -141,7 +141,7 @@ def build_v2_wired_run_and_consume(
                 result = await plan_run.run_plan(
                     request, door=door, manifest=manifest, analyze=analyze, assessor=assessor,
                     gate=position_gate, captures=captures,
-                    signals=signals, admit=admit,
+                    signals=signals, admit=admit, aborts={},
                     gain_ceiling_db=conductor._measure_gain_ceiling_db,
                 )
             finally:
