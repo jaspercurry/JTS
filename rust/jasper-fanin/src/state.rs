@@ -1266,11 +1266,6 @@ mod tests {
 
     #[test]
     fn snapshot_json_always_carries_host_clock_block() {
-        // C7: the combo-mode host-clock block is a top-level, always-present
-        // sibling of `tap` — the disabled block when the feature is off, so the
-        // key is byte-stable. It must parse as valid JSON (the fragment is
-        // rendered by the shared crate; here we prove the fold-in is well-formed
-        // and the disabled default shows through).
         let server = make_test_server();
         let j = server.snapshot_json();
         assert!(
@@ -1285,7 +1280,7 @@ mod tests {
             "disabled fixture ⇒ enabled:false"
         );
         assert_eq!(hc["ladder"].as_str(), Some("disabled"));
-        assert!(hc["probe"]["response_ratio"].is_null());
+        assert!(hc["probe"]["final_response_ratio"].is_null());
         // Sibling of tap, not nested inside it.
         assert!(parsed["tap"].is_object());
     }

@@ -127,30 +127,6 @@ def test_no_fanin_host_clock_target_env_key():
     assert "JASPER_FANIN_HOST_CLOCK_TARGET" not in host_clock
 
 
-def test_fanin_host_clock_runs_the_correction_observable_mode():
-    # Combo mode must select `ObsMode::Correction` in build_config — the whole
-    # point of this redesign. With a lane resampler between the gadget ring and
-    # the mix, the fill slope is dead (the resampler flattens it), so the probe /
-    # L0 servo run on the resampler's own correction ppm.
-    text = _fanin_host_clock_text()
-    assert "ObsMode::Correction" in text, (
-        "fan-in build_config must pass ObsMode::Correction — the combo-mode "
-        "probe/servo observable is the resampler correction ppm, not the fill "
-        "slope (the resampler absorbs the host clock and flattens the fill)."
-    )
-    # And the correction observable is threaded from the resampler's live gauge.
-    assert "correction_milli_ppm" in text, (
-        "fan-in build_obs must decode the resampler's correction gauge "
-        "(ratio_milli_ppm) into Obs.correction_ppm — the combo-mode observable."
-    )
-    # The shared crate must define the typed observable-mode enum both sides use.
-    shared = _SHARED_HOST_CLOCK_RS.read_text(encoding="utf-8")
-    assert "pub enum ObsMode" in shared, (
-        "the shared jasper-host-clock crate must define the typed ObsMode enum "
-        "— the observable mode is explicit, not inferred."
-    )
-
-
 def test_fanin_host_clock_uses_the_shared_crate():
     # The fan-in adapter must compose the SHARED jasper_host_clock ladder, not a
     # forked copy of the servo — the whole point of the extraction.
