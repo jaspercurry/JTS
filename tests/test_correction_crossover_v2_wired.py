@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+import numpy as np
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
 from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from jasper.active_speaker.plan_run import RunSignals
@@ -33,6 +34,8 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
+from jasper.audio_measurement.program import build_measure_program
+from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
 from jasper.audio_measurement.wired_capture import (
     CODE_WIRED_MIC_MISSING,
     WiredCaptureAnswer,
@@ -42,12 +45,14 @@ from jasper.audio_measurement.wired_capture import (
     WiredRecorder,
     WiredSplMonitor,
     decode_wav_to_mono,
+    encode_wav_s32,
 )
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
 from jasper.web import correction_run_host
 from jasper.web import correction_capture, correction_setup
 from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
+from jasper.active_speaker.crossover_v2 import summed_alignment
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
 from tests.test_plan_run import AnsweredGate
@@ -55,6 +60,7 @@ from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
+from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000
 
@@ -797,6 +803,62 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     assert max(progress["budget"]["by_household"] for progress in gate.progress) == 1
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
+
+
+@pytest.mark.parametrize("banked,position,vertical,scope", [
+    (True, 0, 0, "candidate"), (True, 0, 0, "applied"), (False, 0, 0, "candidate"),
+    (True, 20, 0, "candidate"), (True, 0, 20, "candidate"), (True, 0, 0, "drivers"),
+])
+async def test_executor_retains_summed_reference_before_measure(monkeypatch, caplog, banked, position, vertical, scope):
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "check", 2: "entry_baseline", 3: "measure"},
+                           measure_entry_baseline=None)
+    monkeypatch.setattr(conductor, "_applied_alignment", lambda: AppliedAlignment(191.6))
+    conductor._check_ambient_report = {"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45}]}
+    freqs = np.linspace(100, 20000, 100)
+    reference = SummedAlignmentReference(freqs, np.zeros(100),
+                                         {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000))
+    build_reference = Mock(return_value=reference)
+    monkeypatch.setattr(summed_alignment, "session_reference", build_reference)
+    production = v2evidence.bind_production_analyze(resolve_calibration=None)
+    conductor._seams = replace(conductor._seams, analyze=production,
+        summed_alignment_reference=lambda b, p: summed_alignment.session_reference(Path("bundle"), b, p))
+    saved = []
+
+    async def bank(record):
+        saved.append(record)
+        return record["take_id"] + ".json"
+
+    records = core_capture.CapturedRecordStore(SimpleNamespace(bank=bank), None)
+    analyze, _ = correction_run_host.bind_plan_analysis(conductor, records,
+        manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={})
+    impulse = np.zeros(4096)
+    impulse[200] = 1
+    measure = build_measure_program({"woofer": -30, "tweeter": -30}, _roles(),
+                                    sweep_durations={"woofer": .3, "tweeter": .3})
+    captures = ([(2, "entry_baseline", conductor.program_for_phase("entry_baseline"))] if banked else [])
+    captures.append((3, "measure", measure))
+    caplog.set_level(logging.INFO)
+    for index, phase, program in captures:
+        samples = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
+        wav, _ = encode_wav_s32((samples * (2**31 - 1)).astype(np.int32), sample_rate_hz=RATE)
+        record = {"take_id": f"wired-take-{index}", "index": index, "attempt": 1, "phase": phase,
+                  "program_phase": phase, "position_deg": position, "vertical_deg": vertical,
+                  "graph_scope": scope, "graph_fingerprint": "played-graph"}
+        record_id = await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
+        analysis = analyze(saved[-1], record_id)
+    available = banked and position == vertical == 0 and scope in {"applied", "candidate"}
+    assert conductor._measure_priors().summed_alignment is (reference if available else None)
+    events = event_field_maps(caplog, "active_speaker.summed_reference_unreadable")
+    if available:
+        build_reference.assert_called_once()
+        baseline = build_reference.call_args.args[1]
+        assert baseline.artifact_ref == saved[0]["take_id"]
+        assert baseline.graph_fingerprint == saved[0]["graph_fingerprint"]
+        assert events == []
+    else:
+        build_reference.assert_not_called()
+        assert events == [{"code": "summed_reference_unreadable", "reason": "no_entry_baseline"}]
+        assert analysis.candidate.alignment_objective == "applied_alignment_held_after_low_snr"
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
