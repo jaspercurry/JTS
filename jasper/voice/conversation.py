@@ -20,6 +20,11 @@ NO_SPEECH_ABORT_SEC = 5.0
 END_CONVERSATION_TOOL = "end_conversation"
 
 
+# Live may wait longer only after audio has reached playout.
+UNANSWERED_SPEECH_SEC = 8.0
+ACKNOWLEDGED_BACKEND_SEC = 30.0
+
+
 def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[], None]) -> None:
     # A dismissal survives cancellation from any source — a new delegation
     # on Live, a barge-in on the other adapters — deliberately.
@@ -36,7 +41,10 @@ def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[]
     registry.register(end_conversation)
 
 
-async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, user_activity, spend_allowed=lambda: True):
+async def continuous_watchdog(
+    turn, tts, *, followup_seconds, stall_seconds, user_activity, last_accepted_at,
+    spend_allowed=lambda: True,
+):
     started_at = time.monotonic()
     next_spend_check = started_at
     pending_count, progressed_at = 0, started_at
@@ -56,12 +64,13 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
             continue
         if now - last_speech < END_OF_UTTERANCE_SILENCE_SEC:
             continue
-        if turn.backend_pending:
-            if now - turn.last_activity_at() >= stall_seconds:
+        accepted_at = last_accepted_at()
+        if accepted_at < speech_started:
+            if now - last_speech >= UNANSWERED_SPEECH_SEC:
                 return "response_stalled"
             continue
-        if turn.last_chunk_at() < speech_started:
-            if now - max(last_speech, turn.last_activity_at()) >= stall_seconds:
+        if turn.backend_pending:
+            if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
                 return "response_stalled"
             continue
         pending = turn.audio_chunks_pending()
@@ -72,7 +81,7 @@ async def continuous_watchdog(turn, tts, *, followup_seconds, stall_seconds, use
                 return "playout_stalled"
             continue
         deadline = followup_seconds + max(
-            last_speech, turn.last_chunk_at(), turn.last_activity_at(), tts.expected_drain_at(),
+            last_speech, accepted_at, tts.expected_drain_at(),
         )
         if now >= deadline:
             return "followup_timeout"

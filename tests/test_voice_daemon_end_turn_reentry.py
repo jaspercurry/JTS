@@ -422,7 +422,7 @@ async def test_shutdown_waits_out_a_pending_provider_release():
     assert not pending.cancelled()
 
 
-@pytest.mark.parametrize("phase", ["outcome", "peering", "segment", "drain", "restore", "meter"])
+@pytest.mark.parametrize("phase", ["segment", "outcome", "peering", "drain", "restore", "meter"])
 @pytest.mark.parametrize("cancellation", ["caller", "operation"])
 async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     phase, cancellation,
@@ -472,7 +472,7 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     # "release" is no longer an owned cleanup phase, so it carries no
     # position in the closure — only the fact that it still ran.
     assert [name for name in calls if name != "release"] == [
-        "outcome", "peering", "segment", "drain", "restore", "meter",
+        "segment", "outcome", "peering", "drain", "restore", "meter",
     ]
     await wl._turns.pending_release
     assert "release" in calls

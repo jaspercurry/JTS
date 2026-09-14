@@ -68,6 +68,9 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
 })
 
 
+FAILED_END_REASONS = frozenset({"playback_failed", "response_stalled", "playout_stalled"})
+
+
 class InputAdmissionClosed(RuntimeError):
     def __init__(self, result: str) -> None:
         self.result = result
@@ -301,6 +304,7 @@ class TurnLifecycle:
                 self.turn, self._output.tts, followup_seconds=self._output.cfg.followup_timeout_sec,
                 stall_seconds=self._output.cfg.response_stall_timeout_sec,
                 user_activity=lambda: (self.continuous_speech_started, self.continuous_last_speech),
+                last_accepted_at=lambda: self.playback_report.last_accepted_at,
                 spend_allowed=self._spend_cap.allowed,
             ) if continuous else idle_watchdog(
                 self.turn,
@@ -491,7 +495,7 @@ class TurnLifecycle:
             await run_phase("turn_release", turn.release)
         await run_phase(
             "output_cleanup",
-            lambda: self._output.finish_turn_episode(episode, completed=False),
+            lambda: self._output.finish_turn_episode(episode),
         )
         if session_id is not None:
             await run_phase(
@@ -656,13 +660,11 @@ class TurnLifecycle:
             if reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS:
                 reason = self.background_end_reason() or reason
             self.bg_tasks.clear()
-            play_no_answer_cue = reason == "playback_failed"
+            play_no_answer_cue = reason in FAILED_END_REASONS
             play_no_answer_cue = await self._record_and_release_turn(reason, episode)
         finally:
             try:
-                await self._output.finish_turn_episode(
-                    episode, completed=reason != "playback_failed",
-                )
+                await self._output.finish_turn_episode(episode)
                 self.barge_in_active = False
                 if play_no_answer_cue:
                     # A paused connection owns its remedy cue. Keep SESSION
@@ -679,12 +681,23 @@ class TurnLifecycle:
             finally:
                 self._reset()
 
+    def _start_end_chirp(
+        self, reason: str, episode: AssistantOutputEpisode | None,
+    ) -> None:
+        if reason in FAILED_END_REASONS or episode is None:
+            return
+        if not self._output.gate.is_current(episode):
+            return
+        self._output.start_end_feedback(
+            episode, self._output.listening_chirp(going_on=False),
+        )
+
     def _reply_lost(self) -> bool:
         assert self.turn is not None
         return self.turn.turn_lost() and not self.turn.server_turn_complete()
 
     async def _record_turn_outcome(self, reason: str) -> None:
-        failed = reason == "playback_failed" or self._reply_lost()
+        failed = reason in FAILED_END_REASONS or self._reply_lost()
         capped = reason == PRE_RESPONSE_CAPPED_REASON
         if capped:
             self.turns_pre_response_capped += 1
@@ -779,21 +792,24 @@ class TurnLifecycle:
             drain_wait_sec = max(0.0, time.monotonic() - last_chunk_at)
         turn = self.turn
         assert turn is not None
-        phases: list[tuple[str, Callable[[], object]]] = [
-            ("turn_outcome", lambda: self._record_turn_outcome(reason)),
-            ("peering_end", lambda: self._peering.session_ended(reason)),
-        ]
+
         async def end_segment() -> None:
             if episode is not None and self._output.gate.is_current(episode):
                 try:
                     # Endings where the queued tail must not reach the room:
                     # output already failed, or the user asked us to stop.
-                    if reason in ("playback_failed", "conversation_ended"):
+                    if reason in FAILED_END_REASONS or reason == "conversation_ended":
                         await self._output.tts.flush()
                 finally:
                     await self._output.tts.end_segment()
 
-        phases.append(("end_segment", end_segment))
+        # End the segment first so its flush cannot discard the chirp.
+        phases: list[tuple[str, Callable[[], object]]] = [
+            ("end_segment", end_segment),
+            ("end_chirp", lambda: self._start_end_chirp(reason, episode)),
+            ("turn_outcome", lambda: self._record_turn_outcome(reason)),
+            ("peering_end", lambda: self._peering.session_ended(reason)),
+        ]
         if self.input_ended or self.user_speech_seen or self.manual_endpoint_this_turn:
             phases.append(("end_input", lambda: asyncio.wait_for(turn.end_input(), timeout=2.0)))
         cleanup_base_error: BaseException | None = None
@@ -829,9 +845,9 @@ class TurnLifecycle:
         chunks_received = turn.chunks_received()
         lost_mid_reply = self._reply_lost()
         silent = not self.playback_report.accepted_audio and not turn.turn_lost()
-        if reason == "playback_failed":
+        if reason in FAILED_END_REASONS:
             play_no_answer_cue = self._log_no_answer(
-                "turn.output_failed",
+                "turn.output_failed" if reason == "playback_failed" else "turn.response_stalled",
                 end_reason=reason,
                 counted=not self.playback_report.accepted_audio,
                 accepted_audio=self.playback_report.accepted_audio,
