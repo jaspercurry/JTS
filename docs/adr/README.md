@@ -37,6 +37,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0242](0242-post-deploy-health-is-the-core-doctor-run-in-a-transient-unit.md) | Post-deploy health is the core doctor, run in a transient unit | accepted |
 | [0248](0248-post-deploy-health-gates-the-deploy.md) | Post-deploy health gates the deploy | accepted |
 | [0252](0252-the-python-tree-publishes-from-a-staging-path.md) | The Python tree publishes from a staging path | accepted |
+| [0315](0315-hardware-tier-and-direct-updates.md) | Hardware tier and direct updates | accepted |
 
 ## Audio path & output (ring/fanin/outputd/DAC)
 

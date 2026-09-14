@@ -193,27 +193,7 @@ detect_default_install_profile() {
     esac
 }
 
-# Detect the box's hardware tier (RAM / CPU / arch) once, up front. This
-# is ORTHOGONAL to the install profile above: the profile is the product
-# role (does this box run the voice brain?), the tier is hardware
-# capability (how do I build safely here?). jts2 — a 1 GB Pi 5 on the
-# `full` profile — is the proof they differ: small hardware, full role.
-#
-# Pure reporter: prints one normalized line and mutates nothing, so the
-# dry-run plan, the real-install preflight, and tests can all call it.
-# The tier names the RAM region the box is in for OBSERVABILITY — an OOM
-# in a later build step is then self-evident in the deploy transcript. It
-# is the first step toward one shared tier vocabulary for the build knobs
-# that today read RAM independently (rust-daemons.sh's low-memory flip;
-# build_sandbox_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
-# this helper is Workstream A; this change does NOT alter any build behavior.
-# See docs/install-hardware-tier-and-staleness.md.
-#
-# Seams (all default to the real system; injectable so tests can drive
-# the whole SKU matrix with no hardware):
-#   JASPER_HW_MEMINFO_FILE  (default /proc/meminfo)
-#   JASPER_HW_NPROC         (default `nproc`)
-#   JASPER_HW_ARCH          (default `uname -m`)
+# See docs/adr/0315-hardware-tier-and-direct-updates.md.
 detect_hardware_tier() {
     local meminfo="${JASPER_HW_MEMINFO_FILE:-/proc/meminfo}"
     local mem_kb
