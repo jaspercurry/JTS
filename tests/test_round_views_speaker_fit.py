@@ -222,7 +222,7 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
     group = manifest_set(rows, set_id=role, selected={r["take_id"] for _, r in rows[:poses] + rows[3:6]})
     group["capture_basis"].update(role=changes.get("basis_role", role), stimulus=changes.get("stimulus"))
     for take in group["takes"]:
-        take.update(role=role, analysis=candidate["analysis"])
+        take.update(role=changes.get("basis_role", role), analysis=candidate["analysis"])
     write_manifest(root, groups=[group])
     flags = [arg for key in ("floor", "override") if key in changes
              for arg in ("--boost-floor-hz" if key == "floor" else "--vocabulary", str(changes[key]))]
