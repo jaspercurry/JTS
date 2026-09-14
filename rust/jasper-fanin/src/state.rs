@@ -967,6 +967,10 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "flushed_frames", metrics.flushed_frames());
                 buf.push(',');
+                // Mirrors the ring's `stall_log_dropped` for the TTS mixer
+                // thread's own `fanin-ring-log` events (issue #4787).
+                push_kv_u64(buf, "log_dropped", metrics.log_dropped());
+                buf.push(',');
                 push_kv_bool(buf, "program_duck_active", metrics.program_duck_active());
                 buf.push(',');
                 // Render through the shared writer so fan-in and outputd cannot
@@ -1561,6 +1565,7 @@ mod tests {
         assert!(j.contains(r#""tts_clients":0"#));
         assert!(j.contains(r#""frame_timeouts":0"#));
         assert!(j.contains(r#""stale_commands_dropped":0"#));
+        assert!(j.contains(r#""log_dropped":0"#));
         assert!(j.contains(r#""program_duck_active":false"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
         assert!(j.contains(r#""decision_seen":false"#));
