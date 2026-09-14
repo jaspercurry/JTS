@@ -551,7 +551,7 @@ def check_daemon_readable_inputs() -> CheckResult:
     return CheckResult(label, worst, detail, reason=reason)
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_household_secret_readable() -> CheckResult:
     """A PRESENT household_secret must be readable by jasper-control (the
     ``/grouping/set`` verify gate). Present-but-unreadable = the gate has

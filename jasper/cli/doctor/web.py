@@ -326,7 +326,7 @@ def _camillagui_listen_addresses() -> list[str] | None:
     return addresses
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_camillagui_loopback() -> CheckResult:
     """CamillaGUI's externally-reachable socket must bind loopback-only.
 

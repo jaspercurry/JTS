@@ -80,6 +80,15 @@ def test_the_live_hearing_ceiling_check_runs_on_every_deploy():
     assert "check_camilla_volume_limit" in core_names
 
 
+def test_the_security_posture_checks_run_on_every_deploy():
+    """#4800: a misconfigured box should fail install loudly, not only the
+    full doctor — the household-secret gate and the CamillaGUI loopback bind
+    are both deploy-blocking, not advisory-only."""
+    core_names = {c.func.__name__ for c in registered_checks(core_only=True)}
+    assert "check_household_secret_readable" in core_names
+    assert "check_camillagui_loopback" in core_names
+
+
 def test_only_restricts_the_import_and_the_result(monkeypatch):
     """`--only` exists to skip the work, not just narrow the display: the
     import loop itself must not touch a module outside the requested one."""

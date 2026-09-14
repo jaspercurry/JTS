@@ -75,6 +75,7 @@ _ROSTER_POSITION: dict[str, int] = {
 # check.
 CORE_MODULES: frozenset[str] = frozenset({
     "renderers",
+    "privsep",
     "web",
     "resilience",
     "audio_runtime_fanin",
