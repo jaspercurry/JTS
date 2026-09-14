@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 from jasper.platform.control_client import (
@@ -91,13 +92,16 @@ READER_REARM_MAX_SEC = 30.0
 # bridge gives up on it and waits for the next hot-plug.
 UDEV_SETTLE_SEC = 0.1
 UDEV_SETTLE_ATTEMPTS = 5
-# The udev-event queue's bound. The consumer can stall up to the full settle
-# ladder above (~3.1 s) draining one stuck "add" before it gets back to
-# `events.get()`, so this is generous headroom past what a hot-plug storm on
-# a handful of known accessories (a flaky hub cycling power) would enqueue in
-# that window — past it, `_udev_cb` drops and counts rather than blocking the
-# pyudev callback thread.
+# The udev-event queue's bound: headroom for a hot-plug storm on a handful
+# of known accessories (a flaky hub cycling power) to queue up during one
+# stuck-"add" consumer stall (the settle ladder above, ~3.1 s worst case).
+# Past it, the event is dropped and counted
+# (`_ReaderHealth.udev_event_dropped`) rather than the queue growing further.
 UDEV_QUEUE_MAXSIZE = 32
+# Throttle for the extra publish `udev_event_dropped` forces during a drop
+# storm (see its docstring) — a ceiling on how stale the published drop
+# count can get when nothing else is publishing, not a real-time signal.
+UDEV_DROP_PUBLISH_MIN_INTERVAL_SEC = 1.0
 
 
 def _doubled(delay: float, cap: float = float("inf")) -> float:
@@ -708,6 +712,7 @@ class _ReaderHealth:
         # freezing a copy of the count at registration time.
         self.udev_queue: dict[str, int] = {"dropped": 0}
         self._publish: Publish = lambda: None
+        self._udev_drop_last_publish = 0.0
 
     def register(self, publish: Publish) -> dict[str, Any]:
         self._publish = publish
@@ -733,14 +738,22 @@ class _ReaderHealth:
         self._publish()
 
     def udev_event_dropped(self) -> None:
-        """Bump the udev hot-plug queue's overflow counter and republish.
+        """Bump the udev hot-plug queue's overflow counter.
 
-        Called when `_run_hid_bridge`'s bounded `events` queue is full: the
-        add/remove is discarded rather than blocking the udev callback
-        thread that produced it.
+        Called on the loop thread — the same thread the queue bound exists
+        to protect — when `_run_hid_bridge`'s bounded `events` queue is
+        full, so this must not itself do the synchronous `atomic_write_json`
+        a normal `self._publish()` call does. The counter rides along on
+        whatever publish happens next (every `opened`/`ended`/`removed` call
+        does one); this only forces an extra publish, throttled to at most
+        one per `UDEV_DROP_PUBLISH_MIN_INTERVAL_SEC`, for the case where
+        nothing else is publishing during the storm.
         """
         self.udev_queue["dropped"] += 1
-        self._publish()
+        now = time.monotonic()
+        if now - self._udev_drop_last_publish >= UDEV_DROP_PUBLISH_MIN_INTERVAL_SEC:
+            self._udev_drop_last_publish = now
+            self._publish()
 
     def ended(self, path: str, state: str, error: str | None = None) -> None:
         entry = self.devices.get(path)

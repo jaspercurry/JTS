@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -1246,7 +1247,11 @@ async def test_a_dead_reader_is_reported_and_re_armed(
 async def test_opening_a_reader_emits_a_structured_event(monkeypatch, caplog):
     """`_ReaderHealth.opened` must reach the journal (event=knob.opened), not
     just the in-memory status dict `register` publishes — a log-tailing tool
-    or jasper-doctor has no other way to see a reader come up."""
+    or jasper-doctor has no other way to see a reader come up.
+
+    JSON mode (see test_log_event.py's own pin) turns the message into a
+    structured payload so the assert below reads fields, not rendered text.
+    """
     node = "/dev/input/event9"
     device = _profile(keymap={})
     opened = asyncio.Event()
@@ -1261,6 +1266,7 @@ async def test_opening_a_reader_emits_a_structured_event(monkeypatch, caplog):
     _install_fake_pyudev(monkeypatch)
     monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
     monkeypatch.setattr(bridge_mod, "_read_device", fake_read_device)
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
 
     readers = bridge_mod._ReaderHealth()
     with caplog.at_level(logging.INFO, logger="jasper.accessories.bridge"):
@@ -1275,7 +1281,25 @@ async def test_opening_a_reader_emits_a_structured_event(monkeypatch, caplog):
         if getattr(r, "jasper_event", None) == "knob.opened"
     ]
     assert len(records) == 1
-    assert records[0].getMessage() == f"event=knob.opened path={node} profile={device.id}"
+    payload = json.loads(records[0].getMessage())
+    assert payload["path"] == node
+    assert payload["profile"] == device.id
+
+
+def test_udev_drop_storm_coalesces_into_one_forced_publish(monkeypatch):
+    """`udev_event_dropped` runs on the loop thread the queue bound protects,
+    so a storm of drops must not each do a synchronous `atomic_write_json` —
+    the counter accumulates, and only the first drop in the throttle window
+    forces a publish."""
+    readers = bridge_mod._ReaderHealth()
+    publishes: List[int] = []
+    readers.register(lambda: publishes.append(readers.udev_queue["dropped"]))
+
+    for _ in range(50):
+        readers.udev_event_dropped()
+
+    assert readers.udev_queue["dropped"] == 50
+    assert len(publishes) == 1
 
 
 async def test_udev_queue_overflow_drops_and_counts_instead_of_growing(
@@ -1283,8 +1307,7 @@ async def test_udev_queue_overflow_drops_and_counts_instead_of_growing(
 ):
     """A hot-plug storm must not grow the udev queue without bound: once the
     consumer is busy and the bound is full, `_udev_cb` drops the event and
-    counts it via `_ReaderHealth` rather than blocking pyudev's callback
-    thread or growing the queue further."""
+    counts it via `_ReaderHealth` rather than growing the queue further."""
     device = _profile(keymap={})
 
     class _NeverWiredUp(_FakeInputDevice):
