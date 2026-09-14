@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import room_views
+from jasper.active_speaker.crossover_v2.prescription_contract import prescription_contracts
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
@@ -247,7 +248,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry):
     source.assert_called_once_with(inputs.applied_profile_path)
     document = json.loads(Path(result["out"]).read_text())
     assert set(document) == {"ceiling", "median", "persistence", "limits", "incumbent",
-                             "boundary", "boundary_reason", "incumbent_reason", "room_median_sha256"}
+                             "boundary", "boundary_reason", "incumbent_reason", "room_median_sha256", "admit_boost"}
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
                                   basis=selected.capture_basis)
@@ -258,10 +259,10 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry):
         "cut_floor_db": room_limits.cut_floor_db(value.spread_db, value.freqs_hz, value.ceiling_hz).tolist(),
         "boost_cap_db": room_limits.boost_cap_db(value.freqs_hz, value.ceiling_hz).tolist(),
     }
-    for feature in document["persistence"]["features"]:
-        assert feature["admission"] == room_limits.admit_boost(
-            feature["centre_hz"], freqs_hz=value.freqs_hz, median_db=value.median_db,
-            deviations_db=value.deviations_db, n_positions=value.n_positions).to_dict()
+    bounds = prescription_contracts(room_median=median, room_persistence=document["persistence"])["room"]["bounds"]
+    assert document["admit_boost"] == bounds["admit_boost"]
+    assert [finding["feature"] for finding in document["admit_boost"]] == document["persistence"]["features"]
+    assert {key: bounds[key] for key in document["limits"]} == document["limits"]
     assert document["incumbent"]["round_id"] == _ROOM_CORRECTION["basis"]["round_id"]
     assert document["incumbent"]["room_median_sha256"] == _ROOM_CORRECTION["basis"]["room_median_sha256"]
     assert document["incumbent_reason"] == result["incumbent_reason"] == ""

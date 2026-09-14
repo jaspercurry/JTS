@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, read_prescription_document,
+    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_room_document, read_prescription_document,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_artifact_dir, round_inputs, contract_sources, RoundInputs,
@@ -64,10 +64,12 @@ def _contract_sources(inputs: RoundInputs | None, set_id: str | None = None) -> 
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
     inputs = round_inputs(Path(args.round)) if args.round else None
-    sources = _contract_sources(inputs, args.set)
     sections = document["sections"]
+    if inputs is not None and sections.get("room"):
+        resolve_set(inputs, args.set)
+    sources = _contract_sources(inputs, args.set)
     packet: dict[str, Any] = {}
-    if inputs is not None and (sections.get("driver") or sections.get("blend")):
+    if not getattr(args, "preview", False) and inputs is not None and (sections.get("driver") or sections.get("blend")):
         packet = _load_packet(args, inputs=inputs)
     try:
         sha = _room_median(sources.get("room_median", {}))[1] if sections.get("room") else ""
@@ -102,6 +104,8 @@ def _cmd_document(args: argparse.Namespace) -> int:
         else:
             base = find_banked_candidate(document["base"], root=root)
         evidence = _document_evidence(args, document)
+        if args.command == "judge" and args.preview:
+            return answered(preview_room_document(document, base=base, evidence=evidence))
         candidate = judge_prescription_document(document, base=base, evidence=evidence)
     except PrescriptionDocumentRefused as exc:
         print(json.dumps(exc.to_dict(), sort_keys=True))
@@ -648,6 +652,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--base", required=True, metavar="FINGERPRINT|saved")
         else:
             command.set_defaults(base=None)
+            command.add_argument("--preview", action="store_true", help="room response, taper margins and residual; banks nothing")
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read declared, banked and applied state")

@@ -41,12 +41,14 @@ from tests.test_crossover_v2_blend_prescription import _bundle
 from tests.test_crossover_v2_driver_prescription import _draft, applied_profile
 from tests.test_crossover_v2_room_prescription import _room_median
 from tests.test_crossover_v2_harmonic_evidence import _artifact, _bundle as harmonic_bundle
+from tests.run_manifest_fixture import write_manifest
 
 
 @pytest.fixture
 def round_bank(tmp_path):
     bank = tmp_path / "round"
     session, _ = _bundle(bank / "bundle")
+    write_manifest(bank)
     artifact = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
     preset = _two_way_preset()
     (artifact / "candidate.json").write_text(json.dumps({"source_preset": preset}))

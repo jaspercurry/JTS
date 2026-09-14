@@ -78,7 +78,7 @@ def test_set_selects_manifest_takes_and_files_its_own_artifact(two_sets, capsys,
 
 @pytest.mark.parametrize("case,reason", [
     ("missing", "round_manifest_missing"), ("unfinished", "round_manifest_unfinalized"),
-    ("unknown", "round_set_unknown"), ("ambiguous", "round_set_unknown"),
+    ("unknown", "round_set_unknown"), ("ambiguous", "set_required"),
 ])
 def test_manifest_refusals_keep_registry_codes(two_sets, capsys, case, reason):
     root, manifest = two_sets
@@ -240,7 +240,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
     write_manifest(round_dir, program="room", groups=groups)
     assert main(["room", str(round_dir)]) == 1
     refused = json.loads(capsys.readouterr().out)
-    assert refused["reason"] == "round_set_unknown"
+    assert refused["reason"] == "set_required"
     assert not (round_dir / "room.json").exists()
 
     for record, level in [(original, -30.0), (second, -20.0)]:

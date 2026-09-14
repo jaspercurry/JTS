@@ -30,7 +30,6 @@ from typing import Any, NoReturn
 import numpy as np
 
 from jasper.active_speaker._common import require_sha256_hex
-from jasper.active_speaker.branch_chain import chain_response
 from jasper.audio_measurement.room_boundary import (
     CEILING_SOURCES,
     ROOM_FLOOR_HZ,
@@ -65,7 +64,6 @@ from .blend_prescription import (
     PROHIBITED_PRESCRIPTION_KEYS,
     RATIONALE_MAX_CHARS,
     BlendPrescriptionRefused,
-    composed_grid,
     find_prohibited_keys,
     # Renamed only to stay distinct from this module's own identifiers: the
     # VALUES are that door's, which is what makes one vocabulary cover both.
@@ -75,6 +73,7 @@ from .blend_prescription import (
     # same exception class and refuses under both readers' own values.
     _FILTER_FIELDS,
 )
+from .room_analysis import RoomMedian, room_composition
 
 __all__ = [
     "BOOST_NOT_ADMITTED",
@@ -184,34 +183,6 @@ _PRESCRIPTION_FIELDS = frozenset({
 # --------------------------------------------------------------------------- #
 # the evidence
 # --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True, eq=False)
-class RoomMedian:
-    """One round's spatial median, reduced to what the bounds are computed from.
-
-    ``deviations_db`` is positions x bins, each row a position's deviation FROM
-    ``median_db`` — so a position's own level at a bin is the sum of the two.
-    ``ceiling_hz`` arrives from the median document and is never derived here.
-    """
-
-    freqs_hz: np.ndarray
-    median_db: np.ndarray
-    spread_db: np.ndarray | None
-    deviations_db: np.ndarray
-    n_positions: int
-    ceiling_hz: float
-    ceiling_source: str
-    #: The level ``median_db`` was read against: the producer's median curve's
-    #: own median over the band, dB.
-    level_reference_db: float = 0.0
-    evidence: Mapping[str, Any] | None = None
-    coverage_hz: tuple[float, float] | None = None
-
-    @property
-    def band_hz(self) -> tuple[float, float]:
-        """The band a prescription against this median may place filters in."""
-        return self.coverage_hz or (ROOM_FLOOR_HZ, self.ceiling_hz)
 
 
 def _unavailable(detail: str, **evidence: Any) -> NoReturn:
@@ -528,9 +499,12 @@ def _parse_filter(side: str, position: int, entry: Any) -> dict[str, Any]:
     freq = _number(entry.get("freq"), reason=FILTER_MALFORMED, field=f"{where} freq")
     if freq <= 0.0:
         _refuse(FILTER_MALFORMED, f"{where} freq must be positive")
+    q = _number(entry.get("q"), reason=FILTER_MALFORMED, field=f"{where} q")
+    if q <= 0.0:
+        _refuse(FILTER_Q_OUT_OF_RANGE, f"{where} q must be positive", q=q)
     return {
         "freq": freq,
-        "q": _number(entry.get("q"), reason=FILTER_MALFORMED, field=f"{where} q"),
+        "q": q,
         "gain": _number(
             entry.get("gain"), reason=FILTER_MALFORMED, field=f"{where} gain"
         ),
@@ -761,21 +735,7 @@ def _check_composed(
     median: RoomMedian,
     floor_db: np.ndarray,
 ) -> float:
-    """Per side: the slot count, the boost spend, and the EVALUATED cascade.
-
-    Through ``chain_response``, the ONE biquad evaluator, so this gate and the
-    emitter's headroom charge cannot disagree about what CamillaDSP realizes.
-    Two filters whose skirts overlap deliver more than either alone — and take
-    the cascade past a per-filter bound both filters cleared. Returns the
-    largest per-side boost spend, which is what the level costs.
-    """
-    # Coverage limits filter centres; the room policy still bounds their tails.
-    grid = composed_grid((ROOM_FLOOR_HZ, median.ceiling_hz), median.freqs_hz)
-    grid_floor_db = np.maximum(
-        np.interp(grid, median.freqs_hz, floor_db),
-        cut_floor_db(None if median.spread_db is None else 0.0, grid, median.ceiling_hz),
-    )
-    cap_db = boost_cap_db(grid, median.ceiling_hz)
+    """Check slot count, boost spend and the shared response analysis."""
     spend = 0.0
     for side, entries in sides.items():
         if len(entries) > ROOM_MAX_FILTERS_PER_SIDE:
@@ -796,53 +756,23 @@ def _check_composed(
                 max_composed_boost_db=ROOM_MAX_TOTAL_BOOST_DB,
             )
         spend = max(spend, boost)
-        if not entries:
-            continue
-        composed = 20.0 * np.log10(
-            np.maximum(np.abs(np.asarray(chain_response(entries, grid))), 1e-12)
-        )
-        over = composed - cap_db
-        under = grid_floor_db - composed
-        worst = int(np.argmax(np.maximum(over, under)))
-        if max(over[worst], under[worst]) > ROOM_COMPOSED_TOLERANCE_DB:
-            _refuse(
-                TAPER_VIOLATED,
-                f"side {side!r} composes to {composed[worst]:+.2f} dB at "
-                f"{grid[worst]:.1f} Hz, outside the "
-                f"{grid_floor_db[worst]:+.2f}..{cap_db[worst]:+.2f} dB allowed "
-                "there",
-                freq_hz=float(grid[worst]),
-                composed_db=float(composed[worst]),
-                cut_floor_db=float(grid_floor_db[worst]),
-                boost_cap_db=float(cap_db[worst]),
-                tolerance_db=ROOM_COMPOSED_TOLERANCE_DB,
-            )
+    bins = room_composition(sides, median, floor_db).violations(sides, ROOM_COMPOSED_TOLERANCE_DB)
+    if bins:
+        worst = max(bins, key=lambda row: max(row["cut_floor_db"] - row["composed_db"],
+                                              row["composed_db"] - row["boost_cap_db"]))
+        _refuse(TAPER_VIOLATED, "the composed room response exceeds the taper", **worst,
+                tolerance_db=ROOM_COMPOSED_TOLERANCE_DB, bins=bins)
     return float(spend)
 
 
-def read_room_prescription(
-    raw: Mapping[str, Any] | None,
+def _room_inputs(
+    raw: Mapping[str, Any],
     *,
     room_median: RoomMedian | None,
     room_median_sha256: str | None,
     round_id: str,
     sides: Sequence[str],
-) -> RoomPrescription | None:
-    """THE request gate. One point, and the one place every bound is applied.
-
-    ``None`` when there is no prescription. Otherwise a validated
-    :class:`RoomPrescription`, or :class:`RoomPrescriptionRefused` naming which
-    gate said no. ``sides`` is the layout's own declared side names, which the
-    document's keys must be exactly.
-
-    Order is deliberate — shape, identity, provenance, per-filter bounds, the
-    spatial bar for each boost, then the composed cascade — because each stage
-    sends a prescriber somewhere different, and a proposal learns its filters
-    are unplaceable before it learns the cascade they compose to is. The bounds
-    are INCLUSIVE, so a round's legality does not turn on float noise.
-    """
-    if raw is None:
-        return None
+) -> tuple[dict[str, tuple[dict[str, Any], ...]], str, str, str, str, int, RoomMedian]:
     prescribed, echoed, model, operator, rationale, dropped = _parse_prescription(raw)
     if set(prescribed) != set(sides):
         _refuse(
@@ -855,8 +785,31 @@ def read_room_prescription(
     measured_side = (median.evidence or {}).get("basis", {}).get("side")
     if measured_side is not None and set(sides) != {measured_side}:
         _refuse(SIDE_MALFORMED, "the median measures another side", measured_side=measured_side)
-    # Built once: the per-filter bound and the composed one read the same
-    # per-bin floor, on the same grid the median declared it on.
+    return prescribed, echoed, model, operator, rationale, dropped, median
+
+
+def preview_room_prescription(raw: Mapping[str, Any], *, room_median: RoomMedian,
+                              room_median_sha256: str, round_id: str, sides: Sequence[str]) -> dict[str, Any]:
+    prescribed, *_, median = _room_inputs(
+        raw, room_median=room_median, room_median_sha256=room_median_sha256, round_id=round_id, sides=sides,
+    )
+    floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
+    try:
+        return room_composition(prescribed, median, floor_db).preview(median, ROOM_COMPOSED_TOLERANCE_DB)
+    except (ValueError, OverflowError, ZeroDivisionError) as exc:
+        _refuse(FILTER_MALFORMED, str(exc))
+
+
+def read_room_prescription(
+    raw: Mapping[str, Any] | None, *, room_median: RoomMedian | None,
+    room_median_sha256: str | None, round_id: str, sides: Sequence[str],
+) -> RoomPrescription | None:
+    """Parse the measured basis, then check filters, boost admission and composition."""
+    if raw is None:
+        return None
+    prescribed, echoed, model, operator, rationale, dropped, median = _room_inputs(
+        raw, room_median=room_median, room_median_sha256=room_median_sha256, round_id=round_id, sides=sides,
+    )
     floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
     prescription_class = _check_bounds(prescribed, median, floor_db)
     admissions = _check_boosts(prescribed, median)

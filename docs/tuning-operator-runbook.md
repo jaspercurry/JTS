@@ -111,6 +111,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `seat_anchor_unusable` | Run jasper-seat-level with the current microphone, then measure. | Run jasper-seat-level with the current microphone, then measure | `hard_stop` |
 | `seat_level_watchdog_expired` | Leveling timed out. Check the audio connection and try again. |  | `fix_and_retry` |
 | `session_ceiling_expired` | The whole measurement ran out of time while it was still waiting for the microphone to reach a position. Start over from this page once the microphone can be moved through the walk more quickly. |  | `session_restart` |
+| `set_required` | Name --set with one of the listed set ids. |  | `hard_stop` |
 | `snr_floor` | The room is too loud right now, or the microphone is too far away. Quiet the room or move the microphone closer, then try again. | Quiet the room or move the microphone closer, then try again. | `fix_and_retry` |
 | `speaker_shape_unsupported` | JTS can measure a single full-range speaker or a two-way active crossover, and this speaker is neither. There is nothing to retry — check the drivers declared in speaker setup. | Open speaker setup | `hard_stop` |
 | `spl_ceiling_exceeded` | The measurement stopped because the microphone heard the speaker louder than the commissioning stop. Lower the level and measure again. |  | `hard_stop` |
