@@ -6020,36 +6020,21 @@ def _rearm_verify():
 
 
 
-def test_the_status_block_withholds_a_way_back_its_door_would_refuse(
+def test_status_reports_previous_applied_record_without_a_bank_walk(
     monkeypatch, tmp_path,
 ):
-    """Review row 6, at the seam that feeds every screen.
+    from jasper.web.correction_crossover_flow import handle_status
 
-    ``previous_candidate_fingerprint`` on the status block is what the
-    envelope mints the way-back button AND selects the rollback-failed copy
-    arm from. When the republish door would refuse the pointer — here a bank
-    with no verifiable artifact for it — the block publishes ``None``, so no
-    surface advertises a "Go back to the previous tuning" that refuses on the
-    same fact. The positive control drives the REAL preflight over a REAL
-    bank: the same state publishes the fingerprint once the artifact is
-    admissible.
-    """
     prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
 
-    assert (
-        v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
-        == prior_fingerprint
-    )
+    def bank_walk(*args, **kwargs):
+        raise AssertionError
 
-    # Prune the bank out from under the pointer: the answer must flip with it.
-    monkeypatch.setattr(
-        "jasper.active_speaker.bundles.sessions_dir",
-        lambda: tmp_path / "empty-bank",
-    )
-    assert (
-        v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
-        is None
-    )
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank.find_banked_candidate", bank_walk)
+    payload, code = handle_status()
+    assert code == 200
+    assert payload["crossover_v2"]["previous_candidate_fingerprint"] == prior_fingerprint
+    assert v2host._previous_candidate_known() is True
 
 
 def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatch):
