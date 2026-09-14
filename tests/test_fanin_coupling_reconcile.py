@@ -31,6 +31,7 @@ from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import ring_edge_width_ready
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
+    DEFAULT_FANIN_RING_SLOTS,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
@@ -975,7 +976,7 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
 def _ring_conf(
     tmp_path,
     *,
-    capture_n_slots: int = 2,
+    capture_n_slots: int = DEFAULT_FANIN_RING_SLOTS,
     period_frames: int = 128,
     sample_format: str = "S32_LE",
 ):

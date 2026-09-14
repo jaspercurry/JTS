@@ -223,13 +223,13 @@ def test_slot_migration_writes_the_coherent_value_when_only_slots_are_stale(
     Without this, a decline test proves only that the function wrote nothing —
     which a broken migration that never writes would also satisfy.
     """
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+    from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS, RING_SLOTS_ENV_VAR
 
     text, records = _migrate(
         tmp_path, monkeypatch, fanin_text=f"{RING_SLOTS_ENV_VAR}=8\n"
     )
     assert "stale_ring_slots_overridden" in records
-    assert f"{RING_SLOTS_ENV_VAR}=2" in text
+    assert f"{RING_SLOTS_ENV_VAR}={DEFAULT_FANIN_RING_SLOTS}" in text
 
 
 def test_slot_migration_declines_when_the_wire_format_is_sheared(
