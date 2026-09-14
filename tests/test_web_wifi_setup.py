@@ -148,26 +148,21 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
     monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
 
-    def fake_secret(cmd, *, timeout=10):
-        calls.append(("secret", list(cmd)))
-        # connect attempt fails with a non-SSID-lookup error
-        return _completed(cmd, returncode=4, stderr="Error: Connection activation failed.")
-
-    def fake_run(cmd, *, timeout=10, log_argv=True):
-        calls.append(("run", list(cmd)))
+    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
+        calls.append(list(cmd))
+        if "connect" in cmd:
+            # connect attempt fails with a non-SSID-lookup error
+            return _completed(cmd, returncode=4, stderr="Error: Connection activation failed.")
         return _completed(cmd, returncode=0, stdout="")
 
-    monkeypatch.setattr(wifi_setup, "_run_nmcli_secret", fake_secret)
     monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
 
     ok, msg = wifi_setup.connect_new("BadNet", "secretpw")
     assert ok is False
     # broken profile deleted (didn't exist before) ...
-    assert any(c[1][:4] == ["nmcli", "connection", "delete", "BadNet"]
-               for c in calls if c[0] == "run")
+    assert any(c[:4] == ["nmcli", "connection", "delete", "BadNet"] for c in calls)
     # ... and the previous profile brought back up.
-    assert any("connection" in c[1] and "up" in c[1] and "HomeNet" in c[1]
-               for c in calls if c[0] == "run")
+    assert any("connection" in c and "up" in c and "HomeNet" in c for c in calls)
     assert "HomeNet" in msg
 
 
@@ -184,18 +179,11 @@ def test_connect_new_reactivates_same_profile_on_failure(monkeypatch):
         lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
     )
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: True)
-    monkeypatch.setattr(
-        wifi_setup,
-        "_run_nmcli_secret",
-        lambda cmd, *, timeout=10: _completed(
-            cmd,
-            returncode=4,
-            stderr="Error: Connection activation failed.",
-        ),
-    )
 
-    def fake_run(cmd, *, timeout=10, log_argv=True):
+    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
         calls.append(list(cmd))
+        if "connect" in cmd:
+            return _completed(cmd, returncode=4, stderr="Error: Connection activation failed.")
         return _completed(cmd)
 
     monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
@@ -207,11 +195,21 @@ def test_connect_new_reactivates_same_profile_on_failure(monkeypatch):
         [
             "nmcli",
             "--wait",
+            str(wifi_setup._CONNECT_WAIT),
+            "--ask",
+            "device",
+            "wifi",
+            "connect",
+            "HomeNet",
+        ],
+        [
+            "nmcli",
+            "--wait",
             str(wifi_setup._ROLLBACK_WAIT),
             "connection",
             "up",
             "HomeNet",
-        ]
+        ],
     ]
     assert message.endswith("Restored previous network (HomeNet).")
 
@@ -221,22 +219,19 @@ def test_connect_new_worst_path_matches_declared_timeout_ceiling(monkeypatch):
     reads, profile lookup, visible + hidden attempts, cleanup, and rollback."""
     timeouts: list[int] = []
 
-    def fake_run(cmd, *, timeout=10, log_argv=True):
+    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
         timeouts.append(timeout)
         if cmd[-3:] == ["connection", "show", "--active"]:
             return _completed(cmd, stdout="Home:uuid:wifi:wlan0\n")
+        if "connect" in cmd:
+            return _completed(
+                cmd,
+                returncode=4,
+                stderr="Error: No network with SSID 'MissingNet' found.",
+            )
         return _completed(cmd, returncode=1, stderr="failed")
 
-    def fake_secret(cmd, *, timeout=10):
-        timeouts.append(timeout)
-        return _completed(
-            cmd,
-            returncode=4,
-            stderr="Error: No network with SSID 'MissingNet' found.",
-        )
-
     monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-    monkeypatch.setattr(wifi_setup, "_run_nmcli_secret", fake_secret)
 
     ok, _ = wifi_setup.connect_new("MissingNet", "secretpw")
 
@@ -283,49 +278,6 @@ def test_readable_nmcli_error_scrubs_password_token_without_literal():
     assert "password <redacted>" in msg
 
 
-# WPA passphrases are 8-63 printable ASCII, quote characters included, and
-# both log sites join the argv for display -- so a quote-bearing PSK is the
-# shape that defeats any pattern applied after the join.
-@pytest.mark.parametrize(
-    "psk",
-    [
-        "timeout-secret-psk",
-        'say "hi" 12345',
-        "don't tell me",
-        "p@ss'w\"rd12",
-    ],
-)
-def test_nmcli_secret_argv_never_logs_the_psk(monkeypatch, caplog, psk):
-    cmd = [
-        "nmcli",
-        "device",
-        "wifi",
-        "connect",
-        "HomeNet",
-        "password",
-        psk,
-    ]
-
-    def time_out(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
-
-    monkeypatch.setattr(wifi_setup.subprocess, "run", time_out)
-    caplog.set_level(logging.INFO, logger=wifi_setup.logger.name)
-
-    proc = wifi_setup._run_nmcli_secret(cmd, timeout=1)
-
-    warnings = event_records(caplog, "wifi.nmcli_timeout")
-
-    assert proc.returncode == 124
-    # Without a record to look at, the absence pin below is satisfied by an
-    # empty log.
-    assert len(warnings) == 1
-    assert event_fields(caplog, "wifi.nmcli_timeout")["argv"] == (
-        "nmcli device wifi connect HomeNet password <redacted>"
-    )
-    assert not leaked_lines(caplog, psk)
-
-
 def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
     psk = "TopSecretWifiPass"
     monkeypatch.setattr(
@@ -335,19 +287,50 @@ def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
     monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
 
-    def fake_secret(cmd, *, timeout=10):
-        # nmcli echoes the PSK back in its failure text.
-        return _completed(
-            cmd, returncode=4,
-            stderr=f"Error: secrets were required but not provided: password {psk}",
-        )
+    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
+        if "connect" in cmd:
+            # nmcli echoes the PSK back in its failure text.
+            return _completed(
+                cmd, returncode=4,
+                stderr=f"Error: secrets were required but not provided: password {psk}",
+            )
+        return _completed(["nmcli"])
 
-    monkeypatch.setattr(wifi_setup, "_run_nmcli_secret", fake_secret)
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", lambda *a, **k: _completed(["nmcli"]))
+    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
 
     ok, msg = wifi_setup.connect_new("MyNet", psk)
     assert ok is False
     assert psk not in msg
+
+
+def test_connect_new_never_puts_psk_on_argv(monkeypatch):
+    """Non-negotiable 3 (issue #4279 item 8): the PSK must never land on
+    nmcli's argv, where it is visible in /proc/<pid>/cmdline to root for
+    the connect window. It rides the child's stdin instead, paired with
+    `--ask`."""
+    psk = "hunter2-super-secret-psk"
+    captured: list[tuple[list[str], str | None]] = []
+
+    monkeypatch.setattr(wifi_setup, "_current_wifi", lambda: None)
+    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
+    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
+
+    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
+        captured.append((list(cmd), stdin_secret))
+        return _completed(cmd, returncode=0)
+
+    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
+
+    ok, _ = wifi_setup.connect_new("MyNet", psk)
+
+    assert ok is True
+    connect_calls = [(cmd, secret) for cmd, secret in captured if "connect" in cmd]
+    assert connect_calls
+    for cmd, secret in connect_calls:
+        assert all(psk not in arg for arg in cmd)
+        assert "--ask" in cmd
+        # ... and the mechanism that keeps it off argv actually got it.
+        assert secret == psk
 
 
 def test_set_radio_passes_on_off(monkeypatch):
