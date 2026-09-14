@@ -233,28 +233,9 @@ def _active_graph_fingerprint() -> str:
 
 
 def _previous_candidate_known() -> bool:
-    from jasper.web.correction_crossover_v2_status import _offerable_previous_candidate
+    from jasper.web.correction_crossover_v2_status import rollback_candidate  # lazy: status imports commissioning state
 
-    state = v2state.load_v2_state()
-    return previous_candidate_paired(state) and _offerable_previous_candidate(state) is not None
-
-
-def previous_candidate_paired(state: Mapping[str, Any] | None) -> bool:
-    """Was the previous candidate recorded by the apply now under grade?"""
-    resolved = state or {}
-    displaced_by = resolved.get("previous_candidate_displaced_by")
-    candidate = resolved.get("candidate")
-    published = (
-        str(candidate.get("fingerprint") or "")
-        if isinstance(candidate, Mapping)
-        else ""
-    )
-    return (
-        isinstance(displaced_by, str)
-        and bool(displaced_by)
-        and bool(published)
-        and displaced_by == published
-    )
+    return rollback_candidate(v2state.load_v2_state()) is not None
 
 
 def _applied_graph_boosts() -> bool:

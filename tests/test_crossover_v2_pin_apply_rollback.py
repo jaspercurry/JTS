@@ -7,6 +7,10 @@
 from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_state as v2state
+from jasper.web import correction_crossover_v2_apply as v2apply, correction_crossover_v2_restore as v2restore
+from jasper.web import sound_active_speaker
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment, _bg_run_async
 
 from dataclasses import replace
 
@@ -33,33 +37,39 @@ def _isolated_v2_state(tmp_path):
     v2state.set_state_path_for_tests(None)
 
 
-def _seed_previous_candidate(*, paired: bool = True) -> None:
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "applied": True,
-        "candidate": {"fingerprint": CURRENT},
+@pytest.mark.parametrize("paired,offerable", [(False, False), (False, True), (True, False), (True, True)])
+def test_rollback_candidate_agrees_across_surfaces(monkeypatch, tmp_path, paired, offerable):
+    _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    state = {
+        "applied": True, "candidate": {"fingerprint": CURRENT},
         "previous_candidate_fingerprint": PREVIOUS,
-        "previous_candidate_displaced_by": CURRENT if paired else "fp-older-apply",
-    })
+        "previous_candidate_displaced_by": CURRENT if paired else "older-apply",
+        "previous_applied_profile": {
+            "status": "applied", "source": {"measured_candidate_fingerprint": PREVIOUS},
+            "config": {"sha256": "a" * 64 if offerable else None},
+        },
+    }
+    v2state.save_v2_state(state)
+    expected = PREVIOUS if paired and offerable else None
+    assert v2status.rollback_candidate(state) == expected
+    assert v2host._previous_candidate_known() is (expected is not None)
+    assert v2status.crossover_v2_status_block()["previous_candidate_fingerprint"] == expected
+    assert sound_active_speaker._active_speaker_baseline_profile_payload()["previous_candidate_fingerprint"] == expected
+    calls = []
 
+    def unavailable(fingerprint):
+        calls.append(fingerprint)
+        raise CandidateBankRefusal("not_found", "unavailable")
 
-@pytest.mark.parametrize(
-    ("paired", "preflight_code", "expected"),
-    [
-        pytest.param(True, None, True, id="paired+admitted"),
-        pytest.param(False, None, False, id="unpaired"),
-        pytest.param(True, "not_found", False, id="bank-refuses"),
-    ],
-)
-def test_rollback_available_pairs_and_preflights(
-    monkeypatch, paired, preflight_code, expected,
-):
-    _seed_previous_candidate(paired=paired)
-    monkeypatch.setattr(
-        v2status, "_offerable_previous_candidate", lambda state: PREVIOUS if preflight_code is None else None,
-    )
-
-    assert v2host._previous_candidate_known() is expected
+    monkeypatch.setattr(v2apply, "find_banked_candidate", unavailable)
+    with pytest.raises(CrossoverV2Refused) as caught:
+        v2apply.handle_v2_apply({"previous": True}, _bg_run_async, lambda: None)
+    assert caught.value.code == ("not_found" if expected else "previous_profile_unavailable")
+    assert calls == ([PREVIOUS] if expected else [])
+    monkeypatch.setattr(v2restore, "current_graph_fingerprint", lambda: "graph")
+    restored = v2restore.bind_boost_restore(_bg_run_async, lambda: None)("graph")
+    assert restored["status"] == ("restore_failed" if expected else "previous_profile_unavailable")
+    assert calls == ([PREVIOUS, PREVIOUS] if expected else [])
 
 
 @pytest.mark.parametrize(

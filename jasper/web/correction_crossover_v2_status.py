@@ -23,23 +23,23 @@ import logging
 from typing import Any, Mapping
 
 from jasper.active_speaker import crossover_envelope_v2 as _projection
+from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.grade_coverage import asked_beyond_mark
 from jasper.log_event import log_event
 
 
 logger = logging.getLogger(__name__)
 
-def previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | None:
-    """The measured candidate the applied graph displaced, if one is recorded."""
-    value = (state or {}).get("previous_candidate_fingerprint")
-    return value if isinstance(value, str) and value else None
-
-
-def _offerable_previous_candidate(state: Mapping[str, Any] | None) -> str | None:
-    """The displaced applied record; the apply door resolves its banked artifact."""
-    fingerprint = previous_candidate_fingerprint(state)
-    applied = (state or {}).get("previous_applied_profile") or {}
-    if (fingerprint and applied.get("status") == "applied"
+def rollback_candidate(state: Mapping[str, Any] | None) -> str | None:
+    """The offerable candidate displaced by the current candidate's apply."""
+    state = state or {}
+    fingerprint = state.get("previous_candidate_fingerprint")
+    candidate = state.get("candidate")
+    published = candidate.get("fingerprint") if isinstance(candidate, Mapping) else None
+    applied = state.get("previous_applied_profile") or {}
+    if (published and state.get("previous_candidate_displaced_by") == published
+            and isinstance(fingerprint, str) and fingerprint and applied.get("status") == "applied"
             and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint
             and (applied.get("config") or {}).get("sha256")):
         return fingerprint
@@ -85,8 +85,8 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "execution": (state or {}).get("execution"),
         "failure": (state or {}).get("failure"),
         "needs_recovery": needs_recovery,
-        "applied": bool(state and state.get("applied")),
-        "previous_candidate_fingerprint": _offerable_previous_candidate(state),
+        "applied": applied_identity(load_applied_baseline_profile_state()),
+        "previous_candidate_fingerprint": rollback_candidate(state),
         "session_id": session_id,
         "attempts_loop": {
             "store_count": store_count,

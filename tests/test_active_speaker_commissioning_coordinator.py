@@ -2,6 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+from dataclasses import replace
+
+from jasper.active_speaker import baseline_profile, commissioning_experiment
+from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.commissioning_coordinator import load_commissioning_view
+from jasper.cli.doctor import active_speaker as doctor
+from jasper.doctor_contract import check_row
+from jasper.web import correction_crossover_v2_status as v2status
+from tests.test_active_speaker_baseline_profile import _v2_candidate
+from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 
 import pytest
 
@@ -115,7 +125,8 @@ def test_applied_identity_change_is_disclosed_without_parking_review(ready, appl
         permissions={"may_compile": ready, "may_apply": False},
         issues=[] if ready else [{"severity": "blocker", "code": "compose_refused"}],
     )
-    applied = {**_applied_anchor(), "candidate_fingerprint": applied_fingerprint}
+    applied = {**_applied_anchor(), "candidate_fingerprint": applied_fingerprint,
+               "source": {"measured_candidate_fingerprint": "content-fp"}}
     view = build_commissioning_view(
         _topology(), design_draft=_ready_design(), crossover_preview=_ready_preview(),
         first_experiment={"candidate_fingerprint": "measured-fp"}, baseline_profile=review,
@@ -123,7 +134,7 @@ def test_applied_identity_change_is_disclosed_without_parking_review(ready, appl
     )
     if applied_fingerprint:
         assert view["status"] == "applied"
-        assert view["applied_profile"]["candidate_fingerprint"] == applied_fingerprint
+        assert view["applied_profile"]["candidate_fingerprint"] == "content-fp"
         assert view["applied_profile"]["applied_at"] == applied["applied_at"]
         assert view["applied_profile"]["config_path"] == applied["config"]["path"]
         disclosures = view["applied_profile"]["disclosures"]
@@ -139,3 +150,44 @@ def test_applied_identity_change_is_disclosed_without_parking_review(ready, appl
     assert view["review"]["ready"] is ready
     assert view["review"]["may_apply"] is ready
     assert view["review"]["issues"] == review["issues"]
+
+
+@pytest.mark.parametrize("record", ["absent", "applied", "legacy"])
+def test_applied_identity_is_shared_by_status_commissioning_and_doctor(monkeypatch, record):
+    applied = {**_applied_anchor(), "candidate_fingerprint": "e17afd20" * 8,
+               "source": {"measured_candidate_fingerprint": "48a805ab" * 8}}
+    applied["config"]["sha256"] = "7edfa758981e" + "a" * 52
+    expected = {"candidate": "48a805ab" * 8, "record": "7edfa758981e",
+                "config_path": applied["config"]["path"], "applied_at": applied["applied_at"]}
+    if record == "absent":
+        applied = expected = None
+    elif record == "legacy":
+        applied = {"status": "applied", "candidate_fingerprint": "unrelated-profile-id"}
+        expected = dict.fromkeys(expected)
+    monkeypatch.setattr(v2status, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr(doctor.evidence, "active_speaker_setup_status", lambda: {
+        "protected_profile": {"layer_a_binding": {"matches": True}} if applied else None,
+    })
+    assert applied_identity(applied) == expected
+    assert v2status.crossover_v2_status_block()["applied"] == expected
+    view = build_commissioning_view(_topology(), applied_profile=applied)["applied_profile"]
+    assert {"candidate" if key == "candidate_fingerprint" else key: view[key]
+            for key in ("candidate_fingerprint", "record", "config_path", "applied_at")} == (
+                expected or dict.fromkeys(("candidate", "record", "config_path", "applied_at")))
+    assert check_row(doctor.check_active_speaker_applied_graph()).get("applied_identity") == expected
+
+
+@pytest.mark.parametrize("packet,status,reason", [
+    ({"status": "awaiting_apply", "reason": ""}, "measured", None),
+    ({"status": "alignment_unmeasured", "reason": "delay_out_of_bounds"}, "alignment_unmeasured", "delay_out_of_bounds"),
+    ({}, "declared", None),
+])
+def test_household_experiment_reads_packet_alignment(monkeypatch, tmp_path, packet, status, reason):
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = replace(_v2_candidate(preset), analysis={"evidence": {"commissioning": packet}})
+    monkeypatch.setattr(commissioning_experiment, "commissioning_candidate", lambda *a: candidate)
+    view = load_commissioning_view(topology)
+    assert view["first_experiment"]["alignment"] == {"status": status, "reason": reason}
+    assert view["first_experiment"]["candidate_fingerprint"] == (candidate.fingerprint if packet else None)
+    assert view["first_experiment"]["complete"] is bool(packet)

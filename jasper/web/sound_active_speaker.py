@@ -3549,10 +3549,10 @@ def _active_speaker_baseline_profile_payload(
 ) -> dict[str, Any]:
     from jasper.active_speaker.baseline_profile import compile_commissioning_profile  # lazy: graph compilation imports NumPy
 
-    from .correction_crossover_v2_status import _offerable_previous_candidate, v2state  # lazy: status imports commissioning state
+    from .correction_crossover_v2_status import rollback_candidate, v2state  # lazy: status imports commissioning state
 
     _, payload = compile_commissioning_profile(design_draft=design_draft, write=write)
-    payload["previous_candidate_fingerprint"] = _offerable_previous_candidate(v2state.load_v2_state())
+    payload["previous_candidate_fingerprint"] = rollback_candidate(v2state.load_v2_state())
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",

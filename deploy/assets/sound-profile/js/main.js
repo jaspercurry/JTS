@@ -31,6 +31,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissioningStepFooter,
+  commissioningTimingLabel,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanRole,
@@ -2164,6 +2165,7 @@ import {
         'This saved speaker profile is not active: ') +
         escapeHtml(config.basename || config.path || 'active speaker baseline') + '.</p>' +
       '<p class="setting-row__hint">Candidate: ' + escapeHtml(String(appliedRecord.candidate_fingerprint || '').slice(0, 12)) +
+        ' · Record: ' + escapeHtml(appliedRecord.record || '') +
         ' · Applied: ' + escapeHtml(appliedRecord.applied_at || '') + '</p>' :
       (applyBlocked ?
         '<p class="setting-row__hint">This profile cannot be made active from this page yet. Review the setup issue below.</p>' :
@@ -2193,6 +2195,7 @@ import {
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
+      '<p class="setting-row__hint">' + escapeHtml(commissioningTimingLabel(activeSpeaker.commissioningView)) + '</p>' +
       renderLevelMatchSummary(profile) +
       (issueRows ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +

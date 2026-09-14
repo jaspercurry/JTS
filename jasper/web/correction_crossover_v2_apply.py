@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.web import correction_crossover_v2_state as v2state
-from jasper.web.correction_crossover_v2_status import previous_candidate_fingerprint
+from jasper.web.correction_crossover_v2_status import rollback_candidate
 
 import hashlib
 import logging
@@ -49,7 +49,7 @@ async def apply_candidate(
     async with dsp_writer_lock(baseline_profile.baseline_config_path().parent, source="active_speaker_baseline_apply"):
         try:
             if previous:
-                candidate = previous_candidate_fingerprint(v2state.load_v2_state())
+                candidate = rollback_candidate(v2state.load_v2_state())
                 if candidate is None:
                     raise CrossoverV2Refused("no previous candidate", code="previous_profile_unavailable")
             selected = find_banked_candidate(candidate).candidate if isinstance(candidate, str) else candidate

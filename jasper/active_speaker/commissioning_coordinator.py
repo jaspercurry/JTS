@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from jasper.output_topology import OutputTopology, channel_identity_report, topology_is_subless_passive_mains
+from .applied_identity import applied_identity
 from .wizard_client import APPLY_PATH
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
@@ -48,6 +49,7 @@ def build_commissioning_view(
     safety_ready = passive or (draft.get("driver_safety_profile_evaluation") or {}).get("confirmed_and_current") is True
     values_ready = design_ready and preview_ready and safety_ready
     profile_applied = applied_profile is not None and applied_profile_verdict != APPLIED_PROFILE_DISPLACED
+    applied = applied_identity(applied_profile) or {}
     experiment = dict(first_experiment or {})
     experiment_complete = bool(experiment.get("candidate_fingerprint")) or profile_applied
     review_ready = bool((review.get("permissions") or {}).get("may_compile")
@@ -109,9 +111,9 @@ def build_commissioning_view(
         "applied_profile": {
             "stands": profile_applied, "verdict": applied_profile_verdict if profile_applied else "",
             "exists": applied_profile is not None,
-            "candidate_fingerprint": (applied_profile or {}).get("candidate_fingerprint"),
-            "applied_at": (applied_profile or {}).get("applied_at"),
-            "config_path": ((applied_profile or {}).get("config") or {}).get("path"), "disclosures": disclosures,
+            "candidate_fingerprint": applied.get("candidate"), "record": applied.get("record"),
+            "applied_at": applied.get("applied_at"),
+            "config_path": applied.get("config_path"), "disclosures": disclosures,
         },
         "review": {"ready": review_ready, "may_apply": review_ready,
                    "status": review.get("status"), "issues": list(review.get("issues") or [])},
@@ -149,7 +151,7 @@ def load_commissioning_view(
         compile_commissioning_profile, load_applied_baseline_profile_state,
     )
     from jasper.active_speaker.calibration_level import load_calibration_level_state
-    from jasper.active_speaker.commissioning_experiment import commissioning_candidate  # lazy: candidate imports baseline
+    from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
@@ -167,9 +169,7 @@ def load_commissioning_view(
     experiment = {}
     if applied is None:
         try:
-            candidate = commissioning_candidate(topology, design_draft)
-            if candidate.analysis.get("evidence", {}).get("commissioning"):
-                experiment = {"candidate_fingerprint": candidate.fingerprint}
+            experiment = commissioning_experiment_summary(commissioning_candidate(topology, design_draft))
         except (OSError, ValueError, LookupError):
             pass
     return build_commissioning_view(
