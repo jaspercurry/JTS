@@ -395,47 +395,15 @@ def test_disk_usage_is_none_without_statvfs_and_propagates_read_errors():
 
 
 @pytest.mark.parametrize(
-    "value, expected",
+    "total_gib, free_fraction, status, reason",
     [
-        (None, 85),
-        ("70", 70),
-        # A warn at or above the fixed 95% fail line, at or below 0, or
-        # unparseable snaps back: a fat-fingered env line must not disable the
-        # warning or invert the warn/fail band.
-        ("0", 85),
-        ("-5", 85),
-        ("95", 85),
-        ("99", 85),
-        ("notanumber", 85),
+        (64, 40 / 64, "ok", ""),
+        (32, 0.12, "warn", doctor_memory.REASON_DISK_NEAR_FULL),
+        (16, 0.03, "fail", doctor_memory.REASON_DISK_FULL),
     ],
-    ids=["default", "custom", "zero", "negative", "at-fail", "above-fail", "junk"],
+    ids=["plenty", "over-warn", "over-fail"],
 )
-def test_disk_warn_percent_clamps_to_a_sane_band(monkeypatch, value, expected):
-    monkeypatch.delenv("JASPER_DISK_WARN_PERCENT", raising=False)
-    if value is not None:
-        monkeypatch.setenv("JASPER_DISK_WARN_PERCENT", value)
-
-    assert doctor_memory._disk_warn_percent() == expected
-
-
-@pytest.mark.parametrize(
-    "total_gib, free_fraction, warn_percent, status, reason",
-    [
-        (64, 40 / 64, None, "ok", ""),
-        (32, 0.12, None, "warn", doctor_memory.REASON_DISK_NEAR_FULL),
-        (16, 0.03, None, "fail", doctor_memory.REASON_DISK_FULL),
-        # Fail always wins, even with the warn knob set above the fail line
-        # (which itself snaps back to 85).
-        (16, 0.04, "99", "fail", doctor_memory.REASON_DISK_FULL),
-    ],
-    ids=["plenty", "over-warn", "over-fail", "fail-beats-custom-warn"],
-)
-def test_check_disk_space_verdicts(
-    monkeypatch, total_gib, free_fraction, warn_percent, status, reason
-):
-    monkeypatch.delenv("JASPER_DISK_WARN_PERCENT", raising=False)
-    if warn_percent is not None:
-        monkeypatch.setenv("JASPER_DISK_WARN_PERCENT", warn_percent)
+def test_check_disk_space_verdicts(total_gib, free_fraction, status, reason):
     total = total_gib * 1024**3
     fake = _fake_statvfs(total_bytes=total, free_bytes=int(free_fraction * total))
 
@@ -518,39 +486,20 @@ def test_bounded_dir_size_caps_depth(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "check, dir_env, warn_env, size, warn_bytes, status",
-    [
-        (
-            "check_wake_events_storage",
-            "JASPER_WAKE_EVENTS_DIR",
-            "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
-            1024,
-            None,
-            "ok",
-        ),
-        (
-            "check_wake_events_storage",
-            "JASPER_WAKE_EVENTS_DIR",
-            "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
-            8192,
-            "2048",
-            "warn",
-        ),
-    ],
+    # Below/above the fixed default threshold (128 MiB audio cap + 300 MiB
+    # allowance); truncate keeps the large case sparse.
+    "size, status",
+    [(1024, "ok"), (500 * 1024 * 1024, "warn")],
     ids=["wake-ok", "wake-warn"],
 )
-def test_storage_checks_warn_over_their_threshold(
-    monkeypatch, tmp_path, check, dir_env, warn_env, size, warn_bytes, status
-):
+def test_storage_checks_warn_over_their_threshold(monkeypatch, tmp_path, size, status):
     d = tmp_path / "store"
     d.mkdir()
-    (d / "clip.wav").write_bytes(b"0" * size)
-    monkeypatch.setenv(dir_env, str(d))
-    monkeypatch.delenv(warn_env, raising=False)
-    if warn_bytes is not None:
-        monkeypatch.setenv(warn_env, warn_bytes)
+    with open(d / "clip.wav", "wb") as f:
+        f.truncate(size)
+    monkeypatch.setenv("JASPER_WAKE_EVENTS_DIR", str(d))
 
-    r = getattr(doctor_memory, check)()
+    r = doctor_memory.check_wake_events_storage()
 
     assert r.status == status
     if status == "warn":
@@ -576,7 +525,6 @@ def test_wake_events_warn_threshold_scales_with_the_configured_cap(
         # Above a 128 MiB-scaled default, below a 1 GiB-scaled one.
         f.truncate(600 * 1024 * 1024)
     monkeypatch.setenv("JASPER_WAKE_EVENTS_DIR", str(wake))
-    monkeypatch.delenv("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", raising=False)
     monkeypatch.setenv("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES", str(1024**3))
 
     assert doctor_memory.check_wake_events_storage().status == "ok"

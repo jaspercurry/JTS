@@ -398,26 +398,6 @@ def check_audio_path_no_swap() -> CheckResult:
 _GIB = 1024 ** 3
 
 
-def _disk_warn_percent() -> int:
-    """Operator-tunable WARN threshold (percent used). Falls back to
-    ``DISK_WARN_PERCENT`` on unset / unparseable / out-of-range values so a
-    fat-fingered env line can't silently disable the warning. The FAIL
-    threshold is fixed — it is the "writes are about to fail" line, not a
-    preference."""
-    raw = os.environ.get("JASPER_DISK_WARN_PERCENT", "").strip()
-    if not raw:
-        return DISK_WARN_PERCENT
-    try:
-        value = int(raw)
-    except ValueError:
-        return DISK_WARN_PERCENT
-    # Keep it strictly below the fail line and above 0 so the band is
-    # always meaningful.
-    if value <= 0 or value >= DISK_FAIL_PERCENT:
-        return DISK_WARN_PERCENT
-    return value
-
-
 @doctor_check()
 def check_disk_space() -> CheckResult:
     """WARN/FAIL on root-filesystem fullness before writes start failing.
@@ -449,7 +429,7 @@ def check_disk_space() -> CheckResult:
             reason=REASON_DISK_ZERO_SIZED,
         )
     pct_used = int(usage.percent_used)
-    warn_pct = _disk_warn_percent()
+    warn_pct = DISK_WARN_PERCENT
     summary = f"{path}: {pct_used}% used, {usage.free_bytes / _GIB:.1f} GiB free"
     if pct_used >= DISK_FAIL_PERCENT:
         return CheckResult(
@@ -463,8 +443,8 @@ def check_disk_space() -> CheckResult:
     if pct_used >= warn_pct:
         return CheckResult(
             "disk space", "warn",
-            summary + f" — over {warn_pct}% warn threshold "
-            "(JASPER_DISK_WARN_PERCENT). Reclaim space before it fills.",
+            summary + f" — over {warn_pct}% warn threshold. "
+            "Reclaim space before it fills.",
             reason=REASON_DISK_NEAR_FULL,
         )
     return CheckResult("disk space", "ok", summary)
@@ -595,11 +575,11 @@ def check_wake_events_storage() -> CheckResult:
     card. This surfaces the on-disk total so an operator can catch a ring
     that has drifted well past its audio cap (a sign the reaper is wedged
     or the cap was raised and forgotten). Read-only — the ring owns its
-    own oldest-first eviction. Threshold via JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES,
-    defaulting to the *configured* audio cap (JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES,
-    env override respected) plus a fixed DB/overshoot allowance — so a Pi
-    that deliberately keeps a larger cap doesn't get spurious warnings,
-    and a healthy ring never warns."""
+    own oldest-first eviction. Threshold is the *configured* audio cap
+    (JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES, env override respected) plus a
+    fixed DB/overshoot allowance — so a Pi that deliberately keeps a
+    larger cap doesn't get spurious warnings, and a healthy ring never
+    warns."""
     wake_dir = Path(
         os.environ.get("JASPER_WAKE_EVENTS_DIR", "/var/lib/jasper/wake-events")
     )
@@ -610,11 +590,8 @@ def check_wake_events_storage() -> CheckResult:
     return _storage_check(
         label="wake-events storage",
         path=wake_dir,
-        warn_bytes=_storage_warn_bytes(
-            "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
-            configured_cap + _WAKE_EVENTS_DB_ALLOWANCE_BYTES,
-        ),
-        knob="JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
+        warn_bytes=configured_cap + _WAKE_EVENTS_DB_ALLOWANCE_BYTES,
+        knob="JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
         note=(
             "Well above the JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES audio cap — "
             "check the ring reaper (journalctl -u jasper-voice | grep "
