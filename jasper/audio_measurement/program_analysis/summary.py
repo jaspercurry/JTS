@@ -134,6 +134,8 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     if candidate is not None:
         out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
         out["alignment_objective"] = getattr(candidate, "alignment_objective", "")
+        for field in ("summed_fit_rms_db", "summed_fit_margin", "delay_interval_us"):
+            out[field] = getattr(candidate, field, None)
         seed_polarity_sign = getattr(candidate, "seed_polarity_sign", None)
         out["seed_polarity"] = (
             None if seed_polarity_sign is None

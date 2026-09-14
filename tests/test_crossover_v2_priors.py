@@ -526,3 +526,49 @@ class C:
 '''
 
     assert shadowed_methods(legitimate) == {}
+
+
+@pytest.mark.parametrize("position_deg, available", [(0, True), (-20, False), (20, False)])
+def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch, tmp_path, position_deg, available):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from jasper.active_speaker.camilla_yaml import driver_baseline_gain_name, driver_delay_name
+    from jasper.active_speaker.crossover_v2 import summed_alignment
+    from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
+    from jasper.active_speaker.crossover_v2.record_index import Measurement
+
+    baseline = SimpleNamespace(artifact_ref="sum", reference_mark=REFERENCE_MARK_DESIGN_AXIS)
+    filters = {"common": {"type": "Gain", "parameters": {"gain": -3.0}}}
+    pipeline = []
+    for output in PRESET.channel_map.outputs:
+        role = output.driver_role
+        filters[driver_baseline_gain_name(role)] = {"type": "Gain", "parameters": {"gain": -6.0, "inverted": True}}
+        filters[driver_delay_name(role)] = {"type": "Delay", "parameters": {"delay": .1916}}
+        pipeline.append({"type": "Filter", "channels": [output.index],
+                         "names": ["common", driver_delay_name(role), driver_baseline_gain_name(role)]})
+    graph = {"filters": filters, "pipeline": pipeline}
+    row = Measurement("sum.json", "session", "summed", "entry_baseline", position_deg, 0, "candidate", None)
+    monkeypatch.setattr(summed_alignment, "measurement_documents", lambda _: [(row, {"take_id": "sum"})])
+    monkeypatch.setattr(summed_alignment, "reopen_measurement_capture", lambda *a: (
+        {"program": {}, "provenance": {"graph": {"config": graph}}}, b"wav"))
+    monkeypatch.setattr(summed_alignment, "resolve_setup_calibration", lambda *a, **k: None)
+    monkeypatch.setattr(summed_alignment.ExcitationProgram, "from_dict", lambda _: None)
+    monkeypatch.setattr(summed_alignment, "decode_wav_to_mono", lambda _: ([], 48000))
+    hz = np.linspace(1200, 5000, 100)
+    raw = SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros(hz.size), validity_floor_hz=1000)
+    monkeypatch.setattr(summed_alignment, "analyze_program_capture", lambda *a, **k: SimpleNamespace(summed_response=raw))
+    conductor = _wired_conductor(measure_entry_baseline=baseline)
+    conductor._seams = replace(conductor._seams, summed_alignment_reference=lambda b, p: summed_alignment.session_reference(tmp_path, b, p))
+    reference = conductor._measure_priors().summed_alignment
+    assert (reference is not None) is available
+    if reference is not None:
+        assert reference.freqs_hz is raw.freqs_hz
+        assert reference.magnitude_db is raw.magnitude_db
+        configured, signs = priors.configured_crossover_transfers(PRESET)
+        for role, transfer in reference.response_by_role.items():
+            assert transfer(hz) * configured[role](hz) == pytest.approx(np.full(hz.size, 10 ** (-9 / 20)))
+        assert reference.band_hz == (1200, 5000)
+        assert filters[driver_baseline_gain_name("tweeter")]["parameters"]["inverted"] is True

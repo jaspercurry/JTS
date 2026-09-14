@@ -137,9 +137,7 @@ ALIGNMENT_OK = "ok"
 ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 
 # --- Joint (polarity, delay) alignment selection ---
-# One objective: ripple of the predicted summed blend, correlation as seed
-# and tie-break. Search span: +/- one period at Fc (the comb-lobe ambiguity
-# interval), derived from the priors' Fc.
+# Coarse search span: +/- one period at Fc, shared by the ripple and summed-fit objectives.
 ALIGNMENT_FLATNESS_SPAN_PERIODS = 1.0
 ALIGNMENT_FLATNESS_STEP_US = 10.0
 # Point-count cap for bounded CPU: a low Fc widens the step to fit rather
@@ -153,6 +151,7 @@ ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 
 #: What the candidate's (polarity, delay) pair IS, never why an alternative was rejected.
 ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
+ALIGNMENT_COMMITTED_SUMMED_FIT = "summed_fit_committed"
 ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
 #: The declared polarity at the delay the applied graph already carries.
 ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
@@ -171,6 +170,7 @@ ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
@@ -199,6 +199,7 @@ ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
 #: which checks :attr:`~AlignmentPairSelection.polarity_pinned` first.
 _FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
 })
 #: Commitments the selector itself made, vs. the two where the seed simply stood.
@@ -452,6 +453,16 @@ class AppliedAlignment:
 
 
 @dataclass(frozen=True)
+class SummedAlignmentReference:
+    """Same-pose measured sum and the played chain beyond the configured crossover."""
+
+    freqs_hz: np.ndarray
+    magnitude_db: np.ndarray
+    response_by_role: Mapping[str, Callable[[np.ndarray], np.ndarray]]
+    band_hz: tuple[float, float]
+
+
+@dataclass(frozen=True)
 class MeasurementPriors:
     """Per-analysis priors the program itself does not carry.
 
@@ -492,6 +503,7 @@ class MeasurementPriors:
     target_capture_dbfs: float = DEFAULT_TARGET_CAPTURE_DBFS
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     ambient_report: Mapping[str, Any] | None = None
+    summed_alignment: SummedAlignmentReference | None = None
     measure_excited_band_hz: tuple[float, float] | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
@@ -668,8 +680,7 @@ class AlignmentEstimate:
 
     GCC is the capture-quality seed: ``seed_delay_us`` records that
     corrected delay, while ``delay_us`` is whatever
-    :func:`_select_alignment_pair` COMMITTED (the flattest-summing grid
-    point, or a delay the refused-SNR path never supplied).
+    the alignment selector committed from summed fit, ripple, or held design.
     ``confidence_source='gcc_phat_seed'`` marks that ``confidence`` belongs
     to the seed, not the commitment. ``raw_delay_us`` is the pre-parallax
     coordinate, so ``delay_us == raw_delay_us - parallax_us``.
@@ -709,16 +720,12 @@ class AlignmentEstimate:
 class CrossoverCandidate:
     """The proposed measured candidate (design §5.6.6).
 
-    The (polarity, delay) pair is chosen jointly on predicted summed blend
-    flatness: :func:`_select_alignment_pair` scores both polarities across a
-    delay grid and commits the flattest pair, while correlation supplies the
-    SEED pair and tie-break. ``alignment_objective`` names what was
-    committed (:data:`ALIGNMENT_COMMITMENTS`); ``seed_polarity_sign`` is
-    correlation's own answer, so a disagreement is readable off the
-    candidate. ``left_anchor_lobe`` records the committed delay sitting
-    outside the anchor's comb lobe — carried here (not just the journal)
-    because a wrong-lobe commitment is magnitude-flat and time-wrong, so an
-    on-axis VERIFY cannot see it.
+    ``alignment_objective`` names the joint delay/polarity commitment.
+    ``seed_polarity_sign`` retains correlation's answer. ``left_anchor_lobe``
+    records a commitment more than half a period at Fc from the physical anchor.
+    Summed-fit RMS is in dB; its margin is the other polarity's minimum RMS
+    divided by the winner's. ``delay_interval_us`` spans points within 0.05 dB
+    of the minimum in the winning polarity.
 
     ``anchor_delay_us`` is the bare anchor; ``snap_delta_us`` is
     ``committed - anchor``; ``snap_found`` records whether a local
@@ -770,6 +777,9 @@ class CrossoverCandidate:
     #: admitted no-op and a one-sided skip (all three share
     #: ``trim_db[tweeter] == trim_band_average_db[tweeter]``).
     ripple_polish_rejected_delta_db: float | None = None
+    summed_fit_rms_db: float | None = None
+    summed_fit_margin: float | None = None
+    delay_interval_us: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)

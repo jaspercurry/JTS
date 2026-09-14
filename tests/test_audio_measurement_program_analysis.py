@@ -3559,13 +3559,9 @@ def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
     assert res.candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
     assert res.alignment.polarity_agrees_with_sum is not None
 
-    # The geometric control. This woofer's sweep spans the whole nominal
-    # window, so the clamp is a no-op for it and its verdict is identical
-    # either side of the fix — which is why the box saw the tweeter fail and
-    # the woofer pass on the SAME 14 captures.
     woofer = next(r for r in res.driver_responses if r.role == "woofer")
     w_window, _w_worst, _w_rows = _alignment_rows(woofer)
-    assert w_window == [_JTS3_FC_HZ / 2.0, _JTS3_FC_HZ * 2.0]
+    assert w_window == window
     assert driver_alignment_snr_verdict(woofer) == "ok"
 
 
@@ -3587,7 +3583,7 @@ def test_measure_snr_verdict_ignores_a_row_above_the_woofer_sweep():
     woofer = next(r for r in res.driver_responses if r.role == "woofer")
     window, worst, rows = _alignment_rows(woofer)
 
-    assert window == [1250.0, 4000.0]
+    assert window == [1500.0, 4000.0]
     assert rows["treble"][1] == "insufficient"
     assert worst["band_id"] == "mid"
     assert driver_alignment_snr_verdict(woofer) == "ok"
@@ -8142,3 +8138,62 @@ def test_absolute_target_carries_the_candidates_configured_polarity():
 
     assert analyze({"woofer": 1, "tweeter": 1})["max_db"] < 0.5
     assert analyze({"woofer": 1, "tweeter": -1})["max_db"] > 5.0
+
+
+@pytest.mark.parametrize("delay_us, sign", [(191.0, -1), (-173.0, 1)])
+def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, delay_us, sign):
+    from jasper.audio_measurement.program_analysis import dispatch
+    from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
+
+    freqs = np.linspace(0, SR / 2, 4097)
+    W = np.ones(freqs.size, dtype=complex)
+    T = 0.45 * np.exp(0.02j * (freqs / FC_HZ) ** 2)
+    branches = iter((W, T))
+    monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
+    summed = predicted_branch_sum(W, T, 0, 0, sign, freqs_hz=freqs, residual_delay_us=delay_us)
+    reference = SummedAlignmentReference(
+        freqs, 20 * np.log10(abs(summed)),
+        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000),
+    )
+    program = build_measure_program({"woofer": -30, "tweeter": -30}, _roles(),
+                                    sweep_durations={"woofer": .3, "tweeter": .3})
+    impulse = np.zeros(4096)
+    impulse[200] = 1
+    capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
+    result = analyze_program_capture(program, capture, SR, priors=MeasurementPriors(
+        crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0, 500),
+        summed_alignment=reference,
+        ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45}]},
+    ))
+    candidate = result.candidate
+    assert candidate.alignment_objective == "summed_fit_committed"
+    assert candidate.delay_us == pytest.approx(delay_us, abs=1)
+    assert candidate.polarity == ("inverted" if sign < 0 else "normal")
+    assert candidate.delay_interval_us[0] <= delay_us <= candidate.delay_interval_us[1]
+    assert candidate.summed_fit_margin >= 2
+    summary = analysis_diagnostic_summary(result)
+    for field in ("summed_fit_rms_db", "summed_fit_margin", "delay_interval_us"):
+        assert summary[field] == getattr(candidate, field)
+    assert result.alignment.confidence == candidate.confidence
+    assert result.alignment.confidence_source == "summed_fit_committed"
+    assert any(driver_alignment_snr_verdict(r) == "insufficient" for r in result.driver_responses)
+    minima = [min(_ripple_db(freqs, predicted_branch_sum(
+        W, T, 0, 0, polarity, freqs_hz=freqs, residual_delay_us=delay,
+    ), 1200, 5000) for delay in np.arange(-500, 501, 10)) for polarity in (1, -1)]
+    assert abs(minima[0] - minima[1]) < .1
+
+
+def test_alignment_snr_uses_the_shared_sweep_band(monkeypatch):
+    from jasper.audio_measurement.program_analysis.response import _driver_snr_block
+
+    bands = [{"band_id": name, "band_hz": bounds, "level_dbfs": level}
+             for name, bounds, level in (("mid", [1000, 4000], -40), ("high", [4000, 12000], -70))]
+    monkeypatch.setattr(snr_policy, "band_levels_dbfs", lambda *a, **k: bands)
+    block = _driver_snr_block(
+        ambient_report={"bands": [{**b, "level_dbfs": -80} for b in bands]},
+        fc_hz=2500, freqs=np.array([1600, 3000, 5000]), mag_db=np.zeros(3),
+        capture_segment=np.ones(100), sample_rate=SR, radiated_band_hz=(1600, 20000),
+        alignment_band_hz=(1600, 4000),
+    )
+    assert block[DRIVER_SNR_ALIGNMENT_KEY]["verdict"] == "ok"
+    assert block["verdict"] == "insufficient"

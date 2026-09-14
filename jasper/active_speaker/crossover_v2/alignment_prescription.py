@@ -481,9 +481,8 @@ def alignment_prescription_response_format() -> dict[str, Any]:
         "key": ALIGNMENT_PRESCRIPTION_KEY,
         "entry": "request_body",
         "entry_detail": (
-            "sent as the '" + ALIGNMENT_PRESCRIPTION_KEY + "' key on "
-            "POST /crossover/v2/session, not staged through "
-            "jasper-crossover-prescriber"
+            "staged as the '" + ALIGNMENT_PRESCRIPTION_KEY + "' section through "
+            "jasper-crossover-prescriber judge|compose"
         ),
         "severity": (
             "a refused prescription refuses the whole session at the tap; it "

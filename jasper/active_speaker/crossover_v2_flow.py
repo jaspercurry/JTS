@@ -455,6 +455,7 @@ class V2FlowSeams:
     # #2611: the Layer-A profile the speaker is playing right now. Its absence is
     # NOT a fallback to the raw-crossover axis — the probe reports ``unavailable``.
     applied_profile: Callable[[], Mapping[str, Any] | None] | None = None
+    summed_alignment_reference: Callable[[Any, Any], Any] | None = None
     # S3: once per newly accepted applied-candidate VERIFY.
     record_model_error: RecordModelError | None = None
     # #2291: which DSP graph the entry baseline was measured through, read at accept
@@ -979,6 +980,8 @@ class CrossoverV2Session:
             source_preset=self._preset,
             protection_sections_by_role=self._measurement_protection_sections_by_role,
             ambient_report=self._check_ambient_report,
+            summed_alignment=(self._seams.summed_alignment_reference(self._measure_entry_baseline, self._preset)
+                              if self._seams.summed_alignment_reference else None),
             # Derived here: its producer is shared with the plausibility gate.
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),

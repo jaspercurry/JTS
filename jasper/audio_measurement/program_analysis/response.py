@@ -13,7 +13,7 @@ from typing import Any, Mapping, TYPE_CHECKING
 
 import numpy as np
 
-from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
+from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.alignment import (
     _bandlimit,
     _gcc_local_peak_snap,
@@ -40,6 +40,7 @@ from .model import (
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
@@ -59,6 +60,8 @@ from .model import (
     logger,
     MeasurementGeometry,
     MeasurementPriors,
+    SummedAlignmentReference,
+    VERIFY_TRACKING_SMOOTHING_FRACTION,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
@@ -187,6 +190,7 @@ def _driver_snr_block(
     capture_segment: np.ndarray | None,
     sample_rate: int,
     radiated_band_hz: tuple[float, float] | None,
+    alignment_band_hz: tuple[float, float] | None = None,
 ) -> dict[str, Any] | None:
     """The per-driver magnitude SNR verdict, read in ONE domain.
 
@@ -252,7 +256,7 @@ def _driver_snr_block(
         capture_bands=capture_bands,
         noise_bands=noise_bands,
         noise_floor_dbfs_scalar=None,
-        relevant_hz=relevant_hz,
+        relevant_hz=alignment_band_hz or relevant_hz,
         model=DRIVER,
         band_method=band_method,
     )
@@ -272,6 +276,7 @@ def _driver_response(
     capture_segment: np.ndarray | None = None,
     gate_exempt_reason: str | None = None,
     preserve_timing: bool = False,
+    alignment_band_hz: tuple[float, float] | None = None,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
@@ -329,7 +334,7 @@ def _driver_response(
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
 
     snr_block = _driver_snr_block(
-        ambient_report=ambient_report,
+        ambient_report=ambient_report, alignment_band_hz=alignment_band_hz,
         fc_hz=fc_hz,
         freqs=freqs,
         mag_db=mag_db,
@@ -634,6 +639,9 @@ class AlignmentPairSelection:
     #: ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION); read via
     #: :attr:`polarity_agrees_with_sum` instead.
     polarity_pinned: bool = False
+    summed_fit_rms_db: float | None = None
+    summed_fit_margin: float | None = None
+    delay_interval_us: tuple[float, float] | None = None
 
     @property
     def polarity_agrees_with_sum(self) -> bool | None:
@@ -653,6 +661,82 @@ class AlignmentPairSelection:
     def flatness_improvement_db(self) -> float:
         """``seed_ripple - committed_ripple``: what the objective bought."""
         return self.seed_ripple_db - self.ripple_db
+
+
+def _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us):
+    span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
+    n_steps = max(1, min(int(round(span_us / ALIGNMENT_FLATNESS_STEP_US)),
+                         ALIGNMENT_FLATNESS_MAX_STEPS))
+    step_us = span_us / n_steps
+    grid = [anchor_delay_us + i * step_us for i in range(-n_steps, n_steps + 1)]
+    if delay_bounds_us is not None:
+        lo_us, hi_us = sorted(abs(float(b)) for b in delay_bounds_us)
+        grid = [d for d in grid if lo_us <= abs(d) <= hi_us]
+    return [*grid, seed_delay_us], step_us if grid else 0.0
+
+
+def _select_summed_alignment_pair(
+    freqs: np.ndarray, W: np.ndarray, T: np.ndarray, *,
+    reference: SummedAlignmentReference, woofer_role: str, tweeter_role: str,
+    fc_hz: float, anchor_delay_us: float, seed_delay_us: float,
+    seed_polarity_sign: int, delay_bounds_us: tuple[float, float] | None,
+) -> AlignmentPairSelection:
+    W = W * reference.response_by_role[woofer_role](freqs)
+    T = T * reference.response_by_role[tweeter_role](freqs)
+    measured = analysis.smooth_fractional_octave(
+        reference.freqs_hz, reference.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION,
+    )
+
+    def score(sign, delay):
+        predicted = predicted_branch_sum(
+            W, T, 0.0, 0.0, sign, freqs_hz=freqs,
+            residual_delay_us=summed_model_residual_delay_us(anchor_delay_us, delay),
+        )
+        db = 20 * np.log10(np.maximum(np.abs(predicted), 1e-12))
+        smoothed = analysis.smooth_fractional_octave(
+            reference.freqs_hz, np.interp(reference.freqs_hz, freqs, db),
+            VERIFY_TRACKING_SMOOTHING_FRACTION,
+        )
+        rms, _ = analysis.tracking_error_db(
+            reference.freqs_hz, measured, smoothed, reference.band_hz,
+        )
+        return float(rms)
+
+    grid, step = _alignment_delay_grid(
+        fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us,
+    )
+    scans = {}
+    for sign in (1, -1):
+        coarse = [(delay, score(sign, delay)) for delay in grid]
+        center, _ = min(coarse, key=lambda item: item[1])
+        # Within one period at Fc, sampled at 1 us; declared delay bounds still apply.
+        radius = 1e6 / fc_hz
+        fine = np.arange(math.ceil(center - radius), math.floor(center + radius) + 1)
+        if delay_bounds_us is not None:
+            lower, upper = sorted(abs(float(b)) for b in delay_bounds_us)
+            fine = fine[(np.abs(fine) >= lower) & (np.abs(fine) <= upper)]
+        scans[sign] = coarse + [(float(delay), score(sign, delay)) for delay in fine]
+    minima = {sign: min(scan, key=lambda item: item[1]) for sign, scan in scans.items()}
+    sign = min(minima, key=lambda sign: minima[sign][1])
+    delay, rms = minima[sign]
+    margin = minima[-sign][1] / max(rms, np.finfo(float).eps)
+    interval = [d for d, error in scans[sign] if error <= rms + 0.05]
+
+    def ripple(sign, delay):
+        return _ripple_db(freqs, predicted_branch_sum(
+            W, T, 0.0, 0.0, sign, freqs_hz=freqs,
+            residual_delay_us=summed_model_residual_delay_us(anchor_delay_us, delay),
+        ), *reference.band_hz)
+
+    return AlignmentPairSelection(
+        polarity_sign=sign, delay_us=delay, ripple_db=ripple(sign, delay),
+        seed_polarity_sign=seed_polarity_sign, seed_delay_us=seed_delay_us,
+        seed_ripple_db=ripple(seed_polarity_sign, seed_delay_us),
+        objective=ALIGNMENT_COMMITTED_SUMMED_FIT, grid_points=len(scans[sign]),
+        grid_step_us=step, left_anchor_lobe=abs(delay - anchor_delay_us) > half_period_us(fc_hz),
+        summed_fit_rms_db=rms, summed_fit_margin=margin,
+        delay_interval_us=(min(interval), max(interval)),
+    )
 
 
 def _select_alignment_pair(
@@ -809,19 +893,9 @@ def _select_alignment_pair(
     if explicit_delay_us is not None:
         delays = [float(explicit_delay_us)]
     elif anchor_delay_us is not None and fc_hz > 0.0:
-        span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
-        n_steps = int(round(span_us / ALIGNMENT_FLATNESS_STEP_US))
-        n_steps = max(1, min(n_steps, ALIGNMENT_FLATNESS_MAX_STEPS))
-        step_us = span_us / n_steps
-        grid = [anchor_delay_us + i * step_us for i in range(-n_steps, n_steps + 1)]
-        if delay_bounds_us is not None:
-            lo_us, hi_us = (abs(float(b)) for b in delay_bounds_us)
-            lo_us, hi_us = min(lo_us, hi_us), max(lo_us, hi_us)
-            grid = [d for d in grid if lo_us <= abs(d) <= hi_us]
-        # An empty grid (bound admits no point) reports like no-anchor: (1, 0.0).
-        if grid:
-            grid_step_us = step_us
-        delays = [*grid, seed_delay_us]
+        delays, grid_step_us = _alignment_delay_grid(
+            fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us,
+        )
 
     # The polarity axis, pinned the same way: the seed sign is not added
     # back, for the same reason the seed delay is not.
