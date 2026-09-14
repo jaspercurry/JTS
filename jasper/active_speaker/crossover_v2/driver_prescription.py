@@ -900,7 +900,8 @@ def _composed_grid(
 
 
 def _check_composed(
-    filters: tuple[dict[str, Any], ...], passbands: DriverPassbands
+    filters: tuple[dict[str, Any], ...], passbands: DriverPassbands, *,
+    max_boost_db: float | None = None,
 ) -> tuple[float, str | None]:
     """The composed BOOST cap, per role, on the EVALUATED cascade.
 
@@ -921,6 +922,7 @@ def _check_composed(
     the direction a gate's number must err — an inference that is only sound
     because the span is the charge's own.
     """
+    max_boost_db = DRIVER_MAX_COMPOSED_BOOST_DB if max_boost_db is None else max_boost_db
     worst_boost = 0.0
     worst_role: str | None = None
     for role, band in sorted(passbands.items()):
@@ -941,19 +943,19 @@ def _check_composed(
         # FREQUENCY rather than an interval the number may not be inside.
         peak_index = int(np.argmax(composed))
         peak_boost = max(0.0, float(composed[peak_index]))
-        if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
+        if peak_boost > max_boost_db + _COMPOSED_BOOST_EVAL_TOL_DB:
             _refuse(
                 COMPOSED_BOOST_EXCEEDED,
                 f"the {role}'s composed cascade boosts {peak_boost:.2f} dB at "
                 f"its peak ({grid[peak_index]:.1f} Hz), past the "
-                f"{DRIVER_MAX_COMPOSED_BOOST_DB:g} dB ceiling. Two filters "
+                f"{max_boost_db:g} dB ceiling. Two filters "
                 "whose skirts overlap deliver more than either alone, and "
                 "every dB above unity is charged against the household's "
                 "maximum SPL",
                 role=role,
                 composed_boost_db=peak_boost,
                 composed_boost_hz=float(grid[peak_index]),
-                max_composed_boost_db=DRIVER_MAX_COMPOSED_BOOST_DB,
+                max_composed_boost_db=max_boost_db,
                 max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB,
             )
         # `>` not `>=`: the FIRST role reaching the worst value keeps it, so a

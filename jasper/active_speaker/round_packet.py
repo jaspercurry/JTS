@@ -24,7 +24,7 @@ from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_s
 from .flat_spec import _power_mean_db
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, manifest_frequency_run, FREQUENCY_VIEW_FILENAME
-from .speaker_fit import design_pose_counts, speaker_fit
+from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
 from .run_manifest import RUN_MANIFEST_KIND, RunManifest
@@ -112,21 +112,22 @@ def _stats(plot: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
-    computed: dict[str, Any] = {}
-    design_poses = design_pose_counts(manifest)
+    computed: dict[tuple[str, str], Any] = {}
+    clouds = design_clouds(inputs, manifest)
     fits = []
     for group in manifest.get("sets", ()):
         for take in group["takes"]:
             if not take["selected"]:
                 continue
             take_id = take["take_id"]
-            if take_id not in computed:
+            key = (group["set_id"], take_id)
+            if key not in computed:
                 try:
-                    computed[take_id] = speaker_fit(inputs, manifest, group["set_id"], take_id,
-                                                   design_poses=design_poses)["linearization"]
+                    computed[key] = speaker_fit(inputs, manifest, group["set_id"], take_id,
+                                                clouds_by_set=clouds)["linearization"]
                 except ROUND_INPUT_ERRORS as exc:
-                    computed[take_id] = exc
-            proposals = computed[take_id]
+                    computed[key] = exc
+            proposals = computed[key]
             if isinstance(proposals, Exception):
                 proposals = {take.get("role"): {"fit": {"reason_summary": {
                     "unavailable": getattr(proposals, "reason", "speaker_fit_unavailable"),
@@ -136,7 +137,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, An
                     continue
                 fit = proposal["fit"]
                 fits.append({"set_id": group["set_id"], "take_id": take_id, "pose": take["pose"], "role": role,
-                             **{key: proposal.get(key) for key in ("vocabulary", "cloud", "per_filter_boost_cap_db")},
+                             **{key: proposal.get(key) for key in ("vocabulary", "cloud", "per_filter_boost_cap_db", "composed_boost_cap_db")},
                              **{key: fit.get(key) for key in ("mic_tier", "budget", "filters", "residual_rms_db",
                                                             "residual_max_db", "reason_summary")}})
     return fits

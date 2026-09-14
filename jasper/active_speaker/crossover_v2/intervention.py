@@ -340,6 +340,7 @@ class CloudFitTerms:
     band_spread: tuple[Any, ...] = ()
     n_positions: int = 0
     boost_excluded_bands_hz: tuple[tuple[float, float], ...] = ()
+    boost_responses: tuple[Any, ...] = ()
 
     @classmethod
     def from_evidence(cls, evidence: Any) -> "CloudFitTerms | None":
@@ -820,7 +821,7 @@ def fit_branches(
     vocabulary: FitVocabulary | Mapping[str, FitVocabulary],
     sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
     source_preset: Mapping[str, Any] | None = None,
-    cloud: CloudFitTerms | None = None,
+    cloud: CloudFitTerms | Mapping[str, CloudFitTerms] | None = None,
     on_bands: Callable[[Mapping[str, tuple[float, float]]], None] | None = None,
 ) -> BranchFits:
     """Compose every envelope before fitting the shared measurement hole."""
@@ -834,8 +835,10 @@ def fit_branches(
     if on_bands is not None:
         on_bands(radiating)
     envelopes = {}
+    clouds = cloud if isinstance(cloud, Mapping) else {role: cloud for role in responses}
     for driver in drivers:
         role, response = driver.role, driver.response
+        role_cloud = clouds.get(role)
         # The σ gate reads each branch's REPEAT count against its sibling's; a lone
         # branch is its OWN sibling, reducing the paired-N gate to its own count.
         sibling = next((other for name, other in responses.items() if name != role), response)
@@ -845,9 +848,9 @@ def fit_branches(
             sigma_db=compose_sigma_db(
                 response, sibling, tier=mic_tiers[role], valid_band_hz=driver.excited_band_hz,
             ),
-            excluded_bands_hz=cloud.excluded_bands_hz if cloud else None,
-            band_spread=cloud.band_spread if cloud else None,
-            n_positions=cloud.n_positions if cloud else None,
+            excluded_bands_hz=role_cloud.excluded_bands_hz if role_cloud else None,
+            band_spread=role_cloud.band_spread if role_cloud else None,
+            n_positions=role_cloud.n_positions if role_cloud else None,
         )
     core = {role: core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role]) for role in responses}
     blind = measurement_hole_bands_hz(list(core.values()))
@@ -858,6 +861,7 @@ def fit_branches(
             .with_budget(driver.fit_budget),
             radiating_band_hz=radiating[driver.role], blind_bands_hz=blind,
             target=branch_target(sections.get(driver.role, ()), envelopes[driver.role].freqs_hz),
+            boost_evidence=role_cloud.boost_responses if (role_cloud := clouds.get(driver.role)) else (),
         )
         for driver in drivers
     }
