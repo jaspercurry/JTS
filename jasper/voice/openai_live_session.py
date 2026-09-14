@@ -15,7 +15,7 @@ import base64
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
@@ -49,6 +49,10 @@ FRONTEND_INSTRUCTIONS = (
 # `response_stall_timeout_sec`, or playout never drains and the host's
 # follow-up window never opens (`continuous_watchdog` in .conversation).
 SILENCE_BRIDGE_SEC = 0.8
+
+# Trial reserve for the measured 40–110 ms delivery deficits. Short replies
+# cannot wait for more PCM indefinitely: the fill has the same wall-time cap.
+PLAYOUT_RESERVE_SEC = 0.15
 
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
@@ -109,6 +113,8 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
+        self._playout_available = asyncio.Event()
+        self._reserve_playout = True
         self._finalized = False
         self._delegation_id = None
         # Delegation the in-flight tool round answers; a correction moves
@@ -166,6 +172,63 @@ class OpenAILiveTurn(BaseLiveTurn):
         # Live needs silence as well as speech to advance its audio timeline.
         self._end_input_at_monotonic = time.monotonic()
 
+    def _enqueue_audio(self, chunk: AudioOutChunk) -> None:
+        super()._enqueue_audio(chunk)
+        self._playout_available.set()
+
+    def _on_connection_lost(self) -> None:
+        super()._on_connection_lost()
+        self._playout_available.set()
+
+    def drop_pending_audio(self, *, preserve_overflow: bool = False) -> int:
+        overflow = self._audio_dropped_bytes
+        dropped = super().drop_pending_audio()
+        if preserve_overflow:
+            self._audio_dropped_bytes = overflow
+        self._reserve_playout = True
+        self._playout_available.set()
+        return dropped
+
+    async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
+        try:
+            while not self._released and not self._turn_lost:
+                if self._audio_q.empty():
+                    self._playout_available.clear()
+                    await self._playout_available.wait()
+                    continue
+                if self._reserve_playout:
+                    self._reserve_playout = False
+                    loop = asyncio.get_running_loop()
+                    started = loop.time()
+                    result = "filled"
+                    try:
+                        async with asyncio.timeout(PLAYOUT_RESERVE_SEC):
+                            while self._queued_bytes < int(PLAYOUT_RESERVE_SEC * 48_000):
+                                self._playout_available.clear()
+                                await self._playout_available.wait()
+                                if self._released or self._turn_lost:
+                                    return
+                    except TimeoutError:
+                        result = "timeout"
+                    log_event(
+                        logger, "provider.playout_reserve", result=result,
+                        waited_ms=round((loop.time() - started) * 1000),
+                        queued_ms=round(self._queued_bytes / 48),
+                    )
+                if self._released or self._turn_lost:
+                    return
+                try:
+                    chunk = self._audio_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    continue
+                if chunk is None:
+                    return
+                self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
+                yield chunk
+        finally:
+            # Final accounting reads overflow after playback is cancelled.
+            self.drop_pending_audio(preserve_overflow=True)
+
     def usage(self) -> TurnUsage:
         # Live bills the frontend session per minute, not per token, so
         # this replaces the base turn's token counts with the metered
@@ -185,6 +248,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             return
         self._released = True
         self.discard_input()
+        self.drop_pending_audio(preserve_overflow=True)
         await self._conn._cancel_task(self._sender)
         self._cancel_tools()
         try:
@@ -245,6 +309,8 @@ class OpenAILiveTurn(BaseLiveTurn):
             return
         now = time.monotonic()
         if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
+            if not self._last_chunk_at or now - self._last_chunk_at > SILENCE_BRIDGE_SEC:
+                self._reserve_playout = True
             self._last_chunk_at = now
             self._chunks_received += 1
             self._note_activity()
