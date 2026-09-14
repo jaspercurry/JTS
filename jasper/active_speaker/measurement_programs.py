@@ -172,6 +172,7 @@ class MeasurementProgram:
     purpose: str = PURPOSE_SPEAKER
     regime: str = REGIME_PER_DRIVER
     mover: str | None = None
+    layout: str = ""
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -292,6 +293,7 @@ def _load_programs(
             purpose=row.get("purpose", PURPOSE_SPEAKER),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
+            layout=layout,
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -318,6 +320,16 @@ def load_programs(
 
 
 _PROGRAMS, _DEFAULT_SIZES = _load_programs()
+
+# Driver changes are judged through the summed design poses.
+_TRIAL_PROGRAMS = {
+    "driver": (PURPOSE_ROOM, "room_quick", None),
+    "blend": (PURPOSE_ROOM, "room_quick", None),
+    "alignment": (PURPOSE_ROOM, "room_quick", None),
+    "topology": (PURPOSE_ROOM, "room_quick", None),
+    "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
+    "bass": (PURPOSE_BASS, "bass_axis", None),
+}
 
 # Compatibility values derived from the config, which remains their owner.
 ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
@@ -361,9 +373,16 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
     selected = program(purpose)
     if poses is None:
         return selected
-    for (name, size), row in _PROGRAMS.items():
-        if poses in (f"{name}_{size}", f"{name}/{size}"):
+    for row in (selected, *_PROGRAMS.values()):
+        if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             return replace(row, program_id=purpose, purpose=purpose, regime=selected.regime)
-    return replace(selected, size="custom", poses=tuple(
+    return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")
     ))
+
+
+def trial_program(section: str, mover: str | None = None) -> MeasurementProgram:
+    """Choose the experiment for one authored candidate section."""
+    purpose, layout, arm_layout = _TRIAL_PROGRAMS[section]
+    selected = run_program(purpose, arm_layout if mover == "arm" and arm_layout else layout)
+    return replace(selected, mover=mover or selected.mover)

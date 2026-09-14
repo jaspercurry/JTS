@@ -34,8 +34,10 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport:
     candidates = tuple(value.strip() for value in args.candidates.split(",")) if args.candidates is not None else ()
     if any(not value for value in candidates):
         raise ValueError("candidates must name a fingerprint or base")
+    if args.mover:
+        program = replace(program, mover="arm" if args.mover == "arm" else "human")
     request = request_for_program(
         program, candidates=candidates, level=LevelPolicy(level_db=args.level_db),
-        mover=("arm" if args.mover == "arm" else "human") if args.mover else program.mover or "human",
+        mover=program.mover or "human",
     )
     return preflight(request, read_preflight_facts(request))
