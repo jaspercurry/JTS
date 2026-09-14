@@ -54,6 +54,7 @@ from ._common import (
     dispatch_get,
     dispatch_post,
     read_json_object,
+    refusal_envelope,
     route_path,
     send_html_response,
     send_json_response,
@@ -780,9 +781,14 @@ def _make_handler(
                     )
                     return
                 if path == "/active-speaker/baseline-profile/restore":
-                    from .correction_crossover_v2_apply import handle_v2_apply  # lazy: applying imports NumPy
+                    from .correction_crossover_v2_apply import CrossoverV2Refused, handle_v2_apply  # lazy: applying imports NumPy
 
-                    self._send_json(handle_v2_apply({"previous": True}, asyncio.run, camilla_factory))
+                    try:
+                        payload = handle_v2_apply({"previous": True}, asyncio.run, camilla_factory)
+                    except CrossoverV2Refused as exc:
+                        self._send_json(refusal_envelope(exc), status=HTTPStatus.BAD_REQUEST)
+                    else:
+                        self._send_json(payload)
                     return
                 if path == "/active-speaker/baseline-profile/save-and-apply":
                     self._send_json(

@@ -5437,7 +5437,9 @@ import {
   }
   async function restoreBaselineProfile() {
     var result = await postCommission('./active-speaker/baseline-profile/restore', {}, 'Restoring previous tune');
-    if (result.ok) await runActiveSpeakerAction({}, async function() {
+    var applied = result.ok && result.payload.status === 'applied';
+    status(applied ? 'Previous tune restored.' : (result.error || 'Previous tune was not restored.'), !applied);
+    if (applied) await runActiveSpeakerAction({}, async function() {
       patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
       render();
     });

@@ -16,13 +16,14 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_bank
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft
 from jasper.active_speaker.candidate_trials import candidate_boost_issue
 from jasper.active_speaker.crossover_declaration import (
-    assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
+    CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.design_draft import load_design_draft
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_on_declaration
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, candidate_on_declaration
 from jasper.active_speaker.measurement import load_measurement_state
-from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
+from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import DspApplyError, dsp_writer_lock
 from jasper.log_event import log_event
@@ -119,7 +120,8 @@ async def apply_candidate(
                 result = await baseline_profile._baseline_apply_result(topology, profile, measurements, apply_state=applied)
             log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
             return {**result, "declaration_update": update, "expected_post_apply_offset_db": round(offset, 3)}
-        except (CandidateBankRefusal, CrossoverV2Refused, ValueError) as exc:
+        except (CandidateBankRefusal, CrossoverV2Refused, MeasurementGraphRefused,
+                MeasuredCrossoverCandidateError, ActiveSpeakerConfigError, CrossoverBelowDeclaredFloor) as exc:
             code = getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused"
             log_event(logger, "correction.crossover_v2_apply", status="blocked", code=code, candidate_fingerprint=expected)
             baseline_profile._commissioning_refusal(prepared, exc)

@@ -568,6 +568,28 @@ def _drive_raw_sound_post(
     return wfile.getvalue(), rfile.read_calls
 
 
+@pytest.mark.parametrize("code,action", [
+    ("previous_profile_unavailable", None),
+    ("program_profile_not_confirmed", {"id": "review_profile", "href": "/sound/speaker/"}),
+])
+def test_restore_refusals_preserve_the_typed_envelope(tmp_path, monkeypatch, code, action):
+    from jasper.web import correction_crossover_v2_apply as apply_host
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+
+    refusal = CrossoverV2Refused("restore refused", code=code, next_action=action)
+    def refuse(raw, run_async, camilla_factory):
+        assert raw == {"previous": True}
+        raise refusal
+    monkeypatch.setattr(apply_host, "handle_v2_apply", refuse)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    response, _ = _drive_raw_sound_post(tmp_path, path="/active-speaker/baseline-profile/restore", content_length=2, body=b"{}")
+    assert b" 400 " in response.split(b"\r\n", 1)[0]
+    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+    assert payload == _common.refusal_envelope(refusal)
+    assert payload["code"] == code
+    assert payload["next_action"] == action
+
+
 @pytest.mark.parametrize(
     ("error", "error_type"),
     [
