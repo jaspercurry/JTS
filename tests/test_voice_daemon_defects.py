@@ -286,7 +286,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
         wl = wake_loop_for_tests(connection=_Conn(paused))
         wl._wake_late_cancelled = lambda *_a, **_k: False
         wl._peering.arbitrate = _win
-        wl._prepare_assistant_loudness_context = _noop
+        wl._assistant_output.prepare_loudness = _noop
         wl._play_listening_chirp = _noop
         wl._turns.begin_inner = _begin_boom
         wl._play_cue = _rec
@@ -352,7 +352,7 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
     wl = wake_loop_for_tests(cues=_Cues(), connection=_Conn())
     wl._wake_late_cancelled = lambda *_a, **_k: False
     wl._peering.arbitrate = _win
-    wl._prepare_assistant_loudness_context = _noop
+    wl._assistant_output.prepare_loudness = _noop
     wl._play_listening_chirp = _noop
     wl._turns.begin_inner = _begin_boom
 
@@ -491,6 +491,7 @@ async def test_acquire_drain_failure_releases_started_resources(monkeypatch, pat
 
     monkeypatch.setattr(turn_lifecycle, "play_responses", worker)
     monkeypatch.setattr(turn_lifecycle, "idle_watchdog", worker)
+    wl._peering._enabled = path == "wake"
     wl._peering._send = send
     wl._drain_acquire_audio = fail_drain
     turn.release = release

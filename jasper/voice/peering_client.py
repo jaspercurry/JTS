@@ -32,6 +32,7 @@ class PeeringClient:
         # Empty string means "no peer-tracked session": peering
         # disabled, or a remote-driven session that skipped arbitration.
         self._epoch: str = ""
+        self._start_notice: asyncio.Task[dict | None] | None = None
 
     async def _send(
         self, cmd: str, *, timeout: float = DEFAULT_RPC_TIMEOUT_SEC,
@@ -115,21 +116,19 @@ class PeeringClient:
         return "WIN"
 
     async def session_started(self, has_turn: bool) -> None:
-        """Fire-and-forget notice that this speaker opened a session.
-
-        The peering daemon transitions WINNER → ACTIVE and broadcasts
-        heartbeats so peers stay suppressed for the session. No-op when
-        peering is disabled; errors are swallowed so voice keeps going.
-        """
-        if not has_turn:
-            return  # no active turn to announce
-        await self._send(
-            f"SESSION_STARTED {self._epoch}",
+        """Start peer heartbeats without delaying buffered speech delivery."""
+        if not has_turn or not self._enabled:
+            return
+        self._start_notice = asyncio.create_task(
+            self._send(f"SESSION_STARTED {self._epoch}"),
+            name="peering-session-started",
         )
 
     async def session_ended(self, reason: str) -> None:
-        """Fire-and-forget notice. Mirrors session_started."""
-        await self._send(
-            f"SESSION_ENDED {self._epoch} {reason}",
-        )
+        """Finish START before END so a slow reply cannot leave peers active."""
+        epoch = self._epoch
         self._epoch = ""
+        start_notice, self._start_notice = self._start_notice, None
+        if start_notice is not None:
+            await start_notice
+        await self._send(f"SESSION_ENDED {epoch} {reason}")
