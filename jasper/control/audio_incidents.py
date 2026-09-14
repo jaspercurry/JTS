@@ -22,6 +22,7 @@ from typing import Any
 from ..atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from ..log_event import log_event
 from ._health_fields import _duration_label, _finite_number, _mapping
+from .audio_attribution import ATTRIBUTION_VERDICTS
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,6 @@ _INCIDENT_NUMBER_FIELDS = frozenset({
     "observed_seconds",
 })
 
-
-# Verdict tokens produced by audio_health._input_attribution — kept in sync
-# by hand since this module has no probes and must not import the composer.
-_ATTRIBUTION_VERDICTS = frozenset({"network", "internal:receiver", "unknown"})
 _ATTRIBUTION_MAX_DETAILS = 5
 _ATTRIBUTION_FIELD_MAX_LEN = 160
 
@@ -63,7 +60,7 @@ def _clean_attribution(raw: Any) -> dict[str, Any] | None:
     or corrupt verdict token is dropped rather than rendered."""
     attribution = _mapping(raw)
     verdict = attribution.get("verdict")
-    if verdict not in _ATTRIBUTION_VERDICTS:
+    if verdict not in ATTRIBUTION_VERDICTS:
         return None
     details_raw = attribution.get("details")
     details: list[dict[str, str]] = []
