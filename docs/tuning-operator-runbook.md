@@ -25,7 +25,7 @@ Room defaults to `room/seat`: the three `seat_express` poses with the human move
 
 `jasper-round run --program bass --layout bass_axis --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
-`bass/axis` measures one on-axis bearing with the arm. Run `jasper-round run --program bass --layout bass_axis --candidates base,<fp> --level-db L --wait` once per level, then `jasper-round-views bass-fit-table <round…> --candidate <fp> --target <target.json> --tolerance-db <db>`. The base is the applied tune, including its bass block. The table joins measured pairs by level and includes the base’s boost. Keep the applied tune fixed across these rounds.
+`jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at one pose under one hold, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
 
 ## Evidence and recovery
 

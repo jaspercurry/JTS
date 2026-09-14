@@ -16,6 +16,7 @@ import urllib.error
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -596,17 +597,20 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
 
 
 @pytest.mark.parametrize("verb,flags,noise,levels", [
+    ("run", ["--level-db", "-18"], -60, [-18]),
+    ("run", ["--levels=-18"], -60, [-18]),
+    ("run", ["--levels", "auto"], -55, [-18]),
     ("run", ["--levels", "auto"], -60, [-18, -23]),
     ("run", ["--levels", "auto"], -100, [-18, -23, -28, -33]),
     ("run", ["--levels=-18,-28"], -100, [-18, -28]),
     ("trial", [], -60, [-18, -23]),
 ])
-def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
+def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
     verb, flags, noise, levels,
 ):
     from jasper.active_speaker import bundles, round_bank, plan_run
-    from jasper.active_speaker.bass_levels import preflight_levels, prepare_bass_captures
+    from jasper.active_speaker.bass_levels import BassLevelLadder, preflight_levels, prepare_bass_captures
     from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, default_out
@@ -614,6 +618,7 @@ def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.audio_measurement.calibration import MicSensitivity
     from jasper.cli import round_views
+    from jasper.cli.round_views import _bass_inputs
     from jasper.web import correction_run_host as host, correction_crossover_v2_wired as wired
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.engine_twin import FakeSeams
@@ -623,6 +628,8 @@ def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
 
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
                         analysis={"resolution": {"bass": "document"}, "measurement_status": "unmeasured"})
+    join = Mock(wraps=_bass_inputs.join_bass_rounds)
+    monkeypatch.setattr(_bass_inputs, "join_bass_rounds", join)
     publish_authored_candidate(candidate)
     def facts(plan):
         ready = ready_facts(plan, candidates={candidate.fingerprint: candidate})
@@ -657,7 +664,8 @@ def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
         if request.full_url.endswith(wc.SESSION_PATH) and request.data:
             raw = json.loads(request.data)
             plan = AngleCaptureRequest.from_mapping(raw["plan"])
-            ladder = preflight_levels(plan, facts(plan), raw.get("levels"))
+            report = preflight_levels(plan, facts(plan), raw.get("levels"))
+            plan = report.plan
             conductor = _conductor(FlowSeams())
             door, analyze, assessor, execute = host.bind_run_door(
                 host=SimpleNamespace(_wired_stimulus_capture=lambda *a, **kw: None, bind_v2_engine_seams=engine),
@@ -665,7 +673,7 @@ def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
                 production=SimpleNamespace(graph=fakes.graph, compose=None),
                 conductor=conductor, refs={}, trims={},
                 ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box, verify_only=False,
-                level=plan.level, ladder=ladder,
+                level=plan.level, ladder=report if isinstance(report, BassLevelLadder) else None,
             )
             runner = wired.build_v2_wired_run_and_consume(
                 conductor, door=door, signals=plan_run.RunSignals(), position_gate=gate,
@@ -683,7 +691,7 @@ def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
             return {"view": view, "status": "unavailable"}
         inputs = round_inputs(target)
         document = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts/crossover_v2/run-1/run_manifest.json").read_text())
-        group = next(group for group in document["sets"] if group["set_id"] == set_id)
+        group = next(group for group in document["sets"] if set_id is None or group["set_id"] == set_id)
         takes = []
         for entry in group["takes"]:
             take = deepcopy(bass_fit_pairs[0][0])
@@ -707,10 +715,16 @@ def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
     assert len(gate.grants) == fakes.graph.restores == 1
     assert (box.volume_db, asyncio.run(box.get_loudness_volume_db())) == (entry_volume, entry_loudness)
     packet = json.loads(Path(body["packet"]).read_text())
-    assert packet["result"] == "complete" and len(packet["runs"]) == len(levels)
+    assert packet["result"] == "complete" and len(packet.get("runs", [packet])) == len(levels)
     assert Path(body["packet"]) == Path(body["round_dir"]) / "packet.json"
     assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
     assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if verb == "trial" else 1)
+    assert {take["record"]["level_db"] for view in packet["artifacts"]["bass_views"]
+            for take in json.loads(Path(view["out"]).read_text())["takes"]} == set(levels)
+    assert join.call_count == (1 if len(levels) > 1 else 0)
+    if len(levels) == 1:
+        assert "bass_table" not in packet
+        return
     assert packet["bass_table"].get("schema") == "jts_bass_run_table/1", packet["bass_table"]
     table, = packet["bass_table"]["tables"]
     assert table["target"] == {"freqs_hz": [20, 60], "magnitude_db": [0, 0]}

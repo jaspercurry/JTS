@@ -74,10 +74,11 @@ class RoundPacket:
         self.manifest.path = await self.manifest.records.bank(self.to_dict())
 
 
-def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path | None:
+def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
+    destination = round_dir / PACKET_FILENAME
     manifest = json.loads(manifest_path.read_text())
-    if "runs" not in manifest:
-        return None
+    if len({run["level"]["run"]["level_db"] for run in manifest.get("runs", ())}) < 2:
+        return destination
     candidates = sorted({row["capture_basis"]["candidate_id"] for row in manifest["sets"] if not row["base"]})
     try:
         table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
@@ -85,7 +86,6 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     except (CrossoverV2Refused, OSError, ValueError, KeyError) as exc:
         table = {"status": "unavailable", "code": getattr(exc, "code", "bass_fit_inputs_missing"),
                  "error_type": type(exc).__name__}
-    destination = round_dir / PACKET_FILENAME
     packet = json.loads(destination.read_text())
     atomic_write_json(destination, {**packet, "bass_table": table})
     return destination
