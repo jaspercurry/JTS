@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
+import re
+
 import pytest
 
 from jasper.active_speaker.baseline_profile import APPLIED_PROFILE_DISPLACED
@@ -74,10 +76,35 @@ def test_commissioning_is_declaration_safety_experiment_apply(stage, current, st
     assert view["current_step"] == current
     assert view["status"] == status
     assert view["next_action"].get("id") == action
+    assert "command" not in view["next_action"]
     assert view["combined_groups"] == []
     if action == "apply_candidate":
         assert view["next_action"]["body"] == {"expected_candidate_fingerprint": "measured-fp"}
     assert {"driver_values", "driver_target_proof", "driver_checks", "summed_validation", "output_identity"} <= view.keys()
+
+
+def _assert_household_safe(text: str, where: str) -> None:
+    assert "/" not in text, f"{where}: filesystem path in household copy: {text!r}"
+    assert not re.search(r"\b\w*(?:Error|Exception)\b", text), (
+        f"{where}: exception class in household copy: {text!r}"
+    )
+    assert "_" not in text, f"{where}: raw identifier in household copy: {text!r}"
+    for token in ("camilladsp", "yaml", "alsa", "configfs", "systemd", "snd-aloop", "jasper-"):
+        assert token not in text.lower(), f"{where}: {token!r} in household copy: {text!r}"
+
+
+@pytest.mark.parametrize("ready,passive", [(False, False), (True, False), (False, True)])
+def test_every_step_message_is_household_safe(ready, passive):
+    view = build_commissioning_view(
+        passive_stereo_output_topology() if passive else _topology(),
+        design_draft=_ready_design() if ready else {}, crossover_preview=_ready_preview(),
+    )
+    for step in view["steps"]:
+        _assert_household_safe(step["message"], f"step {step['id']}")
+        _assert_household_safe(step["label"], f"step {step['id']}")
+    for action in (view["next_action"], view["secondary_action"]):
+        _assert_household_safe(action.get("label", ""), "action")
+        assert "command" not in action
 
 
 @pytest.mark.parametrize("ready", [False, True])

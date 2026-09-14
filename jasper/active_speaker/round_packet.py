@@ -123,8 +123,10 @@ def _index(packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]])
              f"Result: {packet['result']}; reason: {packet['reason']}",
              "## Decisions"]
     commissioning = packet.get("commissioning") or {}
-    if commissioning.get("status") == "awaiting_apply":
+    if commissioning.get("candidate_fingerprint"):
         lines.insert(4, f"commissioning: apply {commissioning['candidate_fingerprint']} to finish")
+    if commissioning.get("status") == "alignment_unmeasured":
+        lines.insert(4, f"alignment_unmeasured: {commissioning['reason']}")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
     lines += ["Limits: packet.json limits is keyed by set; it includes per-bin bounds and admitted features.",

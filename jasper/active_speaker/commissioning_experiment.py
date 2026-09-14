@@ -11,12 +11,19 @@ from typing import Any, Mapping
 
 from jasper.output_topology import OutputTopology
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.program_analysis import ALIGNMENT_COMMITTED_FLAT_SUM
+from jasper.json_fields import finite_float
 
 from .candidate_bank import load_candidate_artifact, publish_authored_candidate
 from .candidate_parts import candidate_from_design_draft, compose_candidate
-from .crossover_v2.alignment_prescription import AlignmentPrescription
+from .crossover_v2.alignment_prescription import (
+    ALIGNMENT_PRESCRIPTION_KIND, ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
+    AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, read_alignment_prescription,
+)
+from .crossover_v2.planning import alignment_to_candidate_fields
 from .crossover_v2.round_inputs import SetTakes
-from .measured_crossover_candidate import MeasuredCrossoverCandidate
+from .measured_crossover_candidate import MeasuredCrossoverAlignment, MeasuredCrossoverCandidate
+from .profile import required_driver_roles
 
 
 def commissioning_candidate(
@@ -50,24 +57,44 @@ def bank_commissioning_experiment(
              for take in SetTakes.from_row(group).on_axis if (take.get("analysis") or {}).get("trim_db")]
     if not takes:
         return {"status": "unavailable", "reason": "commissioning_alignment_unavailable"}
-    take = takes[-1]
+    take = max(takes, key=lambda take: (take.get("timing") or {}).get("ended_s", 0))
     analysis = take["analysis"]
     alignment = {key: analysis.get(key) for key in (
-        "delay_us", "polarity", "trim_db", "alignment_objective", "alignment_confidence",
+        "delay_us", "polarity", "trim_db", "alignment_status", "alignment_objective", "alignment_confidence",
     )}
     alignment.update(take_id=take["take_id"], record_id=take["artifacts"]["record_id"], pose=take["pose"])
     if alignment["delay_us"] is None or alignment["polarity"] not in ("normal", "inverted"):
         return {"status": "unavailable", "reason": "commissioning_alignment_unavailable", "alignment": alignment}
     base = publish_authored_candidate(declared, root=target.parent)
-    candidate = compose_candidate(base, sections={
-        "driver": {"role_attenuations_db": alignment["trim_db"], "linearization": {}},
-        "alignment": AlignmentPrescription(
-            delay_us=alignment["delay_us"], basis_delay_us=alignment["delay_us"],
-            polarity="invert" if alignment["polarity"] == "inverted" else "keep",
-            basis_artifacts=(alignment["record_id"],),
-        ),
-    }, evidence={"commissioning": {"run_id": manifest["run_id"], "alignment": alignment}})
+    sections: dict[str, Any] = {"driver": {"role_attenuations_db": alignment["trim_db"], "linearization": {}}}
+    reason = ""
+    if alignment["alignment_objective"] != ALIGNMENT_COMMITTED_FLAT_SUM:
+        reason = alignment["alignment_objective"] or "commissioning_alignment_unavailable"
+    elif (finite_float(alignment["alignment_confidence"]) or 0) <= 0:
+        reason = "commissioning_alignment_unavailable"
+    else:
+        preset = declared.source_preset
+        try:
+            prescription = read_alignment_prescription({
+                "kind": ALIGNMENT_PRESCRIPTION_KIND, "artifact_schema_version": ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
+                "delay_us": alignment["delay_us"], "basis_delay_us": analysis.get("alignment_seed_delay_us"),
+                "polarity": "invert" if alignment["polarity"] == "inverted" else "keep",
+                "basis_artifacts": [alignment["record_id"]],
+            }, fc_hz=preset.crossover_regions[0].fc_hz if preset.crossover_regions else None,
+               declared_bounds_us=alignment_delay_search_bounds_us(preset), way_count=preset.way_count)
+            assert prescription is not None
+            fields = alignment_to_candidate_fields({**analysis, "delay_us": prescription.delay_us},
+                                                   roles=required_driver_roles(preset.way_count))
+            if fields[0] is None:
+                reason = alignment["alignment_status"] or "commissioning_alignment_unavailable"
+            else:
+                sections["alignment"] = MeasuredCrossoverAlignment(*fields)
+                alignment["prescription"] = prescription.to_dict()
+        except AlignmentPrescriptionRefused as exc:
+            reason = exc.reason
+    result = {"status": "alignment_unmeasured" if reason else "awaiting_apply", "reason": reason, "alignment": alignment}
+    candidate = compose_candidate(base, sections=sections,
+        evidence={"commissioning": {"run_id": manifest["run_id"], **result}})
     banked = publish_authored_candidate(candidate, root=target.parent)
     atomic_write_json(target.parent / "commissioning.json", {"candidate_path": str(banked.path)})
-    return {"status": "awaiting_apply", "candidate_fingerprint": banked.fingerprint,
-            "candidate_path": str(banked.path), "alignment": alignment}
+    return {**result, "candidate_fingerprint": banked.fingerprint, "candidate_path": str(banked.path)}

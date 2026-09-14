@@ -92,8 +92,7 @@ def build_commissioning_view(
     elif not experiment_complete:
         status = "needs_first_experiment"
         action = {"id": "run_speaker_program", "label": "Run speaker experiment", "enabled": True,
-                  "endpoint": "/sound/speaker/crossover/", "method": "GET", "body": {},
-                  "command": "jasper-round run --program speaker --wait"}
+                  "endpoint": "/sound/speaker/crossover/", "method": "GET", "body": {}}
     else:
         status = "ready_to_save_profile" if review_ready else "blocked"
         action = {"id": "apply_candidate", "label": "Apply speaker profile", "enabled": review_ready,

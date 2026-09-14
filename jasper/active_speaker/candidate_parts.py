@@ -186,7 +186,7 @@ def compose_candidate(
     if "alignment" in selected:
         pin = selected["alignment"]
         role_order = required_driver_roles(preset.way_count)
-        resolved_alignment = (MeasuredCrossoverAlignment(
+        resolved_alignment = pin if isinstance(pin, MeasuredCrossoverAlignment) else (MeasuredCrossoverAlignment(
             abs(pin.delay_us), role_order[1] if pin.delay_us >= 0 else role_order[0],
             pin.polarity or resolved_alignment.polarity or "keep",
         ) if pin else MeasuredCrossoverAlignment())

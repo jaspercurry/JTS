@@ -1766,80 +1766,6 @@ async function testSublessPassiveLayoutRendersATerminatedLadder() {
   return { sublessPassiveLayoutRendersATerminatedLadder: true };
 }
 
-// The LIVE caller of renderSummedValidationCard's no-groups backstop. A
-// passive-mains-WITH-sub layout keeps the safety step active (it still compiles
-// a degenerate 1-way bass-management profile, so the backend does NOT terminate
-// it) while activeOutputGroups yields nothing to test together. That is the
-// shape that used to render a step title over an empty body.
-
-// The commissioning view an active 2-way reports while its saved crossover
-// preview is stale for the freshly-drawn layout: outputs and drivers already
-// confirmed, values not. The backend gates the combined test; the page must not
-// advertise it as available over a button the backend disabled.
-function staleValuesCommissioningView(groupOverrides = {}) {
-  return commissioningViewPayload({
-    status: "needs_driver_values",
-    current_step: "research",
-    stepStatuses: {
-      layout: "done", research: "active",
-      experiment: "todo", profile: "todo",
-    },
-    driver_values: {
-      status: "needs_preview",
-      complete: false,
-      design_ready: true,
-      preview_ready: false,
-      missing_driver_info_roles: [],
-      missing_crossover_candidate_pairs: [],
-      message: "Preview the crossover before confirming outputs.",
-    },
-    driver_target_proof: {
-      complete: true, source: "measurements", captured: 2, required: 2,
-    },
-    combined_groups: [{
-      group_id: "main",
-      label: "Main speaker",
-      status: "blocked",
-      status_label: "after setup",
-      // Verbatim from the coordinator's _waiting_message for this state.
-      message: "Finish Confirm driver safety profile first, then test the combined speaker.",
-      failure_message: "",
-      failure_code: "",
-      has_audible_test: false,
-      validated: false,
-      test_level: levelPayload(-72).test_signal,
-      actions: {
-        start_combined_test: {
-          id: "start_combined_test",
-          label: "Play combined test",
-          enabled: false,
-          endpoint: "./active-speaker/summed-test",
-          body: {speaker_group_id: "main", audio: true, stimulus: "speech"},
-        },
-        record_combined_result: {
-          id: "record_combined_result",
-          label: "Record combined check",
-          enabled: false,
-          endpoint: "./active-speaker/summed-validation",
-          body: {speaker_group_id: "main"},
-        },
-      },
-      ...groupOverrides,
-    }],
-  });
-}
-
-// The combined-test card must agree with its own button. The backend owns the
-// whole prerequisite chain (values saved AND outputs confirmed); the card head
-// used to re-derive readiness from driver-proof alone, so it invited "play the
-// combined speaker" in the ready voice while rendering a disabled button —
-// the mixed signal that preceded the jts5 stuck state.
-
-// A combined test that returns 200 with blockers (the graph refused to stage)
-// must tell the household what to do next. The old banner said "Review the
-// message in this card" — and the card it pointed at is a step card the ladder
-// can legitimately keep closed, so the household had nowhere to look.
-
 async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
   const researchPosts = [];
   const fetchHandler = baseFetch({
@@ -2298,30 +2224,6 @@ async function testAppliedProfileEditContinueOpensProfileStep() {
         reason: "applied_profile_superseded",
         next_step: "combined_check",
       },
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "ready_to_test",
-        status_label: "next",
-        message: "Run the combined speaker test.",
-        failure_message: "",
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-          },
-          record_combined_result: {
-            id: "record_combined_result",
-            label: "Record combined check",
-            enabled: false,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "" },
-          },
-        },
-      }],
     }))),
   });
   const harness = setupHarness(fetchHandler);
@@ -5161,22 +5063,6 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
         candidate_fingerprint: baselineApplied.candidate_fingerprint,
         applied_at: baselineApplied.applied_at, config_path: baselineApplied.config.path},
       test_level: levelPayload(-72).test_signal,
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "validated",
-        status_label: "ready",
-        has_audible_test: true,
-        validated: true,
-        actions: {
-          record_combined_result: {
-            id: "record_combined_result",
-            enabled: false,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "sum-1" },
-          },
-        },
-      }],
     })),
   }));
   await loadAndSetActiveState(harness);
