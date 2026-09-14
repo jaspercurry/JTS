@@ -556,7 +556,8 @@ async def test_commissioning_and_declaration_refuse_unusable_routes(monkeypatch,
 ])
 @pytest.mark.parametrize("phase", ["review", "apply_preflight"])
 async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_box, error_kind, code, phase):
-    from jasper.active_speaker import baseline_profile, measurement_emit
+    from jasper.active_speaker import measurement_emit
+    from jasper.web import correction_crossover_v2_apply as apply_host
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
     from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
@@ -572,14 +573,12 @@ async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_b
     }[error_kind]
     if phase == "review":
         monkeypatch.setattr(measurement_emit, "compile_tuning_graph", Mock(side_effect=error))
+        monkeypatch.setattr(apply_host, "compile_tuning_graph", Mock(side_effect=error))
         refused = web._active_speaker_baseline_profile_payload()
         assert refused["status"] == "blocked"
         assert refused["issues"][0]["code"] == code
     else:
-        compile_profile = baseline_profile.compile_commissioning_profile
-        monkeypatch.setattr(baseline_profile, "compile_commissioning_profile",
-                            Mock(side_effect=[compile_profile(), compile_profile(write=True)]))
-        monkeypatch.setattr(measurement_emit, "load_tuning_declaration", Mock(side_effect=error))
+        monkeypatch.setattr(apply_host, "load_tuning_declaration", Mock(side_effect=error))
     verified = AsyncMock()
     result = await web._active_speaker_baseline_profile_apply_payload(
         expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
@@ -595,6 +594,7 @@ async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_b
 @pytest.mark.parametrize("outcome", ["applied", "apply_failed", "blocked"])
 async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplog, commissioning_box, outcome):
     from jasper.active_speaker import baseline_profile, bundles, measurement
+    from jasper.web import correction_crossover_v2_apply as apply_host
     from jasper.web import sound_active_speaker as web
     from tests._log_events import event_fields, event_records
 
@@ -616,6 +616,7 @@ async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplo
     bundle = bundles.open_bundle(topology, calibration_id="", sessions_dir=bundles.sessions_dir())
     measurements = {"active_comparison_set": {"bundle_session_id": bundle["session_id"]}}
     monkeypatch.setattr(measurement, "load_measurement_state", lambda _: measurements)
+    monkeypatch.setattr(apply_host, "load_measurement_state", lambda _: measurements)
     reviewed = web._active_speaker_baseline_profile_payload(write=True)
     caplog.clear()
     caplog.set_level("INFO", logger=baseline_profile.__name__)

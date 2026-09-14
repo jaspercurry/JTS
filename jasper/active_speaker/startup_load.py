@@ -2,18 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guarded active-speaker startup config load, rollback, and anchor re-emit.
-
-This is the first active-speaker slice that may reload CamillaDSP.
-`load_protected_startup_config`/`rollback_protected_startup_config` still
-do not play tones, touch normal listening volume, or authorize playback —
-they keep the side-effect boundary deliberately small: validate the staged
-muted/protected startup candidate, require path-safety evidence, load through
-the existing DSP apply lifecycle, and persist a rollback target.
-
-The per-driver/summed commissioning lifecycle, which swaps the RUNNING graph,
-lives in `commission_load`.
-"""
+"""Load the protected startup graph and re-emit its muted anchor."""
 
 from __future__ import annotations
 
@@ -982,110 +971,6 @@ async def load_protected_startup_config(
         apply_state.op_id,
     )
     return {"preflight": preflight, "load": payload}
-
-
-async def rollback_protected_startup_config(
-    *,
-    load_config: PathLoader,
-    get_current_config_path: ConfigPathReader,
-    state_path: str | Path | None = None,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Reload the config that was active before the protected startup load."""
-
-    current_state = load_startup_load_state(state_path=state_path)
-    previous = current_state.get("previous_config_path")
-    if current_state.get("status") != "loaded" or not previous:
-        issue = _issue(
-            "blocker",
-            "startup_rollback_unavailable",
-            "no loaded active-speaker startup config has a rollback target",
-        )
-        payload = _loaded_state_payload(
-            status="blocked",
-            candidate_config_path=current_state.get("candidate_config_path"),
-            active_config_path=current_state.get("active_config_path"),
-            previous_config_path=previous,
-            last_action="rollback_blocked",
-            issues=[issue],
-        )
-        return {"rollback": payload}
-    if not Path(str(previous)).exists():
-        issue = _issue(
-            "blocker",
-            "rollback_config_missing",
-            f"rollback config no longer exists: {previous}",
-        )
-        payload = _loaded_state_payload(
-            status="rollback_failed",
-            candidate_config_path=current_state.get("candidate_config_path"),
-            active_config_path=current_state.get("active_config_path"),
-            previous_config_path=str(previous),
-            last_action="rollback_failed",
-            issues=[issue],
-        )
-        _record_state(payload, state_path=state_path)
-        return {"rollback": payload}
-
-    try:
-        active_before = await get_current_config_path()
-        apply_state = await apply_dsp_config(
-            source="active_speaker_startup_rollback",
-            candidate_path=str(previous),
-            prior_config_path=active_before,
-            load_config=load_config,
-            get_current_config_path=get_current_config_path,
-            validate=validate,
-        )
-    except Exception as exc:  # noqa: BLE001
-        dsp_state = exc.state.to_dict() if isinstance(exc, DspApplyError) else None
-        payload = _loaded_state_payload(
-            status="rollback_failed",
-            candidate_config_path=current_state.get("candidate_config_path"),
-            active_config_path=current_state.get("active_config_path"),
-            previous_config_path=str(previous),
-            last_action="rollback_failed",
-            dsp_apply=dsp_state,
-            issues=[
-                _issue(
-                    "blocker",
-                    "startup_rollback_failed",
-                    f"CamillaDSP rollback failed: {exc}",
-                )
-            ],
-        )
-        _record_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.startup_rollback result=failed target=%s error=%s",
-            previous,
-            type(exc).__name__,
-        )
-        return {"rollback": payload}
-
-    payload = _loaded_state_payload(
-        status="rolled_back",
-        candidate_config_path=current_state.get("candidate_config_path"),
-        active_config_path=apply_state.active_config_path or str(previous),
-        previous_config_path=str(previous),
-        last_action="rollback",
-        dsp_apply=apply_state.to_dict(),
-    )
-    _record_state(payload, state_path=state_path)
-    # The staged anchor was abandoned (the statefile is back on the previous
-    # graph), so the startup-load hold no longer applies. Cleared BEFORE the
-    # reconcile kick so this rollback's own reconcile restores the baseline
-    # rather than re-preserving the anchor. Best-effort — a failed clear never
-    # fails the rollback, and the marker is ephemeral (/run) either way.
-    release_staged_startup_hold()
-    _trigger_audio_hardware_reconcile(source="active_speaker_startup_rollback")
-    logger.info(
-        "event=active_speaker.startup_rollback result=rolled_back target=%s op_id=%s",
-        previous,
-        apply_state.op_id,
-    )
-    return {"rollback": payload}
 
 
 def startup_anchor_from_decision(decision: Any) -> Any | None:

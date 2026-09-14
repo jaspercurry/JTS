@@ -1999,16 +1999,16 @@ def _recorded_emit_kwargs(
 
 
 def _commissioning_apply_site(cam):
+    from jasper.web.correction_crossover_v2_apply import apply_candidate
     import asyncio
     from jasper.active_speaker import baseline_profile
 
     def call_site():
         text, reviewed = baseline_profile.compile_commissioning_profile()
         assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
-        result = asyncio.run(baseline_profile.apply_commissioning_profile(
+        result = asyncio.run(apply_candidate(
             expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
-            load_config=cam.set_config_file_path,
-            get_current_config_path=cam.get_config_file_path,
+            camilla_factory=lambda: cam,
         ))
         assert result["status"] == "applied", result["issues"]
         assert cam.path == result["profile"]["config"]["path"]
@@ -2164,6 +2164,7 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
 def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
     tmp_path, monkeypatch
 ):
+    from jasper.web.correction_crossover_v2_apply import apply_candidate
     import asyncio
     from dataclasses import replace
     from jasper.active_speaker import ActiveSpeakerConfigError, baseline_profile
@@ -2191,10 +2192,9 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
         assert type(caught.value.__cause__) is ValueError
         assert caught.value.args == caught.value.__cause__.args
 
-    result = asyncio.run(baseline_profile.apply_commissioning_profile(
+    result = asyncio.run(apply_candidate(
         expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
-        load_config=cam.set_config_file_path,
-        get_current_config_path=cam.get_config_file_path,
+        camilla_factory=lambda: cam,
     ))
     assert result["status"] == "blocked"
     assert result["issues"][0]["code"] == "compose_refused"
@@ -2238,7 +2238,7 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
             "emit_active_speaker_baseline_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
-        "apply_commissioning_profile": (
+        "apply_candidate": (
             _commissioning_apply_site(cam),
             "emit_active_speaker_baseline_config",
             RING_ACTIVE_PLAYBACK_DEVICE,

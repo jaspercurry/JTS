@@ -340,55 +340,6 @@ def compile_commissioning_profile(
     return text, profile
 
 
-async def apply_commissioning_profile(
-    *, expected_candidate_fingerprint: str,
-    load_config: Callable[[str], Awaitable[bool]],
-    get_current_config_path: Callable[[], Awaitable[str | None]],
-    on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
-) -> dict[str, Any]:
-    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
-    from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
-    from .measurement_emit import load_tuning_declaration  # lazy: graph compilation imports baseline readers
-
-    async with dsp_writer_lock(baseline_config_path().parent, source="active_speaker_baseline_apply"):
-        profile: dict[str, Any] = {}
-        prepared: dict[str, Any] | None = None
-        measurements: Mapping[str, Any] = {}
-        try:
-            topology = load_output_topology()
-            measurements = load_measurement_state(topology)
-            draft = load_design_draft(topology=topology)
-            for write in (False, True):
-                text, profile = compile_commissioning_profile(topology=topology, design_draft=draft, write=write)
-                if any(issue.get("severity") == "blocker" for issue in profile["issues"]):
-                    break
-                refusal = reviewed_candidate_refusal(profile, expected_candidate_fingerprint)
-                if refusal:
-                    profile = refusal["profile"]
-                    break
-            else:
-                declaration = load_tuning_declaration(topology, design_draft=draft)
-                candidate = find_banked_candidate(profile["source"]["measured_candidate_fingerprint"]).candidate
-                prepared = prepare_applied_baseline_profile(
-                    candidate, declaration=declaration, design_draft=draft, measurements=measurements, provenance=profile,
-                    config_path=profile["config"]["path"], config_sha256=profile["config"]["sha256"],
-                )
-        except (CandidateBankRefusal, ValueError) as exc:
-            _commissioning_refusal(profile, exc)
-        if prepared is None:
-            await _record_apply_outcome_into_bundle(measurements, candidate=profile, apply_state=None, rollback_target=None)
-            return {"status": "blocked", "profile": profile, "apply": None, "issues": profile["issues"]}
-        if on_candidate_verified is not None:
-            await on_candidate_verified()
-        _baseline_apply_started(topology, prepared)
-        try:
-            async with load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
-                    load_config=load_config, get_current_config_path=get_current_config_path) as (state, applied):
-                return await _baseline_apply_result(topology, applied, measurements, apply_state=state)
-        except DspApplyError as exc:
-            return await _baseline_apply_result(topology, prepared, measurements, apply_state=exc.state, error=exc)
-
-
 def _canonicalize_camilla_defaults(value: Any) -> Any:
     """Remove representation-only null defaults from Camilla readback.
 

@@ -337,11 +337,6 @@ export function subwooferCrossoverBand(topology) {
   };
 }
 
-// Map a commission-load/ramp POST result to ONE calm, actionable sentence when
-// the guard refused or blocked it. Returns '' on success (the card then shows the
-// new armed/stepped/confirmed state). This is what prevents the "flicker then
-// nothing" silent failure: the endpoints answer HTTP 200 even when a guard blocks
-// the load, so the card must read the body's status — not only the HTTP code.
 export function commissionPayloadFailure(payload) {
   if (!payload || typeof payload !== 'object') return '';
   if (payload.status === 'refused') {
@@ -355,11 +350,16 @@ export function commissionPayloadFailure(payload) {
     return 'There is no active tone to confirm. Start a quiet step first.';
   }
   var load = payload.load && typeof payload.load === 'object' ? payload.load : null;
-  var blocked = payload.status === 'blocked' || payload.status === 'failed' ||
-    payload.status === 'gate_blocked' || payload.status === 'load_failed' ||
-    payload.status === 'tone_failed' || payload.status === 'expired' ||
+  var blocked = ['blocked', 'failed', 'gate_blocked', 'load_failed', 'apply_failed',
+    'tone_failed', 'expired'].indexOf(payload.status) >= 0 ||
     (load && load.status && load.status !== 'loaded');
   if (!blocked) return '';
+  if (payload.status === 'apply_failed') {
+    var blocker = (Array.isArray(payload.issues) ? payload.issues : []).find(function(issue) {
+      return issue && issue.severity === 'blocker' && issue.message;
+    });
+    return blocker ? String(blocker.message) : 'The speaker profile could not be applied.';
+  }
   var issueReason = commissionIssueReason(commissionIssueCodes(payload));
   if (issueReason) return issueReason;
   var preflight = payload.preflight ||

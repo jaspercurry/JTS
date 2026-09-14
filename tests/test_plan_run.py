@@ -423,10 +423,9 @@ def test_done_requires_every_stimulus_at_the_last_stop(monkeypatch, accepted):
 
 @pytest.mark.parametrize("action", ["accept", "retake_same", "stop", "complete", "cancel"])
 def test_run_never_applies_a_tune(monkeypatch, action):
-    from jasper.active_speaker import baseline_profile
     from jasper.web import correction_crossover_v2_apply
     apply = Mock(side_effect=AssertionError("apply called"))
-    monkeypatch.setattr(baseline_profile, "apply_commissioning_profile", apply)
+    monkeypatch.setattr(correction_crossover_v2_apply, "apply_candidate", apply)
     monkeypatch.setattr(correction_crossover_v2_apply, "handle_v2_apply", apply)
     signals = plan_run.RunSignals()
     calls = 0

@@ -4536,6 +4536,7 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     produced by ``ensure_crossover_preview_ready()``, the real
     session-start seam, so this fixture proves the same machinery a browser
     session would drive."""
+    monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.output_topology import save_output_topology
@@ -6489,7 +6490,8 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
 ])
 def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault, code):
     caplog.set_level(logging.INFO, logger=v2apply.__name__)
-    from jasper.active_speaker import boost_protection
+    from jasper.active_speaker import baseline_profile, boost_protection
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
     if fault == "floor":
@@ -6498,7 +6500,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
     _bank_for_apply({"candidate": candidate.to_dict()})
     if fault in {"malformed", "compose"}:
         def refuse(*args, **kwargs):
-            exc = ValueError("bad input")
+            exc = ValueError("bad input") if fault == "malformed" else ActiveSpeakerConfigError("bad input")
             exc.code = None
             raise exc
         if fault == "malformed":
@@ -6540,6 +6542,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
             return text
         monkeypatch.setattr(v2apply, "compile_tuning_graph", over_bound)
     before = (tmp_path / "design_draft.json").read_bytes()
+    state_before = v2state.load_v2_state()
     cam = _FakeApplyCam()
     if fault == "load":
         async def fail(path, **kwargs):
@@ -6551,7 +6554,8 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         assert result["issue"]["code"] == code
         assert result["status"] == ("apply_failed" if fault == "load" else "blocked")
         if fault == "load":
-            assert result["apply"]["result"].startswith("load_failed")
+            assert result["apply"]["result"] == "load_failed"
+            assert result["apply"]["rollback_attempted"] is False
     else:
         with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
@@ -6561,7 +6565,18 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
     assert fields["code"] == code
     assert cam.path is None
     assert (tmp_path / "design_draft.json").read_bytes() == before
-    assert not (tmp_path / "baseline_profile.json").exists()
+    assert baseline_profile.load_applied_baseline_profile_state() is None
+    assert v2state.load_v2_state() == state_before
+    if fault == "load":
+        failed = json.loads((tmp_path / "baseline_profile.json").read_text())
+        assert failed["status"] == "apply_failed"
+        assert failed["apply"] == result["apply"]
+        assert [(issue["severity"], issue["code"]) for issue in failed["issues"]] == [
+            ("blocker", "baseline_profile_apply_failed"),
+        ]
+        assert "applied_recomposition_profile" not in failed
+    else:
+        assert not (tmp_path / "baseline_profile.json").exists()
 
 
 @pytest.mark.parametrize("measured", [True, False])
@@ -6595,6 +6610,28 @@ def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, 
     else:
         assert record is None
     assert result["status"] == "applied"
+
+
+@pytest.mark.parametrize("phase", ["compose", "load", "record"])
+def test_apply_does_not_turn_untyped_faults_into_refusals(monkeypatch, tmp_path, phase):
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    _bank_for_apply({"candidate": candidate.to_dict()})
+    failure = ValueError("unexpected fault")
+    def fail(*args, **kwargs):
+        raise failure
+    @contextlib.asynccontextmanager
+    async def failed_load(*args, **kwargs):
+        raise failure
+        yield
+    if phase == "compose":
+        monkeypatch.setattr(v2apply, "compile_tuning_graph", fail)
+    elif phase == "load":
+        monkeypatch.setattr(v2apply.baseline_profile, "load_composed_graph", failed_load)
+    else:
+        monkeypatch.setattr(v2state, "observe_apply_success", fail)
+    with pytest.raises(ValueError) as caught:
+        v2apply.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint}, _bg_run_async, _FakeApplyCam)
+    assert caught.value is failure
 
 
 def test_declaration_record_failure_does_not_hide_a_successful_apply(monkeypatch, tmp_path, caplog):
