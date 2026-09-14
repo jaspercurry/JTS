@@ -958,6 +958,16 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "flushed_frames", metrics.flushed_frames());
                 buf.push(',');
+                push_kv_u64(buf, "starved_runs", metrics.starved_runs());
+                buf.push(',');
+                push_kv_u64(buf, "starved_frames", metrics.starved_frames());
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "starved_max_run_frames",
+                    metrics.starved_max_run_frames(),
+                );
+                buf.push(',');
                 push_kv_bool(buf, "program_duck_active", metrics.program_duck_active());
                 buf.push(',');
                 // Render through the shared writer so fan-in and outputd cannot

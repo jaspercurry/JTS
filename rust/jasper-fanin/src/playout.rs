@@ -273,7 +273,7 @@ impl PlayoutLedger {
 
 /// Integer frames -> milliseconds at `sample_rate`. Saturating multiply so
 /// a degenerate frame count can never panic.
-fn frames_to_ms(frames: u64, sample_rate: u32) -> u64 {
+pub(crate) fn frames_to_ms(frames: u64, sample_rate: u32) -> u64 {
     frames.saturating_mul(1000) / (sample_rate as u64)
 }
 
