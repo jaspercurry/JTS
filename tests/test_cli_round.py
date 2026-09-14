@@ -448,3 +448,26 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
     assert capture["regime"] == "summed"
     assert body["level"]["level_db"] == -25
     assert not opener.requests
+
+
+@pytest.mark.parametrize("noise_dbfs,levels", [(-60, [-18, -23]), (-100, [-18, -23, -28, -33]), (-20, [])])
+def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, noise_dbfs, levels):
+    from dataclasses import replace
+    from jasper.cli import _run_request
+    from tests.test_preflight import ready_facts
+
+    def facts(plan):
+        ready = ready_facts(plan)
+        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
+            "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise_dbfs}]}}))
+
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    opener = _opener()
+    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--dry-run"],
+                      opener, monkeypatch, capsys)
+    assert code == (0 if levels else 1)
+    assert body["dry_run"] is True
+    assert body["admissible_levels_db"] == levels
+    assert [row["offset_db"] for row in body["levels"]] == [0, -5, -10, -15]
+    assert [row["level_db"] for row in body["levels"]] == [-18, -23, -28, -33]
+    assert not opener.requests

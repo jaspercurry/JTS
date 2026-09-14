@@ -23,6 +23,8 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## Bass
 
+`jasper-round run --program bass --layout bass_axis --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
+
 `bass/axis` measures one on-axis bearing with the arm. Run `jasper-round run --program bass --layout bass_axis --candidates base,<fp> --level-db L --wait` once per level, then `jasper-round-views bass-fit-table <round…> --candidate <fp> --target <target.json> --tolerance-db <db>`. The base is the applied tune, including its bass block. The table joins measured pairs by level and includes the base’s boost. Keep the applied tune fixed across these rounds.
 
 ## Evidence and recovery

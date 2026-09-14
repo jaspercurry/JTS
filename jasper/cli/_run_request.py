@@ -11,12 +11,13 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest, LevelPolicy, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID, request_for_program,
 )
 from jasper.active_speaker.measurement_programs import run_program
+from jasper.active_speaker.bass_levels import BassLevelLadder, bass_level_ladder
 from jasper.active_speaker.preflight import PreflightReport, preflight
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from ._refusal import read_json_source
 
 
-def resolve_run(args: argparse.Namespace) -> PreflightReport:
+def resolve_run(args: argparse.Namespace) -> PreflightReport | BassLevelLadder:
     if args.plan:
         if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db")):
             raise ValueError("a plan document already states its run parameters")
@@ -38,4 +39,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport:
         program, candidates=candidates, level=LevelPolicy(level_db=args.level_db),
         mover=("arm" if args.mover == "arm" else "human") if args.mover else program.mover or "human",
     )
-    return preflight(request, read_preflight_facts(request))
+    facts = read_preflight_facts(request)
+    if args.dry_run and args.program == "bass" and args.level_db is None:
+        return bass_level_ladder(request, facts)
+    return preflight(request, facts)

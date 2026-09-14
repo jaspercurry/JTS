@@ -228,3 +228,22 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
         }
     else:
         assert outcome.issues == ()
+
+
+@pytest.mark.parametrize("level_db,blocked", [(-18, False), (-38, True)])
+def test_bass_preflight_uses_target_band_noise(level_db, blocked):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),),
+                               level=LevelPolicy(level_db=level_db))
+    facts = ready_facts(plan, summed_pilot_band_hz=(200, 800))
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
+        "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60},
+                                       {"band_hz": [200, 800], "level_dbfs": -100}]}}))
+    report = preflight(plan, facts)
+    assert report.blocking is blocked
+    if blocked:
+        issue, = report.issues
+        assert issue.code == "run_level_pilots_under_ambient"
+        assert issue.evidence["pilot_band_hz"] == (20, 60)
+        assert issue.evidence["ambient_row"] == {"band_hz": (20, 80), "level_dbfs": -60}
+    else:
+        assert report.issues == ()
