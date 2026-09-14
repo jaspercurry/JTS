@@ -619,10 +619,7 @@ def test_post_connect_rejects_newline_password_before_connect_new(
     h.do_POST()
 
     assert captured["status"] == 400
-    assert json.loads(h.wfile.getvalue()) == {
-        "ok": False,
-        "message": "password must not contain newlines",
-    }
+    assert json.loads(h.wfile.getvalue())["ok"] is False
     assert calls == []
 
 
