@@ -1917,14 +1917,6 @@ def _ring_composer_box(monkeypatch, tmp_path):
 
 
 def _startup_anchor_site(topology, out_dir, *, playback_device=None):
-    """Drive ``stage_protected_startup_config``'s emit against the ring.
-
-    The BOOT anchor (#2364). It is the graph a mid-commission box — the
-    fleet-typical composite — actually boots from, so a half-moved device
-    contract here is a durable artifact, not a transient one. Like the candidate
-    site, ``playback_device`` is overridable only so a caller can drive the same
-    site at the ALSA active lane as a control.
-    """
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.staging import stage_protected_startup_config
     from tests.active_speaker_fixtures import standard_design_draft
@@ -2026,11 +2018,14 @@ def _commissioning_apply_site(cam):
     return call_site
 
 
-def _grouping_site(topology, tmp_path):
+def _grouping_site(topology, tmp_path, *, applied=False):
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
     from jasper.multiroom.active_profile import build_grouped_profile
     from tests.active_speaker_fixtures import valid_camilla_config
 
     def call_site():
+        if applied:
+            assert load_applied_baseline_profile_state() is not None
         result = build_grouped_profile(
             topology, state_path=str(tmp_path / "grouped.json"),
             config_path=str(tmp_path / "grouped.yml"),
@@ -2249,7 +2244,7 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),
         "build_grouped_profile(applied)": (
-            _grouping_site(topology, tmp_path),
+            _grouping_site(topology, tmp_path, applied=True),
             "emit_active_speaker_baseline_config",
             RING_ACTIVE_PLAYBACK_DEVICE,
         ),

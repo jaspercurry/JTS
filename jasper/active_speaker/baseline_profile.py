@@ -630,36 +630,6 @@ def _measured_level_trims(
     measurements: Mapping[str, Any],
     crossover_preview: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
-    """Per-role attenuation-only trim from the MEASURED overlap-band level deltas.
-
-    For each adjacent-driver crossover, both drivers' near-field captures through
-    the production graph give their level at the shared Fc; the driver-to-driver
-    delta is the relative sensitivity at the handoff (the −6 dB Linkwitz-Riley
-    shoulder cancels). We chain those deltas into a per-driver
-    attenuation (quietest driver = reference, 0 dB), so the acoustic sum is level
-    across every crossover — the MEASURED refinement of the datasheet sensitivity
-    trim ``_derive_corrections`` otherwise seeds.
-
-    TWO evidence sources answer that one question, and this function is the
-    single owner of which one wins. The PREFERRED source is the base trim
-    :mod:`jasper.active_speaker.driver_base_trim` banks — the level match a
-    successful apply was actually playing, written by the apply seam itself.
-    The FALLBACK, unchanged, is the guided per-driver captures the capture flow
-    promotes. A banked trim is preferred only because it is the level match the
-    speaker last committed to, not because it is a better measurement — so a
-    usable guided answer whose captures postdate the record's ``measured_at``
-    supersedes it (ruling S20: the newest measurement wins), and the handoff is
-    disclosed as ``dsp.baseline_base_trim_superseded`` naming both evidences.
-    ``crossover_preview`` is what a banked trim is keyed to, so a caller with
-    none has nothing to match a banked record against and gets the guided
-    captures alone.
-
-    Returns ``(trims_by_role, meta)``. ``trims_by_role`` is empty (fail-closed)
-    unless at least one speaker group has a usable overlap level for BOTH drivers
-    of EVERY crossover — any silent / clipped / low-SNR / missing capture drops
-    that group, and if no group qualifies the caller keeps the datasheet trim and
-    marks the config provisional. Magnitude only: never a phase/delay decision.
-    """
     from .capture_geometry import (
         DRIVER_PLACEMENT_POLICY_ID,
         capture_proof_valid,
@@ -828,11 +798,6 @@ def _measured_level_trims(
     if base_trims:
         banked_measured_at = str(base_trim_meta.get("measured_at") or "")
         if not trims or newest_capture_at <= banked_measured_at:
-            # The banked record names the speaker groups it levelled, and the
-            # ledger reports them under the SAME keys the guided path uses:
-            # readiness (``crossover_contract.automatic_candidate_readiness``)
-            # and the setup status both gate on those, so a measured speaker
-            # reporting zero measured groups would read as un-measured.
             banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
             return base_trims, {
                 "source": "banked_base_trim",

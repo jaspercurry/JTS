@@ -410,17 +410,6 @@ def test_gain_source_to_provenance_migration_mapping_pinned():
 
 
 def test_baseline_config_emits_single_net_inversion_not_double():
-    """Regression for the double-inversion emit bug: a region's own polarity
-    AND ``corrections['inverted']`` both trace back to the SAME manual-tier
-    source (a preview-persisted "inverted" region), since
-    ``_derive_corrections`` reads the region to populate ``corrections``. If
-    ``emit_active_speaker_baseline_config``'s split mixer ALSO applied the
-    region's polarity (on top of the per-driver gain filter that reads
-    ``corrections``), the two inversions would cancel to a net non-inversion —
-    silently dropping the operator's intended polarity flip. The mixer must
-    stay a no-op inverter on this emit path; the gain filter is the sole
-    inverter.
-    """
     raw = _two_way_preset()
     raw["crossover_regions"][0]["upper_polarity"] = "inverted"
     preset = ActiveSpeakerPreset.from_mapping(raw)
@@ -888,12 +877,6 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
 def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     tmp_path: Path,
 ) -> None:
-    """A driver-domain candidate is a wireless follower's Layer-A-only graph.
-    It has no solo lineage, and ``build_baseline_profile_candidate`` already
-    excludes it from the solo artifacts for that reason. This artifact is one
-    of those, so a consolidation that ever routes such a graph through the
-    apply seam must not be able to clear a measurement it knows nothing about.
-    """
     baseline_profile_mod.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},

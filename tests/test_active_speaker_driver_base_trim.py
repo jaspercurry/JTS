@@ -308,9 +308,6 @@ def test_a_tampered_record_can_only_fail_closed(tmp_path: Path, trim, why):
 def test_a_record_that_cannot_name_its_footing_refuses(
     tmp_path: Path, field, value, why
 ):
-    """``speaker_group_ids`` gates readiness
-    (``crossover_contract.automatic_candidate_readiness``) and ``trim_source``
-    is what a receipt discloses, so neither may be guessed."""
     state = _bank(tmp_path)
     record = json.loads(state.read_text())
     record[field] = value

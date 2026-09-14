@@ -111,11 +111,6 @@ def _chain_fingerprint(value: Any) -> str | None:
 
 
 def _group_ids(value: Any) -> list[str]:
-    """The record's speaker groups, or ``[]`` when it names none readably.
-
-    Fail-closed on any unreadable member:
-    ``crossover_contract.automatic_candidate_readiness`` gates on that set.
-    """
     if not isinstance(value, (list, tuple)) or not value:
         return []
     if not all(isinstance(item, str) and item for item in value):
@@ -207,8 +202,6 @@ def banked_base_trims(
                 "remediation": REMEASURE_REMEDIATION,
             }
         trims[role] = value
-    # WHICH speaker groups this trim covers, not merely how many:
-    # ``crossover_contract.automatic_candidate_readiness`` gates on the SET.
     measured = _group_ids(record.get("speaker_group_ids"))
     trim_source = str(record.get("trim_source") or "")
     if not measured or not trim_source:

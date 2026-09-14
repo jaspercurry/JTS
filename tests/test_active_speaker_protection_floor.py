@@ -873,23 +873,6 @@ def test_real_box_honest_redraft_at_the_floor_still_arms(tmp_path: Path) -> None
         )
 
 
-# --- (g) the apply-time layer: the L0 emit gate -----------------------------
-#
-# The fifth surface, and the one that was missing until the crossover frequency
-# stopped being frozen at commissioning. Sections (a)-(f) above cover a floor
-# that is only ever compared AFTER a graph exists: the clamp raises the derived
-# protective high-pass, staging publishes the two facts, and the startup-load
-# gate refuses the staged artifact. None of that stands between a chosen
-# crossover frequency and an APPLIED graph -- the routine apply transaction
-# (build_baseline_profile_candidate -> apply_baseline_profile ->
-# dsp_apply.apply_dsp_config) emitted whatever corner it was handed. Harmless
-# while nothing varied Fc; a live hazard the moment Fc becomes a searched or
-# prescribed parameter.
-#
-# camilla_yaml._assert_tweeter_crossover_honours_declared_floor closes it at the
-# emitter, before a line of YAML is built. These pins exist to keep it honest in
-# BOTH directions: it must refuse a below-floor corner, and it must not invent a
-# floor where the operator declared none.
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 

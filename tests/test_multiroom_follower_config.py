@@ -929,11 +929,6 @@ _PLAYBACK_BRANCHES = ("hw:CARD=DAC8x,DEV=0", RING_ACTIVE_PLAYBACK_DEVICE)
 
 
 def _follower_driver_domain_devices(playback_device: str) -> dict:
-    """The follower's driver-domain ``devices`` block, emitted exactly as the
-    reconciler feeds it: the grouping ring on the capture side (the precheck's
-    two kwargs) and the sink's own geometry everywhere else, DERIVED from
-    ``active_emit_devices`` the way ``build_baseline_profile_candidate`` derives
-    it rather than restated here."""
     devices = active_emit_devices(playback_device)
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
     text = emit_active_speaker_driver_domain_config(

@@ -5423,20 +5423,6 @@ def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
 
 
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
-    """Era tolerance at the LIVE surface, not just in ``from_mapping``.
-
-    The blocker this pins: ``to_dict()`` always writes ``exclusion_evidence``,
-    so a ``candidate.json`` published by a build that predates the field fails
-    ``from_mapping``'s reopen comparison unless it is setdefaulted — and that
-    comparison is on the apply path (``handle_v2_apply`` →
-    ``find_banked_candidate`` → ``from_mapping``). The household-visible
-    symptom was a ``candidate_tampered`` refusal telling them their persisted
-    correction had been altered when the file was merely older than the field.
-
-    Drives the SAME real ``apply_baseline_profile`` path as the sibling test
-    above, with the key deleted from the payload — it must load, keep its
-    fingerprint, and apply.
-    """
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
 
@@ -5766,13 +5752,6 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
 def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     monkeypatch, tmp_path,
 ):
-    """The full real journey: no preview on disk -> session start ensures one
-    (asserted on disk, ready) -> measure-shaped candidate baked against the
-    resolved preset -> handle_v2_apply SUCCEEDS through the real
-    apply_baseline_profile guard -> Start-over (the REAL handle_reset)
-    deletes the preview by design -> a fresh session start re-ensures it from
-    the (unchanged) design draft -> apply succeeds again. The test never
-    once hand-writes active_speaker_crossover_preview.json."""
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.web import correction_crossover_flow as reset_flow
 

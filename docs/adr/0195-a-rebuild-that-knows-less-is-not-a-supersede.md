@@ -1,7 +1,7 @@
 # ADR-0195: A rebuild that knows less is not a supersede
 
 - **Date:** 2026-08-29
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0312
 
 ## Context
 

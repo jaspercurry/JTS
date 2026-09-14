@@ -1,7 +1,7 @@
 # ADR-0312: The ladder has no rebuild to compare
 
-Date: 2026-09-13
-Status: Accepted
+- **Date:** 2026-09-13
+- **Status:** Accepted
 Supersedes: ADR-0195
 
 Commissioning reviews use `compile_commissioning_profile` and the applied record.

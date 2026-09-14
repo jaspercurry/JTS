@@ -100,12 +100,6 @@ def _validated_measurements(*, summed_validated: bool = True) -> dict:
 
 
 def _applied_anchor(basename: str = "candidate_f7e9.yml") -> dict:
-    """The retained applied record a write-free rebuild carries.
-
-    Measured: it holds the per-driver linearization and blend correction the
-    basic save-and-apply door does not re-emit.
-    """
-
     return {
         "status": "applied",
         "applied_at": "2026-08-30T01:33:34Z",
@@ -1250,27 +1244,31 @@ def test_failure_remedies_name_the_card_titles_the_page_actually_renders():
 
 
 @pytest.mark.parametrize("ready", [False, True])
-@pytest.mark.parametrize("has_applied", [False, True])
-def test_applied_identity_change_is_disclosed_without_parking_review(ready, has_applied):
+@pytest.mark.parametrize("applied_fingerprint", [None, "saved-fp", "review-fp"])
+def test_applied_identity_change_is_disclosed_without_parking_review(ready, applied_fingerprint):
     review = _applied_baseline_profile(
         status="ready_to_compile" if ready else "blocked",
         permissions={"may_compile": ready, "may_apply": False},
         issues=[] if ready else [{"severity": "blocker", "code": "compose_refused"}],
     )
-    applied = {**_applied_anchor(), "candidate_fingerprint": "saved-fp"}
+    applied = {**_applied_anchor(), "candidate_fingerprint": applied_fingerprint}
     view = build_commissioning_view(
         _topology(), design_draft=_ready_design(), crossover_preview=_ready_preview(),
         measurements=_validated_measurements(), baseline_profile=review,
-        applied_profile=applied if has_applied else None,
+        applied_profile=applied if applied_fingerprint else None,
     )
-    if has_applied:
+    if applied_fingerprint:
         assert view["status"] == "applied"
-        assert view["applied_profile"]["candidate_fingerprint"] == "saved-fp"
+        assert view["applied_profile"]["candidate_fingerprint"] == applied_fingerprint
         assert view["applied_profile"]["applied_at"] == applied["applied_at"]
         assert view["applied_profile"]["config_path"] == applied["config"]["path"]
-        assert [(item["code"], item["severity"], item["status"]) for item in view["applied_profile"]["disclosures"]] == [
-            ("baseline_candidate_fingerprint_mismatch", "warning", "disclosed_stale"),
-        ]
+        disclosures = view["applied_profile"]["disclosures"]
+        if applied_fingerprint == review["candidate_fingerprint"]:
+            assert disclosures == []
+        else:
+            assert [(item["code"], item["severity"], item["status"]) for item in disclosures] == [
+                ("baseline_candidate_fingerprint_mismatch", "warning", "disclosed_stale"),
+            ]
     else:
         assert view["status"] == ("ready_to_save_profile" if ready else "blocked")
         assert view["next_action"]["enabled"] is ready

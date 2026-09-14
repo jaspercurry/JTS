@@ -1328,18 +1328,11 @@ import {
       summed.complete === true;
   }
   function baselineProfileAppliedRecord() {
-    // The rebuild's own status cannot reach 'applied' for a measured profile;
-    // `applied_profile_stands` is the payload's verdict. See ADR-0195.
-    var profile = activeSpeaker.baselineProfile || {};
-    if (profile.applied_profile_stands === true) {
-      var anchor = profile.applied_recomposition_profile;
-      if (anchor && typeof anchor === 'object') return anchor;
-    }
-    // The save-and-apply response replaces this state with the record it just
-    // wrote — the record itself, not a rebuild, so it carries no verdict and
-    // its own status is the answer.
-    return profile.status === 'applied' ? profile : null;
+    var view = activeSpeaker.commissioningView || {};
+    var record = view.applied_profile;
+    return record && record.exists === true ? record : null;
   }
+
   function baselineProfileApplied() {
     return baselineProfileAppliedRecord() !== null;
   }
@@ -2732,7 +2725,7 @@ import {
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
     var appliedRecord = baselineProfileAppliedRecord();
-    var config = (appliedRecord || profile).config || {};
+    var config = appliedRecord ? {path: appliedRecord.config_path} : (profile.config || {});
     var permissions = profile.permissions || {};
     var applied = appliedRecord !== null;
     var readyToApply = permissions.may_apply === true;
