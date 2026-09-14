@@ -14,6 +14,7 @@ import pytest
 
 from jasper.control import aec_endpoints
 
+from tests._log_events import event_fields
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -53,7 +54,7 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     assert status == 202
     assert body == {"ok": True, "status": "accepted", "mode": "auto"}
     assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in mode_file.read_text()
-    assert calls == [("restart", ["jasper-aec-reconcile.service"])]
+    assert calls == [("restart", ["jasper-aec-reconcile.service"], 5.0, True)]
 
 
 def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
@@ -93,7 +94,7 @@ def test_aec_profile_restarts_reconciler(
     text = mode_file.read_text()
     assert f"JASPER_AUDIO_INPUT_PROFILE={profile}" in text
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in text
-    assert calls == [("restart", ["jasper-aec-reconcile.service"])]
+    assert calls == [("restart", ["jasper-aec-reconcile.service"], 5.0, True)]
 
 
 def test_aec_threshold_persists_and_restarts_voice(
@@ -112,7 +113,7 @@ def test_aec_threshold_persists_and_restarts_voice(
     assert status == 202
     assert body == {"ok": True, "status": "accepted", "threshold": 0.42}
     assert "JASPER_WAKE_THRESHOLD=0.42" in model_file.read_text()
-    assert calls == [("restart", ["jasper-voice.service"])]
+    assert calls == [("restart", ["jasper-voice.service"], 5.0, True)]
 
 
 @pytest.mark.parametrize(
@@ -620,21 +621,34 @@ def test_usb_mic_recompose_routes_through_broker(monkeypatch):
     """Restarting the durable descriptor/producer apply job goes through the
     restart broker (reset-failed, then a no-block restart) instead of a
     hand-rolled systemctl call, so the crash budget and verb allowlist
-    apply."""
+    apply. Both legs are bounded at _ONESHOT_KICK_TIMEOUT_SEC -- the reset
+    leg via reset_then_manage's own reset_timeout= -- so a wedged leg cannot
+    alone burn jasper-web's proxy budget."""
     calls = _record_broker(monkeypatch)
 
     assert aec_endpoints._schedule_usb_gadget_recompose() is True
 
     unit = aec_endpoints._USB_MIC_APPLY_UNIT
-    assert calls == [("reset-failed", [unit]), ("restart", [unit])]
+    timeout = aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC
+    assert calls == [
+        ("reset-failed", [unit], timeout, False),
+        ("restart", [unit], timeout, True),
+    ]
 
 
-def test_usb_mic_recompose_surfaces_broker_refusal(monkeypatch):
+def test_usb_mic_recompose_surfaces_broker_refusal(monkeypatch, caplog):
     """A broker refusal (crash budget, allowlist, unreachable broker) reaches
-    the caller as the same False a direct-systemctl failure used to."""
+    the caller as the same False a direct-systemctl failure used to, and the
+    failure event names the enqueue phase so it stays distinguishable from a
+    later apply failure (deploy/usbsink/jasper-usbmic-apply-result emits the
+    same event name with phase=apply)."""
     _record_broker(monkeypatch, ok=False)
 
-    assert aec_endpoints._schedule_usb_gadget_recompose() is False
+    with caplog.at_level("ERROR", logger=aec_endpoints.logger.name):
+        assert aec_endpoints._schedule_usb_gadget_recompose() is False
+
+    fields = event_fields(caplog, "usb_mic.recompose_failed")
+    assert fields["phase"] == "enqueue"
 
 
 def test_aec_commission_starts_oneshot_when_idle(
@@ -663,7 +677,20 @@ def test_aec_commission_starts_oneshot_when_idle(
         "commission": {"running": True},
     }
     unit = aec_endpoints._AEC_COMMISSION_SERVICE
-    assert calls == [("start", [unit])]
+    timeout = aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC
+    assert calls == [("start", [unit], timeout, True)]
+
+
+def test_aec_commission_start_surfaces_broker_refusal(monkeypatch, caplog):
+    """Same refusal contract as the USB-mic kick, for the unit-level
+    _start_aec_commission -- still a single ``start`` call, no reset leg."""
+    _record_broker(monkeypatch, ok=False)
+
+    with caplog.at_level("ERROR", logger=aec_endpoints.logger.name):
+        assert aec_endpoints._start_aec_commission() is False
+
+    fields = event_fields(caplog, "aec_commission.start_failed")
+    assert fields["phase"] == "enqueue"
 
 
 def test_aec_commission_409_while_a_run_is_active(

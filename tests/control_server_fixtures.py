@@ -46,19 +46,26 @@ def _record_broker(
     *,
     ok: bool = True,
     unit_rc: dict[str, int] | None = None,
-) -> list[tuple[str, list[str]]]:
+) -> list[tuple[str, list[str], float, bool]]:
     """Replace the restart broker's client entry point, returning the
-    ``(verb, units)`` pairs the handler asks for. Nothing real restarts.
+    ``(verb, units, timeout, no_block)`` tuples the handler asks for. Nothing
+    real restarts.
+
+    ``timeout``/``no_block`` are ``manage_units``'s own kwargs, captured as
+    the caller passed them (or its defaults) — this is also how a caller's
+    ``reset_then_manage(..., reset_timeout=X)`` becomes observable here:
+    ``reset_then_manage`` has no direct effect on this fake, but it turns
+    into a ``verb="reset-failed"`` call whose OWN ``timeout`` is ``X``.
 
     ``unit_rc`` gives named units their own return code whatever ``ok``
     says — 5 is systemctl's "no unit file on this box"."""
     import jasper.control.server as srv_mod
 
-    calls: list[tuple[str, list[str]]] = []
+    calls: list[tuple[str, list[str], float, bool]] = []
     rc_by_unit = unit_rc or {}
 
-    def fake_manage_units(*units, verb="restart", **_kw):
-        calls.append((verb, list(units)))
+    def fake_manage_units(*units, verb="restart", timeout=5.0, no_block=True, **_kw):
+        calls.append((verb, list(units), timeout, no_block))
         rc = next(
             (rc_by_unit[u] for u in units if u in rc_by_unit),
             0 if ok else 1,
