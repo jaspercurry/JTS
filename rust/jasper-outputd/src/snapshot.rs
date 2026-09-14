@@ -633,4 +633,118 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
     }
+
+    pub(super) fn chip_ref_writer_json(&self, buf: &mut String, uptime_ms: u64) -> u64 {
+        let chip_ref_sample_rate = self.chip_ref_sample_rate.load(Ordering::Relaxed);
+        let chip_ref_delay_frames =
+            unpack_optional_u64(self.chip_ref_snd_pcm_delay_frames.load(Ordering::Relaxed));
+        let chip_ref_last_written_sequence = unpack_optional_u64(
+            self.chip_ref_last_written_reference_sequence
+                .load(Ordering::Relaxed),
+        );
+        let chip_ref_last_enqueued_sequence = unpack_optional_u64(
+            self.chip_ref_last_enqueued_reference_sequence
+                .load(Ordering::Relaxed),
+        );
+        let reference_sequence = self.reference_sequence.load(Ordering::Relaxed);
+        let chip_ref_desired = self.chip_ref_pcm.is_some();
+        let chip_ref_active = self.chip_ref_writer_active.load(Ordering::Relaxed);
+        let chip_ref_terminal_failure = self.chip_ref_terminal_failure.load(Ordering::Relaxed);
+        let chip_ref_open_error_count = self.chip_ref_open_error_count.load(Ordering::Relaxed);
+        let chip_ref_write_error_count = self.chip_ref_write_error_count.load(Ordering::Relaxed);
+        let chip_ref_status = if !chip_ref_desired {
+            "disabled"
+        } else if chip_ref_active {
+            "active"
+        } else if chip_ref_terminal_failure {
+            "failed"
+        } else if chip_ref_open_error_count > 0 || chip_ref_write_error_count > 0 {
+            "degraded"
+        } else {
+            "connecting"
+        };
+        let chip_ref_sequence_lag = chip_ref_last_written_sequence
+            .map(|written| reference_sequence.saturating_sub(written));
+        // Reserve first, then copy under the lock: the chip-ref writer thread
+        // must never wait on this thread's allocator (same rule the SRO block
+        // below states for its own snapshot). The 8 KiB reservation is skipped
+        // entirely when the writer is not desired, which is every box that
+        // does not run chip AEC.
+        let mut chip_ref_recent_writes: Vec<super::ChipRefObservation> = if chip_ref_desired {
+            Vec::with_capacity(super::CHIP_REF_RECENT_WRITES)
+        } else {
+            Vec::new()
+        };
+        if chip_ref_desired {
+            if let Ok(ring) = self.chip_ref_writes.lock() {
+                ring.copy_into(&mut chip_ref_recent_writes);
+            }
+        }
+        buf.push_str(r#""chip_ref_writer":{"#);
+        push_kv_bool(buf, "desired", chip_ref_desired);
+        buf.push(',');
+        // Compatibility: existing AEC policy consumers read `enabled` as the
+        // live writer verdict — runtime truth, not merely that a PCM name was
+        // configured.
+        push_kv_bool(buf, "enabled", chip_ref_active);
+        buf.push(',');
+        push_kv_bool(buf, "active", chip_ref_active);
+        buf.push(',');
+        push_kv_str(buf, "status", chip_ref_status);
+        buf.push(',');
+        push_kv_u64(buf, "open_error_count", chip_ref_open_error_count);
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "retry_count",
+            self.chip_ref_retry_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "queue_depth_periods",
+            self.chip_ref_queue_depth_periods.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "queued_frames",
+            self.chip_ref_queued_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "frames_written",
+            self.chip_ref_frames_written.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64_opt(buf, "snd_pcm_delay_frames", chip_ref_delay_frames);
+        buf.push(',');
+        push_kv_f64_opt(
+            buf,
+            "snd_pcm_delay_ms",
+            frames_to_ms_opt(chip_ref_delay_frames, chip_ref_sample_rate),
+            3,
+        );
+        buf.push(',');
+        push_kv_u64_opt(
+            buf,
+            "snd_pcm_delay_sample_age_ms",
+            event_age_ms(
+                uptime_ms,
+                self.chip_ref_snd_pcm_delay_sample_ms
+                    .load(Ordering::Relaxed),
+            ),
+        );
+        buf.push(',');
+        self.chip_ref_progress_json(
+            buf,
+            uptime_ms,
+            chip_ref_last_enqueued_sequence,
+            chip_ref_last_written_sequence,
+            chip_ref_sequence_lag,
+            &chip_ref_recent_writes,
+        );
+        chip_ref_sample_rate
+    }
 }
