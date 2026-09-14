@@ -26,6 +26,7 @@ PRE_RESPONSE_CAPPED_REASON = "pre_response_capped"
 @dataclass
 class PlaybackReport:
     accepted_audio: bool = False
+    last_accepted_at: float = 0.0
     stop_reason: str | None = None
 
 
@@ -101,6 +102,7 @@ async def play_responses(
     report = report if report is not None else PlaybackReport()
 
     async def first_write() -> None:
+        report.last_accepted_at = time.monotonic()
         if not report.accepted_audio:
             report.accepted_audio = True
             if on_first_write is not None:
