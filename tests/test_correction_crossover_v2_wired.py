@@ -871,7 +871,7 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     target = (sensitivity.dbfs_from_db_spl(anchor + offset) + SWEEP_PEAK_TO_RMS_DB
               if anchor is not None and sensitivity is not None else None)
     with caplog.at_level(logging.INFO):
-        door, analyze, _assessor = correction_run_host.bind_run_door(
+        door, analyze, _assessor, _execute = correction_run_host.bind_run_door(
             host=SimpleNamespace(session_volume_plan=lambda: None),
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},

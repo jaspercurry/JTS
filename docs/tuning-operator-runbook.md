@@ -25,7 +25,7 @@ Room defaults to `room/seat`: the three `seat_express` poses with the human move
 
 `jasper-round run --program bass --layout bass_axis --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
-`bass/axis` measures one on-axis bearing with the arm. Run `jasper-round run --program bass --layout bass_axis --candidates base,<fp> --level-db L --wait` once per level, then `jasper-round-views bass-fit-table <round…> --candidate <fp> --target <target.json> --tolerance-db <db>`. The base is the applied tune, including its bass block. The table joins measured pairs by level and includes the base’s boost. Keep the applied tune fixed across these rounds.
+`jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at one pose under one hold, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
 
 ## Evidence and recovery
 
@@ -157,7 +157,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round run\|trial\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
+| `jasper-round run\|trial\|placed\|status\|wait\|apply` | Run a plan or bass level sequence, place the microphone, and bank its packet. | mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read measured round evidence, including repeat --set spread across takes. Answers use stdout; detailed reports use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
