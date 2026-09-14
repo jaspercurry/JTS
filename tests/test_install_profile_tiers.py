@@ -183,7 +183,6 @@ def test_python_normalize_maps_legacy_tokens_to_streambox():
     from jasper.install_profile import (
         VALID_INSTALL_PROFILES,
         install_profile_allows_voice_brain,
-        install_role_for_profile,
         is_streambox_install_profile,
         normalize_install_profile,
     )
@@ -196,8 +195,6 @@ def test_python_normalize_maps_legacy_tokens_to_streambox():
     assert normalize_install_profile("") == "full"
     assert normalize_install_profile(None) == "full"
 
-    # role == profile now; legacy tokens behave exactly like streambox.
-    assert install_role_for_profile("endpoint") == "streambox"
     assert is_streambox_install_profile("satellite")
     assert install_profile_allows_voice_brain("endpoint")
     assert install_profile_allows_voice_brain("streambox")

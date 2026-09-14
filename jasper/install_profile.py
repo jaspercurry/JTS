@@ -201,22 +201,13 @@ def _normalize_with_migration_log(value: str | None, *, source: str) -> str:
     return normalized
 
 
-def install_role_for_profile(profile: str | None) -> str:
-    """Return the product role for an install-profile marker.
-
-    Role == profile now: ``full`` or ``streambox`` (legacy tokens
-    normalized to ``streambox``).
-    """
-    return normalize_install_profile(profile)
-
-
 def is_streambox_install_profile(profile: str | None) -> bool:
-    return install_role_for_profile(profile) == STREAMBOX_INSTALL_PROFILE
+    return normalize_install_profile(profile) == STREAMBOX_INSTALL_PROFILE
 
 
 def install_profile_allows_local_sources(profile: str | None) -> bool:
     """Whether this install role may advertise/run local music sources."""
-    return install_role_for_profile(profile) in VALID_INSTALL_PROFILES
+    return normalize_install_profile(profile) in VALID_INSTALL_PROFILES
 
 
 def install_profile_has_capability(
@@ -236,7 +227,7 @@ def install_profile_has_capability(
     Pure: derived from the argument alone — no env, no files, no
     hardware. See the module docstring for why that is load-bearing.
     """
-    return capability in PROFILE_CAPABILITIES[install_role_for_profile(profile)]
+    return capability in PROFILE_CAPABILITIES[normalize_install_profile(profile)]
 
 
 def install_profile_allows_voice_brain(profile: str | None) -> bool:
@@ -284,7 +275,7 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
     agree for the same marker. That purity is the whole contract here;
     see the module docstring for what breaks without it.
     """
-    role = install_role_for_profile(profile)
+    role = normalize_install_profile(profile)
     full = role == FULL_INSTALL_PROFILE
     local_sources = install_profile_allows_local_sources(profile)
     voice_brain = install_profile_allows_voice_brain(profile)
