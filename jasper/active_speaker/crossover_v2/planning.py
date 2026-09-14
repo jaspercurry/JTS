@@ -28,6 +28,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.log_event import log_event
 
 from ..branch_chain import CrossoverSection, sections_by_role
+from .alignment_prescription import AlignmentPrescription
 from .candidates import CloudFitEvidence, LinearizationState
 from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP, detached_json
 from .intervention import (
@@ -100,7 +101,7 @@ class FailureRecord:
 
 
 def alignment_to_candidate_fields(
-    analysis: ProgramAnalysis | Mapping[str, Any], *, roles: Sequence[str],
+    analysis: ProgramAnalysis | Mapping[str, Any] | AlignmentPrescription, *, roles: Sequence[str],
 ) -> tuple[float | None, str | None, str | None]:
     """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
 
@@ -113,19 +114,18 @@ def alignment_to_candidate_fields(
     """
     if isinstance(analysis, Mapping):
         status, delay, measured_polarity = (analysis.get(key) for key in ("alignment_status", "delay_us", "polarity"))
+    elif isinstance(analysis, AlignmentPrescription):
+        status, delay = ALIGNMENT_OK, analysis.delay_us
+        polarity = analysis.polarity
     else:
         est = analysis.alignment
         status, delay, measured_polarity = (est.status, est.delay_us, est.polarity) if est else (None, None, None)
+    if not isinstance(analysis, AlignmentPrescription):
+        polarity = POLARITY_INVERT if measured_polarity == "inverted" else POLARITY_KEEP
     if status != ALIGNMENT_OK or delay is None or len(roles) < 2:
         return None, None, None
-    woofer_role, tweeter_role = roles[0], roles[1]
     delay_us = float(delay)
-    if delay_us >= 0.0:
-        role, magnitude = tweeter_role, delay_us
-    else:
-        role, magnitude = woofer_role, -delay_us
-    polarity = POLARITY_INVERT if measured_polarity == "inverted" else POLARITY_KEEP
-    return magnitude, role, polarity
+    return abs(delay_us), roles[1] if delay_us >= 0 else roles[0], polarity
 
 
 def applied_profile_delay_us(

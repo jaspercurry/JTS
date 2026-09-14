@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from jasper.output_topology import OutputTopology
 from jasper.atomic_io import atomic_write_json
@@ -18,7 +18,7 @@ from .candidate_bank import load_candidate_artifact, publish_authored_candidate
 from .candidate_parts import candidate_from_design_draft, compose_candidate
 from .crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KIND, ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
-    AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, read_alignment_prescription,
+    AlignmentPrescription, AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, read_alignment_prescription,
 )
 from .crossover_v2.planning import alignment_to_candidate_fields
 from .crossover_v2.round_inputs import SetTakes
@@ -59,9 +59,10 @@ def bank_commissioning_experiment(
         return {"status": "unavailable", "reason": "commissioning_alignment_unavailable"}
     take = max(takes, key=lambda take: (take.get("timing") or {}).get("ended_s", 0))
     analysis = take["analysis"]
-    alignment = {key: analysis.get(key) for key in (
+    alignment: dict[str, Any] = dict.fromkeys((
         "delay_us", "polarity", "trim_db", "alignment_status", "alignment_objective", "alignment_confidence",
-    )}
+    ))
+    alignment.update((key, value) for key, value in analysis.items() if key in alignment)
     alignment.update(take_id=take["take_id"], record_id=take["artifacts"]["record_id"], pose=take["pose"])
     if alignment["delay_us"] is None or alignment["polarity"] not in ("normal", "inverted"):
         return {"status": "unavailable", "reason": "commissioning_alignment_unavailable", "alignment": alignment}
@@ -75,16 +76,14 @@ def bank_commissioning_experiment(
     else:
         preset = declared.source_preset
         try:
-            prescription = read_alignment_prescription({
+            prescription = cast(AlignmentPrescription, read_alignment_prescription({
                 "kind": ALIGNMENT_PRESCRIPTION_KIND, "artifact_schema_version": ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
                 "delay_us": alignment["delay_us"], "basis_delay_us": analysis.get("alignment_seed_delay_us"),
                 "polarity": "invert" if alignment["polarity"] == "inverted" else "keep",
                 "basis_artifacts": [alignment["record_id"]],
             }, fc_hz=preset.crossover_regions[0].fc_hz if preset.crossover_regions else None,
-               declared_bounds_us=alignment_delay_search_bounds_us(preset), way_count=preset.way_count)
-            assert prescription is not None
-            fields = alignment_to_candidate_fields({**analysis, "delay_us": prescription.delay_us},
-                                                   roles=required_driver_roles(preset.way_count))
+               declared_bounds_us=alignment_delay_search_bounds_us(preset), way_count=preset.way_count))
+            fields = alignment_to_candidate_fields(analysis, roles=required_driver_roles(preset.way_count))
             if fields[0] is None:
                 reason = alignment["alignment_status"] or "commissioning_alignment_unavailable"
             else:

@@ -1208,6 +1208,25 @@ def test_bass_sequence_join_uses_declared_target_in_last_packet(bass_run, round_
     assert fitted["tolerance_db"] == 3
 
 
+@pytest.mark.parametrize("purpose", [None, "bass", "room"])
+def test_bass_table_take_purpose_overrides_run_fallback(bass_run, capsys, purpose):
+    for path in bass_run.write():
+        manifest = json.loads(path.read_text())
+        for row in manifest["sets"]:
+            for take in row["takes"]:
+                take.pop("purpose", None)
+                if purpose is not None:
+                    take["purpose"] = purpose
+        path.write_text(json.dumps(manifest))
+    assert round_views_main(bass_run.argv) == (1 if purpose == "room" else 0)
+    answer = json.loads(capsys.readouterr().out)
+    if purpose == "room":
+        assert answer["code"] == "bass_fit_inputs_missing"
+    else:
+        table, = json.loads(bass_run.out.read_text())["tables"]
+        assert [level["fit"]["take_pair_count"] for level in table["levels"]] == [1, 1, 1]
+
+
 @pytest.mark.parametrize('round_count', [1, 2])
 @pytest.mark.parametrize('missing_set', [None, '4dc59eaec1e3', '8b2a90f77f31'])
 @pytest.mark.parametrize('ignored_phase,ignored_purpose', [
