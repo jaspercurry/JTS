@@ -3291,8 +3291,7 @@ mod tests {
 
         // A segment stays open while the model thinks, so the lane runs dry
         // for far longer than any audible break in speech.
-        let dropout_max_frames =
-            (STARVED_DROPOUT_MAX_MS * TTS_SAMPLE_RATE as u64) / 1_000;
+        let dropout_max_frames = (STARVED_DROPOUT_MAX_MS * TTS_SAMPLE_RATE as u64) / 1_000;
         let mut starved_frames = 0;
         while starved_frames <= dropout_max_frames {
             mix_one_period(&mut mixer, 480);
