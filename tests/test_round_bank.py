@@ -497,7 +497,7 @@ def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
              "takes": [{"take_id": "take", "role": "summed", "selected": True, "pose": {"kind": "seat"}}]}
     write_manifest(session, program="room", groups=[group])
     applied = {"kind": bp.BASELINE_PROFILE_KIND, "artifact_schema_version": bp.SCHEMA_VERSION,
-               "source": {"measured_candidate_fingerprint": "a123456789bc"},
+               "source": {"measured_candidate_fingerprint": "a123456789bc" + "0" * 52},
                "config": {"sha256": "123456789abc" * 5 + "1234", "path": "/config.yml"},
                "status": "applied", "applied_at": "2026-09-13T12:00:00Z", "recomposition_snapshot": {
                    "linearization": {"woofer": [{"freq": 300, "gain": -2, "q": 1}]},
@@ -524,12 +524,13 @@ def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
     assert stats["low_end_means_db"]["80_120"] == pytest.approx(level - slope)
     assert stats["low_end_means_db"]["20_30"] is None
     assert packet["applied"] == {
-        "candidate": "a123456789bc", "record": "123456789abc", "config_path": "/config.yml",
+        "candidate": "a123456789bc" + "0" * 52, "record": "123456789abc", "config_path": "/config.yml",
         "applied_at": applied["applied_at"],
         "layers": dict(zip(("driver", "room", "bass"), applied["recomposition_snapshot"].values())),
     }
     match = re.search(r"^Applied: candidate ([0-9a-f]{12}) · record ([0-9a-f]{12}) · (.+)$",
                       (banked.path / INDEX_FILENAME).read_text(), re.MULTILINE)
     assert match is not None
-    assert match.groups()[:2] == (packet["applied"]["candidate"], packet["applied"]["record"])
+    assert match.groups()[:2] == (packet["applied"]["candidate"][:12], packet["applied"]["record"])
+    assert len(packet["applied"]["candidate"]) == 64
     assert json.loads(match[3]) == packet["applied"]["layers"]

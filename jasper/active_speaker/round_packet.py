@@ -181,7 +181,7 @@ def _index(packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]])
     poses = list(dict.fromkeys(json.dumps(t["pose"], separators=(",", ":")) for group in packet["sets"] for t in group["takes"]))
     lines = [f"# {packet['round_id']} · {packet['program']}",
              f"Measured: poses {'; '.join(poses)}; level: {json.dumps(packet['level'])}",
-             f"Applied: candidate {packet['applied']['candidate']} · record {packet['applied']['record']} · "
+             f"Applied: candidate {str(packet['applied']['candidate'] or '')[:12]} · record {packet['applied']['record']} · "
              f"{json.dumps(packet['applied']['layers'], separators=(',', ':'))}",
              f"Result: {packet['result']}; reason: {packet['reason']}",
              "## Decisions"]
