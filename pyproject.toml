@@ -519,6 +519,8 @@ exhaustive_ignores = [
   "volume_observers",
   "volume_owner",
   "volume_persistence",
+  "volume_scales",
+  "volume_state",
   "wake_corpus",
   "wake_ports",
 ]
