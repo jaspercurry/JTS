@@ -53,12 +53,20 @@ SILENCE_BRIDGE_SEC = 0.8
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
 
-# Quiet between output deltas that is worth reporting. Live streams answer
-# audio continuously, so a gap this long means the provider or the receive
-# loop, not the lane downstream of it — the split #5091 needs in order to tell
-# a network gap from a local delivery stall. Comfortably above the normal
-# delta cadence so ordinary streaming stays silent.
-OUTPUT_DELTA_GAP_SEC = 0.25
+# How far the provider may fall BEHIND REAL TIME between output deltas before
+# it is worth reporting.
+#
+# Raw spacing cannot answer this. Live streams answer audio in chunks, so a
+# delta carrying 100 ms of audio arriving 100 ms after the last one is the
+# provider keeping up exactly; measuring spacing alone would fire on healthy
+# streaming and stay silent on a real shortfall of the same size. What starves
+# the lane is arrival time EXCEEDING the audio delivered, so that deficit is
+# what is measured. Set below the smallest dropout worth attributing (#5091
+# measured 10-128 ms) because the deficit, unlike spacing, is ~0 when healthy.
+OUTPUT_DELTA_DEFICIT_SEC = 0.04
+
+# Live output PCM: mono int16 at the rate `session.start` asks for.
+OUTPUT_PCM_RATE = 24000
 
 # Ceiling on waiting for the server's `session.close` ack. Live bills per
 # connected minute, so the close is still sent and the transport still
@@ -116,9 +124,10 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
-        # Arrival of the PREVIOUS output delta, audible or quiet. Used only to
-        # report gaps in what the provider sent.
+        # Arrival of the PREVIOUS output delta, audible or quiet, and how much
+        # audio it carried. Used only to report the provider falling behind.
         self._last_delta_at = 0.0
+        self._last_delta_audio_sec = 0.0
         self._finalized = False
         self._delegation_id = None
         # Delegation the in-flight tool round answers; a correction moves
@@ -254,13 +263,21 @@ class OpenAILiveTurn(BaseLiveTurn):
         if not pcm:
             return
         now = time.monotonic()
-        if self._last_delta_at and now - self._last_delta_at >= OUTPUT_DELTA_GAP_SEC:
-            log_event(
-                logger, "provider.output_gap", provider=self._conn.PROVIDER_NAME,
-                gap_ms=int((now - self._last_delta_at) * 1000),
-                chunks_received=self._chunks_received,
-            )
+        if self._last_delta_at:
+            # Elapsed since the previous delta, minus the audio that delta
+            # carried: what the provider failed to cover in real time.
+            deficit = (now - self._last_delta_at) - self._last_delta_audio_sec
+            if deficit >= OUTPUT_DELTA_DEFICIT_SEC:
+                log_event(
+                    logger, "provider.output_deficit",
+                    provider=self._conn.PROVIDER_NAME,
+                    deficit_ms=int(deficit * 1000),
+                    elapsed_ms=int((now - self._last_delta_at) * 1000),
+                    audio_ms=int(self._last_delta_audio_sec * 1000),
+                    chunks_received=self._chunks_received,
+                )
         self._last_delta_at = now
+        self._last_delta_audio_sec = len(pcm) / 2 / OUTPUT_PCM_RATE
         if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
             self._last_chunk_at = now
             self._chunks_received += 1
