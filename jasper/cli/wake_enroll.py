@@ -68,9 +68,6 @@ from pathlib import Path
 import numpy as np
 
 from jasper.atomic_io import atomic_write_bytes
-from jasper.control.restart_broker import (
-    _DEFAULT_EXEC_TIMEOUT_SEC as _SYSTEMCTL_TIMEOUT_SEC,
-)
 from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
@@ -110,6 +107,11 @@ INTER_CLIP_PAUSE_SEC = 2.0
 # UDP receiver sockets in production, so it must be down for the
 # enrollment CLI to bind.
 VOICE_UNIT = "jasper-voice"
+
+# Must exceed systemd's DefaultTimeoutStartSec (90 s): jasper-voice is Type=notify and
+# sets no TimeoutStartSec, so a legitimately slow start blocks that long. This bound
+# only catches a wedged manager; it must never report a slow start as a failure.
+_SYSTEMCTL_TIMEOUT_SEC = 120.0
 
 # Same privacy promise as the wake-corpus recorder: this CLI records the
 # bridge's UDP mic legs directly while jasper-voice is stopped, so it
