@@ -220,7 +220,7 @@ def build_env_cue_manager(
             "JASPER_MANAGEMENT_URL", "https://jts.local",
         )
     except RuntimeError as e:
-        warn(f"TTS backend disabled ({e})")
+        warn(f"TTS backend disabled ({e})", err=type(e).__name__)
         backend = None
         voice = ""
         sounds_dir = os.environ.get(
