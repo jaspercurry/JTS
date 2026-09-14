@@ -127,3 +127,50 @@ def test_bank_refusal_becomes_an_apply_issue(monkeypatch, code):
     issue = candidate_trials.candidate_boost_issue("a" * 16)
     assert issue["code"] == code
     assert issue["severity"] == "blocker"
+
+
+@pytest.mark.parametrize("outcome", ["restored", "missing", "load_failed"])
+def test_previous_reapplies_the_banked_candidate_and_records_it(monkeypatch, tmp_path, outcome):
+    from pathlib import Path
+    from jasper.active_speaker import baseline_profile
+    from jasper.web.correction_crossover_v2_apply import handle_v2_apply
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+    from tests.test_correction_crossover_v2_endpoints import (
+        _seed_baseline_apply_environment, _apply, _bg_run_async, _FakeApplyCam,
+    )
+
+    _, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    cam = _FakeApplyCam()
+    if outcome == "missing":
+        with pytest.raises(CrossoverV2Refused) as caught:
+            handle_v2_apply({"previous": True}, _bg_run_async, lambda: cam)
+        assert caught.value.code == "previous_profile_unavailable"
+        assert cam.path is None
+        assert baseline_profile.load_applied_baseline_profile_state() is None
+        return
+    previous = _v2_candidate(preset)
+    current = replace(previous, role_attenuations_db={"woofer": 0.0, "tweeter": -9.0})
+    for candidate in (previous, current):
+        result = _apply({"candidate": candidate.to_dict(), "expected_candidate_fingerprint": candidate.fingerprint},
+                        _bg_run_async, lambda: cam)
+        assert result["status"] == "applied"
+    state = v2state.load_v2_state()
+    assert state["previous_candidate_fingerprint"] == previous.fingerprint
+    prior_path = Path(state["previous_applied_profile"]["config"]["path"])
+    prior_text = prior_path.read_text()
+    prior_path.unlink()
+    if outcome == "load_failed":
+        async def fail(*args, **kwargs):
+            return False
+        cam.set_config_file_path = fail
+    result = handle_v2_apply({"previous": True}, _bg_run_async, lambda: cam)
+    applied = baseline_profile.load_applied_baseline_profile_state()
+    state = v2state.load_v2_state()
+    restored = outcome == "restored"
+    assert result["status"] == ("applied" if restored else "apply_failed")
+    assert applied["source"]["measured_candidate_fingerprint"] == (previous.fingerprint if restored else current.fingerprint)
+    assert state["previous_candidate_fingerprint"] == (current.fingerprint if restored else previous.fingerprint)
+    assert state["candidate"]["fingerprint"] == applied["source"]["measured_candidate_fingerprint"]
+    if restored:
+        assert Path(cam.path).read_text() == prior_text
+        assert result["profile"]["apply"]["result"] == "success"

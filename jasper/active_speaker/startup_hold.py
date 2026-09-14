@@ -7,10 +7,7 @@
 While it is present, ``safe_graph_for_current_topology`` preserves the staged
 startup anchor instead of restoring the approved baseline. It lives under
 ``/run`` on purpose — a normal boot starts with an empty ``/run``, so a
-commissioned box always comes back to audio. One TAKE
-(``load_protected_startup_config``) and three RELEASEs (that function's
-``finally``, ``rollback_protected_startup_config``, and
-``baseline_profile.persist_applied_baseline_profile``).
+commissioned box always comes back to audio.
 """
 
 from __future__ import annotations

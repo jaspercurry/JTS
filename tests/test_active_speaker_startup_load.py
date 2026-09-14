@@ -24,7 +24,6 @@ from jasper.active_speaker.startup_load import (
     build_startup_load_preflight,
     load_protected_startup_config,
     load_startup_load_state,
-    rollback_protected_startup_config,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -43,11 +42,6 @@ from tests.active_speaker_fixtures import (
     valid_camilla_config as _valid_config,
 )
 from tests.sound_camilla_fixtures import FakeCamilla
-
-
-class SnapshotFailingCamilla(FakeCamilla):
-    async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-        raise RuntimeError("camilla unavailable")
 
 
 def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
@@ -363,74 +357,10 @@ def test_startup_load_records_normal_rollback_state(monkeypatch, tmp_path: Path)
     }]
 
 
-def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) -> None:
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    reconcile_calls = _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-
-    load = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    rollback = asyncio.run(
-        rollback_protected_startup_config(
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    state = load_startup_load_state(state_path=state_path)
-
-    assert load["load"]["status"] == "loaded"
-    assert rollback["rollback"]["status"] == "rolled_back"
-    assert fake.set_calls[-1] == str(prior)
-    assert state["status"] == "rolled_back"
-    assert state["rollback_available"] is False
-    assert [
-        (call["units"], call["verb"], call["reason"], call["no_block"])
-        for call in reconcile_calls
-    ] == [
-        (
-            (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
-            "start",
-            "active_speaker_startup_load",
-            False,
-        ),
-        (
-            (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
-            "start",
-            "active_speaker_startup_rollback",
-            False,
-        ),
-    ]
-
-
-def test_startup_load_sets_staged_hold_and_rollback_clears_it(
+def test_startup_load_sets_staged_hold(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    # The writer wiring for the re-commission deadlock guard: a successful
-    # protected startup load holds the staged anchor (so the reconcile it kicks
-    # preserves it), and a rollback clears the hold (so the box's baseline can be
-    # restored again).
     staged = _staged(tmp_path)
     prior = _protected_prior(tmp_path, staged)
     fake = FakeCamilla(str(prior))
@@ -460,17 +390,6 @@ def test_startup_load_sets_staged_hold_and_rollback_clears_it(
     )
     assert load["load"]["status"] == "loaded"
     assert marker.exists()  # anchor is held while the commission is in flight
-
-    rollback = asyncio.run(
-        rollback_protected_startup_config(
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    assert rollback["rollback"]["status"] == "rolled_back"
-    assert not marker.exists()  # hold released; baseline restore is allowed again
 
 
 def test_startup_load_refuses_when_the_staged_hold_cannot_be_taken(
@@ -710,51 +629,6 @@ def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(
     assert "event=active_speaker.audio_hardware_reconcile_trigger_failed" in caplog.text
     assert "error=rc=3" in caplog.text
     assert "event=active_speaker.audio_hardware_reconcile_triggered" not in caplog.text
-
-
-def test_startup_rollback_reports_snapshot_failure(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-    asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    failing = SnapshotFailingCamilla(str(prior))
-
-    rollback = asyncio.run(
-        rollback_protected_startup_config(
-            load_config=failing.set_config_file_path,
-            get_current_config_path=failing.get_config_file_path,
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-
-    assert rollback["rollback"]["status"] == "rollback_failed"
-    assert "startup_rollback_failed" in {
-        issue["code"] for issue in rollback["rollback"]["issues"]
-    }
 
 
 def _composite_topology() -> OutputTopology:

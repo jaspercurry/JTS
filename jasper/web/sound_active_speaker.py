@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
 from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
+from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
 from jasper.active_speaker.installation import installation_view
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
 
@@ -1449,29 +1450,6 @@ async def _active_speaker_load_startup_config_payload(
     return payload
 
 
-async def _active_speaker_rollback_startup_config_payload(
-    *,
-    camilla_factory: Callable[[], Any],
-) -> dict[str, Any]:
-    """Rollback the protected startup config through the guarded backend."""
-
-    from jasper.active_speaker.startup_load import rollback_protected_startup_config
-
-    cam = camilla_factory()
-    payload = await rollback_protected_startup_config(
-        load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
-    )
-    log_event(
-        logger,
-        "sound.active_speaker_startup_load",
-        action="rollback",
-        status=str(payload.get("rollback", {}).get("status")),
-        active=str(payload.get("rollback", {}).get("active_config_path")),
-    )
-    return payload
-
-
 # --- single-audio-path per-driver commissioning + Stage-5 ramp ----------------
 #
 # The browser surface over the guarded machinery the `jasper-active-speaker` CLI
@@ -2203,17 +2181,6 @@ async def _active_speaker_load_summed_commissioning_config(
     return payload
 
 
-async def _active_speaker_rollback_summed_commissioning_config(
-    *,
-    camilla_factory: Callable[[], Any],
-) -> dict[str, Any]:
-    from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
-
-    cam = camilla_factory()
-    load_config, _, _ = commission_seams(cam)
-    return await rollback_driver_commissioning_config(load_config=load_config)
-
-
 async def _active_speaker_play_summed_commission_tone(
     plan: dict[str, Any],
     *,
@@ -2482,9 +2449,7 @@ async def _active_speaker_play_summed_commission_tone(
             if fanin_gate is not None:
                 _commission_tone_release_fanin_lane(reason="summed_test")
             rollback, rollback_issue = await rollback_summed_commission_teardown(
-                lambda: _active_speaker_rollback_summed_commissioning_config(
-                    camilla_factory=camilla_factory,
-                ),
+                lambda: rollback_driver_commissioning_config(load_config=commission_seams(camilla_factory())[0]),
                 log_event_name="sound.active_speaker_summed_test",
             )
         finally:
@@ -2864,36 +2829,6 @@ async def _active_speaker_commission_load_payload(
                 group=group,
             ),
         )
-    return payload
-
-
-async def _active_speaker_commission_rollback_payload(
-    *,
-    camilla_factory: Callable[[], Any],
-) -> dict[str, Any]:
-    """Roll the running graph back to the all-muted staged config (re-mute)."""
-
-    from jasper.active_speaker.commission_ramp import clear_pending_ramp_step
-    from jasper.active_speaker.safe_playback import stop_safe_playback_session
-    from jasper.active_speaker.commission_load import rollback_driver_commissioning_config
-
-    tone_stop = _active_speaker_stop_commission_tone(reason="commission_rollback")
-    cam = camilla_factory()
-    load_config, _, _ = commission_seams(cam)
-    payload = await rollback_driver_commissioning_config(load_config=load_config)
-    if (payload.get("rollback") or {}).get("status") == "rolled_back":
-        # The graph is proven back on the all-muted anchor, so the step the ramp
-        # was waiting on is gone with it. Only a proven rollback clears it: a
-        # blocked / failed one may still be audible.
-        payload["ramp"] = clear_pending_ramp_step()
-    payload["safe_playback"] = stop_safe_playback_session(reason="commission_rollback")
-    payload["tone_stop"] = tone_stop
-    log_event(
-        logger,
-        "sound.active_speaker_commission",
-        action="rollback",
-        status=str((payload.get("rollback") or {}).get("status")),
-    )
     return payload
 
 
@@ -3614,7 +3549,10 @@ def _active_speaker_baseline_profile_payload(
 ) -> dict[str, Any]:
     from jasper.active_speaker.baseline_profile import compile_commissioning_profile  # lazy: graph compilation imports NumPy
 
+    from .correction_crossover_v2_status import _offerable_previous_candidate, v2state  # lazy: status imports commissioning state
+
     _, payload = compile_commissioning_profile(design_draft=design_draft, write=write)
+    payload["previous_candidate_fingerprint"] = _offerable_previous_candidate(v2state.load_v2_state())
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",
@@ -3635,12 +3573,10 @@ async def _active_speaker_baseline_profile_apply_payload(
 ) -> dict[str, Any]:
     """Apply the active-speaker baseline profile through DSP apply."""
 
-    from jasper.active_speaker.baseline_profile import apply_commissioning_profile  # lazy: graph compilation imports NumPy
+    from .correction_crossover_v2_apply import apply_candidate  # lazy: graph compilation imports NumPy
 
-    cam = camilla_factory()
-    payload = await apply_commissioning_profile(
-        load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+    payload = await apply_candidate(
+        camilla_factory=camilla_factory,
         expected_candidate_fingerprint=expected_candidate_fingerprint,
         on_candidate_verified=on_candidate_verified,
     )

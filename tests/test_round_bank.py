@@ -10,7 +10,6 @@ from jasper.web import correction_crossover_v2_state as v2state
 
 import asyncio
 import errno
-import shutil
 import json
 import hashlib
 import wave
@@ -20,7 +19,10 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
+from jasper.cli.round_views import run_bookkeeping
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
@@ -34,8 +36,8 @@ from jasper.active_speaker.crossover_v2.feature_classifier import load_round_cap
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
 from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
+from jasper.active_speaker.round_packet import INDEX_FILENAME
 from tests.run_manifest_fixture import write_manifest
-from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
 from tests.test_crossover_v2_frequency_view import summed_capture_bundle  # noqa: F401
 from jasper.active_speaker.measurement_programs import bookkeeping_views
 
@@ -52,7 +54,7 @@ from jasper.active_speaker.round_bank import (
     bank_round,
 )
 
-from tests.crossover_v2_banked_round import bank_measure_round
+from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round
 
 
 def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
@@ -369,7 +371,6 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
 @pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("bass-compare", "inputs_required")])
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
     from jasper.active_speaker import measurement_programs
-    from jasper.cli.round_views import run_bookkeeping
     from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
@@ -383,7 +384,6 @@ def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, v
 @pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
 def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
     from jasper.active_speaker.measurement_programs import bookkeeping_views
-    from jasper.cli.round_views import run_bookkeeping
     session, state = _live_session(tmp_path)
     write_manifest(session, program=purpose)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
@@ -415,8 +415,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, purpose, base):
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run)
     if purpose == "speaker":
-        assert calls == [("inventory", row["set_id"], None) for row in groups] + [
-            (view, None, None) for view in ("classify-features", "distortion", "directivity", "per-seat")]
+        assert calls == [("inventory", row["set_id"], None) for row in groups]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
             ("room-grade", f"trial-{i}", None) for i in range(2) if base] + [("frequency", None, None)]
@@ -432,23 +431,10 @@ def test_bank_fans_out_views_with_the_base(tmp_path, purpose, base):
     for view, _, _ in bookkeeping_views(purpose)
 ])
 def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
-    from jasper.cli.round_views import run_bookkeeping
-    from tests.crossover_v2_banked_round import bank_seat_round
     from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir, _flat_curve
-    from tests.test_crossover_v2_feature_classifier import _bundle, _resonant_ir
 
     monkeypatch.chdir(tmp_path)
-    if view == "classify-features":
-        target, _ = _bundle(tmp_path, _resonant_ir(3.0))
-    elif view == "distortion":
-        _, compose, sidecar, _, _ = request.getfixturevalue("harmonic_capture")
-        session = tmp_path / "session"
-        shutil.copytree(sidecar.parent.parent, session / "ring")
-        _, state = compose(-16.0)
-        (session / CAPTURE_STATE_FILENAME).write_text(json.dumps(state))
-        target = bank_round(session, campaign_root=tmp_path / "bank",
-                            applied_profile_path=tmp_path / "applied-profile.json").path
-    elif purpose == "bass":
+    if purpose == "bass":
         target, _, _, bank = request.getfixturevalue("summed_capture_bundle")
         asyncio.run(bank("baseline"))
         write_manifest(target, program=purpose)
@@ -472,3 +458,69 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
             assert Path(answer["image"]) == target / "frequency.png"
             assert Path(answer["image"]).read_bytes().startswith(b"\x89PNG")
         assert len(answer["series"]) == (7 if purpose == "room" else 1)
+
+
+def test_room_packet_keeps_views_limits_and_series_stats(tmp_path):
+
+    source = bank_seat_round(tmp_path / "source")
+    inputs = round_inputs(source)
+    mark_state(inputs.session_dir, "applied")
+    banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+                        view_runner=run_bookkeeping, **_ssot(tmp_path, present=False))
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert packet["program"] == "room" and packet["fits"] == []
+    assert {view["view"] for view in packet["artifacts"]["room_views"]} == {"room", "room-grade"}
+    assert all(Path(view["out"]).is_file() for view in packet["artifacts"]["room_views"] if view["status"] == "written")
+    assert len(packet["series"]) == 7
+    for series in packet["series"]:
+        assert series["set_id"] in packet["limits"] and series["pose"]["kind"] == "seat"
+        assert series["stats"]["rms_100_10k_db"] < 0.5
+        assert abs(series["stats"]["tilt_db_per_decade"]) < 0.5
+        assert series["stats"]["band_means_db"] and series["stats"]["low_end_means_db"]
+    limits, = packet["limits"].values()
+    assert limits["bounds"]["freqs_hz"] and limits["bounds"]["taper_knee_hz"] is not None
+    assert len(limits["bounds"]["cut_floor_db"]) == len(limits["bounds"]["freqs_hz"])
+    index = (banked.path / INDEX_FILENAME).read_text().splitlines()
+    assert f"Fingerprint: {packet['packet_fingerprint']}" in index
+    heads = ("Measured:", "Applied:", "Result:", "## Decisions", "decision:", "Limits:", "Stats:",
+             "Low-end means:", "Fits:", "## Artifacts", "## Tools", "Fingerprint:")
+    positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
+    assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize("level,slope", [(0, 0), (2, 3)])
+def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
+
+    session, state = _live_session(tmp_path)
+    group = {"set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
+             "takes": [{"take_id": "take", "role": "summed", "selected": True, "pose": {"kind": "seat"}}]}
+    write_manifest(session, program="room", groups=[group])
+    applied = {"kind": bp.BASELINE_PROFILE_KIND, "artifact_schema_version": bp.SCHEMA_VERSION,
+               "status": "applied", "applied_at": "2026-09-13T12:00:00Z", "recomposition_snapshot": {
+                   "linearization": {"woofer": [{"freq": 300, "gain": -2, "q": 1}]},
+                   "room_correction": {"left": [{"freq": 80, "gain": -3, "q": 2}]},
+                   "bass_extension": {"enabled": True}}}
+    paths = _ssot(tmp_path, present=True)
+    paths["applied_profile_path"].write_text(json.dumps(applied))
+
+    def views(view, target, **kwargs):
+        if view == "frequency":
+            series = frequency_series(series_id="series", label="seat", kind="measured", role="summed",
+                                      take_id="take", freqs_hz=[100, 1000, 10000],
+                                      magnitude_db=[level - slope, level, level + slope],
+                                      reference_db=0, smoothing_fractional_octave=6)
+            (target / "frequency_view.json").write_text(json.dumps(build_frequency_view(FrequencyRun(
+                id="run", measurement_family="room", series=(series,)))))
+        return {"view": view, "status": "unavailable"}
+
+    packet = json.loads((bank_round(session, campaign_root=tmp_path / "bank", state_path=state,
+                                    view_runner=views, **paths).path / "packet.json").read_text())
+    stats = packet["series"][0]["stats"]
+    assert stats["rms_100_10k_db"] == pytest.approx((level ** 2 + 2 * slope ** 2 / 3) ** 0.5)
+    assert stats["tilt_db_per_decade"] == pytest.approx(slope)
+    assert stats["low_end_means_db"]["80_120"] == pytest.approx(level - slope)
+    assert stats["low_end_means_db"]["20_30"] is None
+    assert packet["applied"] == {
+        "candidate_fingerprint": bp.baseline_candidate_fingerprint(applied), "applied_at": applied["applied_at"],
+        "layers": dict(zip(("driver", "room", "bass"), applied["recomposition_snapshot"].values())),
+    }

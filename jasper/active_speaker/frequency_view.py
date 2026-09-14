@@ -7,13 +7,15 @@
 from __future__ import annotations
 
 import math
+import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .frequency_display import prepare_frequency_curve
 
 SCHEMA = "jts_frequency_view/1"
+FREQUENCY_VIEW_FILENAME = "frequency_view.json"
 
 
 class FrequencyViewError(ValueError):
@@ -168,3 +170,32 @@ def build_frequency_view(
         },
         "runs": projected,
     }
+
+
+def manifest_frequency_run(manifest: Mapping[str, Any]) -> FrequencyRun:
+    from .frequency_plot import prepare_plot_curve  # lazy: numerical display import cost
+
+    series = []
+    for group in manifest.get("sets", ()):
+        for take in group["takes"]:
+            if not take["selected"] or not take.get("curve"):
+                continue
+            curve, pose = take["curve"], take["pose"]
+            item = frequency_series(
+                **{key: value for key, value in curve.items() if key != "role"},
+                series_id=f"{group['set_id']}:{take['take_id']}", label=take["role"], kind="measured",
+                set_id=group["set_id"], take_id=take["take_id"], role=take["role"],
+                base=group.get("base", False), candidate_id=group["capture_basis"].get("candidate_id"),
+                graph_fingerprint=group["capture_basis"].get("graph_fingerprint"),
+                position={**pose, "id": json.dumps(pose, sort_keys=True), "vertical_deg": pose.get("elevation_deg")},
+                visible_by_default=True,
+            )
+            if item is not None:
+                series.append(item)
+    references: dict[str, float] = {}
+    for curve in sorted(series, key=lambda curve: not curve.details["base"]):
+        role = curve.details["role"]
+        if role not in references:
+            references[role] = prepare_plot_curve(curve.to_dict())["reference_db"]
+    return FrequencyRun(id=manifest["run_id"], measurement_family="speaker",
+                        series=tuple(replace(curve, reference_db=references[curve.details["role"]]) for curve in series))

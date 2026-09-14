@@ -143,10 +143,9 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.round_bank import (  # lazy: banking imports analysis
         RoundBankError, bank_round,
     )
-
     from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
     from .round_views._bass_inputs import join_bass_rounds  # lazy: wait-only bass analysis
-    from jasper.active_speaker.round_packet import finish_bass_packet  # lazy: wait-only packet assembly
+    from jasper.active_speaker.round_packet import finish_bass_packet, wait_answer  # lazy: wait-only packet assembly
 
     result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout)
     if result["status"] != "terminal":
@@ -160,16 +159,14 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
             Path(session_dir), view_runner=run_bookkeeping,
         )
         manifest = banked.provenance.get("manifest")
-        packet = (finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
-                  if manifest and Path(manifest).is_file() else None)
+        if manifest and Path(manifest).is_file():
+            finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
     except RoundBankError as exc:
         return failed(EXIT_REFUSED, exc.reason, str(exc))
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
-    return _answer("wait", f"Run banked at {banked.path}", run_id=args.run,
-                   result=result.get("result"), round_dir=str(banked.path),
-                   manifest=banked.provenance.get("manifest"),
-                   views=banked.provenance.get("views", []), packet=str(packet) if packet else None)
+    return answered(wait_answer(banked, result, verbose=args.verbose),
+                    f"Run banked at {banked.path}", sort_keys=False)
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
@@ -216,14 +213,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     timeout_args = argparse.ArgumentParser(add_help=False)
+    timeout_args.add_argument("--verbose", action="store_true", help="include the banked view results")
     timeout_args.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
     run_args = argparse.ArgumentParser(add_help=False, parents=[timeout_args])
     _connection_args(run_args)
-    run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its views")
+    run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     levels = run_args.add_mutually_exclusive_group()
     levels.add_argument("--levels", help="bass levels: auto uses admissible session offsets; or comma-separated absolute dB levels")
     levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; bass otherwise uses auto levels")
-    run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit bass levels; optionally wait and bank its views")
+    run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit bass levels; optionally wait and bank its packet")
     run.add_argument("--program", choices=("speaker", "room", "bass"))
     poses = run.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
