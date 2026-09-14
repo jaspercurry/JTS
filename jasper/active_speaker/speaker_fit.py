@@ -16,7 +16,7 @@ from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_ro
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
-from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
@@ -213,9 +213,7 @@ def speaker_fit(
                                              {role: {**budgets.get(role, {}), **overrides} for role in bands}, vocabulary)
     except (OSError, ValueError, TypeError, LookupError) as exc:
         raise SpeakerFitUnreadable(str(exc)) from exc
-    curves = {curve["role"]: curve for curve in record.get("curves") or []} or {
-        row["role"]: row["curve"] for group in manifest["sets"] for row in group["takes"]
-        if row["take_id"] == take_id and row.get("role") and row.get("curve")}
+    curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
     drivers = []
     for role, band in bands.items():
         response = response_from_banked_curve(curves[role])

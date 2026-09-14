@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import pose_curve, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
@@ -859,26 +860,20 @@ def _analysis_of_shape(shape: str):
 def test_every_shape_of_analysis_banks_its_complex_response(
     shape, expected_roles,
 ):
-    """Ruling S3, at the seam three banked kinds reach it through.
-
-    ``program_analysis`` produces complex responses in exactly two shapes — a
-    per-driver tuple and one summed response — and before this only the walk's
-    per-driver one ever reached a file. Both must come back reconstructible:
-    the record is magnitude+phase, and the pair IS the transfer function.
-
-    Compared at the bins the record itself NAMES, because the curve is sampled
-    and never interpolated — an interpolated complex value is a number no
-    microphone produced, and a phase interpolated across a wrap is wrong.
-    """
+    """Bank the response and gate metadata without interpolating samples."""
     import numpy as np
 
     analysis, prog, sources, bands = _analysis_of_shape(shape)
+    for source in sources.values():
+        source.gating.update(window_ms=7.0, floor_source=FLOOR_SEARCH_BOUND)
 
     records = spatial.analysis_curve_records(analysis, prog)
 
     assert [record["role"] for record in records] == expected_roles
     for record in records:
         source = sources[record["role"]]
+        assert record["gate_window_ms"] == 7.0
+        assert record["floor_source"] == FLOOR_SEARCH_BOUND
         rebuilt = 10.0 ** (np.asarray(record["magnitude_db"]) / 20.0) * np.exp(
             1j * np.radians(np.asarray(record["phase_deg"]))
         )

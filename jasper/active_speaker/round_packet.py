@@ -6,13 +6,9 @@
 from __future__ import annotations
 
 import json
-import shlex
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-import numpy as np
-
-from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.atomic_io import atomic_write_json
 
 from .applied_identity import applied_identity
@@ -22,18 +18,16 @@ from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
 from .crossover_v2.prescription_contract import prescription_contracts
 from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
-from .flat_spec import _power_mean_db
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, manifest_frequency_run, FREQUENCY_VIEW_FILENAME
 from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
+from .round_packet_report import (
+    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index, series_stats,
+)
 from .run_manifest import RUN_MANIFEST_KIND, RunManifest
 from .crossover_v2.refusal_copy import CrossoverV2Refused
-
-PACKET_FILENAME = "packet.json"
-PICTURE_FILENAME = "frequency.png"
-INDEX_FILENAME = "index.md"
 
 
 class RoundPacket:
@@ -94,24 +88,6 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     return destination
 
 
-def _stats(plot: Mapping[str, Any]) -> dict[str, Any]:
-    freqs = np.asarray(plot["freqs_hz"], dtype=float)
-    values = np.asarray(plot["deviation_db"], dtype=float)
-    valid = np.isfinite(values) & (freqs > 0)
-    measured = valid & (freqs >= 100) & (freqs <= 10000)
-    bands = {}
-    for center, lo, hi in octave_bands_hz(20, 20000):
-        band = values[valid & (freqs >= lo) & (freqs < hi)]
-        bands[f"{center:g}"] = _power_mean_db(band) if band.size else None
-    return {
-        "rms_100_10k_db": plot["rms_db"],
-        "tilt_db_per_decade": float(np.polyfit(np.log10(freqs[measured]), values[measured], 1)[0])
-        if np.unique(freqs[measured]).size >= 2 else None,
-        "band_means_db": bands,
-        "low_end_means_db": {f"{b['band_hz'][0]}_{b['band_hz'][1]}": b["mean_db"] for b in plot["band_means"]},
-    }
-
-
 def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     computed: dict[tuple[str, str], Any] = {}
     clouds = design_clouds(inputs, manifest)
@@ -141,67 +117,6 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, An
     return fits
 
 
-def _decision(contract: Mapping[str, Any]) -> str:
-    schema = contract.get("schema", {})
-    fields: dict[str, Any] = {}
-
-    def visit(node: Mapping[str, Any], path: str) -> None:
-        constraints = {key: node[key] for key in ("enum", "const", "minimum", "maximum", "maxItems") if key in node}
-        if constraints:
-            fields[path] = constraints
-        for name, child in node.get("properties", {}).items():
-            visit(child, f"{path}.{name}" if path else name)
-        for key, suffix in (("items", "[]"), ("additionalProperties", ".*")):
-            if isinstance(node.get(key), Mapping):
-                visit(node[key], path + suffix)
-
-    visit(schema, "")
-    bounds = {key: value if len(json.dumps(value)) < 350 else "see packet.json limits"
-              for key, value in contract.get("bounds", {}).items()}
-    return json.dumps({"required": schema.get("required", []), "fields": fields, "bounds": bounds}, separators=(",", ":"))
-
-
-def _index(packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]]) -> str:
-    commands = [shlex.join(["jasper-round-views", row["view"], str(target), *(["--set", row["set_id"]] if row.get("set_id") else []),
-                            *(["--incumbent", row["incumbent_set_id"]] if row.get("incumbent_set_id") else [])])
-                for row in views if row["view"] != "frequency"]
-    if packet["artifacts"]["frequency_view"]:
-        commands.append(shlex.join(["jasper-round-views", "frequency", packet["artifacts"]["frequency_view"],
-                                   "--image", str(target / PICTURE_FILENAME)]))
-    commands += [shlex.join(["jasper-round-views", "speaker-fit", str(target), "--set", fit["set_id"], "--take", fit["take_id"]])
-                 for fit in packet["fits"]]
-    decisions: dict[str, dict[str, list[str]]] = {}
-    for set_id, limits in packet["limits"].items():
-        if limits.get("status") == "unavailable":
-            decisions.setdefault("unavailable", {}).setdefault(limits["reason"], []).append(set_id)
-        sections = limits if packet["program"] and run_purpose(packet["program"]) == PURPOSE_SPEAKER else {"decision": limits}
-        for name, contract in sections.items():
-            if isinstance(contract, Mapping) and "schema" in contract:
-                decisions.setdefault(name, {}).setdefault(_decision(contract), []).append(set_id)
-    poses = list(dict.fromkeys(json.dumps(t["pose"], separators=(",", ":")) for group in packet["sets"] for t in group["takes"]))
-    lines = [f"# {packet['round_id']} · {packet['program']}",
-             f"Measured: poses {'; '.join(poses)}; level: {json.dumps(packet['level'])}",
-             f"Applied: candidate {str(packet['applied']['candidate'] or '')[:12]} · record {packet['applied']['record']} · "
-             f"{json.dumps(packet['applied']['layers'], separators=(',', ':'))}",
-             f"Result: {packet['result']}; reason: {packet['reason']}",
-             "## Decisions"]
-    commissioning = packet.get("commissioning") or {}
-    if commissioning.get("candidate_fingerprint"):
-        lines.insert(4, f"commissioning: apply {commissioning['candidate_fingerprint']} to finish")
-    if commissioning.get("status") == "alignment_unmeasured":
-        lines.insert(4, f"alignment_unmeasured: {commissioning['reason']}")
-    lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
-              for name, values in decisions.items()]
-    lines += ["Limits: packet.json limits is keyed by set; it includes per-bin bounds and admitted features.",
-              "Stats: dB from each series reference; tilt over 100–10000 Hz; band means use octave centers in Hz.",
-              "Low-end means: power means in Hz ranges; null means no usable bins.",
-              f"Fits: {len(packet['fits'])}",
-              "## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
-              "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
-              f"Fingerprint: {packet['packet_fingerprint']}"]
-    return "\n\n".join(lines) + "\n"
-
-
 def write_round_packet(target: Path, manifest_path: str | None, views: list[dict[str, Any]]) -> dict[str, Any]:
     inputs = round_inputs(target)
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else {}
@@ -225,10 +140,11 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                     plot = curve.get("plot") or prepare_plot_curve(curve, run_doc.get("metadata"))
                     curve["plot"] = plot
                     group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.get("take_id")
+                                        and (not curve.get("set_id") or g["set_id"] == curve["set_id"])
                                         and (not curve.get("role") or t.get("role") in (None, curve["role"]))), ({}, {}))
                     series.append({"set_id": curve.get("set_id", group.get("set_id")), "take_id": curve.get("take_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role", take.get("role")),
-                                   "stats": _stats(plot)})
+                                   "stats": series_stats(plot, gate_fields(take)["trusted_floor_hz"])})
             atomic_write_json(view_path, view)
             artifacts["frequency_view"] = str(view_path)
             if purpose == PURPOSE_SPEAKER:
@@ -267,7 +183,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     except ROUND_INPUT_ERRORS as exc:
         fingerprint = None
         errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
-    packet = {"schema": "jts_round_packet/1", "round_id": target.name, "run_id": manifest.get("run_id"),
+    packet = {"schema": "jts_round_packet/2", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "level": manifest.get("level"),
               **({"runs": manifest["runs"]} if "runs" in manifest else {}),
@@ -276,7 +192,8 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                      "room": snapshot.get("room_correction", profile.get("room_correction")),
                                      "bass": snapshot.get("bass_extension")}},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
-                        "takes": [{key: t.get(key) for key in ("take_id", "pose", "role", "selected")} for t in g["takes"]]}
+                        "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected")},
+                                   **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest) if purpose == PURPOSE_SPEAKER else [],
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
@@ -286,7 +203,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
             packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
     atomic_write_json(target / PACKET_FILENAME, packet)
-    (target / INDEX_FILENAME).write_text(_index(packet, target, views))
+    (target / INDEX_FILENAME).write_text(packet_index(packet, target, views, manifest))
     return packet
 
 

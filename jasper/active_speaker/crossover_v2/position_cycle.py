@@ -287,6 +287,16 @@ def read_pose_curve_pair(
     return (found.lower, found.upper, found.take.path) if found else None
 
 
+def curves_for_take(
+    record: Mapping[str, Any], manifest: Mapping[str, Any] | None = None,
+) -> list[Mapping[str, Any]]:
+    """Read retained curves from the sidecar, then the manifest's role rows."""
+    return list(record.get("curves") or [
+        row["curve"] for group in (manifest or {}).get("sets", ()) for row in group["takes"]
+        if row["take_id"] == (record.get("take_id") or record.get("position_id")) and row.get("curve")
+    ])
+
+
 def parse_curve_complex(
     curve: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, tuple[float, float]] | None:
