@@ -56,19 +56,28 @@ RING_SLOT_FRAMES = 128
 DEFAULT_FANIN_RING_SLOTS = 4
 
 
-def ring_capacity_frames() -> int:
-    """Frames the whole ring holds — the ALSA buffer size its ioplug reports.
+def ring_capacity_frames(pcm: str) -> int:
+    """Frames the named ring PCM holds — the ALSA buffer size its ioplug reports.
 
-    The bound a CamillaDSP ``chunksize`` crossing the ring has to clear:
+    The bound a CamillaDSP ``chunksize`` crossing that PCM has to clear:
     CamillaDSP sets ``avail_min`` to its chunk, and ALSA refuses an ``avail_min``
     larger than the device's buffer. A property of the TRANSPORT, not of the
-    fitted DAC — both factors are compile-time constants shared by the fan-in
-    writer and the ioplug, so every box's ring is the same size. Not env-derived:
-    the ioplug takes its slot count from the conf.d block, and a disagreeing pair
-    fails the attach rather than resizing anything.
+    fitted DAC — compile-time constants shared by each ring's writer and ioplug,
+    so a given ring is the same size on every box. NOT one number for every PCM,
+    though: Ring A (``RING_CAPTURE_DEVICE``) widened to
+    :data:`DEFAULT_FANIN_RING_SLOTS` slots (#4124) while Ring B
+    (``RING_PLAYBACK_DEVICE``) and the active ring (``RING_ACTIVE_PLAYBACK_DEVICE``)
+    stayed at :data:`DEFAULT_OUTPUTD_RING_SLOTS`. Not env-derived: the ioplug
+    takes its slot count from the conf.d block, and a disagreeing pair fails the
+    attach rather than resizing anything.
     """
-
-    return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
+    if pcm == RING_CAPTURE_DEVICE:
+        slots = DEFAULT_FANIN_RING_SLOTS
+    elif pcm in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
+        slots = DEFAULT_OUTPUTD_RING_SLOTS
+    else:
+        raise ValueError(f"{pcm!r} is not a ring PCM (see RING_PCM_DEVICES)")
+    return RING_SLOT_FRAMES * slots
 
 
 RING_CAMILLA_CHUNKSIZE = 128

@@ -137,7 +137,8 @@ def test_ring_kwargs_emit_ring_capture_device_s32le():
     # chunk through resolve_camilla_latency_for_devices, which answers a ring
     # end with what the transport can negotiate.
     devices = parse_camilla_devices_config(cfg)
-    assert devices["chunksize"] <= ring_capacity_frames()
+    assert devices["chunksize"] <= ring_capacity_frames(RING_CAPTURE_DEVICE)
+    assert devices["chunksize"] <= ring_capacity_frames(RING_PLAYBACK_DEVICE)
 
 
 def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(

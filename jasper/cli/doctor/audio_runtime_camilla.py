@@ -503,38 +503,43 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
                 reason=REASON_RING_TARGET_LEVEL_ABOVE_CEILING,
             )
 
-    capacity = ring_capacity_frames()
-    if int(chunksize) > capacity:
-        return CheckResult(
-            label, "fail",
-            f"{config_path} sets devices.chunksize={chunksize} on "
-            f"{'/'.join(ring_ends)}, above the ring's {capacity}-frame capacity. "
-            "CamillaDSP cannot open the ring with it and will restart-loop. "
-            "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
-            reason=REASON_RING_CHUNK_ABOVE_CAPACITY,
-        )
+    # Ring A and Ring B/the active ring are sized independently (#4124 widened
+    # Ring A only), so a shared chunksize is judged against EACH named end's
+    # own capacity, not one number for the whole config.
+    capacities = {name: ring_capacity_frames(name) for name in ring_ends}
+    for name in ring_ends:
+        if int(chunksize) > capacities[name]:
+            return CheckResult(
+                label, "fail",
+                f"{config_path} sets devices.chunksize={chunksize} on {name}, "
+                f"above its {capacities[name]}-frame ring capacity. CamillaDSP "
+                "cannot open the ring with it and will restart-loop. "
+                "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
+                reason=REASON_RING_CHUNK_ABOVE_CAPACITY,
+            )
     # target_level is the playback-buffer fill CamillaDSP steers towards, so
     # it is judged against the ring only when the ring IS the playback end. A
     # target the ring cannot hold is a graph emitted before the ring geometry
     # owned it (a DAC floor's 1536 against a 256-frame ring): it plays, with
     # rate_adjust off, but is stale — regenerate it.
+    playback_device = devices.get("playback_device")
     if (
-        devices.get("playback_device") in RING_PCM_DEVICES
+        playback_device in RING_PCM_DEVICES
         and target_level is not None
-        and int(target_level) > capacity
+        and int(target_level) > capacities[playback_device]
     ):
         return CheckResult(
             label, "warn",
             f"{config_path} sets devices.target_level={target_level} on "
-            f"{devices.get('playback_device')}, above the ring's {capacity}-frame "
-            "capacity: a graph emitted before the ring owned its geometry. "
+            f"{playback_device}, above its {capacities[playback_device]}-frame "
+            "ring capacity: a graph emitted before the ring owned its geometry. "
             "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
             reason=REASON_RING_TARGET_LEVEL_ABOVE_CAPACITY,
         )
     return CheckResult(
         label, "ok",
-        f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
-        f"({'/'.join(ring_ends)})",
+        f"chunksize={chunksize} fits its ring capacity "
+        f"({', '.join(f'{name}={capacities[name]}' for name in ring_ends)})",
     )
 
 @doctor_check()

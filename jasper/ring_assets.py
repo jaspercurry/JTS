@@ -140,8 +140,11 @@ RING_CONF_N_SLOTS = 2
 # (``rust/jasper-fanin/src/config.rs``, ``.env.example`` documents 2..16 "must
 # match the conf.d n_slots"), and rendering this constant into that block
 # would shear a coherent operator override (env + conf.d) on the next
-# hardware reconcile. Render Ring A's n_slots too once jasper-fanin reads
-# ``jasper_ring::RING_SLOTS`` and ``JASPER_FANIN_RING_SLOTS`` is gone.
+# hardware reconcile. Ring A's n_slots is owned by
+# ``jasper.fanin_coupling.DEFAULT_FANIN_RING_SLOTS`` /
+# ``JASPER_FANIN_RING_SLOTS``, never this constant — the two rings are sized
+# independently on purpose (``rust/jasper-ring/src/layout.rs``'s
+# ``RING_SLOTS`` doc comment).
 RING_CONF_N_SLOTS_PCMS = (RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 
 

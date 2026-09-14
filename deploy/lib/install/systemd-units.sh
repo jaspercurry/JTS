@@ -962,7 +962,8 @@ forget_core_graph_park_record() {
 restart_core_camilla_after_dsp_reconcile() {
     # CamillaDSP captures the fan-in output. Restart it only after the DSP state
     # reconcile so a ring-default deploy cannot start Camilla on a stale
-    # chunk-256 statefile against freshly-created 2-slot ring files.
+    # chunk-256 statefile against freshly-created ring files (Ring A and Ring B
+    # are sized independently since #4124 — 512 and 256 frames respectively).
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
 }
 
