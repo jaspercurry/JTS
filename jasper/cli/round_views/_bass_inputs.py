@@ -13,7 +13,9 @@ from jasper.active_speaker.bass_comparison import bass_capture_context, selected
 from jasper.active_speaker.bass_table import fit_bass_table, level_key
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate, load_candidate_artifact
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
+from jasper.active_speaker.measurement_programs import PURPOSE_BASS, run_purpose
 
 from ._common import ARTIFACT_BY_VIEW, SetTakes, default_out, read_run_manifest, round_artifact_dir, round_inputs
 
@@ -41,15 +43,19 @@ def fit_run(args) -> dict[str, Any]:
             raise CrossoverV2Refused({"run_id": manifest["run_id"], "round_dir": str(root)},
                                     code="bass_fit_run_mismatch")
         run_ids.append(manifest["run_id"])
+        purpose = run_purpose(manifest.get("program"))
         for row in manifest["sets"]:
             selected = SetTakes.from_row(row)
+            entries = [take for take in selected.takes if take["selected"]
+                       and take.get("phase") == PHASE_LATERAL
+                       and take.get("purpose", purpose) == PURPOSE_BASS]
+            if not entries:
+                continue
             basis = selected.capture_basis
             level = level_key(basis, set_id=selected.set_id)
             path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, selected.set_id)
             view = json.loads(path.read_text())
-            for entry in selected.takes:
-                if not entry["selected"]:
-                    continue
+            for entry in entries:
                 take = dict(selected_take(view, entry["take_id"]))
                 if level_key(bass_capture_context(take), take_id=entry["take_id"]) != level:
                     raise CrossoverV2Refused({"set_id": selected.set_id, "take_id": entry["take_id"]},
